@@ -12,17 +12,13 @@ concurrency:
 jobs:
   syntax-check:
     name: 語法檢查
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.11"
-
       - name: 編譯所有 Python 模組
         run: |
-          python -m compileall -q system bin crown || exit 1
+          python3 -m compileall -q system bin crown || exit 1
           echo "Python 語法 OK"
 
       - name: 檢查 shell 腳本
@@ -35,7 +31,7 @@ jobs:
       - name: 驗證 Crown 與 Footbreak PinnAPI 離線回歸測試
         run: |
           bash crown/validate.sh
-          python -m unittest discover -s system/tests -t .
+          python3 -m unittest discover -s system/tests -t .
           echo "Crown and Footbreak offline safety tests OK"
 
       - name: 驗證 external-tool 相容層介面
