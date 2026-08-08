@@ -22,7 +22,8 @@ sync_crown_web_root() {
 cd "$APP_DIR"
 
 echo "▸ 拉取最新程式碼($BRANCH)"
-git fetch --quiet origin "$BRANCH"
+GIT_SSH_COMMAND="ssh -i /home/radar/.ssh/footbreak_github -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/home/radar/.ssh/known_hosts" \
+  git fetch --quiet origin "$BRANCH"
 BEFORE=$(git rev-parse HEAD)
 git reset --hard --quiet "origin/$BRANCH"
 AFTER=$(git rev-parse HEAD)
