@@ -182,7 +182,9 @@ def run(mode: str, config: Settings) -> dict[str, Any]:
         watch = ledger["watch"].get(event.id, {})
         done = {row.get("stage") for row in watch.get("stages", [])}
         minutes = (event.kickoff - datetime.now(HKT)).total_seconds() / 60
-        if mode == "tick" and minutes <= 0:
+        # Past fixtures stay visible in the active board period, but no pass
+        # should spend provider calls rebuilding prices after kickoff.
+        if minutes <= 0:
             continue
         stage = stage_for(minutes, mode == "sweep", done)
         if not stage:
