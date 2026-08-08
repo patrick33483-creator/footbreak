@@ -1,60 +1,74 @@
-"""銳利參考盤 (Pinnacle) 取數 + 與 HKJC 賽事配對。"""
+"""PinnAPI Edge 銳利參考盤 + 與 HKJC 賽事配對。
+
+The public Footbreak interface remains unchanged:
+  list_fixtures() -> Optic-compatible fixture dictionaries
+  fetch_odds([fixture_id]) -> {fixture_id: price rows}
+  structure(rows, home, away) -> HAD/HDC/HIL/CHL model structure
+
+Internally it uses PinnAPI Edge only.  There is no OpticOdds fallback and no
+disk-cache fallback for a failed live provider request: a provider failure must
+propagate to the systemd service instead of silently rebuilding stale output.
+"""
 import json
 import os
 import re
-import subprocess
 import difflib
 import unicodedata
+import sys
+from pathlib import Path
 from datetime import datetime, timedelta, timezone
 
 HKT = timezone(timedelta(hours=8))
 CACHE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cache")
 os.makedirs(CACHE, exist_ok=True)
 
-BOOKS = ["Pinnacle"]
-MARKETS = ["Moneyline", "Asian Handicap", "Total Goals", "Total Corners"]
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from crown.config import settings as crown_settings
+from crown.pinnapi import PinnapiClient
 
 
-def _call(path, params):
-    payload = json.dumps({
-        "source_id": "opticodds", "tool_name": "opticodds",
-        "arguments": {"path": path, "params": params},
-    })
-    p = subprocess.run(["external-tool", "call", payload],
-                       capture_output=True, text=True, timeout=180)
-    if p.returncode != 0:
-        raise RuntimeError(p.stderr[:400])
-    d = json.loads(p.stdout)
-    r = d.get("result", d)
-    if "data" not in r:
-        raise RuntimeError(str(r)[:300])
-    return r["data"]
+class ProviderError(RuntimeError):
+    """A live sharp-provider failure.  Callers must not downgrade to stale data."""
+
+
+def _client():
+    config = crown_settings()
+    if not config.pinnapi_configured:
+        raise ProviderError("PinnAPI Edge credentials are not configured")
+    return PinnapiClient(config)
 
 
 # ---------------------------------------------------------------- 賽事清單
 
+def _fixture_from_pinnapi(row):
+    """Present a PinnAPI fixture through the legacy Footbreak fixture contract."""
+    kickoff = datetime.fromtimestamp(float(row["kickoff"]), timezone.utc)
+    league = str(row["league"])
+    return {
+        "id": str(row["id"]),
+        "start_date": kickoff.isoformat().replace("+00:00", "Z"),
+        "home_team_display": str(row["home"]),
+        "away_team_display": str(row["away"]),
+        "league": {"id": f"pinnapi:{league}", "name": league},
+        "venue_name": None, "venue_location": None, "venue_neutral": False,
+        "home_competitors": [], "away_competitors": [],
+        "_provider": "pinnapi",
+    }
+
+
 def list_fixtures(max_pages=25, refresh=False):
-    """列出所有有 Pinnacle 盤的足球賽事。快取 20 分鐘。"""
-    f = os.path.join(CACHE, "sharp_fixtures.json")
-    if not refresh and os.path.exists(f):
-        age = datetime.now().timestamp() - os.path.getmtime(f)
-        if age < 1200:
-            with open(f, encoding="utf8") as fh:
-                return json.load(fh)
-    out, cursor = [], None
-    for _ in range(max_pages):
-        params = {"sport": "soccer", "sportsbook": "Pinnacle"}
-        if cursor:
-            params["cursor"] = cursor
-        d = _call("/fixtures/active", params)
-        rows = d.get("data") or []
-        out.extend(rows)
-        cursor = d.get("cursor")
-        if not rows or not cursor:
-            break
-    with open(f, "w", encoding="utf8") as fh:
-        json.dump(out, fh)
-    return out
+    """Fetch current PinnAPI prematch fixtures; never use stale file fallback."""
+    del max_pages, refresh
+    try:
+        rows = _client().fixtures()
+    except Exception as exc:
+        raise ProviderError(f"PinnAPI fixtures unavailable ({type(exc).__name__})") from exc
+    if not rows:
+        raise ProviderError("PinnAPI returned no eligible soccer prematch fixtures")
+    return [_fixture_from_pinnapi(row) for row in rows]
 
 
 # ---------------------------------------------------------------- 隊名配對
@@ -87,20 +101,8 @@ _LEAGUE_META = {}
 
 
 def league_meta():
-    global _LEAGUE_META
-    if _LEAGUE_META:
-        return _LEAGUE_META
-    f = os.path.join(CACHE, "league_meta.json")
-    if os.path.exists(f):
-        with open(f, encoding="utf8") as fh:
-            _LEAGUE_META = json.load(fh)
-    else:
-        rows = _call("/leagues", {"sport": "soccer"})["data"]
-        _LEAGUE_META = {r["id"]: {"gender": r.get("gender"), "name": r.get("name")}
-                        for r in rows}
-        with open(f, "w", encoding="utf8") as fh:
-            json.dump(_LEAGUE_META, fh, ensure_ascii=False)
-    return _LEAGUE_META
+    """Compatibility stub: PinnAPI fixture rows do not expose Optic league metadata."""
+    return {}
 
 
 def qualifiers(team, league=""):
@@ -126,12 +128,6 @@ def fx_qual(fx):
     lname = lg.get("name") or ""
     q = (qualifiers(fx.get("home_team_display") or "", lname)
          | qualifiers(fx.get("away_team_display") or "", lname))
-    # 聯賽元資料的性別比隊名可靠
-    g = (league_meta().get(lg.get("id")) or {}).get("gender")
-    if g == "women":
-        q.add("women")
-    elif g == "men":
-        q.discard("women")
     return q
 
 
@@ -209,7 +205,7 @@ def match_fixture(hk_match, fixtures, kickoff, tol_min=30):
     return fx, s
 
 
-# ---------------------------------------------------------------- 賠率
+# ---------------------------------------------------------------- PinnAPI prices
 
 def american_to_dec(p):
     p = float(p)
@@ -217,17 +213,84 @@ def american_to_dec(p):
 
 
 def fetch_odds(fixture_ids):
-    """批次取 Pinnacle 賠率 (每次最多 5 場)。回傳 {fixture_id: [odds...]}"""
+    """Fetch full-match PinnAPI prices for every requested event or raise.
+
+    PinnAPI exposes per-event prematch lines rather than Optic's batch endpoint.
+    Returning an incomplete map would let downstream code quietly use partial
+    data, so any event failure fails this prediction pass.
+    """
     out = {}
-    ids = list(fixture_ids)
-    for i in range(0, len(ids), 5):
-        chunk = ids[i:i + 5]
-        d = _call("/fixtures/odds", {
-            "fixture_id": chunk, "sportsbook": BOOKS, "market": MARKETS,
-        })
-        for fx in d.get("data") or []:
-            out[fx["id"]] = fx.get("odds") or []
+    client = _client()
+    for fixture_id in dict.fromkeys(str(item) for item in fixture_ids):
+        try:
+            parsed = client.lines(fixture_id)
+        except Exception as exc:
+            raise ProviderError(f"PinnAPI lines unavailable for {fixture_id} ({type(exc).__name__})") from exc
+        prices = parsed.get("prices") or []
+        if not prices:
+            raise ProviderError(f"PinnAPI returned no full-match prices for {fixture_id}")
+        out[fixture_id] = [
+            dict(price, provider="pinnapi", event_id=fixture_id,
+                 timestamp_inferred=bool(parsed.get("timestamp_inferred")))
+            for price in prices
+        ]
     return out
+
+
+def _native_structure(prices):
+    """PinnAPI decimal prices -> Footbreak's existing model input structure."""
+    had = {}
+    hdc, hil = {}, {}
+    ts = 0.0
+    for price in prices:
+        market = price.get("market")
+        selection = price.get("selection")
+        odds = price.get("odds")
+        try:
+            odds = float(odds)
+            ts = max(ts, float(price.get("source_at") or 0))
+        except (TypeError, ValueError):
+            continue
+        if odds <= 1:
+            continue
+        if market == "1X2" and selection in {"H", "D", "A"}:
+            had[selection] = odds
+            continue
+        if market not in {"HDC", "HIL"} or selection not in {"H", "A", "L"}:
+            continue
+        try:
+            line = float(price.get("line"))
+        except (TypeError, ValueError):
+            continue
+        book = hdc if market == "HDC" else hil
+        row = book.setdefault(line, {"odds": {}, "main": False})
+        row["odds"][selection] = odds
+        row["main"] = bool(row["main"] or price.get("main"))
+
+    def as_lines(book, keys):
+        rows = []
+        for line, row in sorted(book.items()):
+            if all(row["odds"].get(key) for key in keys):
+                rows.append({"lineId": None, "condition": f"{line:g}", "main": bool(row["main"]),
+                             "status": "AVAILABLE", "odds": row["odds"]})
+        if rows and not any(row["main"] for row in rows):
+            midpoint = min(rows, key=lambda row: abs(row["odds"][keys[0]] - row["odds"][keys[1]]))
+            midpoint["main"] = True
+        return rows
+
+    result = {
+        "HDC": as_lines(hdc, ("H", "A")),
+        "HIL": as_lines(hil, ("H", "L")),
+        # PinnAPI's football lines endpoint currently supplies no verified
+        # corners market in this adapter.  Leaving it empty is fail-closed.
+        "CHL": [],
+        "_ts": ts,
+        "_provider": "pinnapi",
+    }
+    if len(had) == 3:
+        result["HAD"] = [{"lineId": None, "condition": "0.0", "main": True,
+                          "status": "AVAILABLE", "odds": had}]
+    return result
 
 
 def structure(odds, home_name, away_name):
@@ -237,6 +300,11 @@ def structure(odds, home_name, away_name):
     與 hkjc_feed.flatten_odds 同一格式,方便共用擬合器。
     HDC condition 一律轉換成「主隊角度」。
     """
+    if any(row.get("provider") == "pinnapi" for row in (odds or []) if isinstance(row, dict)):
+        return _native_structure(odds)
+
+    # Legacy converter retained only for offline historic fixture artifacts.
+    # Live Footbreak paths call the PinnAPI branch above.
     ml, ah, tg, tc = {}, {}, {}, {}
     ts = 0.0
     for o in odds:
@@ -290,3 +358,42 @@ def structure(odds, home_name, away_name):
     res["CHL"] = as_lines(tc, ["H", "L"])
     res["_ts"] = ts
     return res
+
+
+def _opening_path(fixture_id):
+    return os.path.join(CACHE, "pinnapi_open", f"{fixture_id}.json")
+
+
+def opening_structure(fixture_id):
+    """Return a locally observed PinnAPI first quote, never Optic historical data."""
+    path = _opening_path(fixture_id)
+    try:
+        with open(path, encoding="utf-8") as handle:
+            value = json.load(handle)
+    except (OSError, ValueError, json.JSONDecodeError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def remember_opening(fixture_id, structure_value):
+    """Persist the first valid PinnAPI structure only; later calls cannot overwrite it."""
+    if not structure_value or not (structure_value.get("HAD") or structure_value.get("HDC") or structure_value.get("HIL")):
+        return
+    path = _opening_path(fixture_id)
+    if os.path.exists(path):
+        return
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    temp = f"{path}.tmp-{os.getpid()}"
+    with open(temp, "w", encoding="utf-8") as handle:
+        json.dump(structure_value, handle, ensure_ascii=False)
+        handle.flush()
+        os.fsync(handle.fileno())
+    try:
+        os.link(temp, path)
+    except FileExistsError:
+        pass
+    finally:
+        try:
+            os.unlink(temp)
+        except FileNotFoundError:
+            pass

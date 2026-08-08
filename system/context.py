@@ -2,8 +2,8 @@
 
 三個資料源:
   1. 天氣  — Open-Meteo(免費、無需 key),按場地城市 geocode 後取開賽時段預報
-  2. 疲勞  — OpticOdds /fixtures/results 每隊近 10 場,推算休息日數 + 上場是否加時
-  3. 移動  — OpticOdds /fixtures/odds/historical 的 olv(初盤)對比現價
+  2. 疲勞  — 舊 OpticOdds 結果相容路徑(可用先補充,不可用就降信心)
+  3. 移動  — 本機首次 PinnAPI 觀測對比現價
 """
 from __future__ import annotations
 import json, os, subprocess, urllib.parse, urllib.request
@@ -212,53 +212,21 @@ def fatigue(team_id: str, kickoff_utc: dt.datetime) -> dict:
 
 # ─────────────────── 3. 賠率移動 ───────────────────
 def opening_structure(fixture_id: str, home_name: str, away_name: str) -> dict | None:
-    """用 olv(開盤價)砌一份同 sharp.structure 一樣格式嘅「初盤」,
-    可以直接餵入 model.fit_goals / fit_corners 得出莊家最初嘅估計。"""
+    """Compatibility wrapper for the locally observed PinnAPI first quote.
+
+    PinnAPI Edge has no Optic-style `/fixtures/odds/historical` API in this
+    deployment.  The sharp provider records the first complete structure and
+    returns it here; no OpticOdds call or stale historical fallback occurs.
+    """
     import sharp as S
-    fp = CACHE / "rest" / f"open_{fixture_id}.json"
-
-    def go():
-        r = optic("/fixtures/odds/historical",
-                  {"fixture_id": fixture_id, "sportsbook": ["Pinnacle"],
-                   "market": ["Moneyline", "Asian Handicap",
-                              "Total Goals", "Total Corners"]})
-        rr = _rows(r)
-        return (rr[0].get("odds") or []) if rr else []
-
-    odds = _cached(fp, go, max_age_h=24 * 7)
-    if not odds:
-        return None
-    # 轉成 sharp.structure 食得嘅樣:price 用 olv.price,points 用 olv.points
-    flat = []
-    for o in odds:
-        olv = o.get("olv") or {}
-        if olv.get("price") is None:
-            continue
-        flat.append({**o, "price": olv["price"], "points": olv.get("points"),
-                     "timestamp": olv.get("timestamp") or 0})
-    if not flat:
-        return None
-    st = S.structure(flat, home_name, away_name)
-    return st
+    del home_name, away_name
+    return S.opening_structure(fixture_id)
 
 
 def opening_vs_now(fixture_id: str, odds_ids: list[str]) -> dict:
-    """對指定 odds_id 取 olv(初盤)。回傳 {odds_id: {open_price, open_points}}。"""
-    if not odds_ids:
-        return {}
-    out = {}
-    for i in range(0, len(odds_ids), 10):
-        chunk = odds_ids[i:i + 10]
-        rows = _rows(optic("/fixtures/odds/historical",
-                           {"fixture_id": fixture_id, "odds_id": chunk}))
-        for r in rows:
-            for o in (r.get("odds") or []):
-                olv = o.get("olv") or {}
-                if olv.get("price") is not None:
-                    out[o.get("id")] = {"open_price": olv.get("price"),
-                                        "open_points": olv.get("points"),
-                                        "open_ts": olv.get("timestamp")}
-    return out
+    """Legacy API retained as an explicit unsupported empty result."""
+    del fixture_id, odds_ids
+    return {}
 
 
 if __name__ == "__main__":

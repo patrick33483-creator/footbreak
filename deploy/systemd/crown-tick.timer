@@ -1,0 +1,11 @@
+[Unit]
+Description=足破 · 皇冠 every 2 minutes (disabled until validation)
+
+[Timer]
+OnCalendar=*:0/2
+AccuracySec=15s
+Persistent=false
+Unit=crown-tick.service
+
+[Install]
+WantedBy=timers.target

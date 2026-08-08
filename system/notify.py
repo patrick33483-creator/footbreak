@@ -1,20 +1,18 @@
 """足破 · Telegram 通知系統
 
-只有真正建立注單(T-5 落注)時才發通知。設計原則:
+只有真正建立注單(T-5 落注)時才發通知。預測、排程、掃描完成及
+結算通知全部停用。
 
   1. 冪等 —— 已通知過嘅注單記喺 notify_state.json,重複執行唔會再發。
      絕對唔會改 sim_ledger.json。
   2. 自足 —— 訊息由帳本 + watch 快照直接組裝,唔靠模型在場,
      所以排程只需要跑一句 `python3 notify.py`。
-  3. 三段對照 —— 每注附首預 / T-30 / T-5 嘅信念同結論,標明有冇轉軚。
-
 用法:
     python3 notify.py              # 發未通知過嘅新注單
     python3 notify.py --dry        # 只印訊息,唔發
-    python3 notify.py --settled    # 改發已結算但未通知嘅結果
     python3 notify.py --window 60  # 只考慮 60 分鐘內建立嘅注單(預設 45)
-    python3 notify.py --sched      # 排程佇列有變動先發(補位 / 移除 / 排到幾點)
-    python3 notify.py --sweep      # 每晚全板首預完成總結(每日只發一次)
+
+舊有 --settled / --sched / --sweep / --watch 參數只會安全退出，不會發訊息。
 """
 import datetime as dt
 import html
@@ -35,7 +33,7 @@ STATE = os.path.join(HERE, "notify_state.json")
 
 HKT = dt.timezone(dt.timedelta(hours=8))
 
-CHAT_ID = "703318555"
+CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 SOURCE_ID = "telegram_bot_api__pipedream"
 TOOL = "telegram_bot_api-send-text-message-or-reply"
 
@@ -183,46 +181,23 @@ def stake_note(b):
 # ─────────────────────────── 訊息 ───────────────────────────
 def bet_msg(led, bets):
     n = dt.datetime.now(HKT)
-    head = (f"<b>🎯 足破 · 落注通知</b>\n"
+    head = (f"<b>足破 · 新模擬注單</b>\n"
             f"{esc(n.strftime('%m/%d %H:%M'))} HKT · 共 {len(bets)} 注")
 
     blocks = []
     for b in bets:
-        prob = b.get("model_prob")
-        ev = b.get("ev")
-        conv = b.get("conviction")
         rows = [
             f"<b>{esc(b.get('home'))} v {esc(b.get('away'))}</b>",
             f"   {esc(b.get('league'))} · 開賽 {esc(b.get('kickoff'))} HKT",
-            f"   <b>{esc(b.get('market'))} — {esc(pick_line(b))}</b>"
-            f"  @ <b>{float(b.get('odds', 0)):.2f}</b>",
-            f"   注碼 <b>{esc(money(b.get('stake', 0)))}</b>"
-            f"  ·  模型勝率 {('—' if prob is None else f'{float(prob) * 100:.1f}%')}"
-            f"  ·  EV {('—' if ev is None else f'{float(ev) * 100:+.1f}%')}"
-            f"  ·  信念 {('—' if conv is None else f'{float(conv):.1f}')}",
+            f"   投注：<b>{esc(b.get('market'))} · {esc(pick_line(b))}</b>",
+            f"   賠率：<b>{float(b.get('odds', 0)):.2f}</b>",
+            f"   注碼：<b>{esc(money(b.get('stake', 0)))}</b>",
         ]
-        pp = b.get("push_prob")
-        if pp:
-            rows.append(f"   走水機率 {float(pp) * 100:.1f}%")
-        sn = stake_note(b)
-        if sn:
-            rows.append("   " + sn)
-        rows.append("")
-        rows.append(drift_line(led, b))
         blocks.append("\n".join(rows))
 
-    s = led.get("stats") or {}
     total = sum(float(b.get("stake") or 0) for b in bets)
-    bank = float(led.get("bankroll") or 0)
-    foot = [
-        f"<b>本次總注碼</b> {esc(money(total))}"
-        + (f" ({total / bank * 100:.1f}% 本金)" if bank else ""),
-        f"在場注碼 {esc(money(s.get('open_stake') or 0))} / 上限 "
-        f"{esc(money(s.get('open_cap') or 0))}"
-        f"  ·  戶口 {esc(money(s.get('equity') if s.get('equity') is not None else bank))}",
-        "<i>落注時點:開賽前 5 分鐘</i>",
-    ]
-    return "\n\n".join([head] + blocks + ["\n".join(foot)])
+    foot = f"<b>本次總注碼：{esc(money(total))}</b>\n只作模擬，絕不實際投注。"
+    return "\n\n".join([head] + blocks + [foot])
 
 
 def settled_msg(led, bets):
@@ -251,6 +226,8 @@ def settled_msg(led, bets):
 
 # ─────────────────────────── 發送 ───────────────────────────
 def send(text):
+    if not CHAT_ID:
+        raise RuntimeError("TELEGRAM_CHAT_ID 未設定")
     payload = json.dumps({
         "source_id": SOURCE_ID, "tool_name": TOOL,
         "arguments": {"chatId": CHAT_ID, "text": text, "parse_mode": "HTML"},
@@ -467,6 +444,12 @@ def main(argv):
     window = DEFAULT_WINDOW_MIN
     if "--window" in argv:
         window = float(argv[argv.index("--window") + 1])
+
+    # User preference: Telegram is a bet alert channel only.  Keep the old
+    # formatters for historical compatibility, but never send these modes.
+    if mode_watch or mode_sched or mode_sweep or mode_settled:
+        print("此通知類型已停用；Telegram 只發新注單")
+        return 0
 
     led = load_ledger()
     state = load_state()

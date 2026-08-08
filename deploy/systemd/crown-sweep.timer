@@ -1,0 +1,11 @@
+[Unit]
+Description=足破 · 皇冠 23:59 HKT first-forecast sweep (disabled until validation)
+
+[Timer]
+OnCalendar=*-*-* 23:59:00
+Persistent=true
+AccuracySec=30s
+Unit=crown-sweep.service
+
+[Install]
+WantedBy=timers.target

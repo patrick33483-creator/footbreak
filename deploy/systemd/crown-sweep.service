@@ -1,0 +1,14 @@
+[Unit]
+Description=足破 · 皇冠 nightly first-forecast sweep
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/footbreak
+ExecStart=/opt/footbreak/deploy/crown-run.sh sweep
+TimeoutStartSec=3600
+Nice=10
+
+[Install]
+WantedBy=multi-user.target

@@ -239,7 +239,7 @@ def run(force=False):
         print(f"補回 {nfill} 注嘅賽事編號")
 
     now = datetime.now(HKT)
-    changes, unresolved = [], []
+    changes, unresolved, provider_errors = [], [], []
     for b in led["bets"]:
         if b.get("status") != "PENDING":
             continue
@@ -257,7 +257,8 @@ def run(force=False):
         try:
             res = fetch_result(fid)
         except Exception as e:
-            unresolved.append(f"{b['home']} v {b['away']} — 抓賽果失敗 {str(e)[:60]}")
+            unresolved.append(f"{b['home']} v {b['away']} — 抓賽果失敗 {type(e).__name__}")
+            provider_errors.append(f"{b.get('bet_id') or b['match_id']}: {type(e).__name__}")
             continue
         if not res:
             unresolved.append(f"{b['home']} v {b['away']} — 賽果未出(開賽後 {mins:.0f} 分)")
@@ -307,6 +308,10 @@ def run(force=False):
           f"{stats['hit_rate']*100:.1f}% ({stats['hits']}/{stats['n_decided']}) · "
           f"盈虧 {stats['pnl']:+,.0f} · ROI {stats['roi']*100:+.2f}% · "
           f"戶口 ${stats['equity']:,.0f}")
+    if provider_errors:
+        # A result-source outage is not a valid "no result yet" state.  Let
+        # run_all/deploy/run fail so nginx keeps the last known-good dashboard.
+        raise RuntimeError(f"賽果 provider failed for {len(provider_errors)} due bet(s)")
     return stats
 
 

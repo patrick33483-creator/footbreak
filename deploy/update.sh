@@ -8,6 +8,17 @@ APP_DIR="/opt/footbreak"
 WEB_ROOT="/var/www/footbreak"
 BRANCH="${1:-main}"
 
+sync_crown_web_root() {
+  # Only the static nginx tree is made readable.  Never recurse into
+  # /var/lib/footbreak/crown, which is private runtime state.
+  install -d -o root -g www-data -m 0755 /var/www /var/www/crown
+  rsync -a --delete --exclude 'data.json' --chmod=Du=rwx,Dgo=rx,Fu=rw,Fgo=r \
+    "$APP_DIR/crown/dashboard/" /var/www/crown/
+  chown -R root:www-data /var/www/crown
+  find /var/www/crown -type d -exec chmod 0755 {} +
+  find /var/www/crown -type f -exec chmod 0644 {} +
+}
+
 cd "$APP_DIR"
 
 echo "▸ 拉取最新程式碼($BRANCH)"
@@ -35,15 +46,29 @@ echo "▸ 更新 systemd 單元"
 install -m 0644 "$APP_DIR"/deploy/systemd/*.service /etc/systemd/system/
 install -m 0644 "$APP_DIR"/deploy/systemd/*.timer   /etc/systemd/system/
 systemctl daemon-reload
-systemctl restart footbreak-tick.timer footbreak-sweep.timer
+for timer in footbreak-tick.timer footbreak-sweep.timer crown-tick.timer crown-sweep.timer; do
+  if systemctl is-enabled --quiet "$timer"; then
+    systemctl restart "$timer"
+  fi
+done
 
 echo "▸ 更新儀表板靜態檔"
 # --exclude data.json:web root 嗰份係跑出嚟嘅實時資料,唔可以用 repo 嗰份覆蓋
 rsync -a --exclude 'data.json' "$APP_DIR/hkjc-dashboard/" "$WEB_ROOT/"
+install -d -o root -g root -m 0700 /var/lib/footbreak/crown
+# Runtime dashboard data is deliberately excluded: a deploy never replaces
+# Crown's ledger/state-derived data with the recovered archive snapshot.
+sync_crown_web_root
+CROWN_STATE_DIR=/var/lib/footbreak/crown CROWN_WEB_ROOT=/var/www/crown \
+  "$APP_DIR/.venv/bin/python3" -m crown.dashboard_data --out /var/www/crown/data.json
+chown root:www-data /var/www/crown/data.json
+chmod 0644 /var/www/crown/data.json
 
 echo "▸ 重載 nginx"
 install -m 0644 "$APP_DIR/deploy/nginx-footbreak.conf" /etc/nginx/sites-available/footbreak
-nginx -t && systemctl reload nginx
+install -m 0644 "$APP_DIR/deploy/nginx-crown.conf" /etc/nginx/sites-available/crown
+nginx -t
+systemctl reload nginx || systemctl restart nginx
 
 echo "✅ 部署完成 @ $(date '+%F %T %Z')"
 systemctl list-timers 'footbreak*' --no-pager | head -5

@@ -13,6 +13,11 @@ system/portfolio.csv
 system/cache/
 hkjc-dashboard/data.json
 
+# ── 皇冠獨立狀態: /var/lib/footbreak/crown，絕不由 git 覆蓋 ──
+crown/state/
+crown/__pycache__/
+crown/**/*.pyc
+
 # ── 秘密 ──
 .env
 *.env

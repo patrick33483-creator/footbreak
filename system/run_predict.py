@@ -149,11 +149,17 @@ def analyse_match(m, fx, wx_city_override=None, news=None, prev_snap=None,
     away_ch = m["awayTeam"]["name_ch"]
     hname, aname = fx["home_team_display"], fx["away_team_display"]
 
+    # PinnAPI Edge is the live sharp source.  A failed or incomplete provider
+    # response raises through this function so the runner cannot publish stale
+    # predictions/dashboard data.
     cur_st = S.structure(S.fetch_odds([fx["id"]]).get(fx["id"], []), hname, aname)
     now = P.fit_view(cur_st)
     if not now:
         return {"skip": "無法由銳利盤擬合模型"}
-    op = P.fit_view(C.opening_structure(fx["id"], hname, aname))
+    # PinnAPI does not expose an Optic-style historical opening endpoint.
+    # The first valid PinnAPI quote observed by Footbreak is persisted locally.
+    op = P.fit_view(S.opening_structure(fx["id"]))
+    S.remember_opening(fx["id"], cur_st)
 
     # ── 情境調整 ──
     adjs: list[P.Adj] = []
@@ -319,11 +325,18 @@ def main(match_ids=None, horizon_min=700, out="predictions.json",
         try:
             r = analyse_match(m, fx, news=news_all.get(mid),
                               prev_snap=snaps.get(mid), stage_override=stage)
-        except Exception as e:
-            print(f"  ! {m['homeTeam']['name_ch']}: {e}", file=sys.stderr)
-            continue
+        except Exception as exc:
+            # Do not continue with a partial/stale prediction set.  The outer
+            # runner will exit nonzero and leave the last dashboard untouched.
+            raise RuntimeError(
+                f"sharp/prediction failed for {m['homeTeam']['name_ch']} v "
+                f"{m['awayTeam']['name_ch']} ({mid})"
+            ) from exc
         if r.get("skip"):
-            continue
+            raise RuntimeError(
+                f"sharp/prediction produced no usable model for "
+                f"{m['homeTeam']['name_ch']} v {m['awayTeam']['name_ch']} ({mid}): {r['skip']}"
+            )
         pick, reason = pick_one(r)
         # 只有 T-5 先真係落注。首預 / T-30 只作預測記錄。
         r["can_bet"] = (stage == "T-5")

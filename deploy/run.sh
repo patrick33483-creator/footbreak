@@ -3,15 +3,20 @@
 #   run.sh tick    每 2 分鐘,跑啱啱踏入 T-30 / T-5 窗口嘅場
 #   run.sh sweep   每晚 23:59,全板首預
 #   run.sh settle  只結算
-set -uo pipefail
+set -euo pipefail
 
 APP_DIR="${APP_DIR:-/opt/footbreak}"
 WEB_ROOT="${WEB_ROOT:-/var/www/footbreak}"
 MODE="${1:-tick}"
+LOCK_FILE="${FOOTBREAK_LOCK_FILE:-/var/lock/footbreak.lock}"
 
-# 環境變數(OpticOdds key / Telegram token)
+# Footbreak variables plus the already-paid PinnAPI Edge credentials.  Both
+# files stay root-only and are sourced without echoing their contents.
 if [ -f /etc/footbreak.env ]; then
   set -a; . /etc/footbreak.env; set +a
+fi
+if [ -f /etc/footbreak-crown.env ]; then
+  set -a; . /etc/footbreak-crown.env; set +a
 fi
 
 export PATH="$APP_DIR/bin:$PATH"
@@ -25,18 +30,23 @@ fi
 cd "$APP_DIR/system"
 
 # 同一時間只准跑一個,避免 tick 同 sweep 撞到一齊寫 ledger
-exec 9>/var/lock/footbreak.lock
+exec 9>"$LOCK_FILE"
 if ! flock -n 9; then
   echo "$(date '+%F %T') 上一次仲跑緊,今次跳過"
   exit 0
 fi
 
-bash run_all.sh "$MODE"
-rc=$?
+if bash run_all.sh "$MODE"; then
+  :
+else
+  rc=$?
+  echo "$(date '+%F %T') Footbreak $MODE failed; dashboard was not published" >&2
+  exit "$rc"
+fi
 
-# 把新出嘅 data.json 推去 nginx web root
+# Only a fully successful pass may replace the nginx dashboard artifact.
 if [ -f "$APP_DIR/hkjc-dashboard/data.json" ] && [ -d "$WEB_ROOT" ]; then
   install -m 0644 "$APP_DIR/hkjc-dashboard/data.json" "$WEB_ROOT/data.json"
 fi
 
-exit $rc
+exit 0
