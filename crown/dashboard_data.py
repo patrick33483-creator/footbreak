@@ -6,14 +6,28 @@ import os
 from pathlib import Path
 from typing import Any
 
-from .common import iso_hkt, write_json_atomic
+from .common import iso_hkt, parse_time, read_json, write_json_atomic
 from .config import Settings, settings
 from .ledger import recompute_stats
+from .period import in_current_period
 from .state import load_ledger, load_predictions, paths
 
 
 def build(config: Settings) -> dict[str, Any]:
-    ledger, matches = load_ledger(config), load_predictions(config)
+    ledger, all_matches = load_ledger(config), load_predictions(config)
+    matches = [
+        row for row in all_matches
+        if (kickoff := parse_time(row.get("kickoff_hkt") or row.get("kickoff"))) is not None
+        and in_current_period(kickoff)
+    ]
+    prediction_history = read_json(
+        config.state_dir / "prediction_history.json",
+        {"rows": [], "stats": {}},
+    )
+    if not isinstance(prediction_history, dict):
+        prediction_history = {"rows": [], "stats": {}}
+    prediction_history.setdefault("rows", [])
+    prediction_history.setdefault("stats", {})
     # A newly seeded ledger has no calculated stats yet; emit the complete
     # dashboard contract even before the first remote Crown pass.
     recompute_stats(ledger, config)
@@ -34,6 +48,7 @@ def build(config: Settings) -> dict[str, Any]:
                           "stages": ["首預", "T-30", "T-5"], "confidence_floor": config.confidence_floor,
                           "minimum_ev": config.min_edge, "minimum_odds": 1.01},
         "matches": matches, "ledger": ledger,
+        "prediction_history": prediction_history,
     }
 
 

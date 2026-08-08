@@ -12,6 +12,7 @@ from .hkjc import event_from_match, fetch_matches, flatten_odds
 from .ledger import recompute_stats, stage_for, sync_prediction
 from .matching import Event, BridgeMatch, bridge_titan_to_pinnapi
 from .pinnapi import PinnapiClient
+from .period import in_current_period
 from .state import load_ledger, merge_predictions, save_ledger
 from .titan import TitanClient
 
@@ -176,10 +177,12 @@ def run(mode: str, config: Settings) -> dict[str, Any]:
     }
     for titan in titan_rows:
         event = _event_from_titan(titan)
+        if not in_current_period(event.kickoff):
+            continue
         watch = ledger["watch"].get(event.id, {})
         done = {row.get("stage") for row in watch.get("stages", [])}
         minutes = (event.kickoff - datetime.now(HKT)).total_seconds() / 60
-        if minutes <= 0 or (mode == "sweep" and minutes > 2160):
+        if mode == "tick" and minutes <= 0:
             continue
         stage = stage_for(minutes, mode == "sweep", done)
         if not stage:

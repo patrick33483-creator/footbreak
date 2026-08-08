@@ -3,21 +3,20 @@ from __future__ import annotations
 import tempfile
 import unittest
 from stat import S_IMODE
-from stat import S_IMODE
 from dataclasses import replace
 from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
 from crown.config import settings
-from crown.dashboard_data import write_dashboard_data
-from crown.dashboard_data import write_dashboard_data
+from crown.dashboard_data import build, write_dashboard_data
 from crown.engine import _fresh
-from crown.ledger import stage_for, sync_prediction
+from crown.ledger import recompute_stats, stage_for, sync_prediction
 from crown.lines import parse_hkjc_handicap, parse_hkjc_total, settle_handicap, settle_total
 from crown.matching import Event, bridge_titan_to_pinnapi, match_event, same_event_for_hkjc
 from crown.notify import _bet_label, notify_new
 from crown.pinnapi import parse_fixtures, parse_lines
+from crown.period import in_current_period, period_bounds
 from crown.state import load_predictions, merge_predictions, save_predictions
 from crown.titan import crown_prices_from_pages
 
@@ -130,9 +129,9 @@ class CrownSafetyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             config = replace(settings(), state_dir=Path(directory))
             now = self.now
-            sweep = {"match_id": "future", "kickoff_hkt": (now + timedelta(hours=4)).isoformat(),
+            sweep = {"match_id": "future", "kickoff_hkt": (now - timedelta(hours=3)).isoformat(),
                      "stage": "首預", "status": "DATA_MISSING"}
-            stale = {"match_id": "old", "kickoff_hkt": (now - timedelta(hours=7)).isoformat(),
+            stale = {"match_id": "old", "kickoff_hkt": (now - timedelta(days=1)).isoformat(),
                      "stage": "首預", "status": "DATA_MISSING"}
             save_predictions(config, [sweep, stale])
             retained = merge_predictions(config, [], now=now)
@@ -144,13 +143,13 @@ class CrownSafetyTests(unittest.TestCase):
             self.assertEqual(load_predictions(config)[0]["stage"], "T-30")
             self.assertEqual(merge_predictions(config, [], now=now)[0]["stage"], "T-30")
 
-    def test_dashboard_artifact_is_readable_while_state_stays_separate(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            config = replace(settings(), state_dir=root / "private-state", web_root=root / "web")
-            output = write_dashboard_data(config)
-            self.assertEqual(S_IMODE(output.stat().st_mode), 0o644)
-            self.assertNotEqual(output.parent, config.state_dir)
+    def test_crown_period_runs_from_1205_to_next_1159(self) -> None:
+        start, end = period_bounds(self.now)
+        self.assertEqual(start.isoformat(), "2026-08-08T12:05:00+08:00")
+        self.assertEqual(end.isoformat(), "2026-08-09T11:59:59+08:00")
+        self.assertTrue(in_current_period(datetime(2026, 8, 8, 12, 5, tzinfo=start.tzinfo), self.now))
+        self.assertTrue(in_current_period(datetime(2026, 8, 9, 11, 59, 59, tzinfo=start.tzinfo), self.now))
+        self.assertFalse(in_current_period(datetime(2026, 8, 9, 12, 0, tzinfo=start.tzinfo), self.now))
 
     def test_dashboard_artifact_is_readable_while_state_stays_separate(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -159,6 +158,42 @@ class CrownSafetyTests(unittest.TestCase):
             output = write_dashboard_data(config)
             self.assertEqual(S_IMODE(output.stat().st_mode), 0o644)
             self.assertNotEqual(output.parent, config.state_dir)
+
+    def test_dashboard_includes_persisted_prediction_history(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = replace(settings(), state_dir=root / "private-state", web_root=root / "web")
+            config.state_dir.mkdir(parents=True)
+            (config.state_dir / "prediction_history.json").write_text(
+                '{"rows":[{"match_id":"old","stage":"T-5"}],"stats":{"predictions":1}}',
+                encoding="utf-8",
+            )
+            payload = build(config)
+            self.assertEqual(payload["prediction_history"]["rows"][0]["match_id"], "old")
+            self.assertEqual(payload["prediction_history"]["stats"]["predictions"], 1)
+
+    def test_recompute_stats_preserves_recovered_bet_results(self) -> None:
+        ledger = {
+            "bankroll": 50000,
+            "watch": {},
+            "log": [],
+            "stats": {"staking": {"label": "階段一 · 建立樣本", "slope": -2.8}},
+            "bets": [
+                {"status": "SETTLED", "market": "讓球", "stake": 1000, "pnl": 900,
+                 "result": "Won", "home": "A", "away": "B", "settled_at": "2026-08-08T10:00:00Z"},
+                {"status": "SETTLED", "market": "讓球", "stake": 500, "pnl": -500,
+                 "result": "Lost", "home": "C", "away": "D", "settled_at": "2026-08-08T11:00:00Z"},
+                {"status": "VOIDED", "market": "入球大小", "stake": 2000, "pnl": None},
+            ],
+        }
+        stats = recompute_stats(ledger, settings())
+        self.assertEqual(stats["n_settled"], 2)
+        self.assertEqual(stats["n_voided"], 1)
+        self.assertEqual(stats["turnover"], 1500)
+        self.assertEqual(stats["pnl"], 400)
+        self.assertEqual(stats["res_counts"]["Won"], 1)
+        self.assertEqual(stats["by_market"]["讓球"]["n"], 2)
+        self.assertEqual(len(stats["curve"]), 2)
 
     def test_notifications_are_deduplicated_and_disabled_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

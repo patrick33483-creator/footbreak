@@ -1,15 +1,13 @@
 """Separate Crown state, intentionally outside Footbreak's system/ state."""
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from .common import HKT, parse_time, read_json, write_json_atomic
 from .config import Settings
-
-PREDICTION_RETENTION_AFTER_KICKOFF = timedelta(hours=6)
-
+from .period import in_current_period
 
 def paths(config: Settings) -> dict[str, Path]:
     return {"ledger": config.state_dir / "ledger.json", "predictions": config.state_dir / "predictions.json",
@@ -49,15 +47,9 @@ def _prediction_time(prediction: dict[str, Any]) -> datetime | None:
 
 
 def _prediction_is_useful(prediction: dict[str, Any], now: datetime) -> bool:
-    """Keep future/current cards and retain a conservative post-kickoff audit window.
-
-    A Crown pass must never drop an upcoming card merely because no fixture is
-    due during this particular tick.  Six hours after kickoff is deliberately
-    longer than the settlement eligibility gate, but still bounds stale
-    dashboard/state growth.
-    """
+    """Keep every card in the active 12:05-to-11:59 Crown board period."""
     kickoff = _prediction_time(prediction)
-    return kickoff is not None and kickoff >= now - PREDICTION_RETENTION_AFTER_KICKOFF
+    return kickoff is not None and in_current_period(kickoff, now)
 
 
 def merge_predictions(

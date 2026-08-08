@@ -21,9 +21,11 @@ const STAGE_DESC = {
 };
 const VD_CLS = { '落注': 'v-go', '傾向': 'v-lean', '偏向': 'v-soft', '觀望': 'v-wait', '無傾向': 'v-none' };
 const MKT = { HDC: '讓球', HIL: '入球大小', CHL: '總角球大小', HAD: '主客和' };
-const MATCH_HIDE_AFTER_KICKOFF_MINUTES = 0;
 
+const API_TOKEN = 'port/8765';
+const API_BASE = API_TOKEN.startsWith('__PORT_') ? null : API_TOKEN;
 let DATA = null, LIST = [], LED = null, SEL = null, STAGE = 'all', Q = '', VIEW = 'pred';
+let SETTLE_MESSAGE = '', SETTLE_BAD = false, SETTLING = false;
 
 const kt = (s) => new Date(String(s).replace(' ', 'T') + (/[Z+]/.test(s) ? '' : '+08:00'));
 function hkClock(s) { return kt(s).toLocaleTimeString('zh-HK', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Hong_Kong' }); }
@@ -31,7 +33,9 @@ function hkDay(s) { return kt(s).toLocaleDateString('zh-HK', { month: '2-digit',
 function hkStamp(s) { return kt(s).toLocaleString('zh-HK', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Hong_Kong' }); }
 function minsLeft(s) { return (kt(s) - Date.now()) / 60000; }
 function displayableMatches(matches) {
-  return (matches || []).filter((m) => minsLeft(m.kickoff_hkt) > -MATCH_HIDE_AFTER_KICKOFF_MINUTES);
+  // 後端已固定只輸出當期 12:05 至翌日 11:59 賽事；期間內已開賽
+  // 亦保留到下一期切換，避免賽事一開波就喺主清單消失。
+  return matches || [];
 }
 function cdText(m) {
   if (m < 0) return '已開賽';
@@ -54,21 +58,40 @@ function heat(p, max) {
 }
 
 /* ══════════════════════ 啟動 ══════════════════════ */
-async function boot() {
-  let raw;
-  try {
-    const r = await fetch('data.json?v=' + Date.now());
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    raw = await r.json();
-  } catch (e) {
-    $('#detail').innerHTML = `<div class="empty">資料載入失敗:${esc(e.message)}</div>`;
-    return;
+async function fetchDashboardData() {
+  // 靜態部署唔應該先連 127.0.0.1，否則使用者瀏覽器會長時間等一個
+  // 根本不存在嘅本機後端。先讀同一部署內嘅 JSON；只有平台已將
+  // port/8765 改寫成後端代理路徑時，先再嘗試 API。
+  const sources = [`data.json?v=${Date.now()}`];
+  if (API_BASE) sources.push(`${API_BASE}/api/data?v=${Date.now()}`);
+  for (const url of sources) {
+    try {
+      const r = await fetch(url, { cache: 'no-store' });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return await r.json();
+    } catch (_) {
+      // 後端暫時不可用時，繼續讀靜態備份。
+    }
   }
+  if (window.__CROWN_DATA__) return window.__CROWN_DATA__;
+  throw new Error('後端同靜態備份都無法讀取');
+}
+
+function applyData(raw) {
   DATA = raw;
   LED = raw.ledger || { bets: [], stats: {}, log: [] };
   LIST = displayableMatches(raw.matches).slice()
     .sort((a, b) => kt(a.kickoff_hkt) - kt(b.kickoff_hkt));
   $('#genAt').textContent = hkStamp(raw.generated_at) + ' HKT';
+}
+
+async function boot() {
+  try {
+    applyData(await fetchDashboardData());
+  } catch (e) {
+    $('#detail').innerHTML = `<div class="empty">資料載入失敗:${esc(e.message)}</div>`;
+    return;
+  }
   bindUI();
   render();
   setInterval(render, 30000);
@@ -82,15 +105,9 @@ async function refresh(silent) {
   const b = $('#refresh');
   if (b) { b.classList.add('spin'); b.disabled = true; }
   try {
-    const r = await fetch('data.json?v=' + Date.now(), { cache: 'no-store' });
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    const raw = await r.json();
+    const raw = await fetchDashboardData();
     const changed = raw.generated_at !== (DATA && DATA.generated_at);
-    DATA = raw;
-    LED = raw.ledger || { bets: [], stats: {}, log: [] };
-    LIST = displayableMatches(raw.matches).slice()
-      .sort((a, b) => kt(a.kickoff_hkt) - kt(b.kickoff_hkt));
-    $('#genAt').textContent = hkStamp(raw.generated_at) + ' HKT';
+    applyData(raw);
     render();
     if (!silent) flash(changed ? '已更新到最新資料' : '已經係最新,冇新資料');
   } catch (e) {
@@ -113,6 +130,7 @@ function flash(msg, bad) {
 function render() {
   $('#viewPred').hidden = VIEW !== 'pred';
   $('#viewLedger').hidden = VIEW !== 'ledger';
+  $('#viewHistory').hidden = VIEW !== 'history';
   $$('#nav .navbtn').forEach((b) => b.classList.toggle('is-on', b.dataset.view === VIEW));
   if (VIEW === 'pred') {
     renderKpis(); renderList();
@@ -121,6 +139,8 @@ function render() {
       SEL = f ? f.match_id : null;
     }
     if (SEL) renderDetail(SEL);
+  } else if (VIEW === 'history') {
+    renderHistory();
   } else {
     renderLedger();
   }
@@ -141,19 +161,19 @@ function bindUI() {
 
 /* ══════════════════════ KPI ══════════════════════ */
 function renderKpis() {
-  const picks = LIST.filter((m) => m.pick);
   const has = (m, k) => (m.stages || []).some((x) => x.stage === k);
   const nT5 = LIST.filter((m) => has(m, 'T-5')).length;
   const s = LED.stats || {};
+  const ledgerBets = (LED.bets || []).filter((b) => b.status !== 'VOIDED');
   const K = [
     ['追蹤賽事', LIST.length, ''],
     ['已首預', LIST.filter((m) => has(m, '首預')).length, ''],
     ['已 T-30', LIST.filter((m) => has(m, 'T-30')).length, ''],
     ['已 T-5', nT5, ''],
-    ['模擬注', picks.length, picks.length ? 'good' : ''],
-    ['模擬注碼', money(s.open_stake), 'amber'],
-    ['佔本金', pc(s.open_pct, 1), (s.open_pct || 0) > 0.3 ? 'bad' : 'good'],
-    ['累計盈虧', (s.pnl || 0) === 0 ? '—' : money(s.pnl), (s.pnl || 0) >= 0 ? 'good' : 'bad'],
+    ['模擬注', ledgerBets.length, ledgerBets.length ? 'good' : ''],
+    ['模擬總注碼', money(s.turnover), 'amber'],
+    ['待決注碼', money(s.open_stake), Number(s.open_stake || 0) > 0 ? 'amber' : ''],
+    ['累計盈虧', money(s.pnl), Number(s.pnl || 0) > 0 ? 'good' : Number(s.pnl || 0) < 0 ? 'bad' : ''],
   ];
   $('#kpis').innerHTML = K.map(([l, v, c]) =>
     `<div class="kpi"><span class="kpi-lbl">${l}</span><span class="kpi-val ${c}">${v}</span></div>`).join('');
@@ -602,7 +622,7 @@ function wdlCard(m) {
 }
 
 function ctxCard(m) {
-  const w = m.weather, f = m.fatigue || {};
+  const w = m.weather, f = m.fatigue || {}, ts = m.team_strength || {};
   const F = [];
   if (w) F.push(['ok', '天氣', `${w.desc || ''} 濕度 ${w.humidity}% · 風 ${f2(w.wind_kmh)}km/h(陣風 ${f2(w.gust_kmh)}) · 雨 ${f2(w.precip_mm_h)}mm/h`, f2(w.temp_c) + '°C']);
   else F.push(['bad', '天氣', '搵唔到場地座標', '不可用']);
@@ -613,7 +633,16 @@ function ctxCard(m) {
       `上仗 ${f.home?.prev_date || '—'} / ${f.away?.prev_date || '—'} · 近 14 日 ${f.home?.games_14d ?? '—'} / ${f.away?.games_14d ?? '—'} 場`,
       `${rd(f.home)} / ${rd(f.away)}`]);
   } else F.push(['bad', '休息日', '該聯賽賽果數據不可用', '不可用']);
-  const news = (m.adjustments || []).filter((a) => !['大盤被推動', '讓球盤被推動', '大盤平穩', '角球盤移動', '氣溫偏高', '氣溫偏低', '氣溫中性', '其他天氣(不調整)', '休息日', '中立場'].includes(a.tag));
+  if (ts.available) {
+    F.push(['ok', '獨立近況實力',
+      `近況 PPG 主 ${f2(ts.home?.ppg)} / 客 ${f2(ts.away?.ppg)} · 得失球差主 ${sg(ts.home?.gd_pg)} / 客 ${sg(ts.away?.gd_pg)}`,
+      `已納入 · 可靠度 ${pc(ts.reliability, 0)}`]);
+  } else {
+    F.push(['bad', '獨立近況實力',
+      ts.reason || '未有安全標準賽事對映，唔會硬配隊名',
+      '未覆蓋']);
+  }
+  const news = (m.adjustments || []).filter((a) => !['大盤被推動', '讓球盤被推動', '大盤平穩', '角球盤移動', '氣溫偏高', '氣溫偏低', '氣溫中性', '其他天氣(不調整)', '休息日', '中立場', '獨立實力'].includes(a.tag));
   F.push([news.length ? 'ok' : 'bad', '陣容 / 傷患研究',
     news.length ? `已逐場上網搜尋,套用 ${news.length} 項調整` : '本場未做人手研究 — 資料源冇陣容同傷兵',
     news.length ? '已納入' : '未覆蓋']);
@@ -803,7 +832,18 @@ function renderLedger() {
   };
 
   let h = `<div class="ledger-head">
-    <h1 class="pg-h">模擬倉 <span class="sub">${stkLabel(s)} · 單場上限 ${pc(s.single_cap_pct, 0)} · 信念門檻 ${s.conf_floor} · 最低賠率 ${f2(DATA.signal_policy?.minimum_odds || 1.5)}</span></h1>
+    <div class="ledger-title-row">
+      <h1 class="pg-h">模擬倉 <span class="sub">${stkLabel(s)} · 單場上限 ${pc(s.single_cap_pct, 0)} · 信念門檻 ${s.conf_floor} · 最低賠率 ${f2(DATA.signal_policy?.minimum_odds || 1.5)}</span></h1>
+      <button class="settle-btn" id="settleNow" data-testid="button-settle-simulation" type="button" ${SETTLING || !API_BASE ? 'disabled' : ''}>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5M6.1 9a7 7 0 0 1 11.2-2.3L20 9M4 15l2.7 2.3A7 7 0 0 0 17.9 15"/></svg>
+        <span>${SETTLING ? '結算中…' : '立即結算'}</span>
+      </button>
+    </div>
+    <p class="settle-status ${SETTLE_BAD ? 'bad' : SETTLE_MESSAGE ? 'good' : ''}" id="settleStatus" data-testid="status-settlement" aria-live="polite">
+      ${esc(SETTLE_MESSAGE || (API_BASE
+        ? '手動操作，只會結算已完場並有正式賽果嘅皇冠模擬注。'
+        : '結算後端未連接，請重新開啟已部署嘅皇冠面板。'))}
+    </p>
     <div class="kpis wide">${K.map(([l, v, c]) =>
       `<div class="kpi"><span class="kpi-lbl">${l}</span><span class="kpi-val ${c}">${v}</span></div>`).join('')}</div>
   </div>`;
@@ -822,7 +862,7 @@ function renderLedger() {
 
   if (!bets.length) {
     h += `<div class="card"><div class="empty2">仲未有任何推介記錄</div></div>`;
-    V.innerHTML = h; return;
+    V.innerHTML = h; bindSettlementButton(); return;
   }
 
   if (s.n_settled) h += `<div class="grid g2">${equityCard(s)}${resultCard(s)}</div>`;
@@ -836,6 +876,7 @@ function renderLedger() {
     </table></div></div>`;
 
   V.innerHTML = h;
+  bindSettlementButton();
   $$('#viewLedger .bets tr.brow').forEach((tr) => {
     tr.onclick = () => {
       const d = $(`#hist-${tr.dataset.i}`);
@@ -843,6 +884,99 @@ function renderLedger() {
       tr.classList.toggle('is-open');
     };
   });
+}
+
+function bindSettlementButton() {
+  const b = $('#settleNow');
+  if (!b) return;
+  b.onclick = async () => {
+    if (SETTLING || !API_BASE) return;
+    if (!window.confirm('只會結算已完場、有正式賽果嘅皇冠模擬注。確認立即檢查賽果並結算？')) return;
+    SETTLING = true;
+    SETTLE_BAD = false;
+    SETTLE_MESSAGE = '正在核對正式賽果及更新模擬倉…';
+    renderLedger();
+    try {
+      const r = await fetch(`${API_BASE}/api/settle`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Crown-Action': 'settle-simulation',
+        },
+        body: JSON.stringify({ confirm: 'simulation-only' }),
+      });
+      const result = await r.json().catch(() => ({}));
+      if (!r.ok || !result.ok) throw new Error(result.error || `HTTP ${r.status}`);
+      applyData(result.data);
+      const settled = result.settled_count || 0;
+      const pending = result.pending_count || 0;
+      SETTLE_BAD = !result.persisted;
+      const syncNote = result.project_submitted === false
+        ? ' 專案檔案同步暫緩，但本機模擬倉已保存。'
+        : '';
+      SETTLE_MESSAGE = settled
+        ? `完成：新結算 ${settled} 注${pending ? `，另有 ${pending} 注待正式賽果` : ''}${result.persisted ? '，已保存。' : '；保存失敗，請稍後再試。'}${syncNote}`
+        : `檢查完成：未有新注可結算${pending ? `，${pending} 注仍待正式賽果` : ''}。${syncNote}`;
+    } catch (e) {
+      SETTLE_BAD = true;
+      SETTLE_MESSAGE = `結算失敗：${e.message}`;
+    } finally {
+      SETTLING = false;
+      renderLedger();
+    }
+  };
+}
+
+function renderHistory() {
+  const payload = DATA.prediction_history || { rows: [], stats: {} };
+  const rows = payload.rows || [], s = payload.stats || {};
+  const accuracy = s.accuracy == null ? '待賽果' : pc(s.accuracy, 1);
+  const K = [
+    ['記錄賽事', s.matches || 0, ''],
+    ['階段預測', s.predictions || 0, 'amber'],
+    ['已核對', s.graded || 0, ''],
+    ['待賽果', s.pending || 0, ''],
+    ['命中', s.hits || 0, 'good'],
+    ['命中率', accuracy, s.accuracy == null ? '' : s.accuracy >= .5 ? 'good' : 'bad'],
+  ];
+  const stageSummary = ['首預', 'T-30', 'T-5'].map((stage) => {
+    const x = (s.by_stage || {})[stage] || {};
+    return `<span class="hist-stage"><b>${stage}</b> ${
+      x.accuracy == null ? '待累積' : `${pc(x.accuracy, 1)} (${x.hits}/${x.graded})`
+    }</span>`;
+  }).join('');
+  const body = rows.map((r) => `<tr>
+    <td class="mono nowrap">${r.kickoff ? `${hkDay(r.kickoff)} ${hkClock(r.kickoff)}` : '—'}</td>
+    <td>${esc(r.home)} <span class="dim">v</span> ${esc(r.away)}
+      <div class="cell-sub">${esc(r.league || '')}</div></td>
+    <td><span class="fx-tag ${TAG[r.stage] || 'tag-wait'}">${esc(r.stage || '—')}</span>
+      <div class="cell-sub mono">${r.predicted_at ? hkStamp(r.predicted_at) : '—'}</div></td>
+    <td><b class="forecast-pick">${esc(r.forecast)}</b>
+      <div class="cell-sub">最高機率 ${pc(r.probability, 1)}${r.likely_score ? ` · 最可能 ${esc(r.likely_score)}` : ''}</div></td>
+    <td class="${convClass(r.conviction)}">${f2(r.conviction)}</td>
+    <td>${r.simulated_bet
+      ? `<span class="stpill pending">有模擬注</span><div class="cell-sub">${esc(r.bet_label || '')}</div>`
+      : `<span class="stpill voided">冇落注</span><div class="cell-sub hist-reason">${esc(r.no_bet_reason || '未達條件')}</div>`}</td>
+    <td>${r.actual
+      ? `<span class="respill ${r.correct ? 'r-w' : 'r-l'}">${r.correct ? '命中' : '落空'}</span>
+         <div class="cell-sub">${esc(r.actual)} · <span class="mono">${esc(r.score)}</span></div>`
+      : '<span class="stpill pending">待賽果</span>'}</td>
+  </tr>`).join('');
+  $('#viewHistory').innerHTML = `<div class="ledger-head">
+    <h1 class="pg-h">預測紀錄 <span class="sub">有冇落注都照記 · 準確率與模擬倉分開</span></h1>
+    <div class="kpis wide">${K.map(([l, v, c]) =>
+      `<div class="kpi"><span class="kpi-lbl">${l}</span><span class="kpi-val ${c}">${v}</span></div>`).join('')}</div>
+  </div>
+  <div class="card history-note">
+    <div class="history-stage-summary">${stageSummary}</div>
+    <p class="mx-note">每個階段以當時主勝／和局／客勝最高機率作正式方向，並保留信念分、最高機率、最可能比分同唔落注原因。賽果返嚟後先計命中，未完場唔當輸。</p>
+  </div>
+  <div class="card"><h2 class="card-h">全量紀錄 <span class="sub">${rows.length} 筆</span></h2>
+    <div class="tbl-wrap"><table class="t history-table">
+      <tr><th>開賽</th><th>賽事</th><th>階段</th><th>我估</th><th>信念</th><th>模擬注</th><th>賽果核對</th></tr>
+      ${body || '<tr><td colspan="7" class="empty2">未有預測紀錄</td></tr>'}
+    </table></div>
+  </div>`;
 }
 
 function dayStake(bets) {

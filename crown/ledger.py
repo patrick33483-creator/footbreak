@@ -80,17 +80,62 @@ def recompute_stats(ledger: dict[str, Any], config: Settings) -> dict[str, Any]:
     turnover = round(sum(float(bet.get("stake") or 0) for bet in settled), 2)
     decided = [bet for bet in settled if bet.get("result") != "Refunded"]
     hits = sum(bet.get("result") in {"Won", "Half Won"} for bet in decided)
+    by_market: dict[str, dict[str, Any]] = {}
+    for bet in settled:
+        market = str(bet.get("market") or bet.get("code") or "其他")
+        row = by_market.setdefault(
+            market, {"n": 0, "stake": 0.0, "pnl": 0.0, "hit": 0, "dec": 0}
+        )
+        row["n"] += 1
+        row["stake"] += float(bet.get("stake") or 0)
+        row["pnl"] += float(bet.get("pnl") or 0)
+        if bet.get("result") != "Refunded":
+            row["dec"] += 1
+            row["hit"] += int(bet.get("result") in {"Won", "Half Won"})
+    for row in by_market.values():
+        row["stake"] = round(row["stake"], 2)
+        row["pnl"] = round(row["pnl"], 2)
+        row["roi"] = round(row["pnl"] / row["stake"], 4) if row["stake"] else None
+        row["hit_rate"] = round(row["hit"] / row["dec"], 4) if row["dec"] else None
+
+    result_names = ("Won", "Half Won", "Refunded", "Half Lost", "Lost")
+    res_counts = {name: sum(bet.get("result") == name for bet in settled) for name in result_names}
+    running_equity = config.bankroll
+    curve = []
+    for bet in sorted(settled, key=lambda row: str(row.get("settled_at") or row.get("created_at") or "")):
+        bet_pnl = float(bet.get("pnl") or 0)
+        running_equity += bet_pnl
+        curve.append({
+            "ts": bet.get("settled_at") or bet.get("created_at"),
+            "label": f"{bet.get('home', '')} v {bet.get('away', '')}".strip(),
+            "pnl": round(bet_pnl, 2),
+            "equity": round(running_equity, 2),
+        })
+
+    previous_staking = ((ledger.get("stats") or {}).get("staking") or {})
     stats = {
         "n_pending": len(pending), "n_voided": sum(bet.get("status") == "VOIDED" for bet in bets), "n_settled": len(settled),
         "open_stake": round(sum(float(bet.get("stake") or 0) for bet in pending), 2),
         "open_pct": round(sum(float(bet.get("stake") or 0) for bet in pending) / config.bankroll, 4) if config.bankroll else 0,
         "pnl": pnl, "turnover": turnover, "roi": round(pnl / turnover, 4) if turnover else None,
         "n_decided": len(decided), "hits": hits, "hit_rate": round(hits / len(decided), 4) if decided else None,
-        "equity": round(config.bankroll + pnl, 2), "by_market": {}, "curve": [], "res_counts": {},
-        "daily_cap": config.bankroll, "open_cap": config.bankroll, "single_cap_pct": 0.04,
+        "equity": round(config.bankroll + pnl, 2), "by_market": by_market, "curve": curve,
+        "res_counts": res_counts,
+        "daily_cap": config.bankroll, "open_cap": round(config.bankroll * 0.35, 2), "single_cap_pct": 0.04,
         "conf_floor": config.confidence_floor, "bet_stage": "T-5", "n_watch": len(ledger["watch"]),
         "n_stage_preds": sum(len(item.get("stages") or []) for item in ledger["watch"].values()),
-        "staking": {"fraction": 1 / 3, "cap": 0.04, "label": "Crown 模擬", "level": 1, "market_mult": {"CHL": 0.5}},
+        "staking": {
+            "fraction": previous_staking.get("fraction", 1 / 3),
+            "cap": previous_staking.get("cap", 0.04),
+            "label": previous_staking.get("label", "階段一 · 建立樣本"),
+            "level": previous_staking.get("level", 1),
+            "n_settled": len(settled),
+            "slope": previous_staking.get("slope"),
+            "buckets": previous_staking.get("buckets", []),
+            "perf": previous_staking.get("perf", {}),
+            "demoted": previous_staking.get("demoted", False),
+            "market_mult": previous_staking.get("market_mult", {"CHL": 0.5}),
+        },
     }
     ledger["stats"] = stats
     return stats

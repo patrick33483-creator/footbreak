@@ -1,5 +1,5 @@
 [Unit]
-Description=足破 · 皇冠 nightly first-forecast sweep
+Description=足破 · 皇冠 hourly new-fixture and first-forecast sweep
 After=network-online.target
 Wants=network-online.target
 
