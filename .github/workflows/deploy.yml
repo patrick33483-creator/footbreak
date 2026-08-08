@@ -1,0 +1,58 @@
+name: 部署到 DigitalOcean
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  syntax-check:
+    name: 語法檢查
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 編譯所有 Python 模組
+        run: |
+          python -m compileall -q system bin || exit 1
+          echo "Python 語法 OK"
+
+      - name: 檢查 shell 腳本
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          bash -n system/run_all.sh deploy/run.sh deploy/setup.sh deploy/update.sh
+          shellcheck -S error deploy/*.sh system/run_all.sh || true
+          echo "Shell 語法 OK"
+
+      - name: 驗證 external-tool 相容層介面
+        run: |
+          set -e
+          # 冇 key 應該 exit 1 兼出 JSON 錯誤,唔可以 traceback
+          out=$(bin/external-tool call '{"source_id":"opticodds","arguments":{"path":"/sports"}}' 2>&1) && rc=0 || rc=$?
+          [ "$rc" = "1" ] || { echo "預期 exit 1,實際 $rc"; exit 1; }
+          echo "$out" | python -c "import sys,json; json.load(sys.stdin)"
+          echo "相容層 OK"
+
+  deploy:
+    name: 部署
+    needs: syntax-check
+    runs-on: ubuntu-latest
+    steps:
+      - name: SSH 入 droplet 執行更新
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.DO_HOST }}
+          username: ${{ secrets.DO_USER }}
+          key: ${{ secrets.DO_SSH_KEY }}
+          port: ${{ secrets.DO_PORT || 22 }}
+          command_timeout: 10m
+          script: |
+            sudo /opt/footbreak/deploy/update.sh main

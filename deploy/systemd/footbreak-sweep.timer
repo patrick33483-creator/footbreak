@@ -1,0 +1,12 @@
+[Unit]
+Description=足破 · 每晚 23:59(香港時間)全板首預
+
+[Timer]
+OnCalendar=*-*-* 23:59:00
+# 機器時區已經由 setup.sh 設成 Asia/Hong_Kong,所以呢度就係香港時間
+Persistent=true
+AccuracySec=30s
+Unit=footbreak-sweep.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,13 @@
+[Unit]
+Description=足破 · 每 2 分鐘檢查有冇場踏入 T-30 / T-5 窗口
+
+[Timer]
+# T-5 窗口只有 1–10 分鐘,所以要 2 分鐘一次先唔會漏場。
+# 喺自己嘅 VPS 上面呢啲叫醒係免費嘅 —— 呢個正正就係搬過嚟嘅意義。
+OnCalendar=*:0/2
+AccuracySec=15s
+Persistent=false
+Unit=footbreak-tick.service
+
+[Install]
+WantedBy=timers.target

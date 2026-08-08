@@ -1,0 +1,26 @@
+# ── 狀態檔:喺伺服器上面由系統自己寫,永遠唔入 git ──
+# 部署時 git reset --hard 唔會掂佢哋,所以模擬倉唔會被覆蓋。
+system/sim_ledger.json
+system/sim_ledger.csv
+system/sim_watch.csv
+system/notify_state.json
+system/predictions.json
+system/accuracy.json
+system/hk_snapshots.json
+system/picks_all.json
+system/portfolio.json
+system/portfolio.csv
+system/cache/
+hkjc-dashboard/data.json
+
+# ── 秘密 ──
+.env
+*.env
+!deploy/footbreak.env.example
+
+# ── 雜項 ──
+__pycache__/
+*.pyc
+.venv/
+*.log
+.DS_Store

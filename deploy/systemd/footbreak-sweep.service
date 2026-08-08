@@ -1,0 +1,14 @@
+[Unit]
+Description=足破 · 每晚全板首預
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/footbreak/system
+ExecStart=/opt/footbreak/deploy/run.sh sweep
+TimeoutStartSec=3600
+Nice=10
+
+[Install]
+WantedBy=multi-user.target

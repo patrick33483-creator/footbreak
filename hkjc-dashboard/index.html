@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="zh-Hant-HK">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>足破 · 賽事預測終端</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%230d1117'/%3E%3Cpath d='M6 24V8l10 8 10-8v16' stroke='%23e8a33d' stroke-width='2.5' fill='none' stroke-linejoin='round'/%3E%3C/svg%3E">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <svg class="logo" viewBox="0 0 32 32" aria-label="足破" fill="none">
+      <path d="M6 24V8l10 8 10-8v16" stroke="currentColor" stroke-width="2.5" stroke-linejoin="round"/>
+    </svg>
+    <div class="brand-txt">
+      <span class="brand-name">足破</span>
+      <span class="brand-sub">賽事預測終端</span>
+    </div>
+  </div>
+  <nav class="nav" id="nav">
+    <button class="navbtn is-on" data-view="pred">賽事預測</button>
+    <button class="navbtn" data-view="fc">純預測</button>
+    <button class="navbtn" data-view="ledger">模擬倉</button>
+  </nav>
+  <div class="kpis" id="kpis"></div>
+  <div class="stamp">
+    <span class="stamp-lbl">資料時間</span>
+    <span class="stamp-val" id="genAt">—</span>
+  </div>
+  <button class="refresh" id="refresh" title="即刻攞最新資料(平時每 5 分鐘自動更新一次)">
+    <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M14 8a6 6 0 1 1-1.8-4.3M14 2v4h-4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    <span>更新</span>
+  </button>
+</header>
+
+<div class="warnbar" id="warnbar">
+  <svg viewBox="0 0 16 16" class="warn-ico" aria-hidden="true"><path d="M8 1.5 15 14H1L8 1.5Z" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M8 6v4M8 11.6v.6" stroke="currentColor" stroke-width="1.4"/></svg>
+  <span><strong>基準說明</strong> — 基礎機率由 Dixon-Coles / 負二項模型擬合自銳利去水盤,本質係「盤口翻譯器」。真正屬於我嘅獨立判斷係<strong>調整層</strong>(賠率移動、天氣、休息日、陣容傷患),每一項都喺賽事頁列明理由同幅度。角球冇任何獨立資料源,100% 由盤口反推。</span>
+  <button class="warn-x" id="warnX" aria-label="關閉">×</button>
+</div>
+
+<!-- ═══ 賽事預測 ═══ -->
+<main class="shell" id="viewPred">
+  <aside class="rail">
+    <div class="rail-head">
+      <input id="search" class="search" type="search" placeholder="搜尋球隊 / 聯賽…" autocomplete="off">
+      <div class="chips" id="stageChips">
+        <button class="chip is-on" data-stage="all">全部</button>
+        <button class="chip" data-stage="pick">有結論</button>
+        <button class="chip" data-stage="T-5">T-5</button>
+        <button class="chip" data-stage="T-30">T-30</button>
+        <button class="chip" data-stage="首預">首預</button>
+        <button class="chip" data-stage="待入窗">待入窗</button>
+      </div>
+      <div class="rail-count" id="railCount"></div>
+    </div>
+    <ol class="fixtures" id="fixtures"></ol>
+  </aside>
+  <section class="detail" id="detail"></section>
+</main>
+
+<!-- ═══ 純預測 ═══ -->
+<main class="page" id="viewFc" hidden></main>
+
+<!-- ═══ 模擬倉 ═══ -->
+<main class="page" id="viewLedger" hidden></main>
+
+<script src="app.js"></script>
+</body>
+</html>

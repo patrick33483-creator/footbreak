@@ -1,0 +1,163 @@
+#!/usr/bin/env python3
+"""
+external-tool —— Perplexity 平台連接器嘅自主 host 版相容 shim。
+
+用途:令 sharp.py / settle.py / context.py / notify.py 完全唔使改一行碼,
+      就可以喺 DigitalOcean(或者任何 VPS)上面直接行。
+
+介面同平台版一模一樣:
+    external-tool call '{"source_id": "...", "tool_name": "...", "arguments": {...}}'
+成功 → stdout 出 JSON,exit 0
+失敗 → stderr 出 JSON,exit 1
+
+支援兩個 source_id:
+  opticodds                    → 直打 OpticOdds REST v3
+  telegram_bot_api__pipedream  → 直打 Telegram Bot API sendMessage
+
+需要嘅環境變數(由 /etc/footbreak.env 提供):
+  OPTICODDS_API_KEY      OpticOdds API key(必需)
+  TELEGRAM_BOT_TOKEN     Telegram bot token(必需,notify 先用到)
+  OPTICODDS_BASE         可選,預設 https://api.opticodds.com/api/v3
+"""
+import json
+import os
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+OPTIC_BASE = os.environ.get("OPTICODDS_BASE", "https://api.opticodds.com/api/v3").rstrip("/")
+OPTIC_KEY = os.environ.get("OPTICODDS_API_KEY", "")
+TG_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+
+TIMEOUT = float(os.environ.get("EXTERNAL_TOOL_TIMEOUT", "60"))
+RETRIES = int(os.environ.get("EXTERNAL_TOOL_RETRIES", "3"))
+
+
+def die(msg, **extra):
+    payload = {"error": str(msg)}
+    payload.update(extra)
+    sys.stderr.write(json.dumps(payload, ensure_ascii=False))
+    sys.exit(1)
+
+
+def _request(url, *, data=None, headers=None, method="GET"):
+    """帶重試嘅 HTTP。回傳 (status_code, 已解析嘅 body)。429 / 5xx 會退避重試。"""
+    last = None
+    for attempt in range(RETRIES):
+        req = urllib.request.Request(url, data=data, method=method)
+        for k, v in (headers or {}).items():
+            req.add_header(k, v)
+        try:
+            with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+                return r.status, json.loads(r.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            body = e.read().decode("utf-8", "replace")[:500]
+            last = f"HTTP {e.code}: {body}"
+            # 429 同 5xx 值得重試;4xx 其餘係請求本身有問題,即刻放棄
+            if e.code != 429 and e.code < 500:
+                break
+        except Exception as e:  # noqa: BLE001
+            last = f"{type(e).__name__}: {e}"
+        if attempt < RETRIES - 1:
+            time.sleep(2 ** attempt)
+    raise RuntimeError(last or "unknown error")
+
+
+# ───────────────────────────── OpticOdds ─────────────────────────────
+def call_opticodds(args):
+    if not OPTIC_KEY:
+        die("OPTICODDS_API_KEY 未設定", source_id="opticodds")
+
+    path = args.get("path") or ""
+    if not path.startswith("/"):
+        path = "/" + path
+    params = args.get("params") or {}
+
+    # 平台版會接受 list 值(例如 fixture_id 傳多個),要展開成重複 query key
+    pairs = []
+    for k, v in params.items():
+        if v is None:
+            continue
+        if isinstance(v, (list, tuple)):
+            for item in v:
+                if item is not None:
+                    pairs.append((k, str(item)))
+        elif isinstance(v, bool):
+            pairs.append((k, "true" if v else "false"))
+        else:
+            pairs.append((k, str(v)))
+
+    qs = urllib.parse.urlencode(pairs)
+    url = f"{OPTIC_BASE}{path}" + (f"?{qs}" if qs else "")
+
+    method = (args.get("method") or "GET").upper()
+    body = args.get("json_body")
+    data = json.dumps(body).encode("utf-8") if body is not None else None
+
+    headers = {"X-Api-Key": OPTIC_KEY, "Accept": "application/json"}
+    if data is not None:
+        headers["Content-Type"] = "application/json"
+        method = "POST"
+
+    status, body = _request(url, data=data, headers=headers, method=method)
+    # 同平台連接器嘅外殼保持一致:{"status_code": N, "data": <vendor JSON>}
+    # sharp.py / settle.py 靠 r["data"] 攞到 vendor body,唔可以扁平化。
+    return {"status_code": status, "data": body}
+
+
+# ───────────────────────────── Telegram ─────────────────────────────
+def call_telegram(args):
+    if not TG_TOKEN:
+        die("TELEGRAM_BOT_TOKEN 未設定", source_id="telegram")
+
+    chat_id = args.get("chatId") or args.get("chat_id")
+    text = args.get("text") or ""
+    if not chat_id:
+        die("缺少 chatId", source_id="telegram")
+
+    payload = {
+        "chat_id": str(chat_id),
+        "text": text,
+        "parse_mode": args.get("parse_mode", "HTML"),
+        "disable_web_page_preview": True,
+    }
+    url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
+    data = json.dumps(payload).encode("utf-8")
+    status, body = _request(url, data=data,
+                            headers={"Content-Type": "application/json"},
+                            method="POST")
+    return {"status_code": status, "data": body}
+
+
+DISPATCH = {
+    "opticodds": call_opticodds,
+    "telegram_bot_api__pipedream": call_telegram,
+    "telegram": call_telegram,
+}
+
+
+def main():
+    if len(sys.argv) < 3 or sys.argv[1] != "call":
+        die("用法:external-tool call '<json>'")
+    try:
+        spec = json.loads(sys.argv[2])
+    except Exception as e:  # noqa: BLE001
+        die(f"payload 唔係有效 JSON:{e}")
+
+    source_id = spec.get("source_id", "")
+    fn = DISPATCH.get(source_id)
+    if fn is None:
+        die(f"未支援嘅 source_id:{source_id}", source_id=source_id)
+
+    try:
+        out = fn(spec.get("arguments") or {})
+    except Exception as e:  # noqa: BLE001
+        die(str(e)[:600], source_id=source_id, tool_name=spec.get("tool_name"))
+
+    sys.stdout.write(json.dumps(out, ensure_ascii=False))
+
+
+if __name__ == "__main__":
+    main()
