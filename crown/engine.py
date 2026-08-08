@@ -199,10 +199,9 @@ def run(mode: str, config: Settings) -> dict[str, Any]:
             mapping["unmapped_hkjc_to_pinnapi"] += 1
         if bridge.reason:
             mapping["reasons"][bridge.reason] = mapping["reasons"].get(bridge.reason, 0) + 1
-        # HKJC is the master event list.  Do not publish or price unrelated
-        # Titan fixtures which have no safe HKJC counterpart.
-        if not bridge.hkjc.event:
-            continue
+        # Keep the complete Crown/Titan fixture board visible.  Unmatched
+        # events remain DATA_MISSING and return before any edge calculation;
+        # only the strict HKJC -> PinnAPI bridge can unlock pricing or a bet.
         h_row = next((row for candidate, row in h_events if bridge.hkjc.event and candidate.id == bridge.hkjc.event.id), None)
         prediction = _prediction(titan, bridge, h_row, stage, config, titan_client, pinnapi_client)
         emitted += sync_prediction(ledger, prediction, config)
