@@ -53,8 +53,19 @@ systemctl daemon-reload
 systemctl enable --now crown-sweep.timer crown-tick.timer
 systemctl restart crown-sweep.timer crown-tick.timer
 # Settlement is deliberately separate from the latency-sensitive tick.  T-30
-# and T-5 now share one ordered queue, so the old second timer must stay off.
-systemctl disable --now footbreak-t30.timer 2>/dev/null || true
+# and T-5 now share one ordered queue, so the old second timer is retired
+# completely.  Merely disabling it proved insufficient on an upgraded host:
+# a still-loaded unit could continue firing and contend for footbreak.lock.
+systemctl stop footbreak-t30.timer footbreak-t30.service 2>/dev/null || true
+systemctl disable footbreak-t30.timer 2>/dev/null || true
+rm -f /etc/systemd/system/footbreak-t30.timer
+systemctl daemon-reload
+systemctl reset-failed footbreak-t30.service 2>/dev/null || true
+if systemctl is-active --quiet footbreak-t30.timer ||
+   systemctl is-enabled --quiet footbreak-t30.timer; then
+  echo "ERROR: retired footbreak-t30.timer is still active or enabled" >&2
+  exit 1
+fi
 systemctl enable --now footbreak-tick.timer footbreak-settle.timer
 for timer in footbreak-tick.timer footbreak-sweep.timer footbreak-settle.timer footbreak-backtest.timer; do
   if systemctl is-enabled --quiet "$timer"; then

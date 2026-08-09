@@ -15,6 +15,13 @@ for unit in \
   echo "OK timer $unit"
 done
 
+if systemctl is-active --quiet footbreak-t30.timer ||
+   systemctl is-enabled --quiet footbreak-t30.timer; then
+  echo "FAIL retired timer footbreak-t30.timer is still active or enabled" >&2
+  exit 1
+fi
+echo "OK retired timer footbreak-t30.timer is inactive and disabled"
+
 for service in footbreak-tick.service crown-tick.service crown-sweep.service; do
   result="$(systemctl show "$service" -p Result --value)"
   status="$(systemctl show "$service" -p ExecMainStatus --value)"
