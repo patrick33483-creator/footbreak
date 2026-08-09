@@ -216,6 +216,7 @@ def build_prediction_history(watch, bets, accuracy):
             "no_bet_reason": no_bet_reason,
             "actual": actual,
             "score": result.get("score") or score.get("score_act"),
+            "result_source": result.get("result_source"),
             "correct": bool(score.get("wdl_hit")) if actual else None,
             "result_status": "已核對" if actual else "待賽果",
             "wdl_brier": score.get("wdl_brier"),

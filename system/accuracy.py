@@ -315,6 +315,7 @@ def run(fetch=True):
                 "match_id": mid, "home": w.get("home"), "away": w.get("away"),
                 "league": w.get("league"), "kickoff": w.get("kickoff"),
                 "score": last["score_act"],
+                "result_source": res.get("source"),
                 "corners": last.get("corners_act"),
                 "stages": [{k: v for k, v in r.items() if not k.startswith("_")}
                            for r in rows],

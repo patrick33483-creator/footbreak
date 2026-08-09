@@ -465,6 +465,7 @@ table.t.bets td.good { color: var(--good); } table.t.bets td.amber { color: var(
 .history-table { min-width: 920px; }
 .history-table tr { content-visibility: auto; contain-intrinsic-size: 0 58px; }
 .history-table td { vertical-align: top; }
+.hist-result { margin-top: 5px; color: var(--text); }
 .forecast-pick { color: var(--amber); }
 .hist-reason {
   max-width: 300px; white-space: normal;

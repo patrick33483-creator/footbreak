@@ -854,6 +854,8 @@ function renderFc() {
   const V = $('#viewFc');
   const payload = DATA.prediction_history || { rows: [], stats: {} };
   const rows = payload.rows || [], s = payload.stats || {};
+  const gradedRows = rows.filter((r) => r.actual);
+  const pendingRows = rows.filter((r) => !r.actual);
   const accuracy = s.accuracy == null ? '待賽果' : pc(s.accuracy, 1);
   const K = [
     ['記錄賽事', s.matches || 0, ''],
@@ -869,7 +871,7 @@ function renderFc() {
       x.accuracy == null ? '待累積' : `${pc(x.accuracy, 1)} (${x.hits}/${x.graded})`
     }</span>`;
   }).join('');
-  const body = rows.map((r) => `<tr>
+  const historyRows = (items) => items.map((r) => `<tr>
     <td class="mono nowrap">${r.kickoff ? `${hkDay(r.kickoff)} ${hkClock(r.kickoff)}` : '—'}</td>
     <td>${esc(r.home)} <span class="dim">v</span> ${esc(r.away)}
       <div class="cell-sub">${esc(r.league || '')}</div></td>
@@ -883,9 +885,14 @@ function renderFc() {
       : `<span class="stpill voided">冇落注</span><div class="cell-sub hist-reason">${esc(r.no_bet_reason || '未達條件')}</div>`}</td>
     <td>${r.actual
       ? `<span class="respill ${r.correct ? 'r-w' : 'r-l'}">${r.correct ? '命中' : '落空'}</span>
-         <div class="cell-sub">${esc(r.actual)} · <span class="mono">${esc(r.score)}</span></div>`
+         <div class="hist-result"><b>${esc(r.score || '—')}</b> · ${esc(r.actual)}</div>
+         <div class="cell-sub">${esc(r.result_source === 'hkjc_official' ? '馬會官方賽果' : r.result_source || '已核對賽果')}</div>`
       : '<span class="stpill pending">待賽果</span>'}</td>
   </tr>`).join('');
+  const historyTable = (items, empty) => `<div class="tbl-wrap"><table class="t history-table">
+      <tr><th>開賽</th><th>賽事</th><th>階段</th><th>我估</th><th>信念</th><th>模擬注</th><th>實際賽果／核對</th></tr>
+      ${historyRows(items) || `<tr><td colspan="7" class="empty2">${empty}</td></tr>`}
+    </table></div>`;
 
   V.innerHTML = `<div class="ledger-head">
     <h1 class="pg-h">純預測紀錄 <span class="sub">有冇落注都照記 · 準確率與模擬倉分開</span></h1>
@@ -894,13 +901,13 @@ function renderFc() {
   </div>
   <div class="card history-note">
     <div class="history-stage-summary">${stageSummary}</div>
-    <p class="mx-note">每個階段以當時主勝／和局／客勝最高機率作正式方向，並保留信念分、最高機率、最可能比分同唔落注原因。賽果返嚟後先計命中，未完場唔當輸。</p>
+    <p class="mx-note">每個階段以當時主勝／和局／客勝最高機率作正式方向。開賽 130 分鐘後抓取賽果，成功核對先計命中；未完場或未取到賽果唔當輸。</p>
   </div>
-  <div class="card"><h2 class="card-h">全量紀錄 <span class="sub">${rows.length} 筆</span></h2>
-    <div class="tbl-wrap"><table class="t history-table">
-      <tr><th>開賽</th><th>賽事</th><th>階段</th><th>我估</th><th>信念</th><th>模擬注</th><th>賽果核對</th></tr>
-      ${body || '<tr><td colspan="7" class="empty2">未有預測紀錄，完成首預後會自動累積。</td></tr>'}
-    </table></div>
+  <div class="card"><h2 class="card-h">已核對賽果 <span class="sub">${gradedRows.length} 筆 · 命中 ${s.hits || 0}</span></h2>
+    ${historyTable(gradedRows, '暫時未有已核對賽果。')}
+  </div>
+  <div class="card"><h2 class="card-h">待賽果 <span class="sub">${pendingRows.length} 筆</span></h2>
+    ${historyTable(pendingRows, '目前冇待核對紀錄。')}
   </div>`;
 }
 

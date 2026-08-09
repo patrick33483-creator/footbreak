@@ -33,7 +33,7 @@ class PredictionHistoryPayloadTests(unittest.TestCase):
             "matches": [{
                 "match_id": "m1", "home": "主隊", "away": "客隊",
                 "league": "測試聯賽", "kickoff": "2026-08-09 20:00",
-                "score": "2-0",
+                "score": "2-0", "result_source": "hkjc_official",
                 "stages": [{
                     "stage": "T-30", "conf": 61.2, "wdl_pick": 0,
                     "wdl_act": 0, "wdl_hit": 1, "wdl_pmax": 0.58,
@@ -54,6 +54,7 @@ class PredictionHistoryPayloadTests(unittest.TestCase):
         self.assertEqual(row["forecast"], "主勝")
         self.assertEqual(row["actual"], "主勝")
         self.assertEqual(row["score"], "2-0")
+        self.assertEqual(row["result_source"], "hkjc_official")
         self.assertTrue(row["correct"])
         self.assertFalse(row["simulated_bet"])
 
