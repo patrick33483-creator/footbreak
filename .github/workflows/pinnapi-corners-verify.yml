@@ -78,6 +78,20 @@ jobs:
                   "prices": prices[:12],
               }
 
+          def compact(value, depth=0):
+              if depth >= 4:
+                  return type(value).__name__
+              if isinstance(value, dict):
+                  return {
+                      str(key): compact(child, depth + 1)
+                      for key, child in list(value.items())[:20]
+                  }
+              if isinstance(value, list):
+                  return [compact(child, depth + 1) for child in value[:12]]
+              if isinstance(value, (str, int, float, bool)) or value is None:
+                  return value
+              return type(value).__name__
+
           def collect_corner_markets(raw, parent_event_id):
               root = raw if isinstance(raw, dict) else {}
               events = root.get("events") or []
@@ -101,6 +115,19 @@ jobs:
                                   market_groups[f"{period_key}.{key}"] = value
                   samples = {}
                   for group, markets in market_groups.items():
+                      if isinstance(markets, dict) and not (
+                          "prices" in markets
+                          or "type" in markets
+                          or "name" in markets
+                      ):
+                          samples[group] = [
+                              {
+                                  "line": str(line),
+                                  "quote": compact(quote),
+                              }
+                              for line, quote in list(markets.items())[:12]
+                          ]
+                          continue
                       if isinstance(markets, dict):
                           markets = [markets]
                       if not isinstance(markets, list):
