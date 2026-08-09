@@ -1,0 +1,164 @@
+name: 診斷足破即時 T-5
+
+on:
+  workflow_dispatch:
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: 設定 SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: 抽取計時器、日誌及臨場賽事
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh "$DEPLOY_USER@$DEPLOY_HOST" "sudo bash -s" <<'REMOTE'
+          set -uo pipefail
+          date
+          echo "=== timers ==="
+          for unit in footbreak-tick.timer footbreak-t30.timer crown-tick.timer; do
+            echo "--- $unit"
+            systemctl is-enabled "$unit" || true
+            systemctl is-active "$unit" || true
+            systemctl show "$unit" \
+              -p ActiveState -p SubState -p Result \
+              -p LastTriggerUSec -p NextElapseUSecRealtime || true
+          done
+          systemctl list-timers footbreak-tick.timer footbreak-t30.timer crown-tick.timer --all --no-pager || true
+
+          echo "=== services ==="
+          for unit in footbreak-tick.service footbreak-t30.service crown-tick.service; do
+            echo "--- $unit"
+            systemctl show "$unit" \
+              -p ActiveState -p SubState -p Result -p ExecMainStatus \
+              -p ExecMainStartTimestamp -p ExecMainExitTimestamp || true
+          done
+
+          echo "=== priority marker and lock ==="
+          ls -la /run/footbreak-t5-priority /var/lock/footbreak.lock 2>&1 || true
+          fuser -v /var/lock/footbreak.lock 2>&1 || true
+          ps -eo pid,lstart,etime,cmd | grep -E 'run_all|deploy/run.sh|footbreak' | grep -v grep || true
+
+          echo "=== recent tick journal ==="
+          journalctl -u footbreak-tick.service --since "-25 minutes" --no-pager -o short-iso | tail -n 500 || true
+          echo "=== recent t30 journal ==="
+          journalctl -u footbreak-t30.service --since "-25 minutes" --no-pager -o short-iso | tail -n 300 || true
+          echo "=== recent Crown tick journal ==="
+          journalctl -u crown-tick.service --since "-25 minutes" --no-pager -o short-iso | tail -n 500 || true
+
+          echo "=== dashboard fixtures around now ==="
+          /opt/footbreak/.venv/bin/python3 - <<'PY'
+          import json
+          from datetime import datetime, timedelta, timezone
+          from pathlib import Path
+
+          data = json.loads(Path("/var/www/footbreak/data.json").read_text())
+          rows = data if isinstance(data, list) else (
+              data.get("matches") or data.get("predictions") or []
+          )
+          now = datetime.now(timezone.utc)
+
+          def parse(value):
+              text = str(value or "").strip().replace("Z", "+00:00")
+              if not text:
+                  return None
+              try:
+                  result = datetime.fromisoformat(text)
+              except ValueError:
+                  return None
+              if result.tzinfo is None:
+                  result = result.replace(tzinfo=timezone(timedelta(hours=8)))
+              return result.astimezone(timezone.utc)
+
+          for row in rows:
+              kickoff_raw = (
+                  row.get("kickoff_utc")
+                  or row.get("kickoff_hkt")
+                  or row.get("kickoff")
+                  or row.get("start_time")
+              )
+              kickoff = parse(kickoff_raw)
+              if kickoff is None or not (-timedelta(minutes=15) <= kickoff - now <= timedelta(minutes=20)):
+                  continue
+              print({
+                  "match_id": row.get("match_id") or row.get("id"),
+                  "home": row.get("home"),
+                  "away": row.get("away"),
+                  "kickoff": kickoff_raw,
+                  "minutes": round((kickoff - now).total_seconds() / 60, 1),
+                  "stage": row.get("stage"),
+                  "status": row.get("status"),
+                  "stages": [
+                      {
+                          "stage": item.get("stage"),
+                          "ts": item.get("ts"),
+                          "can_bet": item.get("can_bet"),
+                          "no_bet_reason": item.get("no_bet_reason"),
+                      }
+                      for item in (row.get("stages") or [])
+                  ],
+              })
+          PY
+
+          echo "=== Crown dashboard fixtures around now ==="
+          /opt/footbreak/.venv/bin/python3 - <<'PY'
+          import json
+          from datetime import datetime, timedelta, timezone
+          from pathlib import Path
+
+          data = json.loads(Path("/var/www/crown/data.json").read_text())
+          rows = data.get("matches") or data.get("predictions") or []
+          now = datetime.now(timezone.utc)
+
+          def parse(value):
+              text = str(value or "").strip().replace("Z", "+00:00")
+              if not text:
+                  return None
+              try:
+                  result = datetime.fromisoformat(text)
+              except ValueError:
+                  return None
+              if result.tzinfo is None:
+                  result = result.replace(tzinfo=timezone(timedelta(hours=8)))
+              return result.astimezone(timezone.utc)
+
+          for row in rows:
+              kickoff_raw = (
+                  row.get("kickoff_utc")
+                  or row.get("kickoff_hkt")
+                  or row.get("kickoff")
+                  or row.get("start_time")
+              )
+              kickoff = parse(kickoff_raw)
+              if kickoff is None or not (-timedelta(minutes=15) <= kickoff - now <= timedelta(minutes=20)):
+                  continue
+              print({
+                  "match_id": row.get("match_id") or row.get("id"),
+                  "home": row.get("home"),
+                  "away": row.get("away"),
+                  "kickoff": kickoff_raw,
+                  "minutes": round((kickoff - now).total_seconds() / 60, 1),
+                  "stage": row.get("stage"),
+                  "status": row.get("status"),
+                  "stages": [
+                      {
+                          "stage": item.get("stage"),
+                          "ts": item.get("ts"),
+                          "can_bet": item.get("can_bet"),
+                          "no_bet_reason": item.get("no_bet_reason"),
+                      }
+                      for item in (row.get("stages") or [])
+                  ],
+              })
+          PY
+          REMOTE
