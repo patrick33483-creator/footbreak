@@ -13,7 +13,7 @@ import math
 import os
 import subprocess
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 HKT = timezone(timedelta(hours=8))
@@ -27,13 +27,26 @@ os.makedirs(RESCACHE, exist_ok=True)
 SETTLE_AFTER_MIN = 130
 
 
+def _hkjc_result_dates(dates):
+    """HKJC business date may precede an after-midnight HKT kickoff date."""
+    expanded = set(map(str, dates))
+    for raw in list(expanded):
+        try:
+            expanded.add((date.fromisoformat(raw) - timedelta(days=1)).isoformat())
+        except ValueError:
+            continue
+    return expanded
+
+
 def fetch_hkjc_results(match_ids, dates):
     """HKJC exact-ID official results in the shape used by this settlement module."""
     root = str(Path(__file__).resolve().parents[1])
     if root not in sys.path:
         sys.path.insert(0, root)
     from crown.hkjc import fetch_official_results
-    rows = fetch_official_results(set(map(str, match_ids)), set(dates))
+    rows = fetch_official_results(
+        set(map(str, match_ids)), _hkjc_result_dates(dates)
+    )
     return {
         match_id: {
             "fixture_id": match_id,
@@ -91,7 +104,9 @@ def fetch_result(fixture_id, refresh=False):
 def fetch_hkjc_statuses(match_ids, dates):
     """HKJC exact-ID states, including suspended/postponed/refunded matches."""
     from crown.hkjc import fetch_official_match_statuses
-    return fetch_official_match_statuses(set(map(str, match_ids)), set(dates))
+    return fetch_official_match_statuses(
+        set(map(str, match_ids)), _hkjc_result_dates(dates)
+    )
 
 
 def parse_result(row):

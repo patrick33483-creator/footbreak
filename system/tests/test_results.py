@@ -24,7 +24,9 @@ class ResultSourceTests(unittest.TestCase):
         }
         with patch("crown.hkjc.fetch_official_results", return_value=official) as fetch:
             rows = settle.fetch_hkjc_results({"50072040"}, {"2026-08-09"})
-        fetch.assert_called_once_with({"50072040"}, {"2026-08-09"})
+        fetch.assert_called_once_with(
+            {"50072040"}, {"2026-08-08", "2026-08-09"}
+        )
         self.assertEqual(rows["50072040"]["goals_home"], 2)
         self.assertEqual(rows["50072040"]["goals_away"], 2)
         self.assertEqual(rows["50072040"]["goals_total"], 4)
