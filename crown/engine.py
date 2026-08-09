@@ -9,8 +9,8 @@ from typing import Any
 from .common import HKT, iso_hkt
 from .config import Settings
 from .hkjc import event_from_match, fetch_matches, flatten_odds
-from .ledger import recompute_stats, stage_for, sync_prediction
-from .matching import Event, BridgeMatch, bridge_titan_to_pinnapi
+from .ledger import completed_stages, recompute_stats, stage_for, sync_prediction
+from .matching import MATCHING_VERSION, Event, BridgeMatch, bridge_titan_to_pinnapi
 from .pinnapi import PinnapiClient
 from .period import in_current_period
 from .state import load_ledger, merge_predictions, save_ledger
@@ -121,7 +121,8 @@ def _prediction(titan: dict[str, Any], bridge: BridgeMatch, h_match: dict[str, A
     event = _event_from_titan(titan)
     minutes = round((event.kickoff - datetime.now(HKT)).total_seconds() / 60, 1)
     base = {
-        "schema_version": "crown-prediction-v2", "generated_at": iso_hkt(), "match_id": event.id,
+        "schema_version": "crown-prediction-v2", "matching_version": MATCHING_VERSION,
+        "generated_at": iso_hkt(), "match_id": event.id,
         "league": event.league, "home": event.home, "away": event.away, "kickoff_hkt": iso_hkt(event.kickoff),
         "mins_to_ko": minutes, "stage": stage, "titan_match_id": event.id,
         "pinnapi_event_id": bridge.event.id if bridge.event else None,
@@ -215,7 +216,7 @@ def run(mode: str, config: Settings) -> dict[str, Any]:
         if not in_current_period(event.kickoff):
             continue
         watch = ledger["watch"].get(event.id, {})
-        done = {row.get("stage") for row in watch.get("stages", [])}
+        done = completed_stages(watch, MATCHING_VERSION)
         minutes = (event.kickoff - datetime.now(HKT)).total_seconds() / 60
         # Past fixtures stay visible in the active board period, but no pass
         # should spend provider calls rebuilding prices after kickoff.

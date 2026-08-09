@@ -9,6 +9,21 @@ from .config import Settings
 STAGES = {"首預": 1, "T-30": 2, "T-5": 3}
 
 
+def completed_stages(watch: dict[str, Any], matching_version: str) -> set[str]:
+    """Refresh stale first looks once without replaying T-30/T-5 decisions."""
+    done = {
+        str(row.get("stage"))
+        for row in watch.get("stages", [])
+        if row.get("stage")
+    }
+    if (
+        watch.get("matching_version") != matching_version
+        and not done.intersection({"T-30", "T-5"})
+    ):
+        done.discard("首預")
+    return done
+
+
 def stage_for(minutes_to_kickoff: float, sweep: bool, done: set[str]) -> str | None:
     if sweep:
         return "首預" if "首預" not in done else None
@@ -25,6 +40,7 @@ def _snapshot(prediction: dict[str, Any], stage: str) -> dict[str, Any]:
         "conviction", "no_bet_reason", "pick", "lead_view", "market_sources", "hkjc_match_id",
         "titan_match_id", "pinnapi_event_id", "source_snapshot_at", "execution",
         "outcome", "forecast", "probability", "likely_score", "prediction_source",
+        "matching_version",
     )} | {"stage": stage, "ts": iso_hkt()}
 
 
@@ -43,8 +59,12 @@ def sync_prediction(ledger: dict[str, Any], prediction: dict[str, Any], config: 
         "match_id": match_id, "league": prediction.get("league"), "home": prediction.get("home"), "away": prediction.get("away"),
         "kickoff": prediction.get("kickoff_hkt"), "titan_match_id": prediction.get("titan_match_id"),
         "pinnapi_event_id": prediction.get("pinnapi_event_id"), "hkjc_match_id": prediction.get("hkjc_match_id"), "stages": [],
+        "matching_version": prediction.get("matching_version"),
     })
-    watch.update({key: prediction.get(key) for key in ("league", "home", "away", "kickoff_hkt", "titan_match_id", "pinnapi_event_id", "hkjc_match_id")})
+    watch.update({key: prediction.get(key) for key in (
+        "league", "home", "away", "kickoff_hkt", "titan_match_id",
+        "pinnapi_event_id", "hkjc_match_id", "matching_version",
+    )})
     watch["kickoff"] = prediction.get("kickoff_hkt")
     stage_rows = watch["stages"]
     existing = next((row for row in stage_rows if row.get("stage") == stage), None)

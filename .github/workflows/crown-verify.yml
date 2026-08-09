@@ -2,6 +2,15 @@ name: 核對皇冠生產掃描
 
 on:
   workflow_dispatch:
+    inputs:
+      mode:
+        description: 皇冠執行模式
+        required: true
+        default: tick
+        type: choice
+        options:
+          - tick
+          - sweep
 
 jobs:
   verify:
@@ -22,8 +31,9 @@ jobs:
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          CROWN_MODE: ${{ inputs.mode }}
         run: |
-          ssh "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          ssh "$DEPLOY_USER@$DEPLOY_HOST" "sudo CROWN_MODE='$CROWN_MODE' bash -s" <<'REMOTE'
           set -euo pipefail
           cd /opt/footbreak
           set -a
@@ -33,8 +43,8 @@ jobs:
           echo "=== Crown service state before check ==="
           systemctl show crown-tick.service \
             -p ActiveState -p SubState -p ExecMainStartTimestamp -p ExecMainPID
-          echo "=== Crown production tick ==="
-          /opt/footbreak/deploy/crown-run.sh tick
+          echo "=== Crown production ${CROWN_MODE} ==="
+          /opt/footbreak/deploy/crown-run.sh "$CROWN_MODE"
           echo "=== Crown live HKJC mapping diagnostic ==="
           /opt/footbreak/.venv/bin/python3 - <<'PY'
           from collections import Counter

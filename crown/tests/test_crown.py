@@ -14,7 +14,7 @@ from crown.config import settings
 from crown.dashboard_data import build, write_dashboard_data
 from crown.engine import _fresh, _wdl_prediction
 from crown.hkjc import fetch_official_results
-from crown.ledger import recompute_stats, stage_for, sync_prediction
+from crown.ledger import completed_stages, recompute_stats, stage_for, sync_prediction
 from crown.lines import parse_hkjc_handicap, parse_hkjc_total, settle_handicap, settle_total
 from crown.matching import (
     Event, bridge_titan_to_pinnapi, canonical_team_key, match_event,
@@ -188,6 +188,23 @@ class CrownSafetyTests(unittest.TestCase):
             self.assertEqual(len(ledger["bets"]), 1)
             self.assertTrue(ledger["bets"][0]["simulation_only"])
             self.assertFalse(ledger["bets"][0]["real_betting_enabled"])
+
+    def test_matching_version_refreshes_only_stale_first_look(self) -> None:
+        old_first = {
+            "matching_version": "old",
+            "stages": [{"stage": "首預"}],
+        }
+        old_late = {
+            "matching_version": "old",
+            "stages": [{"stage": "首預"}, {"stage": "T-30"}],
+        }
+        current_first = {
+            "matching_version": "current",
+            "stages": [{"stage": "首預"}],
+        }
+        self.assertEqual(completed_stages(old_first, "current"), set())
+        self.assertEqual(completed_stages(old_late, "current"), {"首預", "T-30"})
+        self.assertEqual(completed_stages(current_first, "current"), {"首預"})
 
     def test_empty_tick_merge_retains_sweep_prediction_and_prunes_only_stale(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
