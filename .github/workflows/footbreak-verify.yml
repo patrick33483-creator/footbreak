@@ -1,0 +1,78 @@
+name: 核對足破 T-5 生產狀態
+
+on:
+  workflow_dispatch:
+
+jobs:
+  verify:
+    name: 檢查 T-5 執行及資料
+    runs-on: ubuntu-24.04
+    steps:
+      - name: 設定 SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: 核對足破計時器、日誌及 17:00 賽事
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh "$DEPLOY_USER@$DEPLOY_HOST" "sudo bash -s" <<'REMOTE'
+          set -euo pipefail
+          echo "=== Footbreak timer ==="
+          systemctl is-active footbreak-tick.timer
+          systemctl is-enabled footbreak-tick.timer
+          systemctl list-timers footbreak-tick.timer --no-pager
+          echo "=== Footbreak service ==="
+          systemctl show footbreak-tick.service \
+            -p ActiveState -p SubState -p Result -p ExecMainStartTimestamp \
+            -p ExecMainExitTimestamp -p ExecMainStatus
+          echo "=== Footbreak tick journal since 16:50 HKT ==="
+          journalctl -u footbreak-tick.service \
+            --since "2026-08-09 16:50:00" --until "2026-08-09 17:05:00" \
+            --no-pager -o short-iso | tail -n 300
+          echo "=== Dashboard rows near 17:00 HKT ==="
+          /opt/footbreak/.venv/bin/python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          path = Path("/var/www/footbreak/data.json")
+          data = json.loads(path.read_text())
+          rows = data if isinstance(data, list) else (
+              data.get("matches") or data.get("predictions") or []
+          )
+          for row in rows:
+              kickoff = str(
+                  row.get("kickoff_hkt")
+                  or row.get("kickoff")
+                  or row.get("start_time")
+                  or ""
+              )
+              if "2026-08-09 17:00" not in kickoff:
+                  continue
+              print({
+                  "match_id": row.get("match_id") or row.get("id"),
+                  "home": row.get("home"),
+                  "away": row.get("away"),
+                  "kickoff": kickoff,
+                  "stage": row.get("stage"),
+                  "stages": [
+                      {
+                          "stage": item.get("stage"),
+                          "can_bet": item.get("can_bet"),
+                          "pick": (item.get("pick") or {}).get("label")
+                              if isinstance(item.get("pick"), dict)
+                              else item.get("pick"),
+                          "no_bet_reason": item.get("no_bet_reason"),
+                      }
+                      for item in (row.get("stages") or [])
+                  ],
+              })
+          PY
+          REMOTE
