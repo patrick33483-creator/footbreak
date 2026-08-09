@@ -33,6 +33,11 @@ cd "$APP_DIR/system"
 exec 9>"$LOCK_FILE"
 if ! flock -n 9; then
   echo "$(date '+%F %T') 上一次仲跑緊,今次跳過"
+  # Regular timer ticks may safely skip when another pass owns the ledger.
+  # A requested settlement must never report success unless it actually ran.
+  if [ "$MODE" = "settle" ]; then
+    exit 75
+  fi
   exit 0
 fi
 

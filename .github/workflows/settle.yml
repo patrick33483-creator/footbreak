@@ -29,15 +29,18 @@ jobs:
         run: |
           ssh "$DEPLOY_USER@$DEPLOY_HOST" '
             set -e
-            restart_tick() { sudo systemctl start footbreak-tick.timer; }
-            trap restart_tick EXIT
-            sudo systemctl stop footbreak-tick.timer
+            restart_timers() {
+              sudo systemctl start footbreak-tick.timer
+              sudo systemctl start footbreak-sweep.timer
+            }
+            trap restart_timers EXIT
+            sudo systemctl stop footbreak-tick.timer footbreak-sweep.timer
             for i in $(seq 1 120); do
-              systemctl is-active --quiet footbreak-tick.service || break
+              sudo flock -n /var/lock/footbreak.lock true && break
               sleep 5
             done
-            if systemctl is-active --quiet footbreak-tick.service; then
-              echo "足破目前執行超過 10 分鐘，拒絕假裝結算成功" >&2
+            if ! sudo flock -n /var/lock/footbreak.lock true; then
+              echo "足破資料鎖超過 10 分鐘仍未釋放，拒絕假裝結算成功" >&2
               exit 1
             fi
             echo "=== Footbreak settlement ==="
