@@ -30,7 +30,7 @@ if systemctl is-active --quiet footbreak-t30.timer ||
 fi
 echo "OK retired timer footbreak-t30.timer is inactive and disabled"
 
-for service in footbreak-tick.service crown-tick.service crown-sweep.service crown-settle.service; do
+for service in footbreak-tick.service footbreak-settle.service crown-tick.service crown-sweep.service crown-settle.service; do
   result="$(systemctl show "$service" -p Result --value)"
   status="$(systemctl show "$service" -p ExecMainStatus --value)"
   # Footbreak timed jobs deliberately return EX_TEMPFAIL (75) when a

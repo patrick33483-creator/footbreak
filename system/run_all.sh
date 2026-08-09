@@ -37,7 +37,7 @@ if [ "$MODE" != "tick" ] && [ "$MODE" != "t30" ]; then
   python3 settle.py
 
   echo "--- 準繩度記分板 ---"
-  python3 accuracy.py || echo "!! 準繩度計算失敗(唔影響其他)"
+  python3 accuracy.py
 fi
 
 echo "--- 產生前端資料 ---"
