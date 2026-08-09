@@ -174,16 +174,32 @@ class TitanClient:
         return list({row["id"]: row for row in output}.values())
 
     def crown_prices(self, titan_id: str) -> list[dict[str, Any]]:
+        return self.crown_price_snapshot(titan_id)["prices"]
+
+    def crown_price_snapshot(self, titan_id: str) -> dict[str, Any]:
+        """Return prices plus per-market fetch status.
+
+        An empty successful page means Crown no longer has that market.  A
+        network failure is different: callers must keep the last known market
+        rather than making the whole fixture disappear from the dashboard.
+        """
         asian = total = None
+        asian_ok = total_ok = False
         try:
             asian = self._read(f"{self.config.titan_vip_base}/AsianOdds_n.aspx?id={titan_id}")
+            asian_ok = True
         except OSError:
             pass
         try:
             total = self._read(f"{self.config.titan_vip_base}/OverDown_n.aspx?id={titan_id}")
+            total_ok = True
         except OSError:
             pass
-        return crown_prices_from_pages(asian, total, self.config.titan_company_id)
+        return {
+            "prices": crown_prices_from_pages(asian, total, self.config.titan_company_id),
+            "asian_ok": asian_ok,
+            "total_ok": total_ok,
+        }
 
     def results(self) -> list[dict[str, Any]]:
         output: list[dict[str, Any]] = []

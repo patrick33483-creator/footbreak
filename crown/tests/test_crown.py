@@ -342,13 +342,42 @@ class CrownSafetyTests(unittest.TestCase):
             "kickoff": self.now + timedelta(hours=2),
         }
         client = __import__("unittest.mock", fromlist=["Mock"]).Mock()
-        client.crown_prices.return_value = [{"market": "HDC", "odds": 2.01}]
+        client.crown_price_snapshot.return_value = {
+            "prices": [{"market": "HDC", "odds": 2.01}],
+            "asian_ok": True,
+            "total_ok": True,
+        }
         with patch("crown.engine.datetime") as mocked_datetime:
             mocked_datetime.now.return_value = self.now
             refreshed = _refresh_crown_quote(previous, titan, client)
         self.assertEqual(refreshed["stage"], "T-30")
         self.assertEqual(refreshed["book_odds"]["crown"][0]["odds"], 2.01)
         self.assertEqual(refreshed["book_odds"]["hkjc_chl"][0]["odds"], 1.90)
+
+    def test_quote_refresh_retains_only_market_whose_fetch_failed(self) -> None:
+        previous = {
+            "match_id": "x", "stage": "首預",
+            "book_odds": {"crown": [
+                {"market": "HDC", "odds": 1.80},
+                {"market": "HIL", "odds": 1.91},
+            ]},
+        }
+        titan = {
+            "id": "x", "league": "L", "home": "A", "away": "B",
+            "kickoff": self.now + timedelta(hours=2),
+        }
+        client = __import__("unittest.mock", fromlist=["Mock"]).Mock()
+        snapshot = {
+            "prices": [{"market": "HIL", "odds": 2.02}],
+            "asian_ok": False,
+            "total_ok": True,
+        }
+        with patch("crown.engine.datetime") as mocked_datetime:
+            mocked_datetime.now.return_value = self.now
+            refreshed = _refresh_crown_quote(previous, titan, client, snapshot)
+        prices = {row["market"]: row["odds"] for row in refreshed["book_odds"]["crown"]}
+        self.assertEqual(prices, {"HDC": 1.80, "HIL": 2.02})
+        self.assertEqual(refreshed["crown_quote_stale_markets"], ["HDC"])
 
     def test_matching_version_refreshes_only_stale_first_look(self) -> None:
         old_first = {

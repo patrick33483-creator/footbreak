@@ -203,14 +203,16 @@ def _refresh_crown_quote(
     previous: dict[str, Any],
     titan: dict[str, Any],
     titan_client: TitanClient,
-    crown_prices: list[dict[str, Any]] | None = None,
+    crown_snapshot: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Refresh board identity and Crown prices without replaying a prediction stage.
 
     The 30-minute board pass is intentionally separate from 首預/T-30/T-5.
     Existing stage decisions, candidates and simulated picks remain historical
-    snapshots; the current Crown quote is replaced even when the provider now
-    returns no quote, so a stale price can never remain visible as current.
+    snapshots.  A successfully fetched market replaces its old quote, including
+    a confirmed empty market.  A failed market fetch retains its prior quote and
+    is explicitly marked stale, preventing transient source failures from
+    deleting otherwise valid Crown fixtures from the board.
     """
     event = _event_from_titan(titan)
     refreshed = dict(previous)
@@ -222,15 +224,25 @@ def _refresh_crown_quote(
         "mins_to_ko": round((event.kickoff - datetime.now(HKT)).total_seconds() / 60, 1),
         "generated_at": iso_hkt(),
         "source_snapshot_at": iso_hkt(),
-        "crown_quote_refreshed_at": iso_hkt(),
+        "crown_quote_attempted_at": iso_hkt(),
     })
     book_odds = dict(refreshed.get("book_odds") or {})
-    book_odds["crown"] = (
-        titan_client.crown_prices(event.id)
-        if crown_prices is None
-        else crown_prices
-    )
+    snapshot = crown_snapshot or titan_client.crown_price_snapshot(event.id)
+    incoming = list(snapshot.get("prices") or [])
+    prior = list(book_odds.get("crown") or [])
+    merged_prices: list[dict[str, Any]] = []
+    stale_markets: list[str] = []
+    for market, status_key in (("HDC", "asian_ok"), ("HIL", "total_ok")):
+        if snapshot.get(status_key):
+            merged_prices.extend(row for row in incoming if row.get("market") == market)
+        else:
+            merged_prices.extend(row for row in prior if row.get("market") == market)
+            stale_markets.append(market)
+    book_odds["crown"] = merged_prices
     refreshed["book_odds"] = book_odds
+    refreshed["crown_quote_stale_markets"] = stale_markets
+    if not stale_markets:
+        refreshed["crown_quote_refreshed_at"] = iso_hkt()
     if not book_odds["crown"]:
         refreshed["no_bet_reason"] = "皇冠公司盤口目前不可用；不顯示為皇冠有效賽事。"
     return refreshed
@@ -258,7 +270,7 @@ def run(mode: str, config: Settings) -> dict[str, Any]:
         for row in load_predictions(config)
         if row.get("match_id")
     }
-    refresh_quotes: dict[str, list[dict[str, Any]]] = {}
+    refresh_quotes: dict[str, dict[str, Any]] = {}
     if mode == "sweep":
         refresh_rows = []
         now = datetime.now(HKT)
@@ -276,7 +288,7 @@ def run(mode: str, config: Settings) -> dict[str, Any]:
             # blocking the two-minute T-30/T-5 worker for most of the window.
             with ThreadPoolExecutor(max_workers=min(6, len(refresh_rows))) as pool:
                 futures = {
-                    pool.submit(titan_client.crown_prices, str(row["id"])): str(row["id"])
+                    pool.submit(titan_client.crown_price_snapshot, str(row["id"])): str(row["id"])
                     for row in refresh_rows
                 }
                 for future in as_completed(futures):
@@ -284,7 +296,9 @@ def run(mode: str, config: Settings) -> dict[str, Any]:
                     try:
                         refresh_quotes[match_id] = future.result()
                     except Exception:
-                        refresh_quotes[match_id] = []
+                        refresh_quotes[match_id] = {
+                            "prices": [], "asian_ok": False, "total_ok": False,
+                        }
     mapping = {
         "titan_due": 0, "titan_to_hkjc_mapped": 0, "hkjc_to_pinnapi_mapped": 0,
         "direct_same_script_mapped": 0, "unmapped_titan_to_hkjc": 0, "unmapped_hkjc_to_pinnapi": 0,
@@ -309,7 +323,7 @@ def run(mode: str, config: Settings) -> dict[str, Any]:
                     previous,
                     titan,
                     titan_client,
-                    refresh_quotes.get(event.id, []),
+                    refresh_quotes.get(event.id),
                 )
             )
             continue
