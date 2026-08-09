@@ -43,8 +43,21 @@ jobs:
           echo "=== Crown service state before check ==="
           systemctl show crown-tick.service \
             -p ActiveState -p SubState -p ExecMainStartTimestamp -p ExecMainPID
+          if [ "$CROWN_MODE" = "sweep" ]; then
+            echo "=== Crown maintenance sweep: pause tick timer ==="
+            systemctl stop crown-tick.timer
+            trap 'systemctl start crown-tick.timer' EXIT
+            while systemctl is-active --quiet crown-tick.service; do
+              echo "$(date '+%F %T') waiting for current Crown tick to finish"
+              sleep 15
+            done
+          fi
           echo "=== Crown production ${CROWN_MODE} ==="
           /opt/footbreak/deploy/crown-run.sh "$CROWN_MODE"
+          if [ "$CROWN_MODE" = "sweep" ]; then
+            systemctl start crown-tick.timer
+            trap - EXIT
+          fi
           echo "=== Crown live HKJC mapping diagnostic ==="
           /opt/footbreak/.venv/bin/python3 - <<'PY'
           from collections import Counter
