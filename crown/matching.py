@@ -14,12 +14,22 @@ from typing import Callable, Iterable
 from .team_aliases import LEAGUE_ALIAS_SEEDS, TEAM_ALIAS_SEEDS
 
 KICKOFF_TOLERANCE_SECONDS = 10 * 60
+STRONG_NAME_KICKOFF_TOLERANCE_SECONDS = 90 * 60
 NAME_FLOOR = 0.72
+STRONG_NAME_FLOOR = 0.92
 ACCEPT_SCORE = 0.80
+STRONG_NAME_ACCEPT_SCORE = 0.78
+STRONG_NAME_LEAGUE_FLOOR = 0.35
 AMBIGUITY_GAP = 0.05
 _NOISE = re.compile(r"[\s\u3000·・.,'’`\"()（）\[\]【】\-–—_/\\|]+")
-_DROP = {"fc", "sc", "cf", "afc", "ac", "club", "足球", "足球會", "足球会", "俱樂部", "俱乐部",
-         "隊", "队"}
+_LATIN_DROP = {"fc", "sc", "cf", "afc", "ac", "club"}
+_CJK_DROP = {"足球", "足球會", "足球会", "俱樂部", "俱乐部", "隊", "队"}
+_NEUTRAL_MARKER = re.compile(r"[\(\[（【]\s*(?:中|neutral|n)\s*[\)\]）】]", re.I)
+_MIXED_SCRIPT_CLUB_AFFIX = re.compile(
+    r"(?<![a-z0-9])(?:afc|fc|sc|cf|ac)(?=$|[^a-z0-9])|"
+    r"(?<=[^a-z0-9])(?:afc|fc|sc|cf|ac)(?![a-z0-9])",
+    re.I,
+)
 _UCONV = shutil.which("uconv")
 
 
@@ -46,8 +56,14 @@ def _traditional_to_simplified(value: str) -> str:
 def normalize_name(value: str | None) -> str:
     raw = _traditional_to_simplified(unicodedata.normalize("NFKD", str(value or ""))).lower()
     raw = "".join(ch for ch in raw if not unicodedata.combining(ch))
-    compact = _NOISE.sub("", raw)
-    for token in _DROP:
+    raw = _NEUTRAL_MARKER.sub(" ", raw)
+    raw = _MIXED_SCRIPT_CLUB_AFFIX.sub(" ", raw)
+    # Latin club suffixes are removed only as standalone tokens.  The old
+    # substring replacement corrupted legitimate names such as Manchester,
+    # Racing and Vasco whenever they happened to contain "ac", "fc" or "sc".
+    parts = [part for part in _NOISE.sub(" ", raw).split() if part not in _LATIN_DROP]
+    compact = "".join(parts)
+    for token in _CJK_DROP:
         compact = compact.replace(token, "")
     return compact
 
@@ -87,7 +103,13 @@ def qualifiers(event: "Event") -> frozenset[str]:
     age = re.search(r"u(?:17|19|20|21|23)", normal)
     if age:
         flags.add(age.group(0))
-    if any(token in source for token in ("青年", "預備", "后备", "後備", "reserves", "reserve", "jong")):
+    # Do not treat every occurrence of 青年 as a reserve marker: 青年人 is
+    # the established HKJC name for Juventude, while 阿根廷青年人 is the
+    # mainland name for Argentinos Juniors.  Require an explicit team marker.
+    if (
+        re.search(r"青年(?:隊|队|軍|军)", source)
+        or any(token in source for token in ("預備", "预备", "后备", "後備", "reserves", "reserve", "jong", " youth"))
+    ):
         flags.add("reserve")
     if re.search(r"b(?:隊|队|team)", source, re.I):
         flags.add("reserve")
@@ -100,6 +122,11 @@ def similarity(left: str | None, right: str | None) -> float:
         return 0.0
     if a == b:
         return 1.0
+    # Reviewed alias IDs are categorical identities, not natural-language
+    # strings.  Different seed numbers must never become fuzzy matches merely
+    # because their textual prefixes and digits look alike.
+    if a.startswith("seed:") or b.startswith("seed:"):
+        return 0.0
     if a in b or b in a:
         return max(0.85, min(len(a), len(b)) / max(len(a), len(b)))
     return difflib.SequenceMatcher(None, a, b).ratio()
@@ -130,16 +157,62 @@ def _score(
     team_key: Callable[[str | None], str],
     league_key: Callable[[str | None], str],
     require_qualifiers: bool,
+    kickoff_tolerance_seconds: int = KICKOFF_TOLERANCE_SECONDS,
 ) -> tuple[float, float, float]:
-    if abs((candidate.kickoff - target.kickoff).total_seconds()) > KICKOFF_TOLERANCE_SECONDS:
+    if abs((candidate.kickoff - target.kickoff).total_seconds()) > kickoff_tolerance_seconds:
         return 0.0, 0.0, 0.0
     if require_qualifiers and qualifiers(target) != qualifiers(candidate):
         return 0.0, 0.0, 0.0
     home = similarity(team_key(target.home), team_key(candidate.away if reversed_order else candidate.home))
     away = similarity(team_key(target.away), team_key(candidate.home if reversed_order else candidate.away))
     league = similarity(league_key(target.league), league_key(candidate.league))
-    time = max(0.0, 1 - abs((candidate.kickoff - target.kickoff).total_seconds()) / KICKOFF_TOLERANCE_SECONDS)
+    time = max(0.0, 1 - abs((candidate.kickoff - target.kickoff).total_seconds()) / kickoff_tolerance_seconds)
     return 0.65 * ((home + away) / 2) + 0.20 * time + 0.15 * league, min(home, away), league
+
+
+def _rank(
+    target: Event,
+    candidates: Iterable[Event],
+    *,
+    team_key: Callable[[str | None], str],
+    league_key: Callable[[str | None], str],
+    allow_reversed: bool,
+    require_qualifiers: bool,
+    kickoff_tolerance_seconds: int,
+    strong_names_only: bool = False,
+) -> list[tuple[float, float, float, bool, Event]]:
+    scored: list[tuple[float, float, float, bool, Event]] = []
+    for candidate in candidates:
+        for reverse in ((False, True) if allow_reversed else (False,)):
+            score, names, league = _score(
+                target, candidate, reverse, team_key, league_key, require_qualifiers,
+                kickoff_tolerance_seconds,
+            )
+            if not score:
+                continue
+            if strong_names_only and (names < STRONG_NAME_FLOOR or league < STRONG_NAME_LEAGUE_FLOOR):
+                continue
+            scored.append((score, names, league, reverse, candidate))
+    scored.sort(key=lambda item: item[0], reverse=True)
+    return scored
+
+
+def _decision(
+    scored: list[tuple[float, float, float, bool, Event]],
+    *,
+    accept_score: float,
+) -> Match:
+    if not scored:
+        return Match(None, False, 0.0, "no_candidate_in_kickoff_window")
+    score, names, _league, reverse, candidate = scored[0]
+    runner = next((item for item in scored[1:] if item[4].id != candidate.id), None)
+    if names < NAME_FLOOR:
+        return Match(None, False, score, "team_name_similarity_below_floor")
+    if score < accept_score:
+        return Match(None, False, score, "combined_confidence_below_threshold")
+    if runner and score - runner[0] < AMBIGUITY_GAP:
+        return Match(None, False, score, "ambiguous_candidate")
+    return Match(candidate, reverse, score, None)
 
 
 def match_event(
@@ -151,24 +224,28 @@ def match_event(
     allow_reversed: bool = True,
     require_qualifiers: bool = False,
 ) -> Match:
-    scored: list[tuple[float, float, bool, Event]] = []
-    for candidate in candidates:
-        for reverse in ((False, True) if allow_reversed else (False,)):
-            score, names, _league = _score(target, candidate, reverse, team_key, league_key, require_qualifiers)
-            if score:
-                scored.append((score, names, reverse, candidate))
-    if not scored:
-        return Match(None, False, 0.0, "no_candidate_in_kickoff_window")
-    scored.sort(key=lambda item: item[0], reverse=True)
-    score, names, reverse, candidate = scored[0]
-    runner = next((item for item in scored[1:] if item[3].id != candidate.id), None)
-    if names < NAME_FLOOR:
-        return Match(None, False, score, "team_name_similarity_below_floor")
-    if score < ACCEPT_SCORE:
-        return Match(None, False, score, "combined_confidence_below_threshold")
-    if runner and score - runner[0] < AMBIGUITY_GAP:
-        return Match(None, False, score, "ambiguous_candidate")
-    return Match(candidate, reverse, score, None)
+    rows = list(candidates)
+    normal = _rank(
+        target, rows, team_key=team_key, league_key=league_key,
+        allow_reversed=allow_reversed, require_qualifiers=require_qualifiers,
+        kickoff_tolerance_seconds=KICKOFF_TOLERANCE_SECONDS,
+    )
+    decision = _decision(normal, accept_score=ACCEPT_SCORE)
+    if decision.event:
+        return decision
+
+    # A separately gated fallback handles genuine provider reschedules.  It
+    # never widens fuzzy matching: both teams must be near-exact, the league
+    # must remain compatible, qualifiers/orientation still apply, and the
+    # candidate must remain unique.
+    strong = _rank(
+        target, rows, team_key=team_key, league_key=league_key,
+        allow_reversed=allow_reversed, require_qualifiers=require_qualifiers,
+        kickoff_tolerance_seconds=STRONG_NAME_KICKOFF_TOLERANCE_SECONDS,
+        strong_names_only=True,
+    )
+    fallback = _decision(strong, accept_score=STRONG_NAME_ACCEPT_SCORE)
+    return fallback if fallback.event or strong else decision
 
 
 def same_event_for_hkjc(target: Event, candidates: Iterable[Event]) -> Match:

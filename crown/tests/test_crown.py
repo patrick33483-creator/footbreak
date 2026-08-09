@@ -16,7 +16,10 @@ from crown.engine import _fresh, _wdl_prediction
 from crown.hkjc import fetch_official_results
 from crown.ledger import recompute_stats, stage_for, sync_prediction
 from crown.lines import parse_hkjc_handicap, parse_hkjc_total, settle_handicap, settle_total
-from crown.matching import Event, bridge_titan_to_pinnapi, match_event, same_event_for_hkjc
+from crown.matching import (
+    Event, bridge_titan_to_pinnapi, canonical_team_key, match_event,
+    normalize_name, qualifiers, same_event_for_hkjc,
+)
 from crown.notify import _bet_label, notify_new
 from crown.pinnapi import parse_fixtures, parse_lines
 from crown.period import in_current_period, period_bounds
@@ -47,6 +50,50 @@ class CrownSafetyTests(unittest.TestCase):
         self.assertIsNone(same_event_for_hkjc(self.target, [no_ids]).event)
         ids = Event("h2", "League", "Alpha", "Beta", self.now, {"home_team_id": "1", "away_team_id": "2"})
         self.assertEqual(same_event_for_hkjc(self.target, [ids]).event.id, "h2")
+
+    def test_name_normalization_does_not_corrupt_embedded_club_tokens(self) -> None:
+        self.assertEqual(normalize_name("Manchester City FC"), "manchestercity")
+        self.assertEqual(normalize_name("Racing Club"), "racing")
+        self.assertEqual(normalize_name("Vasco SC"), "vasco")
+        self.assertEqual(normalize_name("曼彻斯特城(中)"), "曼彻斯特城")
+        self.assertEqual(normalize_name("FC悉尼"), "悉尼")
+        self.assertEqual(normalize_name("枥木市FC"), "枥木市")
+
+    def test_reviewed_hong_kong_team_aliases_canonicalize(self) -> None:
+        self.assertEqual(canonical_team_key("曼城"), canonical_team_key("曼彻斯特城"))
+        self.assertEqual(canonical_team_key("飛燕諾"), canonical_team_key("费耶诺德"))
+        self.assertEqual(canonical_team_key("阿仙奴"), canonical_team_key("阿森纳"))
+        self.assertEqual(canonical_team_key("加爾斯"), canonical_team_key("哥德堡盖斯"))
+        self.assertEqual(
+            __import__("crown.matching", fromlist=["similarity"]).similarity(
+                canonical_team_key("阿仙奴"), canonical_team_key("車路士")
+            ),
+            0.0,
+        )
+
+    def test_near_exact_names_allow_unique_reschedule_but_not_fuzzy_match(self) -> None:
+        shifted = Event("shifted", "League", "Alpha FC", "Beta FC", self.now + timedelta(minutes=60))
+        self.assertEqual(match_event(self.target, [shifted]).event.id, "shifted")
+        fuzzy = Event("fuzzy", "League", "Alfa", "Beto", self.now + timedelta(minutes=60))
+        self.assertIsNone(match_event(self.target, [fuzzy]).event)
+
+    def test_reschedule_fallback_rejects_ambiguous_and_reversed_hkjc_candidates(self) -> None:
+        first = Event("one", "League", "Alpha", "Beta", self.now + timedelta(minutes=60),
+                      {"home_team_id": "1", "away_team_id": "2"})
+        second = Event("two", "League", "Alpha", "Beta", self.now + timedelta(minutes=61),
+                       {"home_team_id": "1", "away_team_id": "2"})
+        self.assertEqual(same_event_for_hkjc(self.target, [first, second]).reason, "ambiguous_candidate")
+        reversed_row = Event("reverse", "League", "Beta", "Alpha", self.now,
+                             {"home_team_id": "2", "away_team_id": "1"})
+        self.assertIsNone(same_event_for_hkjc(self.target, [reversed_row]).event)
+
+    def test_club_names_containing_youth_word_are_not_misclassified_as_reserves(self) -> None:
+        juventude = Event("j", "巴西乙", "路禾利桑天奴", "青年人", self.now)
+        argentinos = Event("a", "阿甲", "阿根廷青年人", "竞技俱乐部", self.now)
+        youth_team = Event("y", "荷乙", "燕豪芬青年隊", "禾寧丹", self.now)
+        self.assertNotIn("reserve", qualifiers(juventude))
+        self.assertNotIn("reserve", qualifiers(argentinos))
+        self.assertIn("reserve", qualifiers(youth_team))
 
     def test_bilingual_titan_hkjc_pinnapi_bridge_preserves_orientation(self) -> None:
         titan = Event("titan", "澳昆超", "昆士兰狮队", "布里斯班狮吼青年队", self.now)
