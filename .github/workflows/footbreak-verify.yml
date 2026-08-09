@@ -75,4 +75,43 @@ jobs:
                   ],
               })
           PY
+          echo "=== Ledger and current HKJC rows for target matches ==="
+          cd /opt/footbreak/system
+          /opt/footbreak/.venv/bin/python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          import hkjc_feed as H
+
+          target = {"50072292", "50072299"}
+          ledger = json.loads(Path("sim_ledger.json").read_text())
+          for match_id in sorted(target):
+              watch = (ledger.get("watch") or {}).get(match_id) or {}
+              print({
+                  "match_id": match_id,
+                  "ledger_stages": [
+                      {
+                          "stage": item.get("stage"),
+                          "ts": item.get("ts"),
+                          "can_bet": item.get("can_bet"),
+                          "no_bet_reason": item.get("no_bet_reason"),
+                      }
+                      for item in (watch.get("stages") or [])
+                  ],
+              })
+          rows = H.fetch_matches(match_ids=sorted(target))
+          for row in rows:
+              match_id = str(row.get("id"))
+              if match_id not in target:
+                  continue
+              print({
+                  "match_id": match_id,
+                  "status": row.get("status"),
+                  "kickoff": H.parse_kickoff(row).isoformat(),
+                  "pool_statuses": [
+                      (pool.get("oddsType"), pool.get("status"))
+                      for pool in (row.get("foPools") or [])
+                  ],
+              })
+          PY
           REMOTE
