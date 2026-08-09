@@ -75,7 +75,7 @@ jobs:
           from crown.config import settings
           from crown.engine import _event_from_titan
           from crown.hkjc import event_from_match, fetch_matches
-          from crown.matching import same_event_for_hkjc
+          from crown.matching import same_event_for_hkjc, same_identity_for_hkjc
           from crown.titan import TitanClient
 
           config = settings()
@@ -90,13 +90,21 @@ jobs:
               if (event := event_from_match(row)) and event.kickoff > now
           ]
           linked = set()
+          direct_linked = set()
+          reversed_linked = set()
           reasons = Counter()
           for titan in titan_events:
               match = same_event_for_hkjc(titan, hkjc_events)
               if match.event:
                   linked.add(str(match.event.id))
+                  direct_linked.add(str(match.event.id))
               else:
-                  reasons[match.reason or "unknown"] += 1
+                  identity = same_identity_for_hkjc(titan, hkjc_events)
+                  if identity.event:
+                      linked.add(str(identity.event.id))
+                      reversed_linked.add(str(identity.event.id))
+                  else:
+                      reasons[match.reason or "unknown"] += 1
           unmatched = [
               {
                   "id": event.id,
@@ -111,7 +119,9 @@ jobs:
               "titan": len(titan_rows),
               "titan_upcoming": len(titan_events),
               "hkjc_upcoming": len(hkjc_events),
-              "unique_hkjc_linked_to_titan": len(linked),
+              "direct_price_safe_hkjc_linked": len(direct_linked),
+              "reversed_identity_only_hkjc_linked": len(reversed_linked),
+              "total_identity_hkjc_linked": len(linked),
               "unmatched_hkjc_count": len(unmatched),
               "top_reasons": reasons.most_common(8),
               "unmatched_hkjc": unmatched,

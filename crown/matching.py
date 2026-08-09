@@ -262,15 +262,29 @@ def same_event_for_hkjc(target: Event, candidates: Iterable[Event]) -> Match:
 
 
 def same_identity_for_hkjc(target: Event, candidates: Iterable[Event]) -> Match:
-    """Recognize a unique reversed identity without making its prices usable."""
-    verified = [
-        candidate for candidate in candidates
-        if isinstance(candidate.extra, dict)
-        and candidate.extra.get("home_team_id")
-        and candidate.extra.get("away_team_id")
-    ]
-    return match_event(target, verified, team_key=canonical_team_key, league_key=canonical_league_key,
-                       allow_reversed=True, require_qualifiers=True)
+    """Recognize one exact reversed identity without making its prices usable."""
+    reversed_rows = []
+    for candidate in candidates:
+        extra = candidate.extra if isinstance(candidate.extra, dict) else {}
+        if not extra.get("home_team_id") or not extra.get("away_team_id"):
+            continue
+        if abs((candidate.kickoff - target.kickoff).total_seconds()) > KICKOFF_TOLERANCE_SECONDS:
+            continue
+        if qualifiers(target) != qualifiers(candidate):
+            continue
+        if canonical_league_key(target.league) != canonical_league_key(candidate.league):
+            continue
+        if canonical_team_key(target.home) != canonical_team_key(candidate.away):
+            continue
+        if canonical_team_key(target.away) != canonical_team_key(candidate.home):
+            continue
+        reversed_rows.append(candidate)
+    if not reversed_rows:
+        return Match(None, False, 0.0, "no_exact_reversed_identity")
+    unique = {candidate.id: candidate for candidate in reversed_rows}
+    if len(unique) != 1:
+        return Match(None, False, 1.0, "ambiguous_reversed_identity")
+    return Match(next(iter(unique.values())), True, 1.0, None)
 
 
 @dataclass(frozen=True)

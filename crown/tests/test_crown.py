@@ -99,6 +99,16 @@ class CrownSafetyTests(unittest.TestCase):
         identity = same_identity_for_hkjc(self.target, [reversed_row])
         self.assertEqual(identity.event.id, "reverse")
         self.assertTrue(identity.reversed)
+        shifted = replace(reversed_row, id="shifted-reverse", kickoff=self.now + timedelta(minutes=11))
+        self.assertEqual(
+            same_identity_for_hkjc(self.target, [shifted]).reason,
+            "no_exact_reversed_identity",
+        )
+        second_reverse = replace(reversed_row, id="second-reverse")
+        self.assertEqual(
+            same_identity_for_hkjc(self.target, [reversed_row, second_reverse]).reason,
+            "ambiguous_reversed_identity",
+        )
 
     def test_reversed_hkjc_identity_never_unlocks_pinnapi_pricing(self) -> None:
         titan = Event("titan", "美青杯", "美国U20", "墨西哥U20", self.now)
