@@ -27,6 +27,40 @@ jobs:
           set -euo pipefail
           echo "=== Crown production tick ==="
           /opt/footbreak/deploy/crown-run.sh tick
+          echo "=== Crown live mapping diagnostic ==="
+          /opt/footbreak/.venv/bin/python3 -m crown.diagnose_matching --limit 2000 > /tmp/crown-mapping.json
+          /opt/footbreak/.venv/bin/python3 - <<'PY'
+          import json
+          from collections import Counter
+          from pathlib import Path
+
+          data = json.loads(Path("/tmp/crown-mapping.json").read_text())
+          fixtures = data.get("fixtures") or []
+          coverage = data.get("hkjc_coverage") or []
+          hkjc_ids = {
+              str(row.get("bridge", {}).get("hkjc_id"))
+              for row in fixtures
+              if row.get("bridge", {}).get("hkjc_id")
+          }
+          full_ids = {
+              str(row.get("bridge", {}).get("hkjc_id"))
+              for row in fixtures
+              if row.get("bridge", {}).get("hkjc_id")
+              and row.get("bridge", {}).get("pinnapi_id")
+          }
+          reasons = Counter(
+              str(row.get("bridge", {}).get("reason") or "matched")
+              for row in fixtures
+          )
+          print({
+              "titan": data.get("counts", {}).get("titan"),
+              "hkjc_upcoming": len(coverage),
+              "pinnapi": data.get("counts", {}).get("pinnapi"),
+              "unique_hkjc_linked_to_titan": len(hkjc_ids),
+              "unique_hkjc_full_bridge": len(full_ids),
+              "top_reasons": reasons.most_common(8),
+          })
+          PY
           echo "=== Crown dashboard summary ==="
           /opt/footbreak/.venv/bin/python3 - <<'PY'
           import json
