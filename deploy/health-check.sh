@@ -38,7 +38,7 @@ for service in footbreak-tick.service footbreak-settle.service crown-tick.servic
   # scheduler pre-emption, not a provider or prediction failure.
   expected_preemption=false
   case "$service:$status" in
-    footbreak-tick.service:75)
+    footbreak-tick.service:75|footbreak-settle.service:75)
       expected_preemption=true
       ;;
   esac
