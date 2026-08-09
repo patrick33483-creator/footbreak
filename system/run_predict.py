@@ -8,6 +8,7 @@ import json
 import math
 import os
 import sys
+import tempfile
 import datetime as dt
 from dataclasses import asdict
 
@@ -25,6 +26,22 @@ HKT = dt.timezone(dt.timedelta(hours=8))
 NEWS_FILE = os.path.join(HERE, "news_adj.json")
 
 
+def write_json_atomic(path: str, payload: object) -> None:
+    """Durably replace JSON so a killed tick cannot leave a partial file."""
+    directory = os.path.dirname(path) or "."
+    os.makedirs(directory, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix=".tmp-", dir=directory)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=1)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
 def load_news_adj() -> dict:
     if os.path.exists(NEWS_FILE):
         return json.load(open(NEWS_FILE, encoding="utf-8"))
@@ -37,7 +54,7 @@ def load_news_adj() -> dict:
 #   T-5   開賽前 5 分鐘 —— 唯一落注時點
 SWEEP = "首預"
 WIN_T30 = (20.0, 40.0)     # T-30 觸發窗(留返排程延遲餘裕)
-WIN_T5 = (1.0, 10.0)       # T-5 觸發窗
+WIN_T5 = (0.0, 10.0)       # T-5 觸發窗；開賽前最後一刻仍可跑
 
 
 def stage_of(mins: float, sweep: bool = False) -> str:
@@ -113,7 +130,7 @@ def pending_watch_match_ids(horizon_min: float = 90.0) -> list[str]:
         if kickoff.tzinfo is None:
             kickoff = kickoff.replace(tzinfo=HKT)
         mins = (kickoff.astimezone(dt.timezone.utc) - now).total_seconds() / 60
-        if WIN_T5[0] <= mins <= horizon_min:
+        if WIN_T5[0] < mins <= horizon_min:
             pending.append(str(mid))
     return pending
 
@@ -140,7 +157,7 @@ def fetch_matches_with_due_recovery(mode: str, horizon_min: float) -> list[dict]
 
 def due_now(mins: float, done: set) -> str | None:
     """依家應該幫呢場做邊個階段?已做過就回 None。"""
-    if WIN_T5[0] <= mins <= WIN_T5[1] and "T-5" not in done:
+    if WIN_T5[0] < mins <= WIN_T5[1] and "T-5" not in done:
         return "T-5"
     if WIN_T30[0] <= mins <= WIN_T30[1] and "T-30" not in done:
         return "T-30"
@@ -192,7 +209,8 @@ def hk_odds_fingerprint(m) -> dict:
 
 def load_hk_snaps() -> dict:
     if os.path.exists(HK_SNAP):
-        return json.load(open(HK_SNAP, encoding="utf-8"))
+        with open(HK_SNAP, encoding="utf-8") as handle:
+            return json.load(handle)
     return {}
 
 
@@ -353,7 +371,7 @@ def pick_one(res: dict, min_ev=0.015, conf_floor=P.CONF_FLOOR):
 
 
 def main(match_ids=None, horizon_min=700, out="predictions.json",
-         mode="due", force=False):
+         mode="due", force=False, stage_filter=None):
     """mode:
          sweep — 掃全板,每場做一次「首預」(已做過就跳過)
          due   — 只做啱啱踏入 T-30 / T-5 窗口而又未做過嘅場
@@ -363,13 +381,20 @@ def main(match_ids=None, horizon_min=700, out="predictions.json",
         m for m in fetch_matches_with_due_recovery(mode, horizon_min)
         if m.get("status") == "PREEVENT"
     ]
+    # Earliest kickoffs are safety-critical.  Always finish T-5 candidates
+    # before spending time on later T-30/first-look rows.
+    matches.sort(
+        key=lambda row: H.parse_kickoff(row)
+        or dt.datetime.max.replace(tzinfo=dt.timezone.utc)
+    )
     fixtures = S.list_fixtures()
     news_all = load_news_adj()
     snaps = load_hk_snaps()
     done = {} if force else done_stages()
     fixture_ids = {} if force else known_fixture_ids()
     fixtures_by_id = {str(fx.get("id")): fx for fx in fixtures if fx.get("id") is not None}
-    results, skipped = [], 0
+    results, skipped, failures = [], 0, 0
+    failure_messages: list[str] = []
     for m in matches:
         mid = str(m.get("id"))
         if match_ids and mid not in match_ids:
@@ -378,7 +403,7 @@ def main(match_ids=None, horizon_min=700, out="predictions.json",
         if not ko:
             continue
         mins = (ko - dt.datetime.now(dt.timezone.utc)).total_seconds() / 60
-        if mins < WIN_T5[0] or mins > horizon_min:
+        if mins <= WIN_T5[0] or mins > horizon_min:
             continue
 
         seen = done.get(mid, set())
@@ -394,6 +419,9 @@ def main(match_ids=None, horizon_min=700, out="predictions.json",
                 continue
         else:
             stage = stage_of(mins)
+        if stage_filter and stage != stage_filter:
+            skipped += 1
+            continue
 
         fx = fixtures_by_id.get(fixture_ids.get(mid))
         if fx:
@@ -401,6 +429,11 @@ def main(match_ids=None, horizon_min=700, out="predictions.json",
         else:
             fx, sc = S.match_fixture(m, fixtures, ko)
         if not fx:
+            failures += 1
+            failure_messages.append(
+                f"PinnAPI fixture matching failed for "
+                f"{m['homeTeam']['name_ch']} v {m['awayTeam']['name_ch']} ({mid})"
+            )
             print(
                 f"{mins:6.0f}m {stage:4s} 跳過 "
                 f"{m['homeTeam']['name_ch']} v {m['awayTeam']['name_ch']} "
@@ -411,17 +444,41 @@ def main(match_ids=None, horizon_min=700, out="predictions.json",
             r = analyse_match(m, fx, news=news_all.get(mid),
                               prev_snap=snaps.get(mid), stage_override=stage)
         except Exception as exc:
-            # Do not continue with a partial/stale prediction set.  The outer
-            # runner will exit nonzero and leave the last dashboard untouched.
-            raise RuntimeError(
+            failures += 1
+            failure_messages.append(
                 f"sharp/prediction failed for {m['homeTeam']['name_ch']} v "
                 f"{m['awayTeam']['name_ch']} ({mid})"
-            ) from exc
+            )
+            print(
+                f"{mins:6.0f}m {stage:4s} 跳過 "
+                f"{m['homeTeam']['name_ch']} v {m['awayTeam']['name_ch']} "
+                f"— 單場分析失敗({type(exc).__name__})"
+            )
+            continue
         if r.get("skip"):
-            raise RuntimeError(
+            failures += 1
+            failure_messages.append(
                 f"sharp/prediction produced no usable model for "
                 f"{m['homeTeam']['name_ch']} v {m['awayTeam']['name_ch']} ({mid}): {r['skip']}"
             )
+            print(
+                f"{mins:6.0f}m {stage:4s} 跳過 "
+                f"{m['homeTeam']['name_ch']} v {m['awayTeam']['name_ch']} "
+                f"— 無可用模型({r['skip']})"
+            )
+            continue
+        # Provider reads can consume the last pre-match seconds.  Never turn a
+        # result admitted before kickoff into a post-kickoff T-5 decision.
+        remaining = (ko - dt.datetime.now(dt.timezone.utc)).total_seconds() / 60
+        if remaining <= 0:
+            failures += 1
+            failure_messages.append(
+                f"prediction expired before commit for "
+                f"{m['homeTeam']['name_ch']} v {m['awayTeam']['name_ch']} ({mid})"
+            )
+            print(f"{stage:4s} 過期 {m['homeTeam']['name_ch']} v {m['awayTeam']['name_ch']} — 已開賽")
+            continue
+        r["mins_to_ko"] = remaining
         pick, reason = pick_one(r)
         # 只有 T-5 先真係落注。首預 / T-30 只作預測記錄。
         r["can_bet"] = (stage == "T-5")
@@ -438,6 +495,11 @@ def main(match_ids=None, horizon_min=700, out="predictions.json",
               f"{r['home'][:8]:9s}v {r['away'][:8]:9s} "
               f"信念{r['conviction']:4.1f}  {tag}")
 
+    # Preserve the last known-good output when every admitted fixture fails.
+    # If at least one succeeds, persist it and let unrelated failures retry.
+    if failures and not results:
+        raise RuntimeError(failure_messages[0])
+
     for r in results:
         snaps[str(r["match_id"])] = {
             "ts": dt.datetime.now(HKT).isoformat(timespec="seconds"),
@@ -445,12 +507,13 @@ def main(match_ids=None, horizon_min=700, out="predictions.json",
             "final": r["final"], "conviction": r["conviction"],
             "pick": (r["pick"] or r.get("lead_view") or {}).get("label"),
         }
-    json.dump(snaps, open(HK_SNAP, "w", encoding="utf-8"),
-              ensure_ascii=False, indent=1)
+    write_json_atomic(HK_SNAP, snaps)
     results.sort(key=lambda r: r["mins_to_ko"])
-    json.dump(results, open(os.path.join(HERE, out), "w", encoding="utf-8"),
-              ensure_ascii=False, indent=1)
-    print(f"\n{len(results)} 場已處理 · {skipped} 場跳過(未到時點或已做過) → {out}")
+    write_json_atomic(os.path.join(HERE, out), results)
+    print(
+        f"\n{len(results)} 場已處理 · {skipped} 場跳過(未到時點或已做過)"
+        f" · {failures} 場單獨失敗 → {out}"
+    )
     return results
 
 
@@ -463,4 +526,10 @@ if __name__ == "__main__":
         mode = "all"
     nums = [x for x in a if x.lstrip("-").isdigit()]
     hz = int(nums[0]) if nums else (2160 if mode == "sweep" else 60)
-    main(horizon_min=hz, mode=mode, force="--force" in a)
+    stage_filter = "T-5" if "--t5-only" in a else ("T-30" if "--t30-only" in a else None)
+    main(
+        horizon_min=hz,
+        mode=mode,
+        force="--force" in a,
+        stage_filter=stage_filter,
+    )

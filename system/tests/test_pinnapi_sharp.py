@@ -179,7 +179,10 @@ class FootbreakPinnapiSharpTests(unittest.TestCase):
             result = subprocess.run(["bash", "run_all.sh", "tick"], cwd=SYSTEM, env=env,
                                     text=True, capture_output=True)
             self.assertEqual(result.returncode, 17)
-            self.assertEqual(log.read_text(encoding="utf-8").splitlines(), ["run_predict.py 90"])
+            self.assertEqual(
+                log.read_text(encoding="utf-8").splitlines(),
+                ["run_predict.py --t5-only 90"],
+            )
 
 
 if __name__ == "__main__":

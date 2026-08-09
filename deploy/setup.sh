@@ -95,7 +95,7 @@ install -m 0644 "$APP_DIR"/deploy/systemd/*.service /etc/systemd/system/
 install -m 0644 "$APP_DIR"/deploy/systemd/*.timer   /etc/systemd/system/
 systemctl daemon-reload
 # 首次安裝只放好服務，憑證及手動驗證完成前絕不自動掃描。
-systemctl disable --now footbreak-tick.timer footbreak-sweep.timer 2>/dev/null || true
+systemctl disable --now footbreak-tick.timer footbreak-t30.timer footbreak-sweep.timer footbreak-settle.timer 2>/dev/null || true
 # Crown 更要預設停用；升版亦只會保留目前的 enable/disable 狀態。
 systemctl disable --now crown-tick.timer crown-sweep.timer 2>/dev/null || true
 # 回測預設停用，需先成功建立基線再啟用。
@@ -145,7 +145,7 @@ cat <<'EOF'
   1. nano /etc/footbreak-crown.env ← 填 PinnAPI Edge 設定（唔會顯示或複製）
   2. nano /etc/footbreak.env       ← 填 TELEGRAM_BOT_TOKEN、TELEGRAM_CHAT_ID
   3. 手動試一次:  /opt/footbreak/deploy/run.sh tick
-  4. 驗證成功後:  systemctl enable --now footbreak-tick.timer footbreak-sweep.timer
+  4. 驗證成功後:  systemctl enable --now footbreak-tick.timer footbreak-t30.timer footbreak-sweep.timer footbreak-settle.timer
   5. 睇 log:      journalctl -u footbreak-tick -f
 
 儀表板:  http://<你嘅-droplet-IP>:8081/

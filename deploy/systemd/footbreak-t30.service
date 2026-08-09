@@ -1,5 +1,5 @@
 [Unit]
-Description=足破 · 每晚全板首預
+Description=足破 · T-30 獨立資料點
 After=network-online.target
 Wants=network-online.target
 ConditionPathExists=!/run/footbreak-t5-priority
@@ -7,8 +7,9 @@ ConditionPathExists=!/run/footbreak-t5-priority
 [Service]
 Type=oneshot
 WorkingDirectory=/opt/footbreak/system
-ExecStart=/opt/footbreak/deploy/run.sh sweep
-TimeoutStartSec=3600
+ExecStart=/opt/footbreak/deploy/run.sh t30
+# T-30 只補資料，不准拖住臨場 T-5。T-5 啟動時亦會主動中止本服務。
+TimeoutStartSec=25
 TimeoutStopSec=3
 Nice=10
 

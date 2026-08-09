@@ -27,7 +27,7 @@ def completed_stages(watch: dict[str, Any], matching_version: str) -> set[str]:
 def stage_for(minutes_to_kickoff: float, sweep: bool, done: set[str]) -> str | None:
     if sweep:
         return "首預" if "首預" not in done else None
-    if 1 <= minutes_to_kickoff <= 10 and "T-5" not in done:
+    if 0 < minutes_to_kickoff <= 10 and "T-5" not in done:
         return "T-5"
     if 20 <= minutes_to_kickoff <= 40 and "T-30" not in done:
         return "T-30"
@@ -75,6 +75,11 @@ def sync_prediction(ledger: dict[str, Any], prediction: dict[str, Any], config: 
     else:
         existing.update(_snapshot(prediction, stage))
     if stage != "T-5" or not prediction.get("pick"):
+        return []
+    # One final simulation decision per Crown prediction fixture.  A retry or
+    # a concurrent recalculation may move market/line, but must not append a
+    # second T-5 bet for the same match.
+    if any(str(bet.get("match_id")) == match_id for bet in ledger["bets"]):
         return []
     bid = _bet_id(prediction)
     if any(str(bet.get("bet_id")) == bid for bet in ledger["bets"]):

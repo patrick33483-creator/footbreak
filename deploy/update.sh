@@ -52,7 +52,9 @@ systemctl daemon-reload
 # original T-30/T-5 windows and is the only path that can create a T-5 bet.
 systemctl enable --now crown-sweep.timer crown-tick.timer
 systemctl restart crown-sweep.timer crown-tick.timer
-for timer in footbreak-tick.timer footbreak-sweep.timer footbreak-backtest.timer; do
+# Settlement is deliberately separate from the latency-sensitive tick.
+systemctl enable --now footbreak-t30.timer footbreak-settle.timer
+for timer in footbreak-tick.timer footbreak-t30.timer footbreak-sweep.timer footbreak-settle.timer footbreak-backtest.timer; do
   if systemctl is-enabled --quiet "$timer"; then
     systemctl restart "$timer"
   fi

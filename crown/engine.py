@@ -15,7 +15,7 @@ from .lines import parse_hkjc_total
 from .matching import MATCHING_VERSION, Event, BridgeMatch, bridge_titan_to_pinnapi
 from .pinnapi import PinnapiClient
 from .period import in_current_period
-from .state import load_ledger, load_predictions, merge_predictions, save_ledger
+from .state import load_ledger, load_predictions, merge_predictions, save_ledger, state_lock
 from .titan import TitanClient
 
 
@@ -332,6 +332,10 @@ def _refresh_crown_quote(
     """
     event = _event_from_titan(titan)
     refreshed = dict(previous)
+    # Internal merge instruction: a concurrent sweep may finish after a newer
+    # T-30/T-5 tick.  It may refresh quote fields, never roll the card's stage
+    # or decision backwards.
+    refreshed["_quote_refresh_only"] = True
     refreshed.update({
         "league": event.league,
         "home": event.home,
@@ -374,13 +378,15 @@ def run(mode: str, config: Settings) -> dict[str, Any]:
         return {"ok": False, "reason": "PinnAPI credentials are not configured; no network call was made"}
     if mode == "settle":
         from .settle import settle_due
-        return settle_due(config)
+        with state_lock(config):
+            return settle_due(config)
     titan_client, pinnapi_client = TitanClient(config), PinnapiClient(config)
     titan_rows, pinnapi_rows, hkjc_rows = titan_client.fixtures(), pinnapi_client.fixtures(), fetch_matches()
     h_events = [(event_from_match(row), row) for row in hkjc_rows]
     h_events = [(event, row) for event, row in h_events if event]
     p_events = [_event_from_pinnapi(row) for row in pinnapi_rows]
-    ledger, predictions, emitted = load_ledger(config), [], []
+    ledger, predictions = load_ledger(config), []
+    stage_predictions: list[dict[str, Any]] = []
     current_predictions = {
         str(row.get("match_id")): row
         for row in load_predictions(config)
@@ -418,6 +424,9 @@ def run(mode: str, config: Settings) -> dict[str, Any]:
         "reversed_identity_mapped": 0,
         "reasons": {},
     }
+    # Provider order is not a scheduling guarantee.  Nearest kickoff first
+    # prevents a large T-30 batch from starving T-5.
+    titan_rows.sort(key=lambda row: row["kickoff"])
     for titan in titan_rows:
         event = _event_from_titan(titan)
         if not in_current_period(event.kickoff):
@@ -485,18 +494,37 @@ def run(mode: str, config: Settings) -> dict[str, Any]:
             pinnapi_client,
             crown_snapshot=crown_snapshot,
         )
-        emitted += sync_prediction(ledger, prediction, config)
+        # Persist later in a short transaction.  Sweep and tick may spend time
+        # on provider reads concurrently without clobbering Crown state.
+        stage_predictions.append(prediction)
         # The dashboard card keeps all completed stages while the top-level
         # fields remain the latest stage snapshot.  This also survives a later
         # empty tick through merge_predictions().
         prediction["stages"] = list(ledger["watch"].get(event.id, {}).get("stages") or [])
         predictions.append(prediction)
-    recompute_stats(ledger, config)
-    ledger["log"].append({"ts": iso_hkt(), "kind": mode, "n_changes": len(emitted),
-                          "changes": emitted or ["今次無模擬注動作"], "simulation_only": True})
-    ledger["log"] = ledger["log"][-100:]
-    save_ledger(config, ledger)
-    retained = merge_predictions(config, predictions)
+    with state_lock(config):
+        # Reload the latest state because another provider pass may have
+        # committed while this one was fetching quotes.
+        ledger = load_ledger(config)
+        emitted: list[str] = []
+        for prediction in stage_predictions:
+            kickoff = datetime.fromisoformat(str(prediction["kickoff_hkt"]))
+            if kickoff.tzinfo is None:
+                kickoff = kickoff.replace(tzinfo=HKT)
+            if kickoff <= datetime.now(HKT):
+                # A quote request admitted just before kickoff may return after
+                # the match starts.  It must never become a T-5 bet.
+                continue
+            emitted += sync_prediction(ledger, prediction, config)
+            prediction["stages"] = list(
+                ledger["watch"].get(str(prediction["match_id"]), {}).get("stages") or []
+            )
+        recompute_stats(ledger, config)
+        ledger["log"].append({"ts": iso_hkt(), "kind": mode, "n_changes": len(emitted),
+                              "changes": emitted or ["今次無模擬注動作"], "simulation_only": True})
+        ledger["log"] = ledger["log"][-100:]
+        save_ledger(config, ledger)
+        retained = merge_predictions(config, predictions)
     return {"ok": True, "mode": mode, "predictions": len(predictions), "retained_predictions": len(retained),
             "simulations_created": len(emitted), "mapping": mapping,
             "pinnapi_fixtures": len(pinnapi_rows), "titan_fixtures": len(titan_rows), "hkjc_fixtures": len(h_events)}

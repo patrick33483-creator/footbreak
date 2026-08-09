@@ -13,6 +13,7 @@ import math
 import os
 import subprocess
 import sys
+import tempfile
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -25,6 +26,21 @@ os.makedirs(RESCACHE, exist_ok=True)
 
 # 賽事平均 ~115 分鐘完場(90+補時+半場+資料入庫延遲)。留 130 分鐘緩衝。
 SETTLE_AFTER_MIN = 130
+
+
+def write_json_atomic(path, payload):
+    """Replace JSON as one filesystem operation so preemption stays safe."""
+    directory = os.path.dirname(path) or "."
+    fd, temporary = tempfile.mkstemp(prefix=".settle-", dir=directory)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=1)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
 
 
 def _hkjc_result_dates(dates):
@@ -277,7 +293,8 @@ def run(force=False):
     if not os.path.exists(LEDGER):
         print("冇 sim_ledger.json")
         return
-    led = json.load(open(LEDGER, encoding="utf8"))
+    with open(LEDGER, encoding="utf8") as handle:
+        led = json.load(handle)
     led.setdefault("log", [])
     nfill = backfill_fixture_ids(led)
     if nfill:
@@ -368,8 +385,7 @@ def run(force=False):
             "kind": "結算",
             "changes": changes + [f"⏳ {u}" for u in unresolved],
         })
-    json.dump(led, open(LEDGER, "w", encoding="utf8"),
-              ensure_ascii=False, indent=1)
+    write_json_atomic(LEDGER, led)
 
     for c in changes:
         print(c)

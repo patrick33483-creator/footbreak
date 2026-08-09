@@ -7,7 +7,7 @@ from typing import Any
 
 from .common import iso_hkt, read_json, write_json_atomic
 from .config import Settings
-from .state import paths
+from .state import paths, state_lock
 
 
 def _quarter_line(value: Any, signed: bool = True) -> str:
@@ -64,26 +64,30 @@ def _send(config: Settings, text: str) -> None:
 
 
 def notify_new(ledger: dict[str, Any], config: Settings) -> int:
-    state, sent = _load(config), 0
-    seen = set(state["bets"])
-    for bet in ledger.get("bets", []):
-        bid = str(bet.get("bet_id"))
-        if bet.get("status") != "PENDING" or bid in seen:
-            continue
-        stake = float(bet.get("stake") or 0)
-        odds = float(bet.get("odds") or 0)
-        _send(
-            config,
-            "皇冠模擬注單\n"
-            f"{bet['home']} vs {bet['away']}\n"
-            f"投注：{_bet_label(bet)}\n"
-            f"賠率：{odds:.2f}\n"
-            f"注碼：HK${stake:,.0f}\n"
-            "只作模擬，絕不實際投注。",
-        )
-        state["bets"].append(bid)
-        seen.add(bid)
-        sent += 1
-    state["updated_at"] = iso_hkt()
-    write_json_atomic(paths(config)["notify"], state)
-    return sent
+    # Sweep and tick intentionally fetch providers concurrently.  Serialize
+    # the notification read/send/commit so both processes cannot send the same
+    # bet after reading the same old notify state.
+    with state_lock(config):
+        state, sent = _load(config), 0
+        seen = set(state["bets"])
+        for bet in ledger.get("bets", []):
+            bid = str(bet.get("bet_id"))
+            if bet.get("status") != "PENDING" or bid in seen:
+                continue
+            stake = float(bet.get("stake") or 0)
+            odds = float(bet.get("odds") or 0)
+            _send(
+                config,
+                "皇冠模擬注單\n"
+                f"{bet['home']} vs {bet['away']}\n"
+                f"投注：{_bet_label(bet)}\n"
+                f"賠率：{odds:.2f}\n"
+                f"注碼：HK${stake:,.0f}\n"
+                "只作模擬，絕不實際投注。",
+            )
+            state["bets"].append(bid)
+            seen.add(bid)
+            sent += 1
+        state["updated_at"] = iso_hkt()
+        write_json_atomic(paths(config)["notify"], state)
+        return sent

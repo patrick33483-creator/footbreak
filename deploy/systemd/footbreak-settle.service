@@ -1,5 +1,5 @@
 [Unit]
-Description=足破 · 每晚全板首預
+Description=足破 · 獨立賽果結算及準繩度更新
 After=network-online.target
 Wants=network-online.target
 ConditionPathExists=!/run/footbreak-t5-priority
@@ -7,8 +7,8 @@ ConditionPathExists=!/run/footbreak-t5-priority
 [Service]
 Type=oneshot
 WorkingDirectory=/opt/footbreak/system
-ExecStart=/opt/footbreak/deploy/run.sh sweep
-TimeoutStartSec=3600
+ExecStart=/opt/footbreak/deploy/run.sh settle
+TimeoutStartSec=900
 TimeoutStopSec=3
 Nice=10
 

@@ -44,6 +44,11 @@ class DueRecoveryTests(unittest.TestCase):
     def test_t5_window_keeps_one_to_two_minutes(self):
         self.assertEqual(run_predict.due_now(1.2, set()), "T-5")
 
+    def test_t5_window_keeps_last_prematch_seconds(self):
+        self.assertEqual(run_predict.due_now(0.1, set()), "T-5")
+        self.assertIsNone(run_predict.due_now(0.0, set()))
+        self.assertIsNone(run_predict.due_now(-0.1, set()))
+
 
 if __name__ == "__main__":
     unittest.main()

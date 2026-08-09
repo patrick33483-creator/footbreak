@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # 足破 · 執行包裝器(systemd 同手動都用呢個)
-#   run.sh tick    每 2 分鐘,跑啱啱踏入 T-30 / T-5 窗口嘅場
+#   run.sh tick    密集跑啱啱踏入 T-30 / T-5 窗口嘅場
+#   run.sh t30     獨立 T-30 資料點
 #   run.sh sweep   每晚 23:59,全板首預
 #   run.sh settle  只結算
 set -euo pipefail
@@ -9,6 +10,8 @@ APP_DIR="${APP_DIR:-/opt/footbreak}"
 WEB_ROOT="${WEB_ROOT:-/var/www/footbreak}"
 MODE="${1:-tick}"
 LOCK_FILE="${FOOTBREAK_LOCK_FILE:-/var/lock/footbreak.lock}"
+TICK_LOCK_WAIT_SECONDS="${FOOTBREAK_TICK_LOCK_WAIT_SECONDS:-2}"
+PRIORITY_MARKER="${FOOTBREAK_PRIORITY_MARKER:-/run/footbreak-t5-priority}"
 
 # Footbreak variables plus the already-paid PinnAPI Edge credentials.  Both
 # files stay root-only and are sourced without echoing their contents.
@@ -29,16 +32,21 @@ fi
 
 cd "$APP_DIR/system"
 
-# 同一時間只准跑一個,避免 tick 同 sweep 撞到一齊寫 ledger
+# 同一時間只准跑一個,避免狀態互相覆蓋。footbreak-tick.service 會先
+# 中止可能長跑嘅 sweep / settle，再攞呢把鎖；因此慢工作唔可以霸住
+# T-30/T-5 通道。tick 最多只等 2 秒處理上一輪收尾，之後交畀下一輪。
 exec 9>"$LOCK_FILE"
-if ! flock -n 9; then
-  echo "$(date '+%F %T') 上一次仲跑緊,今次跳過"
-  # Regular timer ticks may safely skip when another pass owns the ledger.
-  # A requested settlement must never report success unless it actually ran.
-  if [ "$MODE" = "settle" ]; then
+if [ "$MODE" = "tick" ]; then
+  if ! flock -w "$TICK_LOCK_WAIT_SECONDS" 9; then
+    echo "$(date '+%F %T') Footbreak tick 等鎖超時；今次未有執行" >&2
     exit 75
   fi
-  exit 0
+elif [ -e "$PRIORITY_MARKER" ]; then
+  echo "$(date '+%F %T') Footbreak $MODE 避讓 T-5；今次未有執行" >&2
+  exit 75
+elif ! flock -n 9; then
+  echo "$(date '+%F %T') Footbreak $MODE 撞正另一個工作；今次未有執行" >&2
+  exit 75
 fi
 
 if bash run_all.sh "$MODE"; then

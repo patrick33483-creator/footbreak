@@ -6,8 +6,16 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 WorkingDirectory=/opt/footbreak/system
+# 臨場窗口係最高優先級。慢全板掃描或結算若仍在執行，先中止佢哋；
+# 兩者輸出均以原子替換寫入，中止唔會留下半份 JSON。
+ExecStartPre=/usr/bin/touch /run/footbreak-t5-priority
+ExecStartPre=/usr/bin/systemctl stop footbreak-t30.service footbreak-sweep.service footbreak-settle.service
 ExecStart=/opt/footbreak/deploy/run.sh tick
-TimeoutStartSec=900
+ExecStopPost=-/usr/bin/rm -f /run/footbreak-t5-priority
+# 一輪超過 25 秒即中止，下一輪重新抓最新資料；舊 tick 永遠唔可以
+# 霸住之後嘅 T-5。
+TimeoutStartSec=25
+TimeoutStopSec=3
 Nice=5
 
 [Install]

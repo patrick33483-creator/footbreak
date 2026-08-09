@@ -7,6 +7,7 @@ CROWN_APP_DIR="${CROWN_APP_DIR:-$APP_DIR/crown}"
 CROWN_STATE_DIR="${CROWN_STATE_DIR:-/var/lib/footbreak/crown}"
 CROWN_WEB_ROOT="${CROWN_WEB_ROOT:-/var/www/crown}"
 MODE="${1:-tick}"
+CROWN_LOCK_DIR="${CROWN_LOCK_DIR:-/var/lock}"
 
 # Existing PinnAPI Edge credentials may already be held in Footbreak's secure
 # environment.  Crown's own file is a later, separate override.  Neither is
@@ -22,10 +23,13 @@ install -d -m 0700 "$CROWN_STATE_DIR"
 # readable by nginx; private state remains in CROWN_STATE_DIR.
 install -d -m 0755 "$(dirname "$CROWN_WEB_ROOT")" "$CROWN_WEB_ROOT"
 
-exec 9>/var/lock/footbreak-crown.lock
+# Provider reads for the 30-minute board sweep and the time-critical tick may
+# run concurrently. Python serializes only the short state commit.
+install -d -m 0755 "$CROWN_LOCK_DIR"
+exec 9>"$CROWN_LOCK_DIR/footbreak-crown-${MODE}.lock"
 if ! flock -n 9; then
-  echo "$(date '+%F %T') Crown previous pass is still running; skipped"
-  exit 0
+  echo "$(date '+%F %T') Crown $MODE already running; duplicate trigger rejected" >&2
+  exit 75
 fi
 
 cd "$APP_DIR"

@@ -394,6 +394,9 @@ class CrownSafetyTests(unittest.TestCase):
         self.assertEqual(stage_for(30, False, set()), "T-30")
         self.assertIsNone(stage_for(30, False, {"T-30"}))
         self.assertEqual(stage_for(5, False, set()), "T-5")
+        self.assertEqual(stage_for(0.1, False, set()), "T-5")
+        self.assertIsNone(stage_for(0, False, set()))
+        self.assertIsNone(stage_for(-0.1, False, set()))
         with tempfile.TemporaryDirectory() as directory:
             config = replace(settings(), state_dir=Path(directory), telegram_enabled=False)
             ledger = {"bankroll": 50000, "bets": [], "watch": {}, "log": [], "stats": {}}
@@ -516,6 +519,30 @@ class CrownSafetyTests(unittest.TestCase):
             self.assertEqual(merge_predictions(config, [update], now=now)[0]["stage"], "T-30")
             self.assertEqual(load_predictions(config)[0]["stage"], "T-30")
             self.assertEqual(merge_predictions(config, [], now=now)[0]["stage"], "T-30")
+
+    def test_late_quote_refresh_never_rolls_back_t5_card(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = replace(settings(), state_dir=Path(directory), telegram_enabled=False)
+            now = self.now
+            kickoff = (now + timedelta(minutes=5)).isoformat()
+            t5 = {
+                "match_id": "future", "kickoff_hkt": kickoff, "stage": "T-5",
+                "verdict": "模擬注", "pick": {"label": "HDC H -0.5"},
+                "book_odds": {"crown": [{"odds": 1.8}]},
+            }
+            save_predictions(config, [t5])
+            stale_sweep = {
+                "match_id": "future", "kickoff_hkt": kickoff, "stage": "T-30",
+                "verdict": "傾向", "pick": None, "_quote_refresh_only": True,
+                "book_odds": {"crown": [{"odds": 1.9}]},
+                "crown_quote_refreshed_at": now.isoformat(),
+            }
+            merged = merge_predictions(config, [stale_sweep], now=now)[0]
+            self.assertEqual(merged["stage"], "T-5")
+            self.assertEqual(merged["verdict"], "模擬注")
+            self.assertEqual(merged["pick"]["label"], "HDC H -0.5")
+            self.assertEqual(merged["book_odds"]["crown"][0]["odds"], 1.9)
+            self.assertNotIn("_quote_refresh_only", merged)
 
     def test_crown_period_runs_from_1200_to_next_1159(self) -> None:
         start, end = period_bounds(self.now)

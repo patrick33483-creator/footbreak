@@ -1,0 +1,104 @@
+import tempfile
+import unittest
+import json
+import datetime as dt
+from pathlib import Path
+from unittest.mock import patch
+
+from system import record_picks
+from system import settle
+
+
+ROOT = Path(__file__).resolve().parents[2]
+
+
+class SchedulerPreemptionTests(unittest.TestCase):
+    def test_tick_service_preempts_slow_jobs_before_running(self):
+        unit = (ROOT / "deploy/systemd/footbreak-tick.service").read_text(
+            encoding="utf-8"
+        )
+        preempt = unit.index(
+            "ExecStartPre=/usr/bin/systemctl stop "
+            "footbreak-t30.service footbreak-sweep.service footbreak-settle.service"
+        )
+        run = unit.index("ExecStart=/opt/footbreak/deploy/run.sh tick")
+        self.assertLess(preempt, run)
+        self.assertIn("TimeoutStartSec=25", unit)
+        self.assertIn("TimeoutStopSec=3", unit)
+        self.assertIn("ExecStopPost=-/usr/bin/rm -f /run/footbreak-t5-priority", unit)
+        for name in ("footbreak-t30.service", "footbreak-sweep.service", "footbreak-settle.service"):
+            slow = (ROOT / "deploy/systemd" / name).read_text(encoding="utf-8")
+            self.assertIn(
+                "ConditionPathExists=!/run/footbreak-t5-priority",
+                slow,
+            )
+
+    def test_slow_jobs_yield_when_t5_priority_marker_exists(self):
+        wrapper = (ROOT / "deploy/run.sh").read_text(encoding="utf-8")
+        self.assertIn('elif [ -e "$PRIORITY_MARKER" ]; then', wrapper)
+        self.assertIn('TICK_LOCK_WAIT_SECONDS:-2', wrapper)
+
+    def test_record_picks_save_atomically_replaces_ledger(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = Path(tmp, "sim_ledger.json")
+            with patch.object(record_picks, "LEDGER", str(ledger)):
+                record_picks.save({"bets": [{"match_id": "safe"}]})
+            self.assertEqual(
+                ledger.read_text(encoding="utf-8").count('"match_id": "safe"'),
+                1,
+            )
+            self.assertEqual(list(Path(tmp).glob(".sim-ledger-*")), [])
+
+    def test_settlement_save_atomically_replaces_ledger(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = Path(tmp, "sim_ledger.json")
+            settle.write_json_atomic(str(ledger), {"bets": []})
+            self.assertTrue(ledger.is_file())
+            self.assertEqual(list(Path(tmp).glob(".settle-*")), [])
+
+    def test_t5_is_rejected_at_final_ledger_commit_after_safe_time(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = Path(tmp, "sim_ledger.json")
+            predictions = Path(tmp, "predictions.json")
+            now = dt.datetime.now(record_picks.HKT)
+            predictions.write_text(
+                json.dumps(
+                    [
+                        {
+                            "match_id": "late",
+                            "stage": "T-5",
+                            "league": "L",
+                            "home": "A",
+                            "away": "B",
+                            "kickoff_hkt": (now + dt.timedelta(seconds=2)).isoformat(),
+                            "conviction": 90,
+                            "pick": {
+                                "market": "讓球",
+                                "code": "HDC",
+                                "condition": "-0.5",
+                                "side": "H",
+                                "label": "主 -0.5",
+                                "odds": 2.0,
+                                "prob": 0.6,
+                                "push": 0.0,
+                                "ev": 0.2,
+                                "kelly_used": 0.01,
+                                "stake": 500,
+                            },
+                            "candidates": [],
+                            "final": {},
+                        }
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            with patch.object(record_picks, "HERE", tmp), patch.object(
+                record_picks, "LEDGER", str(ledger)
+            ):
+                _, notes, saved = record_picks.sync("predictions.json")
+            self.assertEqual(saved["bets"], [])
+            self.assertTrue(any("安全落注時間" in note for note in notes))
+
+
+if __name__ == "__main__":
+    unittest.main()

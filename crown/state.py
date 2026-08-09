@@ -1,6 +1,8 @@
 """Separate Crown state, intentionally outside Footbreak's system/ state."""
 from __future__ import annotations
 
+import fcntl
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -8,6 +10,20 @@ from typing import Any
 from .common import HKT, parse_time, read_json, write_json_atomic
 from .config import Settings
 from .period import in_current_period
+
+
+@contextmanager
+def state_lock(config: Settings):
+    """Serialize only Crown state commits, never slow provider reads."""
+    config.state_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = config.state_dir / ".state.lock"
+    with lock_path.open("a+", encoding="utf-8") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
 
 def paths(config: Settings) -> dict[str, Path]:
     return {"ledger": config.state_dir / "ledger.json", "predictions": config.state_dir / "predictions.json",
@@ -73,9 +89,26 @@ def merge_predictions(
         match_id = str(row.get("match_id") or "")
         if match_id and _prediction_is_useful(row, now):
             previous = merged.get(match_id)
+            if row.get("_quote_refresh_only") and previous is not None:
+                quote_fields = {
+                    "league", "home", "away", "kickoff_hkt", "mins_to_ko",
+                    "generated_at", "source_snapshot_at",
+                    "crown_quote_attempted_at", "crown_quote_refreshed_at",
+                    "crown_quote_stale_markets", "book_odds",
+                }
+                refreshed = dict(previous)
+                refreshed.update({
+                    key: value for key, value in row.items()
+                    if key in quote_fields
+                })
+                merged[match_id] = refreshed
+                continue
             # A stage update replaces the current card, but retains any
             # dashboard-only fields absent from a thinner later snapshot.
-            merged[match_id] = (previous or {}) | row
+            merged[match_id] = (previous or {}) | {
+                key: value for key, value in row.items()
+                if key != "_quote_refresh_only"
+            }
     output = list(merged.values())
     output.sort(key=lambda row: (_prediction_time(row) or now, str(row.get("match_id") or "")))
     save_predictions(config, output)

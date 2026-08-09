@@ -1,12 +1,15 @@
 [Unit]
-Description=足破 · 每 2 分鐘檢查有冇場踏入 T-30 / T-5 窗口
+Description=足破 · 高優先 T-5 密集掃描
 
 [Timer]
-# T-5 窗口只有 1–10 分鐘,所以要 2 分鐘一次先唔會漏場。
+# T-5 窗口只有開賽前 0–10 分鐘，所以需要密集追跑。
 # 喺自己嘅 VPS 上面呢啲叫醒係免費嘅 —— 呢個正正就係搬過嚟嘅意義。
-OnCalendar=*:0/2
-AccuracySec=15s
-Persistent=false
+# 固定分鐘觸發之外，每次完成後 30 秒再追跑一次；長任務完成後唔會
+# 等到下一個疏落時間點。DigitalOcean 本機計時不消耗 Perplexity 點數。
+OnCalendar=*:0/1
+OnUnitInactiveSec=5s
+AccuracySec=1s
+Persistent=true
 Unit=footbreak-tick.service
 
 [Install]

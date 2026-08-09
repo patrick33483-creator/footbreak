@@ -12,6 +12,7 @@
 """
 import json
 import os
+import tempfile
 import datetime as dt
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -22,11 +23,13 @@ BANKROLL = 50000.0
 DAILY_CAP = 1.00   # 用戶指定:單日不設限
 OPEN_CAP = 1.00    # 用戶指定:在場不設限
 BET_STAGE = "T-5"          # 唯一落注階段
+MIN_BET_LEAD_SECONDS = 5   # 少過 5 秒已無實際通知/落注時間
 
 
 def load():
     if os.path.exists(LEDGER):
-        d = json.load(open(LEDGER, encoding="utf-8"))
+        with open(LEDGER, encoding="utf-8") as handle:
+            d = json.load(handle)
     else:
         d = {"bankroll": BANKROLL, "bets": [], "log": []}
     d.setdefault("watch", {})
@@ -36,8 +39,17 @@ def load():
 
 
 def save(led):
-    json.dump(led, open(LEDGER, "w", encoding="utf-8"),
-              ensure_ascii=False, indent=1)
+    directory = os.path.dirname(LEDGER) or "."
+    fd, temporary = tempfile.mkstemp(prefix=".sim-ledger-", dir=directory)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(led, handle, ensure_ascii=False, indent=1)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, LEDGER)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
 
 
 def day_open(led, day):
@@ -119,7 +131,8 @@ STAGE_ORDER = {"首預": 1, "T-30": 2, "T-5": 3}
 
 def sync(preds_file="predictions.json"):
     led = load()
-    preds = json.load(open(os.path.join(HERE, preds_file), encoding="utf-8"))
+    with open(os.path.join(HERE, preds_file), encoding="utf-8") as handle:
+        preds = json.load(handle)
     now = dt.datetime.now(HKT).isoformat(timespec="seconds")
     changes, notes = [], []
 
@@ -128,6 +141,20 @@ def sync(preds_file="predictions.json"):
         stage = r["stage"]
         if stage not in STAGE_ORDER:
             continue                      # 待入窗 — 未到第一個預測點,唔記錄
+        if stage == BET_STAGE:
+            try:
+                kickoff = dt.datetime.fromisoformat(r["kickoff_hkt"])
+                if kickoff.tzinfo is None:
+                    kickoff = kickoff.replace(tzinfo=HKT)
+                lead = (kickoff - dt.datetime.now(HKT)).total_seconds()
+            except (KeyError, TypeError, ValueError):
+                lead = -1
+            if lead < MIN_BET_LEAD_SECONDS:
+                notes.append(
+                    f"⏭ {r.get('home')} v {r.get('away')} — "
+                    "T-5 到帳本前已過安全落注時間，沒有建立或更新注單"
+                )
+                continue
 
         # ── 1. 寫入 / 更新階段記錄 ────────────────────────────
         w = led["watch"].setdefault(mid, {
@@ -143,6 +170,12 @@ def sync(preds_file="predictions.json"):
         w["fixture_id"] = w.get("fixture_id") or r.get("fixture_id")
         w["league_id"] = w.get("league_id") or r.get("league_id")
         snap = _snap(r, now)
+        if stage == BET_STAGE:
+            # This is a data-path completeness flag only.  It deliberately
+            # does not alter conviction, pick eligibility, or stake.
+            snap["t30_data_complete"] = any(
+                item.get("stage") == "T-30" for item in w["stages"]
+            )
         prev = next((x for x in w["stages"] if x["stage"] == stage), None)
         if prev:
             w["stages"][w["stages"].index(prev)] = snap    # 同階段重跑 → 覆蓋

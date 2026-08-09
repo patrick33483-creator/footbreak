@@ -1,0 +1,11 @@
+[Unit]
+Description=足破 · 每15分鐘獨立結算
+
+[Timer]
+OnCalendar=*:0/15
+Persistent=true
+AccuracySec=30s
+Unit=footbreak-settle.service
+
+[Install]
+WantedBy=timers.target
