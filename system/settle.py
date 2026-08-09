@@ -88,6 +88,12 @@ def fetch_result(fixture_id, refresh=False):
     return out
 
 
+def fetch_hkjc_statuses(match_ids, dates):
+    """HKJC exact-ID states, including suspended/postponed/refunded matches."""
+    from crown.hkjc import fetch_official_match_statuses
+    return fetch_official_match_statuses(set(map(str, match_ids)), set(dates))
+
+
 def parse_result(row):
     fx = row.get("fixture") or {}
     sc = row.get("scores") or {}

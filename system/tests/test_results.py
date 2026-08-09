@@ -31,6 +31,19 @@ class ResultSourceTests(unittest.TestCase):
         self.assertEqual(rows["50072040"]["corners_total"], 9)
         self.assertEqual(rows["50072040"]["source"], "hkjc_official")
 
+    def test_hkjc_non_result_statuses_are_exposed(self) -> None:
+        official = {
+            "50072899": {
+                "status": "MATCHSUSPENDED",
+                "refund_pools": ["HAD"],
+                "payout_refund_pools": [],
+                "source": "hkjc_official",
+            }
+        }
+        with patch("crown.hkjc.fetch_official_match_statuses", return_value=official):
+            rows = settle.fetch_hkjc_statuses({"50072899"}, {"2026-08-09"})
+        self.assertEqual(rows["50072899"]["status"], "MATCHSUSPENDED")
+
 
 if __name__ == "__main__":
     unittest.main()

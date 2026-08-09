@@ -855,7 +855,8 @@ function renderFc() {
   const payload = DATA.prediction_history || { rows: [], stats: {} };
   const rows = payload.rows || [], s = payload.stats || {};
   const gradedRows = rows.filter((r) => r.actual);
-  const pendingRows = rows.filter((r) => !r.actual);
+  const excludedRows = rows.filter((r) => r.result_status === '不計');
+  const pendingRows = rows.filter((r) => !r.actual && r.result_status !== '不計');
   const accuracy = s.accuracy == null ? '待賽果' : pc(s.accuracy, 1);
   const K = [
     ['記錄賽事', s.matches || 0, ''],
@@ -887,6 +888,9 @@ function renderFc() {
       ? `<span class="respill ${r.correct ? 'r-w' : 'r-l'}">${r.correct ? '命中' : '落空'}</span>
          <div class="hist-result"><b>${esc(r.score || '—')}</b> · ${esc(r.actual)}</div>
          <div class="cell-sub">${esc(r.result_source === 'hkjc_official' ? '馬會官方賽果' : r.result_source || '已核對賽果')}</div>`
+      : r.result_status === '不計'
+        ? `<span class="stpill voided">不計</span>
+           <div class="cell-sub">${esc(r.excluded_reason || '延期／取消／腰斬')}</div>`
       : '<span class="stpill pending">待賽果</span>'}</td>
   </tr>`).join('');
   const historyTable = (items, empty) => `<div class="tbl-wrap"><table class="t history-table">
@@ -908,6 +912,9 @@ function renderFc() {
   </div>
   <div class="card"><h2 class="card-h">待賽果 <span class="sub">${pendingRows.length} 筆</span></h2>
     ${historyTable(pendingRows, '目前冇待核對紀錄。')}
+  </div>
+  <div class="card"><h2 class="card-h">不計入準確率 <span class="sub">${excludedRows.length} 筆</span></h2>
+    ${historyTable(excludedRows, '目前冇延期、取消或腰斬紀錄。')}
   </div>`;
 }
 

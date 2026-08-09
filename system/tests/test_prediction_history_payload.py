@@ -80,6 +80,25 @@ class PredictionHistoryPayloadTests(unittest.TestCase):
         self.assertTrue(by_stage["T-5"]["simulated_bet"])
         self.assertEqual(by_stage["T-5"]["bet_label"], "讓球 主隊 -0.5")
 
+    def test_suspended_match_is_excluded_not_left_pending(self) -> None:
+        watch = {
+            "m2": {
+                "match_id": "m2", "home": "主隊", "away": "客隊",
+                "league": "測試聯賽", "kickoff": "2026-08-09 05:30",
+                "stages": [{"stage": "首預", "conviction": 55}],
+            }
+        }
+        accuracy = {
+            "matches": [],
+            "excluded_results": [{
+                "match_id": "m2", "status": "MATCHSUSPENDED",
+            }],
+        }
+        payload = gen_app_data.build_prediction_history(watch, [], accuracy)
+        self.assertEqual(payload["stats"]["pending"], 0)
+        self.assertEqual(payload["stats"]["excluded"], 1)
+        self.assertEqual(payload["rows"][0]["result_status"], "不計")
+
 
 if __name__ == "__main__":
     unittest.main()

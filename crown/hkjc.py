@@ -111,8 +111,8 @@ _RESULT_PAGE_SIZE = 20
 _RESULT_MAX_PAGES = 20
 
 
-def fetch_official_result_events(dates: set[str]) -> list[dict[str, Any]]:
-    """Return confirmed full-match HKJC result events with identity metadata."""
+def _fetch_official_result_matches(dates: set[str]) -> list[dict[str, Any]]:
+    """Return raw HKJC result-board matches, including non-finished states."""
     if not dates:
         return []
     endpoint = "https://info.cld.hkjc.com/graphql/base/"
@@ -146,41 +146,71 @@ def fetch_official_result_events(dates: set[str]) -> list[dict[str, Any]]:
             matches = data.get("matches") or []
             for match in matches:
                 match_id = str(match.get("id") or "")
-                if not match_id or str(match.get("status", "")).upper() not in _ENDED_STATUSES:
-                    continue
-                rows = [
-                    row for row in (match.get("results") or [])
-                    if row.get("payoutConfirmed") is True
-                    and str(row.get("stageId")) == "5"
-                    and str(row.get("resultType")) == "1"
-                ]
-                if not rows:
-                    continue
-                row = max(rows, key=lambda item: int(item.get("sequence") or 0))
-                try:
-                    corners = int(row["ttlCornerResult"]) if row.get("ttlCornerResult") is not None else None
-                    home_team = match.get("homeTeam") or {}
-                    away_team = match.get("awayTeam") or {}
-                    tournament = match.get("tournament") or {}
-                    result[match_id] = {
-                        "id": match_id,
-                        "front_end_id": str(match.get("frontEndId") or "") or None,
-                        "league": str(tournament.get("name_ch") or tournament.get("name_en") or ""),
-                        "home": str(home_team.get("name_ch") or home_team.get("name_en") or ""),
-                        "away": str(away_team.get("name_ch") or away_team.get("name_en") or ""),
-                        "kickoff": match.get("kickOffTime") or match.get("matchDate"),
-                        "home_score": int(row["homeResult"]),
-                        "away_score": int(row["awayResult"]),
-                        # HKJC uses -1 as a missing-data sentinel, not a
-                        # genuine corner count.
-                        "corners_total": corners if corners is not None and corners >= 0 else None,
-                        "source": "hkjc_official",
-                    }
-                except (TypeError, ValueError, KeyError):
-                    continue
+                if match_id:
+                    result[match_id] = match
             total = int(((data.get("matchNumByDate") or {}).get("total")) or 0)
             if not matches or start + len(matches) >= total:
                 break
+    return list(result.values())
+
+
+def fetch_official_match_statuses(
+    match_ids: set[str], dates: set[str],
+) -> dict[str, dict[str, Any]]:
+    """Return exact-ID HKJC result-board statuses, including suspended/refunded."""
+    if not match_ids or not dates:
+        return {}
+    out = {}
+    for match in _fetch_official_result_matches(dates):
+        match_id = str(match.get("id") or "")
+        if match_id not in match_ids:
+            continue
+        pool_info = match.get("poolInfo") or {}
+        out[match_id] = {
+            "status": str(match.get("status") or "").upper(),
+            "refund_pools": list(pool_info.get("refundPools") or []),
+            "payout_refund_pools": list(pool_info.get("payoutRefundPools") or []),
+            "source": "hkjc_official",
+        }
+    return out
+
+
+def fetch_official_result_events(dates: set[str]) -> list[dict[str, Any]]:
+    """Return confirmed full-match HKJC result events with identity metadata."""
+    result: dict[str, dict[str, Any]] = {}
+    for match in _fetch_official_result_matches(dates):
+        match_id = str(match.get("id") or "")
+        if not match_id or str(match.get("status", "")).upper() not in _ENDED_STATUSES:
+            continue
+        rows = [
+            row for row in (match.get("results") or [])
+            if row.get("payoutConfirmed") is True
+            and str(row.get("stageId")) == "5"
+            and str(row.get("resultType")) == "1"
+        ]
+        if not rows:
+            continue
+        row = max(rows, key=lambda item: int(item.get("sequence") or 0))
+        try:
+            corners = int(row["ttlCornerResult"]) if row.get("ttlCornerResult") is not None else None
+            home_team = match.get("homeTeam") or {}
+            away_team = match.get("awayTeam") or {}
+            tournament = match.get("tournament") or {}
+            result[match_id] = {
+                "id": match_id,
+                "front_end_id": str(match.get("frontEndId") or "") or None,
+                "league": str(tournament.get("name_ch") or tournament.get("name_en") or ""),
+                "home": str(home_team.get("name_ch") or home_team.get("name_en") or ""),
+                "away": str(away_team.get("name_ch") or away_team.get("name_en") or ""),
+                "kickoff": match.get("kickOffTime") or match.get("matchDate"),
+                "home_score": int(row["homeResult"]),
+                "away_score": int(row["awayResult"]),
+                # HKJC uses -1 as a missing-data sentinel, not a genuine count.
+                "corners_total": corners if corners is not None and corners >= 0 else None,
+                "source": "hkjc_official",
+            }
+        except (TypeError, ValueError, KeyError):
+            continue
     return list(result.values())
 
 

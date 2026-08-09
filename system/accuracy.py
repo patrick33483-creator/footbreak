@@ -40,6 +40,9 @@ HISTORY_OUT = os.path.join(HERE, "accuracy_history.json")
 
 SETTLE_AFTER_MIN = 130
 STAGES = ["首預", "T-30", "T-5"]
+NON_RESULT_STATUS_MARKERS = (
+    "SUSPEND", "POSTPON", "CANCEL", "ABANDON", "VOID", "REFUND",
+)
 CONF_BINS = [(0, 45), (45, 52), (52, 58), (58, 64), (64, 200)]
 CONF_LBL = ["<45", "45–52", "52–58", "58–64", "≥64"]
 
@@ -264,16 +267,22 @@ def run(fetch=True):
         if (now - kickoff).total_seconds() / 60 >= SETTLE_AFTER_MIN:
             eligible.append((str(mid), w, kickoff))
     official = {}
+    official_statuses = {}
     if fetch and eligible:
         try:
             official = S.fetch_hkjc_results(
                 {mid for mid, _, _ in eligible},
                 {kickoff.strftime("%Y-%m-%d") for _, _, kickoff in eligible},
             )
+            official_statuses = S.fetch_hkjc_statuses(
+                {mid for mid, _, _ in eligible},
+                {kickoff.strftime("%Y-%m-%d") for _, _, kickoff in eligible},
+            )
         except Exception:
             official = {}
+            official_statuses = {}
 
-    scored, matches, missing_results = [], [], []
+    scored, matches, missing_results, excluded_results = [], [], [], []
     for mid, w in watch.items():
         try:
             ko = datetime.strptime(w["kickoff"], "%Y-%m-%d %H:%M").replace(tzinfo=HKT)
@@ -299,6 +308,17 @@ def run(fetch=True):
             except Exception:
                 res = None
         if not res:
+            state = official_statuses.get(str(mid)) or {}
+            status = str(state.get("status") or "").upper()
+            refund = bool(state.get("refund_pools") or state.get("payout_refund_pools"))
+            if refund or any(marker in status for marker in NON_RESULT_STATUS_MARKERS):
+                excluded_results.append({
+                    "match_id": mid, "home": w.get("home"), "away": w.get("away"),
+                    "league": w.get("league"), "kickoff": w.get("kickoff"),
+                    "status": status or "REFUNDED", "source": state.get("source"),
+                    "reason": "non_result_terminal_state",
+                })
+                continue
             missing_results.append({
                 "match_id": mid, "fixture_id": w.get("fixture_id"),
                 "home": w.get("home"), "away": w.get("away"),
@@ -350,6 +370,8 @@ def run(fetch=True):
         "n_matches": len(matches), "n_preds": len(scored),
         "n_missing_result": len(missing_results),
         "missing_results": missing_results,
+        "n_excluded_result": len(excluded_results),
+        "excluded_results": excluded_results,
         "overall": _agg(scored),
         "latest": _agg(final_rows),
         "by_stage": {k: v for k, v in by_stage.items() if v},

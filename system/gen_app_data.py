@@ -147,6 +147,10 @@ def build_prediction_history(watch, bets, accuracy):
 
     scored = {}
     match_results = {}
+    excluded_results = {
+        str(row.get("match_id")): row
+        for row in (accuracy.get("excluded_results") or [])
+    }
     for match in accuracy.get("matches") or []:
         mid = str(match.get("match_id"))
         match_results[mid] = match
@@ -172,6 +176,7 @@ def build_prediction_history(watch, bets, accuracy):
         snap = snap or {}
         score = scored.get(key) or {}
         result = match_results.get(mid) or {}
+        excluded = excluded_results.get(mid)
 
         fc = None
         if snap.get("final"):
@@ -218,7 +223,9 @@ def build_prediction_history(watch, bets, accuracy):
             "score": result.get("score") or score.get("score_act"),
             "result_source": result.get("result_source"),
             "correct": bool(score.get("wdl_hit")) if actual else None,
-            "result_status": "已核對" if actual else "待賽果",
+            "result_status": ("已核對" if actual else
+                              "不計" if excluded else "待賽果"),
+            "excluded_reason": excluded.get("status") if excluded else None,
             "wdl_brier": score.get("wdl_brier"),
             "wdl_ll": score.get("wdl_ll"),
         })
@@ -241,6 +248,8 @@ def build_prediction_history(watch, bets, accuracy):
     rows.sort(key=lambda r: (str(r.get("kickoff") or ""),
                              str(r.get("predicted_at") or "")), reverse=True)
     graded_rows = [r for r in rows if r.get("actual")]
+    pending_rows = [r for r in rows if r.get("result_status") == "待賽果"]
+    excluded_rows = [r for r in rows if r.get("result_status") == "不計"]
     hits = sum(1 for r in graded_rows if r.get("correct"))
 
     by_stage = {}
@@ -261,7 +270,8 @@ def build_prediction_history(watch, bets, accuracy):
             "matches": len({r.get("match_id") for r in rows}),
             "predictions": len(rows),
             "graded": len(graded_rows),
-            "pending": len(rows) - len(graded_rows),
+        "pending": len(pending_rows),
+        "excluded": len(excluded_rows),
             "hits": hits,
             "accuracy": (hits / len(graded_rows)) if graded_rows else None,
             "by_stage": by_stage,
