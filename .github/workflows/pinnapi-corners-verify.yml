@@ -40,7 +40,7 @@ jobs:
           config = settings()
           client = PinnapiClient(config)
           fixtures = client.fixtures()
-          sample = fixtures[:30]
+          sample = fixtures[:12]
           key_paths = Counter()
           corner_events = []
           failures = []
@@ -68,30 +68,41 @@ jobs:
                   })
 
           checked = []
+          endpoints = {
+              "lines": "/kit/v1/prematch/lines?event_id={event_id}",
+              "markets": "/kit/v1/prematch/markets?event_id={event_id}",
+              "markets_specials": (
+                  "/kit/v1/prematch/markets?"
+                  "event_id={event_id}&include_specials=1"
+              ),
+          }
           for fixture in sample:
               event_id = str(fixture["id"])
-              try:
-                  raw = client._get(
-                      "/kit/v1/prematch/lines?event_id=" + event_id
-                  )
-              except Exception as exc:
-                  failures.append({
+              for endpoint_name, path_template in endpoints.items():
+                  try:
+                      raw = client._get(
+                          path_template.format(event_id=event_id)
+                      )
+                  except Exception as exc:
+                      failures.append({
+                          "event_id": event_id,
+                          "endpoint": endpoint_name,
+                          "error": type(exc).__name__,
+                      })
+                      continue
+                  root = raw if isinstance(raw, dict) else {}
+                  periods = root.get("periods") if isinstance(root.get("periods"), dict) else {}
+                  full = periods.get("num_0") if isinstance(periods.get("num_0"), dict) else {}
+                  checked.append({
                       "event_id": event_id,
-                      "error": type(exc).__name__,
+                      "endpoint": endpoint_name,
+                      "league": fixture.get("league"),
+                      "home": fixture.get("home"),
+                      "away": fixture.get("away"),
+                      "root_keys": sorted(root.keys()),
+                      "full_match_keys": sorted(full.keys()),
                   })
-                  continue
-              root = raw if isinstance(raw, dict) else {}
-              periods = root.get("periods") if isinstance(root.get("periods"), dict) else {}
-              full = periods.get("num_0") if isinstance(periods.get("num_0"), dict) else {}
-              checked.append({
-                  "event_id": event_id,
-                  "league": fixture.get("league"),
-                  "home": fixture.get("home"),
-                  "away": fixture.get("away"),
-                  "root_keys": sorted(root.keys()),
-                  "full_match_keys": sorted(full.keys()),
-              })
-              walk(raw, event_id=event_id)
+                  walk(raw, path=f"root.{endpoint_name}", event_id=event_id)
 
           interesting = [
               {"path": path, "seen": count}
