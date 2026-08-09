@@ -1,5 +1,5 @@
 [Unit]
-Description=足破 · 皇冠 daily fixture and first-forecast sweep
+Description=足破 · 皇冠 30-minute fixture and odds refresh
 After=network-online.target
 Wants=network-online.target
 
