@@ -47,11 +47,11 @@ echo "▸ 更新 systemd 單元"
 install -m 0644 "$APP_DIR"/deploy/systemd/*.service /etc/systemd/system/
 install -m 0644 "$APP_DIR"/deploy/systemd/*.timer   /etc/systemd/system/
 systemctl daemon-reload
-# Crown is a fixed 12:00-to-11:59 board.  Never revive the legacy two-minute
-# tick; refresh fixtures and odds at :05/:35, with 12:05 rolling the day.
-systemctl disable --now crown-tick.timer 2>/dev/null || true
-systemctl stop crown-tick.service 2>/dev/null || true
-systemctl enable --now crown-sweep.timer
+# Crown is a fixed 12:00-to-11:59 board.  The :05/:35 pass refreshes fixture
+# discovery and Crown quotes only; the two-minute tick retains Footbreak's
+# original T-30/T-5 windows and is the only path that can create a T-5 bet.
+systemctl enable --now crown-sweep.timer crown-tick.timer
+systemctl restart crown-sweep.timer crown-tick.timer
 for timer in footbreak-tick.timer footbreak-sweep.timer footbreak-backtest.timer; do
   if systemctl is-enabled --quiet "$timer"; then
     systemctl restart "$timer"

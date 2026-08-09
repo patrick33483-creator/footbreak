@@ -13,7 +13,7 @@ from .ledger import completed_stages, recompute_stats, stage_for, sync_predictio
 from .matching import MATCHING_VERSION, Event, BridgeMatch, bridge_titan_to_pinnapi
 from .pinnapi import PinnapiClient
 from .period import in_current_period
-from .state import load_ledger, merge_predictions, save_ledger
+from .state import load_ledger, load_predictions, merge_predictions, save_ledger
 from .titan import TitanClient
 
 
@@ -196,6 +196,38 @@ def _prediction(titan: dict[str, Any], bridge: BridgeMatch, h_match: dict[str, A
     return base
 
 
+def _refresh_crown_quote(
+    previous: dict[str, Any],
+    titan: dict[str, Any],
+    titan_client: TitanClient,
+) -> dict[str, Any]:
+    """Refresh board identity and Crown prices without replaying a prediction stage.
+
+    The 30-minute board pass is intentionally separate from 首預/T-30/T-5.
+    Existing stage decisions, candidates and simulated picks remain historical
+    snapshots; the current Crown quote is replaced even when the provider now
+    returns no quote, so a stale price can never remain visible as current.
+    """
+    event = _event_from_titan(titan)
+    refreshed = dict(previous)
+    refreshed.update({
+        "league": event.league,
+        "home": event.home,
+        "away": event.away,
+        "kickoff_hkt": iso_hkt(event.kickoff),
+        "mins_to_ko": round((event.kickoff - datetime.now(HKT)).total_seconds() / 60, 1),
+        "generated_at": iso_hkt(),
+        "source_snapshot_at": iso_hkt(),
+        "crown_quote_refreshed_at": iso_hkt(),
+    })
+    book_odds = dict(refreshed.get("book_odds") or {})
+    book_odds["crown"] = titan_client.crown_prices(event.id)
+    refreshed["book_odds"] = book_odds
+    if not book_odds["crown"]:
+        refreshed["no_bet_reason"] = "皇冠公司盤口目前不可用；不顯示為皇冠有效賽事。"
+    return refreshed
+
+
 def run(mode: str, config: Settings) -> dict[str, Any]:
     """Run a remote pass only when the explicit validation gate and PinnAPI key exist."""
     if mode not in {"tick", "sweep", "settle"}:
@@ -213,6 +245,11 @@ def run(mode: str, config: Settings) -> dict[str, Any]:
     h_events = [(event, row) for event, row in h_events if event]
     p_events = [_event_from_pinnapi(row) for row in pinnapi_rows]
     ledger, predictions, emitted = load_ledger(config), [], []
+    current_predictions = {
+        str(row.get("match_id")): row
+        for row in load_predictions(config)
+        if row.get("match_id")
+    }
     mapping = {
         "titan_due": 0, "titan_to_hkjc_mapped": 0, "hkjc_to_pinnapi_mapped": 0,
         "direct_same_script_mapped": 0, "unmapped_titan_to_hkjc": 0, "unmapped_hkjc_to_pinnapi": 0,
@@ -226,9 +263,13 @@ def run(mode: str, config: Settings) -> dict[str, Any]:
         watch = ledger["watch"].get(event.id, {})
         done = completed_stages(watch, MATCHING_VERSION)
         minutes = (event.kickoff - datetime.now(HKT)).total_seconds() / 60
-        # Past fixtures are archived outside the live work board, and no pass
-        # should spend provider calls rebuilding prices after kickoff.
+        # Started fixtures remain visible until the 12:00 board rollover, but
+        # no pass spends provider calls rebuilding prices after kickoff.
         if minutes <= 0:
+            continue
+        previous = current_predictions.get(event.id)
+        if mode == "sweep" and previous is not None and "首預" in done:
+            predictions.append(_refresh_crown_quote(previous, titan, titan_client))
             continue
         stage = stage_for(minutes, mode == "sweep", done)
         if not stage:

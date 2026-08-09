@@ -143,6 +143,49 @@ jobs:
               "signal_data_missing": summary.get("signal_data_missing"),
           })
           PY
+          echo "=== Telegram configuration (presence only; no secrets) ==="
+          /opt/footbreak/.venv/bin/python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          def present(value):
+              return bool(str(value or "").strip())
+
+          radar = {}
+          radar_env = Path("/opt/odds-radar/.env")
+          if radar_env.exists():
+              for raw in radar_env.read_text(errors="ignore").splitlines():
+                  line = raw.strip()
+                  if not line or line.startswith("#") or "=" not in line:
+                      continue
+                  key, value = line.split("=", 1)
+                  radar[key.strip()] = value.strip().strip("'\"")
+
+          radar_token = next((radar.get(k) for k in (
+              "TELEGRAM_BOT_TOKEN", "TG_BOT_TOKEN", "BOT_TOKEN"
+          ) if present(radar.get(k))), "")
+          radar_chat = next((radar.get(k) for k in (
+              "TELEGRAM_CHAT_ID", "TG_CHAT_ID", "CHAT_ID"
+          ) if present(radar.get(k))), "")
+          print({
+              "footbreak": {
+                  "token": present(os.getenv("TELEGRAM_BOT_TOKEN")),
+                  "chat_id": present(os.getenv("TELEGRAM_CHAT_ID")),
+                  "bet_only_code_path": True,
+              },
+              "crown": {
+                  "enabled": str(os.getenv("CROWN_TELEGRAM_ENABLED", "")).lower() in {"1", "true", "yes", "on"},
+                  "token": present(os.getenv("CROWN_TELEGRAM_BOT_TOKEN")),
+                  "chat_id": present(os.getenv("CROWN_TELEGRAM_CHAT_ID")),
+                  "bet_only_code_path": True,
+              },
+              "odds_radar": {
+                  "env_file": radar_env.exists(),
+                  "token": present(radar_token),
+                  "chat_id": present(radar_chat),
+              },
+          })
+          PY
           echo "=== Crown timers ==="
           systemctl is-active crown-tick.timer
           systemctl is-enabled crown-tick.timer

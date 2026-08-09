@@ -1,7 +1,8 @@
 [Unit]
-Description=足破 · 皇冠 every 2 minutes (disabled until validation)
+Description=足破 · 皇冠每 2 分鐘檢查 T-30 / T-5 窗口
 
 [Timer]
+# 跟足破相同：T-30 為 20–40 分鐘，T-5 為 1–10 分鐘。
 OnCalendar=*:0/2
 AccuracySec=15s
 Persistent=false

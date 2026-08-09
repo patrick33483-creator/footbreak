@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 from crown.config import settings
 from crown.dashboard_data import build, write_dashboard_data
-from crown.engine import _candidates, _fresh, _wdl_prediction
+from crown.engine import _candidates, _fresh, _refresh_crown_quote, _wdl_prediction
 from crown.hkjc import fetch_official_results
 from crown.ledger import completed_stages, recompute_stats, stage_for, sync_prediction
 from crown.lines import parse_hkjc_handicap, parse_hkjc_total, settle_handicap, settle_total
@@ -297,6 +297,8 @@ class CrownSafetyTests(unittest.TestCase):
         self.assertEqual([row["id"] for row in rows], ["123"])
 
     def test_stage_windows_and_simulated_ledger_are_idempotent(self) -> None:
+        self.assertEqual(stage_for(120, True, set()), "首預")
+        self.assertIsNone(stage_for(120, True, {"首預"}))
         self.assertEqual(stage_for(30, False, set()), "T-30")
         self.assertIsNone(stage_for(30, False, {"T-30"}))
         self.assertEqual(stage_for(5, False, set()), "T-5")
@@ -316,6 +318,24 @@ class CrownSafetyTests(unittest.TestCase):
             self.assertEqual(len(ledger["bets"]), 1)
             self.assertTrue(ledger["bets"][0]["simulation_only"])
             self.assertFalse(ledger["bets"][0]["real_betting_enabled"])
+
+    def test_quote_refresh_preserves_prediction_stage_and_replaces_stale_price(self) -> None:
+        previous = {
+            "match_id": "x", "stage": "T-30", "pick": None,
+            "book_odds": {"crown": [{"odds": 1.80}], "hkjc_chl": [{"odds": 1.90}]},
+        }
+        titan = {
+            "id": "x", "league": "L", "home": "A", "away": "B",
+            "kickoff": self.now + timedelta(hours=2),
+        }
+        client = __import__("unittest.mock", fromlist=["Mock"]).Mock()
+        client.crown_prices.return_value = [{"market": "HDC", "odds": 2.01}]
+        with patch("crown.engine.datetime") as mocked_datetime:
+            mocked_datetime.now.return_value = self.now
+            refreshed = _refresh_crown_quote(previous, titan, client)
+        self.assertEqual(refreshed["stage"], "T-30")
+        self.assertEqual(refreshed["book_odds"]["crown"][0]["odds"], 2.01)
+        self.assertEqual(refreshed["book_odds"]["hkjc_chl"][0]["odds"], 1.90)
 
     def test_matching_version_refreshes_only_stale_first_look(self) -> None:
         old_first = {
