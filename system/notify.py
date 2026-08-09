@@ -20,6 +20,8 @@ import json
 import os
 import subprocess
 import sys
+import urllib.error
+import urllib.request
 
 try:
     import model as _M
@@ -34,6 +36,7 @@ STATE = os.path.join(HERE, "notify_state.json")
 HKT = dt.timezone(dt.timedelta(hours=8))
 
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
+BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 SOURCE_ID = "telegram_bot_api__pipedream"
 TOOL = "telegram_bot_api-send-text-message-or-reply"
 
@@ -228,6 +231,31 @@ def settled_msg(led, bets):
 def send(text):
     if not CHAT_ID:
         raise RuntimeError("TELEGRAM_CHAT_ID 未設定")
+    if BOT_TOKEN:
+        body = json.dumps({
+            "chat_id": CHAT_ID,
+            "text": text,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": True,
+        }, ensure_ascii=False).encode("utf-8")
+        request = urllib.request.Request(
+            f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=20) as response:
+                result = json.loads(response.read().decode("utf-8"))
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+            raise RuntimeError(f"Telegram 直接發送失敗:{type(exc).__name__}") from exc
+        if not result.get("ok"):
+            raise RuntimeError(f"Telegram 直接發送失敗:{result.get('description', 'unknown')}")
+        return "telegram_bot_api_ok"
+
+    # Backward-compatible local fallback only. Production should always use
+    # the long-lived bot token so delivery does not depend on an expiring
+    # external-tool session.
     payload = json.dumps({
         "source_id": SOURCE_ID, "tool_name": TOOL,
         "arguments": {"chatId": CHAT_ID, "text": text, "parse_mode": "HTML"},

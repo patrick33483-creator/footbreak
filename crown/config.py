@@ -65,8 +65,16 @@ def settings() -> Settings:
         titan_vip_base=os.getenv("CROWN_TITAN_VIP_BASE", os.getenv("TITAN_VIP_BASE", "http://vip.titan007.com")).rstrip("/"),
         titan_company_id=os.getenv("CROWN_TITAN_COMPANY_ID", "3").strip(),
         telegram_enabled=_flag("CROWN_TELEGRAM_ENABLED", False),
-        telegram_bot_token=(os.getenv("CROWN_TELEGRAM_BOT_TOKEN") or "").strip() or None,
-        telegram_chat_id=(os.getenv("CROWN_TELEGRAM_CHAT_ID") or "").strip() or None,
+        telegram_bot_token=(
+            os.getenv("CROWN_TELEGRAM_BOT_TOKEN")
+            or os.getenv("TELEGRAM_BOT_TOKEN")
+            or ""
+        ).strip() or None,
+        telegram_chat_id=(
+            os.getenv("CROWN_TELEGRAM_CHAT_ID")
+            or os.getenv("TELEGRAM_CHAT_ID")
+            or ""
+        ).strip() or None,
         confidence_floor=_number("CROWN_CONF_FLOOR", 58.0),
         min_edge=_number("CROWN_MIN_EDGE", 0.02),
         bankroll=_number("CROWN_BANKROLL", 50000.0),
