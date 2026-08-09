@@ -35,38 +35,55 @@ jobs:
             -p ActiveState -p SubState -p ExecMainStartTimestamp -p ExecMainPID
           echo "=== Crown production tick ==="
           /opt/footbreak/deploy/crown-run.sh tick
-          echo "=== Crown live mapping diagnostic ==="
-          /opt/footbreak/.venv/bin/python3 -m crown.diagnose_matching --limit 2000 > /tmp/crown-mapping.json
+          echo "=== Crown live HKJC mapping diagnostic ==="
           /opt/footbreak/.venv/bin/python3 - <<'PY'
-          import json
           from collections import Counter
-          from pathlib import Path
+          from datetime import datetime
 
-          data = json.loads(Path("/tmp/crown-mapping.json").read_text())
-          fixtures = data.get("fixtures") or []
-          coverage = data.get("hkjc_coverage") or []
-          hkjc_ids = {
-              str(row.get("bridge", {}).get("hkjc_id"))
-              for row in fixtures
-              if row.get("bridge", {}).get("hkjc_id")
-          }
-          full_ids = {
-              str(row.get("bridge", {}).get("hkjc_id"))
-              for row in fixtures
-              if row.get("bridge", {}).get("hkjc_id")
-              and row.get("bridge", {}).get("pinnapi_id")
-          }
-          reasons = Counter(
-              str(row.get("bridge", {}).get("reason") or "matched")
-              for row in fixtures
-          )
+          from crown.common import HKT
+          from crown.config import settings
+          from crown.engine import _event_from_titan
+          from crown.hkjc import event_from_match, fetch_matches
+          from crown.matching import same_event_for_hkjc
+          from crown.titan import TitanClient
+
+          config = settings()
+          now = datetime.now(HKT)
+          titan_rows = TitanClient(config).fixtures()
+          titan_events = [
+              event for row in titan_rows
+              if (event := _event_from_titan(row)).kickoff > now
+          ]
+          hkjc_events = [
+              event for row in fetch_matches()
+              if (event := event_from_match(row)) and event.kickoff > now
+          ]
+          linked = set()
+          reasons = Counter()
+          for titan in titan_events:
+              match = same_event_for_hkjc(titan, hkjc_events)
+              if match.event:
+                  linked.add(str(match.event.id))
+              else:
+                  reasons[match.reason or "unknown"] += 1
+          unmatched = [
+              {
+                  "id": event.id,
+                  "home": event.home,
+                  "away": event.away,
+                  "kickoff": event.kickoff.isoformat(),
+              }
+              for event in hkjc_events
+              if str(event.id) not in linked
+          ]
           print({
-              "titan": data.get("counts", {}).get("titan"),
-              "hkjc_upcoming": len(coverage),
-              "pinnapi": data.get("counts", {}).get("pinnapi"),
-              "unique_hkjc_linked_to_titan": len(hkjc_ids),
-              "unique_hkjc_full_bridge": len(full_ids),
+              "titan": len(titan_rows),
+              "titan_upcoming": len(titan_events),
+              "hkjc_upcoming": len(hkjc_events),
+              "unique_hkjc_linked_to_titan": len(linked),
+              "unmatched_hkjc_count": len(unmatched),
               "top_reasons": reasons.most_common(8),
+              "unmatched_hkjc": unmatched,
           })
           PY
           echo "=== Crown dashboard summary ==="
