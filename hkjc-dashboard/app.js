@@ -852,47 +852,56 @@ function accPanel() {
 
 function renderFc() {
   const V = $('#viewFc');
-  let rows = LIST.filter((m) => m.fc);
-  if (FCHI) rows = rows.filter((m) => (m.conviction || 0) >= 58);
-  if (FCQ) {
-    rows = rows.filter((m) => [m.home, m.away, m.home_en, m.away_en, m.league]
-      .some((x) => String(x || '').toLowerCase().includes(FCQ)));
-  }
-  const key = {
-    conv: (m) => -(m.conviction || 0),
-    ko: (m) => kt(m.kickoff_hkt),
-    total: (m) => -(m.fc.total || 0),
-    sup: (m) => -Math.abs(m.fc.sup || 0),
-    edge: (m) => -Math.max(...m.fc.p),
-  }[FCSORT];
-  rows = rows.slice().sort((a, b) => (key(a) - key(b)) || (kt(a.kickoff_hkt) - kt(b.kickoff_hkt)));
+  const payload = DATA.prediction_history || { rows: [], stats: {} };
+  const rows = payload.rows || [], s = payload.stats || {};
+  const accuracy = s.accuracy == null ? '待賽果' : pc(s.accuracy, 1);
+  const K = [
+    ['記錄賽事', s.matches || 0, ''],
+    ['階段預測', s.predictions || 0, 'amber'],
+    ['已核對', s.graded || 0, ''],
+    ['待賽果', s.pending || 0, ''],
+    ['命中', s.hits || 0, 'good'],
+    ['命中率', accuracy, s.accuracy == null ? '' : s.accuracy >= .5 ? 'good' : 'bad'],
+  ];
+  const stageSummary = ['首預', 'T-30', 'T-5'].map((stage) => {
+    const x = (s.by_stage || {})[stage] || {};
+    return `<span class="hist-stage"><b>${stage}</b> ${
+      x.accuracy == null ? '待累積' : `${pc(x.accuracy, 1)} (${x.hits}/${x.graded})`
+    }</span>`;
+  }).join('');
+  const body = rows.map((r) => `<tr>
+    <td class="mono nowrap">${r.kickoff ? `${hkDay(r.kickoff)} ${hkClock(r.kickoff)}` : '—'}</td>
+    <td>${esc(r.home)} <span class="dim">v</span> ${esc(r.away)}
+      <div class="cell-sub">${esc(r.league || '')}</div></td>
+    <td><span class="fx-tag ${TAG[r.stage] || 'tag-wait'}">${esc(r.stage || '—')}</span>
+      <div class="cell-sub mono">${r.predicted_at ? hkStamp(r.predicted_at) : '—'}</div></td>
+    <td><b class="forecast-pick">${esc(r.forecast)}</b>
+      <div class="cell-sub">最高機率 ${pc(r.probability, 1)}${r.likely_score ? ` · 最可能 ${esc(r.likely_score)}` : ''}</div></td>
+    <td class="${convClass(r.conviction)}">${f2(r.conviction)}</td>
+    <td>${r.simulated_bet
+      ? `<span class="stpill pending">有模擬注</span><div class="cell-sub">${esc(r.bet_label || '')}</div>`
+      : `<span class="stpill voided">冇落注</span><div class="cell-sub hist-reason">${esc(r.no_bet_reason || '未達條件')}</div>`}</td>
+    <td>${r.actual
+      ? `<span class="respill ${r.correct ? 'r-w' : 'r-l'}">${r.correct ? '命中' : '落空'}</span>
+         <div class="cell-sub">${esc(r.actual)} · <span class="mono">${esc(r.score)}</span></div>`
+      : '<span class="stpill pending">待賽果</span>'}</td>
+  </tr>`).join('');
 
-  V.innerHTML = `
-  <h1 class="pg-h">純預測 <span class="sub">${rows.length} / ${LIST.filter((m) => m.fc).length} 場 · 唔理 EV、唔理有冇注</span></h1>
-  <div class="fc-note">呢版係模型嘅<b>原始輸出</b>:每場我估幾多比幾多、入球同角球嘅完整分佈。基礎機率擬合自銳利去水盤,所以呢啲數同市場共識高度重疊 —— 佢哋唔係「我贏過市場」嘅訊號,而係一份去咗水、有分佈嘅共識。單一比分機率通常只得 7–15%,可靠嘅係<b>分佈同區間</b>,唔係邊個比分。</div>
-  <div class="fc-bar">
-    <input id="fcQ" class="search" type="search" placeholder="搜尋球隊 / 聯賽…" value="${esc(FCQ)}" autocomplete="off">
-    <div class="chips">${FCSORTS.map(([k, l]) =>
-    `<button class="chip${FCSORT === k ? ' is-on' : ''}" data-s="${k}">${l}</button>`).join('')}</div>
-    <button class="chip${FCHI ? ' is-on' : ''}" id="fcHi">只睇信念 ≥58</button>
+  V.innerHTML = `<div class="ledger-head">
+    <h1 class="pg-h">純預測紀錄 <span class="sub">有冇落注都照記 · 準確率與模擬倉分開</span></h1>
+    <div class="kpis wide">${K.map(([l, v, c]) =>
+      `<div class="kpi"><span class="kpi-lbl">${l}</span><span class="kpi-val ${c}">${v}</span></div>`).join('')}</div>
   </div>
-  ${accPanel()}
-  <div class="fc-list">${rows.length ? rows.map(fcCard).join('') : '<div class="empty">冇符合嘅賽事</div>'}</div>`;
-
-  const q = $('#fcQ');
-  q.oninput = (e) => {
-    FCQ = e.target.value.trim().toLowerCase();
-    const pos = e.target.selectionStart;
-    renderFc();
-    const n = $('#fcQ'); n.focus(); n.setSelectionRange(pos, pos);
-  };
-  $$('#viewFc .fc-bar .chip[data-s]').forEach((b) => {
-    b.onclick = () => { FCSORT = b.dataset.s; renderFc(); };
-  });
-  $('#fcHi').onclick = () => { FCHI = !FCHI; renderFc(); };
-  $$('#viewFc .fcc').forEach((el) => {
-    el.ondblclick = () => { SEL = el.dataset.id; VIEW = 'pred'; render(); };
-  });
+  <div class="card history-note">
+    <div class="history-stage-summary">${stageSummary}</div>
+    <p class="mx-note">每個階段以當時主勝／和局／客勝最高機率作正式方向，並保留信念分、最高機率、最可能比分同唔落注原因。賽果返嚟後先計命中，未完場唔當輸。</p>
+  </div>
+  <div class="card"><h2 class="card-h">全量紀錄 <span class="sub">${rows.length} 筆</span></h2>
+    <div class="tbl-wrap"><table class="t history-table">
+      <tr><th>開賽</th><th>賽事</th><th>階段</th><th>我估</th><th>信念</th><th>模擬注</th><th>賽果核對</th></tr>
+      ${body || '<tr><td colspan="7" class="empty2">未有預測紀錄，完成首預後會自動累積。</td></tr>'}
+    </table></div>
+  </div>`;
 }
 
 /* ══════════════════════ 模擬倉 ══════════════════════ */

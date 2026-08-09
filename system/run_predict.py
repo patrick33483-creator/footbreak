@@ -84,6 +84,60 @@ def known_fixture_ids() -> dict:
     }
 
 
+def pending_watch_match_ids(horizon_min: float = 90.0) -> list[str]:
+    """Return tracked HKJC IDs still needing a timed stage soon.
+
+    HKJC's unfiltered board can temporarily omit a fixture near kickoff even
+    though a direct ``matchIds`` query still returns it.  The ledger is the
+    durable schedule, so due-mode ticks use it to request those fixtures by ID
+    instead of silently losing their T-5 pass.
+    """
+    fp = os.path.join(HERE, "sim_ledger.json")
+    if not os.path.exists(fp):
+        return []
+    try:
+        with open(fp, encoding="utf-8") as fh:
+            watch = (json.load(fh).get("watch") or {})
+    except Exception:
+        return []
+    now = dt.datetime.now(dt.timezone.utc)
+    pending = []
+    for mid, row in watch.items():
+        done = {stage.get("stage") for stage in (row.get("stages") or [])}
+        if "T-5" in done:
+            continue
+        try:
+            kickoff = dt.datetime.fromisoformat(str(row.get("kickoff") or ""))
+        except ValueError:
+            continue
+        if kickoff.tzinfo is None:
+            kickoff = kickoff.replace(tzinfo=HKT)
+        mins = (kickoff.astimezone(dt.timezone.utc) - now).total_seconds() / 60
+        if WIN_T5[0] <= mins <= horizon_min:
+            pending.append(str(mid))
+    return pending
+
+
+def fetch_matches_with_due_recovery(mode: str, horizon_min: float) -> list[dict]:
+    """Fetch the live board, then recover near-kickoff tracked rows by ID."""
+    board = H.fetch_matches()
+    by_id = {str(row.get("id")): row for row in board if row.get("id") is not None}
+    if mode != "due":
+        return list(by_id.values())
+    missing = [mid for mid in pending_watch_match_ids(horizon_min) if mid not in by_id]
+    recovered = 0
+    for start in range(0, len(missing), 50):
+        rows = H.fetch_matches(match_ids=missing[start:start + 50])
+        for row in rows:
+            mid = str(row.get("id") or "")
+            if mid and mid not in by_id:
+                by_id[mid] = row
+                recovered += 1
+    if missing:
+        print(f"HKJC 全板漏咗 {len(missing)} 場待跑賽事；按 match ID 補回 {recovered} 場")
+    return list(by_id.values())
+
+
 def due_now(mins: float, done: set) -> str | None:
     """依家應該幫呢場做邊個階段?已做過就回 None。"""
     if WIN_T5[0] <= mins <= WIN_T5[1] and "T-5" not in done:
@@ -305,7 +359,10 @@ def main(match_ids=None, horizon_min=700, out="predictions.json",
          due   — 只做啱啱踏入 T-30 / T-5 窗口而又未做過嘅場
          all   — 唔理窗口,horizon 內全部重跑(除錯用)
     """
-    matches = [m for m in H.fetch_matches() if m.get("status") == "PREEVENT"]
+    matches = [
+        m for m in fetch_matches_with_due_recovery(mode, horizon_min)
+        if m.get("status") == "PREEVENT"
+    ]
     fixtures = S.list_fixtures()
     news_all = load_news_adj()
     snaps = load_hk_snaps()
@@ -321,7 +378,7 @@ def main(match_ids=None, horizon_min=700, out="predictions.json",
         if not ko:
             continue
         mins = (ko - dt.datetime.now(dt.timezone.utc)).total_seconds() / 60
-        if mins < 2 or mins > horizon_min:
+        if mins < WIN_T5[0] or mins > horizon_min:
             continue
 
         seen = done.get(mid, set())

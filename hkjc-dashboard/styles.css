@@ -452,6 +452,25 @@ table.t.bets td.good { color: var(--good); } table.t.bets td.amber { color: var(
 .stpill.settled { color: var(--good); }
 .stpill.voided { color: var(--ink-4); }
 
+/* ─── 全量純預測紀錄 ───────────────────── */
+.history-note { margin-bottom: var(--s4); }
+.history-stage-summary { display: flex; flex-wrap: wrap; gap: var(--s2); }
+.hist-stage {
+  display: inline-flex; gap: var(--s2); align-items: center;
+  padding: var(--s2) var(--s3); border: 1px solid var(--line);
+  border-radius: var(--radius-sm); color: var(--ink-3);
+  font: var(--text-xs)/1.4 var(--mono);
+}
+.hist-stage b { color: var(--amber); }
+.history-table { min-width: 920px; }
+.history-table tr { content-visibility: auto; contain-intrinsic-size: 0 58px; }
+.history-table td { vertical-align: top; }
+.forecast-pick { color: var(--amber); }
+.hist-reason {
+  max-width: 300px; white-space: normal;
+  overflow-wrap: anywhere; line-height: 1.45;
+}
+
 .histcell { padding: 0 !important; border-bottom: 0 !important; }
 .hist-panel { display: none; padding: var(--s4) var(--s4) var(--s4) var(--s8); background: var(--bg-2); border-bottom: 1px solid var(--line); }
 .hist-panel.open { display: block; }

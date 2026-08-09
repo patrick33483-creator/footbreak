@@ -131,6 +131,143 @@ def forecast(r):
     }
 
 
+WDL_LABELS = ("主勝", "和局", "客勝")
+HISTORY_STAGES = ("首預", "T-30", "T-5")
+
+
+def build_prediction_history(watch, bets, accuracy):
+    """把足破全量三段預測轉成皇冠儀表板同款紀錄。
+
+    watch 係正式預測來源；accuracy 只補賽果與評分。模擬注與純預測
+    仍然分開，只有實際建立過注單嘅階段先標示「有模擬注」。
+    """
+    watch = watch or {}
+    bets = bets or []
+    accuracy = accuracy or {}
+
+    scored = {}
+    match_results = {}
+    for match in accuracy.get("matches") or []:
+        mid = str(match.get("match_id"))
+        match_results[mid] = match
+        for stage_score in match.get("stages") or []:
+            stage = stage_score.get("stage")
+            if stage:
+                scored[(mid, stage)] = stage_score
+
+    bet_by_stage = {}
+    for bet in bets:
+        mid = str(bet.get("match_id"))
+        stage = bet.get("first_stage") or bet.get("stage") or "T-5"
+        bet_by_stage.setdefault((mid, stage), bet)
+
+    rows = []
+    seen = set()
+
+    def add_row(mid, match, stage, snap=None):
+        key = (mid, stage)
+        if key in seen:
+            return
+        seen.add(key)
+        snap = snap or {}
+        score = scored.get(key) or {}
+        result = match_results.get(mid) or {}
+
+        fc = None
+        if snap.get("final"):
+            try:
+                fc = forecast(snap)
+            except Exception:
+                fc = None
+        probs = (fc or {}).get("p") or []
+        pick_idx = score.get("wdl_pick")
+        if pick_idx is None and probs:
+            pick_idx = max(range(len(probs)), key=lambda i: probs[i])
+        probability = score.get("wdl_pmax")
+        if probability is None and pick_idx is not None and len(probs) > pick_idx:
+            probability = probs[pick_idx]
+
+        actual_idx = score.get("wdl_act")
+        actual = (WDL_LABELS[actual_idx]
+                  if isinstance(actual_idx, int) and 0 <= actual_idx < len(WDL_LABELS)
+                  else None)
+        bet = bet_by_stage.get(key)
+        no_bet_reason = snap.get("no_bet_reason")
+        if not no_bet_reason and not bet:
+            no_bet_reason = "未達模擬投注條件"
+
+        rows.append({
+            "match_id": mid,
+            "home": match.get("home"),
+            "away": match.get("away"),
+            "league": match.get("league"),
+            "kickoff": match.get("kickoff"),
+            "stage": stage,
+            "predicted_at": snap.get("ts"),
+            "forecast": (WDL_LABELS[pick_idx]
+                         if isinstance(pick_idx, int) and 0 <= pick_idx < len(WDL_LABELS)
+                         else "未能計算"),
+            "probability": probability,
+            "likely_score": ((fc or {}).get("tops") or [{}])[0].get("s")
+                            or score.get("score_top"),
+            "conviction": snap.get("conviction", score.get("conf")),
+            "simulated_bet": bool(bet),
+            "bet_label": bet.get("label") if bet else None,
+            "no_bet_reason": no_bet_reason,
+            "actual": actual,
+            "score": result.get("score") or score.get("score_act"),
+            "correct": bool(score.get("wdl_hit")) if actual else None,
+            "result_status": "已核對" if actual else "待賽果",
+            "wdl_brier": score.get("wdl_brier"),
+            "wdl_ll": score.get("wdl_ll"),
+        })
+
+    for mid, match in watch.items():
+        mid = str(mid)
+        for snap in match.get("stages") or []:
+            stage = snap.get("stage")
+            if stage in HISTORY_STAGES:
+                add_row(mid, match, stage, snap)
+
+    # accuracy_history 係全量留存。就算舊 watch 日後被整理，已核對紀錄都不會消失。
+    for match in accuracy.get("matches") or []:
+        mid = str(match.get("match_id"))
+        for stage_score in match.get("stages") or []:
+            stage = stage_score.get("stage")
+            if stage in HISTORY_STAGES:
+                add_row(mid, match, stage)
+
+    rows.sort(key=lambda r: (str(r.get("kickoff") or ""),
+                             str(r.get("predicted_at") or "")), reverse=True)
+    graded_rows = [r for r in rows if r.get("actual")]
+    hits = sum(1 for r in graded_rows if r.get("correct"))
+
+    by_stage = {}
+    for stage in HISTORY_STAGES:
+        stage_rows = [r for r in rows if r.get("stage") == stage]
+        stage_graded = [r for r in stage_rows if r.get("actual")]
+        stage_hits = sum(1 for r in stage_graded if r.get("correct"))
+        by_stage[stage] = {
+            "predictions": len(stage_rows),
+            "graded": len(stage_graded),
+            "hits": stage_hits,
+            "accuracy": (stage_hits / len(stage_graded)) if stage_graded else None,
+        }
+
+    return {
+        "rows": rows,
+        "stats": {
+            "matches": len({r.get("match_id") for r in rows}),
+            "predictions": len(rows),
+            "graded": len(graded_rows),
+            "pending": len(rows) - len(graded_rows),
+            "hits": hits,
+            "accuracy": (hits / len(graded_rows)) if graded_rows else None,
+            "by_stage": by_stage,
+        },
+    }
+
+
 # --------------------------------------------------------- 讓球標籤正規化
 # 馬會 HDC condition 係主隊視角,舊記錄嘅 label 直接印咗原文,買客隊時
 # 容易被誤讀。呢層純顯示改寫,唔會動 bet_id / condition / 結算邏輯。
@@ -329,6 +466,17 @@ def main():
                 acc = json.load(_f)
         except Exception:
             acc = None
+    acc_history = acc
+    _ahp = os.path.join(HERE, "accuracy_history.json")
+    if os.path.exists(_ahp):
+        try:
+            with open(_ahp, encoding="utf-8") as _f:
+                acc_history = json.load(_f)
+        except Exception:
+            acc_history = acc
+    prediction_history = build_prediction_history(
+        watch, bets, acc_history
+    )
 
     out = {
         "generated_at": dt.datetime.now(HKT).isoformat(timespec="seconds"),
@@ -336,6 +484,7 @@ def main():
         "matches": fix_hdc(preds),
         "ledger": fix_hdc(ledger),
         "accuracy": acc,
+        "prediction_history": prediction_history,
     }
     os.makedirs(os.path.dirname(OUT), exist_ok=True)
     json.dump(out, open(OUT, "w", encoding="utf-8"), ensure_ascii=False,
