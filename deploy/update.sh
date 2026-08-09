@@ -32,7 +32,7 @@ if [ "$BEFORE" = "$AFTER" ]; then
   echo "  已經係最新($AFTER),冇嘢要做"
 else
   echo "  $BEFORE → $AFTER"
-  git --no-pager log --oneline "$BEFORE..$AFTER" | head -20
+  git --no-pager log --oneline "$BEFORE..$AFTER" | sed -n '1,20p'
 fi
 
 echo "▸ 同步 Python 依賴"
@@ -79,4 +79,4 @@ nginx -t
 systemctl reload nginx || systemctl restart nginx
 
 echo "✅ 部署完成 @ $(date '+%F %T %Z')"
-systemctl list-timers 'footbreak*' --no-pager | head -5
+systemctl list-timers 'footbreak*' --no-pager | sed -n '1,5p'
