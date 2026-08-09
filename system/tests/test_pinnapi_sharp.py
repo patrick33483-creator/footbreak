@@ -122,7 +122,7 @@ class FootbreakPinnapiSharpTests(unittest.TestCase):
             with self.assertRaises(sharp.ProviderError):
                 sharp.fetch_odds(["123"])
 
-    def test_prediction_failure_does_not_replace_existing_predictions(self) -> None:
+    def test_prediction_failure_persists_fail_closed_stage_decision(self) -> None:
         kickoff = datetime.now(timezone.utc) + timedelta(minutes=30)
         match = {
             "id": "m1", "status": "PREEVENT",
@@ -141,26 +141,40 @@ class FootbreakPinnapiSharpTests(unittest.TestCase):
                      patch.object(run_predict.S, "list_fixtures", return_value=[fixture]), \
                      patch.object(run_predict.S, "match_fixture", return_value=(fixture, 1.0)), \
                      patch.object(run_predict, "analyse_match", side_effect=sharp.ProviderError("PinnAPI down")):
-                    with self.assertRaisesRegex(RuntimeError, "sharp/prediction failed"):
-                        run_predict.main(mode="due", horizon_min=90)
-                self.assertEqual(target.read_text(encoding="utf-8"), '[{"match_id":"existing"}]')
+                    results = run_predict.main(mode="due", horizon_min=90)
+                self.assertEqual(len(results), 1)
+                self.assertEqual(results[0]["match_id"], "m1")
+                self.assertIsNone(results[0]["pick"])
+                self.assertIn("即時數據分析失敗", results[0]["no_bet_reason"])
+                saved = target.read_text(encoding="utf-8")
+                self.assertIn('"match_id": "m1"', saved)
+                self.assertNotIn('"match_id":"existing"', saved)
             finally:
                 run_predict.HERE, run_predict.HK_SNAP = previous_here, previous_snap
 
-    def test_unusable_sharp_model_is_a_failure_not_a_silent_skip(self) -> None:
+    def test_unusable_sharp_model_persists_fail_closed_stage_decision(self) -> None:
         kickoff = datetime.now(timezone.utc) + timedelta(minutes=30)
         match = {
             "id": "m1", "status": "PREEVENT",
             "homeTeam": {"name_ch": "主隊"}, "awayTeam": {"name_ch": "客隊"},
         }
         fixture = {"id": "p1", "home_team_display": "Home", "away_team_display": "Away"}
-        with patch.object(run_predict.H, "fetch_matches", return_value=[match]), \
-             patch.object(run_predict.H, "parse_kickoff", return_value=kickoff), \
-             patch.object(run_predict.S, "list_fixtures", return_value=[fixture]), \
-             patch.object(run_predict.S, "match_fixture", return_value=(fixture, 1.0)), \
-             patch.object(run_predict, "analyse_match", return_value={"skip": "no full-match lines"}):
-            with self.assertRaisesRegex(RuntimeError, "produced no usable model"):
-                run_predict.main(mode="due", horizon_min=90)
+        with tempfile.TemporaryDirectory() as directory:
+            previous_here, previous_snap = run_predict.HERE, run_predict.HK_SNAP
+            try:
+                run_predict.HERE = directory
+                run_predict.HK_SNAP = os.path.join(directory, "hk_snapshots.json")
+                with patch.object(run_predict.H, "fetch_matches", return_value=[match]), \
+                     patch.object(run_predict.H, "parse_kickoff", return_value=kickoff), \
+                     patch.object(run_predict.S, "list_fixtures", return_value=[fixture]), \
+                     patch.object(run_predict.S, "match_fixture", return_value=(fixture, 1.0)), \
+                     patch.object(run_predict, "analyse_match", return_value={"skip": "no full-match lines"}):
+                    results = run_predict.main(mode="due", horizon_min=90)
+                self.assertEqual(len(results), 1)
+                self.assertIsNone(results[0]["pick"])
+                self.assertIn("無可用模型", results[0]["no_bet_reason"])
+            finally:
+                run_predict.HERE, run_predict.HK_SNAP = previous_here, previous_snap
 
     def test_run_all_exits_before_ledger_or_dashboard_steps_on_prediction_failure(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

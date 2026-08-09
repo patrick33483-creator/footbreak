@@ -370,6 +370,34 @@ def pick_one(res: dict, min_ev=0.015, conf_floor=P.CONF_FLOOR):
     return best, ""
 
 
+def failed_prediction(m: dict, stage: str, mins: float, reason: str) -> dict:
+    """Persist a fail-closed timed decision instead of leaving the UI waiting."""
+    ko = H.parse_kickoff(m)
+    return {
+        "match_id": m.get("id"),
+        "home": m.get("homeTeam", {}).get("name_ch"),
+        "away": m.get("awayTeam", {}).get("name_ch"),
+        "home_en": m.get("homeTeam", {}).get("name_en"),
+        "away_en": m.get("awayTeam", {}).get("name_en"),
+        "fixture_id": None,
+        "league_id": None,
+        "league": m.get("tournament", {}).get("nameCH"),
+        "kickoff_hkt": ko.astimezone(HKT).strftime("%Y-%m-%d %H:%M"),
+        "mins_to_ko": round(mins, 1),
+        "stage": stage,
+        "conviction": 0.0,
+        "candidates": [],
+        "pick": None,
+        "lead_view": None,
+        "can_bet": stage == "T-5",
+        "no_bet_reason": reason,
+        "final": None,
+        "outcome": None,
+        "hk_fingerprint": hk_odds_fingerprint(m),
+        "n_hk_lines": 0,
+    }
+
+
 def main(match_ids=None, horizon_min=700, out="predictions.json",
          mode="due", force=False, stage_filter=None):
     """mode:
@@ -394,7 +422,6 @@ def main(match_ids=None, horizon_min=700, out="predictions.json",
     fixture_ids = {} if force else known_fixture_ids()
     fixtures_by_id = {str(fx.get("id")): fx for fx in fixtures if fx.get("id") is not None}
     results, skipped, failures = [], 0, 0
-    failure_messages: list[str] = []
     for m in matches:
         mid = str(m.get("id"))
         if match_ids and mid not in match_ids:
@@ -430,9 +457,13 @@ def main(match_ids=None, horizon_min=700, out="predictions.json",
             fx, sc = S.match_fixture(m, fixtures, ko)
         if not fx:
             failures += 1
-            failure_messages.append(
-                f"PinnAPI fixture matching failed for "
-                f"{m['homeTeam']['name_ch']} v {m['awayTeam']['name_ch']} ({mid})"
+            results.append(
+                failed_prediction(
+                    m, stage, mins,
+                    "PinnAPI 賽事配對失敗，T-5 資料不足，最終決定不下注"
+                    if stage == "T-5"
+                    else "PinnAPI 賽事配對失敗，本階段只記錄資料不足",
+                )
             )
             print(
                 f"{mins:6.0f}m {stage:4s} 跳過 "
@@ -445,9 +476,12 @@ def main(match_ids=None, horizon_min=700, out="predictions.json",
                               prev_snap=snaps.get(mid), stage_override=stage)
         except Exception as exc:
             failures += 1
-            failure_messages.append(
-                f"sharp/prediction failed for {m['homeTeam']['name_ch']} v "
-                f"{m['awayTeam']['name_ch']} ({mid})"
+            results.append(
+                failed_prediction(
+                    m, stage, mins,
+                    f"即時數據分析失敗（{type(exc).__name__}），"
+                    + ("T-5 最終決定不下注" if stage == "T-5" else "本階段記錄資料不足"),
+                )
             )
             print(
                 f"{mins:6.0f}m {stage:4s} 跳過 "
@@ -457,9 +491,12 @@ def main(match_ids=None, horizon_min=700, out="predictions.json",
             continue
         if r.get("skip"):
             failures += 1
-            failure_messages.append(
-                f"sharp/prediction produced no usable model for "
-                f"{m['homeTeam']['name_ch']} v {m['awayTeam']['name_ch']} ({mid}): {r['skip']}"
+            results.append(
+                failed_prediction(
+                    m, stage, mins,
+                    f"無可用模型（{r['skip']}），"
+                    + ("T-5 最終決定不下注" if stage == "T-5" else "本階段記錄資料不足"),
+                )
             )
             print(
                 f"{mins:6.0f}m {stage:4s} 跳過 "
@@ -472,10 +509,6 @@ def main(match_ids=None, horizon_min=700, out="predictions.json",
         remaining = (ko - dt.datetime.now(dt.timezone.utc)).total_seconds() / 60
         if remaining <= 0:
             failures += 1
-            failure_messages.append(
-                f"prediction expired before commit for "
-                f"{m['homeTeam']['name_ch']} v {m['awayTeam']['name_ch']} ({mid})"
-            )
             print(f"{stage:4s} 過期 {m['homeTeam']['name_ch']} v {m['awayTeam']['name_ch']} — 已開賽")
             continue
         r["mins_to_ko"] = remaining
@@ -494,11 +527,6 @@ def main(match_ids=None, horizon_min=700, out="predictions.json",
         print(f"{r['mins_to_ko']:6.0f}m {stage:4s} {flag} "
               f"{r['home'][:8]:9s}v {r['away'][:8]:9s} "
               f"信念{r['conviction']:4.1f}  {tag}")
-
-    # Preserve the last known-good output when every admitted fixture fails.
-    # If at least one succeeds, persist it and let unrelated failures retry.
-    if failures and not results:
-        raise RuntimeError(failure_messages[0])
 
     for r in results:
         snaps[str(r["match_id"])] = {

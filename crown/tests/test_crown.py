@@ -12,7 +12,7 @@ from unittest.mock import Mock, patch
 
 from crown.config import settings
 from crown.dashboard_data import build, write_dashboard_data
-from crown.engine import _candidates, _fresh, _hkjc_chl_candidates, _prediction, _refresh_crown_quote, _wdl_prediction
+from crown.engine import _candidates, _fresh, _hkjc_chl_candidates, _prediction, _refresh_crown_quote, _tick_rows_from_predictions, _wdl_prediction
 from crown.hkjc import fetch_official_results
 from crown.ledger import completed_stages, recompute_stats, stage_for, sync_prediction
 from crown.lines import parse_hkjc_handicap, parse_hkjc_total, settle_handicap, settle_total
@@ -519,6 +519,20 @@ class CrownSafetyTests(unittest.TestCase):
             self.assertEqual(merge_predictions(config, [update], now=now)[0]["stage"], "T-30")
             self.assertEqual(load_predictions(config)[0]["stage"], "T-30")
             self.assertEqual(merge_predictions(config, [], now=now)[0]["stage"], "T-30")
+
+    def test_tick_preflight_uses_only_due_local_cards(self) -> None:
+        predictions = [
+            {"match_id": "t5", "league": "L", "home": "A", "away": "B",
+             "kickoff_hkt": (self.now + timedelta(minutes=5)).isoformat()},
+            {"match_id": "later", "league": "L", "home": "C", "away": "D",
+             "kickoff_hkt": (self.now + timedelta(hours=2)).isoformat()},
+            {"match_id": "done", "league": "L", "home": "E", "away": "F",
+             "kickoff_hkt": (self.now + timedelta(minutes=5)).isoformat()},
+        ]
+        ledger = {"watch": {"done": {"matching_version": "current",
+                                     "stages": [{"stage": "T-5"}]}}}
+        rows = _tick_rows_from_predictions(predictions, ledger, self.now)
+        self.assertEqual([row["id"] for row in rows], ["t5"])
 
     def test_late_quote_refresh_never_rolls_back_t5_card(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

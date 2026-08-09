@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from typing import Any
 
-from .common import HKT, iso_hkt
+from .common import HKT, iso_hkt, parse_time
 from .config import Settings
 from .hkjc import event_from_match, fetch_matches, flatten_odds
 from .ledger import completed_stages, recompute_stats, stage_for, sync_prediction
@@ -26,6 +26,38 @@ def _event_from_titan(row: dict[str, Any]) -> Event:
 def _event_from_pinnapi(row: dict[str, Any]) -> Event:
     return Event(str(row["id"]), str(row["league"]), str(row["home"]), str(row["away"]),
                  datetime.fromtimestamp(float(row["kickoff"]), HKT), {"raw": row})
+
+
+def _tick_rows_from_predictions(
+    predictions: list[dict[str, Any]],
+    ledger: dict[str, Any],
+    now: datetime,
+) -> list[dict[str, Any]]:
+    """Select only locally known Crown cards whose timed stage is due."""
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for card in predictions:
+        match_id = str(card.get("match_id") or "")
+        kickoff = parse_time(card.get("kickoff_hkt") or card.get("kickoff"))
+        if not match_id or match_id in seen or kickoff is None:
+            continue
+        minutes = (kickoff - now).total_seconds() / 60
+        done = completed_stages(
+            (ledger.get("watch") or {}).get(match_id, {}),
+            MATCHING_VERSION,
+        )
+        if not stage_for(minutes, False, done):
+            continue
+        rows.append({
+            "id": match_id,
+            "league": card.get("league") or "",
+            "home": card.get("home") or "",
+            "away": card.get("away") or "",
+            "kickoff": kickoff,
+        })
+        seen.add(match_id)
+    rows.sort(key=lambda row: row["kickoff"])
+    return rows
 
 
 def _line_key(market: str, line: float | None) -> tuple[str, int | None]:
@@ -380,16 +412,30 @@ def run(mode: str, config: Settings) -> dict[str, Any]:
         from .settle import settle_due
         with state_lock(config):
             return settle_due(config)
+    ledger = load_ledger(config)
+    existing_predictions = load_predictions(config)
+    if mode == "tick":
+        titan_rows = _tick_rows_from_predictions(
+            existing_predictions, ledger, datetime.now(HKT)
+        )
+        if not titan_rows:
+            return {
+                "ok": True, "mode": mode, "fast_noop": True,
+                "predictions": 0, "retained_predictions": len(existing_predictions),
+                "simulations_created": 0,
+            }
     titan_client, pinnapi_client = TitanClient(config), PinnapiClient(config)
-    titan_rows, pinnapi_rows, hkjc_rows = titan_client.fixtures(), pinnapi_client.fixtures(), fetch_matches()
+    if mode == "sweep":
+        titan_rows = titan_client.fixtures()
+    pinnapi_rows, hkjc_rows = pinnapi_client.fixtures(), fetch_matches()
     h_events = [(event_from_match(row), row) for row in hkjc_rows]
     h_events = [(event, row) for event, row in h_events if event]
     p_events = [_event_from_pinnapi(row) for row in pinnapi_rows]
-    ledger, predictions = load_ledger(config), []
+    predictions = []
     stage_predictions: list[dict[str, Any]] = []
     current_predictions = {
         str(row.get("match_id")): row
-        for row in load_predictions(config)
+        for row in existing_predictions
         if row.get("match_id")
     }
     refresh_quotes: dict[str, dict[str, Any]] = {}
