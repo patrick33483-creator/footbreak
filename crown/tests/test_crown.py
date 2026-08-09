@@ -239,6 +239,19 @@ class CrownSafetyTests(unittest.TestCase):
         self.assertEqual(len(candidates), 1)
         self.assertEqual(reasons, [])
 
+    def test_negative_ev_is_not_flattened_to_neutral_confidence(self) -> None:
+        crown = [
+            {"market": "HDC", "line": -0.25, "selection": "H", "odds": 1.80, "source_at": 1000},
+        ]
+        reference = [
+            {"market": "HDC", "line": -0.25, "selection": "H", "odds": 1.90, "source_at": 1000},
+            {"market": "HDC", "line": -0.25, "selection": "A", "odds": 2.00, "source_at": 1000},
+        ]
+        config = replace(settings(), source_max_age_seconds=90)
+        candidates, _ = _candidates(crown, reference, config, 1001, False)
+        self.assertLess(candidates[0]["ev"], 0)
+        self.assertLess(candidates[0]["conviction"], 50)
+
     def test_wdl_prediction_uses_complete_no_vig_moneyline(self) -> None:
         view = _wdl_prediction([
             {"market": "1X2", "selection": "H", "odds": 2.0},

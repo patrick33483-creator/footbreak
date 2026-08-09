@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import math
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from typing import Any
 
@@ -67,7 +68,9 @@ def _candidates(crown_prices: list[dict[str, Any]], pinnapi_prices: list[dict[st
         odds = float(crown["odds"])
         ev = probability * odds - 1
         kelly = max(0.0, (probability * odds - 1) / (odds - 1))
-        conviction = min(100.0, 50.0 + max(0.0, ev) * 500.0)
+        # Keep 50 as genuinely neutral instead of flattening every negative
+        # edge to the same score.  Positive-edge thresholds are unchanged.
+        conviction = max(0.0, min(100.0, 50.0 + ev * 500.0))
         candidates.append({
             "market": market, "code": market, "condition": f"{line:g}", "line": line, "side": side,
             "label": f"{market} {side} {line:g}", "odds": round(odds, 3), "prob": round(probability, 5),
@@ -200,6 +203,7 @@ def _refresh_crown_quote(
     previous: dict[str, Any],
     titan: dict[str, Any],
     titan_client: TitanClient,
+    crown_prices: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Refresh board identity and Crown prices without replaying a prediction stage.
 
@@ -221,7 +225,11 @@ def _refresh_crown_quote(
         "crown_quote_refreshed_at": iso_hkt(),
     })
     book_odds = dict(refreshed.get("book_odds") or {})
-    book_odds["crown"] = titan_client.crown_prices(event.id)
+    book_odds["crown"] = (
+        titan_client.crown_prices(event.id)
+        if crown_prices is None
+        else crown_prices
+    )
     refreshed["book_odds"] = book_odds
     if not book_odds["crown"]:
         refreshed["no_bet_reason"] = "皇冠公司盤口目前不可用；不顯示為皇冠有效賽事。"
@@ -250,6 +258,33 @@ def run(mode: str, config: Settings) -> dict[str, Any]:
         for row in load_predictions(config)
         if row.get("match_id")
     }
+    refresh_quotes: dict[str, list[dict[str, Any]]] = {}
+    if mode == "sweep":
+        refresh_rows = []
+        now = datetime.now(HKT)
+        for titan in titan_rows:
+            event = _event_from_titan(titan)
+            if not in_current_period(event.kickoff) or event.kickoff <= now:
+                continue
+            previous = current_predictions.get(event.id)
+            watch = ledger["watch"].get(event.id, {})
+            if previous is not None and "首預" in completed_stages(watch, MATCHING_VERSION):
+                refresh_rows.append(titan)
+        if refresh_rows:
+            # Titan's two quote pages per fixture are independent network
+            # reads.  A small bounded pool prevents a 100+ match refresh from
+            # blocking the two-minute T-30/T-5 worker for most of the window.
+            with ThreadPoolExecutor(max_workers=min(6, len(refresh_rows))) as pool:
+                futures = {
+                    pool.submit(titan_client.crown_prices, str(row["id"])): str(row["id"])
+                    for row in refresh_rows
+                }
+                for future in as_completed(futures):
+                    match_id = futures[future]
+                    try:
+                        refresh_quotes[match_id] = future.result()
+                    except Exception:
+                        refresh_quotes[match_id] = []
     mapping = {
         "titan_due": 0, "titan_to_hkjc_mapped": 0, "hkjc_to_pinnapi_mapped": 0,
         "direct_same_script_mapped": 0, "unmapped_titan_to_hkjc": 0, "unmapped_hkjc_to_pinnapi": 0,
@@ -269,7 +304,14 @@ def run(mode: str, config: Settings) -> dict[str, Any]:
             continue
         previous = current_predictions.get(event.id)
         if mode == "sweep" and previous is not None and "首預" in done:
-            predictions.append(_refresh_crown_quote(previous, titan, titan_client))
+            predictions.append(
+                _refresh_crown_quote(
+                    previous,
+                    titan,
+                    titan_client,
+                    refresh_quotes.get(event.id, []),
+                )
+            )
             continue
         stage = stage_for(minutes, mode == "sweep", done)
         if not stage:
