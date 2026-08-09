@@ -1,0 +1,36 @@
+name: 手動正式結算
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: production-settlement
+  cancel-in-progress: false
+
+jobs:
+  settle:
+    name: 結算足破及皇冠
+    runs-on: ubuntu-24.04
+    steps:
+      - name: 設定 SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: 執行兩套模擬系統結算
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh "$DEPLOY_USER@$DEPLOY_HOST" '
+            set -e
+            echo "=== Footbreak settlement ==="
+            sudo /opt/footbreak/deploy/run.sh settle
+            echo "=== Crown settlement ==="
+            sudo /opt/footbreak/deploy/crown-run.sh settle
+          '
