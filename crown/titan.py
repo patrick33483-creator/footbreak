@@ -44,12 +44,11 @@ def parse_titan_time(raw: str, yyyymmdd: str) -> datetime | None:
 def parse_schedule_page(source: str, yyyymmdd: str) -> list[dict[str, Any]]:
     fixtures = []
     for match in _ROW.finditer(source):
-        row_attrs = f"{match.group('attrs_before')} {match.group('attrs_after')}"
-        # Titan keeps hundreds of non-board fixtures in the HTML with
-        # display:none.  They are not part of the visible Crown board and
-        # must never be treated as priced Crown events.
-        if re.search(r"display\s*:\s*none", row_attrs, re.I):
-            continue
+        # The schedule page's initial CSS visibility is only its default
+        # league view. Selecting Crown in the page reveals additional rows
+        # that also carry valid company-id 3 prices, so fixture discovery
+        # must include both visible and initially hidden rows. The dashboard
+        # still requires a successfully parsed Crown quote before showing one.
         cells = [_text(cell) for cell in re.findall(r"<td[^>]*>[\s\S]*?</td>", match.group("body"), re.I)]
         if len(cells) < 7:
             continue

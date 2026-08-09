@@ -120,7 +120,8 @@ def _wdl_prediction(prices: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def _prediction(titan: dict[str, Any], bridge: BridgeMatch, h_match: dict[str, Any] | None,
-                stage: str, config: Settings, titan_client: TitanClient, pinnapi_client: PinnapiClient) -> dict[str, Any]:
+                stage: str, config: Settings, titan_client: TitanClient, pinnapi_client: PinnapiClient,
+                crown_snapshot: dict[str, Any] | None = None) -> dict[str, Any]:
     event = _event_from_titan(titan)
     minutes = round((event.kickoff - datetime.now(HKT)).total_seconds() / 60, 1)
     base = {
@@ -150,7 +151,7 @@ def _prediction(titan: dict[str, Any], bridge: BridgeMatch, h_match: dict[str, A
     # Crown is the board master.  Fetch and preserve its quote before any
     # HKJC/PinnAPI bridge decision so Crown-only fixtures can still be shown,
     # while edge calculation remains fail-closed without PinnAPI.
-    crown = titan_client.crown_prices(event.id)
+    crown = list((crown_snapshot or {}).get("prices") or []) if crown_snapshot is not None else titan_client.crown_prices(event.id)
     base["book_odds"]["crown"] = crown
     base["source_snapshot_at"] = iso_hkt()
     if not crown:
@@ -278,10 +279,7 @@ def run(mode: str, config: Settings) -> dict[str, Any]:
             event = _event_from_titan(titan)
             if not in_current_period(event.kickoff) or event.kickoff <= now:
                 continue
-            previous = current_predictions.get(event.id)
-            watch = ledger["watch"].get(event.id, {})
-            if previous is not None and "首預" in completed_stages(watch, MATCHING_VERSION):
-                refresh_rows.append(titan)
+            refresh_rows.append(titan)
         if refresh_rows:
             # Titan's two quote pages per fixture are independent network
             # reads.  A small bounded pool prevents a 100+ match refresh from
@@ -327,6 +325,17 @@ def run(mode: str, config: Settings) -> dict[str, Any]:
                 )
             )
             continue
+        crown_snapshot = refresh_quotes.get(event.id) if mode == "sweep" else None
+        if (
+            crown_snapshot is not None
+            and crown_snapshot.get("asian_ok")
+            and crown_snapshot.get("total_ok")
+            and not crown_snapshot.get("prices")
+        ):
+            # The fixture exists on Titan's complete schedule but Crown has
+            # neither supported market. Keep it off the Crown board and avoid
+            # unnecessary HKJC/PinnAPI matching until the next 30-minute sweep.
+            continue
         stage = stage_for(minutes, mode == "sweep", done)
         if not stage:
             continue
@@ -351,7 +360,16 @@ def run(mode: str, config: Settings) -> dict[str, Any]:
         # events remain DATA_MISSING and return before any edge calculation;
         # only the strict HKJC -> PinnAPI bridge can unlock pricing or a bet.
         h_row = next((row for candidate, row in h_events if bridge.hkjc.event and candidate.id == bridge.hkjc.event.id), None)
-        prediction = _prediction(titan, bridge, h_row, stage, config, titan_client, pinnapi_client)
+        prediction = _prediction(
+            titan,
+            bridge,
+            h_row,
+            stage,
+            config,
+            titan_client,
+            pinnapi_client,
+            crown_snapshot=crown_snapshot,
+        )
         emitted += sync_prediction(ledger, prediction, config)
         # The dashboard card keeps all completed stages while the top-level
         # fields remain the latest stage snapshot.  This also survives a later

@@ -299,7 +299,7 @@ class CrownSafetyTests(unittest.TestCase):
         prices = crown_prices_from_pages(html, None, "3", observed_at=100)
         self.assertEqual([(row["line"], row["odds"]) for row in prices], [(0.25, 1.96), (0.25, 1.92)])
 
-    def test_titan_schedule_ignores_hidden_non_board_rows(self) -> None:
+    def test_titan_schedule_includes_rows_revealed_by_crown_filter(self) -> None:
         source = """
         <tr sId="123"><td>瑞士超</td><td>08-09 20:00</td><td>未</td>
           <td>洛桑</td><td>-</td><td>年青人</td><td></td></tr>
@@ -307,7 +307,7 @@ class CrownSafetyTests(unittest.TestCase):
           <td>隱藏主隊</td><td>-</td><td>隱藏客隊</td><td></td></tr>
         """
         rows = parse_schedule_page(source, "20260809")
-        self.assertEqual([row["id"] for row in rows], ["123"])
+        self.assertEqual([row["id"] for row in rows], ["123", "999"])
 
     def test_stage_windows_and_simulated_ledger_are_idempotent(self) -> None:
         self.assertEqual(stage_for(120, True, set()), "首預")
