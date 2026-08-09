@@ -43,7 +43,88 @@ jobs:
           sample = fixtures[:12]
           key_paths = Counter()
           corner_events = []
+          corner_market_samples = []
           failures = []
+
+          def is_corner_event(event):
+              if not isinstance(event, dict):
+                  return False
+              text = " ".join(str(event.get(key) or "") for key in (
+                  "league_name", "league", "home", "away",
+                  "special_category", "special_units",
+              ))
+              return "corner" in text.lower()
+
+          def sanitise_market(market):
+              if not isinstance(market, dict):
+                  return None
+              prices = []
+              for price in market.get("prices") or []:
+                  if not isinstance(price, dict):
+                      continue
+                  prices.append({
+                      "name": price.get("name"),
+                      "points": price.get("points"),
+                      "price": price.get("price"),
+                      "status": price.get("status"),
+                      "participant_id": price.get("participant_id"),
+                  })
+              return {
+                  "market_keys": sorted(market.keys()),
+                  "type": market.get("type"),
+                  "key": market.get("key"),
+                  "name": market.get("name"),
+                  "status": market.get("status"),
+                  "prices": prices[:12],
+              }
+
+          def collect_corner_markets(raw, parent_event_id):
+              root = raw if isinstance(raw, dict) else {}
+              events = root.get("events") or []
+              if not isinstance(events, list):
+                  return
+              for event in events:
+                  if not is_corner_event(event):
+                      continue
+                  special_markets = event.get("special_markets") or {}
+                  periods = event.get("periods") or {}
+                  market_groups = {}
+                  if isinstance(special_markets, dict):
+                      market_groups.update(special_markets)
+                  if isinstance(periods, dict):
+                      for period_key, period in periods.items():
+                          if not isinstance(period, dict):
+                              continue
+                          for key in ("spreads", "totals", "money_line"):
+                              value = period.get(key)
+                              if value:
+                                  market_groups[f"{period_key}.{key}"] = value
+                  samples = {}
+                  for group, markets in market_groups.items():
+                      if isinstance(markets, dict):
+                          markets = [markets]
+                      if not isinstance(markets, list):
+                          continue
+                      cleaned = [
+                          sanitise_market(market)
+                          for market in markets[:8]
+                      ]
+                      samples[group] = [
+                          market for market in cleaned if market is not None
+                      ]
+                  corner_market_samples.append({
+                      "parent_event_id": parent_event_id,
+                      "corner_event_id": event.get("event_id") or event.get("id"),
+                      "league_name": event.get("league_name"),
+                      "home": event.get("home"),
+                      "away": event.get("away"),
+                      "starts": event.get("starts") or event.get("start_time"),
+                      "status": event.get("status"),
+                      "special_category": event.get("special_category"),
+                      "special_units": event.get("special_units"),
+                      "event_keys": sorted(event.keys()),
+                      "markets": samples,
+                  })
 
           def walk(value, path="root", event_id=""):
               if isinstance(value, dict):
@@ -103,6 +184,8 @@ jobs:
                       "full_match_keys": sorted(full.keys()),
                   })
                   walk(raw, path=f"root.{endpoint_name}", event_id=event_id)
+                  if endpoint_name == "markets_specials":
+                      collect_corner_markets(raw, event_id)
 
           interesting = [
               {"path": path, "seen": count}
@@ -116,6 +199,7 @@ jobs:
               "events_checked": len(checked),
               "failures": failures,
               "corner_mentions": corner_events,
+              "corner_market_samples": corner_market_samples,
               "market_paths": interesting,
               "event_schemas": checked,
               "credentials_printed": False,
