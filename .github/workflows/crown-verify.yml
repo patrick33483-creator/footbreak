@@ -47,8 +47,8 @@ jobs:
             echo "=== Crown maintenance sweep: pause tick timer ==="
             systemctl stop crown-tick.timer
             trap 'systemctl start crown-tick.timer' EXIT
-            while systemctl is-active --quiet crown-tick.service; do
-              echo "$(date '+%F %T') waiting for current Crown tick to finish"
+            while ! flock -n /var/lock/footbreak-crown.lock -c true; do
+              echo "$(date '+%F %T') waiting for Crown scan lock"
               sleep 15
             done
           fi
