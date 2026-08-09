@@ -25,7 +25,7 @@ from crown.pinnapi import parse_fixtures, parse_lines
 from crown.period import in_current_period, is_upcoming_in_current_period, period_bounds
 from crown.prediction_history import archive_watch, grade_history
 from crown.state import load_predictions, merge_predictions, save_predictions
-from crown.titan import crown_prices_from_pages
+from crown.titan import crown_prices_from_pages, parse_schedule_page
 
 
 class CrownSafetyTests(unittest.TestCase):
@@ -274,6 +274,28 @@ class CrownSafetyTests(unittest.TestCase):
         self.assertEqual(prices[0]["line"], -0.25)
         self.assertEqual(prices[0]["odds"], 1.95)
 
+    def test_titan_crown_parser_prefers_visible_current_odds(self) -> None:
+        html = """<tr data-id='3'>
+          <td oddstype='wholeLastOdds' style='display: none;'>0.02</td>
+          <td oddstype='wholeLastOdds' goals='-0.25' style='display: none;'>x</td>
+          <td oddstype='wholeLastOdds' style='display: none;'>7.14</td>
+          <td oddstype='wholeOdds'>0.96</td>
+          <td oddstype='wholeOdds' goals='-0.25'>x</td>
+          <td oddstype='wholeOdds'>0.92</td>
+        </tr>"""
+        prices = crown_prices_from_pages(html, None, "3", observed_at=100)
+        self.assertEqual([(row["line"], row["odds"]) for row in prices], [(0.25, 1.96), (0.25, 1.92)])
+
+    def test_titan_schedule_ignores_hidden_non_board_rows(self) -> None:
+        source = """
+        <tr sId="123"><td>瑞士超</td><td>08-09 20:00</td><td>未</td>
+          <td>洛桑</td><td>-</td><td>年青人</td><td></td></tr>
+        <tr style="display: none;" sId="999"><td>隱藏聯賽</td><td>08-09 21:00</td><td>未</td>
+          <td>隱藏主隊</td><td>-</td><td>隱藏客隊</td><td></td></tr>
+        """
+        rows = parse_schedule_page(source, "20260809")
+        self.assertEqual([row["id"] for row in rows], ["123"])
+
     def test_stage_windows_and_simulated_ledger_are_idempotent(self) -> None:
         self.assertEqual(stage_for(30, False, set()), "T-30")
         self.assertIsNone(stage_for(30, False, {"T-30"}))
@@ -349,17 +371,19 @@ class CrownSafetyTests(unittest.TestCase):
             self.assertEqual(S_IMODE(output.stat().st_mode), 0o644)
             self.assertNotEqual(output.parent, config.state_dir)
 
-    def test_dashboard_live_board_uses_hkjc_as_the_master_fixture_list(self) -> None:
+    def test_dashboard_live_board_uses_verified_crown_prices_as_the_master_list(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             config = replace(settings(), state_dir=root / "private-state", web_root=root / "web")
             kickoff = (datetime.now(self.now.tzinfo) + timedelta(hours=1)).isoformat()
             save_predictions(config, [
-                {"match_id": "linked", "kickoff_hkt": kickoff, "hkjc_match_id": "h1", "status": "DATA_MISSING"},
-                {"match_id": "crown-only", "kickoff_hkt": kickoff, "hkjc_match_id": None, "status": "DATA_MISSING"},
+                {"match_id": "crown-only", "kickoff_hkt": kickoff, "hkjc_match_id": None,
+                 "book_odds": {"crown": [{"market": "HDC"}]}, "status": "DATA_MISSING"},
+                {"match_id": "hkjc-only", "kickoff_hkt": kickoff, "hkjc_match_id": "h1",
+                 "book_odds": {"crown": []}, "status": "DATA_MISSING"},
             ])
             payload = build(config)
-            self.assertEqual([row["match_id"] for row in payload["matches"]], ["linked"])
+            self.assertEqual([row["match_id"] for row in payload["matches"]], ["crown-only"])
             self.assertEqual(payload["summary"]["crown_matches"], 1)
 
     def test_dashboard_includes_persisted_prediction_history(self) -> None:

@@ -140,17 +140,25 @@ def _prediction(titan: dict[str, Any], bridge: BridgeMatch, h_match: dict[str, A
         "execution": {"enabled": True, "mode": "simulation", "real_betting_enabled": False,
                       "reason": "Only T-5 can create an idempotent simulated bet; no order client exists."},
         "candidates": [], "pick": None, "lead_view": None, "status": "DATA_MISSING",
-        "verdict": "無法完整預測", "no_bet_reason": None, "book_odds": {"crown": {}, "hkjc_chl": _hkjc_chl(h_match)},
+        "verdict": "無法完整預測", "no_bet_reason": None, "book_odds": {"crown": [], "hkjc_chl": _hkjc_chl(h_match)},
         "outcome": None, "forecast": None, "probability": None, "likely_score": None,
         "prediction_source": None,
     }
+    # Crown is the board master.  Fetch and preserve its quote before any
+    # HKJC/PinnAPI bridge decision so Crown-only fixtures can still be shown,
+    # while edge calculation remains fail-closed without PinnAPI.
+    crown = titan_client.crown_prices(event.id)
+    base["book_odds"]["crown"] = crown
+    base["source_snapshot_at"] = iso_hkt()
+    if not crown:
+        base["no_bet_reason"] = "皇冠公司盤口目前不可用；不顯示為皇冠有效賽事。"
+        return base
     if not bridge.event:
         base["no_bet_reason"] = (
             "PinnAPI 無安全唯一同場對應；禁止計算 edge。"
             f" 映射診斷：{bridge.reason or 'unknown'}。"
         )
         return base
-    crown = titan_client.crown_prices(event.id)
     try:
         pinnapi = pinnapi_client.lines(bridge.event.id)
     except Exception as exc:
@@ -161,11 +169,9 @@ def _prediction(titan: dict[str, Any], bridge: BridgeMatch, h_match: dict[str, A
     base.update(_wdl_prediction(prices))
     now = time.time()
     candidates, reasons = _candidates(crown, prices, config, now, bool(pinnapi["timestamp_inferred"]))
-    base["book_odds"]["crown"] = crown
     base["pinnapi_source_at"] = pinnapi["source_at"]
     base["pinnapi_timestamp_inferred"] = pinnapi["timestamp_inferred"]
     base["pinnapi_timestamp_basis"] = pinnapi.get("timestamp_basis")
-    base["source_snapshot_at"] = iso_hkt()
     base["candidates"] = candidates[:12]
     base["lead_view"] = candidates[0] if candidates else None
     if not candidates:

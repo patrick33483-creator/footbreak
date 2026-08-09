@@ -13,7 +13,7 @@ from typing import Callable, Iterable
 
 from .team_aliases import LEAGUE_ALIAS_SEEDS, TEAM_ALIAS_SEEDS
 
-MATCHING_VERSION = "2026-08-09-hkjc-v4-observed-time"
+MATCHING_VERSION = "2026-08-09-crown-v5-board-source"
 KICKOFF_TOLERANCE_SECONDS = 10 * 60
 STRONG_NAME_KICKOFF_TOLERANCE_SECONDS = 90 * 60
 NAME_FLOOR = 0.72

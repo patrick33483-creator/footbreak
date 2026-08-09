@@ -12,7 +12,11 @@ from .common import HKT
 from .config import Settings
 from .lines import parse_titan_handicap, parse_titan_total
 
-_ROW = re.compile(r"<tr[^>]*sId=['\"](\d+)['\"][^>]*>([\s\S]*?)</tr>", re.I)
+_ROW = re.compile(
+    r"<tr\b(?P<attrs_before>[^>]*)\bsId=['\"](?P<id>\d+)['\"]"
+    r"(?P<attrs_after>[^>]*)>(?P<body>[\s\S]*?)</tr>",
+    re.I,
+)
 _TAG = re.compile(r"<[^>]*>")
 
 
@@ -40,14 +44,20 @@ def parse_titan_time(raw: str, yyyymmdd: str) -> datetime | None:
 def parse_schedule_page(source: str, yyyymmdd: str) -> list[dict[str, Any]]:
     fixtures = []
     for match in _ROW.finditer(source):
-        cells = [_text(cell) for cell in re.findall(r"<td[^>]*>[\s\S]*?</td>", match.group(2), re.I)]
+        row_attrs = f"{match.group('attrs_before')} {match.group('attrs_after')}"
+        # Titan keeps hundreds of non-board fixtures in the HTML with
+        # display:none.  They are not part of the visible Crown board and
+        # must never be treated as priced Crown events.
+        if re.search(r"display\s*:\s*none", row_attrs, re.I):
+            continue
+        cells = [_text(cell) for cell in re.findall(r"<td[^>]*>[\s\S]*?</td>", match.group("body"), re.I)]
         if len(cells) < 7:
             continue
         kickoff = parse_titan_time(cells[1], yyyymmdd)
         if not kickoff:
             continue
         score = re.search(r"(\d+)\s*-\s*(\d+)", cells[4])
-        fixtures.append({"id": match.group(1), "league": re.sub(r"\[\d+\]$", "", cells[0]).strip(),
+        fixtures.append({"id": match.group("id"), "league": re.sub(r"\[\d+\]$", "", cells[0]).strip(),
                          "kickoff": kickoff, "status": cells[2], "home": re.sub(r"\[[^\]]*]", "", cells[3]).strip(),
                          "away": re.sub(r"\[[^\]]*]", "", cells[5]).strip(),
                          "home_score": int(score.group(1)) if score else None,
@@ -56,8 +66,18 @@ def parse_schedule_page(source: str, yyyymmdd: str) -> list[dict[str, Any]]:
 
 
 def _row_triple(row: str) -> tuple[float, float, float] | None:
-    for kind in ("wholeLastOdds", "wholeOdds"):
-        cells = re.findall(rf"<td[^>]*oddstype=['\"]{kind}['\"][^>]*>[\s\S]*?</td>", row, re.I)
+    # `wholeOdds` is the visible current quote.  Titan can leave malformed or
+    # stale `wholeLastOdds` cells hidden in the same row, so never prefer a
+    # display:none snapshot over the visible market.
+    for kind in ("wholeOdds", "wholeLastOdds"):
+        cells = [
+            cell for cell in re.findall(
+                rf"<td[^>]*oddstype=['\"]{kind}['\"][^>]*>[\s\S]*?</td>",
+                row,
+                re.I,
+            )
+            if not re.search(r"display\s*:\s*none", cell, re.I)
+        ]
         if len(cells) < 3:
             continue
         try:
@@ -107,11 +127,22 @@ class TitanClient:
     def _read(url: str) -> str:
         last_error: OSError | None = None
         for attempt in range(2):
+            is_vip_odds = "vip.titan007.com/" in url
             request = urllib.request.Request(
                 url,
                 headers={
-                    "User-Agent": "Mozilla/5.0",
+                    # Titan's VIP odds host returns HTTP 442 to generic bot
+                    # user agents.  These are ordinary browser navigation
+                    # headers; no cookie, login, or anti-bot bypass is used.
+                    "User-Agent": (
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/127.0.0.0 Safari/537.36"
+                    ),
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    "Accept-Language": "zh-HK,zh;q=0.9,en;q=0.8",
                     "Cache-Control": "no-cache",
+                    **({"Referer": "http://bf.titan007.com/football/"} if is_vip_odds else {}),
                 },
             )
             try:
