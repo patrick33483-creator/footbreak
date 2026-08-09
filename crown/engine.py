@@ -135,7 +135,7 @@ def _prediction(titan: dict[str, Any], bridge: BridgeMatch, h_match: dict[str, A
             "titan_to_hkjc_reason": bridge.hkjc.reason,
             "hkjc_to_pinnapi_score": round(bridge.pinnapi.score, 3),
             "hkjc_to_pinnapi_reason": bridge.pinnapi.reason,
-            "orientation": "direct_only",
+            "orientation": "reversed_identity_only" if bridge.reversed else "direct_only",
         },
         "execution": {"enabled": True, "mode": "simulation", "real_betting_enabled": False,
                       "reason": "Only T-5 can create an idempotent simulated bet; no order client exists."},
@@ -209,6 +209,7 @@ def run(mode: str, config: Settings) -> dict[str, Any]:
     mapping = {
         "titan_due": 0, "titan_to_hkjc_mapped": 0, "hkjc_to_pinnapi_mapped": 0,
         "direct_same_script_mapped": 0, "unmapped_titan_to_hkjc": 0, "unmapped_hkjc_to_pinnapi": 0,
+        "reversed_identity_mapped": 0,
         "reasons": {},
     }
     for titan in titan_rows:
@@ -229,6 +230,8 @@ def run(mode: str, config: Settings) -> dict[str, Any]:
         bridge = bridge_titan_to_pinnapi(event, [item[0] for item in h_events], p_events)
         if bridge.hkjc.event:
             mapping["titan_to_hkjc_mapped"] += 1
+            if bridge.reversed:
+                mapping["reversed_identity_mapped"] += 1
         elif bridge.path != "direct_same_script":
             mapping["unmapped_titan_to_hkjc"] += 1
         if bridge.event:

@@ -1,0 +1,24 @@
+{
+  "schema_version": "crown-alias-proposals-v1",
+  "generated_at": "2026-08-09T15:06:00+08:00",
+  "proposals": [
+    {
+      "proposal_id": "P-01",
+      "kind": "team",
+      "status": "PENDING_SOURCE_EVIDENCE",
+      "hkjc_name": "法高爾佛羅內什",
+      "crown_name": "沃罗涅日火炬",
+      "canonical_name": "Fakel Voronezh",
+      "reason": "No Crown/Titan candidate existed in the current kickoff window."
+    },
+    {
+      "proposal_id": "P-02",
+      "kind": "team",
+      "status": "PENDING_SOURCE_EVIDENCE",
+      "hkjc_name": "艾卡馬特",
+      "crown_name": "格罗兹尼艾卡马特",
+      "canonical_name": "Akhmat Grozny",
+      "reason": "No Crown/Titan candidate existed in the current kickoff window."
+    }
+  ]
+}

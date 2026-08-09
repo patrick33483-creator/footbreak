@@ -13,7 +13,7 @@ from typing import Callable, Iterable
 
 from .team_aliases import LEAGUE_ALIAS_SEEDS, TEAM_ALIAS_SEEDS
 
-MATCHING_VERSION = "2026-08-09-hkjc-v2"
+MATCHING_VERSION = "2026-08-09-hkjc-v3"
 KICKOFF_TOLERANCE_SECONDS = 10 * 60
 STRONG_NAME_KICKOFF_TOLERANCE_SECONDS = 90 * 60
 NAME_FLOOR = 0.72
@@ -261,6 +261,18 @@ def same_event_for_hkjc(target: Event, candidates: Iterable[Event]) -> Match:
                        allow_reversed=False, require_qualifiers=True)
 
 
+def same_identity_for_hkjc(target: Event, candidates: Iterable[Event]) -> Match:
+    """Recognize a unique reversed identity without making its prices usable."""
+    verified = [
+        candidate for candidate in candidates
+        if isinstance(candidate.extra, dict)
+        and candidate.extra.get("home_team_id")
+        and candidate.extra.get("away_team_id")
+    ]
+    return match_event(target, verified, team_key=canonical_team_key, league_key=canonical_league_key,
+                       allow_reversed=True, require_qualifiers=True)
+
+
 @dataclass(frozen=True)
 class BridgeMatch:
     """Strict mapping evidence from a Titan event to a PinnAPI event."""
@@ -276,8 +288,7 @@ class BridgeMatch:
 
     @property
     def reversed(self) -> bool:
-        # Both accepted bridge paths deliberately require direct orientation.
-        return False
+        return self.hkjc.reversed or self.pinnapi.reversed
 
 
 def _script(value: str) -> str:
@@ -317,6 +328,16 @@ def bridge_titan_to_pinnapi(titan: Event, hkjc_events: Iterable[Event], pinnapi_
         if pinnapi.event:
             return BridgeMatch(hkjc, pinnapi, "hkjc_bilingual_bridge", None)
         return BridgeMatch(hkjc, pinnapi, "none", f"hkjc_to_pinnapi:{pinnapi.reason}")
+
+    identity = same_identity_for_hkjc(titan, hkjc_rows)
+    if identity.event and identity.reversed:
+        # Identity coverage may include a verified reversed fixture, but the
+        # pricing bridge deliberately remains empty.  No EV, prediction or bet
+        # can be produced until an independently tested reorientation layer
+        # swaps H/A and flips the home-perspective handicap sign.
+        blocked = Match(None, False, 0.0, "hkjc_orientation_reversed_unpriced")
+        return BridgeMatch(identity, blocked, "hkjc_reversed_identity_only",
+                           "hkjc_orientation_reversed_unpriced")
 
     if all(_script(value) in {"han", "latin"} for value in (titan.home, titan.away)):
         same_script = [event for event in pinnapi_rows if _script(event.home) == _script(titan.home)

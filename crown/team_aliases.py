@@ -108,6 +108,12 @@ TEAM_ALIAS_SEEDS: tuple[tuple[str, ...], ...] = (
     ("戈亞斯", "戈伊亚斯"), ("隆德里納", "隆迪那"),
     ("奧達斯", "奥达斯"), ("紐柏萊斯", "奴伯伦斯"),
     ("聖達菲聯", "圣塔菲联"), ("CA科爾多瓦中央", "科尔多瓦中央SDE"),
+    # Reviewed 2026-08-09 HKJC ↔ Titan/Crown gaps.  Reversed fixtures remain
+    # separately fail-closed in matching.py; these aliases never alter sides.
+    ("競技體育會", "巴西竞技"), ("基斯奧馬", "克里丘马"),
+    ("國際杜古", "图尔库国际"), ("拉迪", "拉赫蒂"),
+    ("拿根亞", "桑托斯拉古纳"),
+    ("CF 阿美利加", "墨西哥美洲", "墨西哥美洲(中)"),
 )
 
 LEAGUE_ALIAS_SEEDS: tuple[tuple[str, ...], ...] = (
@@ -120,4 +126,5 @@ LEAGUE_ALIAS_SEEDS: tuple[tuple[str, ...], ...] = (
     ("瑞士超級聯賽", "瑞士超"), ("蘇格蘭超級聯賽", "苏超"),
     ("俄羅斯超級聯賽", "俄超"), ("奧地利超級聯賽", "奥甲"),
     ("比利時盃", "比利时杯"), ("荷蘭盃", "荷兰杯"),
+    ("U20中北美錦標賽", "美青杯"),
 )

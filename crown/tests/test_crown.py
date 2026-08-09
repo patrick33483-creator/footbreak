@@ -17,8 +17,8 @@ from crown.hkjc import fetch_official_results
 from crown.ledger import completed_stages, recompute_stats, stage_for, sync_prediction
 from crown.lines import parse_hkjc_handicap, parse_hkjc_total, settle_handicap, settle_total
 from crown.matching import (
-    Event, bridge_titan_to_pinnapi, canonical_team_key, match_event,
-    normalize_name, qualifiers, same_event_for_hkjc,
+    Event, bridge_titan_to_pinnapi, canonical_league_key, canonical_team_key, match_event,
+    normalize_name, qualifiers, same_event_for_hkjc, same_identity_for_hkjc,
 )
 from crown.notify import _bet_label, notify_new
 from crown.pinnapi import parse_fixtures, parse_lines
@@ -70,6 +70,16 @@ class CrownSafetyTests(unittest.TestCase):
             ),
             0.0,
         )
+        for hkjc, crown in (
+            ("競技體育會", "巴西竞技"),
+            ("基斯奧馬", "克里丘马"),
+            ("國際杜古", "图尔库国际"),
+            ("拉迪", "拉赫蒂"),
+            ("拿根亞", "桑托斯拉古纳"),
+            ("CF 阿美利加", "墨西哥美洲(中)"),
+        ):
+            self.assertEqual(canonical_team_key(hkjc), canonical_team_key(crown))
+        self.assertEqual(canonical_league_key("U20中北美錦標賽"), canonical_league_key("美青杯"))
 
     def test_near_exact_names_allow_unique_reschedule_but_not_fuzzy_match(self) -> None:
         shifted = Event("shifted", "League", "Alpha FC", "Beta FC", self.now + timedelta(minutes=60))
@@ -86,6 +96,62 @@ class CrownSafetyTests(unittest.TestCase):
         reversed_row = Event("reverse", "League", "Beta", "Alpha", self.now,
                              {"home_team_id": "2", "away_team_id": "1"})
         self.assertIsNone(same_event_for_hkjc(self.target, [reversed_row]).event)
+        identity = same_identity_for_hkjc(self.target, [reversed_row])
+        self.assertEqual(identity.event.id, "reverse")
+        self.assertTrue(identity.reversed)
+
+    def test_reversed_hkjc_identity_never_unlocks_pinnapi_pricing(self) -> None:
+        titan = Event("titan", "美青杯", "美国U20", "墨西哥U20", self.now)
+        hkjc = Event(
+            "hkjc", "U20中北美錦標賽", "墨西哥U20", "美國U20", self.now,
+            {"home_team_id": "11", "away_team_id": "22", "home_en": "Mexico U20",
+             "away_en": "United States U20", "league_en": "CONCACAF U20 Championship"},
+        )
+        pinnapi = Event(
+            "pin", "CONCACAF U20 Championship", "United States U20", "Mexico U20", self.now
+        )
+        bridge = bridge_titan_to_pinnapi(titan, [hkjc], [pinnapi])
+        self.assertEqual(bridge.path, "hkjc_reversed_identity_only")
+        self.assertEqual(bridge.hkjc.event.id, "hkjc")
+        self.assertTrue(bridge.reversed)
+        self.assertIsNone(bridge.event)
+        self.assertEqual(bridge.reason, "hkjc_orientation_reversed_unpriced")
+
+    def test_reviewed_20260809_fixture_batch_preserves_orientation_gate(self) -> None:
+        direct = (
+            (("巴西乙", "巴西竞技", "克里丘马"),
+             ("巴西乙組聯賽", "競技體育會", "基斯奧馬")),
+            (("芬超", "图尔库国际", "拉赫蒂"),
+             ("芬蘭超級聯賽", "國際杜古", "拉迪")),
+            (("中北美杯", "芝加哥火焰", "桑托斯拉古纳"),
+             ("北美聯賽盃", "芝加哥火燄", "拿根亞")),
+        )
+        for number, (titan_row, hkjc_row) in enumerate(direct):
+            titan = Event(f"t{number}", *titan_row, self.now)
+            hkjc = Event(
+                f"h{number}", *hkjc_row, self.now,
+                {"home_team_id": f"{number}h", "away_team_id": f"{number}a"},
+            )
+            matched = same_event_for_hkjc(titan, [hkjc])
+            self.assertEqual(matched.event.id, hkjc.id)
+            self.assertFalse(matched.reversed)
+
+        reversed_rows = (
+            (("美青杯", "美国U20", "墨西哥U20"),
+             ("U20中北美錦標賽", "墨西哥U20", "美國U20")),
+            (("中北美杯", "墨西哥美洲(中)", "波特兰伐木者"),
+             ("北美聯賽盃", "波特蘭伐木者", "CF 阿美利加")),
+        )
+        for number, (titan_row, hkjc_row) in enumerate(reversed_rows):
+            titan = Event(f"rt{number}", *titan_row, self.now)
+            hkjc = Event(
+                f"rh{number}", *hkjc_row, self.now,
+                {"home_team_id": f"r{number}h", "away_team_id": f"r{number}a"},
+            )
+            self.assertIsNone(same_event_for_hkjc(titan, [hkjc]).event)
+            identity = same_identity_for_hkjc(titan, [hkjc])
+            self.assertEqual(identity.event.id, hkjc.id)
+            self.assertTrue(identity.reversed)
 
     def test_club_names_containing_youth_word_are_not_misclassified_as_reserves(self) -> None:
         juventude = Event("j", "巴西乙", "路禾利桑天奴", "青年人", self.now)

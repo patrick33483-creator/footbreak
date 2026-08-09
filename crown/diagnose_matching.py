@@ -90,6 +90,7 @@ def main() -> int:
             "bridge": {
                 "path": bridge.path,
                 "reason": bridge.reason,
+                "reversed": bridge.reversed,
                 "hkjc_id": bridge.hkjc.event.id if bridge.hkjc.event else None,
                 "hkjc_score": round(bridge.hkjc.score, 3),
                 "pinnapi_id": bridge.event.id if bridge.event else None,
