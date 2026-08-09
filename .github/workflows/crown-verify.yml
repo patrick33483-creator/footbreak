@@ -1,0 +1,52 @@
+name: 核對皇冠生產掃描
+
+on:
+  workflow_dispatch:
+
+jobs:
+  verify:
+    name: 掃描及安全摘要
+    runs-on: ubuntu-24.04
+    steps:
+      - name: 設定 SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: 執行皇冠掃描並核對計時器
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          set -euo pipefail
+          echo "=== Crown production tick ==="
+          /opt/footbreak/deploy/crown-run.sh tick
+          echo "=== Crown dashboard summary ==="
+          /opt/footbreak/.venv/bin/python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          data = json.loads(Path("/var/www/crown/data.json").read_text())
+          summary = data.get("summary") or {}
+          print({
+              "generated_at": data.get("generated_at"),
+              "crown_matches": summary.get("crown_matches"),
+              "hkjc_overlaps": summary.get("hkjc_overlaps"),
+              "predicted": summary.get("predicted"),
+              "actionable": summary.get("actionable"),
+              "signal_data_missing": summary.get("signal_data_missing"),
+          })
+          PY
+          echo "=== Crown timers ==="
+          systemctl is-active crown-tick.timer
+          systemctl is-enabled crown-tick.timer
+          systemctl is-active crown-sweep.timer
+          systemctl is-enabled crown-sweep.timer
+          systemctl list-timers crown-tick.timer crown-sweep.timer --no-pager
+          REMOTE
