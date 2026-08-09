@@ -220,7 +220,7 @@ def run(mode: str, config: Settings) -> dict[str, Any]:
         watch = ledger["watch"].get(event.id, {})
         done = completed_stages(watch, MATCHING_VERSION)
         minutes = (event.kickoff - datetime.now(HKT)).total_seconds() / 60
-        # Past fixtures stay visible in the active board period, but no pass
+        # Past fixtures are archived outside the live work board, and no pass
         # should spend provider calls rebuilding prices after kickoff.
         if minutes <= 0:
             continue

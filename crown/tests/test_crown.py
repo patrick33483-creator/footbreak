@@ -22,7 +22,7 @@ from crown.matching import (
 )
 from crown.notify import _bet_label, notify_new
 from crown.pinnapi import parse_fixtures, parse_lines
-from crown.period import in_current_period, period_bounds
+from crown.period import in_current_period, is_upcoming_in_current_period, period_bounds
 from crown.prediction_history import archive_watch, grade_history
 from crown.state import load_predictions, merge_predictions, save_predictions
 from crown.titan import crown_prices_from_pages
@@ -316,9 +316,9 @@ class CrownSafetyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             config = replace(settings(), state_dir=Path(directory))
             now = self.now
-            sweep = {"match_id": "future", "kickoff_hkt": (now - timedelta(hours=3)).isoformat(),
+            sweep = {"match_id": "future", "kickoff_hkt": (now + timedelta(hours=3)).isoformat(),
                      "stage": "首預", "status": "DATA_MISSING"}
-            stale = {"match_id": "old", "kickoff_hkt": (now - timedelta(days=1)).isoformat(),
+            stale = {"match_id": "old", "kickoff_hkt": (now - timedelta(hours=3)).isoformat(),
                      "stage": "首預", "status": "DATA_MISSING"}
             save_predictions(config, [sweep, stale])
             retained = merge_predictions(config, [], now=now)
@@ -330,13 +330,16 @@ class CrownSafetyTests(unittest.TestCase):
             self.assertEqual(load_predictions(config)[0]["stage"], "T-30")
             self.assertEqual(merge_predictions(config, [], now=now)[0]["stage"], "T-30")
 
-    def test_crown_period_runs_from_1205_to_next_1159(self) -> None:
+    def test_crown_period_runs_from_1200_to_next_1159_and_hides_started_matches(self) -> None:
         start, end = period_bounds(self.now)
-        self.assertEqual(start.isoformat(), "2026-08-08T12:05:00+08:00")
-        self.assertEqual(end.isoformat(), "2026-08-09T11:59:59+08:00")
-        self.assertTrue(in_current_period(datetime(2026, 8, 8, 12, 5, tzinfo=start.tzinfo), self.now))
-        self.assertTrue(in_current_period(datetime(2026, 8, 9, 11, 59, 59, tzinfo=start.tzinfo), self.now))
-        self.assertFalse(in_current_period(datetime(2026, 8, 9, 12, 0, tzinfo=start.tzinfo), self.now))
+        self.assertEqual(start.isoformat(), "2026-08-09T12:00:00+08:00")
+        self.assertEqual(end.isoformat(), "2026-08-10T11:59:59+08:00")
+        future = datetime(2026, 8, 9, 12, 5, tzinfo=start.tzinfo)
+        started = datetime(2026, 8, 9, 12, 0, tzinfo=start.tzinfo)
+        self.assertTrue(in_current_period(started, self.now))
+        self.assertTrue(in_current_period(end, self.now))
+        self.assertTrue(is_upcoming_in_current_period(future, self.now))
+        self.assertFalse(is_upcoming_in_current_period(started, self.now))
 
     def test_dashboard_artifact_is_readable_while_state_stays_separate(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

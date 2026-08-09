@@ -1,4 +1,4 @@
-"""Crown board period: 12:05 HKT through 11:59:59 HKT next day."""
+"""Crown board period: 12:00 HKT through 11:59:59 HKT next day."""
 from __future__ import annotations
 
 from datetime import datetime, time, timedelta
@@ -6,8 +6,8 @@ from datetime import datetime, time, timedelta
 from .common import HKT
 
 
-PERIOD_START = time(12, 5)
-PERIOD_DURATION = timedelta(hours=23, minutes=55)
+PERIOD_START = time(12, 0)
+PERIOD_DURATION = timedelta(days=1)
 
 
 def period_bounds(now: datetime | None = None) -> tuple[datetime, datetime]:
@@ -21,3 +21,9 @@ def in_current_period(kickoff: datetime, now: datetime | None = None) -> bool:
     start, end = period_bounds(now)
     value = kickoff.astimezone(HKT)
     return start <= value <= end
+
+
+def is_upcoming_in_current_period(kickoff: datetime, now: datetime | None = None) -> bool:
+    """Only pre-match fixtures belong on the live Crown work board."""
+    current = (now or datetime.now(HKT)).astimezone(HKT)
+    return kickoff.astimezone(HKT) > current and in_current_period(kickoff, current)
