@@ -349,6 +349,19 @@ class CrownSafetyTests(unittest.TestCase):
             self.assertEqual(S_IMODE(output.stat().st_mode), 0o644)
             self.assertNotEqual(output.parent, config.state_dir)
 
+    def test_dashboard_live_board_uses_hkjc_as_the_master_fixture_list(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = replace(settings(), state_dir=root / "private-state", web_root=root / "web")
+            kickoff = (datetime.now(self.now.tzinfo) + timedelta(hours=1)).isoformat()
+            save_predictions(config, [
+                {"match_id": "linked", "kickoff_hkt": kickoff, "hkjc_match_id": "h1", "status": "DATA_MISSING"},
+                {"match_id": "crown-only", "kickoff_hkt": kickoff, "hkjc_match_id": None, "status": "DATA_MISSING"},
+            ])
+            payload = build(config)
+            self.assertEqual([row["match_id"] for row in payload["matches"]], ["linked"])
+            self.assertEqual(payload["summary"]["crown_matches"], 1)
+
     def test_dashboard_includes_persisted_prediction_history(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

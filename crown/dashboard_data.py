@@ -19,6 +19,7 @@ def build(config: Settings) -> dict[str, Any]:
         row for row in all_matches
         if (kickoff := parse_time(row.get("kickoff_hkt") or row.get("kickoff"))) is not None
         and is_upcoming_in_current_period(kickoff)
+        and bool(row.get("hkjc_match_id"))
     ]
     prediction_history = read_json(
         config.state_dir / "prediction_history.json",
