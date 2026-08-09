@@ -17,7 +17,7 @@ if str(SYSTEM) not in sys.path:
 
 import run_predict
 import sharp
-from crown.pinnapi import parse_lines
+from crown.pinnapi import parse_corner_lines, parse_lines
 
 
 class FootbreakPinnapiSharpTests(unittest.TestCase):
@@ -38,6 +38,69 @@ class FootbreakPinnapiSharpTests(unittest.TestCase):
         self.assertEqual(structured["HDC"][0]["odds"], {"H": 1.91, "A": 1.99})
         self.assertEqual(structured["HIL"][0]["condition"], "2.75")
         self.assertEqual(structured["HAD"][0]["odds"]["D"], 3.4)
+        self.assertEqual(structured["CHL"], [])
+
+    def test_corner_prices_merge_into_chl_without_changing_standard_markets(self) -> None:
+        normal = parse_lines({
+            "event_id": "event-1", "source_timestamp": 1786248000,
+            "periods": {"num_0": {
+                "spreads": [{"hdp": -0.25, "home": 1.91, "away": 1.99, "is_main": True}],
+                "totals": [{"points": 2.75, "over": 1.95, "under": 1.95, "is_main": True}],
+            }},
+        }, "event-1", observed_at=1786248001)
+        corners = parse_corner_lines({
+            "events": [{
+                "event_id": "corner-1", "league_name": "League Corners",
+                "home": "Home (Corners)", "away": "Away (Corners)",
+                "source_timestamp": 1786248000,
+                "periods": {"num_0": {
+                    "totals": {"9.5": {"points": 9.5, "over": 1.92, "under": 1.96}},
+                }},
+            }],
+        }, "event-1", observed_at=1786248001)
+
+        class Client:
+            def lines(self, event_id):
+                assert event_id == "event-1"
+                return normal
+
+            def corner_lines(self, event_id):
+                assert event_id == "event-1"
+                return corners
+
+        with patch.object(sharp, "_client", return_value=Client()):
+            prices = sharp.fetch_odds(["event-1"])["event-1"]
+        structured = sharp.structure(prices, "Home", "Away")
+
+        self.assertEqual(structured["HDC"][0]["odds"], {"H": 1.91, "A": 1.99})
+        self.assertEqual(structured["HIL"][0]["odds"], {"H": 1.95, "L": 1.95})
+        self.assertEqual(structured["CHL"], [{
+            "lineId": None, "condition": "9.5", "main": True,
+            "status": "AVAILABLE", "odds": {"H": 1.92, "L": 1.96},
+        }])
+        self.assertTrue(all(row["event_id"] == "event-1" for row in prices))
+
+    def test_corner_failure_fails_closed_without_breaking_standard_markets(self) -> None:
+        normal = parse_lines({
+            "event_id": "event-1", "source_timestamp": 1786248000,
+            "periods": {"num_0": {
+                "spreads": [{"hdp": 0, "home": 1.91, "away": 1.99}],
+                "totals": [{"points": 2.5, "over": 1.95, "under": 1.95}],
+            }},
+        }, "event-1", observed_at=1786248001)
+
+        class Client:
+            def lines(self, _event_id):
+                return normal
+
+            def corner_lines(self, _event_id):
+                raise RuntimeError("specials unavailable")
+
+        with patch.object(sharp, "_client", return_value=Client()):
+            structured = sharp.structure(sharp.fetch_odds(["event-1"])["event-1"], "Home", "Away")
+
+        self.assertEqual(len(structured["HDC"]), 1)
+        self.assertEqual(len(structured["HIL"]), 1)
         self.assertEqual(structured["CHL"], [])
 
     def test_pinnapi_fixture_adapter_preserves_english_identity_and_kickoff(self) -> None:

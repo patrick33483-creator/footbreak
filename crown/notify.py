@@ -42,6 +42,8 @@ def _bet_label(bet: dict[str, Any]) -> str:
         return f"讓球 · {team} {_quarter_line(selected_line)}"
     if market == "HIL":
         return f"入球大細 · {'大' if side == 'H' else '細'} {_quarter_line(line, signed=False)}"
+    if market == "HKJC角球大細" or bet.get("code") == "CHL":
+        return f"HKJC角球大細 · {'大' if side == 'H' else '細'} {_quarter_line(line, signed=False)}"
     return str(bet.get("label") or f"{market} {side} {line}")
 
 

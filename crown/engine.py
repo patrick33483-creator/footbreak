@@ -11,6 +11,7 @@ from .common import HKT, iso_hkt
 from .config import Settings
 from .hkjc import event_from_match, fetch_matches, flatten_odds
 from .ledger import completed_stages, recompute_stats, stage_for, sync_prediction
+from .lines import parse_hkjc_total
 from .matching import MATCHING_VERSION, Event, BridgeMatch, bridge_titan_to_pinnapi
 from .pinnapi import PinnapiClient
 from .period import in_current_period
@@ -81,10 +82,96 @@ def _candidates(crown_prices: list[dict[str, Any]], pinnapi_prices: list[dict[st
 
 
 def _hkjc_chl(match: dict[str, Any] | None) -> list[dict[str, Any]]:
-    """CHL is retained only as display information after strict event mapping."""
+    """Return HKJC CHL rows after the strict bridge, never as Crown prices."""
     if not match:
         return []
-    return [{"market": "CHL", **row} for row in flatten_odds(match).get("CHL", [])]
+    return [{
+        "market": "CHL",
+        "provider": "HKJC",
+        "source": "hkjc_chl",
+        "bookmaker": "HKJC",
+        **row,
+    } for row in flatten_odds(match).get("CHL", [])]
+
+
+def _hkjc_chl_candidates(
+    hkjc_lines: list[dict[str, Any]],
+    pinnapi_corner_prices: list[dict[str, Any]],
+    config: Settings,
+    now: float,
+    inferred_timestamp: bool,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Compare HKJC full-match CHL with PinnAPI's exact same corner line.
+
+    Titan's Crown feed has no verified corner quote.  This intentionally builds
+    an independent HKJC-priced candidate rather than placing CHL in the Crown
+    quote list or assigning it Crown bookmaker provenance.
+    """
+    if inferred_timestamp and not config.allow_inferred_pinnapi_timestamp:
+        return [], ["pinnapi_corner_source_timestamp_missing"]
+    candidates: list[dict[str, Any]] = []
+    reasons: list[str] = []
+    for hkjc in hkjc_lines:
+        line = parse_hkjc_total(hkjc.get("condition"))
+        if line is None:
+            reasons.append(f"invalid_hkjc_chl_line_{hkjc.get('condition')}")
+            continue
+        # The HKJC query is a current response snapshot; it exposes no quote
+        # timestamp, so the response-observed time is retained explicitly.
+        quote = dict(hkjc, source_at=float(hkjc.get("source_at") or now))
+        good, reason = _fresh(quote, config, now)
+        if not good:
+            reasons.append(f"hkjc_{reason}")
+            continue
+        reference_rows = [
+            row for row in pinnapi_corner_prices
+            if _line_key(str(row.get("market")), row.get("line")) == _line_key("CHL", line)
+        ]
+        if not reference_rows:
+            reasons.append(f"no_exact_pinnapi_CHL_{line:g}")
+            continue
+        if any(not _fresh(row, config, now)[0] for row in reference_rows):
+            reasons.append(f"pinnapi_corner_source_stale_CHL_{line:g}")
+            continue
+        reference = _pairs(pinnapi_corner_prices, "CHL", line)
+        if not reference:
+            reasons.append(f"no_complete_pinnapi_CHL_{line:g}")
+            continue
+        implied = {key: 1 / float(reference[key]) for key in ("H", "L")}
+        denominator = sum(implied.values())
+        for side in ("H", "L"):
+            try:
+                odds = float((hkjc.get("odds") or {}).get(side))
+            except (TypeError, ValueError):
+                continue
+            if odds <= 1:
+                continue
+            probability = implied[side] / denominator
+            ev = probability * odds - 1
+            kelly = max(0.0, (probability * odds - 1) / (odds - 1))
+            conviction = max(0.0, min(100.0, 50.0 + ev * 500.0))
+            candidates.append({
+                "market": "HKJC角球大細",
+                "code": "CHL",
+                # Persist the canonical quarter line for Asian settlement;
+                # ``label`` retains HKJC's original split-line presentation.
+                "condition": f"{line:g}",
+                "line": line,
+                "side": side,
+                "label": f"HKJC角球大細 {'大' if side == 'H' else '細'} {hkjc.get('condition')}",
+                "odds": round(odds, 3),
+                "prob": round(probability, 5),
+                "ev": round(ev, 5),
+                "kelly_raw": round(kelly, 5),
+                "kelly_used": round(kelly / 3, 5),
+                "conviction": round(conviction, 1),
+                "provider": "HKJC",
+                "source": "hkjc_chl",
+                "bookmaker": "HKJC",
+                "reference": "pinnapi_corner_exact_full_match",
+                "reference_provider": "PinnAPI",
+            })
+    return sorted(candidates, key=lambda row: (row["ev"], row["conviction"]), reverse=True), sorted(set(reasons))
 
 
 def _wdl_prediction(prices: list[dict[str, Any]]) -> dict[str, Any]:
@@ -131,8 +218,11 @@ def _prediction(titan: dict[str, Any], bridge: BridgeMatch, h_match: dict[str, A
         "mins_to_ko": minutes, "stage": stage, "titan_match_id": event.id,
         "pinnapi_event_id": bridge.event.id if bridge.event else None,
         "hkjc_match_id": str((h_match or {}).get("id") or (h_match or {}).get("frontEndId") or "") or None,
-        "market_sources": {"HDC": "titan007-crown-id-3", "HIL": "titan007-crown-id-3",
-                           "CHL": "hkjc_only_after_strict_same_event"},
+        "market_sources": {
+            "HDC": "titan007-crown-id-3",
+            "HIL": "titan007-crown-id-3",
+            "CHL": "HKJC CHL odds vs PinnAPI CHL exact full-match reference; not Crown odds",
+        },
         "mapping": {
             "path": bridge.path, "reason": bridge.reason,
             "titan_to_hkjc_score": round(bridge.hkjc.score, 3),
@@ -173,13 +263,38 @@ def _prediction(titan: dict[str, Any], bridge: BridgeMatch, h_match: dict[str, A
     base.update(_wdl_prediction(prices))
     now = time.time()
     candidates, reasons = _candidates(crown, prices, config, now, bool(pinnapi["timestamp_inferred"]))
+    corner_candidates: list[dict[str, Any]] = []
+    corner_reasons: list[str] = []
+    if h_match:
+        try:
+            corners = pinnapi_client.corner_lines(bridge.event.id)
+            base["pinnapi_corner_event_id"] = corners.get("corner_event_id")
+            base["pinnapi_corner_source_at"] = corners.get("source_at")
+            base["pinnapi_corner_timestamp_inferred"] = corners.get("timestamp_inferred")
+            corner_candidates, corner_reasons = _hkjc_chl_candidates(
+                base["book_odds"]["hkjc_chl"],
+                list(corners.get("prices") or []),
+                config,
+                now,
+                bool(corners.get("timestamp_inferred")),
+            )
+        except Exception as exc:
+            # CHL is a separate HKJC candidate.  A special-market outage must
+            # fail it closed without changing Crown HDC/HIL decisions.
+            corner_reasons = [f"pinnapi_corner_lines_unavailable_{type(exc).__name__}"]
+    if corner_reasons:
+        # Keep CHL's independently fail-closed state visible even where a
+        # normal Crown HDC/HIL candidate remains available.
+        base["corner_no_bet_reason"] = "；".join(corner_reasons)
     base["pinnapi_source_at"] = pinnapi["source_at"]
     base["pinnapi_timestamp_inferred"] = pinnapi["timestamp_inferred"]
     base["pinnapi_timestamp_basis"] = pinnapi.get("timestamp_basis")
-    base["candidates"] = candidates[:12]
+    candidates = sorted(candidates + corner_candidates,
+                        key=lambda row: (row["ev"], row["conviction"]), reverse=True)
+    base["candidates"] = candidates
     base["lead_view"] = candidates[0] if candidates else None
     if not candidates:
-        base["no_bet_reason"] = "；".join(reasons or ["Crown/PinnAPI 無可比較完整雙邊盤"])
+        base["no_bet_reason"] = "；".join(reasons + corner_reasons or ["Crown/PinnAPI 無可比較完整雙邊盤"])
         return base
     lead = candidates[0]
     base["conviction"] = lead["conviction"]

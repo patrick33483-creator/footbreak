@@ -8,22 +8,23 @@ from stat import S_IMODE
 from dataclasses import replace
 from datetime import datetime, timedelta
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from crown.config import settings
 from crown.dashboard_data import build, write_dashboard_data
-from crown.engine import _candidates, _fresh, _refresh_crown_quote, _wdl_prediction
+from crown.engine import _candidates, _fresh, _hkjc_chl_candidates, _prediction, _refresh_crown_quote, _wdl_prediction
 from crown.hkjc import fetch_official_results
 from crown.ledger import completed_stages, recompute_stats, stage_for, sync_prediction
 from crown.lines import parse_hkjc_handicap, parse_hkjc_total, settle_handicap, settle_total
 from crown.matching import (
-    Event, bridge_titan_to_pinnapi, canonical_league_key, canonical_team_key, match_event,
+    BridgeMatch, Event, Match, bridge_titan_to_pinnapi, canonical_league_key, canonical_team_key, match_event,
     normalize_name, qualifiers, same_event_for_hkjc, same_identity_for_hkjc,
 )
 from crown.notify import _bet_label, notify_new
 from crown.pinnapi import parse_fixtures, parse_lines
 from crown.period import in_current_period, is_upcoming_in_current_period, period_bounds
 from crown.prediction_history import archive_watch, grade_history
+from crown import settle as crown_settle
 from crown.state import load_predictions, merge_predictions, save_predictions
 from crown.titan import crown_prices_from_pages, parse_crown_fixture_ids, parse_schedule_page
 
@@ -252,6 +253,78 @@ class CrownSafetyTests(unittest.TestCase):
         self.assertLess(candidates[0]["ev"], 0)
         self.assertLess(candidates[0]["conviction"], 50)
 
+    def test_hkjc_corner_candidate_uses_exact_pinnapi_line_and_is_not_crown_odds(self) -> None:
+        config = replace(settings(), source_max_age_seconds=90, allow_inferred_pinnapi_timestamp=False)
+        hkjc = [{
+            "condition": "9.5",
+            "status": "AVAILABLE",
+            "odds": {"H": 2.20, "L": 1.70},
+            "provider": "HKJC",
+            "source": "hkjc_chl",
+        }]
+        pinnapi = [
+            {"market": "CHL", "line": 9.5, "selection": "H", "odds": 1.90, "source_at": 1000},
+            {"market": "CHL", "line": 9.5, "selection": "L", "odds": 2.00, "source_at": 1000},
+        ]
+        candidates, reasons = _hkjc_chl_candidates(hkjc, pinnapi, config, 1001, False)
+        self.assertEqual(reasons, [])
+        self.assertEqual(len(candidates), 2)
+        candidate = next(row for row in candidates if row["side"] == "H")
+        self.assertEqual(candidate["market"], "HKJC角球大細")
+        self.assertEqual(candidate["label"], "HKJC角球大細 大 9.5")
+        self.assertEqual(candidate["provider"], "HKJC")
+        self.assertEqual(candidate["reference"], "pinnapi_corner_exact_full_match")
+        self.assertNotIn("Crown", candidate["label"])
+
+        no_match, no_match_reasons = _hkjc_chl_candidates(
+            hkjc, pinnapi[:1], config, 1001, False
+        )
+        self.assertEqual(no_match, [])
+        self.assertIn("no_complete_pinnapi_CHL_9.5", no_match_reasons)
+
+    def test_hkjc_corner_candidate_fails_closed_for_stale_or_inferred_pinnapi_reference(self) -> None:
+        config = replace(settings(), source_max_age_seconds=90, allow_inferred_pinnapi_timestamp=False)
+        hkjc = [{"condition": "10", "odds": {"H": 1.95, "L": 1.95}}]
+        stale = [
+            {"market": "CHL", "line": 10, "selection": "H", "odds": 1.90, "source_at": 800},
+            {"market": "CHL", "line": 10, "selection": "L", "odds": 2.00, "source_at": 800},
+        ]
+        candidates, reasons = _hkjc_chl_candidates(hkjc, stale, config, 1001, False)
+        self.assertEqual(candidates, [])
+        self.assertIn("pinnapi_corner_source_stale_CHL_10", reasons)
+        candidates, reasons = _hkjc_chl_candidates(hkjc, stale, config, 1001, True)
+        self.assertEqual(candidates, [])
+        self.assertEqual(reasons, ["pinnapi_corner_source_timestamp_missing"])
+
+    def test_corner_feed_failure_does_not_remove_crown_standard_candidate(self) -> None:
+        config = replace(settings(), source_max_age_seconds=90, allow_inferred_pinnapi_timestamp=False)
+        kickoff = self.now + timedelta(minutes=5)
+        titan = {"id": "titan", "league": "L", "home": "A", "away": "B", "kickoff": kickoff}
+        h_event = Event("hkjc", "L", "A", "B", kickoff, {"home_team_id": "h", "away_team_id": "a"})
+        p_event = Event("pin", "L", "A", "B", kickoff)
+        bridge = BridgeMatch(Match(h_event, False, 1.0, None), Match(p_event, False, 1.0, None),
+                             "hkjc_bilingual_bridge", None)
+        h_match = {"id": "hkjc", "foPools": []}
+        titan_client = Mock()
+        titan_client.crown_prices.return_value = [
+            {"market": "HDC", "line": -0.25, "selection": "H", "odds": 2.20, "source_at": 1000},
+        ]
+        pinnapi_client = Mock()
+        pinnapi_client.lines.return_value = {
+            "prices": [
+                {"market": "HDC", "line": -0.25, "selection": "H", "odds": 1.90, "source_at": 1000},
+                {"market": "HDC", "line": -0.25, "selection": "A", "odds": 2.00, "source_at": 1000},
+            ],
+            "source_at": 1000, "timestamp_inferred": False, "timestamp_basis": "provider",
+        }
+        pinnapi_client.corner_lines.side_effect = RuntimeError("specials down")
+        with patch("crown.engine.datetime") as mocked_datetime, patch("crown.engine.time.time", return_value=1001):
+            mocked_datetime.now.return_value = self.now
+            prediction = _prediction(titan, bridge, h_match, "T-5", config, titan_client, pinnapi_client)
+        self.assertTrue(any(row["code"] == "HDC" for row in prediction["candidates"]))
+        self.assertFalse(any(row["code"] == "CHL" for row in prediction["candidates"]))
+        self.assertIn("pinnapi_corner_lines_unavailable_RuntimeError", prediction["corner_no_bet_reason"])
+
     def test_wdl_prediction_uses_complete_no_vig_moneyline(self) -> None:
         view = _wdl_prediction([
             {"market": "1X2", "selection": "H", "odds": 2.0},
@@ -337,6 +410,30 @@ class CrownSafetyTests(unittest.TestCase):
             self.assertEqual(len(ledger["bets"]), 1)
             self.assertTrue(ledger["bets"][0]["simulation_only"])
             self.assertFalse(ledger["bets"][0]["real_betting_enabled"])
+
+    def test_chl_simulation_stores_hkjc_provider_and_has_its_own_market_stats(self) -> None:
+        config = settings()
+        ledger = {"bankroll": 50000, "bets": [], "watch": {}, "log": [], "stats": {}}
+        prediction = {
+            "match_id": "corner", "league": "L", "home": "A", "away": "B",
+            "kickoff_hkt": "2026-08-09T12:05:00+08:00", "stage": "T-5",
+            "conviction": 70, "market_sources": {"CHL": "HKJC, not Crown"},
+            "pick": {
+                "market": "HKJC角球大細", "code": "CHL", "condition": "9.5", "line": 9.5,
+                "side": "H", "label": "HKJC角球大細 大 9.5", "odds": 2.0, "stake": 100,
+                "prob": .55, "ev": .1, "provider": "HKJC", "source": "hkjc_chl",
+                "bookmaker": "HKJC", "reference": "pinnapi_corner_exact_full_match",
+                "reference_provider": "PinnAPI",
+            },
+        }
+        sync_prediction(ledger, prediction, config)
+        bet = ledger["bets"][0]
+        self.assertEqual(bet["market"], "HKJC角球大細")
+        self.assertEqual(bet["provider"], "HKJC")
+        self.assertEqual(bet["source"], "hkjc_chl")
+        bet.update({"status": "SETTLED", "result": "Won", "pnl": 100})
+        stats = recompute_stats(ledger, config)
+        self.assertEqual(stats["by_market"]["HKJC角球大細"]["n"], 1)
 
     def test_quote_refresh_preserves_prediction_stage_and_replaces_stale_price(self) -> None:
         previous = {
@@ -569,6 +666,40 @@ class CrownSafetyTests(unittest.TestCase):
         away = {"market": "HDC", "side": "A", "line": 0.25, "home": "主隊", "away": "客隊"}
         self.assertEqual(_bet_label(home), "讓球 · 主隊 -0/0.5")
         self.assertEqual(_bet_label(away), "讓球 · 客隊 -0/0.5")
+
+    def test_corner_notification_is_explicitly_hkjc_chinese_market_name(self) -> None:
+        corner = {"market": "HKJC角球大細", "code": "CHL", "side": "H", "line": 9.5}
+        self.assertEqual(_bet_label(corner), "HKJC角球大細 · 大 9.5")
+
+    def test_chl_settlement_uses_hkjc_exact_id_corners_even_when_live_cache_exists(self) -> None:
+        config = settings()
+        ledger = {
+            "bankroll": 50000, "watch": {}, "log": [], "stats": {},
+            "bets": [{
+                "bet_id": "corner", "match_id": "titan-match", "hkjc_match_id": "hkjc-match",
+                "pinnapi_event_id": "pin-match", "league": "L", "home": "A", "away": "B",
+                "kickoff": "2020-01-01T12:00:00+08:00",
+                "market": "HKJC角球大細", "code": "CHL", "condition": "9.5", "side": "H",
+                "odds": 2.0, "stake": 100, "status": "PENDING",
+            }],
+        }
+        official = {
+            "hkjc-match": {
+                "home_score": 0, "away_score": 0, "corners_total": 10,
+                "source": "hkjc_official",
+            }
+        }
+        with patch("crown.settle.load_ledger", return_value=ledger), \
+             patch("crown.settle._refresh_live", return_value={"pin-match": {"seen_live": True}}), \
+             patch("crown.settle.fetch_official_results", return_value=official), \
+             patch("crown.settle.TitanClient.results") as titan_results, \
+             patch("crown.settle.save_ledger"):
+            result = crown_settle.settle_due(config)
+        self.assertEqual(result["settled"], 1)
+        self.assertEqual(ledger["bets"][0]["result"], "Won")
+        self.assertEqual(ledger["bets"][0]["score"], {"corners_total": 10})
+        self.assertEqual(ledger["bets"][0]["settlement_source"], "hkjc_official_exact_id_corners")
+        titan_results.assert_not_called()
 
     def test_hkjc_official_results_paginate_and_require_confirmed_full_time(self) -> None:
         class Response:

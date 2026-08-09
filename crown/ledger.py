@@ -40,6 +40,7 @@ def _snapshot(prediction: dict[str, Any], stage: str) -> dict[str, Any]:
         "conviction", "no_bet_reason", "pick", "lead_view", "market_sources", "hkjc_match_id",
         "titan_match_id", "pinnapi_event_id", "source_snapshot_at", "execution",
         "outcome", "forecast", "probability", "likely_score", "prediction_source",
+        "pinnapi_corner_event_id", "pinnapi_corner_source_at", "pinnapi_corner_timestamp_inferred",
         "matching_version",
     )} | {"stage": stage, "ts": iso_hkt()}
 
@@ -85,7 +86,10 @@ def sync_prediction(ledger: dict[str, Any], prediction: dict[str, Any], config: 
         "away": prediction.get("away"), "kickoff": prediction.get("kickoff_hkt"), "titan_match_id": prediction.get("titan_match_id"),
         "pinnapi_event_id": prediction.get("pinnapi_event_id"), "hkjc_match_id": prediction.get("hkjc_match_id"),
         "market": pick["market"], "code": pick["code"], "condition": pick["condition"], "side": pick["side"],
-        "label": pick["label"], "odds": pick["odds"], "stake": pick["stake"], "model_prob": pick["prob"], "ev": pick["ev"],
+        "label": pick["label"], "line": pick.get("line"), "odds": pick["odds"], "stake": pick["stake"],
+        "model_prob": pick["prob"], "ev": pick["ev"], "provider": pick.get("provider"),
+        "source": pick.get("source"), "bookmaker": pick.get("bookmaker"),
+        "reference": pick.get("reference"), "reference_provider": pick.get("reference_provider"),
         "conviction": prediction.get("conviction"), "first_stage": "T-5", "stage": "T-5", "status": "PENDING",
         "simulation_only": True, "real_betting_enabled": False, "created_at": iso_hkt(),
         "history": [{"ts": iso_hkt(), "stage": "T-5", "action": "模擬注建立", "bet_id": bid}],

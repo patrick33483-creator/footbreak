@@ -217,7 +217,10 @@ def fetch_odds(fixture_ids):
 
     PinnAPI exposes per-event prematch lines rather than Optic's batch endpoint.
     Returning an incomplete map would let downstream code quietly use partial
-    data, so any event failure fails this prediction pass.
+    data, so a failure of the normal full-match market fails this prediction
+    pass.  Corners are a separate special-event feed: an absent, ambiguous, or
+    temporarily failed corner response deliberately contributes no CHL rows,
+    but must not discard otherwise usable HDC/HIL/1X2 data.
     """
     out = {}
     client = _client()
@@ -229,18 +232,39 @@ def fetch_odds(fixture_ids):
         prices = parsed.get("prices") or []
         if not prices:
             raise ProviderError(f"PinnAPI returned no full-match prices for {fixture_id}")
-        out[fixture_id] = [
+        merged = [
             dict(price, provider="pinnapi", event_id=fixture_id,
                  timestamp_inferred=bool(parsed.get("timestamp_inferred")))
             for price in prices
         ]
+        try:
+            corners = client.corner_lines(fixture_id)
+        except Exception:
+            # CHL is optional and fail-closed.  The normal match markets above
+            # remain valid rather than turning a special-market outage into a
+            # whole-fixture provider failure.
+            corners = None
+        if corners:
+            for price in corners.get("prices") or []:
+                # The parser accepts only one verified full-match corner child.
+                # Keep CHL only; CHDC has no Footbreak model/settlement path.
+                if price.get("market") != "CHL":
+                    continue
+                merged.append(dict(
+                    price,
+                    provider="pinnapi",
+                    event_id=fixture_id,
+                    corner_event_id=corners.get("corner_event_id"),
+                    timestamp_inferred=bool(corners.get("timestamp_inferred")),
+                ))
+        out[fixture_id] = merged
     return out
 
 
 def _native_structure(prices):
     """PinnAPI decimal prices -> Footbreak's existing model input structure."""
     had = {}
-    hdc, hil = {}, {}
+    hdc, hil, chl = {}, {}, {}
     ts = 0.0
     for price in prices:
         market = price.get("market")
@@ -256,13 +280,17 @@ def _native_structure(prices):
         if market == "1X2" and selection in {"H", "D", "A"}:
             had[selection] = odds
             continue
-        if market not in {"HDC", "HIL"} or selection not in {"H", "A", "L"}:
+        if market not in {"HDC", "HIL", "CHL"}:
+            continue
+        if market == "HDC" and selection not in {"H", "A"}:
+            continue
+        if market in {"HIL", "CHL"} and selection not in {"H", "L"}:
             continue
         try:
             line = float(price.get("line"))
         except (TypeError, ValueError):
             continue
-        book = hdc if market == "HDC" else hil
+        book = hdc if market == "HDC" else hil if market == "HIL" else chl
         row = book.setdefault(line, {"odds": {}, "main": False})
         row["odds"][selection] = odds
         row["main"] = bool(row["main"] or price.get("main"))
@@ -281,9 +309,10 @@ def _native_structure(prices):
     result = {
         "HDC": as_lines(hdc, ("H", "A")),
         "HIL": as_lines(hil, ("H", "L")),
-        # PinnAPI's football lines endpoint currently supplies no verified
-        # corners market in this adapter.  Leaving it empty is fail-closed.
-        "CHL": [],
+        # Special-market parsing emits CHL only for one verified full-match
+        # corner child.  Missing/ambiguous special markets therefore remain
+        # empty without affecting standard markets.
+        "CHL": as_lines(chl, ("H", "L")),
         "_ts": ts,
         "_provider": "pinnapi",
     }
@@ -377,7 +406,12 @@ def opening_structure(fixture_id):
 
 def remember_opening(fixture_id, structure_value):
     """Persist the first valid PinnAPI structure only; later calls cannot overwrite it."""
-    if not structure_value or not (structure_value.get("HAD") or structure_value.get("HDC") or structure_value.get("HIL")):
+    if not structure_value or not (
+        structure_value.get("HAD")
+        or structure_value.get("HDC")
+        or structure_value.get("HIL")
+        or structure_value.get("CHL")
+    ):
         return
     path = _opening_path(fixture_id)
     if os.path.exists(path):
