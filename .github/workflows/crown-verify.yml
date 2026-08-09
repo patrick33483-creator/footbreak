@@ -25,6 +25,7 @@ jobs:
         run: |
           ssh "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
           set -euo pipefail
+          cd /opt/footbreak
           echo "=== Crown production tick ==="
           /opt/footbreak/deploy/crown-run.sh tick
           echo "=== Crown live mapping diagnostic ==="
