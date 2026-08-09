@@ -47,7 +47,7 @@ echo "▸ 更新 systemd 單元"
 install -m 0644 "$APP_DIR"/deploy/systemd/*.service /etc/systemd/system/
 install -m 0644 "$APP_DIR"/deploy/systemd/*.timer   /etc/systemd/system/
 systemctl daemon-reload
-for timer in footbreak-tick.timer footbreak-sweep.timer crown-tick.timer crown-sweep.timer; do
+for timer in footbreak-tick.timer footbreak-sweep.timer crown-tick.timer crown-sweep.timer footbreak-backtest.timer; do
   if systemctl is-enabled --quiet "$timer"; then
     systemctl restart "$timer"
   fi

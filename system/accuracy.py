@@ -26,6 +26,7 @@ import json
 import math
 import os
 import sys
+import tempfile
 from datetime import datetime, timedelta, timezone
 
 import model as M
@@ -35,11 +36,26 @@ HKT = timezone(timedelta(hours=8))
 HERE = os.path.dirname(os.path.abspath(__file__))
 LEDGER = os.path.join(HERE, "sim_ledger.json")
 OUT = os.path.join(HERE, "accuracy.json")
+HISTORY_OUT = os.path.join(HERE, "accuracy_history.json")
 
 SETTLE_AFTER_MIN = 130
 STAGES = ["首預", "T-30", "T-5"]
 CONF_BINS = [(0, 45), (45, 52), (52, 58), (58, 64), (64, 200)]
 CONF_LBL = ["<45", "45–52", "52–58", "58–64", "≥64"]
+
+
+def _atomic_json(path, payload):
+    directory = os.path.dirname(path)
+    fd, temp_path = tempfile.mkstemp(prefix=".accuracy.", dir=directory)
+    try:
+        with os.fdopen(fd, "w", encoding="utf8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, separators=(",", ":"))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_path, path)
+    finally:
+        if os.path.exists(temp_path):
+            os.unlink(temp_path)
 
 
 # ─────────────────────────────────────────── 由參數重砌分佈
@@ -319,7 +335,7 @@ def run(fetch=True):
         final_rows.append([r for r in scored
                            if r["match_id"] == m["match_id"]][-1])
 
-    out = {
+    full_out = {
         "generated_at": now.isoformat(timespec="seconds"),
         "n_matches": len(matches), "n_preds": len(scored),
         "n_missing_result": missing,
@@ -328,10 +344,11 @@ def run(fetch=True):
         "by_stage": {k: v for k, v in by_stage.items() if v},
         "by_conf": by_conf,
         "calibration": calibration(scored),
-        "matches": matches[:200],
+        "matches": matches,
     }
-    with open(OUT, "w", encoding="utf8") as handle:
-        json.dump(out, handle, ensure_ascii=False, separators=(",", ":"))
+    out = {**full_out, "matches": matches[:200]}
+    _atomic_json(HISTORY_OUT, full_out)
+    _atomic_json(OUT, out)
     return out
 
 

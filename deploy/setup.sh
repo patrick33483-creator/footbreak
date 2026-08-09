@@ -13,6 +13,7 @@ WEB_ROOT="/var/www/footbreak"
 CROWN_STATE_DIR="/var/lib/footbreak/crown"
 CROWN_ENV_FILE="/etc/footbreak-crown.env"
 CROWN_WEB_ROOT="/var/www/crown"
+BACKTEST_STATE_DIR="/var/lib/footbreak/backtest"
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 sync_crown_web_root() {
@@ -38,6 +39,7 @@ echo "▸ 3/7 建立目錄"
 mkdir -p "$APP_DIR" "$STATE_DIR" "$WEB_ROOT" "$CROWN_WEB_ROOT" /var/log/footbreak
 # Private runtime state is never served by nginx and never made group-readable.
 install -d -o root -g root -m 0700 "$CROWN_STATE_DIR"
+install -d -o root -g root -m 0700 "$BACKTEST_STATE_DIR"
 if [ "$REPO_DIR" != "$APP_DIR" ]; then
   rsync -a --delete --exclude '.git' "$REPO_DIR/" "$APP_DIR/"
 fi
@@ -96,6 +98,8 @@ systemctl daemon-reload
 systemctl disable --now footbreak-tick.timer footbreak-sweep.timer 2>/dev/null || true
 # Crown 更要預設停用；升版亦只會保留目前的 enable/disable 狀態。
 systemctl disable --now crown-tick.timer crown-sweep.timer 2>/dev/null || true
+# 回測預設停用，需先成功建立基線再啟用。
+systemctl disable --now footbreak-backtest.timer 2>/dev/null || true
 
 install -m 0644 "$APP_DIR/deploy/nginx-footbreak.conf" /etc/nginx/sites-available/footbreak
 ln -sf /etc/nginx/sites-available/footbreak /etc/nginx/sites-enabled/footbreak

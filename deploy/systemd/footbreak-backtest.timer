@@ -1,0 +1,12 @@
+[Unit]
+Description=足破及皇冠 · 每日累積及時間順序回測
+
+[Timer]
+# 伺服器時區由 setup.sh 設為 Asia/Hong_Kong。
+OnCalendar=*-*-* 12:20:00
+Persistent=true
+AccuracySec=1s
+Unit=footbreak-backtest.service
+
+[Install]
+WantedBy=timers.target

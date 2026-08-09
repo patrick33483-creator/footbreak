@@ -1,0 +1,35 @@
+name: 啟用自動累積及回測
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: production-backtest-enable
+  cancel-in-progress: false
+
+jobs:
+  enable:
+    name: 建立基線並啟用每日回測
+    runs-on: ubuntu-24.04
+    steps:
+      - name: 設定 SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: 建立基線及啟用計時器
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh "$DEPLOY_USER@$DEPLOY_HOST" '
+            set -e
+            sudo /opt/footbreak/deploy/backtest-run.sh
+            sudo systemctl enable --now footbreak-backtest.timer
+            sudo systemctl status footbreak-backtest.timer --no-pager
+          '

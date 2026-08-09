@@ -1,0 +1,16 @@
+[Unit]
+Description=足破及皇冠 · 累積時間順序回測
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/footbreak
+ExecStart=/opt/footbreak/deploy/backtest-run.sh
+TimeoutStartSec=1800
+Nice=10
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

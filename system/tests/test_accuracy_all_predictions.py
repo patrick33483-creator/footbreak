@@ -44,14 +44,20 @@ class AccuracyAllPredictionsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             ledger_path = Path(directory) / "sim_ledger.json"
             output_path = Path(directory) / "accuracy.json"
+            history_path = Path(directory) / "accuracy_history.json"
             ledger_path.write_text(json.dumps(ledger, ensure_ascii=False), encoding="utf-8")
             with patch.object(accuracy, "LEDGER", str(ledger_path)), \
                  patch.object(accuracy, "OUT", str(output_path)), \
+                 patch.object(accuracy, "HISTORY_OUT", str(history_path)), \
                  patch.object(accuracy.S, "fetch_hkjc_results", return_value={"m1": result}):
                 scored = accuracy.run(fetch=True)
+            history_count = len(
+                json.loads(history_path.read_text(encoding="utf-8"))["matches"]
+            )
         self.assertEqual(scored["n_matches"], 1)
         self.assertEqual(scored["n_preds"], 1)
         self.assertEqual(scored["latest"]["n"], 1)
+        self.assertEqual(history_count, 1)
 
 
 if __name__ == "__main__":
