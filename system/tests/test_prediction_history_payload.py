@@ -10,11 +10,15 @@ if str(SYSTEM_DIR) not in sys.path:
     sys.path.insert(0, str(SYSTEM_DIR))
 
 import gen_app_data
+from record_picks import PREDICTION_ERA
+
+ERA = PREDICTION_ERA
 
 
 class PredictionHistoryPayloadTests(unittest.TestCase):
     def test_all_stages_are_kept_and_results_are_joined(self) -> None:
         stage = {
+            "prediction_era": ERA,
             "stage": "T-30",
             "ts": "2026-08-09T19:30:00+08:00",
             "conviction": 61.2,
@@ -64,8 +68,8 @@ class PredictionHistoryPayloadTests(unittest.TestCase):
                 "match_id": "m1", "home": "主隊", "away": "客隊",
                 "league": "測試聯賽", "kickoff": "2026-08-09 20:00",
                 "stages": [
-                    {"stage": "T-30", "conviction": 60},
-                    {"stage": "T-5", "conviction": 62},
+                    {"prediction_era": ERA, "stage": "T-30", "conviction": 60},
+                    {"prediction_era": ERA, "stage": "T-5", "conviction": 62},
                 ],
             }
         }
@@ -85,7 +89,7 @@ class PredictionHistoryPayloadTests(unittest.TestCase):
             "m2": {
                 "match_id": "m2", "home": "主隊", "away": "客隊",
                 "league": "測試聯賽", "kickoff": "2026-08-09 05:30",
-                "stages": [{"stage": "首預", "conviction": 55}],
+                "stages": [{"prediction_era": ERA, "stage": "首預", "conviction": 55}],
             }
         }
         accuracy = {

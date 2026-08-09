@@ -927,6 +927,23 @@ function bindSettlementButton() {
   };
 }
 
+const HIST_MARKET_LABEL = { HDC: '讓球', HIL: '入球大細', CHL: '角球大細' };
+const HIST_SETTLEMENT_LABEL = {
+  Won: '全贏', 'Half Won': '半贏', Refunded: '走水',
+  'Half Lost': '半輸', Lost: '全輸',
+};
+function historyMarkets(r) {
+  const grades = Object.fromEntries((r.market_grades || []).map((g) => [g.code, g]));
+  return (r.market_predictions || []).map((p) => {
+    const g = grades[p.code] || {};
+    const result = g.grade_status === 'GRADED'
+      ? ` · ${HIST_SETTLEMENT_LABEL[g.settlement] || g.settlement}`
+      : g.reason === 'corners_result_missing' ? ' · 待角球賽果' : '';
+    return `<div><b>${HIST_MARKET_LABEL[p.code] || esc(p.code)}</b> ${esc(p.label || `${p.condition} ${p.side}`)}
+      <span class="cell-sub">${pc(p.probability, 1)}${esc(result)}</span></div>`;
+  }).join('') || '<span class="dim">未有可評分市場</span>';
+}
+
 function renderHistory() {
   const payload = DATA.prediction_history || { rows: [], stats: {} };
   const rows = payload.rows || [], s = payload.stats || {};
@@ -945,6 +962,12 @@ function renderHistory() {
       x.accuracy == null ? '待累積' : `${pc(x.accuracy, 1)} (${x.hits}/${x.graded})`
     }</span>`;
   }).join('');
+  const marketSummary = ['HDC', 'HIL', 'CHL'].map((code) => {
+    const x = (s.by_market || {})[code] || {};
+    return `<span class="hist-stage"><b>${HIST_MARKET_LABEL[code]}</b> ${
+      x.accuracy == null ? `待累積 (${x.graded || 0})` : `${pc(x.accuracy, 1)} (${x.hits}/${x.decided})`
+    }</span>`;
+  }).join('');
   const body = rows.map((r) => `<tr>
     <td class="mono nowrap">${r.kickoff ? `${hkDay(r.kickoff)} ${hkClock(r.kickoff)}` : '—'}</td>
     <td>${esc(r.home)} <span class="dim">v</span> ${esc(r.away)}
@@ -953,6 +976,7 @@ function renderHistory() {
       <div class="cell-sub mono">${r.predicted_at ? hkStamp(r.predicted_at) : '—'}</div></td>
     <td><b class="forecast-pick">${esc(r.forecast)}</b>
       <div class="cell-sub">最高機率 ${pc(r.probability, 1)}${r.likely_score ? ` · 最可能 ${esc(r.likely_score)}` : ''}</div></td>
+    <td>${historyMarkets(r)}</td>
     <td class="${convClass(r.conviction)}">${f2(r.conviction)}</td>
     <td>${r.simulated_bet
       ? `<span class="stpill pending">有模擬注</span><div class="cell-sub">${esc(r.bet_label || '')}</div>`
@@ -969,12 +993,13 @@ function renderHistory() {
   </div>
   <div class="card history-note">
     <div class="history-stage-summary">${stageSummary}</div>
-    <p class="mx-note">每個階段以當時主勝／和局／客勝最高機率作正式方向，並保留信念分、最高機率、最可能比分同唔落注原因。賽果返嚟後先計命中，未完場唔當輸。</p>
+    <div class="history-stage-summary">${marketSummary}</div>
+    <p class="mx-note">正式學習樣本為讓球、入球大細及角球大細當時主線；1X2 只作輔助。賽果返嚟後先計命中，未完場或未取到賽果唔當輸。</p>
   </div>
   <div class="card"><h2 class="card-h">全量紀錄 <span class="sub">${rows.length} 筆</span></h2>
     <div class="tbl-wrap"><table class="t history-table">
-      <tr><th>開賽</th><th>賽事</th><th>階段</th><th>我估</th><th>信念</th><th>模擬注</th><th>賽果核對</th></tr>
-      ${body || '<tr><td colspan="7" class="empty2">未有預測紀錄</td></tr>'}
+      <tr><th>開賽</th><th>賽事</th><th>階段</th><th>1X2 輔助</th><th>三市場正式預測</th><th>信念</th><th>模擬注</th><th>賽果核對</th></tr>
+      ${body || '<tr><td colspan="8" class="empty2">未有預測紀錄</td></tr>'}
     </table></div>
   </div>`;
 }

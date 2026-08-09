@@ -1,0 +1,11 @@
+[Unit]
+Description=皇冠 · 每15分鐘獨立結算
+
+[Timer]
+OnCalendar=*:0/15
+Persistent=true
+AccuracySec=30s
+Unit=crown-settle.service
+
+[Install]
+WantedBy=timers.target

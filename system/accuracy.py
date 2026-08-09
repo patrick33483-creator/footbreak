@@ -29,6 +29,12 @@ import sys
 import tempfile
 from datetime import datetime, timedelta, timezone
 
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+
+from analysis.learning_store import LearningStore
+
 import model as M
 import settle as S
 
@@ -40,6 +46,8 @@ HISTORY_OUT = os.path.join(HERE, "accuracy_history.json")
 
 SETTLE_AFTER_MIN = 130
 STAGES = ["首預", "T-30", "T-5"]
+PREDICTION_ERA = "2026-08-10-market-learning-v2"
+PREDICTION_SCHEMA_VERSION = 2
 NON_RESULT_STATUS_MARKERS = (
     "SUSPEND", "POSTPON", "CANCEL", "ABANDON", "VOID", "REFUND",
 )
@@ -140,6 +148,7 @@ def score_stage(st, res):
 
     r = {
         "stage": st.get("stage"),
+        "predicted_at": st.get("ts"),
         "conf": st.get("conviction"),
         "wdl_pick": pick, "wdl_act": act, "wdl_hit": int(pick == act),
         "wdl_p": round(p[act], 4), "wdl_pmax": round(p[pick], 4),
@@ -150,6 +159,7 @@ def score_stage(st, res):
         "score_top": f"{d['tops'][0][0]}-{d['tops'][0][1]}",
         "score_hit1": int((gh, ga) == d["tops"][0]),
         "score_hit5": int((gh, ga) in d["tops"]),
+        "market_grades": score_market_predictions(st.get("market_predictions") or [], res),
     }
 
     # 大細 2.5
@@ -189,6 +199,100 @@ def score_stage(st, res):
     return r
 
 
+_SETTLEMENT_TARGET = {
+    "Won": 1.0, "Half Won": 0.75, "Refunded": 0.5,
+    "Half Lost": 0.25, "Lost": 0.0,
+}
+
+
+def score_market_predictions(predictions, res):
+    """按當時實際主線逐一評分；不以有冇落注或 EV 作篩選。"""
+    grades = []
+    for prediction in predictions:
+        code = prediction.get("code")
+        try:
+            probability = float(prediction["probability"])
+            bet = {
+                "code": code,
+                "condition": prediction["condition"],
+                "side": prediction["side"],
+                "stake": 1.0,
+                "odds": 2.0,
+            }
+            status, _ = S.settle_bet(bet, res)
+        except (KeyError, TypeError, ValueError, ZeroDivisionError):
+            status = None
+        if not status:
+            grades.append({
+                **prediction,
+                "grade_status": "NOT_APPLICABLE",
+                "reason": "corners_result_missing" if code == "CHL" else "invalid_prediction_or_result",
+            })
+            continue
+        target = _SETTLEMENT_TARGET[status]
+        p = min(.999999, max(.000001, probability))
+        grades.append({
+            **prediction,
+            "grade_status": "GRADED",
+            "settlement": status,
+            "target": target,
+            "hit": None if status == "Refunded" else status in {"Won", "Half Won"},
+            "brier": round((p - target) ** 2, 6),
+            "log_loss": round(
+                -(target * math.log(p) + (1 - target) * math.log(1 - p)), 6
+            ),
+        })
+    return grades
+
+
+def _persist_learning_result(mid, w, res, rows):
+    path = os.environ.get("LEARNING_DB_PATH")
+    if not path:
+        return
+    provenance = {
+        "fixture_id": w.get("fixture_id"),
+        "hkjc_match_id": mid,
+        "corners_total": res.get("corners_total"),
+        "raw_source": res.get("source"),
+    }
+    with LearningStore(path) as store:
+        result = store.record_result(
+            "footbreak",
+            mid,
+            home_score=res.get("goals_home"),
+            away_score=res.get("goals_away"),
+            terminal_status="finished",
+            source=str(res.get("source") or "verified_result"),
+            provenance=provenance,
+        )
+        for stage, score in rows:
+            snapshot_id = stage.get("learning_snapshot_id")
+            if not snapshot_id:
+                continue
+            store.record_grade(
+                snapshot_id,
+                "WDL",
+                str(score.get("wdl_pick")),
+                "GRADED",
+                {
+                    "hit": score.get("wdl_hit"),
+                    "brier": score.get("wdl_brier"),
+                    "log_loss": score.get("wdl_ll"),
+                    "actual": score.get("wdl_act"),
+                },
+                result_id=result["result_id"],
+            )
+            for grade in score.get("market_grades") or []:
+                store.record_grade(
+                    snapshot_id,
+                    str(grade.get("code") or "UNKNOWN"),
+                    f"{grade.get('condition')}|{grade.get('side')}",
+                    str(grade.get("grade_status") or "NOT_APPLICABLE"),
+                    grade,
+                    result_id=result["result_id"],
+                )
+
+
 # ─────────────────────────────────────────── 匯總
 
 def _agg(rows):
@@ -205,7 +309,7 @@ def _agg(rows):
         return {"n": len(v), "hit": sum(v),
                 "pct": round(100.0 * sum(v) / len(v), 1)} if v else None
 
-    return {
+    result = {
         "n": len(rows),
         "wdl": rate("wdl_hit"),
         "wdl_brier": mean("wdl_brier"),
@@ -217,6 +321,38 @@ def _agg(rows):
         "score1": rate("score_hit1"), "score5": rate("score_hit5"),
         "goals_mae": mean("goals_err"), "goals_cover": rate("goals_cover"),
         "corners_mae": mean("corners_err"), "corners_cover": rate("corners_cover"),
+    }
+    result["by_market"] = {
+        code: _market_agg(rows, code) for code in ("HDC", "HIL", "CHL")
+    }
+    return result
+
+
+def _market_agg(rows, code=None):
+    grades = [
+        grade
+        for row in rows
+        for grade in (row.get("market_grades") or [])
+        if grade.get("grade_status") == "GRADED"
+        and (code is None or grade.get("code") == code)
+    ]
+    decided = [grade for grade in grades if grade.get("hit") is not None]
+    return {
+        "graded": len(grades),
+        "decided": len(decided),
+        "hits": sum(grade.get("hit") is True for grade in decided),
+        "accuracy": (
+            round(sum(grade.get("hit") is True for grade in decided) / len(decided), 6)
+            if decided else None
+        ),
+        "brier": (
+            round(sum(float(grade["brier"]) for grade in grades) / len(grades), 6)
+            if grades else None
+        ),
+        "log_loss": (
+            round(sum(float(grade["log_loss"]) for grade in grades) / len(grades), 6)
+            if grades else None
+        ),
     }
 
 
@@ -260,6 +396,11 @@ def run(fetch=True):
 
     eligible = []
     for mid, w in watch.items():
+        if not any(
+            stage.get("prediction_era") == PREDICTION_ERA
+            for stage in (w.get("stages") or [])
+        ):
+            continue
         try:
             kickoff = datetime.strptime(w["kickoff"], "%Y-%m-%d %H:%M").replace(tzinfo=HKT)
         except Exception:
@@ -284,6 +425,12 @@ def run(fetch=True):
 
     scored, matches, missing_results, excluded_results = [], [], [], []
     for mid, w in watch.items():
+        learning_stages = [
+            stage for stage in (w.get("stages") or [])
+            if stage.get("prediction_era") == PREDICTION_ERA
+        ]
+        if not learning_stages:
+            continue
         try:
             ko = datetime.strptime(w["kickoff"], "%Y-%m-%d %H:%M").replace(tzinfo=HKT)
         except Exception:
@@ -328,7 +475,8 @@ def run(fetch=True):
             continue
 
         rows = []
-        for st in (w.get("stages") or []):
+        learning_rows = []
+        for st in learning_stages:
             sc = score_stage(st, res)
             if not sc:
                 continue
@@ -337,8 +485,10 @@ def run(fetch=True):
             sc["_p3"] = [x / sp for x in d["p"]]
             sc["match_id"] = mid
             rows.append(sc)
+            learning_rows.append((st, sc))
             scored.append(sc)
         if rows:
+            _persist_learning_result(mid, w, res, learning_rows)
             last = rows[-1]
             matches.append({
                 "match_id": mid, "home": w.get("home"), "away": w.get("away"),
@@ -366,6 +516,8 @@ def run(fetch=True):
                            if r["match_id"] == m["match_id"]][-1])
 
     full_out = {
+        "prediction_era": PREDICTION_ERA,
+        "schema_version": PREDICTION_SCHEMA_VERSION,
         "generated_at": now.isoformat(timespec="seconds"),
         "n_matches": len(matches), "n_preds": len(scored),
         "n_missing_result": len(missing_results),
@@ -373,6 +525,7 @@ def run(fetch=True):
         "n_excluded_result": len(excluded_results),
         "excluded_results": excluded_results,
         "overall": _agg(scored),
+        "market_overall": _market_agg(scored),
         "latest": _agg(final_rows),
         "by_stage": {k: v for k, v in by_stage.items() if v},
         "by_conf": by_conf,

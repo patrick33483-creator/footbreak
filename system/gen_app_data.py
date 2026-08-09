@@ -202,6 +202,7 @@ def build_prediction_history(watch, bets, accuracy):
             no_bet_reason = "未達模擬投注條件"
 
         rows.append({
+            "prediction_era": snap.get("prediction_era") or accuracy.get("prediction_era"),
             "match_id": mid,
             "home": match.get("home"),
             "away": match.get("away"),
@@ -228,13 +229,16 @@ def build_prediction_history(watch, bets, accuracy):
             "excluded_reason": excluded.get("status") if excluded else None,
             "wdl_brier": score.get("wdl_brier"),
             "wdl_ll": score.get("wdl_ll"),
+            "market_predictions": snap.get("market_predictions") or [],
+            "market_grades": score.get("market_grades") or [],
         })
 
     for mid, match in watch.items():
         mid = str(mid)
         for snap in match.get("stages") or []:
             stage = snap.get("stage")
-            if stage in HISTORY_STAGES:
+            if (stage in HISTORY_STAGES
+                    and snap.get("prediction_era") == "2026-08-10-market-learning-v2"):
                 add_row(mid, match, stage, snap)
 
     # accuracy_history 係全量留存。就算舊 watch 日後被整理，已核對紀錄都不會消失。
@@ -264,17 +268,40 @@ def build_prediction_history(watch, bets, accuracy):
             "accuracy": (stage_hits / len(stage_graded)) if stage_graded else None,
         }
 
+    by_market = {}
+    for code in ("HDC", "HIL", "CHL"):
+        grades = [
+            grade for row in rows for grade in (row.get("market_grades") or [])
+            if grade.get("code") == code and grade.get("grade_status") == "GRADED"
+        ]
+        decided = [grade for grade in grades if grade.get("hit") is not None]
+        by_market[code] = {
+            "graded": len(grades),
+            "decided": len(decided),
+            "hits": sum(grade.get("hit") is True for grade in decided),
+            "accuracy": (
+                sum(grade.get("hit") is True for grade in decided) / len(decided)
+                if decided else None
+            ),
+            "brier": (
+                sum(float(grade["brier"]) for grade in grades) / len(grades)
+                if grades else None
+            ),
+        }
+
     return {
         "rows": rows,
         "stats": {
             "matches": len({r.get("match_id") for r in rows}),
             "predictions": len(rows),
             "graded": len(graded_rows),
-        "pending": len(pending_rows),
-        "excluded": len(excluded_rows),
+            "pending": len(pending_rows),
+            "excluded": len(excluded_rows),
             "hits": hits,
             "accuracy": (hits / len(graded_rows)) if graded_rows else None,
             "by_stage": by_stage,
+            "by_market": by_market,
+            "learning_status": "collecting_market_level_shadow_samples",
         },
     }
 

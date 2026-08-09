@@ -21,6 +21,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 LEDGER = os.path.join(HERE, "sim_ledger.json")
 
 MARKET_MULT = {"CHL": 0.5}          # 角球額外折讓
+ALLOW_UNVALIDATED_UPGRADE = False
 
 STAGES = {
     1: {"fraction": 1.0 / 3.0, "cap": 0.04, "label": "階段一 · 建立樣本"},
@@ -124,9 +125,9 @@ def stage(led=None):
     n = perf["n"]
 
     lvl = 1
-    if n >= 80 and slope is not None and slope > 0.6:
+    if ALLOW_UNVALIDATED_UPGRADE and n >= 80 and slope is not None and slope > 0.6:
         lvl = 2
-    if (n >= 200 and slope is not None and slope > 0.6
+    if (ALLOW_UNVALIDATED_UPGRADE and n >= 200 and slope is not None and slope > 0.6
             and perf["roi"] is not None and perf["pred_roi"]
             and perf["roi"] > 0.6 * perf["pred_roi"]):
         lvl = 3
@@ -140,7 +141,12 @@ def stage(led=None):
     st = dict(STAGES[lvl])
     st.update({"level": lvl, "n_settled": n, "slope": slope,
                "buckets": buckets, "perf": perf, "demoted": demoted,
-               "market_mult": MARKET_MULT})
+               "market_mult": MARKET_MULT,
+               "promotion_locked": not ALLOW_UNVALIDATED_UPGRADE,
+               "promotion_reason": (
+                   "awaiting_locked_out_of_sample_model_and_policy_validation"
+                   if not ALLOW_UNVALIDATED_UPGRADE else None
+               )})
     return st
 
 

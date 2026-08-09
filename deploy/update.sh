@@ -50,8 +50,8 @@ systemctl daemon-reload
 # Crown is a fixed 12:00-to-11:59 board.  The :05/:35 pass refreshes fixture
 # discovery and Crown quotes only; the two-minute tick retains Footbreak's
 # original T-30/T-5 windows and is the only path that can create a T-5 bet.
-systemctl enable --now crown-sweep.timer crown-tick.timer
-systemctl restart crown-sweep.timer crown-tick.timer
+systemctl enable --now crown-sweep.timer crown-tick.timer crown-settle.timer
+systemctl restart crown-sweep.timer crown-tick.timer crown-settle.timer
 # Settlement is deliberately separate from the latency-sensitive tick.  T-30
 # and T-5 now share one ordered queue, so the old second timer is retired
 # completely.  Merely disabling it proved insufficient on an upgraded host:
@@ -76,7 +76,7 @@ done
 echo "▸ 更新儀表板靜態檔"
 # --exclude data.json:web root 嗰份係跑出嚟嘅實時資料,唔可以用 repo 嗰份覆蓋
 rsync -a --exclude 'data.json' "$APP_DIR/hkjc-dashboard/" "$WEB_ROOT/"
-install -d -o root -g root -m 0700 /var/lib/footbreak/crown
+install -d -o root -g root -m 0700 /var/lib/footbreak/crown /var/lib/footbreak/learning
 # Runtime dashboard data is deliberately excluded: a deploy never replaces
 # Crown's ledger/state-derived data with the recovered archive snapshot.
 sync_crown_web_root

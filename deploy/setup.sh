@@ -97,7 +97,7 @@ systemctl daemon-reload
 # 首次安裝只放好服務，憑證及手動驗證完成前絕不自動掃描。
 systemctl disable --now footbreak-tick.timer footbreak-t30.timer footbreak-sweep.timer footbreak-settle.timer 2>/dev/null || true
 # Crown 更要預設停用；升版亦只會保留目前的 enable/disable 狀態。
-systemctl disable --now crown-tick.timer crown-sweep.timer 2>/dev/null || true
+systemctl disable --now crown-tick.timer crown-sweep.timer crown-settle.timer 2>/dev/null || true
 # 回測預設停用，需先成功建立基線再啟用。
 systemctl disable --now footbreak-backtest.timer 2>/dev/null || true
 
@@ -158,6 +158,6 @@ cat <<'EOF'
   /opt/footbreak/.venv/bin/python -m unittest discover -s /opt/footbreak/crown/tests -t /opt/footbreak
   /opt/footbreak/.venv/bin/python -m crown.run tick --dry-run
 確認 PinnAPI、配對、資料時效及模擬注後才可:
-  systemctl enable --now crown-tick.timer crown-sweep.timer
+  systemctl enable --now crown-tick.timer crown-sweep.timer crown-settle.timer
 ═══════════════════════════════════════════════════
 EOF

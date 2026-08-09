@@ -29,6 +29,7 @@ class AccuracyAllPredictionsTests(unittest.TestCase):
                     "league": "聯賽",
                     "kickoff": kickoff.strftime("%Y-%m-%d %H:%M"),
                     "stages": [{
+                        "prediction_era": accuracy.PREDICTION_ERA,
                         "stage": "T-30",
                         "conviction": 60,
                         "final": {"lh": 1.6, "la": 0.9, "rho": 0.0, "mu": None},

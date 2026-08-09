@@ -12,10 +12,17 @@
 """
 import json
 import os
+import sys
 import tempfile
 import datetime as dt
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(HERE)
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+
+from analysis.learning_store import LearningStore
+
 LEDGER = os.path.join(HERE, "sim_ledger.json")
 HKT = dt.timezone(dt.timedelta(hours=8))
 
@@ -24,6 +31,8 @@ DAILY_CAP = 1.00   # 用戶指定:單日不設限
 OPEN_CAP = 1.00    # 用戶指定:在場不設限
 BET_STAGE = "T-5"          # 唯一落注階段
 MIN_BET_LEAD_SECONDS = 5   # 少過 5 秒已無實際通知/落注時間
+PREDICTION_ERA = "2026-08-10-market-learning-v2"
+PREDICTION_SCHEMA_VERSION = 2
 
 
 def load():
@@ -70,6 +79,42 @@ def _slim_adjs(adjs):
     return out
 
 
+def _market_predictions(candidates):
+    """每個市場保留一個與賠率/EV無關的正式方向。
+
+    主線優先；同一條主線兩邊之中，揀模型條件勝率較高的一邊。完整盤口
+    仍由即時 predictions.json 保留，歷史只需要一個不重複計權的樣本。
+    """
+    grouped = {}
+    for candidate in candidates or []:
+        code = candidate.get("code")
+        if code not in {"HDC", "HIL", "CHL"}:
+            continue
+        grouped.setdefault(code, []).append(candidate)
+    output = []
+    for code, rows in grouped.items():
+        main = [row for row in rows if row.get("is_main")]
+        pool = main or rows
+        def decided_probability(row):
+            probability = float(row.get("prob") or 0)
+            push = float(row.get("push") or 0)
+            return probability / max(1e-9, 1.0 - push)
+        best = max(pool, key=lambda row: (decided_probability(row), float(row.get("prob") or 0)))
+        output.append({
+            "code": code,
+            "market": best.get("market"),
+            "condition": best.get("condition"),
+            "side": best.get("side"),
+            "label": best.get("label"),
+            "probability": round(decided_probability(best), 6),
+            "win_probability": best.get("prob"),
+            "push_probability": best.get("push"),
+            "is_main": bool(best.get("is_main")),
+            "source": "footbreak_model_current_main_line",
+        })
+    return sorted(output, key=lambda row: row["code"])
+
+
 def _snap(r, now):
     """把一次預測壓成一個階段記錄。"""
     can_bet = bool(r.get("can_bet"))
@@ -86,6 +131,8 @@ def _snap(r, now):
     else:
         verdict = "無傾向"
     return {
+        "prediction_era": PREDICTION_ERA,
+        "schema_version": PREDICTION_SCHEMA_VERSION,
         "stage": r["stage"],
         "ts": now,
         "can_bet": can_bet,
@@ -113,6 +160,7 @@ def _snap(r, now):
         "adjustments": _slim_adjs(r.get("adjustments")),
         "mults": r.get("mults"),
         "outcome": r.get("outcome"),
+        "market_predictions": _market_predictions(cands),
         # 資訊齊唔齊
         "info": {
             "weather": bool(wx),
@@ -127,6 +175,27 @@ def _snap(r, now):
 
 
 STAGE_ORDER = {"首預": 1, "T-30": 2, "T-5": 3}
+
+
+def _record_learning_snapshot(mid, r, snap):
+    path = os.environ.get("LEARNING_DB_PATH")
+    if not path:
+        return None
+    kickoff = dt.datetime.fromisoformat(str(r["kickoff_hkt"]))
+    if kickoff.tzinfo is None:
+        kickoff = kickoff.replace(tzinfo=HKT)
+    payload = {key: value for key, value in snap.items() if key != "ts"}
+    with LearningStore(path) as store:
+        return store.record_snapshot(
+            "footbreak",
+            mid,
+            str(r["stage"]),
+            snap["ts"],
+            kickoff.isoformat(),
+            payload,
+            model_version=PREDICTION_ERA,
+            schema_version=str(PREDICTION_SCHEMA_VERSION),
+        )
 
 
 def sync(preds_file="predictions.json"):
@@ -176,6 +245,20 @@ def sync(preds_file="predictions.json"):
             snap["t30_data_complete"] = any(
                 item.get("stage") == "T-30" for item in w["stages"]
             )
+        learning = _record_learning_snapshot(mid, r, snap)
+        if learning:
+            snap.update({
+                "learning_snapshot_id": learning["snapshot_id"],
+                "learning_attempt": learning["attempt"],
+                "learning_pre_kickoff": learning["pre_kickoff"],
+                "learning_payload_sha256": learning["payload_sha256"],
+            })
+            if not learning["pre_kickoff"]:
+                notes.append(
+                    f"⏭ {r.get('home')} v {r.get('away')} — "
+                    f"{stage} 賽後重跑已隔離，沒有覆蓋賽前預測"
+                )
+                continue
         prev = next((x for x in w["stages"] if x["stage"] == stage), None)
         if prev:
             w["stages"][w["stages"].index(prev)] = snap    # 同階段重跑 → 覆蓋

@@ -9,7 +9,7 @@ echo "=== production health $(TZ=Asia/Hong_Kong date '+%F %T %Z') ==="
 
 for unit in \
   footbreak-tick.timer footbreak-sweep.timer footbreak-settle.timer footbreak-backtest.timer \
-  crown-tick.timer crown-sweep.timer; do
+  crown-tick.timer crown-sweep.timer crown-settle.timer; do
   systemctl is-enabled --quiet "$unit"
   systemctl is-active --quiet "$unit"
   echo "OK timer $unit"
@@ -22,7 +22,7 @@ if systemctl is-active --quiet footbreak-t30.timer ||
 fi
 echo "OK retired timer footbreak-t30.timer is inactive and disabled"
 
-for service in footbreak-tick.service crown-tick.service crown-sweep.service; do
+for service in footbreak-tick.service crown-tick.service crown-sweep.service crown-settle.service; do
   result="$(systemctl show "$service" -p Result --value)"
   status="$(systemctl show "$service" -p ExecMainStatus --value)"
   # Footbreak timed jobs deliberately return EX_TEMPFAIL (75) when a

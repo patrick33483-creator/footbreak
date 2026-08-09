@@ -12,16 +12,25 @@ from pathlib import Path
 from typing import Any
 
 from analysis.time_order_backtest import (
+    crown_market_rows,
     crown_rows,
     evaluate,
+    footbreak_market_rows,
     footbreak_rows,
     latest,
     with_ci,
 )
+from analysis.champion_challenger import all_market_tests
+from analysis.learning_store import LearningStore
 
 TARGET_NEW_MATCHES = 100
 MIN_HOLDOUT_MATCHES = 30
 MIN_T5_HOLDOUT_COVERAGE = 0.70
+MIN_MATCHES_FOR_UPGRADE_TEST = 300
+MIN_UPGRADE_HOLDOUT_COVERAGE = 0.70
+MIN_BRIER_IMPROVEMENT = 0.01
+MAX_ACCURACY_DECLINE = 0.02
+MAX_LOG_LOSS_INCREASE = 0.0
 
 
 def read_json(path: Path) -> dict[str, Any]:
@@ -107,6 +116,100 @@ def forward_report(
         },
         "t5_matches": len(t5_ids),
         "t5_coverage": round(len(t5_ids) / len(batch_ids), 6) if batch_ids else 0.0,
+    }
+
+
+def candidate_gate(
+    label: str,
+    candidate: dict[str, Any],
+    baseline: dict[str, Any],
+    coverage: float,
+) -> dict[str, Any]:
+    candidate_n = int(candidate.get("n") or 0)
+    baseline_n = int(baseline.get("n") or 0)
+    brier_delta = (
+        round(float(candidate["brier"]) - float(baseline["brier"]), 6)
+        if candidate.get("brier") is not None and baseline.get("brier") is not None
+        else None
+    )
+    accuracy_delta = (
+        round(float(candidate["accuracy"]) - float(baseline["accuracy"]), 6)
+        if candidate.get("accuracy") is not None and baseline.get("accuracy") is not None
+        else None
+    )
+    log_loss_delta = (
+        round(float(candidate["log_loss"]) - float(baseline["log_loss"]), 6)
+        if candidate.get("log_loss") is not None and baseline.get("log_loss") is not None
+        else None
+    )
+    checks = {
+        "holdout_rows": candidate_n >= MIN_HOLDOUT_MATCHES and baseline_n >= MIN_HOLDOUT_MATCHES,
+        "holdout_coverage": coverage >= MIN_UPGRADE_HOLDOUT_COVERAGE,
+        "brier_improvement": (
+            brier_delta is not None and brier_delta <= -MIN_BRIER_IMPROVEMENT
+        ),
+        "accuracy_not_materially_worse": (
+            accuracy_delta is not None and accuracy_delta >= -MAX_ACCURACY_DECLINE
+        ),
+        "log_loss_not_worse": (
+            log_loss_delta is not None and log_loss_delta <= MAX_LOG_LOSS_INCREASE
+        ),
+    }
+    return {
+        "candidate": label,
+        "coverage": coverage,
+        "candidate_metrics": candidate,
+        "baseline_metrics": baseline,
+        "delta": {
+            "brier": brier_delta,
+            "accuracy": accuracy_delta,
+            "log_loss": log_loss_delta,
+        },
+        "checks": checks,
+        "passed": all(checks.values()),
+    }
+
+
+def automatic_upgrade_test(name: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
+    match_count = len(ordered_match_ids(rows))
+    if match_count < MIN_MATCHES_FOR_UPGRADE_TEST:
+        return {
+            "status": "waiting_for_300_matches",
+            "eligible_matches": match_count,
+            "required_matches": MIN_MATCHES_FOR_UPGRADE_TEST,
+            "remaining_matches": MIN_MATCHES_FOR_UPGRADE_TEST - match_count,
+            "auto_promote": False,
+            "tests": [],
+        }
+
+    report = evaluate(name, rows)
+    baseline = report["baseline_latest"]["holdout"]
+    tests = [
+        candidate_gate(
+            f"stage:{report['stage_candidate']['selected_on_train']}",
+            report["stage_candidate"]["holdout"],
+            baseline,
+            float(report["stage_candidate"]["holdout_coverage"]),
+        ),
+        candidate_gate(
+            f"confidence:{report['confidence_candidate']['selected_on_train']}",
+            report["confidence_candidate"]["holdout"],
+            baseline,
+            float(report["confidence_candidate"]["holdout_coverage"]),
+        ),
+    ]
+    passed = [test for test in tests if test["passed"]]
+    return {
+        "status": "candidate_passed" if passed else "tested_no_safe_upgrade",
+        "tested_at_matches": match_count,
+        "eligible_matches": match_count,
+        "required_matches": MIN_MATCHES_FOR_UPGRADE_TEST,
+        "remaining_matches": 0,
+        "selection_locked_to_train": True,
+        "holdout_start": report["holdout_start"],
+        "auto_promote": False,
+        "recommended_candidate": passed[0]["candidate"] if passed else None,
+        "tests": tests,
     }
 
 
@@ -221,12 +324,34 @@ def run(
     state_path: Path,
     output_path: Path,
     public_paths: list[Path] | None = None,
+    learning_db: Path | None = None,
 ) -> dict[str, Any]:
     now = datetime.now(timezone.utc).isoformat()
-    rows_by_system = {
-        "crown": crown_rows(read_json(crown_path)),
-        "footbreak": footbreak_rows(read_json(footbreak_path)),
-    }
+    if learning_db is not None:
+        if not learning_db.is_file():
+            raise FileNotFoundError(
+                f"immutable learning database does not exist: {learning_db}"
+            )
+        with LearningStore(learning_db) as store:
+            crown_wdl, crown_markets = store.backtest_rows("crown")
+            footbreak_wdl, footbreak_markets = store.backtest_rows("footbreak")
+        rows_by_system = {
+            "crown": crown_wdl,
+            "footbreak": footbreak_wdl,
+        }
+        market_rows_by_system = {
+            "crown": crown_markets,
+            "footbreak": footbreak_markets,
+        }
+    else:
+        rows_by_system = {
+            "crown": crown_rows(read_json(crown_path)),
+            "footbreak": footbreak_rows(read_json(footbreak_path)),
+        }
+        market_rows_by_system = {
+            "crown": crown_market_rows(read_json(crown_path)),
+            "footbreak": footbreak_market_rows(read_json(footbreak_path)),
+        }
     if state_path.exists():
         state = read_json(state_path)
     else:
@@ -245,13 +370,20 @@ def run(
             name, rows_by_system[name], state["systems"][name]
         )
         if state["systems"][name].get("initialized"):
-            systems[name] = system_status(
-                rows_by_system[name], state["systems"][name]
+            systems[name] = system_status(rows_by_system[name], state["systems"][name])
+            systems[name]["automatic_upgrade_test"] = automatic_upgrade_test(
+                name, rows_by_system[name]
             )
         else:
             systems[name] = accumulating_status(
                 state["systems"][name], rows_by_system[name]
             )
+        systems[name]["automatic_upgrade_test"] = automatic_upgrade_test(
+            name, rows_by_system[name]
+        )
+        systems[name]["market_model_upgrade_tests"] = all_market_tests(
+            market_rows_by_system[name]
+        )
     result = {
         "schema_version": 2,
         "generated_at": now,
@@ -260,6 +392,11 @@ def run(
             "target_new_matches_per_review": TARGET_NEW_MATCHES,
             "minimum_holdout_matches": MIN_HOLDOUT_MATCHES,
             "minimum_t5_holdout_coverage": MIN_T5_HOLDOUT_COVERAGE,
+            "automatic_upgrade_test_at_matches": MIN_MATCHES_FOR_UPGRADE_TEST,
+            "minimum_upgrade_holdout_coverage": MIN_UPGRADE_HOLDOUT_COVERAGE,
+            "minimum_brier_improvement": MIN_BRIER_IMPROVEMENT,
+            "maximum_accuracy_decline": MAX_ACCURACY_DECLINE,
+            "maximum_log_loss_increase": MAX_LOG_LOSS_INCREASE,
             "auto_apply": False,
             "notifications": False,
         },
@@ -306,6 +443,12 @@ def main() -> None:
     )
     parser.add_argument("--public", action="append", type=Path, default=[])
     parser.add_argument(
+        "--learning-db",
+        type=Path,
+        default=None,
+        help="immutable learning SQLite database; production must provide this",
+    )
+    parser.add_argument(
         "--lock",
         type=Path,
         default=Path("/var/lock/footbreak-backtest.lock"),
@@ -321,6 +464,7 @@ def main() -> None:
             args.state,
             args.out,
             args.public,
+            args.learning_db,
         )
     print(json.dumps({
         "generated_at": result["generated_at"],

@@ -672,6 +672,45 @@ class CrownSafetyTests(unittest.TestCase):
             self.assertFalse(second["rows"][0]["simulated_bet"])
             self.assertEqual(second["stats"]["predictions"], 1)
 
+    def test_prediction_history_advances_valid_learning_snapshot_reference(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = replace(settings(), state_dir=Path(directory))
+            stage = {
+                "match_id": "x", "stage": "T-30",
+                "ts": "2026-08-09T11:35:00+08:00",
+                "forecast": "主勝",
+                "outcome": {"home": .55, "draw": .25, "away": .20},
+                "learning_snapshot_id": 1,
+                "learning_attempt": 1,
+                "learning_pre_kickoff": True,
+                "learning_payload_sha256": "old",
+            }
+            ledger = {"watch": {"x": {
+                "match_id": "x", "league": "L", "home": "A", "away": "B",
+                "kickoff": "2026-08-09T12:05:00+08:00",
+                "stages": [stage],
+            }}}
+            first = archive_watch(config, ledger)
+            first["rows"][0]["actual"] = "主勝"
+            first["rows"][0]["result_status"] = "已核實"
+            (config.state_dir / "prediction_history.json").write_text(
+                json.dumps(first), encoding="utf-8"
+            )
+
+            stage.update({
+                "ts": "2026-08-09T11:36:00+08:00",
+                "learning_snapshot_id": 2,
+                "learning_attempt": 2,
+                "learning_payload_sha256": "new",
+            })
+            second = archive_watch(config, ledger)
+            row = second["rows"][0]
+            self.assertEqual(row["learning_snapshot_id"], 2)
+            self.assertEqual(row["learning_attempt"], 2)
+            self.assertEqual(row["learning_payload_sha256"], "new")
+            self.assertEqual(row["actual"], "主勝")
+            self.assertEqual(row["result_status"], "已核實")
+
     def test_prediction_history_grades_non_bet_by_verified_titan_identity(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             config = replace(settings(), state_dir=Path(directory))
@@ -683,6 +722,10 @@ class CrownSafetyTests(unittest.TestCase):
                     "match_id": "x", "stage": "T-30", "ts": (kickoff - timedelta(minutes=30)).isoformat(),
                     "forecast": "主勝", "probability": .60,
                     "outcome": {"home": .60, "draw": .25, "away": .15},
+                    "market_predictions": [{
+                        "code": "HDC", "condition": -0.5, "line": -0.5,
+                        "side": "H", "label": "主 -0.5", "probability": .62,
+                    }],
                     "pick": None,
                 }],
             }}}
@@ -700,6 +743,8 @@ class CrownSafetyTests(unittest.TestCase):
             self.assertEqual(row["result_source"], "titan_verified_identity")
             self.assertEqual(history["stats"]["graded"], 1)
             self.assertIsNotNone(history["stats"]["brier"])
+            self.assertEqual(row["market_grades"][0]["settlement"], "Won")
+            self.assertEqual(history["stats"]["by_market"]["HDC"]["hits"], 1)
 
     def test_recompute_stats_preserves_recovered_bet_results(self) -> None:
         ledger = {

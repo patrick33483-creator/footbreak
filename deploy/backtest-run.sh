@@ -3,6 +3,7 @@ set -euo pipefail
 
 APP_DIR="/opt/footbreak"
 STATE_DIR="/var/lib/footbreak/backtest"
+LEARNING_DB="/var/lib/footbreak/learning/predictions.sqlite"
 
 install -d -o root -g root -m 0700 "$STATE_DIR"
 install -d -o root -g www-data -m 0755 /var/www/footbreak /var/www/crown
@@ -49,8 +50,13 @@ fi
   echo "accuracy_history.json was not created; refusing a truncated baseline" >&2
   exit 1
 }
+[ -s "$LEARNING_DB" ] || {
+  echo "immutable learning database is missing; refusing mutable JSON backtest input" >&2
+  exit 1
+}
 exec "$APP_DIR/.venv/bin/python3" -m analysis.rolling_backtest \
   --footbreak "$FOOTBREAK_HISTORY" \
+  --learning-db "$LEARNING_DB" \
   --state "$STATE_DIR/state.json" \
   --out "$STATE_DIR/latest.json" \
   --public /var/www/footbreak/backtest.json \

@@ -7,13 +7,17 @@ observation-only: no model threshold or weight is silently changed.
 from __future__ import annotations
 
 import math
+import os
 from datetime import datetime
 from typing import Any
+
+from analysis.learning_store import LearningStore
 
 from .common import HKT, SETTLE_AFTER_SECONDS, iso_hkt, parse_time, read_json, write_json_atomic
 from .config import Settings
 from .hkjc import fetch_official_result_events
-from .ledger import STAGES
+from .ledger import PREDICTION_ERA, PREDICTION_SCHEMA_VERSION, STAGES
+from .lines import settle_handicap, settle_total
 from .matching import Event, match_event
 from .titan import TitanClient
 
@@ -26,6 +30,15 @@ def load_history(config: Settings) -> dict[str, Any]:
     value = read_json(_path(config), {"rows": [], "stats": {}})
     if not isinstance(value, dict):
         value = {"rows": [], "stats": {}}
+    # 2026-08-10 起重新建立乾淨市場學習樣本；舊 WDL-only 紀錄不混入。
+    if value.get("prediction_era") != PREDICTION_ERA:
+        value = {
+            "prediction_era": PREDICTION_ERA,
+            "schema_version": PREDICTION_SCHEMA_VERSION,
+            "started_at": iso_hkt(),
+            "rows": [],
+            "stats": {},
+        }
     value["rows"] = value.get("rows") if isinstance(value.get("rows"), list) else []
     value["stats"] = value.get("stats") if isinstance(value.get("stats"), dict) else {}
     return value
@@ -37,6 +50,8 @@ def _history_row(watch: dict[str, Any], stage: dict[str, Any]) -> dict[str, Any]
     pick = stage.get("pick") if isinstance(stage.get("pick"), dict) else None
     return {
         "_origin": "crown_ledger_v1",
+        "prediction_era": PREDICTION_ERA,
+        "schema_version": PREDICTION_SCHEMA_VERSION,
         "history_key": f"{match_id}|{stage_name}",
         "match_id": match_id,
         "hkjc_match_id": stage.get("hkjc_match_id") or watch.get("hkjc_match_id"),
@@ -53,6 +68,12 @@ def _history_row(watch: dict[str, Any], stage: dict[str, Any]) -> dict[str, Any]
         "probability": stage.get("probability"),
         "likely_score": stage.get("likely_score"),
         "prediction_source": stage.get("prediction_source"),
+        "learning_snapshot_id": stage.get("learning_snapshot_id"),
+        "learning_attempt": stage.get("learning_attempt"),
+        "learning_pre_kickoff": stage.get("learning_pre_kickoff"),
+        "learning_payload_sha256": stage.get("learning_payload_sha256"),
+        "market_predictions": stage.get("market_predictions") or [],
+        "market_grades": [],
         "conviction": stage.get("conviction"),
         "simulated_bet": bool(pick),
         "bet_label": pick.get("label") if pick else None,
@@ -87,7 +108,11 @@ def archive_watch(config: Settings, ledger: dict[str, Any]) -> dict[str, Any]:
             else:
                 result_fields = {
                     key: old.get(key)
-                    for key in ("actual", "score", "correct", "result_status", "verified_at", "result_source")
+                    for key in (
+                        "actual", "score", "correct", "result_status", "verified_at",
+                        "result_source", "market_grades", "result_detail",
+                        "result_attempted_at", "result_missing_reason",
+                    )
                 }
                 old.update(row)
                 old.update({key: value for key, value in result_fields.items() if value is not None})
@@ -142,13 +167,96 @@ def _hkjc_event(row: dict[str, Any]) -> Event | None:
     return Event(str(row["id"]), str(row.get("league") or ""), str(row["home"]), str(row["away"]), kickoff)
 
 
+_SETTLEMENT_TARGET = {
+    "Won": 1.0, "Half Won": 0.75, "Refunded": 0.5,
+    "Half Lost": 0.25, "Lost": 0.0,
+}
+
+
+def _grade_market(prediction: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
+    code = str(prediction.get("code") or "")
+    try:
+        line = float(prediction.get("line", prediction.get("condition")))
+        side = str(prediction["side"])
+        probability = float(prediction["probability"])
+        home, away = int(result["home_score"]), int(result["away_score"])
+        if code == "HDC":
+            status = settle_handicap(line, side, home, away)
+        elif code == "HIL":
+            status = settle_total(line, side, home, away)
+        elif code == "CHL":
+            corners = result.get("corners_total")
+            if corners is None:
+                return {**prediction, "grade_status": "NOT_APPLICABLE", "reason": "corners_result_missing"}
+            status = settle_total(line, side, int(corners), 0)
+        else:
+            return {**prediction, "grade_status": "NOT_APPLICABLE", "reason": "unsupported_market"}
+    except (KeyError, TypeError, ValueError):
+        return {**prediction, "grade_status": "NOT_APPLICABLE", "reason": "invalid_prediction_or_result"}
+    target = _SETTLEMENT_TARGET[status]
+    p = min(.999999, max(.000001, probability))
+    return {
+        **prediction,
+        "grade_status": "GRADED",
+        "settlement": status,
+        "target": target,
+        "hit": None if status == "Refunded" else status in {"Won", "Half Won"},
+        "brier": round((p - target) ** 2, 6),
+        "log_loss": round(-(target * math.log(p) + (1 - target) * math.log(1 - p)), 6),
+    }
+
+
+def _persist_learning_result(row: dict[str, Any], score: dict[str, Any], source: str) -> None:
+    path = os.environ.get("LEARNING_DB_PATH")
+    snapshot_id = row.get("learning_snapshot_id")
+    if not path or not snapshot_id:
+        return
+    with LearningStore(path) as store:
+        result = store.record_result(
+            "crown",
+            str(row.get("match_id")),
+            home_score=score.get("home_score"),
+            away_score=score.get("away_score"),
+            terminal_status="finished",
+            source=source,
+            provenance={
+                "hkjc_match_id": row.get("hkjc_match_id"),
+                "titan_match_id": row.get("titan_match_id"),
+                "pinnapi_event_id": row.get("pinnapi_event_id"),
+                "corners_total": score.get("corners_total"),
+            },
+        )
+        if row.get("forecast"):
+            store.record_grade(
+                int(snapshot_id),
+                "WDL",
+                str(row.get("forecast")),
+                "GRADED",
+                {
+                    "hit": row.get("correct"),
+                    "actual": row.get("actual"),
+                    "score": row.get("score"),
+                },
+                result_id=result["result_id"],
+            )
+        for grade in row.get("market_grades") or []:
+            store.record_grade(
+                int(snapshot_id),
+                str(grade.get("code") or "UNKNOWN"),
+                f"{grade.get('condition')}|{grade.get('side')}",
+                str(grade.get("grade_status") or "NOT_APPLICABLE"),
+                grade,
+                result_id=result["result_id"],
+            )
+
+
 def grade_history(config: Settings) -> dict[str, Any]:
     history = load_history(config)
     rows = history["rows"]
     now = datetime.now(HKT)
     due = [
         row for row in rows
-        if not row.get("actual")
+        if row.get("result_status") not in {"已核實", "不計"}
         and (kickoff := parse_time(row.get("kickoff"))) is not None
         and (now - kickoff).total_seconds() >= SETTLE_AFTER_SECONDS
     ]
@@ -170,6 +278,8 @@ def grade_history(config: Settings) -> dict[str, Any]:
     for row in due:
         score, source = _result(row, titan_by_id, hkjc_by_id, hkjc_events)
         if not score:
+            row["result_attempted_at"] = iso_hkt()
+            row["result_missing_reason"] = "no_verified_result_match"
             continue
         try:
             home, away = int(score["home_score"]), int(score["away_score"])
@@ -179,18 +289,29 @@ def grade_history(config: Settings) -> dict[str, Any]:
         row.update({
             "actual": actual,
             "score": f"{home}-{away}",
-            "correct": bool(row.get("forecast")) and row.get("forecast") == actual,
+            "correct": (row.get("forecast") == actual) if row.get("forecast") else None,
             "result_status": "已核實",
             "verified_at": iso_hkt(),
             "result_source": source,
+            "result_detail": {
+                "home_score": home,
+                "away_score": away,
+                "corners_total": score.get("corners_total"),
+            },
+            "market_grades": [
+                _grade_market(prediction, score)
+                for prediction in (row.get("market_predictions") or [])
+            ],
+            "result_missing_reason": None,
         })
+        _persist_learning_result(row, score, str(source))
     history["stats"] = calculate_stats(rows)
     write_json_atomic(_path(config), history)
     return history
 
 
 def _metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
-    graded = [row for row in rows if row.get("actual")]
+    graded = [row for row in rows if row.get("actual") and row.get("forecast")]
     hits = sum(row.get("correct") is True for row in graded)
     briers: list[float] = []
     losses: list[float] = []
@@ -220,6 +341,34 @@ def _metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _market_metrics(rows: list[dict[str, Any]], code: str | None = None) -> dict[str, Any]:
+    grades = [
+        grade
+        for row in rows
+        for grade in (row.get("market_grades") or [])
+        if grade.get("grade_status") == "GRADED"
+        and (code is None or grade.get("code") == code)
+    ]
+    decided = [grade for grade in grades if grade.get("hit") is not None]
+    return {
+        "graded": len(grades),
+        "decided": len(decided),
+        "hits": sum(grade.get("hit") is True for grade in decided),
+        "accuracy": (
+            round(sum(grade.get("hit") is True for grade in decided) / len(decided), 6)
+            if decided else None
+        ),
+        "brier": (
+            round(sum(float(grade["brier"]) for grade in grades) / len(grades), 6)
+            if grades else None
+        ),
+        "log_loss": (
+            round(sum(float(grade["log_loss"]) for grade in grades) / len(grades), 6)
+            if grades else None
+        ),
+    }
+
+
 def calculate_stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
     overall = _metrics(rows)
     by_stage = {stage: _metrics([row for row in rows if row.get("stage") == stage]) for stage in STAGES}
@@ -237,11 +386,19 @@ def calculate_stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "matches": len({str(row.get("match_id")) for row in rows if row.get("match_id")}),
         "predictions": len(rows),
-        "pending": len(rows) - overall["graded"],
+        "pending": sum(row.get("result_status") == "待賽果" for row in rows),
         **overall,
         "by_stage": by_stage,
+        "by_market": {
+            code: _market_metrics(rows, code)
+            for code in ("HDC", "HIL", "CHL")
+        },
+        "market_overall": _market_metrics(rows),
+        "result_coverage": round(
+            sum(row.get("result_status") == "已核實" for row in rows) / len(rows), 6
+        ) if rows else None,
         "latest": latest,
-        "learning_status": "observation_only",
+        "learning_status": "collecting_market_level_shadow_samples",
         "minimum_sample_per_bucket": 30,
     }
 

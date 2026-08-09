@@ -1,12 +1,17 @@
 """Idempotent Crown watch ledger.  It can create simulations, never real bets."""
 from __future__ import annotations
 
+import os
 from typing import Any
+
+from analysis.learning_store import LearningStore
 
 from .common import iso_hkt
 from .config import Settings
 
 STAGES = {"首預": 1, "T-30": 2, "T-5": 3}
+PREDICTION_ERA = "2026-08-10-market-learning-v2"
+PREDICTION_SCHEMA_VERSION = 2
 
 
 def completed_stages(watch: dict[str, Any], matching_version: str) -> set[str]:
@@ -34,20 +39,70 @@ def stage_for(minutes_to_kickoff: float, sweep: bool, done: set[str]) -> str | N
     return None
 
 
+def _market_predictions(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for candidate in candidates or []:
+        code = str(candidate.get("code") or "")
+        if code in {"HDC", "HIL", "CHL"}:
+            grouped.setdefault(code, []).append(candidate)
+    output = []
+    for code, rows in grouped.items():
+        best = max(rows, key=lambda row: float(row.get("prob") or 0))
+        output.append({
+            "code": code,
+            "market": best.get("market"),
+            "condition": best.get("condition"),
+            "line": best.get("line"),
+            "side": best.get("side"),
+            "label": best.get("label"),
+            "probability": best.get("prob"),
+            "source": best.get("reference") or "pinnapi_exact_line",
+            "provider": best.get("provider") or "Crown",
+        })
+    return sorted(output, key=lambda row: row["code"])
+
+
 def _snapshot(prediction: dict[str, Any], stage: str) -> dict[str, Any]:
-    return {key: prediction.get(key) for key in (
+    snapshot = {key: prediction.get(key) for key in (
         "match_id", "league", "home", "away", "kickoff_hkt", "mins_to_ko", "status", "verdict",
         "conviction", "no_bet_reason", "pick", "lead_view", "market_sources", "hkjc_match_id",
         "titan_match_id", "pinnapi_event_id", "source_snapshot_at", "execution",
         "outcome", "forecast", "probability", "likely_score", "prediction_source",
         "pinnapi_corner_event_id", "pinnapi_corner_source_at", "pinnapi_corner_timestamp_inferred",
         "matching_version",
-    )} | {"stage": stage, "ts": iso_hkt()}
+    )} | {
+        "prediction_era": PREDICTION_ERA,
+        "schema_version": PREDICTION_SCHEMA_VERSION,
+        "stage": stage,
+        "ts": iso_hkt(),
+        "market_predictions": _market_predictions(prediction.get("candidates") or []),
+    }
+    return snapshot
 
 
 def _bet_id(prediction: dict[str, Any]) -> str:
     pick = prediction["pick"]
     return f"{prediction['match_id']}|{pick['code']}|{pick['condition']}|{pick['side']}"
+
+
+def _record_learning_snapshot(
+    prediction: dict[str, Any], snapshot: dict[str, Any]
+) -> dict[str, Any] | None:
+    path = os.environ.get("LEARNING_DB_PATH")
+    if not path:
+        return None
+    payload = {key: value for key, value in snapshot.items() if key != "ts"}
+    with LearningStore(path) as store:
+        return store.record_snapshot(
+            "crown",
+            str(prediction["match_id"]),
+            str(snapshot["stage"]),
+            snapshot["ts"],
+            str(prediction["kickoff_hkt"]),
+            payload,
+            model_version=PREDICTION_ERA,
+            schema_version=str(PREDICTION_SCHEMA_VERSION),
+        )
 
 
 def sync_prediction(ledger: dict[str, Any], prediction: dict[str, Any], config: Settings) -> list[str]:
@@ -69,11 +124,22 @@ def sync_prediction(ledger: dict[str, Any], prediction: dict[str, Any], config: 
     watch["kickoff"] = prediction.get("kickoff_hkt")
     stage_rows = watch["stages"]
     existing = next((row for row in stage_rows if row.get("stage") == stage), None)
+    snapshot = _snapshot(prediction, stage)
+    learning = _record_learning_snapshot(prediction, snapshot)
+    if learning:
+        snapshot.update({
+            "learning_snapshot_id": learning["snapshot_id"],
+            "learning_attempt": learning["attempt"],
+            "learning_pre_kickoff": learning["pre_kickoff"],
+            "learning_payload_sha256": learning["payload_sha256"],
+        })
+        if not learning["pre_kickoff"]:
+            return []
     if existing is None:
-        stage_rows.append(_snapshot(prediction, stage))
+        stage_rows.append(snapshot)
         stage_rows.sort(key=lambda row: STAGES[row["stage"]])
     else:
-        existing.update(_snapshot(prediction, stage))
+        existing.update(snapshot)
     if stage != "T-5" or not prediction.get("pick"):
         return []
     # One final simulation decision per Crown prediction fixture.  A retry or

@@ -90,12 +90,87 @@ def footbreak_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
                 "match_id": str(match["match_id"]),
                 "kickoff": kickoff,
                 "stage": row.get("stage"),
-                "predicted_at": f"{index:03d}",
+                "predicted_at": str(row.get("predicted_at") or f"{index:03d}"),
                 "conf": row.get("conf"),
                 "hit": int(row["wdl_hit"]),
                 "brier": float(row["wdl_brier"]),
                 "log_loss": float(row["wdl_ll"]),
             })
+    return output
+
+
+def _market_row(
+    match_id: str,
+    kickoff: datetime,
+    stage: str | None,
+    predicted_at: str,
+    conf: Any,
+    grade: dict[str, Any],
+) -> dict[str, Any] | None:
+    if grade.get("grade_status") != "GRADED":
+        return None
+    try:
+        probability = float(grade["probability"])
+        target = float(grade["target"])
+        brier = float(grade["brier"])
+        log_loss = float(grade["log_loss"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    return {
+        "match_id": match_id,
+        "kickoff": kickoff,
+        "stage": stage,
+        "predicted_at": predicted_at,
+        "conf": conf,
+        "market": str(grade.get("code") or ""),
+        "target_key": f"{grade.get('condition')}|{grade.get('side')}",
+        "probability": probability,
+        "target": target,
+        "hit": None if grade.get("hit") is None else int(bool(grade["hit"])),
+        "brier": brier,
+        "log_loss": log_loss,
+    }
+
+
+def crown_market_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    output = []
+    history = payload.get("prediction_history", payload)
+    for row in history.get("rows") or []:
+        if not row.get("match_id") or not row.get("kickoff"):
+            continue
+        for grade in row.get("market_grades") or []:
+            item = _market_row(
+                str(row["match_id"]),
+                dt(row["kickoff"]),
+                row.get("stage"),
+                str(row.get("predicted_at") or ""),
+                row.get("conviction"),
+                grade,
+            )
+            if item:
+                output.append(item)
+    return output
+
+
+def footbreak_market_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    output = []
+    accuracy = payload.get("accuracy", payload)
+    for match in accuracy.get("matches") or []:
+        if not match.get("match_id") or not match.get("kickoff"):
+            continue
+        kickoff = dt(match["kickoff"])
+        for index, stage in enumerate(match.get("stages") or []):
+            for grade in stage.get("market_grades") or []:
+                item = _market_row(
+                    str(match["match_id"]),
+                    kickoff,
+                    stage.get("stage"),
+                    str(stage.get("predicted_at") or f"{index:03d}"),
+                    stage.get("conf"),
+                    grade,
+                )
+                if item:
+                    output.append(item)
     return output
 
 

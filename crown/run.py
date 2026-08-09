@@ -46,7 +46,7 @@ def main() -> int:
     if not result.get("ok"):
         print(result)
         return 3
-    if result.get("fast_noop"):
+    if result.get("fast_noop") and args.mode != "settle":
         print(result)
         return 0
     ledger = load_ledger(config)
@@ -59,6 +59,9 @@ def main() -> int:
     write_dashboard_data(config)
     if history_warning:
         result["warning"] = history_warning
+        if args.mode == "settle":
+            print(result)
+            return 5
     print(result)
     return 0 if result.get("ok") else 3
 
