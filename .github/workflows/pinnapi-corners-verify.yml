@@ -1,0 +1,113 @@
+name: 驗證 PinnAPI 角球市場
+
+on:
+  workflow_dispatch:
+
+jobs:
+  verify:
+    name: 抽查未開賽市場結構
+    runs-on: ubuntu-24.04
+    steps:
+      - name: 設定 SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: 安全抽查 PinnAPI 市場名稱
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh "$DEPLOY_USER@$DEPLOY_HOST" "sudo bash -s" <<'REMOTE'
+          set -euo pipefail
+          cd /opt/footbreak
+          set -a
+          [ ! -f /etc/footbreak.env ] || . /etc/footbreak.env
+          [ ! -f /etc/footbreak-crown.env ] || . /etc/footbreak-crown.env
+          set +a
+          /opt/footbreak/.venv/bin/python3 - <<'PY'
+          import json
+          from collections import Counter
+
+          from crown.config import settings
+          from crown.pinnapi import PinnapiClient
+
+          config = settings()
+          client = PinnapiClient(config)
+          fixtures = client.fixtures()
+          sample = fixtures[:30]
+          key_paths = Counter()
+          corner_events = []
+          failures = []
+
+          def walk(value, path="root", event_id=""):
+              if isinstance(value, dict):
+                  for key, child in value.items():
+                      child_path = f"{path}.{key}"
+                      key_paths[child_path] += 1
+                      if "corner" in str(key).lower():
+                          corner_events.append({
+                              "event_id": event_id,
+                              "path": child_path,
+                              "kind": type(child).__name__,
+                          })
+                      walk(child, child_path, event_id)
+              elif isinstance(value, list):
+                  for child in value[:20]:
+                      walk(child, f"{path}[]", event_id)
+              elif isinstance(value, str) and "corner" in value.lower():
+                  corner_events.append({
+                      "event_id": event_id,
+                      "path": path,
+                      "value": value[:120],
+                  })
+
+          checked = []
+          for fixture in sample:
+              event_id = str(fixture["id"])
+              try:
+                  raw = client._get(
+                      "/kit/v1/prematch/lines?event_id=" + event_id
+                  )
+              except Exception as exc:
+                  failures.append({
+                      "event_id": event_id,
+                      "error": type(exc).__name__,
+                  })
+                  continue
+              root = raw if isinstance(raw, dict) else {}
+              periods = root.get("periods") if isinstance(root.get("periods"), dict) else {}
+              full = periods.get("num_0") if isinstance(periods.get("num_0"), dict) else {}
+              checked.append({
+                  "event_id": event_id,
+                  "league": fixture.get("league"),
+                  "home": fixture.get("home"),
+                  "away": fixture.get("away"),
+                  "root_keys": sorted(root.keys()),
+                  "full_match_keys": sorted(full.keys()),
+              })
+              walk(raw, event_id=event_id)
+
+          interesting = [
+              {"path": path, "seen": count}
+              for path, count in key_paths.most_common()
+              if any(term in path.lower() for term in (
+                  "market", "period", "total", "spread", "corner"
+              ))
+          ][:100]
+          print(json.dumps({
+              "fixtures_available": len(fixtures),
+              "events_checked": len(checked),
+              "failures": failures,
+              "corner_mentions": corner_events,
+              "market_paths": interesting,
+              "event_schemas": checked,
+              "credentials_printed": False,
+          }, ensure_ascii=False, indent=2))
+          PY
+          REMOTE
