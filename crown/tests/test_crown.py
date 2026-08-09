@@ -25,7 +25,7 @@ from crown.pinnapi import parse_fixtures, parse_lines
 from crown.period import in_current_period, is_upcoming_in_current_period, period_bounds
 from crown.prediction_history import archive_watch, grade_history
 from crown.state import load_predictions, merge_predictions, save_predictions
-from crown.titan import crown_prices_from_pages, parse_schedule_page
+from crown.titan import crown_prices_from_pages, parse_crown_fixture_ids, parse_schedule_page
 
 
 class CrownSafetyTests(unittest.TestCase):
@@ -308,6 +308,12 @@ class CrownSafetyTests(unittest.TestCase):
         """
         rows = parse_schedule_page(source, "20260809")
         self.assertEqual([row["id"] for row in rows], ["123", "999"])
+
+    def test_titan_company_feed_is_the_crown_fixture_filter(self) -> None:
+        source = """<?xml version='1.0' encoding='UTF-8'?>
+        <c><match><m>123,99,0,0.90,0.90</m></match>
+        <ids>123,999,</ids><jcIds></jcIds><isMaintain>0</isMaintain></c>"""
+        self.assertEqual(parse_crown_fixture_ids(source), {"123", "999"})
 
     def test_stage_windows_and_simulated_ledger_are_idempotent(self) -> None:
         self.assertEqual(stage_for(120, True, set()), "首預")

@@ -5,6 +5,7 @@ import html
 import re
 import time
 import urllib.request
+import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -62,6 +63,27 @@ def parse_schedule_page(source: str, yyyymmdd: str) -> list[dict[str, Any]]:
                          "home_score": int(score.group(1)) if score else None,
                          "away_score": int(score.group(2)) if score else None})
     return fixtures
+
+
+def parse_crown_fixture_ids(source: str) -> set[str]:
+    """Return the exact fixture IDs exposed by Titan's company-id feed."""
+    try:
+        root = ET.fromstring(source)
+    except ET.ParseError:
+        return set()
+    ids_node = root.find("ids")
+    ids = {
+        value.strip()
+        for value in (ids_node.text or "").split(",")
+        if value.strip()
+    } if ids_node is not None else set()
+    if ids:
+        return ids
+    return {
+        fields[0]
+        for node in root.findall("./match/m")
+        if node.text and (fields := node.text.split(",")) and fields[0]
+    }
 
 
 def _row_triple(row: str) -> tuple[float, float, float] | None:
@@ -127,6 +149,7 @@ class TitanClient:
         last_error: OSError | None = None
         for attempt in range(2):
             is_vip_odds = "vip.titan007.com/" in url
+            is_live_static = "livestatic.titan007.com/" in url
             request = urllib.request.Request(
                 url,
                 headers={
@@ -141,7 +164,13 @@ class TitanClient:
                     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
                     "Accept-Language": "zh-HK,zh;q=0.9,en;q=0.8",
                     "Cache-Control": "no-cache",
-                    **({"Referer": "http://bf.titan007.com/football/"} if is_vip_odds else {}),
+                    **(
+                        {"Referer": "https://live.titan007.com/index2in1.aspx?id=3"}
+                        if is_live_static
+                        else {"Referer": "http://bf.titan007.com/football/"}
+                        if is_vip_odds
+                        else {}
+                    ),
                 },
             )
             try:
@@ -155,6 +184,16 @@ class TitanClient:
         raise last_error
 
     def fixtures(self, offsets: tuple[int, ...] = (0, 1)) -> list[dict[str, Any]]:
+        try:
+            company_feed = self._read(
+                "https://livestatic.titan007.com/vbsxml/"
+                f"goal{self.config.titan_company_id}.xml?r=007{int(time.time() * 1000)}"
+            )
+            crown_ids = parse_crown_fixture_ids(company_feed)
+        except OSError:
+            crown_ids = set()
+        if not crown_ids:
+            return []
         output: list[dict[str, Any]] = []
         for offset in offsets:
             day = (datetime.now(HKT) + timedelta(days=offset)).strftime("%Y%m%d")
@@ -163,10 +202,12 @@ class TitanClient:
                 # it after a transient `Next` timeout silently removes all
                 # upcoming matches, so fixture discovery must use Next only.
                 output.extend(
-                    parse_schedule_page(
+                    row
+                    for row in parse_schedule_page(
                         self._read(f"{self.config.titan_bf_base}/Next_{day}.htm"),
                         day,
                     )
+                    if str(row["id"]) in crown_ids
                 )
             except OSError:
                 continue
