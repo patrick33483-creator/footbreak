@@ -233,3 +233,148 @@ jobs:
           }, ensure_ascii=False, indent=2))
           PY
           REMOTE
+
+      - name: 三輪角球盤穩定性驗證
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh "$DEPLOY_USER@$DEPLOY_HOST" "sudo bash -s" <<'REMOTE'
+          set -euo pipefail
+          cd /opt/footbreak
+          set -a
+          [ ! -f /etc/footbreak.env ] || . /etc/footbreak.env
+          [ ! -f /etc/footbreak-crown.env ] || . /etc/footbreak-crown.env
+          set +a
+          /opt/footbreak/.venv/bin/python3 - <<'PY'
+          import json
+          import time
+
+          from crown.config import settings
+          from crown.pinnapi import PinnapiClient
+
+          client = PinnapiClient(settings())
+          fixtures = client.fixtures()[:12]
+          parent_ids = [str(row["id"]) for row in fixtures]
+          snapshots = []
+          selected = []
+
+          for round_number in range(1, 4):
+              ids = selected or parent_ids
+              rows = []
+              for parent_id in ids:
+                  try:
+                      parsed = client.corner_lines(parent_id)
+                  except Exception as exc:
+                      rows.append({
+                          "parent_event_id": parent_id,
+                          "available": False,
+                          "error": type(exc).__name__,
+                      })
+                      continue
+                  prices = parsed.get("prices") or []
+                  markets = {}
+                  for market in ("CHDC", "CHL"):
+                      market_prices = [
+                          row for row in prices if row.get("market") == market
+                      ]
+                      mains = [
+                          row for row in market_prices if row.get("main")
+                      ]
+                      markets[market] = {
+                          "price_count": len(market_prices),
+                          "lines": sorted({
+                              float(row["line"]) for row in market_prices
+                          }),
+                          "main": [
+                              {
+                                  "line": row.get("line"),
+                                  "selection": row.get("selection"),
+                                  "odds": row.get("odds"),
+                                  "max": row.get("max"),
+                              }
+                              for row in mains
+                          ],
+                      }
+                  available = bool(
+                      markets["CHL"]["price_count"] >= 2
+                      and markets["CHDC"]["price_count"] >= 2
+                  )
+                  rows.append({
+                      "parent_event_id": parent_id,
+                      "corner_event_id": parsed.get("corner_event_id"),
+                      "available": available,
+                      "market_status": parsed.get("market_status"),
+                      "candidate_count": parsed.get("candidate_count"),
+                      "league": parsed.get("league"),
+                      "home": parsed.get("home"),
+                      "away": parsed.get("away"),
+                      "markets": markets,
+                  })
+              if round_number == 1:
+                  selected = [
+                      row["parent_event_id"]
+                      for row in rows if row.get("available")
+                  ][:8]
+              snapshots.append({
+                  "round": round_number,
+                  "observed_at": time.time(),
+                  "rows": rows,
+              })
+              if round_number < 3:
+                  time.sleep(30)
+
+          first = {
+              row["parent_event_id"]: row
+              for row in snapshots[0]["rows"] if row.get("available")
+          }
+          stability = []
+          for parent_id in selected:
+              observed = []
+              for snapshot in snapshots:
+                  row = next((
+                      item for item in snapshot["rows"]
+                      if item["parent_event_id"] == parent_id
+                  ), None)
+                  if row is not None:
+                      observed.append(row)
+              base = first.get(parent_id) or {}
+              stability.append({
+                  "parent_event_id": parent_id,
+                  "corner_event_id": base.get("corner_event_id"),
+                  "league": base.get("league"),
+                  "home": base.get("home"),
+                  "away": base.get("away"),
+                  "available_rounds": sum(
+                      1 for row in observed if row.get("available")
+                  ),
+                  "corner_id_consistent": len({
+                      row.get("corner_event_id") for row in observed
+                  }) == 1,
+                  "chl_line_sets_consistent": len({
+                      tuple(row.get("markets", {}).get("CHL", {}).get("lines", []))
+                      for row in observed
+                  }) == 1,
+                  "chdc_line_sets_consistent": len({
+                      tuple(row.get("markets", {}).get("CHDC", {}).get("lines", []))
+                      for row in observed
+                  }) == 1,
+                  "rounds": observed,
+              })
+
+          print("CORNER_STABILITY_JSON")
+          print(json.dumps({
+              "round_interval_seconds": 30,
+              "round_count": 3,
+              "fixtures_sampled": len(parent_ids),
+              "corner_events_selected": len(selected),
+              "stable_all_rounds": sum(
+                  1 for row in stability
+                  if row["available_rounds"] == 3
+                  and row["corner_id_consistent"]
+              ),
+              "events": stability,
+              "credentials_printed": False,
+          }, ensure_ascii=False, indent=2))
+          PY
+          REMOTE
