@@ -18,11 +18,24 @@ done
 for service in footbreak-tick.service footbreak-t30.service crown-tick.service crown-sweep.service; do
   result="$(systemctl show "$service" -p Result --value)"
   status="$(systemctl show "$service" -p ExecMainStatus --value)"
-  [ "$result" = success ] && [ "$status" = 0 ] || {
+  # Footbreak timed jobs deliberately return EX_TEMPFAIL (75) when a
+  # higher-priority T-5 pass owns the shared lock.  The timers retry; this is
+  # scheduler pre-emption, not a provider or prediction failure.
+  expected_preemption=false
+  case "$service:$status" in
+    footbreak-tick.service:75|footbreak-t30.service:75)
+      expected_preemption=true
+      ;;
+  esac
+  { [ "$result" = success ] && [ "$status" = 0 ]; } || "$expected_preemption" || {
     echo "FAIL service $service result=$result status=$status" >&2
     exit 1
   }
-  echo "OK service $service"
+  if "$expected_preemption"; then
+    echo "OK service $service preempted(status=75); timer retry active"
+  else
+    echo "OK service $service"
+  fi
 done
 
 set -a
