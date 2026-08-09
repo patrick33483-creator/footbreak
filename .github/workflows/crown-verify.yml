@@ -26,6 +26,13 @@ jobs:
           ssh "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
           set -euo pipefail
           cd /opt/footbreak
+          set -a
+          [ ! -f /etc/footbreak.env ] || . /etc/footbreak.env
+          [ ! -f /etc/footbreak-crown.env ] || . /etc/footbreak-crown.env
+          set +a
+          echo "=== Crown service state before check ==="
+          systemctl show crown-tick.service \
+            -p ActiveState -p SubState -p ExecMainStartTimestamp -p ExecMainPID
           echo "=== Crown production tick ==="
           /opt/footbreak/deploy/crown-run.sh tick
           echo "=== Crown live mapping diagnostic ==="
