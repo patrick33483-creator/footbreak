@@ -195,7 +195,7 @@ class FootbreakPinnapiSharpTests(unittest.TestCase):
             self.assertEqual(result.returncode, 17)
             self.assertEqual(
                 log.read_text(encoding="utf-8").splitlines(),
-                ["run_predict.py --t5-only 90"],
+                ["run_predict.py 90"],
             )
 
 

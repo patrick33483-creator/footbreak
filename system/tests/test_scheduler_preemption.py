@@ -19,11 +19,11 @@ class SchedulerPreemptionTests(unittest.TestCase):
         )
         preempt = unit.index(
             "ExecStartPre=/usr/bin/systemctl stop "
-            "footbreak-t30.service footbreak-sweep.service footbreak-settle.service"
+            "footbreak-sweep.service footbreak-settle.service"
         )
         run = unit.index("ExecStart=/opt/footbreak/deploy/run.sh tick")
         self.assertLess(preempt, run)
-        self.assertIn("TimeoutStartSec=25", unit)
+        self.assertIn("TimeoutStartSec=60", unit)
         self.assertIn("TimeoutStopSec=3", unit)
         self.assertIn("ExecStopPost=-/usr/bin/rm -f /run/footbreak-t5-priority", unit)
         for name in ("footbreak-t30.service", "footbreak-sweep.service", "footbreak-settle.service"):

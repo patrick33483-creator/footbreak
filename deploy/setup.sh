@@ -145,7 +145,7 @@ cat <<'EOF'
   1. nano /etc/footbreak-crown.env ← 填 PinnAPI Edge 設定（唔會顯示或複製）
   2. nano /etc/footbreak.env       ← 填 TELEGRAM_BOT_TOKEN、TELEGRAM_CHAT_ID
   3. 手動試一次:  /opt/footbreak/deploy/run.sh tick
-  4. 驗證成功後:  systemctl enable --now footbreak-tick.timer footbreak-t30.timer footbreak-sweep.timer footbreak-settle.timer
+  4. 驗證成功後:  systemctl enable --now footbreak-tick.timer footbreak-sweep.timer footbreak-settle.timer
   5. 睇 log:      journalctl -u footbreak-tick -f
 
 儀表板:  http://<你嘅-droplet-IP>:8081/

@@ -297,7 +297,7 @@ def _prediction(titan: dict[str, Any], bridge: BridgeMatch, h_match: dict[str, A
     candidates, reasons = _candidates(crown, prices, config, now, bool(pinnapi["timestamp_inferred"]))
     corner_candidates: list[dict[str, Any]] = []
     corner_reasons: list[str] = []
-    if h_match:
+    if base["book_odds"]["hkjc_chl"]:
         try:
             corners = pinnapi_client.corner_lines(bridge.event.id)
             base["pinnapi_corner_event_id"] = corners.get("corner_event_id")
@@ -433,6 +433,9 @@ def run(mode: str, config: Settings) -> dict[str, Any]:
     p_events = [_event_from_pinnapi(row) for row in pinnapi_rows]
     predictions = []
     stage_predictions: list[dict[str, Any]] = []
+    pending_predictions: list[
+        tuple[dict[str, Any], BridgeMatch, dict[str, Any] | None, str, dict[str, Any] | None]
+    ] = []
     current_predictions = {
         str(row.get("match_id")): row
         for row in existing_predictions
@@ -530,24 +533,48 @@ def run(mode: str, config: Settings) -> dict[str, Any]:
         # events remain DATA_MISSING and return before any edge calculation;
         # only the strict HKJC -> PinnAPI bridge can unlock pricing or a bet.
         h_row = next((row for candidate, row in h_events if bridge.hkjc.event and candidate.id == bridge.hkjc.event.id), None)
-        prediction = _prediction(
-            titan,
-            bridge,
-            h_row,
-            stage,
-            config,
-            titan_client,
-            pinnapi_client,
-            crown_snapshot=crown_snapshot,
+        pending_predictions.append((titan, bridge, h_row, stage, crown_snapshot))
+
+    # A same-kickoff batch can contain dozens of fixtures.  Each prediction
+    # performs independent Crown and PinnAPI reads, so serial execution could
+    # consume the entire ten-minute T-5 window.  Keep concurrency bounded, but
+    # finish T-5 rows before T-30/first-look rows and commit only after every
+    # result is complete.
+    pending_predictions.sort(
+        key=lambda job: (
+            0 if job[3] == "T-5" else 1 if job[3] == "T-30" else 2,
+            job[0]["kickoff"],
         )
-        # Persist later in a short transaction.  Sweep and tick may spend time
-        # on provider reads concurrently without clobbering Crown state.
-        stage_predictions.append(prediction)
-        # The dashboard card keeps all completed stages while the top-level
-        # fields remain the latest stage snapshot.  This also survives a later
-        # empty tick through merge_predictions().
-        prediction["stages"] = list(ledger["watch"].get(event.id, {}).get("stages") or [])
-        predictions.append(prediction)
+    )
+    if pending_predictions:
+        with ThreadPoolExecutor(max_workers=min(10, len(pending_predictions))) as pool:
+            futures = {
+                pool.submit(
+                    _prediction,
+                    titan,
+                    bridge,
+                    h_row,
+                    stage,
+                    config,
+                    titan_client,
+                    pinnapi_client,
+                    crown_snapshot,
+                ): str(titan["id"])
+                for titan, bridge, h_row, stage, crown_snapshot in pending_predictions
+            }
+            completed: dict[str, dict[str, Any]] = {}
+            for future in as_completed(futures):
+                completed[futures[future]] = future.result()
+        for titan, _bridge, _h_row, _stage, _snapshot in pending_predictions:
+            prediction = completed[str(titan["id"])]
+            stage_predictions.append(prediction)
+            # The dashboard card keeps all completed stages while the top-level
+            # fields remain the latest stage snapshot.  This also survives a
+            # later empty tick through merge_predictions().
+            prediction["stages"] = list(
+                ledger["watch"].get(str(titan["id"]), {}).get("stages") or []
+            )
+            predictions.append(prediction)
     with state_lock(config):
         # Reload the latest state because another provider pass may have
         # committed while this one was fetching quotes.

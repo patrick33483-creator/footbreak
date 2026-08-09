@@ -318,12 +318,43 @@ class CrownSafetyTests(unittest.TestCase):
             "source_at": 1000, "timestamp_inferred": False, "timestamp_basis": "provider",
         }
         pinnapi_client.corner_lines.side_effect = RuntimeError("specials down")
-        with patch("crown.engine.datetime") as mocked_datetime, patch("crown.engine.time.time", return_value=1001):
+        with patch("crown.engine.datetime") as mocked_datetime, \
+                patch("crown.engine.time.time", return_value=1001), \
+                patch("crown.engine._hkjc_chl", return_value=[
+                    {"condition": "9.5", "odds": {"H": 1.9, "L": 1.9}}
+                ]):
             mocked_datetime.now.return_value = self.now
             prediction = _prediction(titan, bridge, h_match, "T-5", config, titan_client, pinnapi_client)
         self.assertTrue(any(row["code"] == "HDC" for row in prediction["candidates"]))
         self.assertFalse(any(row["code"] == "CHL" for row in prediction["candidates"]))
         self.assertIn("pinnapi_corner_lines_unavailable_RuntimeError", prediction["corner_no_bet_reason"])
+
+    def test_prediction_skips_corner_provider_when_hkjc_has_no_chl_market(self) -> None:
+        config = replace(settings(), source_max_age_seconds=90)
+        kickoff = self.now + timedelta(minutes=5)
+        titan = {"id": "titan", "league": "L", "home": "A", "away": "B", "kickoff": kickoff}
+        h_event = Event("hkjc", "L", "A", "B", kickoff, {"home_team_id": "h", "away_team_id": "a"})
+        p_event = Event("pin", "L", "A", "B", kickoff)
+        bridge = BridgeMatch(Match(h_event, False, 1.0, None), Match(p_event, False, 1.0, None),
+                             "hkjc_bilingual_bridge", None)
+        titan_client = Mock()
+        titan_client.crown_prices.return_value = [
+            {"market": "HDC", "line": -0.25, "selection": "H", "odds": 2.20, "source_at": 1000},
+        ]
+        pinnapi_client = Mock()
+        pinnapi_client.lines.return_value = {
+            "prices": [
+                {"market": "HDC", "line": -0.25, "selection": "H", "odds": 1.90, "source_at": 1000},
+                {"market": "HDC", "line": -0.25, "selection": "A", "odds": 2.00, "source_at": 1000},
+            ],
+            "source_at": 1000, "timestamp_inferred": False, "timestamp_basis": "provider",
+        }
+        with patch("crown.engine.datetime") as mocked_datetime, \
+                patch("crown.engine.time.time", return_value=1001), \
+                patch("crown.engine._hkjc_chl", return_value=[]):
+            mocked_datetime.now.return_value = self.now
+            _prediction(titan, bridge, {"id": "hkjc"}, "T-5", config, titan_client, pinnapi_client)
+        pinnapi_client.corner_lines.assert_not_called()
 
     def test_wdl_prediction_uses_complete_no_vig_moneyline(self) -> None:
         view = _wdl_prediction([

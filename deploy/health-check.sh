@@ -8,14 +8,14 @@ CROWN_DATA="${CROWN_DATA:-/var/www/crown/data.json}"
 echo "=== production health $(TZ=Asia/Hong_Kong date '+%F %T %Z') ==="
 
 for unit in \
-  footbreak-tick.timer footbreak-t30.timer footbreak-sweep.timer footbreak-settle.timer footbreak-backtest.timer \
+  footbreak-tick.timer footbreak-sweep.timer footbreak-settle.timer footbreak-backtest.timer \
   crown-tick.timer crown-sweep.timer; do
   systemctl is-enabled --quiet "$unit"
   systemctl is-active --quiet "$unit"
   echo "OK timer $unit"
 done
 
-for service in footbreak-tick.service footbreak-t30.service crown-tick.service crown-sweep.service; do
+for service in footbreak-tick.service crown-tick.service crown-sweep.service; do
   result="$(systemctl show "$service" -p Result --value)"
   status="$(systemctl show "$service" -p ExecMainStatus --value)"
   # Footbreak timed jobs deliberately return EX_TEMPFAIL (75) when a
@@ -23,7 +23,7 @@ for service in footbreak-tick.service footbreak-t30.service crown-tick.service c
   # scheduler pre-emption, not a provider or prediction failure.
   expected_preemption=false
   case "$service:$status" in
-    footbreak-tick.service:75|footbreak-t30.service:75)
+    footbreak-tick.service:75)
       expected_preemption=true
       ;;
   esac

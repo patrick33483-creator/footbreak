@@ -44,6 +44,11 @@ def _traditional_to_simplified(value: str) -> str:
     """
     if not _UCONV or not value:
         return value
+    # PinnAPI team and league names are overwhelmingly ASCII.  Starting an
+    # ICU subprocess for every already-Latin token made a large same-kickoff
+    # batch spend most of its T-5 window doing no-op conversions.
+    if not any("\u3400" <= char <= "\u9fff" for char in value):
+        return value
     try:
         completed = subprocess.run(
             (_UCONV, "-x", "Traditional-Simplified"),

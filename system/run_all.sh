@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # 足破 · 一鍵流程
 #   ./run_all.sh sweep   —— 每晚 23:59:掃馬會全板,每場做一次「首預」
-#   ./run_all.sh tick    —— 高優先 T-5，唯一落注通道
-#   ./run_all.sh t30     —— 獨立 T-30 資料點，只記錄不落注
+#   ./run_all.sh tick    —— 一條到期隊列，T-5 優先，再做 T-30
+#   ./run_all.sh t30     —— 舊相容入口，只做 T-30
 #   ./run_all.sh settle  —— 淨係結算
 # 只有新注單通知由 notify.py 負責,冪等(notify_state.json),重跑唔會重複發
 set -euo pipefail
@@ -13,7 +13,7 @@ echo "═══ $(TZ=Asia/Hong_Kong date '+%F %H:%M') HKT · 模式 $MODE ══
 
 case "$MODE" in
   sweep)  python3 run_predict.py --sweep 2160 ;;
-  tick)   python3 run_predict.py --t5-only 90 ;;
+  tick)   python3 run_predict.py 90 ;;
   t30)    python3 run_predict.py --t30-only 90 ;;
   settle) ;;
   *)      echo "未知模式 $MODE"; exit 2 ;;
