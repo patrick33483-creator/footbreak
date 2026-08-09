@@ -56,6 +56,7 @@ class AccuracyAllPredictionsTests(unittest.TestCase):
             )
         self.assertEqual(scored["n_matches"], 1)
         self.assertEqual(scored["n_preds"], 1)
+        self.assertEqual(scored["missing_results"], [])
         self.assertEqual(scored["latest"]["n"], 1)
         self.assertEqual(history_count, 1)
 

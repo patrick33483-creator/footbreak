@@ -93,6 +93,13 @@ print(
     f"matches={accuracy.get('n_matches')} predictions={accuracy.get('n_preds')} "
     f"missing_results={accuracy.get('n_missing_result')}"
 )
+for missing in accuracy.get("missing_results") or []:
+    print(
+        "WARN missing result "
+        f"match_id={missing.get('match_id')} fixture_id={missing.get('fixture_id')} "
+        f"{missing.get('home')} v {missing.get('away')} "
+        f"kickoff={missing.get('kickoff')} reason={missing.get('reason')}"
+    )
 
 crown_matches = crown.get("matches") or crown.get("predictions") or []
 print(f"OK Crown dashboard matches={len(crown_matches)}")

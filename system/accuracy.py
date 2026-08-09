@@ -273,7 +273,7 @@ def run(fetch=True):
         except Exception:
             official = {}
 
-    scored, matches, missing = [], [], 0
+    scored, matches, missing_results = [], [], []
     for mid, w in watch.items():
         try:
             ko = datetime.strptime(w["kickoff"], "%Y-%m-%d %H:%M").replace(tzinfo=HKT)
@@ -285,7 +285,11 @@ def run(fetch=True):
         if not res:
             fid = w.get("fixture_id")
             if not fid:
-                missing += 1
+                missing_results.append({
+                    "match_id": mid, "home": w.get("home"), "away": w.get("away"),
+                    "league": w.get("league"), "kickoff": w.get("kickoff"),
+                    "reason": "missing_fixture_id",
+                })
                 continue
             cached = os.path.join(S.RESCACHE, f"{fid}.json")
             if not os.path.exists(cached) and not fetch:
@@ -295,7 +299,12 @@ def run(fetch=True):
             except Exception:
                 res = None
         if not res:
-            missing += 1
+            missing_results.append({
+                "match_id": mid, "fixture_id": w.get("fixture_id"),
+                "home": w.get("home"), "away": w.get("away"),
+                "league": w.get("league"), "kickoff": w.get("kickoff"),
+                "reason": "result_not_returned",
+            })
             continue
 
         rows = []
@@ -339,7 +348,8 @@ def run(fetch=True):
     full_out = {
         "generated_at": now.isoformat(timespec="seconds"),
         "n_matches": len(matches), "n_preds": len(scored),
-        "n_missing_result": missing,
+        "n_missing_result": len(missing_results),
+        "missing_results": missing_results,
         "overall": _agg(scored),
         "latest": _agg(final_rows),
         "by_stage": {k: v for k, v in by_stage.items() if v},
