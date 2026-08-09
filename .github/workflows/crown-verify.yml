@@ -53,10 +53,18 @@ jobs:
             done
           fi
           echo "=== Crown production ${CROWN_MODE} ==="
-          /opt/footbreak/deploy/crown-run.sh "$CROWN_MODE"
           if [ "$CROWN_MODE" = "sweep" ]; then
+            /opt/footbreak/deploy/crown-run.sh "$CROWN_MODE" &
+            crown_pid=$!
+            while kill -0 "$crown_pid" 2>/dev/null; do
+              echo "$(date '+%F %T') Crown sweep is running"
+              sleep 15
+            done
+            wait "$crown_pid"
             systemctl start crown-tick.timer
             trap - EXIT
+          else
+            /opt/footbreak/deploy/crown-run.sh "$CROWN_MODE"
           fi
           echo "=== Crown live HKJC mapping diagnostic ==="
           /opt/footbreak/.venv/bin/python3 - <<'PY'
