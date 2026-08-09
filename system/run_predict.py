@@ -67,6 +67,23 @@ def done_stages() -> dict:
             for mid, w in (d.get("watch") or {}).items()}
 
 
+def known_fixture_ids() -> dict:
+    """沿用首預已確認的 PinnAPI fixture，避免臨場隊名變化令配對失敗。"""
+    fp = os.path.join(HERE, "sim_ledger.json")
+    if not os.path.exists(fp):
+        return {}
+    try:
+        with open(fp, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except Exception:
+        return {}
+    return {
+        str(mid): str(w["fixture_id"])
+        for mid, w in (data.get("watch") or {}).items()
+        if w.get("fixture_id") is not None
+    }
+
+
 def due_now(mins: float, done: set) -> str | None:
     """依家應該幫呢場做邊個階段?已做過就回 None。"""
     if WIN_T5[0] <= mins <= WIN_T5[1] and "T-5" not in done:
@@ -293,6 +310,8 @@ def main(match_ids=None, horizon_min=700, out="predictions.json",
     news_all = load_news_adj()
     snaps = load_hk_snaps()
     done = {} if force else done_stages()
+    fixture_ids = {} if force else known_fixture_ids()
+    fixtures_by_id = {str(fx.get("id")): fx for fx in fixtures if fx.get("id") is not None}
     results, skipped = [], 0
     for m in matches:
         mid = str(m.get("id"))
@@ -319,8 +338,17 @@ def main(match_ids=None, horizon_min=700, out="predictions.json",
         else:
             stage = stage_of(mins)
 
-        fx, sc = S.match_fixture(m, fixtures, ko)
+        fx = fixtures_by_id.get(fixture_ids.get(mid))
+        if fx:
+            sc = 1.0
+        else:
+            fx, sc = S.match_fixture(m, fixtures, ko)
         if not fx:
+            print(
+                f"{mins:6.0f}m {stage:4s} 跳過 "
+                f"{m['homeTeam']['name_ch']} v {m['awayTeam']['name_ch']} "
+                f"— PinnAPI 賽事配對失敗"
+            )
             continue
         try:
             r = analyse_match(m, fx, news=news_all.get(mid),
