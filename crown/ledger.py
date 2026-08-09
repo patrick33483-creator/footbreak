@@ -24,6 +24,7 @@ def _snapshot(prediction: dict[str, Any], stage: str) -> dict[str, Any]:
         "match_id", "league", "home", "away", "kickoff_hkt", "mins_to_ko", "status", "verdict",
         "conviction", "no_bet_reason", "pick", "lead_view", "market_sources", "hkjc_match_id",
         "titan_match_id", "pinnapi_event_id", "source_snapshot_at", "execution",
+        "outcome", "forecast", "probability", "likely_score", "prediction_source",
     )} | {"stage": stage, "ts": iso_hkt()}
 
 

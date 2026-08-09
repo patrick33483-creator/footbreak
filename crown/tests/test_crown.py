@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 from crown.config import settings
 from crown.dashboard_data import build, write_dashboard_data
-from crown.engine import _fresh
+from crown.engine import _fresh, _wdl_prediction
 from crown.hkjc import fetch_official_results
 from crown.ledger import recompute_stats, stage_for, sync_prediction
 from crown.lines import parse_hkjc_handicap, parse_hkjc_total, settle_handicap, settle_total
@@ -20,6 +20,7 @@ from crown.matching import Event, bridge_titan_to_pinnapi, match_event, same_eve
 from crown.notify import _bet_label, notify_new
 from crown.pinnapi import parse_fixtures, parse_lines
 from crown.period import in_current_period, period_bounds
+from crown.prediction_history import archive_watch, grade_history
 from crown.state import load_predictions, merge_predictions, save_predictions
 from crown.titan import crown_prices_from_pages
 
@@ -84,6 +85,19 @@ class CrownSafetyTests(unittest.TestCase):
                          {("HDC", -0.25, "H"), ("HDC", -0.25, "A"), ("HIL", 2.75, "H"), ("HIL", 2.75, "L")})
         non_full = parse_lines({"event_id": "p1", "periods": {"num_1": {"totals": []}}})
         self.assertEqual(non_full["prices"], [])
+
+    def test_wdl_prediction_uses_complete_no_vig_moneyline(self) -> None:
+        view = _wdl_prediction([
+            {"market": "1X2", "selection": "H", "odds": 2.0},
+            {"market": "1X2", "selection": "D", "odds": 4.0},
+            {"market": "1X2", "selection": "A", "odds": 4.0},
+        ])
+        self.assertEqual(view["forecast"], "主勝")
+        self.assertAlmostEqual(view["outcome"]["home"], 0.5)
+        self.assertAlmostEqual(sum(view["outcome"].values()), 1.0)
+        self.assertIsNone(_wdl_prediction([
+            {"market": "1X2", "selection": "H", "odds": 2.0},
+        ])["forecast"])
 
     def test_pinnapi_fixture_parser_drops_live_and_bad_time(self) -> None:
         result = parse_fixtures({"fixtures": [
@@ -174,6 +188,56 @@ class CrownSafetyTests(unittest.TestCase):
             payload = build(config)
             self.assertEqual(payload["prediction_history"]["rows"][0]["match_id"], "old")
             self.assertEqual(payload["prediction_history"]["stats"]["predictions"], 1)
+
+    def test_prediction_history_archives_no_bet_stages_idempotently(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = replace(settings(), state_dir=Path(directory))
+            ledger = {"watch": {"x": {
+                "match_id": "x", "league": "L", "home": "A", "away": "B",
+                "kickoff": "2026-08-09T12:05:00+08:00", "titan_match_id": "x",
+                "stages": [{
+                    "match_id": "x", "stage": "T-30", "ts": "2026-08-09T11:35:00+08:00",
+                    "forecast": "主勝", "probability": .55,
+                    "outcome": {"home": .55, "draw": .25, "away": .20},
+                    "prediction_source": "pinnapi_1x2_no_vig",
+                    "pick": None, "no_bet_reason": "資訊階段",
+                }],
+            }}}
+            first = archive_watch(config, ledger)
+            second = archive_watch(config, ledger)
+            self.assertEqual(len(first["rows"]), 1)
+            self.assertEqual(len(second["rows"]), 1)
+            self.assertFalse(second["rows"][0]["simulated_bet"])
+            self.assertEqual(second["stats"]["predictions"], 1)
+
+    def test_prediction_history_grades_non_bet_by_verified_titan_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = replace(settings(), state_dir=Path(directory))
+            kickoff = datetime.now(self.now.tzinfo) - timedelta(hours=3)
+            ledger = {"watch": {"x": {
+                "match_id": "x", "league": "League", "home": "Alpha FC", "away": "Beta FC",
+                "kickoff": kickoff.isoformat(), "titan_match_id": "x",
+                "stages": [{
+                    "match_id": "x", "stage": "T-30", "ts": (kickoff - timedelta(minutes=30)).isoformat(),
+                    "forecast": "主勝", "probability": .60,
+                    "outcome": {"home": .60, "draw": .25, "away": .15},
+                    "pick": None,
+                }],
+            }}}
+            archive_watch(config, ledger)
+            result = {
+                "id": "x", "league": "League", "home": "Alpha FC", "away": "Beta FC",
+                "kickoff": kickoff, "home_score": 2, "away_score": 1,
+            }
+            with patch("crown.prediction_history.TitanClient.results", return_value=[result]), \
+                 patch("crown.prediction_history.fetch_official_result_events", return_value=[]):
+                history = grade_history(config)
+            row = history["rows"][0]
+            self.assertEqual(row["actual"], "主勝")
+            self.assertTrue(row["correct"])
+            self.assertEqual(row["result_source"], "titan_verified_identity")
+            self.assertEqual(history["stats"]["graded"], 1)
+            self.assertIsNotNone(history["stats"]["brier"])
 
     def test_recompute_stats_preserves_recovered_bet_results(self) -> None:
         ledger = {

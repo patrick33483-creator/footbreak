@@ -234,7 +234,8 @@ def calibration(rows, nbins=5):
 # ─────────────────────────────────────────── 主流程
 
 def run(fetch=True):
-    led = json.load(open(LEDGER, encoding="utf8"))
+    with open(LEDGER, encoding="utf8") as handle:
+        led = json.load(handle)
     watch = led.get("watch") or {}
     now = datetime.now(HKT)
 
@@ -329,8 +330,8 @@ def run(fetch=True):
         "calibration": calibration(scored),
         "matches": matches[:200],
     }
-    json.dump(out, open(OUT, "w", encoding="utf8"),
-              ensure_ascii=False, separators=(",", ":"))
+    with open(OUT, "w", encoding="utf8") as handle:
+        json.dump(out, handle, ensure_ascii=False, separators=(",", ":"))
     return out
 
 

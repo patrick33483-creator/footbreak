@@ -111,10 +111,10 @@ _RESULT_PAGE_SIZE = 20
 _RESULT_MAX_PAGES = 20
 
 
-def fetch_official_results(match_ids: set[str], dates: set[str]) -> dict[str, dict[str, Any]]:
-    """Official fallback: exact HKJC match IDs only, confirmed full-match rows only."""
-    if not match_ids or not dates:
-        return {}
+def fetch_official_result_events(dates: set[str]) -> list[dict[str, Any]]:
+    """Return confirmed full-match HKJC result events with identity metadata."""
+    if not dates:
+        return []
     endpoint = "https://info.cld.hkjc.com/graphql/base/"
     result: dict[str, dict[str, Any]] = {}
     for day in sorted(dates):
@@ -146,7 +146,7 @@ def fetch_official_results(match_ids: set[str], dates: set[str]) -> dict[str, di
             matches = data.get("matches") or []
             for match in matches:
                 match_id = str(match.get("id") or "")
-                if match_id not in match_ids or str(match.get("status", "")).upper() not in _ENDED_STATUSES:
+                if not match_id or str(match.get("status", "")).upper() not in _ENDED_STATUSES:
                     continue
                 rows = [
                     row for row in (match.get("results") or [])
@@ -159,7 +159,16 @@ def fetch_official_results(match_ids: set[str], dates: set[str]) -> dict[str, di
                 row = max(rows, key=lambda item: int(item.get("sequence") or 0))
                 try:
                     corners = int(row["ttlCornerResult"]) if row.get("ttlCornerResult") is not None else None
+                    home_team = match.get("homeTeam") or {}
+                    away_team = match.get("awayTeam") or {}
+                    tournament = match.get("tournament") or {}
                     result[match_id] = {
+                        "id": match_id,
+                        "front_end_id": str(match.get("frontEndId") or "") or None,
+                        "league": str(tournament.get("name_ch") or tournament.get("name_en") or ""),
+                        "home": str(home_team.get("name_ch") or home_team.get("name_en") or ""),
+                        "away": str(away_team.get("name_ch") or away_team.get("name_en") or ""),
+                        "kickoff": match.get("kickOffTime") or match.get("matchDate"),
                         "home_score": int(row["homeResult"]),
                         "away_score": int(row["awayResult"]),
                         # HKJC uses -1 as a missing-data sentinel, not a
@@ -170,6 +179,22 @@ def fetch_official_results(match_ids: set[str], dates: set[str]) -> dict[str, di
                 except (TypeError, ValueError, KeyError):
                     continue
             total = int(((data.get("matchNumByDate") or {}).get("total")) or 0)
-            if result.keys() >= match_ids or not matches or start + len(matches) >= total:
+            if not matches or start + len(matches) >= total:
                 break
-    return result
+    return list(result.values())
+
+
+def fetch_official_results(match_ids: set[str], dates: set[str]) -> dict[str, dict[str, Any]]:
+    """Official fallback: exact HKJC match IDs only, confirmed full-match rows only."""
+    if not match_ids or not dates:
+        return {}
+    return {
+        row["id"]: {
+            "home_score": row["home_score"],
+            "away_score": row["away_score"],
+            "corners_total": row.get("corners_total"),
+            "source": row["source"],
+        }
+        for row in fetch_official_result_events(dates)
+        if row["id"] in match_ids
+    }

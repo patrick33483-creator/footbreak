@@ -84,6 +84,38 @@ def _hkjc_chl(match: dict[str, Any] | None) -> list[dict[str, Any]]:
     return [{"market": "CHL", **row} for row in flatten_odds(match).get("CHL", [])]
 
 
+def _wdl_prediction(prices: list[dict[str, Any]]) -> dict[str, Any]:
+    """Return a complete no-vig 1X2 view, or no prediction at all."""
+    odds = {
+        selection: next((
+            float(price["odds"]) for price in prices
+            if price.get("market") == "1X2" and price.get("selection") == selection
+        ), None)
+        for selection in ("H", "D", "A")
+    }
+    if not all(value and value > 1 for value in odds.values()):
+        return {
+            "outcome": None, "forecast": None, "probability": None,
+            "likely_score": None, "prediction_source": None,
+        }
+    implied = {selection: 1 / float(value) for selection, value in odds.items()}
+    total = sum(implied.values())
+    probabilities = {selection: implied[selection] / total for selection in ("H", "D", "A")}
+    pick = max(probabilities, key=probabilities.get)
+    labels = {"H": "主勝", "D": "和局", "A": "客勝"}
+    return {
+        "outcome": {
+            "home": round(probabilities["H"], 6),
+            "draw": round(probabilities["D"], 6),
+            "away": round(probabilities["A"], 6),
+        },
+        "forecast": labels[pick],
+        "probability": round(probabilities[pick], 6),
+        "likely_score": None,
+        "prediction_source": "pinnapi_1x2_no_vig",
+    }
+
+
 def _prediction(titan: dict[str, Any], bridge: BridgeMatch, h_match: dict[str, Any] | None,
                 stage: str, config: Settings, titan_client: TitanClient, pinnapi_client: PinnapiClient) -> dict[str, Any]:
     event = _event_from_titan(titan)
@@ -108,6 +140,8 @@ def _prediction(titan: dict[str, Any], bridge: BridgeMatch, h_match: dict[str, A
                       "reason": "Only T-5 can create an idempotent simulated bet; no order client exists."},
         "candidates": [], "pick": None, "lead_view": None, "status": "DATA_MISSING",
         "verdict": "無法完整預測", "no_bet_reason": None, "book_odds": {"crown": {}, "hkjc_chl": _hkjc_chl(h_match)},
+        "outcome": None, "forecast": None, "probability": None, "likely_score": None,
+        "prediction_source": None,
     }
     if not bridge.event:
         base["no_bet_reason"] = (
@@ -123,6 +157,7 @@ def _prediction(titan: dict[str, Any], bridge: BridgeMatch, h_match: dict[str, A
         base["no_bet_reason"] = f"PinnAPI lines unavailable ({type(exc).__name__}); fail closed。"
         return base
     prices = pinnapi["prices"]
+    base.update(_wdl_prediction(prices))
     now = time.time()
     candidates, reasons = _candidates(crown, prices, config, now, bool(pinnapi["timestamp_inferred"]))
     base["book_odds"]["crown"] = crown

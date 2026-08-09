@@ -8,6 +8,7 @@ from .config import settings
 from .dashboard_data import write_dashboard_data
 from .engine import run
 from .notify import notify_new
+from .prediction_history import update_history
 from .state import load_ledger
 
 
@@ -46,8 +47,15 @@ def main() -> int:
         print(result)
         return 3
     ledger = load_ledger(config)
+    history_warning = None
+    try:
+        update_history(config, ledger)
+    except Exception as exc:
+        history_warning = f"prediction_history_{type(exc).__name__}"
     notify_new(ledger, config)
     write_dashboard_data(config)
+    if history_warning:
+        result["warning"] = history_warning
     print(result)
     return 0 if result.get("ok") else 3
 
