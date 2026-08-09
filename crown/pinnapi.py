@@ -141,6 +141,137 @@ def parse_lines(payload: Any, requested_event_id: str = "", observed_at: float |
             "market_status": str(period.get("status") or root.get("status") or "") or None}
 
 
+def _corner_event(row: Any) -> bool:
+    if not isinstance(row, dict):
+        return False
+    identity = " ".join(str(row.get(key) or "") for key in (
+        "league_name", "league", "home", "away",
+        "special_category", "special_units",
+    ))
+    return "corner" in identity.lower()
+
+
+def _line_map(value: Any) -> list[dict[str, Any]]:
+    """Return PinnAPI's line-keyed maps as quote records with an explicit line."""
+    if isinstance(value, list):
+        return [row for row in value if isinstance(row, dict)]
+    if not isinstance(value, dict):
+        return []
+    rows: list[dict[str, Any]] = []
+    for raw_line, quote in value.items():
+        if not isinstance(quote, dict):
+            continue
+        row = dict(quote)
+        row.setdefault("line", raw_line)
+        rows.append(row)
+    return rows
+
+
+def parse_corner_lines(
+    payload: Any,
+    requested_event_id: str = "",
+    observed_at: float | None = None,
+) -> dict[str, Any]:
+    """Parse full-match corner children returned by markets?include_specials=1.
+
+    PinnAPI models corners as separate events whose league/team identity contains
+    ``Corners``.  This parser deliberately ignores first-half ``num_1`` data and
+    returns no prices unless exactly one eligible full-match corner child exists.
+    """
+    root = _record(payload) or {}
+    observed_at = observed_at or time.time()
+    events = root.get("events") if isinstance(root.get("events"), list) else []
+    candidates = [row for row in events if _corner_event(row)]
+    parsed_candidates: list[dict[str, Any]] = []
+    for event in candidates:
+        periods = _record(event.get("periods")) or {}
+        period = _record(periods.get("num_0"))
+        if not period:
+            continue
+        source_at = _timestamp(
+            period.get("updated_at") or period.get("updatedAt")
+            or event.get("source_timestamp") or event.get("updated_at")
+            or root.get("source_timestamp") or root.get("updated_at")
+        )
+        inferred = source_at is None
+        source_at = observed_at if source_at is None else source_at
+        prices: list[dict[str, Any]] = []
+
+        spread_rows = _line_map(period.get("spreads") or period.get("handicaps"))
+        spread_mid = None
+        if spread_rows:
+            eligible = []
+            for row in spread_rows:
+                line = _num(row.get("hdp", row.get("handicap", row.get("line"))))
+                home, away = _decimal(row.get("home")), _decimal(row.get("away"))
+                if line is None or home is None or away is None or not is_quarter(line):
+                    continue
+                eligible.append((abs(home - away), line, row, home, away))
+            if eligible:
+                spread_mid = min(eligible, key=lambda item: item[0])[1]
+                for _, line, row, home, away in eligible:
+                    maximum = _num(row.get("max"))
+                    for selection, odds in (("H", home), ("A", away)):
+                        prices.append({
+                            "market": "CHDC", "line": line,
+                            "selection": selection, "odds": odds,
+                            "source_at": source_at, "max": maximum,
+                            "main": line == spread_mid,
+                        })
+
+        total_rows = _line_map(period.get("totals") or period.get("total"))
+        total_mid = None
+        if total_rows:
+            eligible = []
+            for row in total_rows:
+                line = _num(row.get("points", row.get("total", row.get("line"))))
+                over, under = _decimal(row.get("over")), _decimal(row.get("under"))
+                if line is None or line < 0 or over is None or under is None or not is_quarter(line):
+                    continue
+                eligible.append((abs(over - under), line, row, over, under))
+            if eligible:
+                total_mid = min(eligible, key=lambda item: item[0])[1]
+                for _, line, row, over, under in eligible:
+                    maximum = _num(row.get("max"))
+                    for selection, odds in (("H", over), ("L", under)):
+                        prices.append({
+                            "market": "CHL", "line": line,
+                            "selection": selection, "odds": odds,
+                            "source_at": source_at, "max": maximum,
+                            "main": line == total_mid,
+                        })
+
+        if prices:
+            parsed_candidates.append({
+                "event_id": str(requested_event_id),
+                "corner_event_id": str(
+                    event.get("event_id") or event.get("eventId") or event.get("id") or ""
+                ) or None,
+                "league": str(event.get("league_name") or event.get("league") or ""),
+                "home": str(event.get("home") or ""),
+                "away": str(event.get("away") or ""),
+                "prices": prices,
+                "source_at": source_at,
+                "timestamp_inferred": inferred,
+                "timestamp_basis": "response_observed" if inferred else "provider",
+                "market_status": str(period.get("status") or event.get("status") or root.get("status") or "") or None,
+            })
+
+    if len(parsed_candidates) != 1:
+        return {
+            "event_id": str(requested_event_id),
+            "corner_event_id": None,
+            "prices": [],
+            "source_at": observed_at,
+            "timestamp_inferred": True,
+            "timestamp_basis": "response_observed",
+            "market_status": "ambiguous" if len(parsed_candidates) > 1 else "unavailable",
+            "candidate_count": len(parsed_candidates),
+        }
+    parsed_candidates[0]["candidate_count"] = 1
+    return parsed_candidates[0]
+
+
 def parse_live_scores(payload: Any, observed_at: float | None = None) -> dict[str, dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     _collect(payload, rows)
@@ -183,6 +314,13 @@ class PinnapiClient:
 
     def lines(self, event_id: str) -> dict[str, Any]:
         return parse_lines(self._get("/kit/v1/prematch/lines?event_id=" + urllib.parse.quote(event_id, safe="")), event_id)
+
+    def corner_lines(self, event_id: str) -> dict[str, Any]:
+        encoded = urllib.parse.quote(event_id, safe="")
+        payload = self._get(
+            f"/kit/v1/prematch/markets?event_id={encoded}&include_specials=1"
+        )
+        return parse_corner_lines(payload, event_id)
 
     def live_scores(self) -> dict[str, dict[str, Any]]:
         return parse_live_scores(self._get("/kit/v1/markets?sport_id=1&event_type=live"))
