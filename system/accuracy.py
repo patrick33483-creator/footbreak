@@ -238,6 +238,24 @@ def run(fetch=True):
     watch = led.get("watch") or {}
     now = datetime.now(HKT)
 
+    eligible = []
+    for mid, w in watch.items():
+        try:
+            kickoff = datetime.strptime(w["kickoff"], "%Y-%m-%d %H:%M").replace(tzinfo=HKT)
+        except Exception:
+            continue
+        if (now - kickoff).total_seconds() / 60 >= SETTLE_AFTER_MIN:
+            eligible.append((str(mid), w, kickoff))
+    official = {}
+    if fetch and eligible:
+        try:
+            official = S.fetch_hkjc_results(
+                {mid for mid, _, _ in eligible},
+                {kickoff.strftime("%Y-%m-%d") for _, _, kickoff in eligible},
+            )
+        except Exception:
+            official = {}
+
     scored, matches, missing = [], [], 0
     for mid, w in watch.items():
         try:
@@ -246,17 +264,19 @@ def run(fetch=True):
             continue
         if (now - ko).total_seconds() / 60 < SETTLE_AFTER_MIN:
             continue
-        fid = w.get("fixture_id")
-        if not fid:
-            missing += 1
-            continue
-        cached = os.path.join(S.RESCACHE, f"{fid}.json")
-        if not os.path.exists(cached) and not fetch:
-            continue
-        try:
-            res = S.fetch_result(fid)
-        except Exception:
-            res = None
+        res = official.get(str(mid))
+        if not res:
+            fid = w.get("fixture_id")
+            if not fid:
+                missing += 1
+                continue
+            cached = os.path.join(S.RESCACHE, f"{fid}.json")
+            if not os.path.exists(cached) and not fetch:
+                continue
+            try:
+                res = S.fetch_result(fid)
+            except Exception:
+                res = None
         if not res:
             missing += 1
             continue

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import gzip
+import json
 import tempfile
 import unittest
 from stat import S_IMODE
@@ -11,6 +13,7 @@ from unittest.mock import patch
 from crown.config import settings
 from crown.dashboard_data import build, write_dashboard_data
 from crown.engine import _fresh
+from crown.hkjc import fetch_official_results
 from crown.ledger import recompute_stats, stage_for, sync_prediction
 from crown.lines import parse_hkjc_handicap, parse_hkjc_total, settle_handicap, settle_total
 from crown.matching import Event, bridge_titan_to_pinnapi, match_event, same_event_for_hkjc
@@ -209,6 +212,71 @@ class CrownSafetyTests(unittest.TestCase):
         away = {"market": "HDC", "side": "A", "line": 0.25, "home": "主隊", "away": "客隊"}
         self.assertEqual(_bet_label(home), "讓球 · 主隊 -0/0.5")
         self.assertEqual(_bet_label(away), "讓球 · 客隊 -0/0.5")
+
+    def test_hkjc_official_results_paginate_and_require_confirmed_full_time(self) -> None:
+        class Response:
+            def __init__(self, payload, compressed=False):
+                raw = json.dumps(payload).encode("utf-8")
+                self.raw = gzip.compress(raw) if compressed else raw
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+            def read(self):
+                return self.raw
+
+        filler = [
+            {"id": f"other-{i}", "status": "MATCHENDED", "results": []}
+            for i in range(20)
+        ]
+        first = {
+            "data": {
+                "matchNumByDate": {"total": 21},
+                "matches": filler,
+            }
+        }
+        second = {
+            "data": {
+                "matchNumByDate": {"total": 21},
+                "matches": [{
+                    "id": "wanted",
+                    "status": "MATCHENDED",
+                    "results": [
+                        {
+                            "homeResult": "9",
+                            "awayResult": "9",
+                            "ttlCornerResult": "99",
+                            "payoutConfirmed": False,
+                            "stageId": 5,
+                            "resultType": 1,
+                            "sequence": 99,
+                        },
+                        {
+                            "homeResult": "2",
+                            "awayResult": "1",
+                            "ttlCornerResult": "11",
+                            "payoutConfirmed": True,
+                            "stageId": 5,
+                            "resultType": 1,
+                            "sequence": 2,
+                        },
+                    ],
+                }],
+            }
+        }
+        with patch(
+            "crown.hkjc.urllib.request.urlopen",
+            side_effect=[Response(first, compressed=True), Response(second)],
+        ) as opener:
+            rows = fetch_official_results({"wanted"}, {"2026-08-09"})
+        self.assertEqual(opener.call_count, 2)
+        self.assertEqual(rows["wanted"]["home_score"], 2)
+        self.assertEqual(rows["wanted"]["away_score"], 1)
+        self.assertEqual(rows["wanted"]["corners_total"], 11)
+        self.assertEqual(rows["wanted"]["source"], "hkjc_official")
 
 
 if __name__ == "__main__":

@@ -14,6 +14,7 @@ import os
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 HKT = timezone(timedelta(hours=8))
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -24,6 +25,29 @@ os.makedirs(RESCACHE, exist_ok=True)
 
 # 賽事平均 ~115 分鐘完場(90+補時+半場+資料入庫延遲)。留 130 分鐘緩衝。
 SETTLE_AFTER_MIN = 130
+
+
+def fetch_hkjc_results(match_ids, dates):
+    """HKJC exact-ID official results in the shape used by this settlement module."""
+    root = str(Path(__file__).resolve().parents[1])
+    if root not in sys.path:
+        sys.path.insert(0, root)
+    from crown.hkjc import fetch_official_results
+    rows = fetch_official_results(set(map(str, match_ids)), set(dates))
+    return {
+        match_id: {
+            "fixture_id": match_id,
+            "goals_home": row["home_score"],
+            "goals_away": row["away_score"],
+            "goals_total": row["home_score"] + row["away_score"],
+            "corners_home": None,
+            "corners_away": None,
+            "corners_total": row.get("corners_total"),
+            "checked_at": None,
+            "source": "hkjc_official",
+        }
+        for match_id, row in rows.items()
+    }
 
 
 def _call(path, params):
@@ -239,7 +263,28 @@ def run(force=False):
         print(f"補回 {nfill} 注嘅賽事編號")
 
     now = datetime.now(HKT)
+    due = []
+    for bet in led["bets"]:
+        if bet.get("status") != "PENDING":
+            continue
+        try:
+            kickoff = datetime.strptime(bet["kickoff"], "%Y-%m-%d %H:%M").replace(tzinfo=HKT)
+        except Exception:
+            continue
+        if force or (now - kickoff).total_seconds() / 60 >= SETTLE_AFTER_MIN:
+            due.append((bet, kickoff))
     changes, unresolved, provider_errors = [], [], []
+    official = {}
+    if due:
+        try:
+            official = fetch_hkjc_results(
+                {str(bet.get("match_id") or "") for bet, _ in due if bet.get("match_id")},
+                {kickoff.strftime("%Y-%m-%d") for _, kickoff in due},
+            )
+        except Exception:
+            # Per-bet OpticOdds fallback below remains available.  A source
+            # error only becomes fatal if no fallback can settle that bet.
+            official = {}
     for b in led["bets"]:
         if b.get("status") != "PENDING":
             continue
@@ -250,16 +295,18 @@ def run(force=False):
         mins = (now - ko).total_seconds() / 60
         if not force and mins < SETTLE_AFTER_MIN:
             continue
-        fid = b.get("fixture_id")
-        if not fid:
-            unresolved.append(f"{b['home']} v {b['away']} — 搵唔到賽事編號")
-            continue
-        try:
-            res = fetch_result(fid)
-        except Exception as e:
-            unresolved.append(f"{b['home']} v {b['away']} — 抓賽果失敗 {type(e).__name__}")
-            provider_errors.append(f"{b.get('bet_id') or b['match_id']}: {type(e).__name__}")
-            continue
+        res = official.get(str(b.get("match_id") or ""))
+        if not res:
+            fid = b.get("fixture_id")
+            if not fid:
+                unresolved.append(f"{b['home']} v {b['away']} — 搵唔到賽事編號")
+                continue
+            try:
+                res = fetch_result(fid)
+            except Exception as e:
+                unresolved.append(f"{b['home']} v {b['away']} — 抓賽果失敗 {type(e).__name__}")
+                provider_errors.append(f"{b.get('bet_id') or b['match_id']}: {type(e).__name__}")
+                continue
         if not res:
             unresolved.append(f"{b['home']} v {b['away']} — 賽果未出(開賽後 {mins:.0f} 分)")
             continue
@@ -272,9 +319,14 @@ def run(force=False):
         b["result"] = label
         b["pnl"] = pnl
         b["settled_at"] = now.isoformat(timespec="seconds")
+        b["settlement_source"] = res.get("source") or "opticodds"
+        corners_display = None
+        if res["corners_home"] is not None and res["corners_away"] is not None:
+            corners_display = f"{res['corners_home']}-{res['corners_away']}"
+        elif res["corners_total"] is not None:
+            corners_display = f"總數 {res['corners_total']}"
         b["score"] = {"goals": f"{res['goals_home']}-{res['goals_away']}",
-                      "corners": (f"{res['corners_home']}-{res['corners_away']}"
-                                  if res["corners_total"] is not None else None),
+                      "corners": corners_display,
                       "goals_total": res["goals_total"],
                       "corners_total": res["corners_total"]}
         b.setdefault("history", []).append({

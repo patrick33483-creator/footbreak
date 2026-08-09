@@ -43,13 +43,72 @@ def flatten_odds(match: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
 
 
 _RESULT_QUERY = """
-query matchResults($startDate: String, $endDate: String, $startIndex: Int, $endIndex: Int) {
-  matches: matchResult(startDate: $startDate, endDate: $endDate, startIndex: $startIndex, endIndex: $endIndex) {
-    id status matchDate kickOffTime
-    homeTeam { id name_ch name_en } awayTeam { id name_ch name_en }
-    results { homeResult awayResult ttlCornerResult payoutConfirmed stageId resultType sequence }
-  }
-}"""
+query matchResults($startDate: String, $endDate: String, $startIndex: Int,$endIndex: Int,$teamId: String) {
+    timeOffset {
+    fb
+    }
+    matchNumByDate(startDate: $startDate, endDate: $endDate, teamId: $teamId) {
+    total
+    }
+    matches: matchResult(startDate: $startDate, endDate: $endDate, startIndex: $startIndex,endIndex: $endIndex, teamId: $teamId) {
+    id
+    status
+    frontEndId
+    matchDayOfWeek
+    matchNumber
+    matchDate
+    kickOffTime
+    sequence
+    homeTeam {
+        id
+        name_en
+        name_ch
+    }
+    awayTeam {
+        id
+        name_en
+        name_ch
+    }
+    tournament {
+        code
+        name_en
+        name_ch
+    }
+    results {
+        homeResult
+        awayResult
+        ttlCornerResult
+        resultConfirmType
+        payoutConfirmed
+        stageId
+        resultType
+        sequence
+    }
+    poolInfo {
+        payoutRefundPools
+        refundPools
+        ntsInfo
+        entInfo
+        definedPools
+        ngsInfo {
+        str
+        name_en
+        name_ch
+        instNo
+        }
+        agsInfo {
+        str
+        name_en
+        name_ch
+        }
+    }
+    }
+}
+"""
+
+_ENDED_STATUSES = {"MATCHENDED", "INPLAYMATCHENDED", "FINISHED", "ENDED", "CLOSED"}
+_RESULT_PAGE_SIZE = 20
+_RESULT_MAX_PAGES = 20
 
 
 def fetch_official_results(match_ids: set[str], dates: set[str]) -> dict[str, dict[str, Any]]:
@@ -58,28 +117,59 @@ def fetch_official_results(match_ids: set[str], dates: set[str]) -> dict[str, di
         return {}
     endpoint = "https://info.cld.hkjc.com/graphql/base/"
     result: dict[str, dict[str, Any]] = {}
-    for day in dates:
-        body = json.dumps({"query": _RESULT_QUERY, "variables": {
-            "startDate": day, "endDate": day, "startIndex": 0, "endIndex": 250,
-        }}).encode()
-        request = urllib.request.Request(endpoint, data=body, headers={
-            "Content-Type": "application/json", "User-Agent": "Mozilla/5.0", "Referer": "https://bet.hkjc.com/",
-        })
-        with urllib.request.urlopen(request, timeout=30) as response:
-            response_json = json.loads(response.read().decode("utf-8"))
-        for match in ((response_json.get("data") or {}).get("matches") or []):
-            match_id = str(match.get("id") or "")
-            if match_id not in match_ids or str(match.get("status", "")).upper() not in {"FINISHED", "ENDED", "CLOSED"}:
-                continue
-            rows = [row for row in (match.get("results") or [])
-                    if row.get("payoutConfirmed") is True and str(row.get("stageId")) == "5" and str(row.get("resultType")) == "1"]
-            if not rows:
-                continue
-            row = max(rows, key=lambda item: int(item.get("sequence") or 0))
-            try:
-                result[match_id] = {"home_score": int(row["homeResult"]), "away_score": int(row["awayResult"]),
-                                    "corners_total": int(row["ttlCornerResult"]) if row.get("ttlCornerResult") is not None else None,
-                                    "source": "hkjc_official"}
-            except (TypeError, ValueError, KeyError):
-                continue
+    for day in sorted(dates):
+        for page in range(_RESULT_MAX_PAGES):
+            start = page * _RESULT_PAGE_SIZE
+            body = json.dumps({"query": _RESULT_QUERY, "variables": {
+                "startDate": day,
+                "endDate": day,
+                "startIndex": start,
+                "endIndex": start + _RESULT_PAGE_SIZE,
+                "teamId": None,
+            }}).encode()
+            request = urllib.request.Request(endpoint, data=body, headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "Origin": "https://bet.hkjc.com",
+                "User-Agent": "Mozilla/5.0",
+                "Referer": "https://bet.hkjc.com/",
+            })
+            with urllib.request.urlopen(request, timeout=30) as response:
+                raw = response.read()
+            if raw[:2] == b"\x1f\x8b":
+                import gzip
+                raw = gzip.decompress(raw)
+            response_json = json.loads(raw.decode("utf-8"))
+            if response_json.get("errors"):
+                raise RuntimeError(str(response_json["errors"])[:400])
+            data = response_json.get("data") or {}
+            matches = data.get("matches") or []
+            for match in matches:
+                match_id = str(match.get("id") or "")
+                if match_id not in match_ids or str(match.get("status", "")).upper() not in _ENDED_STATUSES:
+                    continue
+                rows = [
+                    row for row in (match.get("results") or [])
+                    if row.get("payoutConfirmed") is True
+                    and str(row.get("stageId")) == "5"
+                    and str(row.get("resultType")) == "1"
+                ]
+                if not rows:
+                    continue
+                row = max(rows, key=lambda item: int(item.get("sequence") or 0))
+                try:
+                    corners = int(row["ttlCornerResult"]) if row.get("ttlCornerResult") is not None else None
+                    result[match_id] = {
+                        "home_score": int(row["homeResult"]),
+                        "away_score": int(row["awayResult"]),
+                        # HKJC uses -1 as a missing-data sentinel, not a
+                        # genuine corner count.
+                        "corners_total": corners if corners is not None and corners >= 0 else None,
+                        "source": "hkjc_official",
+                    }
+                except (TypeError, ValueError, KeyError):
+                    continue
+            total = int(((data.get("matchNumByDate") or {}).get("total")) or 0)
+            if result.keys() >= match_ids or not matches or start + len(matches) >= total:
+                break
     return result
