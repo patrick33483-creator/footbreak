@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 from crown.config import settings
 from crown.dashboard_data import build, write_dashboard_data
-from crown.engine import _fresh, _wdl_prediction
+from crown.engine import _candidates, _fresh, _wdl_prediction
 from crown.hkjc import fetch_official_results
 from crown.ledger import completed_stages, recompute_stats, stage_for, sync_prediction
 from crown.lines import parse_hkjc_handicap, parse_hkjc_total, settle_handicap, settle_total
@@ -204,10 +204,40 @@ class CrownSafetyTests(unittest.TestCase):
         }}}
         parsed = parse_lines(payload, "p1", observed_at=1786248001)
         self.assertFalse(parsed["timestamp_inferred"])
+        self.assertEqual(parsed["timestamp_basis"], "provider")
         self.assertEqual({(p["market"], p["line"], p["selection"]) for p in parsed["prices"]},
                          {("HDC", -0.25, "H"), ("HDC", -0.25, "A"), ("HIL", 2.75, "H"), ("HIL", 2.75, "L")})
         non_full = parse_lines({"event_id": "p1", "periods": {"num_1": {"totals": []}}})
         self.assertEqual(non_full["prices"], [])
+
+    def test_pinnapi_missing_provider_timestamp_is_audited_as_response_observed(self) -> None:
+        parsed = parse_lines({
+            "event_id": "p1",
+            "periods": {"num_0": {
+                "spreads": [{"hdp": -0.25, "home": 1.9, "away": 2.0}],
+                "totals": [{"points": 2.75, "over": 1.95, "under": 1.95}],
+            }},
+        }, "p1", observed_at=1786248001)
+        self.assertTrue(parsed["timestamp_inferred"])
+        self.assertEqual(parsed["timestamp_basis"], "response_observed")
+        self.assertEqual(parsed["source_at"], 1786248001)
+
+    def test_response_observed_timestamp_requires_explicit_policy_switch(self) -> None:
+        crown = [
+            {"market": "HDC", "line": -0.25, "selection": "H", "odds": 2.1, "source_at": 1000},
+        ]
+        reference = [
+            {"market": "HDC", "line": -0.25, "selection": "H", "odds": 1.9, "source_at": 1000},
+            {"market": "HDC", "line": -0.25, "selection": "A", "odds": 2.0, "source_at": 1000},
+        ]
+        closed = replace(settings(), source_max_age_seconds=90, allow_inferred_pinnapi_timestamp=False)
+        candidates, reasons = _candidates(crown, reference, closed, 1001, True)
+        self.assertEqual(candidates, [])
+        self.assertEqual(reasons, ["pinnapi_source_timestamp_missing"])
+        approved = replace(closed, allow_inferred_pinnapi_timestamp=True)
+        candidates, reasons = _candidates(crown, reference, approved, 1001, True)
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(reasons, [])
 
     def test_wdl_prediction_uses_complete_no_vig_moneyline(self) -> None:
         view = _wdl_prediction([

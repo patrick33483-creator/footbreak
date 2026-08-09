@@ -164,6 +164,7 @@ def _prediction(titan: dict[str, Any], bridge: BridgeMatch, h_match: dict[str, A
     base["book_odds"]["crown"] = crown
     base["pinnapi_source_at"] = pinnapi["source_at"]
     base["pinnapi_timestamp_inferred"] = pinnapi["timestamp_inferred"]
+    base["pinnapi_timestamp_basis"] = pinnapi.get("timestamp_basis")
     base["source_snapshot_at"] = iso_hkt()
     base["candidates"] = candidates[:12]
     base["lead_view"] = candidates[0] if candidates else None

@@ -106,9 +106,11 @@ def parse_lines(payload: Any, requested_event_id: str = "", observed_at: float |
                            root.get("source_timestamp") or root.get("last") or root.get("updated_at"))
     inferred = source_at is None
     source_at = observed_at if source_at is None else source_at
+    timestamp_basis = "response_observed" if inferred else "provider"
     prices: list[dict[str, Any]] = []
     if not period:
         return {"event_id": event_id, "prices": prices, "source_at": source_at, "timestamp_inferred": inferred,
+                "timestamp_basis": timestamp_basis,
                 "market_status": str(root.get("status") or "") or None}
     moneyline = _record(period.get("moneyline") or period.get("money_line") or period.get("1x2"))
     if moneyline:
@@ -135,6 +137,7 @@ def parse_lines(payload: Any, requested_event_id: str = "", observed_at: float |
                 prices.append({"market": "HIL", "line": line, "selection": selection, "odds": odds, "source_at": source_at,
                                "main": bool(total.get("is_main", total.get("main", index == 0)))})
     return {"event_id": event_id, "prices": prices, "source_at": source_at, "timestamp_inferred": inferred,
+            "timestamp_basis": timestamp_basis,
             "market_status": str(period.get("status") or root.get("status") or "") or None}
 
 
