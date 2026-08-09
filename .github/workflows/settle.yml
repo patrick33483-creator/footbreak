@@ -29,6 +29,17 @@ jobs:
         run: |
           ssh "$DEPLOY_USER@$DEPLOY_HOST" '
             set -e
+            restart_tick() { sudo systemctl start footbreak-tick.timer; }
+            trap restart_tick EXIT
+            sudo systemctl stop footbreak-tick.timer
+            for i in $(seq 1 120); do
+              systemctl is-active --quiet footbreak-tick.service || break
+              sleep 5
+            done
+            if systemctl is-active --quiet footbreak-tick.service; then
+              echo "足破目前執行超過 10 分鐘，拒絕假裝結算成功" >&2
+              exit 1
+            fi
             echo "=== Footbreak settlement ==="
             sudo /opt/footbreak/deploy/run.sh settle
             echo "=== Crown settlement ==="
