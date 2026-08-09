@@ -10,8 +10,16 @@ echo "=== production health $(TZ=Asia/Hong_Kong date '+%F %T %Z') ==="
 for unit in \
   footbreak-tick.timer footbreak-sweep.timer footbreak-settle.timer footbreak-backtest.timer \
   crown-tick.timer crown-sweep.timer crown-settle.timer; do
-  systemctl is-enabled --quiet "$unit"
-  systemctl is-active --quiet "$unit"
+  systemctl is-enabled --quiet "$unit" || {
+    state="$(systemctl is-enabled "$unit" 2>&1 || true)"
+    echo "FAIL timer $unit enabled_state=$state" >&2
+    exit 1
+  }
+  systemctl is-active --quiet "$unit" || {
+    systemctl show "$unit" -p LoadState -p ActiveState -p SubState -p Result
+    echo "FAIL timer $unit is not active" >&2
+    exit 1
+  }
   echo "OK timer $unit"
 done
 

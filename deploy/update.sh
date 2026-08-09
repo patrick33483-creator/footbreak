@@ -50,8 +50,19 @@ systemctl daemon-reload
 # Crown is a fixed 12:00-to-11:59 board.  The :05/:35 pass refreshes fixture
 # discovery and Crown quotes only; the two-minute tick retains Footbreak's
 # original T-30/T-5 windows and is the only path that can create a T-5 bet.
-systemctl enable --now crown-sweep.timer crown-tick.timer crown-settle.timer
-systemctl restart crown-sweep.timer crown-tick.timer crown-settle.timer
+for timer in crown-sweep.timer crown-tick.timer crown-settle.timer; do
+  systemctl enable "$timer"
+  systemctl restart "$timer"
+  if ! systemctl is-active --quiet "$timer"; then
+    systemctl reset-failed "$timer" 2>/dev/null || true
+    systemctl start "$timer"
+  fi
+  systemctl is-active --quiet "$timer" || {
+    systemctl show "$timer" -p LoadState -p ActiveState -p SubState -p Result
+    echo "ERROR: $timer did not become active after restart" >&2
+    exit 1
+  }
+done
 # Settlement is deliberately separate from the latency-sensitive tick.  T-30
 # and T-5 now share one ordered queue, so the old second timer is retired
 # completely.  Merely disabling it proved insufficient on an upgraded host:
