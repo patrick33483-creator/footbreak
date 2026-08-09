@@ -47,7 +47,12 @@ echo "▸ 更新 systemd 單元"
 install -m 0644 "$APP_DIR"/deploy/systemd/*.service /etc/systemd/system/
 install -m 0644 "$APP_DIR"/deploy/systemd/*.timer   /etc/systemd/system/
 systemctl daemon-reload
-for timer in footbreak-tick.timer footbreak-sweep.timer crown-tick.timer crown-sweep.timer footbreak-backtest.timer; do
+# Crown is a fixed daily board.  Never revive the legacy two-minute tick;
+# refresh the full 12:00-to-11:59 board once at 12:05 HKT instead.
+systemctl disable --now crown-tick.timer 2>/dev/null || true
+systemctl stop crown-tick.service 2>/dev/null || true
+systemctl enable --now crown-sweep.timer
+for timer in footbreak-tick.timer footbreak-sweep.timer footbreak-backtest.timer; do
   if systemctl is-enabled --quiet "$timer"; then
     systemctl restart "$timer"
   fi

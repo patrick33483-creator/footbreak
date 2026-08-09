@@ -1,8 +1,8 @@
 [Unit]
-Description=足破 · 皇冠 hourly board refresh at minute 05 HKT
+Description=足破 · 皇冠 daily board refresh at 12:05 HKT
 
 [Timer]
-OnCalendar=*-*-* *:05:00
+OnCalendar=*-*-* 12:05:00
 Persistent=true
 AccuracySec=30s
 Unit=crown-sweep.service

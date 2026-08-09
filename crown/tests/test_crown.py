@@ -352,7 +352,7 @@ class CrownSafetyTests(unittest.TestCase):
             self.assertEqual(load_predictions(config)[0]["stage"], "T-30")
             self.assertEqual(merge_predictions(config, [], now=now)[0]["stage"], "T-30")
 
-    def test_crown_period_runs_from_1200_to_next_1159_and_hides_started_matches(self) -> None:
+    def test_crown_period_runs_from_1200_to_next_1159(self) -> None:
         start, end = period_bounds(self.now)
         self.assertEqual(start.isoformat(), "2026-08-09T12:00:00+08:00")
         self.assertEqual(end.isoformat(), "2026-08-10T11:59:59+08:00")
@@ -362,6 +362,21 @@ class CrownSafetyTests(unittest.TestCase):
         self.assertTrue(in_current_period(end, self.now))
         self.assertTrue(is_upcoming_in_current_period(future, self.now))
         self.assertFalse(is_upcoming_in_current_period(started, self.now))
+
+    def test_dashboard_keeps_started_crown_matches_until_the_daily_rollover(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = replace(settings(), state_dir=root / "private-state", web_root=root / "web")
+            started = (datetime.now(self.now.tzinfo) - timedelta(minutes=2)).isoformat()
+            save_predictions(config, [{
+                "match_id": "started-crown",
+                "kickoff_hkt": started,
+                "hkjc_match_id": None,
+                "book_odds": {"crown": [{"market": "HDC"}]},
+                "status": "REFERENCE_READY",
+            }])
+            payload = build(config)
+            self.assertEqual([row["match_id"] for row in payload["matches"]], ["started-crown"])
 
     def test_dashboard_artifact_is_readable_while_state_stays_separate(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

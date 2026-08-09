@@ -9,7 +9,7 @@ from typing import Any
 from .common import iso_hkt, parse_time, read_json, write_json_atomic
 from .config import Settings, settings
 from .ledger import recompute_stats
-from .period import is_upcoming_in_current_period
+from .period import in_current_period
 from .state import load_ledger, load_predictions, paths
 
 
@@ -18,7 +18,7 @@ def build(config: Settings) -> dict[str, Any]:
     matches = [
         row for row in all_matches
         if (kickoff := parse_time(row.get("kickoff_hkt") or row.get("kickoff"))) is not None
-        and is_upcoming_in_current_period(kickoff)
+        and in_current_period(kickoff)
         and bool((row.get("book_odds") or {}).get("crown"))
     ]
     prediction_history = read_json(
