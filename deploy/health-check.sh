@@ -33,12 +33,14 @@ echo "OK retired timer footbreak-t30.timer is inactive and disabled"
 for service in footbreak-tick.service footbreak-settle.service crown-tick.service crown-sweep.service crown-settle.service; do
   result="$(systemctl show "$service" -p Result --value)"
   status="$(systemctl show "$service" -p ExecMainStatus --value)"
-  # Footbreak timed jobs deliberately return EX_TEMPFAIL (75) when a
-  # higher-priority T-5 pass owns the shared lock.  The timers retry; this is
-  # scheduler pre-emption, not a provider or prediction failure.
+  # Timed jobs deliberately return EX_TEMPFAIL (75) when a higher-priority
+  # pass or the same mode already owns its lock.  The timers retry; this is
+  # scheduler pre-emption / duplicate-trigger rejection, not a provider or
+  # prediction failure.
   expected_preemption=false
   case "$service:$status" in
-    footbreak-tick.service:75|footbreak-settle.service:75)
+    footbreak-tick.service:75|footbreak-settle.service:75|\
+    crown-tick.service:75|crown-sweep.service:75|crown-settle.service:75)
       expected_preemption=true
       ;;
   esac
