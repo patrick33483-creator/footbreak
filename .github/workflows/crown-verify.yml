@@ -33,7 +33,9 @@ jobs:
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
           CROWN_MODE: ${{ inputs.mode }}
         run: |
-          ssh "$DEPLOY_USER@$DEPLOY_HOST" "sudo CROWN_MODE='$CROWN_MODE' bash -s" <<'REMOTE'
+          set -o pipefail
+          ssh "$DEPLOY_USER@$DEPLOY_HOST" "sudo CROWN_MODE='$CROWN_MODE' bash -s" \
+            <<'REMOTE' 2>&1 | tee crown-verify.log
           set -euo pipefail
           cd /opt/footbreak
           set -a
@@ -191,3 +193,12 @@ jobs:
           systemctl is-enabled crown-sweep.timer
           systemctl list-timers crown-tick.timer crown-sweep.timer --no-pager
           REMOTE
+
+      - name: 保存皇冠驗證日誌
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: crown-verify-log-${{ github.run_id }}
+          path: crown-verify.log
+          if-no-files-found: warn
+          retention-days: 7
