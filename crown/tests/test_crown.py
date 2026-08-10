@@ -1023,6 +1023,37 @@ class CrownSafetyTests(unittest.TestCase):
         self.assertEqual(ledger["bets"][0]["settlement_source"], "hkjc_official_exact_id_corners")
         titan_results.assert_not_called()
 
+    def test_dashboard_api_settlement_publishes_ledger_even_if_history_grading_warns(self) -> None:
+        from crown.dashboard_api import perform_settlement
+
+        config = settings()
+        ledger = {"bets": [{"status": "SETTLED"}]}
+        dashboard = {"ledger": ledger, "matches": []}
+        with patch(
+            "crown.dashboard_api.run",
+            return_value={"ok": True, "settled": 1, "pending": 2},
+        ), patch(
+            "crown.dashboard_api.load_ledger",
+            return_value=ledger,
+        ), patch(
+            "crown.dashboard_api.update_history",
+            side_effect=RuntimeError("grading unavailable"),
+        ), patch(
+            "crown.dashboard_api.write_dashboard_data",
+        ) as publisher, patch(
+            "crown.dashboard_api.build",
+            return_value=dashboard,
+        ):
+            result = perform_settlement(config)
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["persisted"])
+        self.assertEqual(result["settled_count"], 1)
+        self.assertEqual(result["pending_count"], 2)
+        self.assertEqual(result["data"], dashboard)
+        self.assertEqual(result["warning"], "prediction_history_RuntimeError")
+        publisher.assert_called_once_with(config)
+
     def test_hkjc_official_results_paginate_and_require_confirmed_full_time(self) -> None:
         class Response:
             def __init__(self, payload, compressed=False):

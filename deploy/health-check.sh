@@ -30,6 +30,23 @@ if systemctl is-active --quiet footbreak-t30.timer ||
 fi
 echo "OK retired timer footbreak-t30.timer is inactive and disabled"
 
+systemctl is-active --quiet crown-dashboard-api.service || {
+  systemctl status crown-dashboard-api.service --no-pager
+  echo "FAIL crown-dashboard-api.service is not active" >&2
+  exit 1
+}
+echo "OK service crown-dashboard-api.service active"
+python3 - <<'PY'
+import json
+from urllib.request import urlopen
+
+with urlopen("http://127.0.0.1:8765/api/data", timeout=5) as response:
+    payload = json.load(response)
+if payload.get("schema_version") != "crown-dashboard-v2":
+    raise SystemExit("FAIL Crown dashboard API returned an invalid payload")
+print("OK Crown dashboard API /api/data")
+PY
+
 for service in footbreak-tick.service footbreak-settle.service crown-tick.service crown-sweep.service crown-settle.service; do
   result="$(systemctl show "$service" -p Result --value)"
   status="$(systemctl show "$service" -p ExecMainStatus --value)"

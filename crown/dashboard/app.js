@@ -22,8 +22,9 @@ const STAGE_DESC = {
 const VD_CLS = { '落注': 'v-go', '傾向': 'v-lean', '偏向': 'v-soft', '已預測': 'v-lean', '觀望': 'v-wait', '無傾向': 'v-none' };
 const MKT = { HDC: '讓球', HIL: '入球大小', CHL: '總角球大小', HAD: '主客和' };
 
-const API_TOKEN = 'port/8765';
-const API_BASE = API_TOKEN.startsWith('__PORT_') ? null : API_TOKEN;
+// DigitalOcean serves the authenticated dashboard and proxies this same-origin
+// path to a local-only simulation settlement service.
+const API_BASE = '/api';
 let DATA = null, LIST = [], LED = null, SEL = null, STAGE = 'all', Q = '', VIEW = 'pred';
 let SETTLE_MESSAGE = '', SETTLE_BAD = false, SETTLING = false;
 
@@ -59,11 +60,10 @@ function heat(p, max) {
 
 /* ══════════════════════ 啟動 ══════════════════════ */
 async function fetchDashboardData() {
-  // 靜態部署唔應該先連 127.0.0.1，否則使用者瀏覽器會長時間等一個
-  // 根本不存在嘅本機後端。先讀同一部署內嘅 JSON；只有平台已將
-  // port/8765 改寫成後端代理路徑時，先再嘗試 API。
+  // 先讀同一部署內嘅 JSON；本機 API 只作後備，兩者都由 Nginx
+  // 同一個已認證來源提供。
   const sources = [`data.json?v=${Date.now()}`];
-  if (API_BASE) sources.push(`${API_BASE}/api/data?v=${Date.now()}`);
+  if (API_BASE) sources.push(`${API_BASE}/data?v=${Date.now()}`);
   for (const url of sources) {
     try {
       const r = await fetch(url, { cache: 'no-store' });
@@ -901,7 +901,7 @@ function bindSettlementButton() {
     SETTLE_MESSAGE = '正在核對正式賽果及更新模擬倉…';
     renderLedger();
     try {
-      const r = await fetch(`${API_BASE}/api/settle`, {
+      const r = await fetch(`${API_BASE}/settle`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

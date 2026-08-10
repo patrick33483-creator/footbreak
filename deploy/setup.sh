@@ -94,6 +94,7 @@ echo "▸ 7/7 安裝 systemd 單元同 nginx"
 install -m 0644 "$APP_DIR"/deploy/systemd/*.service /etc/systemd/system/
 install -m 0644 "$APP_DIR"/deploy/systemd/*.timer   /etc/systemd/system/
 systemctl daemon-reload
+systemctl enable --now crown-dashboard-api.service
 # 首次安裝只放好服務，憑證及手動驗證完成前絕不自動掃描。
 systemctl disable --now footbreak-tick.timer footbreak-t30.timer footbreak-sweep.timer footbreak-settle.timer 2>/dev/null || true
 # Crown 更要預設停用；升版亦只會保留目前的 enable/disable 狀態。

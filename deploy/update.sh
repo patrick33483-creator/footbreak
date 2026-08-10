@@ -78,6 +78,13 @@ if systemctl is-active --quiet footbreak-t30.timer ||
   exit 1
 fi
 systemctl enable --now footbreak-tick.timer footbreak-settle.timer
+systemctl enable crown-dashboard-api.service
+systemctl restart crown-dashboard-api.service
+systemctl is-active --quiet crown-dashboard-api.service || {
+  systemctl status crown-dashboard-api.service --no-pager
+  echo "ERROR: crown-dashboard-api.service did not start" >&2
+  exit 1
+}
 for timer in footbreak-tick.timer footbreak-sweep.timer footbreak-settle.timer footbreak-backtest.timer; do
   if systemctl is-enabled --quiet "$timer"; then
     systemctl restart "$timer"

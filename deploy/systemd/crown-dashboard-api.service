@@ -1,0 +1,23 @@
+[Unit]
+Description=皇冠 · 儀表板模擬結算 API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt/footbreak
+EnvironmentFile=-/etc/footbreak.env
+EnvironmentFile=-/etc/footbreak-crown.env
+Environment=CROWN_STATE_DIR=/var/lib/footbreak/crown
+Environment=CROWN_WEB_ROOT=/var/www/crown
+Environment=LEARNING_DB_PATH=/var/lib/footbreak/learning/predictions.sqlite
+ExecStart=/opt/footbreak/.venv/bin/python3 -m crown.dashboard_api --host 127.0.0.1 --port 8765
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
