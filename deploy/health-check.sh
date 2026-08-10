@@ -36,16 +36,29 @@ systemctl is-active --quiet crown-dashboard-api.service || {
   exit 1
 }
 echo "OK service crown-dashboard-api.service active"
-python3 - <<'PY'
+api_ready=0
+for _ in $(seq 1 10); do
+  if python3 - <<'PY'
 import json
 from urllib.request import urlopen
 
-with urlopen("http://127.0.0.1:8765/api/data", timeout=5) as response:
+with urlopen("http://127.0.0.1:8765/api/data", timeout=3) as response:
     payload = json.load(response)
-if payload.get("schema_version") != "crown-dashboard-v2":
-    raise SystemExit("FAIL Crown dashboard API returned an invalid payload")
-print("OK Crown dashboard API /api/data")
+assert payload.get("schema_version") == "crown-dashboard-v2"
 PY
+  then
+    api_ready=1
+    break
+  fi
+  sleep 1
+done
+if [ "$api_ready" != 1 ]; then
+  systemctl status crown-dashboard-api.service --no-pager -l || true
+  journalctl -u crown-dashboard-api.service --since "-5 minutes" --no-pager -n 200 || true
+  echo "FAIL Crown dashboard API /api/data is unreachable" >&2
+  exit 1
+fi
+echo "OK Crown dashboard API /api/data"
 
 for service in footbreak-tick.service footbreak-settle.service crown-tick.service crown-sweep.service crown-settle.service; do
   result="$(systemctl show "$service" -p Result --value)"

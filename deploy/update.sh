@@ -80,11 +80,31 @@ fi
 systemctl enable --now footbreak-tick.timer footbreak-settle.timer
 systemctl enable crown-dashboard-api.service
 systemctl restart crown-dashboard-api.service
-systemctl is-active --quiet crown-dashboard-api.service || {
-  systemctl status crown-dashboard-api.service --no-pager
-  echo "ERROR: crown-dashboard-api.service did not start" >&2
+# `systemctl is-active` can briefly report active while a crashing process is
+# inside its restart loop.  Require the local HTTP socket to answer before the
+# deployment is allowed to continue.
+dashboard_api_ready=0
+for _ in $(seq 1 20); do
+  if /usr/bin/python3 - <<'PY'
+import json
+from urllib.request import urlopen
+
+with urlopen("http://127.0.0.1:8765/api/data", timeout=2) as response:
+    payload = json.load(response)
+assert payload.get("schema_version") == "crown-dashboard-v2"
+PY
+  then
+    dashboard_api_ready=1
+    break
+  fi
+  sleep 1
+done
+if [ "$dashboard_api_ready" != 1 ]; then
+  systemctl status crown-dashboard-api.service --no-pager -l || true
+  journalctl -u crown-dashboard-api.service --since "-5 minutes" --no-pager -n 200 || true
+  echo "ERROR: crown-dashboard-api.service HTTP socket did not become ready" >&2
   exit 1
-}
+fi
 for timer in footbreak-tick.timer footbreak-sweep.timer footbreak-settle.timer footbreak-backtest.timer; do
   if systemctl is-enabled --quiet "$timer"; then
     systemctl restart "$timer"
