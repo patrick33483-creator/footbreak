@@ -197,7 +197,14 @@ def _result(row: dict[str, Any], titan_by_id: dict[str, dict[str, Any]],
             str(titan["id"]), str(titan.get("league") or ""), str(titan.get("home") or ""),
             str(titan.get("away") or ""), titan["kickoff"],
         )
-        if match_event(target, [candidate], allow_reversed=False, require_qualifiers=True).event:
+        if match_event(
+            target,
+            [candidate],
+            team_key=canonical_team_key,
+            league_key=canonical_league_key,
+            allow_reversed=False,
+            require_qualifiers=True,
+        ).event:
             return titan, "titan_verified_identity"
     return None, None
 

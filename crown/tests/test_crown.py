@@ -1232,7 +1232,7 @@ class CrownSafetyTests(unittest.TestCase):
         self.assertIn("font-size: 1.4375rem", styles)
 
     def test_prediction_history_fetches_titan_corner_detail_after_strict_checks(self) -> None:
-        from crown.prediction_history import _merge_titan_corner_detail
+        from crown.prediction_history import _merge_titan_corner_detail, _result
         from crown.titan import TitanClient
 
         row = {
@@ -1258,6 +1258,11 @@ class CrownSafetyTests(unittest.TestCase):
             "corners_away": 3,
             "corners_total": 9,
         }
+        matched_score, matched_source = _result(
+            row, {"2961746": titan}, {}, []
+        )
+        self.assertEqual(matched_score["home_score"], 1)
+        self.assertEqual(matched_source, "titan_verified_identity")
         result, source, reason = _merge_titan_corner_detail(
             row,
             {"home_score": 1, "away_score": 0, "corners_total": None},
