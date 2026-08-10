@@ -151,5 +151,37 @@ install -m 0644 "$APP_DIR/deploy/nginx-crown.conf" /etc/nginx/sites-available/cr
 nginx -t
 systemctl reload nginx || systemctl restart nginx
 
+# Timer restarts and a pending persistent settlement may run during deployment.
+# Reassert both long-running dashboard APIs only after every timer, static file
+# and nginx operation has completed, then require their sockets to stay live.
+systemctl enable --now crown-dashboard-api.service footbreak-dashboard-api.service
+systemctl restart crown-dashboard-api.service footbreak-dashboard-api.service
+final_api_ready=0
+for _ in $(seq 1 30); do
+  if systemctl is-active --quiet crown-dashboard-api.service &&
+     systemctl is-active --quiet footbreak-dashboard-api.service &&
+     /usr/bin/python3 - <<'PY' 2>/dev/null
+import json
+from urllib.request import urlopen
+
+with urlopen("http://127.0.0.1:8765/api/data", timeout=2) as response:
+    crown = json.load(response)
+with urlopen("http://127.0.0.1:8766/api/data", timeout=2) as response:
+    footbreak = json.load(response)
+assert crown.get("schema_version") == "crown-dashboard-v2"
+assert "prediction_history" in footbreak
+PY
+  then
+    final_api_ready=1
+    break
+  fi
+  sleep 1
+done
+if [ "$final_api_ready" != 1 ]; then
+  systemctl status crown-dashboard-api.service footbreak-dashboard-api.service --no-pager -l || true
+  echo "ERROR: dashboard APIs did not remain ready at deployment completion" >&2
+  exit 1
+fi
+
 echo "✅ 部署完成 @ $(date '+%F %T %Z')"
 systemctl list-timers 'footbreak*' --no-pager | sed -n '1,5p'
