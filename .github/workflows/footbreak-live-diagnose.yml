@@ -145,6 +145,48 @@ jobs:
               })
           PY
 
+          echo "=== Footbreak corner-result grades ==="
+          /opt/footbreak/.venv/bin/python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          data = json.loads(Path("/var/www/footbreak/data.json").read_text())
+          history = data.get("prediction_history") or {}
+          rows = history.get("rows") or []
+          for row in rows:
+              predictions = [
+                  prediction for prediction in (row.get("market_predictions") or [])
+                  if isinstance(prediction, dict) and prediction.get("code") == "CHL"
+              ]
+              if not predictions:
+                  continue
+              grades = [
+                  grade for grade in (row.get("market_grades") or [])
+                  if isinstance(grade, dict) and grade.get("code") == "CHL"
+              ]
+              print({
+                  "match_id": row.get("match_id"),
+                  "fixture_id": row.get("fixture_id"),
+                  "home": row.get("home"), "away": row.get("away"),
+                  "league": row.get("league"), "kickoff": row.get("kickoff"),
+                  "stage": row.get("stage"),
+                  "result_status": row.get("result_status"),
+                  "result_source": row.get("result_source"),
+                  "score": row.get("score"),
+                  "prediction": predictions,
+                  "grade": grades,
+              })
+          print({
+              "corner_prediction_rows": sum(
+                  any(
+                      isinstance(prediction, dict) and prediction.get("code") == "CHL"
+                      for prediction in (row.get("market_predictions") or [])
+                  )
+                  for row in rows
+              )
+          })
+          PY
+
           echo "=== HKJC to PinnAPI matching diagnostics ==="
           cd /opt/footbreak
           set -a
