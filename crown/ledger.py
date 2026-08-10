@@ -19,7 +19,10 @@ def completed_stages(watch: dict[str, Any], matching_version: str) -> set[str]:
     done = {
         str(row.get("stage"))
         for row in watch.get("stages", [])
-        if row.get("stage")
+        # A provider/mapping outage is not a completed prediction.  Keep the
+        # stage eligible for a later recovery pass; sync_prediction updates
+        # the same stage row idempotently and still cannot duplicate a bet.
+        if row.get("stage") and row.get("status") != "DATA_MISSING"
     }
     if (
         watch.get("matching_version") != matching_version

@@ -502,6 +502,20 @@ class CrownSafetyTests(unittest.TestCase):
             self.assertTrue(ledger["bets"][0]["simulation_only"])
             self.assertFalse(ledger["bets"][0]["real_betting_enabled"])
 
+    def test_data_missing_stage_remains_due_for_recovery_without_replaying_success(self) -> None:
+        missing = {
+            "matching_version": "same",
+            "stages": [{"stage": "首預", "status": "DATA_MISSING"}],
+        }
+        self.assertEqual(completed_stages(missing, "same"), set())
+        self.assertEqual(stage_for(120, True, completed_stages(missing, "same")), "首預")
+        recovered = {
+            "matching_version": "same",
+            "stages": [{"stage": "首預", "status": "PREDICTION_READY"}],
+        }
+        self.assertEqual(completed_stages(recovered, "same"), {"首預"})
+        self.assertIsNone(stage_for(120, True, completed_stages(recovered, "same")))
+
     def test_chl_simulation_stores_hkjc_provider_and_has_its_own_market_stats(self) -> None:
         config = settings()
         ledger = {"bankroll": 50000, "bets": [], "watch": {}, "log": [], "stats": {}}
