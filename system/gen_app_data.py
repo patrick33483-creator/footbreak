@@ -210,9 +210,11 @@ def build_prediction_history(watch, bets, accuracy):
             "kickoff": match.get("kickoff"),
             "stage": stage,
             "predicted_at": snap.get("ts"),
-            "forecast": (WDL_LABELS[pick_idx]
-                         if isinstance(pick_idx, int) and 0 <= pick_idx < len(WDL_LABELS)
-                         else "未能計算"),
+            "forecast": (
+                WDL_LABELS[pick_idx]
+                if isinstance(pick_idx, int) and 0 <= pick_idx < len(WDL_LABELS)
+                else "資料不足（不列入準繩度）"
+            ),
             "probability": probability,
             "likely_score": ((fc or {}).get("tops") or [{}])[0].get("s")
                             or score.get("score_top"),

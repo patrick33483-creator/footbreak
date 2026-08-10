@@ -237,11 +237,14 @@ def analyse_match(m, fx, wx_city_override=None, news=None, prev_snap=None,
     home_ch = m["homeTeam"]["name_ch"]
     away_ch = m["awayTeam"]["name_ch"]
     hname, aname = fx["home_team_display"], fx["away_team_display"]
+    reversed_orientation = bool(fx.get("_orientation_reversed"))
 
     # PinnAPI Edge is the live sharp source.  A failed or incomplete provider
     # response raises through this function so the runner cannot publish stale
     # predictions/dashboard data.
-    cur_st = S.structure(S.fetch_odds([fx["id"]]).get(fx["id"], []), hname, aname)
+    prices = S.fetch_odds([fx["id"]]).get(fx["id"], [])
+    prices = S.orient_prices(prices, reversed_orientation)
+    cur_st = S.structure(prices, hname, aname)
     now = P.fit_view(cur_st)
     if not now:
         return {"skip": "無法由銳利盤擬合模型"}
@@ -452,8 +455,10 @@ def main(match_ids=None, horizon_min=700, out="predictions.json",
 
         fx = fixtures_by_id.get(fixture_ids.get(mid))
         if fx:
-            sc = 1.0
-        else:
+            # Revalidate the remembered identity so a PinnAPI/HKJC home-away
+            # disagreement remains explicitly oriented at every timed stage.
+            fx, sc = S.match_fixture(m, [fx], ko)
+        if not fx:
             fx, sc = S.match_fixture(m, fixtures, ko)
         if not fx:
             failures += 1

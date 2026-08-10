@@ -113,6 +113,73 @@ class FootbreakPinnapiSharpTests(unittest.TestCase):
         self.assertTrue(fixture["start_date"].endswith("Z"))
         self.assertEqual(fixture["league"]["name"], "England - Premier League")
 
+    def test_fixture_list_excludes_corner_child_events(self) -> None:
+        class Client:
+            def fixtures(self):
+                return [
+                    {
+                        "id": "parent", "league": "Cup", "home": "San Diego FC",
+                        "away": "Club Tijuana", "kickoff": 1786248000,
+                        "parent_id": None,
+                    },
+                    {
+                        "id": "corners", "league": "Cup Corners",
+                        "home": "San Diego FC (Corners)",
+                        "away": "Club Tijuana (Corners)", "kickoff": 1786248000,
+                        "parent_id": "parent",
+                    },
+                ]
+
+        with patch.object(sharp, "_client", return_value=Client()):
+            fixtures = sharp.list_fixtures()
+        self.assertEqual([row["id"] for row in fixtures], ["parent"])
+
+    def test_unique_reversed_fixture_is_oriented_to_hkjc(self) -> None:
+        kickoff = datetime(2026, 8, 10, 2, 15, tzinfo=timezone.utc)
+        match = {
+            "id": "50072659",
+            "homeTeam": {"name_en": "Portland Timbers"},
+            "awayTeam": {"name_en": "CF America"},
+            "tournament": {"name_en": "Leagues Cup"},
+        }
+        fixture = {
+            "id": "1633316620",
+            "start_date": kickoff.isoformat(),
+            "home_team_display": "Club America",
+            "away_team_display": "Portland Timbers",
+            "league": {"name": "Leagues Cup"},
+        }
+
+        found, score = sharp.match_fixture(match, [fixture], kickoff)
+
+        self.assertEqual(found["id"], fixture["id"])
+        self.assertTrue(found["_orientation_reversed"])
+        self.assertEqual(score, 1.0)
+
+    def test_reversed_fixture_prices_swap_sides_and_handicap_sign(self) -> None:
+        prices = [
+            {"market": "1X2", "selection": "H", "odds": 2.1},
+            {"market": "1X2", "selection": "D", "odds": 3.4},
+            {"market": "1X2", "selection": "A", "odds": 3.7},
+            {"market": "HDC", "line": -0.25, "selection": "H", "odds": 1.91},
+            {"market": "HDC", "line": -0.25, "selection": "A", "odds": 1.99},
+            {"market": "HIL", "line": 2.75, "selection": "H", "odds": 1.95},
+            {"market": "HIL", "line": 2.75, "selection": "L", "odds": 1.95},
+        ]
+
+        structured = sharp._native_structure(sharp.orient_prices(prices, True))
+
+        self.assertEqual(structured["HAD"][0]["odds"], {
+            "H": 3.7, "D": 3.4, "A": 2.1,
+        })
+        self.assertEqual(structured["HDC"][0]["condition"], "0.25")
+        self.assertEqual(structured["HDC"][0]["odds"], {
+            "H": 1.99, "A": 1.91,
+        })
+        self.assertEqual(structured["HIL"][0]["odds"], {
+            "H": 1.95, "L": 1.95,
+        })
+
     def test_pinnapi_lines_failure_propagates(self) -> None:
         class BrokenClient:
             def lines(self, event_id):

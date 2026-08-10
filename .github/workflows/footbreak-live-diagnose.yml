@@ -118,11 +118,14 @@ jobs:
           from pathlib import Path
 
           data = json.loads(Path("/var/www/footbreak/data.json").read_text())
-          rows = (
-              data.get("prediction_history") or data.get("predictions") or []
-              if isinstance(data, dict) else []
-          )
-          failed = [row for row in rows if row.get("forecast") == "未能計算"]
+          history = data.get("prediction_history") or {} if isinstance(data, dict) else {}
+          rows = history.get("rows") or [] if isinstance(history, dict) else []
+          failed = [
+              row for row in rows
+              if row.get("forecast") in {
+                  "未能計算", "資料不足（不列入準繩度）"
+              }
+          ]
           reasons = collections.Counter(
               str(row.get("no_bet_reason") or "未提供原因") for row in failed
           )

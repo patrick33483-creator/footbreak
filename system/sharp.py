@@ -66,6 +66,12 @@ def list_fixtures(max_pages=25, refresh=False):
         rows = _client().fixtures()
     except Exception as exc:
         raise ProviderError(f"PinnAPI fixtures unavailable ({type(exc).__name__})") from exc
+    # PinnAPI's fixture payload also contains child events such as
+    # ``Team A (Corners) v Team B (Corners)``.  They share the parent kickoff
+    # and almost identical team names, so keeping them in the normal fixture
+    # universe makes an otherwise exact match look ambiguous.  Corners are
+    # fetched separately through ``corner_lines(parent_id)`` below.
+    rows = [row for row in rows if not row.get("parent_id")]
     if not rows:
         raise ProviderError("PinnAPI returned no eligible soccer prematch fixtures")
     return [_fixture_from_pinnapi(row) for row in rows]
@@ -190,19 +196,50 @@ def match_fixture(hk_match, fixtures, kickoff, tol_min=30):
         if hq != fx_qual(fx):
             continue
         sh, sa = _sim(hh, fh), _sim(ha, fa)
-        s = (sh + sa) / 2
-        if _sim(hh, fa) + _sim(ha, fh) > sh + sa:
-            continue          # 主客倒轉,唔接受(避免錯邊)
-        scored.append((s, min(sh, sa), fx))
+        rh, ra = _sim(hh, fa), _sim(ha, fh)
+        direct = (sh + sa) / 2
+        reverse = (rh + ra) / 2
+        reversed_orientation = reverse > direct
+        score = reverse if reversed_orientation else direct
+        floor = min(rh, ra) if reversed_orientation else min(sh, sa)
+        scored.append((score, floor, reversed_orientation, fx))
     if not scored:
         return None, 0.0
     scored.sort(key=lambda x: -x[0])
-    s, lo, fx = scored[0]
+    s, lo, reversed_orientation, fx = scored[0]
     runner = scored[1][0] if len(scored) > 1 else 0.0
     # 三重閘門:平均分、兩邊都不能太低、與次佳選項要有明顯距離
     if s < 0.66 or lo < 0.42 or (s - runner) < 0.12:
         return None, s
-    return fx, s
+    matched = dict(fx)
+    matched["_orientation_reversed"] = reversed_orientation
+    return matched, s
+
+
+def orient_prices(prices, reversed_orientation=False):
+    """Convert PinnAPI selections into HKJC's home/away orientation.
+
+    Totals and corners are orientation-independent.  For a reversed fixture,
+    1X2 home/away selections swap; Asian handicap selections swap and the
+    home-perspective line changes sign.
+    """
+    if not reversed_orientation:
+        return list(prices or [])
+    converted = []
+    for source in prices or []:
+        row = dict(source)
+        market = row.get("market")
+        selection = row.get("selection")
+        if market == "1X2" and selection in {"H", "A"}:
+            row["selection"] = "A" if selection == "H" else "H"
+        elif market == "HDC" and selection in {"H", "A"}:
+            row["selection"] = "A" if selection == "H" else "H"
+            try:
+                row["line"] = -float(row.get("line"))
+            except (TypeError, ValueError):
+                continue
+        converted.append(row)
+    return converted
 
 
 # ---------------------------------------------------------------- PinnAPI prices
