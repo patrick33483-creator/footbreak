@@ -800,20 +800,19 @@ table.calib tr:last-child td { border-bottom: 0; }
   font: var(--text-xs)/1.4 var(--mono);
 }
 .hist-stage b { color: var(--amber); }
-.history-table-wrap { overflow-x: hidden; }
 .history-table {
   width: 100%;
   min-width: 0;
   table-layout: fixed;
 }
-.history-col-time { width: 9%; }
-.history-col-match { width: 16%; }
-.history-col-stage { width: 6%; }
-.history-col-forecast { width: 14%; }
-.history-col-markets { width: 29%; }
-.history-col-conviction { width: 6%; }
-.history-col-bet { width: 9%; }
-.history-col-result { width: 11%; }
+.history-table th:nth-child(1) { width: 9%; }
+.history-table th:nth-child(2) { width: 16%; }
+.history-table th:nth-child(3) { width: 6%; }
+.history-table th:nth-child(4) { width: 14%; }
+.history-table th:nth-child(5) { width: 29%; }
+.history-table th:nth-child(6) { width: 6%; }
+.history-table th:nth-child(7) { width: 9%; }
+.history-table th:nth-child(8) { width: 11%; }
 table.t.history-table th {
   padding-inline: var(--s1);
   white-space: normal;
@@ -829,10 +828,6 @@ table.t.history-table td {
 .history-table .cell-sub {
   white-space: normal;
   overflow-wrap: anywhere;
-}
-.history-markets-cell {
-  min-width: 0;
-  white-space: normal;
 }
 .hist-result { margin-top: 5px; color: var(--text); }
 .history-result-cell {
@@ -907,13 +902,11 @@ table.t.history-table td {
 }
 
 @media (max-width: 620px) {
-  .history-table-wrap { overflow-x: hidden; }
   .history-table {
     display: block;
-    width: 100%;
+    min-width: 0;
     table-layout: auto;
   }
-  .history-table colgroup { display: none; }
   .history-table > tbody {
     display: grid;
     gap: var(--s3);
@@ -928,7 +921,7 @@ table.t.history-table td {
     border-radius: var(--radius-sm);
     background: var(--panel-2);
   }
-  table.t.history-table > tbody > tr > td {
+  .history-table > tbody > tr > td {
     display: block;
     min-width: 0;
     padding: var(--s2) 0;
@@ -949,7 +942,7 @@ table.t.history-table td {
     grid-column: 1 / -1;
     border-top: 1px solid var(--line-soft);
   }
-  table.t.history-table .history-result-cell {
+  .history-table .history-result-cell {
     display: grid;
     grid-template-columns: max-content minmax(0, 1fr);
     align-items: center;
@@ -968,7 +961,6 @@ table.t.history-table td {
   .history-result-cell .stpill {
     width: max-content;
     max-width: 100%;
-    white-space: nowrap;
     font-size: 0.8125rem;
   }
   .history-result-cell .cell-sub { font-size: 0.75rem; }

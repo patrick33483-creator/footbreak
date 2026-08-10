@@ -48,6 +48,7 @@ function heat(p, max) {
 }
 
 /* ══════════════════════ 啟動 ══════════════════════ */
+const API_BASE = '/api';
 async function boot() {
   let raw;
   try {
@@ -76,16 +77,41 @@ async function refresh(silent) {
   const b = $('#refresh');
   if (b) { b.classList.add('spin'); b.disabled = true; }
   try {
-    const r = await fetch('data.json?v=' + Date.now(), { cache: 'no-store' });
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    const raw = await r.json();
+    let raw;
+    let settlementBusy = false;
+    if (!silent) {
+      const settlement = await fetch(`${API_BASE}/settle`, {
+        method: 'POST',
+        cache: 'no-store',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Footbreak-Action': 'settle-simulation',
+        },
+        body: JSON.stringify({ confirm: 'simulation-only' }),
+      });
+      const result = await settlement.json().catch(() => ({}));
+      settlementBusy = settlement.status === 409 && result.error === 'settlement_busy';
+      if (!settlement.ok && !settlementBusy) {
+        throw new Error(result.error || `結算 HTTP ${settlement.status}`);
+      }
+      raw = result.data;
+    }
+    if (!raw) {
+      const r = await fetch('data.json?v=' + Date.now(), { cache: 'no-store' });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      raw = await r.json();
+    }
     const changed = raw.generated_at !== (DATA && DATA.generated_at);
     DATA = raw;
     LED = raw.ledger || { bets: [], stats: {}, log: [] };
     LIST = (raw.matches || []).slice().sort((a, b) => kt(a.kickoff_hkt) - kt(b.kickoff_hkt));
     $('#genAt').textContent = hkStamp(raw.generated_at) + ' HKT';
     render();
-    if (!silent) flash(changed ? '已更新到最新資料' : '伺服器暫時未有新結算');
+    if (!silent) {
+      flash(settlementBusy
+        ? '結算程序運行中，已載入目前最新資料'
+        : changed ? '賽果核對完成，已更新到最新資料' : '賽果核對完成，暫時冇新賽果');
+    }
   } catch (e) {
     if (!silent) flash('更新失敗:' + e.message, true);
   } finally {

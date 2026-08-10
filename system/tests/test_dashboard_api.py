@@ -16,6 +16,17 @@ import dashboard_api
 
 
 class DashboardApiTests(unittest.TestCase):
+    def test_dashboard_manual_refresh_triggers_settlement_and_busts_assets(self) -> None:
+        root = Path(__file__).resolve().parents[2] / "hkjc-dashboard"
+        app = (root / "app.js").read_text(encoding="utf-8")
+        index = (root / "index.html").read_text(encoding="utf-8")
+
+        self.assertIn("X-Footbreak-Action", app)
+        self.assertIn("settle-simulation", app)
+        self.assertIn("賽果核對完成，已更新到最新資料", app)
+        self.assertIn("styles.css?v=20260811-result-refresh", index)
+        self.assertIn("app.js?v=20260811-result-refresh", index)
+
     def test_perform_settlement_returns_new_prediction_history(self) -> None:
         payload = {
             "generated_at": "2026-08-10T20:00:00+08:00",

@@ -110,11 +110,34 @@ async function refresh(silent) {
   const b = $('#refresh');
   if (b) { b.classList.add('spin'); b.disabled = true; }
   try {
-    const raw = await fetchDashboardData();
+    let raw;
+    let settlementBusy = false;
+    if (!silent && API_BASE) {
+      const response = await fetch(`${API_BASE}/settle`, {
+        method: 'POST',
+        cache: 'no-store',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Crown-Action': 'settle-simulation',
+        },
+        body: JSON.stringify({ confirm: 'simulation-only' }),
+      });
+      const result = await response.json().catch(() => ({}));
+      settlementBusy = response.status === 409 && result.error === 'settlement_busy';
+      if (!response.ok && !settlementBusy) {
+        throw new Error(result.error || `結算 HTTP ${response.status}`);
+      }
+      raw = result.data;
+    }
+    if (!raw) raw = await fetchDashboardData();
     const changed = raw.generated_at !== (DATA && DATA.generated_at);
     applyData(raw);
     render();
-    if (!silent) flash(changed ? '已更新到最新資料' : '已經係最新,冇新資料');
+    if (!silent) {
+      flash(settlementBusy
+        ? '結算程序運行中，已載入目前最新資料'
+        : changed ? '賽果核對完成，已更新到最新資料' : '賽果核對完成，暫時冇新賽果');
+    }
   } catch (e) {
     if (!silent) flash('更新失敗:' + e.message, true);
   } finally {
@@ -1056,7 +1079,7 @@ function renderHistory() {
       <div class="cell-sub mono">${r.predicted_at ? hkStamp(r.predicted_at) : '—'}</div></td>
     <td data-label="1X2 輔助"><b class="forecast-pick">${esc(r.forecast || '冇主客和預測')}</b>
       <div class="cell-sub">${r.probability == null ? '正式結果見市場欄' : `最高機率 ${pc(r.probability, 1)}`}${r.likely_score ? ` · 最可能 ${esc(r.likely_score)}` : ''}</div></td>
-    <td data-label="各市場預測／結果" class="history-markets-cell">${historyMarkets(r)}<div class="market-summary">${historyMarketResult(r)}</div></td>
+    <td data-label="各市場預測／結果">${historyMarkets(r)}<div class="market-summary">${historyMarketResult(r)}</div></td>
     <td data-label="信念" class="${convClass(r.conviction)}">${f2(r.conviction)}</td>
     <td data-label="模擬注">${r.simulated_bet
       ? `<span class="stpill pending">有模擬注</span><div class="cell-sub">${esc(r.bet_label || '')}</div>`
@@ -1074,12 +1097,7 @@ function renderHistory() {
            <div class="cell-sub">${esc(r.excluded_reason || '延期／取消／腰斬')}</div>`
         : '<span class="stpill pending">待賽果</span>'}</td>
   </tr>`).join('');
-  const historyTable = (items, empty) => `<div class="tbl-wrap history-table-wrap"><table class="t history-table">
-      <colgroup>
-        <col class="history-col-time"><col class="history-col-match"><col class="history-col-stage">
-        <col class="history-col-forecast"><col class="history-col-markets"><col class="history-col-conviction">
-        <col class="history-col-bet"><col class="history-col-result">
-      </colgroup>
+  const historyTable = (items, empty) => `<div class="tbl-wrap"><table class="t history-table">
       <tr><th>開賽</th><th>賽事</th><th>階段</th><th>1X2 輔助</th><th>各市場預測／結果</th><th>信念</th><th>模擬注</th><th>整場賽果</th></tr>
       ${historyRows(items) || `<tr class="history-empty-row"><td colspan="8" class="empty2">${empty}</td></tr>`}
     </table></div>`;
