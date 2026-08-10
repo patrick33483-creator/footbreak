@@ -910,8 +910,13 @@ function historyMarkets(r) {
       : g.reason === 'corners_result_missing'
         ? '<span class="market-hit pending">角球賽果同步中</span>'
         : '<span class="market-hit pending">待賽果</span>';
-    return `<div><b>${HIST_MARKET_LABEL[p.code] || esc(p.code)}</b> ${esc(historyPredictionLabel(r, p))}
-      <span class="cell-sub">${pc(p.probability, 1)}</span>${result}</div>`;
+    return `<div class="history-market-row">
+      <span class="history-market-pick"><b>${HIST_MARKET_LABEL[p.code] || esc(p.code)}</b>
+        ${esc(historyPredictionLabel(r, p))}
+        <span class="cell-sub">${pc(p.probability, 1)}</span>
+      </span>
+      ${result}
+    </div>`;
   }).join('') || '<span class="dim">未有可評分市場</span>';
 }
 
@@ -982,7 +987,7 @@ function renderFc() {
       : '<span class="stpill pending">待賽果</span>'}</td>
   </tr>`).join('');
   const historyTable = (items, empty) => `<div class="tbl-wrap"><table class="t history-table">
-      <tr><th>開賽</th><th>賽事</th><th>階段</th><th>1X2 輔助</th><th>三市場正式預測</th><th>信念</th><th>模擬注</th><th>實際賽果／核對</th></tr>
+      <tr><th>開賽</th><th>賽事</th><th>階段</th><th>1X2 輔助</th><th>各市場預測／結果</th><th>信念</th><th>模擬注</th><th>整場賽果</th></tr>
       ${historyRows(items) || `<tr><td colspan="8" class="empty2">${empty}</td></tr>`}
     </table></div>`;
 

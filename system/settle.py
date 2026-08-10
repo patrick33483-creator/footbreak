@@ -97,24 +97,31 @@ def _call(path, params):
 
 # ------------------------------------------------------------ 賽果抓取
 
-def fetch_result(fixture_id, refresh=False):
+def fetch_result(fixture_id, refresh=False, require_corners=False):
     """回傳 dict 或 None。已完場嘅賽果會永久快取。"""
     fp = os.path.join(RESCACHE, f"{fixture_id}.json")
+    cached = None
     if not refresh and os.path.exists(fp):
         with open(fp, encoding="utf8") as fh:
-            return json.load(fh)
+            cached = json.load(fh)
+        if not require_corners or cached.get("corners_total") is not None:
+            return cached
     d = _call("/fixtures/results", {"fixture_id": fixture_id})
     rows = d.get("data") or []
     if not rows:
-        return None
+        return cached
     row = rows[0]
     if (row.get("fixture") or {}).get("status") != "completed":
         return None          # 未完場 / 腰斬 / 取消 → 唔快取,下次再試
     out = parse_result(row)
     if out:
+        if cached:
+            for key in ("corners_home", "corners_away", "corners_total"):
+                if out.get(key) is None and cached.get(key) is not None:
+                    out[key] = cached[key]
         with open(fp, "w", encoding="utf8") as fh:
             json.dump(out, fh, ensure_ascii=False)
-    return out
+    return out or cached
 
 
 def fetch_hkjc_statuses(match_ids, dates):
@@ -162,7 +169,25 @@ def parse_result(row):
         "corners_home": ch, "corners_away": ca,
         "corners_total": (ch + ca) if (ch is not None and ca is not None) else None,
         "checked_at": row.get("last_checked_at"),
+        "source": "opticodds_exact_fixture_id",
     }
+
+
+def merge_missing_corners(result, fixture_id):
+    """以安全唯一 fixture ID 補角球；官方入球比分永遠保留。"""
+    if not result or result.get("corners_total") is not None or not fixture_id:
+        return result
+    fallback = fetch_result(fixture_id, require_corners=True)
+    if not fallback or fallback.get("corners_total") is None:
+        return result
+    merged = dict(result)
+    for key in ("corners_home", "corners_away", "corners_total"):
+        if merged.get(key) is None:
+            merged[key] = fallback.get(key)
+    official_source = result.get("source") or "official"
+    fallback_source = fallback.get("source") or "exact_fixture"
+    merged["source"] = f"{official_source}+{fallback_source}"
+    return merged
 
 
 # ------------------------------------------------------------ 盤口結算
@@ -334,6 +359,13 @@ def run(force=False):
         if not force and mins < SETTLE_AFTER_MIN:
             continue
         res = official.get(str(b.get("match_id") or ""))
+        if res and b.get("code") == "CHL":
+            try:
+                res = merge_missing_corners(res, b.get("fixture_id"))
+            except Exception as e:
+                provider_errors.append(
+                    f"{b.get('bet_id') or b['match_id']}: corner_{type(e).__name__}"
+                )
         if not res:
             fid = b.get("fixture_id")
             if not fid:

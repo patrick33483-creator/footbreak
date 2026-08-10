@@ -512,6 +512,16 @@ def run(fetch=True):
         if (now - ko).total_seconds() / 60 < SETTLE_AFTER_MIN:
             continue
         res = official.get(str(mid))
+        if res and any(
+            prediction.get("code") == "CHL"
+            for stage in learning_stages
+            for prediction in (stage.get("market_predictions") or [])
+        ):
+            try:
+                res = S.merge_missing_corners(res, w.get("fixture_id"))
+            except Exception:
+                # 角球後備來源失敗唔可以阻止讓球／入球大細正常評分。
+                pass
         if not res:
             fid = w.get("fixture_id")
             if not fid:

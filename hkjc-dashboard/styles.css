@@ -936,10 +936,30 @@ table.calib tr:last-child td { border-bottom: 0; }
 .acc-f { margin: 0; font: 400 10.5px/1.8 var(--sans); color: var(--ink-4); }
 
 /* ── 純預測紀錄逐市場結算 ── */
+.history-market-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) max-content;
+  align-items: start;
+  gap: var(--s3);
+  padding: 3px 0;
+}
+.history-market-row + .history-market-row {
+  border-top: 1px solid var(--line-soft);
+}
+.history-market-pick {
+  min-width: 0;
+  line-height: 1.65;
+}
+.history-market-pick .cell-sub {
+  display: inline;
+  margin-left: 4px;
+}
 .market-hit {
-  display: inline-block; margin-left: 6px; padding: 1px 5px;
-  border: 1px solid var(--line); border-radius: 999px;
-  font: 600 10px/1.5 var(--sans);
+  display: inline-flex; gap: 4px; align-items: center;
+  margin: 0; padding: 1px 7px;
+  border: 1px solid var(--line); border-radius: 4px;
+  white-space: nowrap;
+  font: 600 11px/1.6 var(--sans);
 }
 .market-hit.hit { color: var(--good); border-color: var(--good); }
 .market-hit.miss { color: var(--bad); border-color: var(--bad); }

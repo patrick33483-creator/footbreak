@@ -92,6 +92,54 @@ class AccuracyAllPredictionsTests(unittest.TestCase):
         self.assertEqual(score["market_grades"][0]["settlement"], "Won")
         self.assertTrue(score["market_grades"][0]["hit"])
 
+    def test_official_result_with_missing_corners_uses_exact_fixture_fallback(self) -> None:
+        kickoff = datetime.now(accuracy.HKT) - timedelta(hours=3)
+        corner_prediction = {
+            "code": "CHL", "condition": "9.5", "side": "H",
+            "probability": 0.61, "label": "角球大 9.5",
+        }
+        ledger = {
+            "bets": [],
+            "watch": {
+                "m-corner": {
+                    "match_id": "m-corner", "fixture_id": "fx-corner",
+                    "home": "主隊", "away": "客隊", "league": "聯賽",
+                    "kickoff": kickoff.strftime("%Y-%m-%d %H:%M"),
+                    "stages": [{
+                        "prediction_era": accuracy.PREDICTION_ERA,
+                        "stage": "T-30", "conviction": 60,
+                        "market_predictions": [corner_prediction],
+                    }],
+                },
+            },
+        }
+        official = {
+            "goals_home": 1, "goals_away": 1, "goals_total": 2,
+            "corners_total": None, "source": "hkjc_official",
+        }
+        merged = {
+            **official, "corners_home": 6, "corners_away": 5,
+            "corners_total": 11,
+            "source": "hkjc_official+opticodds_exact_fixture_id",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            ledger_path = Path(directory) / "sim_ledger.json"
+            output_path = Path(directory) / "accuracy.json"
+            history_path = Path(directory) / "accuracy_history.json"
+            ledger_path.write_text(json.dumps(ledger), encoding="utf-8")
+            with patch.object(accuracy, "LEDGER", str(ledger_path)), \
+                 patch.object(accuracy, "OUT", str(output_path)), \
+                 patch.object(accuracy, "HISTORY_OUT", str(history_path)), \
+                 patch.object(accuracy.S, "fetch_hkjc_results",
+                              return_value={"m-corner": official}), \
+                 patch.object(accuracy.S, "merge_missing_corners",
+                              return_value=merged) as merge:
+                result = accuracy.run(fetch=True)
+        merge.assert_called_once_with(official, "fx-corner")
+        grade = result["matches"][0]["stages"][0]["market_grades"][0]
+        self.assertEqual(grade["grade_status"], "GRADED")
+        self.assertEqual(grade["settlement"], "Won")
+
 
 if __name__ == "__main__":
     unittest.main()
