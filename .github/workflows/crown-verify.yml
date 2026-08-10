@@ -48,6 +48,7 @@ jobs:
           echo "=== Crown verification: pause tick timer and wait for scan lock ==="
           systemctl stop crown-tick.timer
           trap 'systemctl start crown-tick.timer' EXIT
+          systemctl stop crown-tick.service || true
           while ! flock -n /var/lock/footbreak-crown.lock -c true; do
             echo "$(date '+%F %T') waiting for Crown scan lock"
             sleep 15
