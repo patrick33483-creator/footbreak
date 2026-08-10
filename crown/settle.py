@@ -9,7 +9,7 @@ from .config import Settings
 from .hkjc import fetch_official_results
 from .ledger import recompute_stats
 from .lines import pnl, settle_handicap, settle_total
-from .matching import Event, match_event
+from .matching import Event, canonical_league_key, canonical_team_key, match_event
 from .pinnapi import PinnapiClient
 from .state import load_ledger, paths, save_ledger
 from .titan import TitanClient
@@ -61,6 +61,55 @@ def _settle(bet: dict[str, Any], score: dict[str, Any], source: str) -> bool:
     return True
 
 
+def _verified_titan_corner_score(
+    bet: dict[str, Any],
+    official: dict[str, Any],
+    titan_by_id: dict[str, dict[str, Any]],
+    client: TitanClient,
+) -> dict[str, Any] | None:
+    """Use Titan corners only after exact ID, identity and official-score checks."""
+    target = _target(bet)
+    titan_id = str(bet.get("titan_match_id") or bet.get("match_id") or "")
+    titan = titan_by_id.get(titan_id)
+    if target is None or not titan or titan.get("home_score") is None:
+        return None
+    candidate = Event(
+        str(titan["id"]),
+        str(titan.get("league") or ""),
+        str(titan.get("home") or ""),
+        str(titan.get("away") or ""),
+        titan["kickoff"],
+    )
+    matched = match_event(
+        target,
+        [candidate],
+        team_key=canonical_team_key,
+        league_key=canonical_league_key,
+        allow_reversed=True,
+        require_qualifiers=True,
+    )
+    if not matched.event:
+        return None
+    titan_home, titan_away = titan.get("home_score"), titan.get("away_score")
+    if matched.reversed:
+        titan_home, titan_away = titan_away, titan_home
+    try:
+        official_score = (int(official["home_score"]), int(official["away_score"]))
+        titan_score = (int(titan_home), int(titan_away))
+    except (KeyError, TypeError, ValueError):
+        return None
+    if titan_score != official_score:
+        return None
+    try:
+        detail = client.result_detail(titan_id)
+        corners = int(detail["corners_total"]) if detail else None
+    except (KeyError, TypeError, ValueError, OSError):
+        return None
+    if corners is None or corners < 0:
+        return None
+    return {**official, "corners_total": corners}
+
+
 def settle_due(config: Settings) -> dict[str, Any]:
     ledger = load_ledger(config)
     now = datetime.now(HKT)
@@ -83,14 +132,8 @@ def settle_due(config: Settings) -> dict[str, Any]:
         if bet.get("code") != "CHL"
         and not (cache.get(str(bet.get("pinnapi_event_id"))) or {}).get("seen_live")
     ]
-    titan_results: list[dict[str, Any]] = []
     hkjc_results: dict[str, dict[str, Any]] = {}
     official_due = fallback + corner_due
-    if fallback:
-        try:
-            titan_results = TitanClient(config).results()
-        except Exception:
-            titan_results = []
     if official_due:
         dates = {parse_time(bet.get("kickoff")).strftime("%Y-%m-%d") for bet in official_due if parse_time(bet.get("kickoff"))}
         ids = {str(bet.get("hkjc_match_id")) for bet in official_due if bet.get("hkjc_match_id")}
@@ -98,6 +141,18 @@ def settle_due(config: Settings) -> dict[str, Any]:
             hkjc_results = fetch_official_results(ids, dates)
         except Exception:
             hkjc_results = {}
+    needs_titan_corners = any(
+        (hkjc_results.get(str(bet.get("hkjc_match_id") or "")) or {}).get("corners_total") is None
+        for bet in corner_due
+    )
+    titan_client = TitanClient(config)
+    titan_results: list[dict[str, Any]] = []
+    if fallback or needs_titan_corners:
+        try:
+            titan_results = titan_client.results()
+        except Exception:
+            titan_results = []
+    titan_by_id = {str(row.get("id") or ""): row for row in titan_results}
     settled = 0
     for bet in due:
         if bet.get("code") == "CHL":
@@ -106,6 +161,17 @@ def settle_due(config: Settings) -> dict[str, Any]:
                 bet, official, "hkjc_official_exact_id_corners"
             ):
                 settled += 1
+                continue
+            if official:
+                verified = _verified_titan_corner_score(
+                    bet, official, titan_by_id, titan_client
+                )
+                if verified and _settle(
+                    bet,
+                    verified,
+                    "hkjc_official_score+titan007_detail_exact_id_identity",
+                ):
+                    settled += 1
             continue
         event_id = str(bet.get("pinnapi_event_id") or "")
         live = cache.get(event_id, {})

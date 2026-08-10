@@ -1173,6 +1173,76 @@ class CrownSafetyTests(unittest.TestCase):
         self.assertEqual(ledger["bets"][0]["settlement_source"], "hkjc_official_exact_id_corners")
         titan_results.assert_not_called()
 
+    def test_chl_settlement_uses_verified_titan_detail_when_official_corners_are_missing(self) -> None:
+        config = settings()
+        ledger = {
+            "bankroll": 50000, "watch": {}, "log": [], "stats": {},
+            "bets": [{
+                "bet_id": "corner", "match_id": "3019098", "titan_match_id": "3019098",
+                "hkjc_match_id": "50072724", "league": "德乙", "home": "纽伦堡",
+                "away": "德累斯顿", "kickoff": "2020-01-01T12:00:00+08:00",
+                "market": "HKJC角球大細", "code": "CHL", "condition": "10.5", "side": "H",
+                "odds": 2.0, "stake": 100, "status": "PENDING",
+            }],
+        }
+        official = {
+            "50072724": {
+                "home_score": 3, "away_score": 0, "corners_total": None,
+                "source": "hkjc_official",
+            }
+        }
+        titan = [{
+            "id": "3019098", "league": "德乙", "home": "纽伦堡", "away": "德累斯顿",
+            "kickoff": datetime.fromisoformat("2020-01-01T12:00:00+08:00"),
+            "home_score": 3, "away_score": 0,
+        }]
+        with patch("crown.settle.load_ledger", return_value=ledger), \
+             patch("crown.settle.fetch_official_results", return_value=official), \
+             patch("crown.settle.TitanClient.results", return_value=titan), \
+             patch("crown.settle.TitanClient.result_detail", return_value={"corners_total": 11}), \
+             patch("crown.settle.save_ledger"):
+            result = crown_settle.settle_due(config)
+        self.assertEqual(result["settled"], 1)
+        self.assertEqual(ledger["bets"][0]["result"], "Won")
+        self.assertEqual(ledger["bets"][0]["score"], {"corners_total": 11})
+        self.assertEqual(
+            ledger["bets"][0]["settlement_source"],
+            "hkjc_official_score+titan007_detail_exact_id_identity",
+        )
+
+    def test_chl_titan_detail_rejects_official_score_mismatch(self) -> None:
+        config = settings()
+        ledger = {
+            "bankroll": 50000, "watch": {}, "log": [], "stats": {},
+            "bets": [{
+                "bet_id": "corner", "match_id": "3019098", "titan_match_id": "3019098",
+                "hkjc_match_id": "50072724", "league": "德乙", "home": "纽伦堡",
+                "away": "德累斯顿", "kickoff": "2020-01-01T12:00:00+08:00",
+                "code": "CHL", "condition": "10.5", "side": "H",
+                "odds": 2.0, "stake": 100, "status": "PENDING",
+            }],
+        }
+        official = {
+            "50072724": {
+                "home_score": 2, "away_score": 0, "corners_total": None,
+                "source": "hkjc_official",
+            }
+        }
+        titan = [{
+            "id": "3019098", "league": "德乙", "home": "纽伦堡", "away": "德累斯顿",
+            "kickoff": datetime.fromisoformat("2020-01-01T12:00:00+08:00"),
+            "home_score": 3, "away_score": 0,
+        }]
+        with patch("crown.settle.load_ledger", return_value=ledger), \
+             patch("crown.settle.fetch_official_results", return_value=official), \
+             patch("crown.settle.TitanClient.results", return_value=titan), \
+             patch("crown.settle.TitanClient.result_detail") as detail, \
+             patch("crown.settle.save_ledger"):
+            result = crown_settle.settle_due(config)
+        self.assertEqual(result["settled"], 0)
+        self.assertEqual(ledger["bets"][0]["status"], "PENDING")
+        detail.assert_not_called()
+
     def test_dashboard_api_settlement_publishes_ledger_even_if_history_grading_warns(self) -> None:
         from crown.dashboard_api import perform_settlement
 
