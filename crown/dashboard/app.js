@@ -19,7 +19,7 @@ const STAGE_DESC = {
   'T-30': '開賽前 30 分鐘 · 陣容、傷患出咗,賠率漸定',
   'T-5': '開賽前 5 分鐘 · 唯一落注時點',
 };
-const VD_CLS = { '落注': 'v-go', '傾向': 'v-lean', '偏向': 'v-soft', '觀望': 'v-wait', '無傾向': 'v-none' };
+const VD_CLS = { '落注': 'v-go', '傾向': 'v-lean', '偏向': 'v-soft', '已預測': 'v-lean', '觀望': 'v-wait', '無傾向': 'v-none' };
 const MKT = { HDC: '讓球', HIL: '入球大小', CHL: '總角球大小', HAD: '主客和' };
 
 const API_TOKEN = 'port/8765';
@@ -497,6 +497,7 @@ function runsCard(m) {
 
 function runRow(x, isFinal, all) {
   const p = x.pick, ld = x.lead, v = x.verdict || '—';
+  const forecasts = x.market_predictions || [];
   const info = x.info || {};
   const mv = x.movement || {};
   const chip = (val, u) => val == null ? '—' :
@@ -509,7 +510,7 @@ function runRow(x, isFinal, all) {
   if (prev) {
     const pl = (x2) => {
       const q = x2.pick || (x2.lead && (x2.lead.ev || 0) > 0 ? x2.lead : null);
-      return q ? q.label : '無方向';
+      return q ? q.label : ((x2.market_predictions || []).map((r) => r.label).join(' · ') || '無方向');
     };
     const a = pl(prev), b = pl(x);
     const dc = (x.conviction ?? 0) - (prev.conviction ?? 0);
@@ -526,6 +527,9 @@ function runRow(x, isFinal, all) {
     : soft
       ? `<span class="run-pick dimp">${esc(ld.label)}</span>
          <span class="run-num">勝率 ${pc(ld.prob)} · EV ${sg((ld.ev || 0) * 100, 2)}%</span>`
+      : forecasts.length
+        ? `<span class="run-pick dimp">${forecasts.map((r) => esc(r.label)).join(' · ')}</span>
+           <span class="run-num">${forecasts.map((r) => `預測概率 ${pc(r.probability, 1)}`).join(' · ')} · 未有 Pinnacle 同路盤，未計 EV</span>`
       : `<span class="run-pick dimp">無明顯方向</span>
          ${ld ? `<span class="run-num">最佳候選 ${esc(ld.label)} · EV ${sg((ld.ev || 0) * 100, 2)}%,全部負值</span>` : ''}`;
 
@@ -974,8 +978,8 @@ function renderHistory() {
       <div class="cell-sub">${esc(r.league || '')}</div></td>
     <td><span class="fx-tag ${TAG[r.stage] || 'tag-wait'}">${esc(r.stage || '—')}</span>
       <div class="cell-sub mono">${r.predicted_at ? hkStamp(r.predicted_at) : '—'}</div></td>
-    <td><b class="forecast-pick">${esc(r.forecast)}</b>
-      <div class="cell-sub">最高機率 ${pc(r.probability, 1)}${r.likely_score ? ` · 最可能 ${esc(r.likely_score)}` : ''}</div></td>
+    <td><b class="forecast-pick">${esc(r.forecast || ((r.market_predictions || []).length ? '亞洲盤市場預測' : '未能預測'))}</b>
+      <div class="cell-sub">${r.probability == null ? '詳見右欄市場方向' : `最高機率 ${pc(r.probability, 1)}`}${r.likely_score ? ` · 最可能 ${esc(r.likely_score)}` : ''}</div></td>
     <td>${historyMarkets(r)}</td>
     <td class="${convClass(r.conviction)}">${f2(r.conviction)}</td>
     <td>${r.simulated_bet

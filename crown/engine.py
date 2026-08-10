@@ -1,4 +1,4 @@
-"""Crown prediction pass: Crown/Titan quotes versus PinnAPI reference, fail closed."""
+"""Crown prediction pass with independent forecasting and strict PinnAPI betting gates."""
 from __future__ import annotations
 
 import math
@@ -76,6 +76,89 @@ def _pairs(prices: list[dict[str, Any]], market: str, line: float) -> dict[str, 
     keys = ("H", "A") if market == "HDC" else ("H", "L")
     result = {key: next((float(price["odds"]) for price in wanted if price["selection"] == key), None) for key in keys}
     return result if all(value and value > 1 for value in result.values()) else None
+
+
+def _crown_market_forecasts(
+    crown_prices: list[dict[str, Any]],
+    config: Settings,
+    now: float,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Build forecast-only HDC/HIL views from Crown's complete current market.
+
+    This is deliberately independent of PinnAPI.  It supplies a direction for
+    the prediction-learning ledger, but carries no EV/Kelly fields and can
+    never unlock a simulated bet.
+    """
+    output: list[dict[str, Any]] = []
+    reasons: list[str] = []
+    for market, sides in (("HDC", ("H", "A")), ("HIL", ("H", "L"))):
+        lines = sorted({
+            float(row["line"])
+            for row in crown_prices
+            if row.get("market") == market and row.get("line") is not None
+        })
+        complete: list[tuple[float, dict[str, dict[str, Any]], dict[str, float]]] = []
+        for line in lines:
+            rows = {
+                side: next((
+                    row for row in crown_prices
+                    if _line_key(str(row.get("market")), row.get("line")) == _line_key(market, line)
+                    and row.get("selection") == side
+                ), None)
+                for side in sides
+            }
+            if not all(rows.values()):
+                reasons.append(f"crown_incomplete_{market}_{line:g}")
+                continue
+            stale = [reason for row in rows.values() if not _fresh(row, config, now)[0]
+                     for reason in [_fresh(row, config, now)[1]]]
+            if stale:
+                reasons.extend(f"crown_{reason}" for reason in stale if reason)
+                continue
+            try:
+                implied = {side: 1 / float(rows[side]["odds"]) for side in sides}
+            except (TypeError, ValueError, ZeroDivisionError):
+                reasons.append(f"crown_invalid_odds_{market}_{line:g}")
+                continue
+            if any(float(rows[side]["odds"]) <= 1 for side in sides):
+                reasons.append(f"crown_invalid_odds_{market}_{line:g}")
+                continue
+            denominator = sum(implied.values())
+            probabilities = {side: implied[side] / denominator for side in sides}
+            complete.append((line, rows, probabilities))
+        if not complete:
+            reasons.append(f"no_complete_current_crown_{market}")
+            continue
+        # The most balanced complete line is the market's central/main line.
+        line, rows, probabilities = min(
+            complete,
+            key=lambda item: (abs(item[2][sides[0]] - 0.5), abs(item[0]), item[0]),
+        )
+        side = max(sides, key=lambda item: probabilities[item])
+        side_label = (
+            ("主" if side == "H" else "客")
+            if market == "HDC"
+            else ("大" if side == "H" else "細")
+        )
+        market_label = "讓球" if market == "HDC" else "入球大細"
+        probability = probabilities[side]
+        output.append({
+            "market": market_label,
+            "code": market,
+            "condition": f"{line:g}",
+            "line": line,
+            "side": side,
+            "label": f"皇冠{market_label} {side_label} {line:g}",
+            "odds": round(float(rows[side]["odds"]), 3),
+            "prob": round(probability, 5),
+            "conviction": round(probability * 100, 1),
+            "provider": "Crown",
+            "source": "titan007-crown-id-3",
+            "bookmaker": "Crown",
+            "reference": "crown_full_market_no_vig",
+            "forecast_only": True,
+        })
+    return output, sorted(set(reasons))
 
 
 def _candidates(crown_prices: list[dict[str, Any]], pinnapi_prices: list[dict[str, Any]], config: Settings,
@@ -265,10 +348,10 @@ def _prediction(titan: dict[str, Any], bridge: BridgeMatch, h_match: dict[str, A
         },
         "execution": {"enabled": True, "mode": "simulation", "real_betting_enabled": False,
                       "reason": "Only T-5 can create an idempotent simulated bet; no order client exists."},
-        "candidates": [], "pick": None, "lead_view": None, "status": "DATA_MISSING",
+        "candidates": [], "forecast_candidates": [], "pick": None, "lead_view": None, "status": "DATA_MISSING",
         "verdict": "無法完整預測", "no_bet_reason": None, "book_odds": {"crown": [], "hkjc_chl": _hkjc_chl(h_match)},
         "outcome": None, "forecast": None, "probability": None, "likely_score": None,
-        "prediction_source": None,
+        "prediction_source": None, "sharp_reference_available": False,
     }
     # Crown is the board master.  Fetch and preserve its quote before any
     # HKJC/PinnAPI bridge decision so Crown-only fixtures can still be shown,
@@ -279,21 +362,35 @@ def _prediction(titan: dict[str, Any], bridge: BridgeMatch, h_match: dict[str, A
     if not crown:
         base["no_bet_reason"] = "皇冠公司盤口目前不可用；不顯示為皇冠有效賽事。"
         return base
+    now = time.time()
+    forecasts, forecast_reasons = _crown_market_forecasts(crown, config, now)
+    base["forecast_candidates"] = forecasts
+    if forecasts:
+        base["status"] = "PREDICTION_READY"
+        base["verdict"] = "已預測"
+        base["conviction"] = max(float(row["conviction"]) for row in forecasts)
+        base["prediction_source"] = "crown_full_market_no_vig"
     if not bridge.event:
         base["no_bet_reason"] = (
-            "PinnAPI 無安全唯一同場對應；禁止計算 edge。"
+            f"{'已保留皇冠全盤預測；' if forecasts else ''}"
+            "PinnAPI 無安全唯一同場對應，只禁止計算 edge 及投注。"
             f" 映射診斷：{bridge.reason or 'unknown'}。"
         )
+        if not forecasts:
+            base["no_bet_reason"] += f" 皇冠預測診斷：{'；'.join(forecast_reasons)}。"
         return base
     try:
         pinnapi = pinnapi_client.lines(bridge.event.id)
     except Exception as exc:
         # Deliberately do not include provider responses, URLs, or credentials.
-        base["no_bet_reason"] = f"PinnAPI lines unavailable ({type(exc).__name__}); fail closed。"
+        base["no_bet_reason"] = (
+            f"{'已保留皇冠全盤預測；' if forecasts else ''}"
+            f"PinnAPI lines unavailable ({type(exc).__name__})，只禁止計算 edge 及投注。"
+        )
         return base
     prices = pinnapi["prices"]
     base.update(_wdl_prediction(prices))
-    now = time.time()
+    base["sharp_reference_available"] = True
     candidates, reasons = _candidates(crown, prices, config, now, bool(pinnapi["timestamp_inferred"]))
     corner_candidates: list[dict[str, Any]] = []
     corner_reasons: list[str] = []
@@ -324,9 +421,16 @@ def _prediction(titan: dict[str, Any], bridge: BridgeMatch, h_match: dict[str, A
     candidates = sorted(candidates + corner_candidates,
                         key=lambda row: (row["ev"], row["conviction"]), reverse=True)
     base["candidates"] = candidates
+    if candidates:
+        # Exact PinnAPI same-line views supersede Crown-only forecasts for
+        # learning quality.  They still do not create a bet before T-5.
+        base["forecast_candidates"] = candidates
     base["lead_view"] = candidates[0] if candidates else None
     if not candidates:
-        base["no_bet_reason"] = "；".join(reasons + corner_reasons or ["Crown/PinnAPI 無可比較完整雙邊盤"])
+        prefix = "已保留皇冠全盤預測；" if forecasts else ""
+        base["no_bet_reason"] = prefix + "；".join(
+            reasons + corner_reasons or ["Crown/PinnAPI 無可比較完整雙邊盤"]
+        )
         return base
     lead = candidates[0]
     base["conviction"] = lead["conviction"]
@@ -529,9 +633,9 @@ def run(mode: str, config: Settings) -> dict[str, Any]:
             mapping["unmapped_hkjc_to_pinnapi"] += 1
         if bridge.reason:
             mapping["reasons"][bridge.reason] = mapping["reasons"].get(bridge.reason, 0) + 1
-        # Keep the complete Crown/Titan fixture board visible.  Unmatched
-        # events remain DATA_MISSING and return before any edge calculation;
-        # only the strict HKJC -> PinnAPI bridge can unlock pricing or a bet.
+        # Keep the complete Crown/Titan fixture board visible.  Crown's own
+        # complete market can always create a forecast-learning snapshot;
+        # only the strict HKJC -> PinnAPI bridge can unlock edge or a bet.
         h_row = next((row for candidate, row in h_events if bridge.hkjc.event and candidate.id == bridge.hkjc.event.id), None)
         pending_predictions.append((titan, bridge, h_row, stage, crown_snapshot))
 

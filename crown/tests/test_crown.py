@@ -12,7 +12,7 @@ from unittest.mock import Mock, patch
 
 from crown.config import settings
 from crown.dashboard_data import build, write_dashboard_data
-from crown.engine import _candidates, _fresh, _hkjc_chl_candidates, _prediction, _refresh_crown_quote, _tick_rows_from_predictions, _wdl_prediction
+from crown.engine import _candidates, _crown_market_forecasts, _fresh, _hkjc_chl_candidates, _prediction, _refresh_crown_quote, _tick_rows_from_predictions, _wdl_prediction
 from crown.hkjc import fetch_official_results
 from crown.ledger import completed_stages, recompute_stats, stage_for, sync_prediction
 from crown.lines import parse_hkjc_handicap, parse_hkjc_total, settle_handicap, settle_total
@@ -355,6 +355,63 @@ class CrownSafetyTests(unittest.TestCase):
             mocked_datetime.now.return_value = self.now
             _prediction(titan, bridge, {"id": "hkjc"}, "T-5", config, titan_client, pinnapi_client)
         pinnapi_client.corner_lines.assert_not_called()
+
+    def test_crown_full_market_forecast_uses_central_complete_line_without_ev(self) -> None:
+        config = replace(settings(), source_max_age_seconds=90)
+        prices = [
+            {"market": "HDC", "line": -0.25, "selection": "H", "odds": 1.80, "source_at": 1000},
+            {"market": "HDC", "line": -0.25, "selection": "A", "odds": 2.05, "source_at": 1000},
+            {"market": "HDC", "line": -0.75, "selection": "H", "odds": 2.60, "source_at": 1000},
+            {"market": "HDC", "line": -0.75, "selection": "A", "odds": 1.45, "source_at": 1000},
+            {"market": "HIL", "line": 2.5, "selection": "H", "odds": 1.90, "source_at": 1000},
+            {"market": "HIL", "line": 2.5, "selection": "L", "odds": 2.00, "source_at": 1000},
+        ]
+        forecasts, reasons = _crown_market_forecasts(prices, config, 1001)
+        self.assertEqual(reasons, [])
+        hdc = next(row for row in forecasts if row["code"] == "HDC")
+        self.assertEqual(hdc["line"], -0.25)
+        self.assertEqual(hdc["side"], "H")
+        self.assertTrue(hdc["forecast_only"])
+        self.assertNotIn("ev", hdc)
+        self.assertNotIn("kelly_raw", hdc)
+
+    def test_unmapped_pinnapi_still_records_crown_forecast_but_never_bets(self) -> None:
+        config = replace(settings(), source_max_age_seconds=90)
+        kickoff = self.now + timedelta(minutes=5)
+        titan = {"id": "titan", "league": "L", "home": "A", "away": "B", "kickoff": kickoff}
+        bridge = BridgeMatch(
+            Match(None, False, 0.0, "team_name_similarity_below_floor"),
+            Match(None, False, 0.0, "no_candidate_in_kickoff_window"),
+            None,
+            "titan_to_hkjc:team_name_similarity_below_floor",
+        )
+        titan_client = Mock()
+        titan_client.crown_prices.return_value = [
+            {"market": "HDC", "line": -0.25, "selection": "H", "odds": 1.80, "source_at": 1000},
+            {"market": "HDC", "line": -0.25, "selection": "A", "odds": 2.05, "source_at": 1000},
+            {"market": "HIL", "line": 2.5, "selection": "H", "odds": 1.90, "source_at": 1000},
+            {"market": "HIL", "line": 2.5, "selection": "L", "odds": 2.00, "source_at": 1000},
+        ]
+        pinnapi_client = Mock()
+        with patch("crown.engine.datetime") as mocked_datetime, patch("crown.engine.time.time", return_value=1001):
+            mocked_datetime.now.return_value = self.now
+            prediction = _prediction(
+                titan, bridge, None, "T-5", config, titan_client, pinnapi_client
+            )
+        self.assertEqual(prediction["status"], "PREDICTION_READY")
+        self.assertEqual(prediction["verdict"], "已預測")
+        self.assertEqual({row["code"] for row in prediction["forecast_candidates"]}, {"HDC", "HIL"})
+        self.assertEqual(prediction["candidates"], [])
+        self.assertIsNone(prediction["pick"])
+        self.assertFalse(prediction["sharp_reference_available"])
+        self.assertIn("已保留皇冠全盤預測", prediction["no_bet_reason"])
+        pinnapi_client.lines.assert_not_called()
+
+        ledger = {"bankroll": 50000, "bets": [], "watch": {}, "log": [], "stats": {}}
+        self.assertEqual(sync_prediction(ledger, prediction, config), [])
+        snapshot = ledger["watch"]["titan"]["stages"][0]
+        self.assertEqual({row["code"] for row in snapshot["market_predictions"]}, {"HDC", "HIL"})
+        self.assertEqual(ledger["bets"], [])
 
     def test_wdl_prediction_uses_complete_no_vig_moneyline(self) -> None:
         view = _wdl_prediction([

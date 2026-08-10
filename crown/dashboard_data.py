@@ -36,7 +36,10 @@ def build(config: Settings) -> dict[str, Any]:
     return {
         "schema_version": "crown-dashboard-v2", "generated_at": iso_hkt(), "title": "足破 · 皇冠賽事預測終端",
         "summary": {"crown_matches": len(matches), "hkjc_overlaps": sum(bool(row.get("hkjc_match_id")) for row in matches),
-                    "predicted": sum(row.get("status") == "REFERENCE_READY" for row in matches),
+                    "predicted": sum(
+                        row.get("status") in {"PREDICTION_READY", "REFERENCE_READY", "SIMULATION_READY"}
+                        for row in matches
+                    ),
                     "actionable": sum(bool(row.get("pick")) for row in matches),
                     "simulation_t5_picks": sum(bool(row.get("pick")) and row.get("stage") == "T-5" for row in matches),
                     "signal_data_missing": sum(row.get("status") == "DATA_MISSING" for row in matches)},

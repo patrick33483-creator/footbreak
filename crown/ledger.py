@@ -75,7 +75,9 @@ def _snapshot(prediction: dict[str, Any], stage: str) -> dict[str, Any]:
         "schema_version": PREDICTION_SCHEMA_VERSION,
         "stage": stage,
         "ts": iso_hkt(),
-        "market_predictions": _market_predictions(prediction.get("candidates") or []),
+        "market_predictions": _market_predictions(
+            prediction.get("forecast_candidates") or prediction.get("candidates") or []
+        ),
     }
     return snapshot
 
