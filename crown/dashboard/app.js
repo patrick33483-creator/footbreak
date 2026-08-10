@@ -1049,7 +1049,7 @@ function renderHistory() {
       <div class="cell-sub mono">${r.predicted_at ? hkStamp(r.predicted_at) : '—'}</div></td>
     <td><b class="forecast-pick">${esc(r.forecast || '冇主客和預測')}</b>
       <div class="cell-sub">${r.probability == null ? '正式結果見市場欄' : `最高機率 ${pc(r.probability, 1)}`}${r.likely_score ? ` · 最可能 ${esc(r.likely_score)}` : ''}</div></td>
-    <td>${historyMarkets(r)}<div class="market-summary">${historyMarketResult(r)}</div></td>
+    <td class="history-markets-cell">${historyMarkets(r)}<div class="market-summary">${historyMarketResult(r)}</div></td>
     <td class="${convClass(r.conviction)}">${f2(r.conviction)}</td>
     <td>${r.simulated_bet
       ? `<span class="stpill pending">有模擬注</span><div class="cell-sub">${esc(r.bet_label || '')}</div>`

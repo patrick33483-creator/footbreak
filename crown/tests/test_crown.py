@@ -1298,10 +1298,15 @@ class CrownSafetyTests(unittest.TestCase):
         self.assertIn("全部預測紀錄", app)
         self.assertIn("最新開賽時間先", app)
         self.assertIn('class="history-market-row"', app)
+        self.assertIn('class="history-markets-cell"', app)
         self.assertIn('class="history-result-cell"', app)
         self.assertIn(".history-result-cell .hist-result b", styles)
         self.assertIn("font-size: 1.625rem", styles)
         self.assertIn("font-size: 1.75rem", styles)
+        self.assertIn("min-width: 340px", styles)
+        self.assertIn("grid-template-columns: minmax(190px, 1fr) max-content", styles)
+        self.assertIn("overflow-wrap: anywhere", styles)
+        self.assertIn("font: 600 12px/1.6 var(--sans)", styles)
 
     def test_prediction_history_fetches_titan_corner_detail_after_strict_checks(self) -> None:
         from crown.prediction_history import _merge_titan_corner_detail, _result

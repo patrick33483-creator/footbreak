@@ -800,9 +800,13 @@ table.calib tr:last-child td { border-bottom: 0; }
   font: var(--text-xs)/1.4 var(--mono);
 }
 .hist-stage b { color: var(--amber); }
-.history-table { min-width: 920px; }
+.history-table { min-width: 1180px; }
 .history-table tr { content-visibility: auto; contain-intrinsic-size: 0 58px; }
 .history-table td { vertical-align: top; }
+.history-markets-cell {
+  min-width: 340px;
+  white-space: normal;
+}
 .hist-result { margin-top: 5px; color: var(--text); }
 .history-result-cell {
   min-width: 210px;
@@ -834,10 +838,10 @@ table.calib tr:last-child td { border-bottom: 0; }
 .forecast-pick { color: var(--amber); }
 .history-market-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) max-content;
+  grid-template-columns: minmax(190px, 1fr) max-content;
   align-items: start;
-  gap: var(--s3);
-  padding: 3px 0;
+  gap: var(--s2);
+  padding: var(--s1) 0;
 }
 .history-market-row + .history-market-row {
   border-top: 1px solid var(--line-soft);
@@ -845,6 +849,8 @@ table.calib tr:last-child td { border-bottom: 0; }
 .history-market-pick {
   min-width: 0;
   line-height: 1.65;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 .history-market-pick .cell-sub {
   display: inline;
@@ -852,9 +858,10 @@ table.calib tr:last-child td { border-bottom: 0; }
 }
 .market-hit {
   display: inline-flex; gap: 4px; align-items: center;
+  justify-self: end;
   margin: 0; padding: 1px 7px; border-radius: 4px;
   white-space: nowrap;
-  font: 600 11px/1.6 var(--sans); border: 1px solid var(--line);
+  font: 600 12px/1.6 var(--sans); border: 1px solid var(--line);
 }
 .market-hit.hit { color: var(--good); border-color: var(--good); }
 .market-hit.miss { color: var(--bad); border-color: var(--bad); }
@@ -862,7 +869,7 @@ table.calib tr:last-child td { border-bottom: 0; }
 .market-summary { margin-top: 5px; padding-top: 6px; border-top: 1px dashed var(--line); }
 .market-total {
   display: inline-block; padding: 2px 8px; border-radius: 5px;
-  font: 700 11.5px/1.7 var(--sans); border: 1px solid var(--line);
+  font: 700 12px/1.7 var(--sans); border: 1px solid var(--line);
 }
 .market-total.all-hit { color: var(--good); border-color: var(--good); }
 .market-total.some-hit { color: var(--amber); border-color: var(--amber); }
