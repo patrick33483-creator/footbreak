@@ -13,6 +13,14 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class SchedulerPreemptionTests(unittest.TestCase):
+    def test_deploy_update_enables_full_board_sweep_timer(self):
+        update = (ROOT / "deploy/update.sh").read_text(encoding="utf-8")
+        self.assertRegex(
+            update,
+            r"systemctl enable --now\s+\\?\s*"
+            r"footbreak-tick\.timer footbreak-sweep\.timer footbreak-settle\.timer",
+        )
+
     def test_tick_service_conditionally_preempts_slow_jobs_before_running(self):
         unit = (ROOT / "deploy/systemd/footbreak-tick.service").read_text(
             encoding="utf-8"
