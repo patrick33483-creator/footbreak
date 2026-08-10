@@ -110,6 +110,99 @@ jobs:
               })
           PY
 
+          echo "=== Footbreak uncomputable summary ==="
+          cd /opt/footbreak
+          PYTHONPATH=/opt/footbreak /opt/footbreak/.venv/bin/python3 - <<'PY'
+          import collections
+          import json
+          from pathlib import Path
+
+          data = json.loads(Path("/var/www/footbreak/data.json").read_text())
+          rows = data.get("prediction_history") or data.get("predictions") or []
+          failed = [row for row in rows if row.get("forecast") == "未能計算"]
+          reasons = collections.Counter(
+              str(row.get("no_bet_reason") or "未提供原因") for row in failed
+          )
+          print({
+              "prediction_rows": len(rows),
+              "uncomputable": len(failed),
+              "reasons": reasons.most_common(20),
+          })
+          for row in failed[:50]:
+              print({
+                  "match_id": row.get("match_id"),
+                  "home": row.get("home"),
+                  "away": row.get("away"),
+                  "kickoff": row.get("kickoff"),
+                  "stage": row.get("stage"),
+                  "reason": row.get("no_bet_reason"),
+              })
+          PY
+
+          echo "=== HKJC to PinnAPI matching diagnostics ==="
+          cd /opt/footbreak
+          PYTHONPATH=/opt/footbreak /opt/footbreak/.venv/bin/python3 - <<'PY'
+          from datetime import datetime, timezone
+
+          from system import hkjc_feed as H
+          from system import sharp as S
+
+          matches = [row for row in H.fetch_matches() if row.get("status") == "PREEVENT"]
+          fixtures = S.list_fixtures()
+          now = datetime.now(timezone.utc)
+          failures = 0
+          for match in matches:
+              kickoff = H.parse_kickoff(match)
+              if kickoff is None:
+                  continue
+              mins = (kickoff - now).total_seconds() / 60
+              if not (0 < mins <= 720):
+                  continue
+              found, score = S.match_fixture(match, fixtures, kickoff)
+              if found:
+                  continue
+              failures += 1
+              home = match.get("homeTeam", {}).get("name_en") or ""
+              away = match.get("awayTeam", {}).get("name_en") or ""
+              candidates = []
+              for fixture in fixtures:
+                  try:
+                      start = datetime.fromisoformat(
+                          fixture["start_date"].replace("Z", "+00:00")
+                      )
+                  except Exception:
+                      continue
+                  delta = abs((start - kickoff).total_seconds()) / 60
+                  if delta > 90:
+                      continue
+                  fh = fixture.get("home_team_display") or ""
+                  fa = fixture.get("away_team_display") or ""
+                  direct = (S._sim(home, fh) + S._sim(away, fa)) / 2
+                  reverse = (S._sim(home, fa) + S._sim(away, fh)) / 2
+                  candidates.append({
+                      "fixture_id": fixture.get("id"),
+                      "home": fh,
+                      "away": fa,
+                      "kickoff": fixture.get("start_date"),
+                      "delta_min": round(delta, 1),
+                      "direct": round(direct, 3),
+                      "reverse": round(reverse, 3),
+                      "hk_qual": sorted(S.hk_qual(match)),
+                      "pin_qual": sorted(S.fx_qual(fixture)),
+                  })
+              candidates.sort(key=lambda row: (-row["direct"], row["delta_min"]))
+              print({
+                  "match_id": match.get("id"),
+                  "home": home,
+                  "away": away,
+                  "kickoff": kickoff.isoformat(),
+                  "mins_to_ko": round(mins, 1),
+                  "best_score": round(score, 3),
+                  "candidates": candidates[:5],
+              })
+          print({"eligible_hkjc": len(matches), "unmatched_within_12h": failures})
+          PY
+
           echo "=== Crown dashboard fixtures around now ==="
           /opt/footbreak/.venv/bin/python3 - <<'PY'
           import json
