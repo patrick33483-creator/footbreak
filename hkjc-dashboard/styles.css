@@ -466,6 +466,30 @@ table.t.bets td.good { color: var(--good); } table.t.bets td.amber { color: var(
 .history-table tr { content-visibility: auto; contain-intrinsic-size: 0 58px; }
 .history-table td { vertical-align: top; }
 .hist-result { margin-top: 5px; color: var(--text); }
+.history-result-cell {
+  min-width: 170px;
+  white-space: nowrap;
+}
+.history-result-cell .hist-result {
+  font-size: 1.0625rem;
+  font-weight: 700;
+  line-height: 1.5;
+}
+.history-result-cell .hist-result b {
+  font-size: 1.3125rem;
+  color: var(--ink);
+}
+.history-result-cell .respill,
+.history-result-cell .stpill {
+  font-size: 0.75rem;
+  font-weight: 700;
+  line-height: 1.6;
+}
+.history-result-cell .cell-sub {
+  margin-top: 2px;
+  font-size: 0.6875rem;
+  line-height: 1.45;
+}
 .forecast-pick { color: var(--amber); }
 .hist-reason {
   max-width: 300px; white-space: normal;
@@ -522,6 +546,12 @@ table.t.bets td.good { color: var(--good); } table.t.bets td.amber { color: var(
   .mt-mid { text-align: left; }
   .mhead { padding: var(--s4); }
   .card { padding: var(--s3); }
+  .history-result-cell { min-width: 185px; }
+  .history-result-cell .hist-result { font-size: 1.125rem; }
+  .history-result-cell .hist-result b { font-size: 1.4375rem; }
+  .history-result-cell .respill,
+  .history-result-cell .stpill { font-size: 0.8125rem; }
+  .history-result-cell .cell-sub { font-size: 0.75rem; }
 }
 @media (max-width: 420px) {
   .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }

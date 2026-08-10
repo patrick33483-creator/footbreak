@@ -953,7 +953,7 @@ function renderFc() {
     <td>${r.simulated_bet
       ? `<span class="stpill pending">有模擬注</span><div class="cell-sub">${esc(r.bet_label || '')}</div>`
       : `<span class="stpill voided">冇落注</span><div class="cell-sub hist-reason">${esc(r.no_bet_reason || '未達條件')}</div>`}</td>
-    <td>${r.actual
+    <td class="history-result-cell">${r.actual
       ? r.correct == null
         ? `<span class="stpill voided">冇主客和預測</span>
            <div class="hist-result"><b>${esc(r.score || '—')}</b> · ${esc(r.actual)}</div>

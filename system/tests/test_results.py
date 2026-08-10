@@ -159,6 +159,13 @@ class ResultSourceTests(unittest.TestCase):
         self.assertNotIn("api/settle", app)
         self.assertIn("fetch('data.json?v='", app)
         self.assertIn("setInterval(() => refresh(true), 60000)", app)
+        self.assertIn('class="history-result-cell"', app)
+
+        styles = Path(SYSTEM_DIR.parent, "hkjc-dashboard", "styles.css").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(".history-result-cell .hist-result", styles)
+        self.assertIn(".history-result-cell .hist-result b", styles)
 
 
 if __name__ == "__main__":
