@@ -83,7 +83,7 @@ echo "OK Crown Telegram enabled"
 "$APP_DIR/.venv/bin/python3" - "$FOOTBREAK_DATA" "$CROWN_DATA" <<'PY'
 import json
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 
@@ -106,9 +106,41 @@ for label, path, max_age in (
         raise SystemExit(f"FAIL {label} data stale: {age:.0f}s")
     print(f"OK {label} data age={age:.0f}s")
 
+
+def scoreable_market_row(row):
+    for prediction in row.get("market_predictions") or []:
+        if not isinstance(prediction, dict):
+            continue
+        if prediction.get("code") not in {"HDC", "HIL", "CHL"}:
+            continue
+        if prediction.get("side") not in {"H", "A", "L"}:
+            continue
+        if prediction.get("condition", prediction.get("line")) is None:
+            continue
+        return True
+    return False
+
+
+def kickoff_timestamp(row):
+    text = str(row.get("kickoff") or "").strip().replace("Z", "+00:00")
+    if not text:
+        return float("-inf")
+    value = datetime.fromisoformat(text)
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone(timedelta(hours=8)))
+    return value.timestamp()
+
+
 history = foot.get("prediction_history") or {}
 stats = history.get("stats") or {}
 rows = history.get("rows") or []
+bad_rows = [row for row in rows if not scoreable_market_row(row)]
+if bad_rows:
+    raise SystemExit(
+        "FAIL Footbreak prediction history contains "
+        f"{len(bad_rows)} non-scoreable WDL-only/empty row(s)"
+    )
+print(f"OK Footbreak prediction history market rows={len(rows)}")
 graded = [row for row in rows if row.get("actual") and row.get("score")]
 reported_graded = int(stats.get("graded") or 0)
 if reported_graded != len(graded):
@@ -147,6 +179,18 @@ for missing in accuracy.get("missing_results") or []:
 
 crown_matches = crown.get("matches") or crown.get("predictions") or []
 print(f"OK Crown dashboard matches={len(crown_matches)}")
+crown_history = crown.get("prediction_history") or {}
+crown_rows = crown_history.get("rows") or []
+crown_bad = [row for row in crown_rows if not scoreable_market_row(row)]
+if crown_bad:
+    raise SystemExit(
+        "FAIL Crown prediction history contains "
+        f"{len(crown_bad)} non-scoreable WDL-only/empty row(s)"
+    )
+crown_kickoffs = [kickoff_timestamp(row) for row in crown_rows]
+if crown_kickoffs != sorted(crown_kickoffs, reverse=True):
+    raise SystemExit("FAIL Crown prediction history is not newest-kickoff-first")
+print(f"OK Crown prediction history market rows={len(crown_rows)} newest-first")
 PY
 
 echo "=== production health PASS ==="
