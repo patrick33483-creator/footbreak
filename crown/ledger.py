@@ -72,7 +72,7 @@ def _snapshot(prediction: dict[str, Any], stage: str) -> dict[str, Any]:
         "titan_match_id", "pinnapi_event_id", "source_snapshot_at", "execution",
         "outcome", "forecast", "probability", "likely_score", "prediction_source",
         "pinnapi_corner_event_id", "pinnapi_corner_source_at", "pinnapi_corner_timestamp_inferred",
-        "matching_version",
+        "matching_version", "crown_quote_cached_forecast_only", "crown_cached_source_at",
     )} | {
         "prediction_era": PREDICTION_ERA,
         "schema_version": PREDICTION_SCHEMA_VERSION,

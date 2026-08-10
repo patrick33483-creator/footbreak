@@ -82,6 +82,7 @@ def _crown_market_forecasts(
     crown_prices: list[dict[str, Any]],
     config: Settings,
     now: float,
+    require_fresh: bool = True,
 ) -> tuple[list[dict[str, Any]], list[str]]:
     """Build forecast-only HDC/HIL views from Crown's complete current market.
 
@@ -110,11 +111,16 @@ def _crown_market_forecasts(
             if not all(rows.values()):
                 reasons.append(f"crown_incomplete_{market}_{line:g}")
                 continue
-            stale = [reason for row in rows.values() if not _fresh(row, config, now)[0]
-                     for reason in [_fresh(row, config, now)[1]]]
-            if stale:
-                reasons.extend(f"crown_{reason}" for reason in stale if reason)
-                continue
+            if require_fresh:
+                stale = [
+                    reason
+                    for row in rows.values()
+                    if not _fresh(row, config, now)[0]
+                    for reason in [_fresh(row, config, now)[1]]
+                ]
+                if stale:
+                    reasons.extend(f"crown_{reason}" for reason in stale if reason)
+                    continue
             try:
                 implied = {side: 1 / float(rows[side]["odds"]) for side in sides}
             except (TypeError, ValueError, ZeroDivisionError):
@@ -323,7 +329,8 @@ def _wdl_prediction(prices: list[dict[str, Any]]) -> dict[str, Any]:
 
 def _prediction(titan: dict[str, Any], bridge: BridgeMatch, h_match: dict[str, Any] | None,
                 stage: str, config: Settings, titan_client: TitanClient, pinnapi_client: PinnapiClient,
-                crown_snapshot: dict[str, Any] | None = None) -> dict[str, Any]:
+                crown_snapshot: dict[str, Any] | None = None,
+                previous_crown_prices: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     event = _event_from_titan(titan)
     minutes = round((event.kickoff - datetime.now(HKT)).total_seconds() / 60, 1)
     base = {
@@ -357,19 +364,42 @@ def _prediction(titan: dict[str, Any], bridge: BridgeMatch, h_match: dict[str, A
     # HKJC/PinnAPI bridge decision so Crown-only fixtures can still be shown,
     # while edge calculation remains fail-closed without PinnAPI.
     crown = list((crown_snapshot or {}).get("prices") or []) if crown_snapshot is not None else titan_client.crown_prices(event.id)
+    used_cached_crown = False
+    if not crown and previous_crown_prices:
+        # A current empty/error response must not erase an earlier valid
+        # pre-match market view.  Reuse it for forecasting and learning only;
+        # stale/current-source uncertainty can never unlock edge or a bet.
+        crown = list(previous_crown_prices)
+        used_cached_crown = True
     base["book_odds"]["crown"] = crown
     base["source_snapshot_at"] = iso_hkt()
     if not crown:
         base["no_bet_reason"] = "皇冠公司盤口目前不可用；不顯示為皇冠有效賽事。"
         return base
     now = time.time()
-    forecasts, forecast_reasons = _crown_market_forecasts(crown, config, now)
+    forecasts, forecast_reasons = _crown_market_forecasts(
+        crown, config, now, require_fresh=not used_cached_crown
+    )
     base["forecast_candidates"] = forecasts
+    base["crown_quote_cached_forecast_only"] = used_cached_crown
+    if used_cached_crown:
+        source_times = [
+            float(row.get("source_at") or 0)
+            for row in crown
+            if float(row.get("source_at") or 0) > 0
+        ]
+        base["crown_cached_source_at"] = min(source_times) if source_times else None
     if forecasts:
         base["status"] = "PREDICTION_READY"
         base["verdict"] = "已預測"
         base["conviction"] = max(float(row["conviction"]) for row in forecasts)
         base["prediction_source"] = "crown_full_market_no_vig"
+    if used_cached_crown:
+        base["no_bet_reason"] = (
+            "皇冠即時盤目前不可用；已沿用最後一次有效皇冠盤作純預測及學習，"
+            "禁止計算 edge 及投注。"
+        )
+        return base
     if not bridge.event:
         base["no_bet_reason"] = (
             f"{'已保留皇冠全盤預測；' if forecasts else ''}"
@@ -538,7 +568,10 @@ def run(mode: str, config: Settings) -> dict[str, Any]:
     predictions = []
     stage_predictions: list[dict[str, Any]] = []
     pending_predictions: list[
-        tuple[dict[str, Any], BridgeMatch, dict[str, Any] | None, str, dict[str, Any] | None]
+        tuple[
+            dict[str, Any], BridgeMatch, dict[str, Any] | None, str,
+            dict[str, Any] | None, list[dict[str, Any]],
+        ]
     ] = []
     current_predictions = {
         str(row.get("match_id")): row
@@ -637,7 +670,12 @@ def run(mode: str, config: Settings) -> dict[str, Any]:
         # complete market can always create a forecast-learning snapshot;
         # only the strict HKJC -> PinnAPI bridge can unlock edge or a bet.
         h_row = next((row for candidate, row in h_events if bridge.hkjc.event and candidate.id == bridge.hkjc.event.id), None)
-        pending_predictions.append((titan, bridge, h_row, stage, crown_snapshot))
+        previous_crown_prices = list(
+            ((previous or {}).get("book_odds") or {}).get("crown") or []
+        )
+        pending_predictions.append((
+            titan, bridge, h_row, stage, crown_snapshot, previous_crown_prices
+        ))
 
     # A same-kickoff batch can contain dozens of fixtures.  Each prediction
     # performs independent Crown and PinnAPI reads, so serial execution could
@@ -663,13 +701,17 @@ def run(mode: str, config: Settings) -> dict[str, Any]:
                     titan_client,
                     pinnapi_client,
                     crown_snapshot,
+                    previous_crown_prices,
                 ): str(titan["id"])
-                for titan, bridge, h_row, stage, crown_snapshot in pending_predictions
+                for (
+                    titan, bridge, h_row, stage, crown_snapshot,
+                    previous_crown_prices,
+                ) in pending_predictions
             }
             completed: dict[str, dict[str, Any]] = {}
             for future in as_completed(futures):
                 completed[futures[future]] = future.result()
-        for titan, _bridge, _h_row, _stage, _snapshot in pending_predictions:
+        for titan, _bridge, _h_row, _stage, _snapshot, _previous in pending_predictions:
             prediction = completed[str(titan["id"])]
             stage_predictions.append(prediction)
             # The dashboard card keeps all completed stages while the top-level

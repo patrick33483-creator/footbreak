@@ -413,6 +413,41 @@ class CrownSafetyTests(unittest.TestCase):
         self.assertEqual({row["code"] for row in snapshot["market_predictions"]}, {"HDC", "HIL"})
         self.assertEqual(ledger["bets"], [])
 
+    def test_empty_current_crown_uses_last_quote_for_forecast_only_and_never_bets(self) -> None:
+        config = replace(settings(), source_max_age_seconds=90)
+        kickoff = self.now + timedelta(minutes=5)
+        titan = {"id": "titan", "league": "L", "home": "A", "away": "B", "kickoff": kickoff}
+        bridge = BridgeMatch(
+            Match(None, False, 0.0, "no_candidate_in_kickoff_window"),
+            Match(None, False, 0.0, "no_candidate_in_kickoff_window"),
+            None,
+            "direct_same_script:no_candidate_in_kickoff_window",
+        )
+        previous = [
+            {"market": "HDC", "line": -0.25, "selection": "H", "odds": 1.80, "source_at": 100},
+            {"market": "HDC", "line": -0.25, "selection": "A", "odds": 2.05, "source_at": 100},
+            {"market": "HIL", "line": 2.5, "selection": "H", "odds": 1.90, "source_at": 100},
+            {"market": "HIL", "line": 2.5, "selection": "L", "odds": 2.00, "source_at": 100},
+        ]
+        titan_client = Mock()
+        titan_client.crown_prices.return_value = []
+        pinnapi_client = Mock()
+        with patch("crown.engine.datetime") as mocked_datetime, patch("crown.engine.time.time", return_value=1001):
+            mocked_datetime.now.return_value = self.now
+            prediction = _prediction(
+                titan, bridge, None, "T-5", config, titan_client, pinnapi_client,
+                previous_crown_prices=previous,
+            )
+        self.assertEqual(prediction["status"], "PREDICTION_READY")
+        self.assertEqual(prediction["verdict"], "已預測")
+        self.assertTrue(prediction["crown_quote_cached_forecast_only"])
+        self.assertEqual({row["code"] for row in prediction["forecast_candidates"]}, {"HDC", "HIL"})
+        self.assertEqual(prediction["book_odds"]["crown"], previous)
+        self.assertEqual(prediction["candidates"], [])
+        self.assertIsNone(prediction["pick"])
+        self.assertIn("禁止計算 edge 及投注", prediction["no_bet_reason"])
+        pinnapi_client.lines.assert_not_called()
+
     def test_wdl_prediction_uses_complete_no_vig_moneyline(self) -> None:
         view = _wdl_prediction([
             {"market": "1X2", "selection": "H", "odds": 2.0},
