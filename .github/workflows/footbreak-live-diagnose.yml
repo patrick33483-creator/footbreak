@@ -112,13 +112,16 @@ jobs:
 
           echo "=== Footbreak uncomputable summary ==="
           cd /opt/footbreak
-          PYTHONPATH=/opt/footbreak /opt/footbreak/.venv/bin/python3 - <<'PY'
+          PYTHONPATH=/opt/footbreak /opt/footbreak/.venv/bin/python3 -u - <<'PY'
           import collections
           import json
           from pathlib import Path
 
           data = json.loads(Path("/var/www/footbreak/data.json").read_text())
-          rows = data.get("prediction_history") or data.get("predictions") or []
+          rows = (
+              data.get("prediction_history") or data.get("predictions") or []
+              if isinstance(data, dict) else []
+          )
           failed = [row for row in rows if row.get("forecast") == "未能計算"]
           reasons = collections.Counter(
               str(row.get("no_bet_reason") or "未提供原因") for row in failed
@@ -141,7 +144,11 @@ jobs:
 
           echo "=== HKJC to PinnAPI matching diagnostics ==="
           cd /opt/footbreak
-          PYTHONPATH=/opt/footbreak /opt/footbreak/.venv/bin/python3 - <<'PY'
+          set -a
+          [ ! -f /etc/footbreak.env ] || . /etc/footbreak.env
+          [ ! -f /etc/footbreak-crown.env ] || . /etc/footbreak-crown.env
+          set +a
+          PYTHONPATH=/opt/footbreak /opt/footbreak/.venv/bin/python3 -u - <<'PY'
           from datetime import datetime, timezone
 
           from system import hkjc_feed as H
