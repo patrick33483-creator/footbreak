@@ -1293,9 +1293,10 @@ class CrownSafetyTests(unittest.TestCase):
         app = (root / "app.js").read_text(encoding="utf-8")
         styles = (root / "styles.css").read_text(encoding="utf-8")
 
-        self.assertIn("const gradedRows = rows.filter", app)
-        self.assertIn("已核對賽果", app)
-        self.assertIn("不計入準確率", app)
+        self.assertIn("const historyTime = (row)", app)
+        self.assertIn("b[0] - a[0] || b[1] - a[1]", app)
+        self.assertIn("全部預測紀錄", app)
+        self.assertIn("最新開賽時間先", app)
         self.assertIn('class="history-market-row"', app)
         self.assertIn('class="history-result-cell"', app)
         self.assertIn(".history-result-cell .hist-result b", styles)
