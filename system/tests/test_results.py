@@ -142,7 +142,7 @@ class ResultSourceTests(unittest.TestCase):
         rows = [{
             "id": "wrong", "league": "中北美杯",
             "home": "圣地亚哥", "away": "蒂华纳",
-            "kickoff": datetime(2026, 8, 10, 10, 0, tzinfo=HKT),
+            "kickoff": datetime(2026, 8, 10, 10, 10, tzinfo=HKT),
             "home_score": 0, "away_score": 1,
         }]
         client = Mock(spec=TitanClient)
@@ -151,6 +151,33 @@ class ResultSourceTests(unittest.TestCase):
         )
         self.assertIsNone(result["corners_total"])
         client.result_detail.assert_not_called()
+
+    def test_titan_exact_teams_and_score_allow_ten_minute_provider_offset(self) -> None:
+        official = {
+            "goals_home": 1, "goals_away": 0, "goals_total": 1,
+            "corners_home": None, "corners_away": None,
+            "corners_total": None, "source": "hkjc_official",
+        }
+        record = {
+            "match_id": "50072681", "league": "North America - Leagues Cup",
+            "home": "聖地亞哥FC", "away": "迪祖亞拿",
+            "kickoff": "2026-08-10 10:00",
+        }
+        rows = [{
+            "id": "2961747", "league": "中北美杯",
+            "home": "圣地亚哥", "away": "蒂华纳",
+            "kickoff": datetime(2026, 8, 10, 10, 10, tzinfo=HKT),
+            "home_score": 1, "away_score": 0,
+        }]
+        client = Mock(spec=TitanClient)
+        client.result_detail.return_value = {
+            "corners_home": 6, "corners_away": 3, "corners_total": 9,
+        }
+        result = titan_results.merge_titan_corners(
+            official, record, client=client, rows=rows
+        )
+        self.assertEqual(result["corners_total"], 9)
+        client.result_detail.assert_called_once_with("2961747")
 
     def test_public_refresh_uses_static_data_instead_of_missing_api_route(self) -> None:
         app = Path(SYSTEM_DIR.parent, "hkjc-dashboard", "app.js").read_text(

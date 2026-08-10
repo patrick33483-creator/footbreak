@@ -18,13 +18,16 @@ if ROOT not in sys.path:
 from crown.config import settings
 from crown.matching import (
     Event,
+    Match,
     canonical_league_key,
     canonical_team_key,
     match_event,
+    qualifiers,
 )
 from crown.titan import TitanClient
 
 HKT = timezone(timedelta(hours=8))
+EXACT_TEAM_FALLBACK_TOLERANCE_SECONDS = 15 * 60
 
 
 def _kickoff(record: dict[str, Any]) -> datetime | None:
@@ -44,6 +47,40 @@ def _kickoff(record: dict[str, Any]) -> datetime | None:
 def fetch_titan_result_rows(client: TitanClient | None = None) -> tuple[TitanClient, list[dict[str, Any]]]:
     client = client or TitanClient(settings())
     return client, client.results()
+
+
+def _exact_team_fallback(target: Event, candidates: list[Event]) -> Match:
+    """Accept one exact reviewed team identity despite a small clock offset.
+
+    This is result-only matching.  The caller still requires an exact official
+    score cross-check before any corner statistic can be merged.
+    """
+    matches: list[tuple[Event, bool]] = []
+    for candidate in candidates:
+        if abs((candidate.kickoff - target.kickoff).total_seconds()) > EXACT_TEAM_FALLBACK_TOLERANCE_SECONDS:
+            continue
+        if qualifiers(target) != qualifiers(candidate):
+            continue
+        direct = (
+            canonical_team_key(target.home) == canonical_team_key(candidate.home)
+            and canonical_team_key(target.away) == canonical_team_key(candidate.away)
+        )
+        reversed_order = (
+            canonical_team_key(target.home) == canonical_team_key(candidate.away)
+            and canonical_team_key(target.away) == canonical_team_key(candidate.home)
+        )
+        if direct:
+            matches.append((candidate, False))
+        if reversed_order:
+            matches.append((candidate, True))
+    unique = {(event.id, reversed_order): event for event, reversed_order in matches}
+    event_ids = {event_id for event_id, _ in unique}
+    if len(event_ids) != 1 or len(unique) != 1:
+        reason = "no_exact_team_candidate" if not unique else "ambiguous_exact_team_candidate"
+        return Match(None, False, 0.0, reason)
+    (event_id, reversed_order), event = next(iter(unique.items()))
+    assert event.id == event_id
+    return Match(event, reversed_order, 1.0, None)
 
 
 def merge_titan_corners(
@@ -84,7 +121,9 @@ def merge_titan_corners(
         require_qualifiers=True,
     )
     if not matched.event:
-        return result
+        matched = _exact_team_fallback(target, candidates)
+        if not matched.event:
+            return result
 
     row = matched.event.extra or {}
     titan_home, titan_away = row.get("home_score"), row.get("away_score")
