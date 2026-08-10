@@ -89,9 +89,9 @@ for _ in $(seq 1 60); do
 import json
 from urllib.request import urlopen
 
-with urlopen("http://127.0.0.1:8765/api/data", timeout=2) as response:
+with urlopen("http://127.0.0.1:8765/api/health", timeout=2) as response:
     payload = json.load(response)
-assert payload.get("schema_version") == "crown-dashboard-v2"
+assert payload == {"ok": True, "service": "crown-dashboard-api"}
 PY
   then
     dashboard_api_ready=1
@@ -111,9 +111,9 @@ for _ in $(seq 1 20); do
 import json
 from urllib.request import urlopen
 
-with urlopen("http://127.0.0.1:8766/api/data", timeout=2) as response:
+with urlopen("http://127.0.0.1:8766/api/health", timeout=2) as response:
     payload = json.load(response)
-assert "prediction_history" in payload
+assert payload == {"ok": True, "service": "footbreak-dashboard-api"}
 PY
   then
     footbreak_api_ready=1
@@ -164,12 +164,12 @@ for _ in $(seq 1 30); do
 import json
 from urllib.request import urlopen
 
-with urlopen("http://127.0.0.1:8765/api/data", timeout=2) as response:
+with urlopen("http://127.0.0.1:8765/api/health", timeout=2) as response:
     crown = json.load(response)
-with urlopen("http://127.0.0.1:8766/api/data", timeout=2) as response:
+with urlopen("http://127.0.0.1:8766/api/health", timeout=2) as response:
     footbreak = json.load(response)
-assert crown.get("schema_version") == "crown-dashboard-v2"
-assert "prediction_history" in footbreak
+assert crown == {"ok": True, "service": "crown-dashboard-api"}
+assert footbreak == {"ok": True, "service": "footbreak-dashboard-api"}
 PY
   then
     final_api_ready=1

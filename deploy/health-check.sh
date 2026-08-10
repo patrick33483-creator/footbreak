@@ -48,9 +48,12 @@ for _ in $(seq 1 10); do
 import json
 from urllib.request import urlopen
 
-with urlopen("http://127.0.0.1:8765/api/data", timeout=3) as response:
-    payload = json.load(response)
-assert payload.get("schema_version") == "crown-dashboard-v2"
+with urlopen("http://127.0.0.1:8765/api/health", timeout=3) as response:
+    crown = json.load(response)
+with urlopen("http://127.0.0.1:8766/api/health", timeout=3) as response:
+    footbreak = json.load(response)
+assert crown == {"ok": True, "service": "crown-dashboard-api"}
+assert footbreak == {"ok": True, "service": "footbreak-dashboard-api"}
 PY
   then
     api_ready=1
@@ -61,18 +64,23 @@ done
 if [ "$api_ready" != 1 ]; then
   systemctl status crown-dashboard-api.service --no-pager -l || true
   journalctl -u crown-dashboard-api.service --since "-5 minutes" --no-pager -n 200 || true
-  echo "FAIL Crown dashboard API /api/data is unreachable" >&2
+  echo "FAIL dashboard API health endpoints are unreachable" >&2
   exit 1
 fi
-echo "OK Crown dashboard API /api/data"
+echo "OK Crown dashboard API /api/health"
+echo "OK Footbreak dashboard API /api/health"
 python3 - <<'PY'
 import json
 from urllib.request import urlopen
 
+with urlopen("http://127.0.0.1:8765/api/data", timeout=3) as response:
+    crown = json.load(response)
 with urlopen("http://127.0.0.1:8766/api/data", timeout=3) as response:
-    payload = json.load(response)
-assert "prediction_history" in payload
+    footbreak = json.load(response)
+assert crown.get("schema_version") == "crown-dashboard-v2"
+assert "prediction_history" in footbreak
 PY
+echo "OK Crown dashboard API /api/data"
 echo "OK Footbreak dashboard API /api/data"
 
 for service in footbreak-tick.service footbreak-settle.service crown-tick.service crown-sweep.service crown-settle.service; do

@@ -803,10 +803,54 @@ table.calib tr:last-child td { border-bottom: 0; }
 .history-table { min-width: 920px; }
 .history-table tr { content-visibility: auto; contain-intrinsic-size: 0 58px; }
 .history-table td { vertical-align: top; }
+.hist-result { margin-top: 5px; color: var(--text); }
+.history-result-cell {
+  min-width: 170px;
+  white-space: nowrap;
+}
+.history-result-cell .hist-result {
+  font-size: 1.0625rem;
+  font-weight: 700;
+  line-height: 1.5;
+}
+.history-result-cell .hist-result b {
+  font-size: 1.3125rem;
+  color: var(--ink);
+}
+.history-result-cell .respill,
+.history-result-cell .stpill {
+  font-size: 0.75rem;
+  font-weight: 700;
+  line-height: 1.6;
+}
+.history-result-cell .cell-sub {
+  margin-top: 2px;
+  font-size: 0.6875rem;
+  line-height: 1.45;
+}
 .forecast-pick { color: var(--amber); }
+.history-market-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) max-content;
+  align-items: start;
+  gap: var(--s3);
+  padding: 3px 0;
+}
+.history-market-row + .history-market-row {
+  border-top: 1px solid var(--line-soft);
+}
+.history-market-pick {
+  min-width: 0;
+  line-height: 1.65;
+}
+.history-market-pick .cell-sub {
+  display: inline;
+  margin-left: 4px;
+}
 .market-hit {
   display: inline-flex; gap: 4px; align-items: center;
-  margin: 3px 0 7px; padding: 1px 7px; border-radius: 4px;
+  margin: 0; padding: 1px 7px; border-radius: 4px;
+  white-space: nowrap;
   font: 600 11px/1.6 var(--sans); border: 1px solid var(--line);
 }
 .market-hit.hit { color: var(--good); border-color: var(--good); }
@@ -826,6 +870,12 @@ table.calib tr:last-child td { border-bottom: 0; }
 }
 
 @media (max-width: 620px) {
+  .history-result-cell { min-width: 185px; }
+  .history-result-cell .hist-result { font-size: 1.125rem; }
+  .history-result-cell .hist-result b { font-size: 1.4375rem; }
+  .history-result-cell .respill,
+  .history-result-cell .stpill { font-size: 0.8125rem; }
+  .history-result-cell .cell-sub { font-size: 0.75rem; }
   .lad { grid-template-columns: 22px 1fr; }
   .lad-c { grid-column: 2; text-align: left; }
   .card.stk .stk-now { gap: var(--s2) var(--s3); }

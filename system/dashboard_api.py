@@ -62,7 +62,14 @@ class FootbreakDashboardHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self) -> None:  # noqa: N802
-        if self.path.split("?", 1)[0] != "/api/data":
+        path = self.path.split("?", 1)[0]
+        if path == "/api/health":
+            self._json(
+                HTTPStatus.OK,
+                {"ok": True, "service": "footbreak-dashboard-api"},
+            )
+            return
+        if path != "/api/data":
             self._json(HTTPStatus.NOT_FOUND, {"ok": False, "error": "not_found"})
             return
         try:

@@ -22,6 +22,8 @@ class SchedulerPreemptionTests(unittest.TestCase):
         self.assertLess(preempt, run)
         self.assertIn("TimeoutStartSec=60", unit)
         self.assertIn("TimeoutStopSec=3", unit)
+        self.assertIn("Environment=FOOTBREAK_TICK_LOCK_WAIT_SECONDS=5", unit)
+        self.assertIn("SuccessExitStatus=75", unit)
         self.assertIn("ExecStopPost=-/usr/bin/rm -f /run/footbreak-t5-priority", unit)
         for name in ("footbreak-t30.service", "footbreak-sweep.service", "footbreak-settle.service"):
             slow = (ROOT / "deploy/systemd" / name).read_text(encoding="utf-8")
@@ -39,6 +41,11 @@ class SchedulerPreemptionTests(unittest.TestCase):
         wrapper = (ROOT / "deploy/run.sh").read_text(encoding="utf-8")
         self.assertIn('elif [ -e "$PRIORITY_MARKER" ]; then', wrapper)
         self.assertIn('TICK_LOCK_WAIT_SECONDS:-2', wrapper)
+        timer = (ROOT / "deploy/systemd/footbreak-settle.timer").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("OnCalendar=*:0/5:15", timer)
+        self.assertIn("AccuracySec=1s", timer)
 
     def test_record_picks_save_atomically_replaces_ledger(self):
         with tempfile.TemporaryDirectory() as tmp:

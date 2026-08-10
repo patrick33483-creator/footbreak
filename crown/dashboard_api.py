@@ -13,13 +13,23 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 from .config import Settings, settings
-from .dashboard_data import build, write_dashboard_data
+from .dashboard_data import write_dashboard_data
 from .engine import run
 from .prediction_history import update_history
 from .state import load_ledger
 
 
 MAX_BODY_BYTES = 4096
+
+
+def read_published_data(config: Settings) -> dict[str, Any]:
+    """Read the already-published snapshot without rebuilding Crown state."""
+    payload = json.loads((config.web_root / "data.json").read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("dashboard_payload_not_object")
+    if payload.get("schema_version") != "crown-dashboard-v2":
+        raise ValueError("dashboard_schema_invalid")
+    return payload
 
 
 def perform_settlement(config: Settings) -> dict[str, Any]:
@@ -39,7 +49,7 @@ def perform_settlement(config: Settings) -> dict[str, Any]:
         warning = f"prediction_history_{type(exc).__name__}"
 
     write_dashboard_data(config)
-    data = build(config)
+    data = read_published_data(config)
     response = {
         "ok": True,
         "settled_count": int(result.get("settled") or 0),
@@ -72,10 +82,23 @@ class CrownDashboardHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self) -> None:  # noqa: N802
-        if self.path.split("?", 1)[0] != "/api/data":
+        path = self.path.split("?", 1)[0]
+        if path == "/api/health":
+            self._json(
+                HTTPStatus.OK,
+                {"ok": True, "service": "crown-dashboard-api"},
+            )
+            return
+        if path != "/api/data":
             self._json(HTTPStatus.NOT_FOUND, {"ok": False, "error": "not_found"})
             return
-        self._json(HTTPStatus.OK, build(self.config))
+        try:
+            self._json(HTTPStatus.OK, read_published_data(self.config))
+        except Exception as exc:
+            self._json(
+                HTTPStatus.SERVICE_UNAVAILABLE,
+                {"ok": False, "error": f"data_{type(exc).__name__}"},
+            )
 
     def do_POST(self) -> None:  # noqa: N802
         if self.path.split("?", 1)[0] != "/api/settle":

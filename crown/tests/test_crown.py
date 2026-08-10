@@ -1191,7 +1191,7 @@ class CrownSafetyTests(unittest.TestCase):
         ), patch(
             "crown.dashboard_api.write_dashboard_data",
         ) as publisher, patch(
-            "crown.dashboard_api.build",
+            "crown.dashboard_api.read_published_data",
             return_value=dashboard,
         ):
             result = perform_settlement(config)
@@ -1203,6 +1203,72 @@ class CrownSafetyTests(unittest.TestCase):
         self.assertEqual(result["data"], dashboard)
         self.assertEqual(result["warning"], "prediction_history_RuntimeError")
         publisher.assert_called_once_with(config)
+
+    def test_dashboard_api_reads_only_valid_published_snapshot(self) -> None:
+        from crown.dashboard_api import read_published_data
+
+        payload = {"schema_version": "crown-dashboard-v2", "matches": []}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "data.json").write_text(
+                json.dumps(payload), encoding="utf-8"
+            )
+            self.assertEqual(
+                read_published_data(replace(settings(), web_root=root)),
+                payload,
+            )
+
+    def test_crown_history_uses_footbreak_result_layout_and_large_score(self) -> None:
+        root = Path(__file__).resolve().parents[1] / "dashboard"
+        app = (root / "app.js").read_text(encoding="utf-8")
+        styles = (root / "styles.css").read_text(encoding="utf-8")
+
+        self.assertIn("const gradedRows = rows.filter", app)
+        self.assertIn("已核對賽果", app)
+        self.assertIn("不計入準確率", app)
+        self.assertIn('class="history-market-row"', app)
+        self.assertIn('class="history-result-cell"', app)
+        self.assertIn(".history-result-cell .hist-result b", styles)
+        self.assertIn("font-size: 1.4375rem", styles)
+
+    def test_prediction_history_fetches_titan_corner_detail_after_strict_checks(self) -> None:
+        from crown.prediction_history import _merge_titan_corner_detail
+        from crown.titan import TitanClient
+
+        row = {
+            "match_id": "2961746",
+            "titan_match_id": "2961746",
+            "league": "北美聯賽盃",
+            "home": "聖地亞哥FC",
+            "away": "迪祖亞拿",
+            "kickoff": "2026-08-10T10:00:00+08:00",
+        }
+        titan = {
+            "id": "2961746",
+            "league": "中北美杯",
+            "home": "圣地亚哥",
+            "away": "蒂华纳",
+            "kickoff": datetime(2026, 8, 10, 10, 0, tzinfo=self.now.tzinfo),
+            "home_score": 1,
+            "away_score": 0,
+        }
+        client = Mock(spec=TitanClient)
+        client.result_detail.return_value = {
+            "corners_home": 6,
+            "corners_away": 3,
+            "corners_total": 9,
+        }
+        result, source, reason = _merge_titan_corner_detail(
+            row,
+            {"home_score": 1, "away_score": 0, "corners_total": None},
+            "hkjc_official_exact_id",
+            {"2961746": titan},
+            client,
+        )
+        self.assertEqual(result["corners_total"], 9)
+        self.assertEqual(reason, "filled")
+        self.assertIn("exact_id_identity_score", source)
+        client.result_detail.assert_called_once_with("2961746")
 
     def test_hkjc_official_results_paginate_and_require_confirmed_full_time(self) -> None:
         class Response:

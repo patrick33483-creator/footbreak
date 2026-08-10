@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import math
 import os
+from collections import Counter
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -17,7 +18,7 @@ from .config import Settings
 from .hkjc import fetch_official_result_events
 from .ledger import PREDICTION_ERA, PREDICTION_SCHEMA_VERSION, STAGES
 from .lines import settle_handicap, settle_total
-from .matching import Event, match_event
+from .matching import Event, canonical_league_key, canonical_team_key, match_event
 from .titan import TitanClient
 
 
@@ -201,6 +202,71 @@ def _result(row: dict[str, Any], titan_by_id: dict[str, dict[str, Any]],
     return None, None
 
 
+def _merge_titan_corner_detail(
+    row: dict[str, Any],
+    score: dict[str, Any],
+    source: str | None,
+    titan_by_id: dict[str, dict[str, Any]],
+    client: TitanClient,
+) -> tuple[dict[str, Any], str | None, str]:
+    """Fill corners only after exact Titan ID, identity and score checks."""
+    if score.get("corners_total") is not None:
+        return score, source, "already_present"
+    titan_id = str(row.get("titan_match_id") or row.get("match_id") or "")
+    titan = titan_by_id.get(titan_id)
+    target = _target(row)
+    if not titan or target is None or titan.get("home_score") is None:
+        return score, source, "titan_row_missing"
+    candidate = Event(
+        str(titan["id"]),
+        str(titan.get("league") or ""),
+        str(titan.get("home") or ""),
+        str(titan.get("away") or ""),
+        titan["kickoff"],
+    )
+    matched = match_event(
+        target,
+        [candidate],
+        team_key=canonical_team_key,
+        league_key=canonical_league_key,
+        allow_reversed=True,
+        require_qualifiers=True,
+    )
+    if not matched.event:
+        return score, source, f"titan_identity_{matched.reason or 'rejected'}"
+    titan_home, titan_away = titan.get("home_score"), titan.get("away_score")
+    if matched.reversed:
+        titan_home, titan_away = titan_away, titan_home
+    try:
+        verified_score = (int(score["home_score"]), int(score["away_score"]))
+        titan_score = (int(titan_home), int(titan_away))
+    except (KeyError, TypeError, ValueError):
+        return score, source, "titan_score_invalid"
+    if titan_score != verified_score:
+        return score, source, "titan_score_mismatch"
+    try:
+        detail = client.result_detail(titan_id)
+    except Exception as exc:
+        return score, source, f"titan_detail_{type(exc).__name__}"
+    if not detail or detail.get("corners_total") is None:
+        return score, source, "titan_detail_corners_missing"
+    corners_home = detail.get("corners_home")
+    corners_away = detail.get("corners_away")
+    if matched.reversed:
+        corners_home, corners_away = corners_away, corners_home
+    merged = {
+        **score,
+        "corners_home": corners_home,
+        "corners_away": corners_away,
+        "corners_total": detail["corners_total"],
+    }
+    return (
+        merged,
+        f"{source or 'verified_result'}+titan007_detail_exact_id_identity_score",
+        "filled",
+    )
+
+
 def _hkjc_event(row: dict[str, Any]) -> Event | None:
     kickoff = parse_time(row.get("kickoff"))
     if not kickoff or not row.get("home") or not row.get("away"):
@@ -381,8 +447,9 @@ def grade_history(config: Settings) -> dict[str, Any]:
         dates.add((datetime.strptime(raw, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d"))
     titan_error = None
     official_error = None
+    titan_client = TitanClient(config)
     try:
-        titan_rows = TitanClient(config).results() if due else []
+        titan_rows = titan_client.results() if due else []
     except Exception as exc:
         titan_error = type(exc).__name__
         titan_rows = []
@@ -396,6 +463,7 @@ def grade_history(config: Settings) -> dict[str, Any]:
     hkjc_events = [(event, row) for row in official_rows if (event := _hkjc_event(row))]
     footbreak_by_hkjc_id = _footbreak_results_by_hkjc_id()
     graded_now = 0
+    corner_detail_reasons: Counter[str] = Counter()
     for row in due:
         score, source = _result(row, titan_by_id, hkjc_by_id, hkjc_events)
         hkjc_id = str(row.get("hkjc_match_id") or "")
@@ -415,6 +483,16 @@ def grade_history(config: Settings) -> dict[str, Any]:
             else:
                 row["result_missing_reason"] = "no_verified_result_match"
             continue
+        has_corner_prediction = any(
+            str(prediction.get("code") or "") == "CHL"
+            for prediction in (row.get("market_predictions") or [])
+            if isinstance(prediction, dict)
+        )
+        if has_corner_prediction:
+            score, source, corner_reason = _merge_titan_corner_detail(
+                row, score, source, titan_by_id, titan_client
+            )
+            corner_detail_reasons[corner_reason] += 1
         try:
             home, away = int(score["home_score"]), int(score["away_score"])
         except (KeyError, TypeError, ValueError):
@@ -449,6 +527,7 @@ def grade_history(config: Settings) -> dict[str, Any]:
         "titan_error": titan_error,
         "hkjc_error": official_error,
         "graded_now": graded_now,
+        "corner_detail": dict(sorted(corner_detail_reasons.items())),
         "unresolved": sum(
             row.get("result_status") not in {"已核實", "不計"}
             or any(

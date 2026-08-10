@@ -2,9 +2,10 @@
 Description=足破 · 每5分鐘獨立結算
 
 [Timer]
-OnCalendar=*:0/5
+# Start between the :00 and :30 tick cadence instead of colliding at :00.
+OnCalendar=*:0/5:15
 Persistent=true
-AccuracySec=30s
+AccuracySec=1s
 Unit=footbreak-settle.service
 
 [Install]

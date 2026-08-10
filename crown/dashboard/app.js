@@ -978,12 +978,15 @@ function historyMarkets(r) {
           ? `<span class="market-hit miss"><b>落空</b> · ${esc(settlement)}</span>`
           : `<span class="market-hit push"><b>走水</b></span>`
       : g.reason === 'corners_result_missing'
-        ? `<span class="market-hit pending">${minsLeft(r.kickoff) < -(7 * 24 * 60)
-          ? '角球賽果來源缺失'
-          : '角球賽果同步中'}</span>`
+        ? '<span class="market-hit pending">角球賽果同步中</span>'
         : '<span class="market-hit pending">待賽果</span>';
-    return `<div><b>${HIST_MARKET_LABEL[p.code] || esc(p.code)}</b> ${esc(historyPredictionLabel(r, p))}
-      <span class="cell-sub">${pc(p.probability, 1)}</span>${result}</div>`;
+    return `<div class="history-market-row">
+      <span class="history-market-pick"><b>${HIST_MARKET_LABEL[p.code] || esc(p.code)}</b>
+        ${esc(historyPredictionLabel(r, p))}
+        <span class="cell-sub">${pc(p.probability, 1)}</span>
+      </span>
+      ${result}
+    </div>`;
   }).join('') || '<span class="dim">未有可評分市場</span>';
 }
 
@@ -1002,8 +1005,12 @@ function historyMarketResult(r) {
 }
 
 function renderHistory() {
+  const V = $('#viewHistory');
   const payload = DATA.prediction_history || { rows: [], stats: {} };
   const rows = payload.rows || [], s = payload.stats || {};
+  const gradedRows = rows.filter((r) => r.result_status === '已核實');
+  const excludedRows = rows.filter((r) => r.result_status === '不計');
+  const pendingRows = rows.filter((r) => r.result_status === '待賽果');
   const accuracy = s.accuracy == null ? '待賽果' : pc(s.accuracy, 1);
   const K = [
     ['記錄賽事', s.matches || 0, ''],
@@ -1025,28 +1032,38 @@ function renderHistory() {
       x.accuracy == null ? `待累積 (${x.graded || 0})` : `${pc(x.accuracy, 1)} (${x.hits}/${x.decided})`
     }</span>`;
   }).join('');
-  const body = rows.map((r) => `<tr>
+  const historyRows = (items) => items.map((r) => `<tr>
     <td class="mono nowrap">${r.kickoff ? `${hkDay(r.kickoff)} ${hkClock(r.kickoff)}` : '—'}</td>
     <td>${esc(r.home)} <span class="dim">v</span> ${esc(r.away)}
       <div class="cell-sub">${esc(r.league || '')}</div></td>
     <td><span class="fx-tag ${TAG[r.stage] || 'tag-wait'}">${esc(r.stage || '—')}</span>
       <div class="cell-sub mono">${r.predicted_at ? hkStamp(r.predicted_at) : '—'}</div></td>
-    <td><b class="forecast-pick">${esc(r.forecast || ((r.market_predictions || []).length ? '亞洲盤市場預測' : '未能預測'))}</b>
-      <div class="cell-sub">${r.probability == null ? '詳見右欄市場方向' : `最高機率 ${pc(r.probability, 1)}`}${r.likely_score ? ` · 最可能 ${esc(r.likely_score)}` : ''}</div></td>
+    <td><b class="forecast-pick">${esc(r.forecast || '冇主客和預測')}</b>
+      <div class="cell-sub">${r.probability == null ? '正式結果見市場欄' : `最高機率 ${pc(r.probability, 1)}`}${r.likely_score ? ` · 最可能 ${esc(r.likely_score)}` : ''}</div></td>
     <td>${historyMarkets(r)}<div class="market-summary">${historyMarketResult(r)}</div></td>
     <td class="${convClass(r.conviction)}">${f2(r.conviction)}</td>
     <td>${r.simulated_bet
       ? `<span class="stpill pending">有模擬注</span><div class="cell-sub">${esc(r.bet_label || '')}</div>`
       : `<span class="stpill voided">冇落注</span><div class="cell-sub hist-reason">${esc(r.no_bet_reason || '未達條件')}</div>`}</td>
-    <td>${r.actual
-      ? r.forecast
-        ? `<span class="respill ${r.correct ? 'r-w' : 'r-l'}">主客和${r.correct ? '命中' : '落空'}</span>
-           <div class="cell-sub">預測 ${esc(r.forecast)} · 賽果 ${esc(r.actual)} · <span class="mono">${esc(r.score)}</span></div>`
-        : `<span class="stpill voided">冇主客和預測</span>
-           <div class="cell-sub">賽果 ${esc(r.actual)} · <span class="mono">${esc(r.score)}</span></div>`
-      : '<span class="stpill pending">待賽果</span>'}</td>
+    <td class="history-result-cell">${r.actual
+      ? r.correct == null
+        ? `<span class="stpill voided">冇主客和預測</span>
+           <div class="hist-result"><b>${esc(r.score || '—')}</b> · ${esc(r.actual)}</div>
+           <div class="cell-sub">${esc(r.result_source === 'hkjc_official' ? '馬會官方賽果' : r.result_source || '已核對賽果')}</div>`
+        : `<span class="respill ${r.correct ? 'r-w' : 'r-l'}">主客和${r.correct ? '命中' : '落空'}</span>
+         <div class="hist-result"><b>${esc(r.score || '—')}</b> · ${esc(r.actual)}</div>
+         <div class="cell-sub">${esc(r.result_source === 'hkjc_official' ? '馬會官方賽果' : r.result_source || '已核對賽果')}</div>`
+      : r.result_status === '不計'
+        ? `<span class="stpill voided">不計</span>
+           <div class="cell-sub">${esc(r.excluded_reason || '延期／取消／腰斬')}</div>`
+        : '<span class="stpill pending">待賽果</span>'}</td>
   </tr>`).join('');
-  $('#viewHistory').innerHTML = `<div class="ledger-head">
+  const historyTable = (items, empty) => `<div class="tbl-wrap"><table class="t history-table">
+      <tr><th>開賽</th><th>賽事</th><th>階段</th><th>1X2 輔助</th><th>各市場預測／結果</th><th>信念</th><th>模擬注</th><th>整場賽果</th></tr>
+      ${historyRows(items) || `<tr><td colspan="8" class="empty2">${empty}</td></tr>`}
+    </table></div>`;
+
+  V.innerHTML = `<div class="ledger-head">
     <h1 class="pg-h">預測紀錄 <span class="sub">有冇落注都照記 · 準確率與模擬倉分開</span></h1>
     <div class="kpis wide">${K.map(([l, v, c]) =>
       `<div class="kpi"><span class="kpi-lbl">${l}</span><span class="kpi-val ${c}">${v}</span></div>`).join('')}</div>
@@ -1056,11 +1073,14 @@ function renderHistory() {
     <div class="history-stage-summary">${marketSummary}</div>
     <p class="mx-note">正式學習樣本為讓球、入球大細及角球大細當時主線；1X2 只作輔助。賽果返嚟後先計命中，未完場或未取到賽果唔當輸。</p>
   </div>
-  <div class="card"><h2 class="card-h">全量紀錄 <span class="sub">${rows.length} 筆</span></h2>
-    <div class="tbl-wrap"><table class="t history-table">
-      <tr><th>開賽</th><th>賽事</th><th>階段</th><th>主客和預測</th><th>各市場預測及結果</th><th>信念</th><th>模擬注</th><th>主客和結果</th></tr>
-      ${body || '<tr><td colspan="8" class="empty2">未有預測紀錄</td></tr>'}
-    </table></div>
+  <div class="card"><h2 class="card-h">已核對賽果 <span class="sub">${gradedRows.length} 筆 · 命中 ${s.hits || 0}</span></h2>
+    ${historyTable(gradedRows, '暫時未有已核對賽果。')}
+  </div>
+  <div class="card"><h2 class="card-h">待賽果 <span class="sub">${pendingRows.length} 筆</span></h2>
+    ${historyTable(pendingRows, '目前冇待核對紀錄。')}
+  </div>
+  <div class="card"><h2 class="card-h">不計入準確率 <span class="sub">${excludedRows.length} 筆</span></h2>
+    ${historyTable(excludedRows, '目前冇延期、取消或腰斬紀錄。')}
   </div>`;
 }
 
