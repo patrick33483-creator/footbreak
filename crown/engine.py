@@ -327,6 +327,44 @@ def _wdl_prediction(prices: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _fixture_baseline_prediction(
+    forecasts: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Return a low-confidence, always-available WDL learning prediction.
+
+    This fallback exists so every Crown fixture produces a scoreable prediction
+    record even when one or more quote/reference providers are incomplete.  It
+    is deliberately excluded from EV, Kelly and simulated-bet candidates.
+    Where Crown has an HDC direction, that direction nudges the league-neutral
+    prior; otherwise a conservative home-advantage prior is used.
+    """
+    handicap = next(
+        (row for row in (forecasts or []) if row.get("code") == "HDC"),
+        None,
+    )
+    side = str((handicap or {}).get("side") or "")
+    if side == "H":
+        probabilities = {"home": 0.44, "draw": 0.29, "away": 0.27}
+        forecast, likely_score = "主勝", "1-0"
+        source = "crown_hdc_direction_low_confidence_v1"
+    elif side == "A":
+        probabilities = {"home": 0.28, "draw": 0.29, "away": 0.43}
+        forecast, likely_score = "客勝", "0-1"
+        source = "crown_hdc_direction_low_confidence_v1"
+    else:
+        probabilities = {"home": 0.40, "draw": 0.30, "away": 0.30}
+        forecast, likely_score = "主勝", "1-0"
+        source = "fixture_prior_low_confidence_v1"
+    return {
+        "probabilities": probabilities,
+        "forecast": forecast,
+        "probability": max(probabilities.values()),
+        "likely_score": likely_score,
+        "prediction_source": source,
+        "baseline_low_confidence": True,
+    }
+
+
 def _prediction(titan: dict[str, Any], bridge: BridgeMatch, h_match: dict[str, Any] | None,
                 stage: str, config: Settings, titan_client: TitanClient, pinnapi_client: PinnapiClient,
                 crown_snapshot: dict[str, Any] | None = None,
@@ -359,6 +397,7 @@ def _prediction(titan: dict[str, Any], bridge: BridgeMatch, h_match: dict[str, A
         "verdict": "無法完整預測", "no_bet_reason": None, "book_odds": {"crown": [], "hkjc_chl": _hkjc_chl(h_match)},
         "outcome": None, "forecast": None, "probability": None, "likely_score": None,
         "prediction_source": None, "sharp_reference_available": False,
+        "edge_reference_status": "not_checked", "edge_reference_note": None,
     }
     # Crown is the board master.  Fetch and preserve its quote before any
     # HKJC/PinnAPI bridge decision so Crown-only fixtures can still be shown,
@@ -374,7 +413,13 @@ def _prediction(titan: dict[str, Any], bridge: BridgeMatch, h_match: dict[str, A
     base["book_odds"]["crown"] = crown
     base["source_snapshot_at"] = iso_hkt()
     if not crown:
-        base["no_bet_reason"] = "皇冠公司盤口目前不可用；不顯示為皇冠有效賽事。"
+        base.update(_fixture_baseline_prediction())
+        base["status"] = "PREDICTION_READY"
+        base["verdict"] = "已預測"
+        base["conviction"] = round(float(base["probability"]) * 100, 1)
+        base["edge_reference_status"] = "unavailable"
+        base["edge_reference_note"] = "皇冠即時盤及 PinnAPI EV 參考暫不可用；只保留低信念純預測。"
+        base["no_bet_reason"] = None
         return base
     now = time.time()
     forecasts, forecast_reasons = _crown_market_forecasts(
@@ -394,6 +439,13 @@ def _prediction(titan: dict[str, Any], bridge: BridgeMatch, h_match: dict[str, A
         base["verdict"] = "已預測"
         base["conviction"] = max(float(row["conviction"]) for row in forecasts)
         base["prediction_source"] = "crown_full_market_no_vig"
+    base.update(_fixture_baseline_prediction(forecasts))
+    base["status"] = "PREDICTION_READY"
+    base["verdict"] = "已預測"
+    base["conviction"] = max(
+        float(base.get("conviction") or 0),
+        round(float(base["probability"]) * 100, 1),
+    )
     if used_cached_crown:
         base["no_bet_reason"] = (
             "皇冠即時盤目前不可用；已沿用最後一次有效皇冠盤作純預測及學習，"
@@ -401,26 +453,46 @@ def _prediction(titan: dict[str, Any], bridge: BridgeMatch, h_match: dict[str, A
         )
         return base
     if not bridge.event:
-        base["no_bet_reason"] = (
-            f"{'已保留皇冠全盤預測；' if forecasts else ''}"
-            "PinnAPI 無安全唯一同場對應，只禁止計算 edge 及投注。"
+        # PinnAPI is an optional EV reference, never a prerequisite for Crown
+        # forecasting. Keep mapping diagnostics out of the main prediction /
+        # no-bet verdict so the UI cannot mislabel a valid Crown forecast as
+        # "unable to predict".
+        base["edge_reference_status"] = "unavailable"
+        base["edge_reference_note"] = (
+            "PinnAPI 暫無安全唯一同場參考；不計算 EV。"
             f" 映射診斷：{bridge.reason or 'unknown'}。"
         )
-        if not forecasts:
-            base["no_bet_reason"] += f" 皇冠預測診斷：{'；'.join(forecast_reasons)}。"
+        if forecasts:
+            base["no_bet_reason"] = None
+        else:
+            base["edge_reference_note"] = (
+                "皇冠盤未形成完整雙邊市場，已保留低信念賽果 baseline；"
+                "PinnAPI EV 參考暫不可用。"
+            )
+            base["no_bet_reason"] = None
         return base
     try:
         pinnapi = pinnapi_client.lines(bridge.event.id)
     except Exception as exc:
         # Deliberately do not include provider responses, URLs, or credentials.
-        base["no_bet_reason"] = (
-            f"{'已保留皇冠全盤預測；' if forecasts else ''}"
-            f"PinnAPI lines unavailable ({type(exc).__name__})，只禁止計算 edge 及投注。"
+        base["edge_reference_status"] = "unavailable"
+        base["edge_reference_note"] = (
+            f"PinnAPI 參考暫時不可用 ({type(exc).__name__})；不計算 EV。"
         )
+        if forecasts:
+            base["no_bet_reason"] = None
+        else:
+            base["edge_reference_note"] = (
+                "皇冠盤未形成完整雙邊市場，已保留低信念賽果 baseline；"
+                f"PinnAPI 參考暫時不可用 ({type(exc).__name__})。"
+            )
+            base["no_bet_reason"] = None
         return base
     prices = pinnapi["prices"]
     base.update(_wdl_prediction(prices))
     base["sharp_reference_available"] = True
+    base["edge_reference_status"] = "available"
+    base["edge_reference_note"] = None
     candidates, reasons = _candidates(crown, prices, config, now, bool(pinnapi["timestamp_inferred"]))
     corner_candidates: list[dict[str, Any]] = []
     corner_reasons: list[str] = []

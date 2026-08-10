@@ -10,7 +10,7 @@ from .common import iso_hkt
 from .config import Settings
 
 STAGES = {"首預": 1, "T-30": 2, "T-5": 3}
-PREDICTION_ERA = "2026-08-10-market-learning-v2"
+PREDICTION_ERA = "2026-08-10-every-crown-fixture-v3"
 PREDICTION_SCHEMA_VERSION = 2
 
 
@@ -71,6 +71,7 @@ def _snapshot(prediction: dict[str, Any], stage: str) -> dict[str, Any]:
         "conviction", "no_bet_reason", "pick", "lead_view", "market_sources", "hkjc_match_id",
         "titan_match_id", "pinnapi_event_id", "source_snapshot_at", "execution",
         "outcome", "forecast", "probability", "likely_score", "prediction_source",
+        "probabilities", "baseline_low_confidence", "edge_reference_status", "edge_reference_note",
         "pinnapi_corner_event_id", "pinnapi_corner_source_at", "pinnapi_corner_timestamp_inferred",
         "matching_version", "crown_quote_cached_forecast_only", "crown_cached_source_at",
     )} | {

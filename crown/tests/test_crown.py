@@ -12,7 +12,7 @@ from unittest.mock import Mock, patch
 
 from crown.config import settings
 from crown.dashboard_data import build, write_dashboard_data
-from crown.engine import _candidates, _crown_market_forecasts, _fresh, _hkjc_chl_candidates, _prediction, _refresh_crown_quote, _tick_rows_from_predictions, _wdl_prediction
+from crown.engine import _candidates, _crown_market_forecasts, _fixture_baseline_prediction, _fresh, _hkjc_chl_candidates, _prediction, _refresh_crown_quote, _tick_rows_from_predictions, _wdl_prediction
 from crown.hkjc import fetch_official_results
 from crown.ledger import completed_stages, recompute_stats, stage_for, sync_prediction
 from crown.lines import parse_hkjc_handicap, parse_hkjc_total, settle_handicap, settle_total
@@ -404,7 +404,9 @@ class CrownSafetyTests(unittest.TestCase):
         self.assertEqual(prediction["candidates"], [])
         self.assertIsNone(prediction["pick"])
         self.assertFalse(prediction["sharp_reference_available"])
-        self.assertIn("已保留皇冠全盤預測", prediction["no_bet_reason"])
+        self.assertIsNone(prediction["no_bet_reason"])
+        self.assertEqual(prediction["edge_reference_status"], "unavailable")
+        self.assertIn("不計算 EV", prediction["edge_reference_note"])
         pinnapi_client.lines.assert_not_called()
 
         ledger = {"bankroll": 50000, "bets": [], "watch": {}, "log": [], "stats": {}}
@@ -447,6 +449,90 @@ class CrownSafetyTests(unittest.TestCase):
         self.assertIsNone(prediction["pick"])
         self.assertIn("禁止計算 edge 及投注", prediction["no_bet_reason"])
         pinnapi_client.lines.assert_not_called()
+
+    def test_missing_pinnapi_mapping_never_blocks_valid_crown_forecast(self) -> None:
+        config = replace(settings(), source_max_age_seconds=90)
+        kickoff = self.now + timedelta(minutes=5)
+        titan = {"id": "titan", "league": "L", "home": "A", "away": "B", "kickoff": kickoff}
+        bridge = BridgeMatch(
+            Match(None, False, 0.0, "no_candidate_in_kickoff_window"),
+            Match(None, False, 0.0, "no_candidate_in_kickoff_window"),
+            "none",
+            "titan_to_hkjc:no_candidate_in_kickoff_window;"
+            "direct_same_script:no_candidate_in_kickoff_window",
+        )
+        crown = [
+            {"market": "HDC", "line": -0.25, "selection": "H", "odds": 1.80, "source_at": 1000},
+            {"market": "HDC", "line": -0.25, "selection": "A", "odds": 2.05, "source_at": 1000},
+            {"market": "HIL", "line": 2.5, "selection": "H", "odds": 1.90, "source_at": 1000},
+            {"market": "HIL", "line": 2.5, "selection": "L", "odds": 2.00, "source_at": 1000},
+        ]
+        titan_client = Mock()
+        pinnapi_client = Mock()
+        with patch("crown.engine.datetime") as mocked_datetime, patch("crown.engine.time.time", return_value=1001):
+            mocked_datetime.now.return_value = self.now
+            prediction = _prediction(
+                titan, bridge, None, "T-5", config, titan_client, pinnapi_client,
+                crown_snapshot={"prices": crown},
+            )
+        self.assertEqual(prediction["status"], "PREDICTION_READY")
+        self.assertEqual(prediction["verdict"], "已預測")
+        self.assertEqual({row["code"] for row in prediction["forecast_candidates"]}, {"HDC", "HIL"})
+        self.assertEqual(prediction["edge_reference_status"], "unavailable")
+        self.assertIn("不計算 EV", prediction["edge_reference_note"])
+        self.assertIsNone(prediction["no_bet_reason"])
+        self.assertEqual(prediction["candidates"], [])
+        self.assertIsNone(prediction["pick"])
+        pinnapi_client.lines.assert_not_called()
+
+    def test_every_crown_fixture_gets_scoreable_prediction_without_any_quote(self) -> None:
+        config = replace(settings(), source_max_age_seconds=90)
+        kickoff = self.now + timedelta(minutes=30)
+        titan = {
+            "id": "crown-only", "league": "Crown League",
+            "home": "Home", "away": "Away", "kickoff": kickoff,
+        }
+        bridge = BridgeMatch(
+            Match(None, False, 0.0, "no_candidate_in_kickoff_window"),
+            Match(None, False, 0.0, "no_candidate_in_kickoff_window"),
+            "none", "no_reference",
+        )
+        titan_client = Mock()
+        titan_client.crown_prices.return_value = []
+        pinnapi_client = Mock()
+        with patch("crown.engine.datetime") as mocked_datetime:
+            mocked_datetime.now.return_value = self.now
+            prediction = _prediction(
+                titan, bridge, None, "首預", config, titan_client, pinnapi_client
+            )
+        self.assertEqual(prediction["status"], "PREDICTION_READY")
+        self.assertEqual(prediction["verdict"], "已預測")
+        self.assertIn(prediction["forecast"], {"主勝", "和", "客勝"})
+        self.assertGreater(prediction["probability"], 0)
+        self.assertTrue(prediction["baseline_low_confidence"])
+        self.assertEqual(prediction["prediction_source"], "fixture_prior_low_confidence_v1")
+        self.assertIsNone(prediction["no_bet_reason"])
+        self.assertEqual(prediction["candidates"], [])
+        self.assertIsNone(prediction["pick"])
+        pinnapi_client.lines.assert_not_called()
+
+        ledger = {"bankroll": 50000, "bets": [], "watch": {}, "log": [], "stats": {}}
+        self.assertEqual(sync_prediction(ledger, prediction, config), [])
+        snapshot = ledger["watch"]["crown-only"]["stages"][0]
+        self.assertEqual(snapshot["stage"], "首預")
+        self.assertEqual(snapshot["status"], "PREDICTION_READY")
+        self.assertEqual(snapshot["forecast"], prediction["forecast"])
+        self.assertTrue(snapshot["baseline_low_confidence"])
+        self.assertEqual(snapshot["prediction_era"], "2026-08-10-every-crown-fixture-v3")
+        self.assertEqual(ledger["bets"], [])
+
+    def test_fixture_baseline_uses_crown_handicap_direction_when_available(self) -> None:
+        home = _fixture_baseline_prediction([{"code": "HDC", "side": "H"}])
+        away = _fixture_baseline_prediction([{"code": "HDC", "side": "A"}])
+        self.assertEqual(home["forecast"], "主勝")
+        self.assertEqual(away["forecast"], "客勝")
+        self.assertTrue(home["baseline_low_confidence"])
+        self.assertTrue(away["baseline_low_confidence"])
 
     def test_wdl_prediction_uses_complete_no_vig_moneyline(self) -> None:
         view = _wdl_prediction([
