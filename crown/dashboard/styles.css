@@ -54,9 +54,19 @@
 
 *, *::before, *::after { box-sizing: border-box; }
 
-html { -webkit-text-size-adjust: 100%; }
+html {
+  width: 100%;
+  min-width: 100%;
+  min-height: 100%;
+  background: var(--bg);
+  overflow-x: hidden;
+  -webkit-text-size-adjust: 100%;
+}
 
 body {
+  width: 100%;
+  min-width: 100%;
+  min-height: 100dvh;
   margin: 0;
   background: var(--bg);
   color: var(--ink);
@@ -64,6 +74,15 @@ body {
   font-size: var(--text-base);
   line-height: 1.55;
   -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+}
+
+.topbar,
+.warnbar,
+.shell,
+.page {
+  width: 100%;
+  max-width: 100%;
 }
 
 /* 數字一律等寬 + 表格對齊 */
