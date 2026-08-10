@@ -264,4 +264,79 @@ jobs:
                   ],
               })
           PY
+
+          echo "=== Crown unresolved prediction-result matching ==="
+          cd /opt/footbreak
+          set -a
+          [ ! -f /etc/footbreak-crown.env ] || . /etc/footbreak-crown.env
+          set +a
+          PYTHONPATH=/opt/footbreak /opt/footbreak/.venv/bin/python3 -u - <<'PY'
+          from crown.common import read_json
+          from crown.config import settings
+          from crown.matching import (
+              Event, canonical_league_key, canonical_team_key, match_event,
+          )
+          from crown.prediction_history import _target
+          from crown.titan import TitanClient
+
+          config = settings()
+          history = read_json(config.state_dir / "prediction_history.json", {})
+          rows = history.get("rows") or []
+          titan_rows = TitanClient(config).results()
+          titan_by_id = {str(row.get("id")): row for row in titan_rows}
+          for row in rows:
+              grades = row.get("market_grades") or []
+              has_chl = any(
+                  prediction.get("code") == "CHL"
+                  for prediction in (row.get("market_predictions") or [])
+                  if isinstance(prediction, dict)
+              )
+              corner_done = any(
+                  grade.get("code") == "CHL" and grade.get("grade_status") == "GRADED"
+                  for grade in grades if isinstance(grade, dict)
+              )
+              if not has_chl or corner_done:
+                  continue
+              titan_id = str(row.get("titan_match_id") or row.get("match_id") or "")
+              titan = titan_by_id.get(titan_id)
+              target = _target(row)
+              match = None
+              if titan and target:
+                  candidate = Event(
+                      str(titan["id"]), str(titan.get("league") or ""),
+                      str(titan.get("home") or ""), str(titan.get("away") or ""),
+                      titan["kickoff"],
+                  )
+                  match = match_event(
+                      target, [candidate],
+                      team_key=canonical_team_key,
+                      league_key=canonical_league_key,
+                      allow_reversed=False,
+                      require_qualifiers=True,
+                  )
+              nearby = [
+                  {
+                      "id": item.get("id"), "league": item.get("league"),
+                      "home": item.get("home"), "away": item.get("away"),
+                      "kickoff": item.get("kickoff").isoformat(),
+                      "score": [item.get("home_score"), item.get("away_score")],
+                  }
+                  for item in titan_rows
+                  if target and abs((item["kickoff"] - target.kickoff).total_seconds()) <= 15 * 60
+              ][:10]
+              print({
+                  "match_id": row.get("match_id"),
+                  "hkjc_match_id": row.get("hkjc_match_id"),
+                  "titan_match_id": row.get("titan_match_id"),
+                  "home": row.get("home"), "away": row.get("away"),
+                  "league": row.get("league"), "kickoff": row.get("kickoff"),
+                  "result_status": row.get("result_status"),
+                  "result_missing_reason": row.get("result_missing_reason"),
+                  "direct_titan_row": bool(titan),
+                  "direct_match_reason": None if match and match.event else (
+                      match.reason if match else "no_direct_titan_row"
+                  ),
+                  "nearby_titan": nearby,
+              })
+          PY
           REMOTE
