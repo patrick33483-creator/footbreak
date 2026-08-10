@@ -6,6 +6,8 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 WorkingDirectory=/opt/footbreak
+Environment=FOOTBREAK_LEDGER_PATH=/opt/footbreak/system/sim_ledger.json
+Environment=FOOTBREAK_RESULT_CACHE_DIR=/opt/footbreak/system/cache/results
 ExecStart=/opt/footbreak/deploy/crown-run.sh settle
 TimeoutStartSec=900
 Nice=10

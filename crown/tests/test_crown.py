@@ -1034,6 +1034,54 @@ class CrownSafetyTests(unittest.TestCase):
             self.assertEqual(row["market_grades"][0]["settlement"], "Won")
             self.assertEqual(history["result_sync"]["graded_now"], 1)
 
+    def test_official_score_merges_exact_hkjc_footbreak_corner_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = replace(settings(), state_dir=root / "crown")
+            kickoff = datetime.now(self.now.tzinfo) - timedelta(hours=3)
+            ledger = {"watch": {"x": {
+                "match_id": "x", "league": "League", "home": "Alpha FC", "away": "Beta FC",
+                "kickoff": kickoff.isoformat(), "titan_match_id": "x", "hkjc_match_id": "h1",
+                "stages": [{
+                    "match_id": "x", "stage": "T-5", "ts": (kickoff - timedelta(minutes=5)).isoformat(),
+                    "forecast": "主勝", "probability": .60,
+                    "market_predictions": [{
+                        "code": "CHL", "condition": 10.5, "line": 10.5,
+                        "side": "L", "label": "細 10.5 角球", "probability": .62,
+                    }],
+                    "pick": None,
+                }],
+            }}}
+            archive_watch(config, ledger)
+            footbreak_ledger = root / "sim_ledger.json"
+            result_cache = root / "results"
+            result_cache.mkdir()
+            footbreak_ledger.write_text(json.dumps({
+                "watch": {"h1": {"fixture_id": "fixture-1"}},
+            }), encoding="utf-8")
+            (result_cache / "fixture-1.json").write_text(json.dumps({
+                "goals_home": 2, "goals_away": 1, "corners_total": 9,
+            }), encoding="utf-8")
+            official = {
+                "id": "h1", "league": "League", "home": "Alpha FC", "away": "Beta FC",
+                "kickoff": kickoff, "home_score": 2, "away_score": 1, "corners_total": None,
+            }
+            with patch.dict("os.environ", {
+                     "FOOTBREAK_LEDGER_PATH": str(footbreak_ledger),
+                     "FOOTBREAK_RESULT_CACHE_DIR": str(result_cache),
+                 }), patch("crown.prediction_history.TitanClient.results", return_value=[]), \
+                 patch("crown.prediction_history.fetch_official_result_events", return_value=[official]):
+                history = grade_history(config)
+            row = history["rows"][0]
+            self.assertEqual(row["result_detail"]["corners_total"], 9)
+            self.assertEqual(
+                row["result_source"],
+                "hkjc_official_exact_id+footbreak_corner_exact_hkjc_id",
+            )
+            self.assertEqual(row["market_grades"][0]["grade_status"], "GRADED")
+            self.assertEqual(row["market_grades"][0]["settlement"], "Won")
+            self.assertEqual(history["result_sync"]["footbreak_cached_rows"], 1)
+
     def test_recompute_stats_preserves_recovered_bet_results(self) -> None:
         ledger = {
             "bankroll": 50000,

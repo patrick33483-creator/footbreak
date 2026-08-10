@@ -51,5 +51,5 @@ jobs:
               -H "Content-Type: application/json" \
               -H "X-Crown-Action: settle-simulation" \
               --data "{\"confirm\":\"simulation-only\"}")
-            python3 -c "import json,sys; d=json.load(sys.stdin); assert d.get(\"ok\") is True; print(\"Crown API OK\", d.get(\"settled_count\", 0), d.get(\"pending_count\", 0), d.get(\"warning\"))" <<< "$response"
+            python3 -c "import json,sys; d=json.load(sys.stdin); assert d.get(\"ok\") is True; print(\"Crown API OK\", d.get(\"settled_count\", 0), d.get(\"pending_count\", 0), d.get(\"warning\"), d.get(\"prediction_result_sync\"))" <<< "$response"
           '

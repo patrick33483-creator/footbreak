@@ -9,6 +9,7 @@ from __future__ import annotations
 import math
 import os
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 from analysis.learning_store import LearningStore
@@ -209,6 +210,51 @@ def _hkjc_event(row: dict[str, Any]) -> Event | None:
     return Event(str(row["id"]), str(row.get("league") or ""), str(row["home"]), str(row["away"]), kickoff)
 
 
+def _footbreak_results_by_hkjc_id() -> dict[str, dict[str, Any]]:
+    """Reuse only Footbreak results joined by the exact HKJC match ID.
+
+    Footbreak's settlement source includes corner statistics while HKJC's
+    official result board commonly publishes only the final score.  The join
+    is deliberately exact-ID only: no team-name or kickoff guess is permitted.
+    """
+    ledger_path = Path(os.getenv(
+        "FOOTBREAK_LEDGER_PATH",
+        "/opt/footbreak/system/sim_ledger.json",
+    ))
+    cache_dir = Path(os.getenv(
+        "FOOTBREAK_RESULT_CACHE_DIR",
+        "/opt/footbreak/system/cache/results",
+    ))
+    ledger = read_json(ledger_path, {})
+    watch = ledger.get("watch") if isinstance(ledger, dict) else {}
+    if not isinstance(watch, dict):
+        return {}
+    results: dict[str, dict[str, Any]] = {}
+    for hkjc_id, item in watch.items():
+        if not isinstance(item, dict):
+            continue
+        fixture_id = str(item.get("fixture_id") or "")
+        if not fixture_id:
+            continue
+        cached = read_json(cache_dir / f"{fixture_id}.json", None)
+        if not isinstance(cached, dict):
+            continue
+        try:
+            home = int(cached["goals_home"])
+            away = int(cached["goals_away"])
+            corners = cached.get("corners_total")
+            corners = int(corners) if corners is not None else None
+        except (KeyError, TypeError, ValueError):
+            continue
+        results[str(hkjc_id)] = {
+            "home_score": home,
+            "away_score": away,
+            "corners_total": corners,
+            "source": "footbreak_result_cache_exact_hkjc_id",
+        }
+    return results
+
+
 _SETTLEMENT_TARGET = {
     "Won": 1.0, "Half Won": 0.75, "Refunded": 0.5,
     "Half Lost": 0.25, "Lost": 0.0,
@@ -345,9 +391,18 @@ def grade_history(config: Settings) -> dict[str, Any]:
     titan_by_id = {str(row.get("id")): row for row in titan_rows}
     hkjc_by_id = {str(row.get("id")): row for row in official_rows}
     hkjc_events = [(event, row) for row in official_rows if (event := _hkjc_event(row))]
+    footbreak_by_hkjc_id = _footbreak_results_by_hkjc_id()
     graded_now = 0
     for row in due:
         score, source = _result(row, titan_by_id, hkjc_by_id, hkjc_events)
+        hkjc_id = str(row.get("hkjc_match_id") or "")
+        cached = footbreak_by_hkjc_id.get(hkjc_id)
+        if score and score.get("corners_total") is None and cached and cached.get("corners_total") is not None:
+            score = {**score, "corners_total": cached["corners_total"]}
+            source = f"{source}+footbreak_corner_exact_hkjc_id"
+        elif not score and cached:
+            score = cached
+            source = str(cached.get("source"))
         if not score:
             row["result_attempted_at"] = iso_hkt()
             if titan_error and official_error:
@@ -387,6 +442,7 @@ def grade_history(config: Settings) -> dict[str, Any]:
         "due": len(due),
         "titan_rows": len(titan_rows),
         "hkjc_rows": len(official_rows),
+        "footbreak_cached_rows": len(footbreak_by_hkjc_id),
         "titan_error": titan_error,
         "hkjc_error": official_error,
         "graded_now": graded_now,

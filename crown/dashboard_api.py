@@ -30,8 +30,9 @@ def perform_settlement(config: Settings) -> dict[str, Any]:
 
     ledger = load_ledger(config)
     warning = None
+    history = None
     try:
-        update_history(config, ledger)
+        history = update_history(config, ledger)
     except Exception as exc:
         # Prediction-history grading is separate from simulation-ledger
         # settlement.  Keep the settled ledger visible and report a warning.
@@ -47,6 +48,8 @@ def perform_settlement(config: Settings) -> dict[str, Any]:
         "project_submitted": True,
         "data": data,
     }
+    if isinstance(history, dict):
+        response["prediction_result_sync"] = history.get("result_sync") or {}
     if warning:
         response["warning"] = warning
     return response
