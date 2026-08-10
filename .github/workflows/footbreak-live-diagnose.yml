@@ -199,6 +199,9 @@ jobs:
           from pathlib import Path
 
           from system import titan_results
+          from crown.matching import (
+              Event, canonical_league_key, canonical_team_key, match_event,
+          )
 
           data = json.loads(Path("/var/www/footbreak/data.json").read_text())
           rows = (data.get("prediction_history") or {}).get("rows") or []
@@ -223,6 +226,37 @@ jobs:
                   "source": row.get("result_source"),
               }
               try:
+                  target = Event(
+                      str(row.get("match_id") or ""),
+                      str(row.get("league") or ""),
+                      str(row.get("home") or ""),
+                      str(row.get("away") or ""),
+                      titan_results._kickoff(row),
+                  )
+                  candidates = [
+                      Event(
+                          str(item.get("id") or ""),
+                          str(item.get("league") or ""),
+                          str(item.get("home") or ""),
+                          str(item.get("away") or ""),
+                          item["kickoff"],
+                          item,
+                      )
+                      for item in titan_rows
+                      if item.get("id") and item.get("kickoff")
+                  ]
+                  matched = match_event(
+                      target,
+                      candidates,
+                      team_key=canonical_team_key,
+                      league_key=canonical_league_key,
+                      allow_reversed=True,
+                      require_qualifiers=True,
+                  )
+                  detail = (
+                      client.result_detail(matched.event.id)
+                      if matched.event else None
+                  )
                   merged = titan_results.merge_titan_corners(
                       official,
                       {
@@ -238,6 +272,11 @@ jobs:
                   print({
                       "match_id": row.get("match_id"),
                       "home": row.get("home"), "away": row.get("away"),
+                      "match_reason": matched.reason,
+                      "match_score": matched.score,
+                      "titan_id": matched.event.id if matched.event else None,
+                      "titan_row": matched.event.extra if matched.event else None,
+                      "detail": detail,
                       "merged": merged,
                   })
               except Exception as exc:
