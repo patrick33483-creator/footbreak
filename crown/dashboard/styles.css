@@ -800,47 +800,74 @@ table.calib tr:last-child td { border-bottom: 0; }
   font: var(--text-xs)/1.4 var(--mono);
 }
 .hist-stage b { color: var(--amber); }
-.history-table { min-width: 1180px; }
+.history-table-wrap { overflow-x: hidden; }
+.history-table {
+  width: 100%;
+  min-width: 0;
+  table-layout: fixed;
+}
+.history-col-time { width: 9%; }
+.history-col-match { width: 16%; }
+.history-col-stage { width: 6%; }
+.history-col-forecast { width: 14%; }
+.history-col-markets { width: 29%; }
+.history-col-conviction { width: 6%; }
+.history-col-bet { width: 9%; }
+.history-col-result { width: 11%; }
+table.t.history-table th {
+  padding-inline: var(--s1);
+  white-space: normal;
+}
 .history-table tr { content-visibility: auto; contain-intrinsic-size: 0 58px; }
-.history-table td { vertical-align: top; }
+table.t.history-table td {
+  min-width: 0;
+  padding-inline: var(--s1);
+  vertical-align: top;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.history-table .cell-sub {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
 .history-markets-cell {
-  min-width: 340px;
+  min-width: 0;
   white-space: normal;
 }
 .hist-result { margin-top: 5px; color: var(--text); }
 .history-result-cell {
-  min-width: 210px;
-  white-space: nowrap;
+  min-width: 0;
+  white-space: normal;
 }
 .history-result-cell .hist-result {
-  font-size: 1.25rem;
+  font-size: 1.0625rem;
   font-weight: 800;
   line-height: 1.45;
 }
 .history-result-cell .hist-result b {
-  font-size: 1.625rem;
+  font-size: 1.4375rem;
   font-weight: 800;
   color: var(--ink);
 }
 .history-result-cell .respill,
 .history-result-cell .stpill {
-  font-size: 0.9375rem;
+  font-size: 0.8125rem;
   font-weight: 800;
   line-height: 1.55;
-  padding: 3px 9px;
+  padding: 2px 6px;
 }
 .history-result-cell .cell-sub {
-  margin-top: 3px;
-  font-size: 0.8125rem;
+  margin-top: 2px;
+  font-size: 0.75rem;
   font-weight: 650;
   line-height: 1.5;
 }
 .forecast-pick { color: var(--amber); }
 .history-market-row {
   display: grid;
-  grid-template-columns: minmax(190px, 1fr) max-content;
+  grid-template-columns: minmax(0, 1fr) max-content;
   align-items: start;
-  gap: var(--s2);
+  gap: var(--s1);
   padding: var(--s1) 0;
 }
 .history-market-row + .history-market-row {
@@ -859,7 +886,7 @@ table.calib tr:last-child td { border-bottom: 0; }
 .market-hit {
   display: inline-flex; gap: 4px; align-items: center;
   justify-self: end;
-  margin: 0; padding: 1px 7px; border-radius: 4px;
+  margin: 0; padding: 1px 5px; border-radius: 4px;
   white-space: nowrap;
   font: 600 12px/1.6 var(--sans); border: 1px solid var(--line);
 }
@@ -880,12 +907,35 @@ table.calib tr:last-child td { border-bottom: 0; }
 }
 
 @media (max-width: 620px) {
-  .history-result-cell { min-width: 220px; }
-  .history-result-cell .hist-result { font-size: 1.3125rem; }
-  .history-result-cell .hist-result b { font-size: 1.75rem; }
+  .history-col-stage,
+  .history-col-conviction,
+  .history-col-bet,
+  .history-table th:nth-child(3),
+  .history-table td:nth-child(3),
+  .history-table th:nth-child(6),
+  .history-table td:nth-child(6),
+  .history-table th:nth-child(7),
+  .history-table td:nth-child(7) { display: none; }
+  .history-col-time { width: 18%; }
+  .history-col-match { width: 24%; }
+  .history-col-forecast { width: 18%; }
+  .history-col-markets { width: 24%; }
+  .history-col-result { width: 16%; }
+  .history-table th,
+  .history-table td { padding-inline: 2px; }
+  .history-table td:nth-child(2) .cell-sub { display: none; }
+  .history-market-row { display: block; }
+  .market-hit { margin-top: 2px; }
+  .history-result-cell .hist-result { font-size: 1rem; }
+  .history-result-cell .hist-result b { font-size: 1.25rem; }
   .history-result-cell .respill,
-  .history-result-cell .stpill { font-size: 1rem; }
-  .history-result-cell .cell-sub { font-size: 0.875rem; }
+  .history-result-cell .stpill {
+    max-width: 100%;
+    padding-inline: 3px;
+    white-space: normal;
+    font-size: 0.75rem;
+  }
+  .history-result-cell .cell-sub { font-size: 0.6875rem; }
   .lad { grid-template-columns: 22px 1fr; }
   .lad-c { grid-column: 2; text-align: left; }
   .card.stk .stk-now { gap: var(--s2) var(--s3); }

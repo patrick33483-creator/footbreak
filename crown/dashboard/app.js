@@ -1074,7 +1074,12 @@ function renderHistory() {
            <div class="cell-sub">${esc(r.excluded_reason || '延期／取消／腰斬')}</div>`
         : '<span class="stpill pending">待賽果</span>'}</td>
   </tr>`).join('');
-  const historyTable = (items, empty) => `<div class="tbl-wrap"><table class="t history-table">
+  const historyTable = (items, empty) => `<div class="tbl-wrap history-table-wrap"><table class="t history-table">
+      <colgroup>
+        <col class="history-col-time"><col class="history-col-match"><col class="history-col-stage">
+        <col class="history-col-forecast"><col class="history-col-markets"><col class="history-col-conviction">
+        <col class="history-col-bet"><col class="history-col-result">
+      </colgroup>
       <tr><th>開賽</th><th>賽事</th><th>階段</th><th>1X2 輔助</th><th>各市場預測／結果</th><th>信念</th><th>模擬注</th><th>整場賽果</th></tr>
       ${historyRows(items) || `<tr><td colspan="8" class="empty2">${empty}</td></tr>`}
     </table></div>`;
