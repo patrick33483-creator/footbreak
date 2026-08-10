@@ -45,6 +45,11 @@ jobs:
             fi
             echo "=== Footbreak settlement ==="
             sudo /opt/footbreak/deploy/run.sh settle
-            echo "=== Crown settlement ==="
-            sudo /opt/footbreak/deploy/crown-run.sh settle
+            echo "=== Crown dashboard settlement API ==="
+            response=$(curl --fail --silent --show-error --max-time 240 \
+              -X POST http://127.0.0.1:8765/api/settle \
+              -H "Content-Type: application/json" \
+              -H "X-Crown-Action: settle-simulation" \
+              --data "{\"confirm\":\"simulation-only\"}")
+            python3 -c "import json,sys; d=json.load(sys.stdin); assert d.get(\"ok\") is True; print(\"Crown API OK\", d.get(\"settled\", 0), d.get(\"pending\", 0))" <<< "$response"
           '

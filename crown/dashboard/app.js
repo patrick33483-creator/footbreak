@@ -330,7 +330,11 @@ function verdictCard(m) {
       ${bar}</div>`;
   }
   const p = m.pick;
-  const G = [
+  const G = p.confidence_only ? [
+    ['市場', p.market], ['投注', shortPick(p)], [`${sourceFor(p)}賠率`, f2(p.odds)],
+    ['模型勝率', pc(p.prob)], ['EV 參考', 'PinnAPI 無安全同場，不計 EV'],
+    ['落注方式', '皇冠信念注'],
+  ] : [
     ['市場', p.market], ['投注', shortPick(p)], [`${sourceFor(p)}賠率`, f2(p.odds)],
     ['我嘅公平價', f2(p.fair)], ['模型勝率', pc(p.prob)],
     ['走水機率', p.push > 1e-6 ? pc(p.push) : '—'],
@@ -348,7 +352,9 @@ function verdictCard(m) {
       `<div class="par"><div class="par-l">${l}</div><div class="par-v">${esc(v)}</div></div>`).join('')}</div>
     ${bar}
     ${p.code === 'HDC' ? `<p class="vd-note">讓球讀法：上面嘅「讓 / 受讓」係按我揀嘅一邊寫。括弧入面嘅皇冠盤口已經同步翻成<b>我揀嗰邊嘅視角</b>，原始盤口係主隊視角，買客隊會反號。</p>` : ''}
-    <p class="vd-note">注碼 = min(全凱利 × ${fracTxt()}${mktTxt(m)} × min(1, 信念/75), 單場上限 ${pc(DATA.ledger.stats.single_cap_pct, 0)}) × 本金 ${money(DATA.ledger.bankroll)},再受單日 100% / 在場 35% 組合上限約束。</p>
+    <p class="vd-note">${p.confidence_only
+      ? `PinnAPI 無安全唯一同場時，不虛構 EV 或凱利值；只按即時完整皇冠盤及信念門檻建立 2% 本金模擬注。`
+      : `注碼 = min(全凱利 × ${fracTxt()}${mktTxt(m)} × min(1, 信念/75), 單場上限 ${pc(DATA.ledger.stats.single_cap_pct, 0)}) × 本金 ${money(DATA.ledger.bankroll)},再受單日 100% / 在場 35% 組合上限約束。`}</p>
   </div>`;
 }
 
@@ -936,6 +942,30 @@ const HIST_SETTLEMENT_LABEL = {
   Won: '全贏', 'Half Won': '半贏', Refunded: '走水',
   'Half Lost': '半輸', Lost: '全輸',
 };
+function historyQuarterLine(raw, signed = true) {
+  const q = Math.round(Number(raw) * 4);
+  if (!Number.isFinite(q)) return String(raw ?? '—');
+  const values = q % 2 === 0
+    ? [q / 4]
+    : q > 0
+      ? [(q - 1) / 4, (q + 1) / 4]
+      : [(q + 1) / 4, (q - 1) / 4];
+  return values.map((value) => {
+    const text = Number.isInteger(value) ? String(value) : String(value);
+    return signed && value > 0 ? `+${text}` : text;
+  }).join('/');
+}
+function historyPredictionLabel(r, p) {
+  const line = Number(p.line ?? p.condition);
+  if (p.code === 'HDC') {
+    const team = p.side === 'A' ? r.away : r.home;
+    const selectedLine = p.side === 'A' ? -line : line;
+    return `${team} ${historyQuarterLine(selectedLine, true)}`;
+  }
+  if (p.code === 'HIL') return `${p.side === 'H' ? '大' : '細'} ${historyQuarterLine(line, false)} 球`;
+  if (p.code === 'CHL') return `${p.side === 'H' ? '大' : '細'} ${historyQuarterLine(line, false)} 角球`;
+  return p.label || `${p.condition} ${p.side}`;
+}
 function historyMarkets(r) {
   const grades = Object.fromEntries((r.market_grades || []).map((g) => [g.code, g]));
   return (r.market_predictions || []).map((p) => {
@@ -948,9 +978,11 @@ function historyMarkets(r) {
           ? `<span class="market-hit miss"><b>落空</b> · ${esc(settlement)}</span>`
           : `<span class="market-hit push"><b>走水</b></span>`
       : g.reason === 'corners_result_missing'
-        ? '<span class="market-hit pending">待角球賽果</span>'
+        ? `<span class="market-hit pending">${minsLeft(r.kickoff) < -(7 * 24 * 60)
+          ? '角球賽果來源缺失'
+          : '角球賽果同步中'}</span>`
         : '<span class="market-hit pending">待賽果</span>';
-    return `<div><b>${HIST_MARKET_LABEL[p.code] || esc(p.code)}</b> ${esc(p.label || `${p.condition} ${p.side}`)}
+    return `<div><b>${HIST_MARKET_LABEL[p.code] || esc(p.code)}</b> ${esc(historyPredictionLabel(r, p))}
       <span class="cell-sub">${pc(p.probability, 1)}</span>${result}</div>`;
   }).join('') || '<span class="dim">未有可評分市場</span>';
 }
@@ -1050,7 +1082,7 @@ function betRow(b, i) {
     <td>${f2(b.odds)}</td>
     <td class="stk">${money(b.stake)}</td>
     <td>${pc(b.model_prob)}</td>
-    <td class="${b.ev > 0 ? 'ev-p' : 'ev-n'}">${sg(b.ev * 100, 2)}%</td>
+    <td class="${b.ev == null ? 'dim' : b.ev > 0 ? 'ev-p' : 'ev-n'}">${b.ev == null ? '無 EV 參考' : `${sg(b.ev * 100, 2)}%`}</td>
     <td class="${convClass(b.conviction)}">${f2(b.conviction)}</td>
     <td>${esc(b.stage)}${chg > 1 ? `<span class="minitag">${chg} 次變動</span>` : ''}</td>
     <td><span class="stpill ${b.status.toLowerCase()}">${ST_LBL[b.status] || b.status}</span></td>

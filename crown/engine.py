@@ -78,6 +78,22 @@ def _pairs(prices: list[dict[str, Any]], market: str, line: float) -> dict[str, 
     return result if all(value and value > 1 for value in result.values()) else None
 
 
+def _display_quarter_line(line: float, *, signed: bool = True) -> str:
+    quarters = round(float(line) * 4)
+    if quarters % 2 == 0:
+        values = [quarters / 4]
+    elif quarters > 0:
+        values = [(quarters - 1) / 4, (quarters + 1) / 4]
+    else:
+        values = [(quarters + 1) / 4, (quarters - 1) / 4]
+
+    def part(value: float) -> str:
+        text = f"{value:g}"
+        return f"+{text}" if signed and value > 0 else text
+
+    return "/".join(part(value) for value in values)
+
+
 def _crown_market_forecasts(
     crown_prices: list[dict[str, Any]],
     config: Settings,
@@ -86,9 +102,9 @@ def _crown_market_forecasts(
 ) -> tuple[list[dict[str, Any]], list[str]]:
     """Build forecast-only HDC/HIL views from Crown's complete current market.
 
-    This is deliberately independent of PinnAPI.  It supplies a direction for
-    the prediction-learning ledger, but carries no EV/Kelly fields and can
-    never unlock a simulated bet.
+    This is deliberately independent of PinnAPI. It supplies a direction for
+    the prediction-learning ledger and may support a confidence-only T-5
+    simulation when the current Crown quote is complete and fresh.
     """
     output: list[dict[str, Any]] = []
     reasons: list[str] = []
@@ -148,13 +164,15 @@ def _crown_market_forecasts(
         )
         market_label = "讓球" if market == "HDC" else "入球大細"
         probability = probabilities[side]
+        selected_line = -line if market == "HDC" and side == "A" else line
+        display_line = _display_quarter_line(selected_line, signed=market == "HDC")
         output.append({
             "market": market_label,
             "code": market,
             "condition": f"{line:g}",
             "line": line,
             "side": side,
-            "label": f"皇冠{market_label} {side_label} {line:g}",
+            "label": f"皇冠{market_label} {side_label} {display_line}",
             "odds": round(float(rows[side]["odds"]), 3),
             "prob": round(probability, 5),
             "conviction": round(probability * 100, 1),
@@ -165,6 +183,46 @@ def _crown_market_forecasts(
             "forecast_only": True,
         })
     return output, sorted(set(reasons))
+
+
+def _apply_confidence_only_pick(
+    base: dict[str, Any],
+    forecasts: list[dict[str, Any]],
+    stage: str,
+    config: Settings,
+) -> bool:
+    """Create a conservative simulation without pretending an EV is known."""
+    if stage != "T-5" or not forecasts:
+        return False
+    lead = max(forecasts, key=lambda row: float(row.get("conviction") or 0))
+    if float(lead.get("conviction") or 0) < config.confidence_floor:
+        base["no_bet_reason"] = (
+            f"未過 T-5 信念門檻（信念 {lead.get('conviction')}/{config.confidence_floor}；"
+            "PinnAPI 無可用同場參考，所以不計 EV）"
+        )
+        return False
+    stake = round(config.bankroll * 0.02, 2)
+    if stake <= 0:
+        return False
+    pick = {
+        **lead,
+        "stake": stake,
+        "ev": None,
+        "fair": None,
+        "push": None,
+        "kelly_raw": None,
+        "kelly_used": None,
+        "confidence_only": True,
+        "forecast_only": False,
+        "reference": "crown_full_market_no_vig_confidence_only",
+    }
+    base["pick"] = pick
+    base["lead_view"] = pick
+    base["conviction"] = pick["conviction"]
+    base["verdict"] = "模擬注"
+    base["status"] = "SIMULATION_READY"
+    base["no_bet_reason"] = None
+    return True
 
 
 def _candidates(crown_prices: list[dict[str, Any]], pinnapi_prices: list[dict[str, Any]], config: Settings,
@@ -470,6 +528,7 @@ def _prediction(titan: dict[str, Any], bridge: BridgeMatch, h_match: dict[str, A
                 "PinnAPI EV 參考暫不可用。"
             )
             base["no_bet_reason"] = None
+        _apply_confidence_only_pick(base, forecasts, stage, config)
         return base
     try:
         pinnapi = pinnapi_client.lines(bridge.event.id)
@@ -487,6 +546,7 @@ def _prediction(titan: dict[str, Any], bridge: BridgeMatch, h_match: dict[str, A
                 f"PinnAPI 參考暫時不可用 ({type(exc).__name__})。"
             )
             base["no_bet_reason"] = None
+        _apply_confidence_only_pick(base, forecasts, stage, config)
         return base
     prices = pinnapi["prices"]
     base.update(_wdl_prediction(prices))
@@ -533,6 +593,7 @@ def _prediction(titan: dict[str, Any], bridge: BridgeMatch, h_match: dict[str, A
         base["no_bet_reason"] = prefix + "；".join(
             reasons + corner_reasons or ["Crown/PinnAPI 無可比較完整雙邊盤"]
         )
+        _apply_confidence_only_pick(base, forecasts, stage, config)
         return base
     lead = candidates[0]
     base["conviction"] = lead["conviction"]

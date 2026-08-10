@@ -404,7 +404,7 @@ class CrownSafetyTests(unittest.TestCase):
         self.assertEqual(prediction["candidates"], [])
         self.assertIsNone(prediction["pick"])
         self.assertFalse(prediction["sharp_reference_available"])
-        self.assertIsNone(prediction["no_bet_reason"])
+        self.assertIn("未過 T-5 信念門檻", prediction["no_bet_reason"])
         self.assertEqual(prediction["edge_reference_status"], "unavailable")
         self.assertIn("不計算 EV", prediction["edge_reference_note"])
         pinnapi_client.lines.assert_not_called()
@@ -480,10 +480,47 @@ class CrownSafetyTests(unittest.TestCase):
         self.assertEqual({row["code"] for row in prediction["forecast_candidates"]}, {"HDC", "HIL"})
         self.assertEqual(prediction["edge_reference_status"], "unavailable")
         self.assertIn("不計算 EV", prediction["edge_reference_note"])
-        self.assertIsNone(prediction["no_bet_reason"])
+        self.assertIn("未過 T-5 信念門檻", prediction["no_bet_reason"])
         self.assertEqual(prediction["candidates"], [])
         self.assertIsNone(prediction["pick"])
         pinnapi_client.lines.assert_not_called()
+
+    def test_missing_pinnapi_mapping_allows_fresh_high_confidence_t5_simulation(self) -> None:
+        config = replace(settings(), source_max_age_seconds=90, bankroll=50000)
+        kickoff = self.now + timedelta(minutes=5)
+        titan = {"id": "titan", "league": "L", "home": "Alpha", "away": "Beta", "kickoff": kickoff}
+        bridge = BridgeMatch(
+            Match(None, False, 0.0, "no_candidate_in_kickoff_window"),
+            Match(None, False, 0.0, "no_candidate_in_kickoff_window"),
+            "none",
+            "direct_same_script:no_candidate_in_kickoff_window",
+        )
+        crown = [
+            {"market": "HDC", "line": -0.25, "selection": "H", "odds": 1.40, "source_at": 1000},
+            {"market": "HDC", "line": -0.25, "selection": "A", "odds": 3.00, "source_at": 1000},
+            {"market": "HIL", "line": 2.5, "selection": "H", "odds": 1.90, "source_at": 1000},
+            {"market": "HIL", "line": 2.5, "selection": "L", "odds": 2.00, "source_at": 1000},
+        ]
+        pinnapi_client = Mock()
+        with patch("crown.engine.datetime") as mocked_datetime, patch("crown.engine.time.time", return_value=1001):
+            mocked_datetime.now.return_value = self.now
+            prediction = _prediction(
+                titan, bridge, None, "T-5", config, Mock(), pinnapi_client,
+                crown_snapshot={"prices": crown},
+            )
+        self.assertEqual(prediction["status"], "SIMULATION_READY")
+        self.assertEqual(prediction["verdict"], "模擬注")
+        self.assertTrue(prediction["pick"]["confidence_only"])
+        self.assertIsNone(prediction["pick"]["ev"])
+        self.assertEqual(prediction["pick"]["stake"], 1000)
+        self.assertEqual(prediction["pick"]["label"], "皇冠讓球 主 0/-0.5")
+        pinnapi_client.lines.assert_not_called()
+
+        ledger = {"bankroll": 50000, "bets": [], "watch": {}, "log": [], "stats": {}}
+        created = sync_prediction(ledger, prediction, config)
+        self.assertEqual(len(created), 1)
+        self.assertIsNone(ledger["bets"][0]["ev"])
+        self.assertTrue(ledger["bets"][0]["simulation_only"])
 
     def test_every_crown_fixture_gets_scoreable_prediction_without_any_quote(self) -> None:
         config = replace(settings(), source_max_age_seconds=90)
@@ -950,6 +987,52 @@ class CrownSafetyTests(unittest.TestCase):
             self.assertIsNotNone(history["stats"]["brier"])
             self.assertEqual(row["market_grades"][0]["settlement"], "Won")
             self.assertEqual(history["stats"]["by_market"]["HDC"]["hits"], 1)
+
+    def test_verified_history_retries_and_grades_late_official_corner_result(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = replace(settings(), state_dir=Path(directory))
+            kickoff = datetime.now(self.now.tzinfo) - timedelta(hours=3)
+            ledger = {"watch": {"x": {
+                "match_id": "x", "league": "League", "home": "Alpha FC", "away": "Beta FC",
+                "kickoff": kickoff.isoformat(), "titan_match_id": "x", "hkjc_match_id": "h1",
+                "stages": [{
+                    "match_id": "x", "stage": "T-5", "ts": (kickoff - timedelta(minutes=5)).isoformat(),
+                    "forecast": "主勝", "probability": .60,
+                    "market_predictions": [{
+                        "code": "CHL", "condition": 10.5, "line": 10.5,
+                        "side": "L", "label": "細 10.5 角球", "probability": .62,
+                    }],
+                    "pick": None,
+                }],
+            }}}
+            first = archive_watch(config, ledger)
+            first["rows"][0].update({
+                "actual": "主勝",
+                "score": "2-1",
+                "correct": True,
+                "result_status": "已核實",
+                "market_grades": [{
+                    **first["rows"][0]["market_predictions"][0],
+                    "grade_status": "NOT_APPLICABLE",
+                    "reason": "corners_result_missing",
+                }],
+            })
+            (config.state_dir / "prediction_history.json").write_text(
+                json.dumps(first), encoding="utf-8"
+            )
+            official = {
+                "id": "h1", "league": "League", "home": "Alpha FC", "away": "Beta FC",
+                "kickoff": kickoff, "home_score": 2, "away_score": 1, "corners_total": 9,
+            }
+            with patch("crown.prediction_history.TitanClient.results", return_value=[]), \
+                 patch("crown.prediction_history.fetch_official_result_events", return_value=[official]):
+                history = grade_history(config)
+            row = history["rows"][0]
+            self.assertEqual(row["result_source"], "hkjc_official_exact_id")
+            self.assertEqual(row["result_detail"]["corners_total"], 9)
+            self.assertEqual(row["market_grades"][0]["grade_status"], "GRADED")
+            self.assertEqual(row["market_grades"][0]["settlement"], "Won")
+            self.assertEqual(history["result_sync"]["graded_now"], 1)
 
     def test_recompute_stats_preserves_recovered_bet_results(self) -> None:
         ledger = {

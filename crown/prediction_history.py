@@ -27,6 +27,7 @@ def _path(config: Settings):
 
 
 _SCOREABLE_MARKETS = {"HDC", "HIL", "CHL"}
+_CORNER_RESULT_RETRY_DAYS = 7
 
 
 def _has_scoreable_market_prediction(row: dict[str, Any]) -> bool:
@@ -184,6 +185,12 @@ def _result(row: dict[str, Any], titan_by_id: dict[str, dict[str, Any]],
     official = hkjc_by_id.get(str(row.get("hkjc_match_id") or ""))
     if official:
         return official, "hkjc_official_exact_id"
+    matched = match_event(
+        target, [event for event, _ in hkjc_events],
+        allow_reversed=False, require_qualifiers=True,
+    )
+    if matched.event:
+        return next(data for event, data in hkjc_events if event.id == matched.event.id), "hkjc_official_strict_identity"
     titan = titan_by_id.get(str(row.get("titan_match_id") or row.get("match_id") or ""))
     if titan and titan.get("home_score") is not None:
         candidate = Event(
@@ -192,12 +199,6 @@ def _result(row: dict[str, Any], titan_by_id: dict[str, dict[str, Any]],
         )
         if match_event(target, [candidate], allow_reversed=False, require_qualifiers=True).event:
             return titan, "titan_verified_identity"
-    matched = match_event(
-        target, [event for event, _ in hkjc_events],
-        allow_reversed=False, require_qualifiers=True,
-    )
-    if matched.event:
-        return next(data for event, data in hkjc_events if event.id == matched.event.id), "hkjc_official_strict_identity"
     return None, None
 
 
@@ -295,12 +296,32 @@ def grade_history(config: Settings) -> dict[str, Any]:
     history = load_history(config)
     rows = history["rows"]
     now = datetime.now(HKT)
-    due = [
-        row for row in rows
-        if row.get("result_status") not in {"已核實", "不計"}
-        and (kickoff := parse_time(row.get("kickoff"))) is not None
-        and (now - kickoff).total_seconds() >= SETTLE_AFTER_SECONDS
-    ]
+    def pending_corner_result(row: dict[str, Any], kickoff: datetime) -> bool:
+        if not any(
+            str(prediction.get("code") or "") == "CHL"
+            for prediction in (row.get("market_predictions") or [])
+            if isinstance(prediction, dict)
+        ):
+            return False
+        grades = {
+            str(grade.get("code") or ""): grade
+            for grade in (row.get("market_grades") or [])
+            if isinstance(grade, dict)
+        }
+        corner_grade = grades.get("CHL")
+        if corner_grade and corner_grade.get("grade_status") == "GRADED":
+            return False
+        age = (now - kickoff).total_seconds()
+        return age <= _CORNER_RESULT_RETRY_DAYS * 86400
+
+    due = []
+    for row in rows:
+        kickoff = parse_time(row.get("kickoff"))
+        if kickoff is None or (now - kickoff).total_seconds() < SETTLE_AFTER_SECONDS:
+            continue
+        unresolved_result = row.get("result_status") not in {"已核實", "不計"}
+        if unresolved_result or pending_corner_result(row, kickoff):
+            due.append(row)
     dates = {
         parse_time(row.get("kickoff")).strftime("%Y-%m-%d")
         for row in due if parse_time(row.get("kickoff"))
@@ -370,7 +391,13 @@ def grade_history(config: Settings) -> dict[str, Any]:
         "hkjc_error": official_error,
         "graded_now": graded_now,
         "unresolved": sum(
-            row.get("result_status") not in {"已核實", "不計"} for row in due
+            row.get("result_status") not in {"已核實", "不計"}
+            or any(
+                grade.get("reason") == "corners_result_missing"
+                for grade in (row.get("market_grades") or [])
+                if isinstance(grade, dict)
+            )
+            for row in due
         ),
     }
     normalize_history(history)
