@@ -187,6 +187,68 @@ jobs:
           })
           PY
 
+          echo "=== Footbreak Titan corner fallback execution ==="
+          cd /opt/footbreak
+          set -a
+          [ ! -f /etc/footbreak.env ] || . /etc/footbreak.env
+          [ ! -f /etc/footbreak-crown.env ] || . /etc/footbreak-crown.env
+          set +a
+          PYTHONPATH=/opt/footbreak/system:/opt/footbreak \
+            /opt/footbreak/.venv/bin/python3 -u - <<'PY'
+          import json
+          from pathlib import Path
+
+          from system import titan_results
+
+          data = json.loads(Path("/var/www/footbreak/data.json").read_text())
+          rows = (data.get("prediction_history") or {}).get("rows") or []
+          client, titan_rows = titan_results.fetch_titan_result_rows()
+          for row in rows:
+              grades = [
+                  grade for grade in (row.get("market_grades") or [])
+                  if isinstance(grade, dict)
+                  and grade.get("code") == "CHL"
+                  and grade.get("reason") == "corners_result_missing"
+              ]
+              if not grades:
+                  continue
+              home_score, away_score = str(row.get("score") or "-").split("-", 1)
+              official = {
+                  "goals_home": int(home_score),
+                  "goals_away": int(away_score),
+                  "goals_total": int(home_score) + int(away_score),
+                  "corners_home": None,
+                  "corners_away": None,
+                  "corners_total": None,
+                  "source": row.get("result_source"),
+              }
+              try:
+                  merged = titan_results.merge_titan_corners(
+                      official,
+                      {
+                          "match_id": row.get("match_id"),
+                          "league": row.get("league"),
+                          "home": row.get("home"),
+                          "away": row.get("away"),
+                          "kickoff": row.get("kickoff"),
+                      },
+                      client=client,
+                      rows=titan_rows,
+                  )
+                  print({
+                      "match_id": row.get("match_id"),
+                      "home": row.get("home"), "away": row.get("away"),
+                      "merged": merged,
+                  })
+              except Exception as exc:
+                  print({
+                      "match_id": row.get("match_id"),
+                      "home": row.get("home"), "away": row.get("away"),
+                      "error": type(exc).__name__,
+                      "message": str(exc),
+                  })
+          PY
+
           echo "=== HKJC to PinnAPI matching diagnostics ==="
           cd /opt/footbreak
           set -a
