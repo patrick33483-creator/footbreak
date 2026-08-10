@@ -51,6 +51,9 @@ def normalize_history(history: dict[str, Any]) -> dict[str, Any]:
         row for row in (history.get("rows") or [])
         if isinstance(row, dict) and _has_scoreable_market_prediction(row)
     ]
+    for row in rows:
+        if row.get("result_status") == "已核實":
+            row["result_status"] = "已核對"
 
     def sort_key(row: dict[str, Any]) -> tuple[float, str, int]:
         kickoff = parse_time(row.get("kickoff"))
@@ -441,7 +444,7 @@ def grade_history(config: Settings) -> dict[str, Any]:
         kickoff = parse_time(row.get("kickoff"))
         if kickoff is None or (now - kickoff).total_seconds() < SETTLE_AFTER_SECONDS:
             continue
-        unresolved_result = row.get("result_status") not in {"已核實", "不計"}
+        unresolved_result = row.get("result_status") not in {"已核對", "不計"}
         if unresolved_result or pending_corner_result(row, kickoff):
             due.append(row)
     dates = {
@@ -509,7 +512,7 @@ def grade_history(config: Settings) -> dict[str, Any]:
             "actual": actual,
             "score": f"{home}-{away}",
             "correct": (row.get("forecast") == actual) if row.get("forecast") else None,
-            "result_status": "已核實",
+            "result_status": "已核對",
             "verified_at": iso_hkt(),
             "result_source": source,
             "result_detail": {
@@ -536,7 +539,7 @@ def grade_history(config: Settings) -> dict[str, Any]:
         "graded_now": graded_now,
         "corner_detail": dict(sorted(corner_detail_reasons.items())),
         "unresolved": sum(
-            row.get("result_status") not in {"已核實", "不計"}
+            row.get("result_status") not in {"已核對", "不計"}
             or any(
                 grade.get("reason") == "corners_result_missing"
                 for grade in (row.get("market_grades") or [])
@@ -635,7 +638,7 @@ def calculate_stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
         },
         "market_overall": _market_metrics(rows),
         "result_coverage": round(
-            sum(row.get("result_status") == "已核實" for row in rows) / len(rows), 6
+            sum(row.get("result_status") == "已核對" for row in rows) / len(rows), 6
         ) if rows else None,
         "latest": latest,
         "learning_status": "collecting_market_level_shadow_samples",

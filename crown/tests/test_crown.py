@@ -970,7 +970,7 @@ class CrownSafetyTests(unittest.TestCase):
             self.assertEqual(row["learning_attempt"], 2)
             self.assertEqual(row["learning_payload_sha256"], "new")
             self.assertEqual(row["actual"], "主勝")
-            self.assertEqual(row["result_status"], "已核實")
+            self.assertEqual(row["result_status"], "已核對")
 
     def test_prediction_history_grades_non_bet_by_verified_titan_identity(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1029,7 +1029,7 @@ class CrownSafetyTests(unittest.TestCase):
                 "actual": "主勝",
                 "score": "2-1",
                 "correct": True,
-                "result_status": "已核實",
+                "result_status": "已核對",
                 "market_grades": [{
                     **first["rows"][0]["market_predictions"][0],
                     "grade_status": "NOT_APPLICABLE",
@@ -1295,8 +1295,7 @@ class CrownSafetyTests(unittest.TestCase):
 
         self.assertIn("const historyTime = (row)", app)
         self.assertIn("b[0] - a[0] || b[1] - a[1]", app)
-        self.assertIn("全部預測紀錄", app)
-        self.assertIn("最新開賽時間先", app)
+        self.assertNotIn("全部預測紀錄", app)
         self.assertIn('class="history-market-row"', app)
         self.assertIn('class="history-result-cell"', app)
         self.assertIn('class="tbl-wrap"><table class="t history-table"', app)
@@ -1312,8 +1311,11 @@ class CrownSafetyTests(unittest.TestCase):
         self.assertIn("overflow-wrap: anywhere", styles)
         self.assertIn("font: 600 12px/1.6 var(--sans)", styles)
         index = (root / "index.html").read_text(encoding="utf-8")
-        self.assertIn("styles.css?v=20260811-result-refresh", index)
-        self.assertIn("app.js?v=20260811-result-refresh", index)
+        self.assertIn("styles.css?v=20260811-history-layout2", index)
+        self.assertIn("app.js?v=20260811-history-layout2", index)
+        self.assertIn('已核對賽果 <span class="sub">${gradedRows.length}', app)
+        self.assertIn('待賽果 <span class="sub">${pendingRows.length}', app)
+        self.assertIn('不計入準確率 <span class="sub">${excludedRows.length}', app)
         self.assertIn("X-Crown-Action", app)
         self.assertIn("賽果核對完成，已更新到最新資料", app)
         self.assertIn("const FINISHED_MATCH_GRACE_MINUTES = 150", app)

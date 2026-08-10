@@ -1049,6 +1049,9 @@ function renderHistory() {
     const a = historyTime(left), b = historyTime(right);
     return b[0] - a[0] || b[1] - a[1];
   });
+  const gradedRows = rows.filter((r) => r.result_status === '已核對');
+  const pendingRows = rows.filter((r) => r.result_status === '待賽果');
+  const excludedRows = rows.filter((r) => r.result_status === '不計');
   const s = payload.stats || {};
   const accuracy = s.accuracy == null ? '待賽果' : pc(s.accuracy, 1);
   const K = [
@@ -1112,8 +1115,14 @@ function renderHistory() {
     <div class="history-stage-summary">${marketSummary}</div>
     <p class="mx-note">正式學習樣本為讓球、入球大細及角球大細當時主線；1X2 只作輔助。賽果返嚟後先計命中，未完場或未取到賽果唔當輸。</p>
   </div>
-  <div class="card"><h2 class="card-h">全部預測紀錄 <span class="sub">${rows.length} 筆 · 最新開賽時間先</span></h2>
-    ${historyTable(rows, '暫時未有預測紀錄。')}
+  <div class="card"><h2 class="card-h">已核對賽果 <span class="sub">${gradedRows.length} 筆 · 命中 ${s.hits || 0}</span></h2>
+    ${historyTable(gradedRows, '暫時未有已核對賽果。')}
+  </div>
+  <div class="card"><h2 class="card-h">待賽果 <span class="sub">${pendingRows.length} 筆</span></h2>
+    ${historyTable(pendingRows, '目前冇待核對紀錄。')}
+  </div>
+  <div class="card"><h2 class="card-h">不計入準確率 <span class="sub">${excludedRows.length} 筆</span></h2>
+    ${historyTable(excludedRows, '目前冇延期、取消或腰斬紀錄。')}
   </div>`;
 }
 

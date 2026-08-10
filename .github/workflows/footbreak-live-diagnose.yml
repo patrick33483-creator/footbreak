@@ -26,7 +26,7 @@ jobs:
           set -uo pipefail
           date
           echo "=== timers ==="
-          for unit in footbreak-tick.timer footbreak-t30.timer crown-tick.timer; do
+          for unit in footbreak-tick.timer footbreak-t30.timer crown-tick.timer crown-settle.timer; do
             echo "--- $unit"
             systemctl is-enabled "$unit" || true
             systemctl is-active "$unit" || true
@@ -34,10 +34,10 @@ jobs:
               -p ActiveState -p SubState -p Result \
               -p LastTriggerUSec -p NextElapseUSecRealtime || true
           done
-          systemctl list-timers footbreak-tick.timer footbreak-t30.timer crown-tick.timer --all --no-pager || true
+          systemctl list-timers footbreak-tick.timer footbreak-t30.timer crown-tick.timer crown-settle.timer --all --no-pager || true
 
           echo "=== services ==="
-          for unit in footbreak-tick.service footbreak-t30.service crown-tick.service; do
+          for unit in footbreak-tick.service footbreak-t30.service crown-tick.service crown-settle.service; do
             echo "--- $unit"
             systemctl show "$unit" \
               -p ActiveState -p SubState -p Result -p ExecMainStatus \
@@ -131,6 +131,8 @@ jobs:
           journalctl -u footbreak-t30.service --since "-25 minutes" --no-pager -o short-iso | tail -n 300 || true
           echo "=== recent Crown tick journal ==="
           journalctl -u crown-tick.service --since "-25 minutes" --no-pager -o short-iso | tail -n 500 || true
+          echo "=== recent Crown settlement journal ==="
+          journalctl -u crown-settle.service --since "-3 hours" --no-pager -o short-iso | tail -n 500 || true
 
           echo "=== dashboard fixtures around now ==="
           /opt/footbreak/.venv/bin/python3 - <<'PY'
@@ -490,7 +492,10 @@ jobs:
           [ ! -f /etc/footbreak-crown.env ] || . /etc/footbreak-crown.env
           set +a
           PYTHONPATH=/opt/footbreak /opt/footbreak/.venv/bin/python3 -u - <<'PY'
-          from crown.common import read_json
+          from collections import Counter
+          from datetime import datetime
+
+          from crown.common import HKT, parse_time, read_json
           from crown.config import settings
           from crown.matching import (
               Event, canonical_league_key, canonical_team_key, match_event,
@@ -503,6 +508,47 @@ jobs:
           rows = history.get("rows") or []
           titan_rows = TitanClient(config).results()
           titan_by_id = {str(row.get("id")): row for row in titan_rows}
+          now = datetime.now(HKT)
+          print("=== Crown prediction-history raw state ===")
+          print({
+              "state_path": str(config.state_dir / "prediction_history.json"),
+              "web_path": str(config.web_root / "data.json"),
+              "rows": len(rows),
+              "statuses": dict(Counter(
+                  str(row.get("result_status") or "missing") for row in rows
+              )),
+              "result_sync": history.get("result_sync"),
+              "titan_result_rows": len(titan_rows),
+          })
+          for row in rows:
+              kickoff = parse_time(row.get("kickoff"))
+              if kickoff is None or kickoff > now:
+                  continue
+              print({
+                  "history_key": row.get("history_key"),
+                  "match_id": row.get("match_id"),
+                  "hkjc_match_id": row.get("hkjc_match_id"),
+                  "titan_match_id": row.get("titan_match_id"),
+                  "home": row.get("home"), "away": row.get("away"),
+                  "league": row.get("league"), "kickoff": row.get("kickoff"),
+                  "stage": row.get("stage"),
+                  "result_status": row.get("result_status"),
+                  "actual": row.get("actual"), "score": row.get("score"),
+                  "result_source": row.get("result_source"),
+                  "result_attempted_at": row.get("result_attempted_at"),
+                  "result_missing_reason": row.get("result_missing_reason"),
+                  "market_grades": [
+                      {
+                          "code": grade.get("code"),
+                          "status": grade.get("grade_status"),
+                          "settlement": grade.get("settlement"),
+                          "reason": grade.get("reason"),
+                      }
+                      for grade in (row.get("market_grades") or [])
+                      if isinstance(grade, dict)
+                  ],
+              })
+          print("=== Crown unresolved corner detail ===")
           for row in rows:
               grades = row.get("market_grades") or []
               has_chl = any(
