@@ -1229,7 +1229,8 @@ class CrownSafetyTests(unittest.TestCase):
         self.assertIn('class="history-market-row"', app)
         self.assertIn('class="history-result-cell"', app)
         self.assertIn(".history-result-cell .hist-result b", styles)
-        self.assertIn("font-size: 1.4375rem", styles)
+        self.assertIn("font-size: 1.625rem", styles)
+        self.assertIn("font-size: 1.75rem", styles)
 
     def test_prediction_history_fetches_titan_corner_detail_after_strict_checks(self) -> None:
         from crown.prediction_history import _merge_titan_corner_detail, _result

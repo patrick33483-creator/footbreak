@@ -805,28 +805,31 @@ table.calib tr:last-child td { border-bottom: 0; }
 .history-table td { vertical-align: top; }
 .hist-result { margin-top: 5px; color: var(--text); }
 .history-result-cell {
-  min-width: 170px;
+  min-width: 210px;
   white-space: nowrap;
 }
 .history-result-cell .hist-result {
-  font-size: 1.0625rem;
-  font-weight: 700;
-  line-height: 1.5;
+  font-size: 1.25rem;
+  font-weight: 800;
+  line-height: 1.45;
 }
 .history-result-cell .hist-result b {
-  font-size: 1.3125rem;
+  font-size: 1.625rem;
+  font-weight: 800;
   color: var(--ink);
 }
 .history-result-cell .respill,
 .history-result-cell .stpill {
-  font-size: 0.75rem;
-  font-weight: 700;
-  line-height: 1.6;
+  font-size: 0.9375rem;
+  font-weight: 800;
+  line-height: 1.55;
+  padding: 3px 9px;
 }
 .history-result-cell .cell-sub {
-  margin-top: 2px;
-  font-size: 0.6875rem;
-  line-height: 1.45;
+  margin-top: 3px;
+  font-size: 0.8125rem;
+  font-weight: 650;
+  line-height: 1.5;
 }
 .forecast-pick { color: var(--amber); }
 .history-market-row {
@@ -870,12 +873,12 @@ table.calib tr:last-child td { border-bottom: 0; }
 }
 
 @media (max-width: 620px) {
-  .history-result-cell { min-width: 185px; }
-  .history-result-cell .hist-result { font-size: 1.125rem; }
-  .history-result-cell .hist-result b { font-size: 1.4375rem; }
+  .history-result-cell { min-width: 220px; }
+  .history-result-cell .hist-result { font-size: 1.3125rem; }
+  .history-result-cell .hist-result b { font-size: 1.75rem; }
   .history-result-cell .respill,
-  .history-result-cell .stpill { font-size: 0.8125rem; }
-  .history-result-cell .cell-sub { font-size: 0.75rem; }
+  .history-result-cell .stpill { font-size: 1rem; }
+  .history-result-cell .cell-sub { font-size: 0.875rem; }
   .lad { grid-template-columns: 22px 1fr; }
   .lad-c { grid-column: 2; text-align: left; }
   .card.stk .stk-now { gap: var(--s2) var(--s3); }
