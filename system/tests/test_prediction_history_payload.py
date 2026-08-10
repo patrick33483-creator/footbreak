@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -143,6 +144,62 @@ class PredictionHistoryPayloadTests(unittest.TestCase):
         }
         rows = gen_app_data.build_prediction_history(watch, [], None)["rows"]
         self.assertEqual([row["match_id"] for row in rows], ["valid-late", "valid-early"])
+
+    def test_prediction_archive_keeps_stage_after_live_watch_removal(self) -> None:
+        watch = {
+            "m3": {
+                "match_id": "m3", "home": "主隊", "away": "客隊",
+                "league": "測試聯賽", "kickoff": "2026-08-10 18:00",
+                "stages": [{
+                    "prediction_era": ERA, "stage": "T-5",
+                    "ts": "2026-08-10T17:55:00+08:00",
+                    "market_predictions": [market_prediction("CHL", "9.5", "H")],
+                }],
+            }
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = str(Path(directory) / "archive.json")
+            first = gen_app_data.sync_prediction_archive(watch, path)
+            second = gen_app_data.sync_prediction_archive({}, path)
+        self.assertEqual(first, second)
+        self.assertIn("m3", second)
+        self.assertEqual(second["m3"]["stages"][0]["stage"], "T-5")
+
+    def test_market_only_settlement_is_not_shown_as_wdl_loss(self) -> None:
+        prediction = market_prediction("HIL", "2.5", "H")
+        watch = {
+            "m4": {
+                "match_id": "m4", "home": "主隊", "away": "客隊",
+                "league": "測試聯賽", "kickoff": "2026-08-10 18:00",
+                "stages": [{
+                    "prediction_era": ERA, "stage": "T-5",
+                    "market_predictions": [prediction],
+                }],
+            }
+        }
+        accuracy_payload = {
+            "matches": [{
+                "match_id": "m4", "home": "主隊", "away": "客隊",
+                "league": "測試聯賽", "kickoff": "2026-08-10 18:00",
+                "score": "2-1", "result_source": "hkjc_official",
+                "stages": [{
+                    "stage": "T-5", "wdl_pick": None, "wdl_act": 0,
+                    "wdl_hit": None, "score_act": "2-1",
+                    "market_predictions": [prediction],
+                    "market_grades": [{
+                        **prediction, "grade_status": "GRADED",
+                        "settlement": "Won", "hit": True,
+                    }],
+                }],
+            }],
+        }
+        payload = gen_app_data.build_prediction_history(watch, [], accuracy_payload)
+        row = payload["rows"][0]
+        self.assertEqual(row["result_status"], "已核對")
+        self.assertIsNone(row["correct"])
+        self.assertEqual(payload["stats"]["graded"], 1)
+        self.assertIsNone(payload["stats"]["accuracy"])
+        self.assertEqual(payload["stats"]["by_market"]["HIL"]["hits"], 1)
 
 
 if __name__ == "__main__":

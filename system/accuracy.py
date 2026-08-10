@@ -43,6 +43,10 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 LEDGER = os.path.join(HERE, "sim_ledger.json")
 OUT = os.path.join(HERE, "accuracy.json")
 HISTORY_OUT = os.path.join(HERE, "accuracy_history.json")
+PREDICTION_ARCHIVE = os.environ.get(
+    "FOOTBREAK_PREDICTION_ARCHIVE_PATH",
+    os.path.join(HERE, "prediction_history_archive.json"),
+)
 
 SETTLE_AFTER_MIN = 130
 STAGES = ["首預", "T-30", "T-5"]
@@ -146,14 +150,33 @@ def band(dist, lo=0.10, hi=0.90):
 def score_stage(st, res):
     """一個階段預測 vs 一個賽果 → 一份評分 dict(冇得計嘅欄位留 None)。"""
     d = rebuild(st.get("final"), st.get("now"))
-    if not d:
-        return None
     gh, ga = res["goals_home"], res["goals_away"]
     tot = gh + ga
     ct = res.get("corners_total")
+    normalized_res = {**res, "goals_total": res.get("goals_total", tot)}
+    act = 0 if gh > ga else (1 if gh == ga else 2)
+
+    # 舊快照有時只保存咗正式市場方向，冇保存完整 Poisson 參數。
+    # 讓球／入球大細／角球仍然可以用真實賽果獨立結算，唔應該因為
+    # 缺 final/now 而整個階段消失。
+    if not d:
+        return {
+            "stage": st.get("stage"),
+            "predicted_at": st.get("ts"),
+            "conf": st.get("conviction"),
+            "wdl_pick": None,
+            "wdl_act": act,
+            "wdl_hit": None,
+            "score_act": f"{gh}-{ga}",
+            "goals_act": tot,
+            "corners_act": ct,
+            "market_predictions": st.get("market_predictions") or [],
+            "market_grades": score_market_predictions(
+                st.get("market_predictions") or [], normalized_res
+            ),
+        }
 
     # 1X2 ── 0 主勝 1 和 2 客勝
-    act = 0 if gh > ga else (1 if gh == ga else 2)
     p = d["p"]
     sp = sum(p) or 1.0
     p = [x / sp for x in p]
@@ -175,7 +198,9 @@ def score_stage(st, res):
         "score_hit1": int((gh, ga) == d["tops"][0]),
         "score_hit5": int((gh, ga) in d["tops"]),
         "market_predictions": st.get("market_predictions") or [],
-        "market_grades": score_market_predictions(st.get("market_predictions") or [], res),
+        "market_grades": score_market_predictions(
+            st.get("market_predictions") or [], normalized_res
+        ),
     }
 
     # 大細 2.5
@@ -285,19 +310,20 @@ def _persist_learning_result(mid, w, res, rows):
             snapshot_id = stage.get("learning_snapshot_id")
             if not snapshot_id:
                 continue
-            store.record_grade(
-                snapshot_id,
-                "WDL",
-                str(score.get("wdl_pick")),
-                "GRADED",
-                {
-                    "hit": score.get("wdl_hit"),
-                    "brier": score.get("wdl_brier"),
-                    "log_loss": score.get("wdl_ll"),
-                    "actual": score.get("wdl_act"),
-                },
-                result_id=result["result_id"],
-            )
+            if score.get("wdl_pick") is not None:
+                store.record_grade(
+                    snapshot_id,
+                    "WDL",
+                    str(score.get("wdl_pick")),
+                    "GRADED",
+                    {
+                        "hit": score.get("wdl_hit"),
+                        "brier": score.get("wdl_brier"),
+                        "log_loss": score.get("wdl_ll"),
+                        "actual": score.get("wdl_act"),
+                    },
+                    result_id=result["result_id"],
+                )
             for grade in score.get("market_grades") or []:
                 store.record_grade(
                     snapshot_id,
@@ -307,6 +333,37 @@ def _persist_learning_result(mid, w, res, rows):
                     grade,
                     result_id=result["result_id"],
                 )
+
+
+def _merge_watch(archived, live):
+    """Merge persistent prediction snapshots with the current live board."""
+    merged = dict(archived or {})
+    for mid, current in (live or {}).items():
+        mid = str(mid)
+        previous = merged.get(mid) or {}
+        row = {**previous, **current}
+        stages = {}
+        for stage in (previous.get("stages") or []) + (current.get("stages") or []):
+            if not isinstance(stage, dict):
+                continue
+            key = (stage.get("prediction_era"), stage.get("stage"))
+            old = stages.get(key)
+            if old is None or str(stage.get("ts") or "") >= str(old.get("ts") or ""):
+                stages[key] = stage
+        row["stages"] = list(stages.values())
+        merged[mid] = row
+    return merged
+
+
+def _load_archived_watch(live):
+    try:
+        with open(PREDICTION_ARCHIVE, encoding="utf8") as handle:
+            archived = json.load(handle)
+        if not isinstance(archived, dict):
+            archived = {}
+    except (OSError, ValueError, TypeError):
+        archived = {}
+    return _merge_watch(archived, live)
 
 
 # ─────────────────────────────────────────── 匯總
@@ -407,7 +464,7 @@ def calibration(rows, nbins=5):
 def run(fetch=True):
     with open(LEDGER, encoding="utf8") as handle:
         led = json.load(handle)
-    watch = led.get("watch") or {}
+    watch = _load_archived_watch(led.get("watch") or {})
     now = datetime.now(HKT)
 
     eligible = []
@@ -498,8 +555,9 @@ def run(fetch=True):
             if not sc:
                 continue
             d = rebuild(st.get("final"), st.get("now"))
-            sp = sum(d["p"]) or 1.0
-            sc["_p3"] = [x / sp for x in d["p"]]
+            if d:
+                sp = sum(d["p"]) or 1.0
+                sc["_p3"] = [x / sp for x in d["p"]]
             sc["match_id"] = mid
             rows.append(sc)
             learning_rows.append((st, sc))
@@ -517,7 +575,43 @@ def run(fetch=True):
                            for r in rows],
             })
 
-    matches.sort(key=lambda m: m["kickoff"], reverse=True)
+    # accuracy_history 係長期記錄，唔可以因為 live watch 清理舊賽事而
+    # 覆寫成空白。新結果按 match/stage 取代舊結果，其餘完整保留。
+    previous_matches = []
+    try:
+        with open(HISTORY_OUT, encoding="utf8") as handle:
+            previous_matches = json.load(handle).get("matches") or []
+    except (OSError, ValueError, TypeError, AttributeError):
+        previous_matches = []
+    merged_matches = {
+        str(match.get("match_id")): match
+        for match in previous_matches
+        if isinstance(match, dict) and match.get("match_id") is not None
+    }
+    for match in matches:
+        mid = str(match.get("match_id"))
+        previous = merged_matches.get(mid) or {}
+        stage_map = {
+            stage.get("stage"): stage
+            for stage in (previous.get("stages") or [])
+            if isinstance(stage, dict) and stage.get("stage")
+        }
+        for stage in match.get("stages") or []:
+            if isinstance(stage, dict) and stage.get("stage"):
+                stage_map[stage["stage"]] = stage
+        merged_matches[mid] = {
+            **previous,
+            **match,
+            "stages": list(stage_map.values()),
+        }
+    matches = list(merged_matches.values())
+    matches.sort(key=lambda m: str(m.get("kickoff") or ""), reverse=True)
+    scored = []
+    for match in matches:
+        mid = str(match.get("match_id"))
+        for stage in match.get("stages") or []:
+            if isinstance(stage, dict):
+                scored.append({**stage, "match_id": mid})
     by_stage = {s: _agg([r for r in scored if r["stage"] == s]) for s in STAGES}
     by_conf = []
     for (lo, hi), lbl in zip(CONF_BINS, CONF_LBL):

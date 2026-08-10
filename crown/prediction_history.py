@@ -12,8 +12,6 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from analysis.learning_store import LearningStore
-
 from .common import HKT, SETTLE_AFTER_SECONDS, iso_hkt, parse_time, read_json, write_json_atomic
 from .config import Settings
 from .hkjc import fetch_official_result_events
@@ -299,6 +297,11 @@ def _persist_learning_result(row: dict[str, Any], score: dict[str, Any], source:
     snapshot_id = row.get("learning_snapshot_id")
     if not path or not snapshot_id:
         return
+    # Loading the learning stack pulls in the numerical modelling
+    # dependencies.  Keep it off the dashboard API startup path and import it
+    # only when a newly verified result is actually persisted.
+    from analysis.learning_store import LearningStore
+
     with LearningStore(path) as store:
         result = store.record_result(
             "crown",

@@ -1,0 +1,25 @@
+[Unit]
+Description=足破 · 儀表板模擬結算 API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt/footbreak/system
+EnvironmentFile=-/etc/footbreak.env
+EnvironmentFile=-/etc/footbreak-crown.env
+Environment=FOOTBREAK_DATA=/var/www/footbreak/data.json
+Environment=FOOTBREAK_RUNNER=/opt/footbreak/deploy/run.sh
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/footbreak/.venv/bin/python3 /opt/footbreak/system/dashboard_api.py --host 127.0.0.1 --port 8766
+Restart=on-failure
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

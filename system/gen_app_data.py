@@ -7,6 +7,7 @@ import re
 import os
 import sys
 import datetime as dt
+import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -134,6 +135,10 @@ def forecast(r):
 WDL_LABELS = ("主勝", "和局", "客勝")
 HISTORY_STAGES = ("首預", "T-30", "T-5")
 SCOREABLE_MARKETS = {"HDC", "HIL", "CHL"}
+PREDICTION_ARCHIVE = os.environ.get(
+    "FOOTBREAK_PREDICTION_ARCHIVE_PATH",
+    os.path.join(HERE, "prediction_history_archive.json"),
+)
 
 
 def _scoreable_market_predictions(value):
@@ -149,6 +154,58 @@ def _scoreable_market_predictions(value):
             continue
         rows.append(prediction)
     return rows
+
+
+def sync_prediction_archive(watch, path=None):
+    """Persist every scoreable prediction stage independently of live watch."""
+    path = path or PREDICTION_ARCHIVE
+    try:
+        with open(path, encoding="utf-8") as handle:
+            archived = json.load(handle)
+        if not isinstance(archived, dict):
+            archived = {}
+    except (OSError, ValueError, TypeError):
+        archived = {}
+
+    for mid, current in (watch or {}).items():
+        stages = [
+            stage for stage in (current.get("stages") or [])
+            if stage.get("prediction_era") == "2026-08-10-market-learning-v2"
+            and _scoreable_market_predictions(stage.get("market_predictions"))
+        ]
+        if not stages:
+            continue
+        mid = str(mid)
+        previous = archived.get(mid) or {}
+        stage_map = {
+            (stage.get("prediction_era"), stage.get("stage")): stage
+            for stage in (previous.get("stages") or [])
+            if isinstance(stage, dict)
+        }
+        for stage in stages:
+            key = (stage.get("prediction_era"), stage.get("stage"))
+            old = stage_map.get(key)
+            if old is None or str(stage.get("ts") or "") >= str(old.get("ts") or ""):
+                stage_map[key] = stage
+        archived[mid] = {
+            **previous,
+            **{key: value for key, value in current.items() if key != "stages"},
+            "stages": list(stage_map.values()),
+        }
+
+    directory = os.path.dirname(path) or "."
+    os.makedirs(directory, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix=".prediction-history.", dir=directory)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(archived, handle, ensure_ascii=False, separators=(",", ":"))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+    return archived
 
 
 def build_prediction_history(watch, bets, accuracy):
@@ -248,7 +305,10 @@ def build_prediction_history(watch, bets, accuracy):
             "actual": actual,
             "score": result.get("score") or score.get("score_act"),
             "result_source": result.get("result_source"),
-            "correct": bool(score.get("wdl_hit")) if actual else None,
+            "correct": (
+                bool(score.get("wdl_hit"))
+                if actual and score.get("wdl_hit") is not None else None
+            ),
             "result_status": ("已核對" if actual else
                               "不計" if excluded else "待賽果"),
             "excluded_reason": excluded.get("status") if excluded else None,
@@ -276,16 +336,17 @@ def build_prediction_history(watch, bets, accuracy):
 
     rows.sort(key=lambda r: (str(r.get("kickoff") or ""),
                              str(r.get("predicted_at") or "")), reverse=True)
-    graded_rows = [r for r in rows if r.get("actual")]
+    graded_rows = [r for r in rows if r.get("result_status") == "已核對"]
     pending_rows = [r for r in rows if r.get("result_status") == "待賽果"]
     excluded_rows = [r for r in rows if r.get("result_status") == "不計"]
-    hits = sum(1 for r in graded_rows if r.get("correct"))
+    wdl_graded_rows = [r for r in graded_rows if r.get("correct") is not None]
+    hits = sum(1 for r in wdl_graded_rows if r.get("correct") is True)
 
     by_stage = {}
     for stage in HISTORY_STAGES:
         stage_rows = [r for r in rows if r.get("stage") == stage]
-        stage_graded = [r for r in stage_rows if r.get("actual")]
-        stage_hits = sum(1 for r in stage_graded if r.get("correct"))
+        stage_graded = [r for r in stage_rows if r.get("correct") is not None]
+        stage_hits = sum(1 for r in stage_graded if r.get("correct") is True)
         by_stage[stage] = {
             "predictions": len(stage_rows),
             "graded": len(stage_graded),
@@ -309,8 +370,9 @@ def build_prediction_history(watch, bets, accuracy):
                 if decided else None
             ),
             "brier": (
-                sum(float(grade["brier"]) for grade in grades) / len(grades)
-                if grades else None
+                sum(float(grade["brier"]) for grade in grades if grade.get("brier") is not None)
+                / len([grade for grade in grades if grade.get("brier") is not None])
+                if any(grade.get("brier") is not None for grade in grades) else None
             ),
         }
 
@@ -323,7 +385,7 @@ def build_prediction_history(watch, bets, accuracy):
             "pending": len(pending_rows),
             "excluded": len(excluded_rows),
             "hits": hits,
-            "accuracy": (hits / len(graded_rows)) if graded_rows else None,
+            "accuracy": (hits / len(wdl_graded_rows)) if wdl_graded_rows else None,
             "by_stage": by_stage,
             "by_market": by_market,
             "learning_status": "collecting_market_level_shadow_samples",
@@ -538,7 +600,7 @@ def main():
         except Exception:
             acc_history = acc
     prediction_history = build_prediction_history(
-        watch, bets, acc_history
+        sync_prediction_archive(watch), bets, acc_history
     )
 
     out = {

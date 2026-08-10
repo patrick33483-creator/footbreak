@@ -76,9 +76,29 @@ async function refresh(silent) {
   const b = $('#refresh');
   if (b) { b.classList.add('spin'); b.disabled = true; }
   try {
-    const r = await fetch('data.json?v=' + Date.now(), { cache: 'no-store' });
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    const raw = await r.json();
+    let raw;
+    if (!silent) {
+      const settled = await fetch('api/settle', {
+        method: 'POST',
+        cache: 'no-store',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Footbreak-Action': 'settle-simulation',
+        },
+        body: JSON.stringify({ confirm: 'simulation-only' }),
+      });
+      if (!settled.ok) {
+        let detail = {};
+        try { detail = await settled.json(); } catch (_) {}
+        throw new Error(detail.error === 'settlement_busy' ? '系統正處理臨場任務，請稍後再按' : `結算 HTTP ${settled.status}`);
+      }
+      const response = await settled.json();
+      raw = response.data;
+    } else {
+      const r = await fetch('data.json?v=' + Date.now(), { cache: 'no-store' });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      raw = await r.json();
+    }
     const changed = raw.generated_at !== (DATA && DATA.generated_at);
     DATA = raw;
     LED = raw.ledger || { bets: [], stats: {}, log: [] };
@@ -855,25 +875,65 @@ const HIST_SETTLEMENT_LABEL = {
   Won: '全贏', 'Half Won': '半贏', Refunded: '走水',
   'Half Lost': '半輸', Lost: '全輸',
 };
+function historyQuarterLine(raw, signed = true) {
+  const q = Math.round(Number(raw) * 4);
+  if (!Number.isFinite(q)) return String(raw ?? '—');
+  const values = q % 2 === 0
+    ? [q / 4]
+    : q > 0
+      ? [(q - 1) / 4, (q + 1) / 4]
+      : [(q + 1) / 4, (q - 1) / 4];
+  return values.map((value) => signed && value > 0 ? `+${value}` : String(value)).join('/');
+}
+function historyPredictionLabel(r, p) {
+  const line = Number(p.line ?? p.condition);
+  if (p.code === 'HDC') {
+    const team = p.side === 'A' ? r.away : r.home;
+    const selectedLine = p.side === 'A' ? -line : line;
+    return `${team} ${historyQuarterLine(selectedLine, true)}`;
+  }
+  if (p.code === 'HIL') return `${p.side === 'H' ? '大' : '細'} ${historyQuarterLine(line, false)} 球`;
+  if (p.code === 'CHL') return `${p.side === 'H' ? '大' : '細'} ${historyQuarterLine(line, false)} 角球`;
+  return p.label || `${p.condition} ${p.side}`;
+}
 function historyMarkets(r) {
   const grades = Object.fromEntries((r.market_grades || []).map((g) => [g.code, g]));
   return (r.market_predictions || []).map((p) => {
     const g = grades[p.code] || {};
+    const settlement = HIST_SETTLEMENT_LABEL[g.settlement] || g.settlement || '';
     const result = g.grade_status === 'GRADED'
-      ? ` · ${HIST_SETTLEMENT_LABEL[g.settlement] || g.settlement}`
-      : g.reason === 'corners_result_missing' ? ' · 待角球賽果' : '';
-    return `<div><b>${HIST_MARKET_LABEL[p.code] || esc(p.code)}</b> ${esc(p.label || `${p.condition} ${p.side}`)}
-      <span class="cell-sub">${pc(p.probability, 1)}${esc(result)}</span></div>`;
+      ? g.hit === true
+        ? `<span class="market-hit hit"><b>命中</b> · ${esc(settlement)}</span>`
+        : g.hit === false
+          ? `<span class="market-hit miss"><b>落空</b> · ${esc(settlement)}</span>`
+          : `<span class="market-hit push"><b>走水</b></span>`
+      : g.reason === 'corners_result_missing'
+        ? '<span class="market-hit pending">角球賽果同步中</span>'
+        : '<span class="market-hit pending">待賽果</span>';
+    return `<div><b>${HIST_MARKET_LABEL[p.code] || esc(p.code)}</b> ${esc(historyPredictionLabel(r, p))}
+      <span class="cell-sub">${pc(p.probability, 1)}</span>${result}</div>`;
   }).join('') || '<span class="dim">未有可評分市場</span>';
+}
+
+function historyMarketResult(r) {
+  const grades = (r.market_grades || []).filter((g) => g.grade_status === 'GRADED');
+  const decided = grades.filter((g) => g.hit === true || g.hit === false);
+  const hits = decided.filter((g) => g.hit === true).length;
+  const pushes = grades.filter((g) => g.hit == null).length;
+  if (!(r.market_predictions || []).length) return '<span class="dim">冇市場預測</span>';
+  if (!grades.length) return '<span class="stpill pending">市場待賽果</span>';
+  return `<span class="market-total ${decided.length && hits === decided.length ? 'all-hit' : hits ? 'some-hit' : 'none-hit'}">
+      市場命中 ${hits}/${decided.length}</span>
+    ${pushes ? `<div class="cell-sub">走水 ${pushes} 項</div>` : ''}`;
 }
 
 function renderFc() {
   const V = $('#viewFc');
   const payload = DATA.prediction_history || { rows: [], stats: {} };
   const rows = payload.rows || [], s = payload.stats || {};
-  const gradedRows = rows.filter((r) => r.actual);
+  const gradedRows = rows.filter((r) => r.result_status === '已核對');
   const excludedRows = rows.filter((r) => r.result_status === '不計');
-  const pendingRows = rows.filter((r) => !r.actual && r.result_status !== '不計');
+  const pendingRows = rows.filter((r) => r.result_status === '待賽果');
   const accuracy = s.accuracy == null ? '待賽果' : pc(s.accuracy, 1);
   const K = [
     ['記錄賽事', s.matches || 0, ''],
@@ -901,15 +961,19 @@ function renderFc() {
       <div class="cell-sub">${esc(r.league || '')}</div></td>
     <td><span class="fx-tag ${TAG[r.stage] || 'tag-wait'}">${esc(r.stage || '—')}</span>
       <div class="cell-sub mono">${r.predicted_at ? hkStamp(r.predicted_at) : '—'}</div></td>
-    <td><b class="forecast-pick">${esc(r.forecast)}</b>
-      <div class="cell-sub">最高機率 ${pc(r.probability, 1)}${r.likely_score ? ` · 最可能 ${esc(r.likely_score)}` : ''}</div></td>
-    <td>${historyMarkets(r)}</td>
+    <td><b class="forecast-pick">${esc(r.forecast || '冇主客和預測')}</b>
+      <div class="cell-sub">${r.probability == null ? '正式結果見市場欄' : `最高機率 ${pc(r.probability, 1)}`}${r.likely_score ? ` · 最可能 ${esc(r.likely_score)}` : ''}</div></td>
+    <td>${historyMarkets(r)}<div class="market-summary">${historyMarketResult(r)}</div></td>
     <td class="${convClass(r.conviction)}">${f2(r.conviction)}</td>
     <td>${r.simulated_bet
       ? `<span class="stpill pending">有模擬注</span><div class="cell-sub">${esc(r.bet_label || '')}</div>`
       : `<span class="stpill voided">冇落注</span><div class="cell-sub hist-reason">${esc(r.no_bet_reason || '未達條件')}</div>`}</td>
     <td>${r.actual
-      ? `<span class="respill ${r.correct ? 'r-w' : 'r-l'}">${r.correct ? '命中' : '落空'}</span>
+      ? r.correct == null
+        ? `<span class="stpill voided">冇主客和預測</span>
+           <div class="hist-result"><b>${esc(r.score || '—')}</b> · ${esc(r.actual)}</div>
+           <div class="cell-sub">${esc(r.result_source === 'hkjc_official' ? '馬會官方賽果' : r.result_source || '已核對賽果')}</div>`
+        : `<span class="respill ${r.correct ? 'r-w' : 'r-l'}">主客和${r.correct ? '命中' : '落空'}</span>
          <div class="hist-result"><b>${esc(r.score || '—')}</b> · ${esc(r.actual)}</div>
          <div class="cell-sub">${esc(r.result_source === 'hkjc_official' ? '馬會官方賽果' : r.result_source || '已核對賽果')}</div>`
       : r.result_status === '不計'

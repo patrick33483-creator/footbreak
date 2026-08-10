@@ -934,3 +934,21 @@ table.calib tr:last-child td { border-bottom: 0; }
 .acc-t td.num { text-align: right; }
 .acc-t tr:last-child td { border-bottom: none; }
 .acc-f { margin: 0; font: 400 10.5px/1.8 var(--sans); color: var(--ink-4); }
+
+/* ── 純預測紀錄逐市場結算 ── */
+.market-hit {
+  display: inline-block; margin-left: 6px; padding: 1px 5px;
+  border: 1px solid var(--line); border-radius: 999px;
+  font: 600 10px/1.5 var(--sans);
+}
+.market-hit.hit { color: var(--good); border-color: var(--good); }
+.market-hit.miss { color: var(--bad); border-color: var(--bad); }
+.market-hit.push, .market-hit.pending { color: var(--ink-4); }
+.market-summary { margin-top: 5px; padding-top: 6px; border-top: 1px dashed var(--line-soft); }
+.market-total {
+  display: inline-block; padding: 2px 6px; border: 1px solid var(--line);
+  border-radius: 999px; font: 650 10.5px/1.5 var(--sans);
+}
+.market-total.all-hit { color: var(--good); border-color: var(--good); }
+.market-total.some-hit { color: var(--amber); border-color: var(--amber); }
+.market-total.none-hit { color: var(--bad); border-color: var(--bad); }

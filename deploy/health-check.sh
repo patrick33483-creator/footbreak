@@ -36,6 +36,12 @@ systemctl is-active --quiet crown-dashboard-api.service || {
   exit 1
 }
 echo "OK service crown-dashboard-api.service active"
+systemctl is-active --quiet footbreak-dashboard-api.service || {
+  systemctl status footbreak-dashboard-api.service --no-pager
+  echo "FAIL footbreak-dashboard-api.service is not active" >&2
+  exit 1
+}
+echo "OK service footbreak-dashboard-api.service active"
 api_ready=0
 for _ in $(seq 1 10); do
   if python3 - <<'PY'
@@ -59,6 +65,15 @@ if [ "$api_ready" != 1 ]; then
   exit 1
 fi
 echo "OK Crown dashboard API /api/data"
+python3 - <<'PY'
+import json
+from urllib.request import urlopen
+
+with urlopen("http://127.0.0.1:8766/api/data", timeout=3) as response:
+    payload = json.load(response)
+assert "prediction_history" in payload
+PY
+echo "OK Footbreak dashboard API /api/data"
 
 for service in footbreak-tick.service footbreak-settle.service crown-tick.service crown-sweep.service crown-settle.service; do
   result="$(systemctl show "$service" -p Result --value)"

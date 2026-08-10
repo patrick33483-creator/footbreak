@@ -71,6 +71,27 @@ class AccuracyAllPredictionsTests(unittest.TestCase):
             "final": {"lh": 1.5, "la": 1.0},
         }))
 
+    def test_market_prediction_scores_without_poisson_snapshot(self) -> None:
+        score = accuracy.score_stage(
+            {
+                "stage": "T-5",
+                "conviction": 63,
+                "market_predictions": [{
+                    "code": "HIL", "condition": "2.5", "side": "H",
+                    "probability": 0.59, "label": "大 2.5 球",
+                }],
+            },
+            {
+                "goals_home": 2, "goals_away": 1,
+                "corners_total": None, "source": "hkjc_official",
+            },
+        )
+        self.assertIsNotNone(score)
+        self.assertEqual(score["score_act"], "2-1")
+        self.assertIsNone(score["wdl_pick"])
+        self.assertEqual(score["market_grades"][0]["settlement"], "Won")
+        self.assertTrue(score["market_grades"][0]["hit"])
+
 
 if __name__ == "__main__":
     unittest.main()

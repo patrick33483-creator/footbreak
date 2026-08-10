@@ -25,7 +25,8 @@ fi
 export PATH="$APP_DIR/bin:$PATH"
 export TZ="Asia/Hong_Kong"
 export LEARNING_DB_PATH="${LEARNING_DB_PATH:-/var/lib/footbreak/learning/predictions.sqlite}"
-install -d -m 0700 "$(dirname "$LEARNING_DB_PATH")"
+export FOOTBREAK_PREDICTION_ARCHIVE_PATH="${FOOTBREAK_PREDICTION_ARCHIVE_PATH:-/var/lib/footbreak/prediction_history_archive.json}"
+install -d -m 0700 "$(dirname "$LEARNING_DB_PATH")" "$(dirname "$FOOTBREAK_PREDICTION_ARCHIVE_PATH")"
 
 # venv 有就用,冇就用系統 python3
 if [ -x "$APP_DIR/.venv/bin/python3" ]; then
