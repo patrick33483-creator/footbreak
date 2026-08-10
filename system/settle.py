@@ -338,6 +338,7 @@ def run(force=False):
             due.append((bet, kickoff))
     changes, unresolved, provider_errors = [], [], []
     official = {}
+    titan_client, titan_rows = None, []
     if due:
         try:
             official = fetch_hkjc_results(
@@ -359,12 +360,29 @@ def run(force=False):
         if not force and mins < SETTLE_AFTER_MIN:
             continue
         res = official.get(str(b.get("match_id") or ""))
+        corner_provider_error = None
         if res and b.get("code") == "CHL":
             try:
                 res = merge_missing_corners(res, b.get("fixture_id"))
             except Exception as e:
+                corner_provider_error = f"opticodds_{type(e).__name__}"
+            if res.get("corners_total") is None:
+                try:
+                    import titan_results as T
+                    if titan_client is None:
+                        titan_client, titan_rows = T.fetch_titan_result_rows()
+                    res = T.merge_titan_corners(
+                        res, b, client=titan_client, rows=titan_rows
+                    )
+                except Exception as e:
+                    corner_provider_error = (
+                        f"{corner_provider_error or 'titan'}+titan_{type(e).__name__}"
+                    )
+            if res.get("corners_total") is not None:
+                corner_provider_error = None
+            if corner_provider_error:
                 provider_errors.append(
-                    f"{b.get('bet_id') or b['match_id']}: corner_{type(e).__name__}"
+                    f"{b.get('bet_id') or b['match_id']}: {corner_provider_error}"
                 )
         if not res:
             fid = b.get("fixture_id")

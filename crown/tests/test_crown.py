@@ -26,7 +26,12 @@ from crown.period import in_current_period, is_upcoming_in_current_period, perio
 from crown.prediction_history import archive_watch, grade_history
 from crown import settle as crown_settle
 from crown.state import load_predictions, merge_predictions, save_predictions
-from crown.titan import crown_prices_from_pages, parse_crown_fixture_ids, parse_schedule_page
+from crown.titan import (
+    crown_prices_from_pages,
+    parse_crown_fixture_ids,
+    parse_match_statistics,
+    parse_schedule_page,
+)
 
 
 class CrownSafetyTests(unittest.TestCase):
@@ -41,6 +46,20 @@ class CrownSafetyTests(unittest.TestCase):
         self.assertIsNone(parse_hkjc_total("2.2"))
         self.assertEqual(settle_handicap(-0.25, "H", 1, 1), "Half Lost")
         self.assertEqual(settle_total(2.75, "H", 2, 1), "Half Won")
+
+    def test_titan_live_detail_corner_statistics_are_parsed_fail_closed(self) -> None:
+        source = (
+            '<script>var teamTvStatisticData = '
+            '"0,5,2,71,29^2,2,1,67,33^11,56%,44%,56,44";</script>'
+        )
+        self.assertEqual(
+            parse_match_statistics(source),
+            {"corners_home": 5, "corners_away": 2, "corners_total": 7},
+        )
+        self.assertIsNone(parse_match_statistics("var teamTvStatisticData = '';"))
+        self.assertIsNone(parse_match_statistics(
+            'var teamTvStatisticData = "0,not-a-number,2,0,0";'
+        ))
 
     def test_matching_requires_unique_same_event_and_team_ids_for_hkjc(self) -> None:
         good = Event("good", "League", "Alpha", "Beta", self.now + timedelta(minutes=2))

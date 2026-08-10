@@ -497,6 +497,7 @@ def run(fetch=True):
             official_statuses = {}
 
     scored, matches, missing_results, excluded_results = [], [], [], []
+    titan_client, titan_rows = None, []
     for mid, w in watch.items():
         learning_stages = [
             stage for stage in (w.get("stages") or [])
@@ -522,6 +523,19 @@ def run(fetch=True):
             except Exception:
                 # 角球後備來源失敗唔可以阻止讓球／入球大細正常評分。
                 pass
+            if res.get("corners_total") is None and fetch:
+                try:
+                    import titan_results as T
+                    if titan_client is None:
+                        titan_client, titan_rows = T.fetch_titan_result_rows()
+                    res = T.merge_titan_corners(
+                        res, {**w, "match_id": mid},
+                        client=titan_client, rows=titan_rows,
+                    )
+                except Exception:
+                    # Titan is a corner-only fallback; every other market must
+                    # still grade even when that source is temporarily absent.
+                    pass
         if not res:
             fid = w.get("fixture_id")
             if not fid:

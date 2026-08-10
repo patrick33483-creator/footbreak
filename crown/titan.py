@@ -19,6 +19,10 @@ _ROW = re.compile(
     re.I,
 )
 _TAG = re.compile(r"<[^>]*>")
+_TEAM_TV_STATS = re.compile(
+    r"(?:var\s+)?teamTvStatisticData\s*=\s*['\"](?P<data>[^'\"]*)",
+    re.I,
+)
 
 
 def _text(value: str) -> str:
@@ -63,6 +67,34 @@ def parse_schedule_page(source: str, yyyymmdd: str) -> list[dict[str, Any]]:
                          "home_score": int(score.group(1)) if score else None,
                          "away_score": int(score.group(2)) if score else None})
     return fixtures
+
+
+def parse_match_statistics(source: str) -> dict[str, int] | None:
+    """Parse full-time team statistics embedded in a Titan live-detail page.
+
+    Titan encodes rows as ``stat_code,home,away,home_pct,away_pct`` separated
+    by ``^``.  Verified stat code 0 is the full-time corner count.  Returning
+    ``None`` is intentionally fail-closed when the field is absent or malformed.
+    """
+    found = _TEAM_TV_STATS.search(source)
+    if not found:
+        return None
+    for raw_row in found.group("data").split("^"):
+        fields = [field.strip() for field in raw_row.split(",")]
+        if len(fields) < 3 or fields[0] != "0":
+            continue
+        try:
+            home, away = int(fields[1]), int(fields[2])
+        except ValueError:
+            return None
+        if home < 0 or away < 0:
+            return None
+        return {
+            "corners_home": home,
+            "corners_away": away,
+            "corners_total": home + away,
+        }
+    return None
 
 
 def parse_crown_fixture_ids(source: str) -> set[str]:
@@ -250,3 +282,19 @@ class TitanClient:
             except OSError:
                 continue
         return list({row["id"]: row for row in output}.values())
+
+    def result_detail(self, titan_id: str) -> dict[str, Any] | None:
+        """Return machine-readable full-time statistics for one numeric ID."""
+        titan_id = str(titan_id)
+        if not titan_id.isdigit():
+            return None
+        stats = parse_match_statistics(
+            self._read(f"https://live.titan007.com/detail/{titan_id}cn.htm")
+        )
+        if not stats:
+            return None
+        return {
+            "titan_id": titan_id,
+            **stats,
+            "source": "titan007_match_detail",
+        }

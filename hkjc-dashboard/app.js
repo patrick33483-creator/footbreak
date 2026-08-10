@@ -66,7 +66,7 @@ async function boot() {
   bindUI();
   render();
   setInterval(render, 30000);
-  setInterval(() => refresh(true), 5 * 60000);   // 每 5 分鐘自動攞一次新資料
+  setInterval(() => refresh(true), 60000);   // 每分鐘檢查伺服器最新資料
 }
 
 let BUSY = false;
@@ -76,36 +76,16 @@ async function refresh(silent) {
   const b = $('#refresh');
   if (b) { b.classList.add('spin'); b.disabled = true; }
   try {
-    let raw;
-    if (!silent) {
-      const settled = await fetch('api/settle', {
-        method: 'POST',
-        cache: 'no-store',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Footbreak-Action': 'settle-simulation',
-        },
-        body: JSON.stringify({ confirm: 'simulation-only' }),
-      });
-      if (!settled.ok) {
-        let detail = {};
-        try { detail = await settled.json(); } catch (_) {}
-        throw new Error(detail.error === 'settlement_busy' ? '系統正處理臨場任務，請稍後再按' : `結算 HTTP ${settled.status}`);
-      }
-      const response = await settled.json();
-      raw = response.data;
-    } else {
-      const r = await fetch('data.json?v=' + Date.now(), { cache: 'no-store' });
-      if (!r.ok) throw new Error('HTTP ' + r.status);
-      raw = await r.json();
-    }
+    const r = await fetch('data.json?v=' + Date.now(), { cache: 'no-store' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const raw = await r.json();
     const changed = raw.generated_at !== (DATA && DATA.generated_at);
     DATA = raw;
     LED = raw.ledger || { bets: [], stats: {}, log: [] };
     LIST = (raw.matches || []).slice().sort((a, b) => kt(a.kickoff_hkt) - kt(b.kickoff_hkt));
     $('#genAt').textContent = hkStamp(raw.generated_at) + ' HKT';
     render();
-    if (!silent) flash(changed ? '已更新到最新資料' : '已經係最新,冇新資料');
+    if (!silent) flash(changed ? '已更新到最新資料' : '伺服器暫時未有新結算');
   } catch (e) {
     if (!silent) flash('更新失敗:' + e.message, true);
   } finally {
