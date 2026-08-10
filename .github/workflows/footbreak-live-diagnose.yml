@@ -44,6 +44,82 @@ jobs:
               -p ExecMainStartTimestamp -p ExecMainExitTimestamp || true
           done
 
+          echo "=== Crown pending simulation settlement ==="
+          cd /opt/footbreak
+          set -a
+          [ ! -f /etc/footbreak.env ] || . /etc/footbreak.env
+          [ ! -f /etc/footbreak-crown.env ] || . /etc/footbreak-crown.env
+          set +a
+          PYTHONPATH=/opt/footbreak /opt/footbreak/.venv/bin/python3 -u - <<'PY'
+          from datetime import datetime
+
+          from crown.common import HKT, SETTLE_AFTER_SECONDS, parse_time
+          from crown.config import settings
+          from crown.hkjc import fetch_official_results
+          from crown.state import load_ledger
+          from crown.titan import TitanClient
+
+          config = settings()
+          bets = load_ledger(config).get("bets") or []
+          now = datetime.now(HKT)
+          pending = [bet for bet in bets if bet.get("status") == "PENDING"]
+          due = [
+              bet for bet in pending
+              if parse_time(bet.get("kickoff"))
+              and (now - parse_time(bet.get("kickoff"))).total_seconds() >= SETTLE_AFTER_SECONDS
+          ]
+          dates = {
+              parse_time(bet.get("kickoff")).strftime("%Y-%m-%d")
+              for bet in due if parse_time(bet.get("kickoff"))
+          }
+          ids = {
+              str(bet.get("hkjc_match_id"))
+              for bet in due if bet.get("hkjc_match_id")
+          }
+          try:
+              official = fetch_official_results(ids, dates)
+              official_error = None
+          except Exception as exc:
+              official = {}
+              official_error = f"{type(exc).__name__}: {exc}"
+          try:
+              titan = TitanClient(config).results()
+              titan_error = None
+          except Exception as exc:
+              titan = []
+              titan_error = f"{type(exc).__name__}: {exc}"
+          titan_by_id = {str(row.get("id")): row for row in titan}
+          print({
+              "bets": len(bets), "pending": len(pending), "due": len(due),
+              "hkjc_ids": len(ids), "official_rows": len(official),
+              "official_error": official_error, "titan_rows": len(titan),
+              "titan_error": titan_error,
+          })
+          for bet in pending:
+              kickoff = parse_time(bet.get("kickoff"))
+              hkjc_id = str(bet.get("hkjc_match_id") or "")
+              titan_id = str(bet.get("titan_match_id") or "")
+              official_row = official.get(hkjc_id)
+              titan_row = titan_by_id.get(titan_id)
+              print({
+                  "bet_id": bet.get("bet_id") or bet.get("id"),
+                  "match_id": bet.get("match_id"),
+                  "hkjc_match_id": hkjc_id or None,
+                  "titan_match_id": titan_id or None,
+                  "pinnapi_event_id": bet.get("pinnapi_event_id"),
+                  "home": bet.get("home"), "away": bet.get("away"),
+                  "league": bet.get("league"), "kickoff": bet.get("kickoff"),
+                  "code": bet.get("code"), "side": bet.get("side"),
+                  "condition": bet.get("condition"),
+                  "due": bool(
+                      kickoff
+                      and (now - kickoff).total_seconds() >= SETTLE_AFTER_SECONDS
+                  ),
+                  "official": official_row,
+                  "titan": titan_row,
+              })
+          PY
+
           echo "=== priority marker and lock ==="
           ls -la /run/footbreak-t5-priority /var/lock/footbreak.lock 2>&1 || true
           fuser -v /var/lock/footbreak.lock 2>&1 || true
