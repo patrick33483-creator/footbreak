@@ -1,6 +1,6 @@
 import unittest
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -30,6 +30,59 @@ class FailClosedPredictionTest(unittest.TestCase):
         self.assertEqual(result["conviction"], 0.0)
         self.assertIn("最終決定不下注", result["no_bet_reason"])
         self.assertEqual(result["stage"], "T-5")
+
+    def test_missing_pinnapi_fixture_uses_hkjc_full_market_model(self):
+        match = {
+            "id": "5002",
+            "homeTeam": {"name_ch": "主隊", "name_en": "Home"},
+            "awayTeam": {"name_ch": "客隊", "name_en": "Away"},
+            "tournament": {"nameCH": "測試聯賽"},
+            "foPools": [],
+        }
+        kickoff = datetime.now(timezone.utc) + timedelta(minutes=5)
+        hk = {
+            "HAD": [{"condition": None, "odds": {"H": 2.4, "D": 3.2, "A": 2.8}}],
+            "HDC": [],
+            "HIL": [],
+            "CHL": [],
+        }
+        view = {
+            "lh": 1.4, "la": 1.1, "rho": -0.03, "rmse": 0.04, "n": 3,
+            "total": 2.5, "supremacy": 0.3,
+        }
+        matrix = [[0.0] * 13 for _ in range(13)]
+        matrix[1][0] = 1.0
+        with patch.object(run_predict.H, "parse_kickoff", return_value=kickoff), \
+             patch.object(run_predict.H, "flatten_odds", return_value=hk), \
+             patch.object(run_predict.P, "fit_view", return_value=view), \
+             patch.object(run_predict.P, "apply",
+                          return_value=(1.4, 1.1, None, {})), \
+             patch.object(run_predict.P, "outcome_probs",
+                          return_value=(matrix, [], None, 1.0, 0.0, 0.0)), \
+             patch.object(run_predict.M, "evaluate", return_value=[]), \
+             patch.object(run_predict, "hk_odds_fingerprint", return_value={}), \
+             patch.object(run_predict, "conviction", return_value=60.0):
+            result = run_predict.analyse_match(match, None, stage_override="T-5")
+        self.assertNotIn("skip", result)
+        self.assertEqual(result["model_source"], "hkjc_full_market")
+        self.assertFalse(result["sharp_reference_available"])
+        self.assertIsNone(result["fixture_id"])
+        self.assertIsNotNone(result["final"])
+
+    def test_hkjc_only_model_requires_four_percent_internal_edge(self):
+        result = {
+            "conviction": 65.0,
+            "model_source": "hkjc_full_market",
+            "candidates": [{
+                "market": "入球大小", "code": "HIL", "condition": "2.5",
+                "side": "H", "label": "大 2.5", "odds": 2.0,
+                "fair": 1.94, "prob": 0.515, "push": 0.0,
+                "ev": 0.03, "kelly_raw": 0.03, "is_main": True,
+            }],
+        }
+        pick, reason = run_predict.pick_one(result)
+        self.assertIsNone(pick)
+        self.assertIn("冇一注值博", reason)
 
 
 if __name__ == "__main__":

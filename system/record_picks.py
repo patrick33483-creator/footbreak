@@ -138,6 +138,9 @@ def _snap(r, now):
         "can_bet": can_bet,
         "mins_to_ko": r.get("mins_to_ko"),
         "conviction": r.get("conviction"),
+        "model_source": r.get("model_source"),
+        "sharp_reference_available": bool(r.get("sharp_reference_available")),
+        "sharp_reference_note": r.get("sharp_reference_note"),
         "verdict": verdict,
         "no_bet_reason": r.get("no_bet_reason"),
         # 只有 T-5 嘅 pick 會變成真注;前兩段只係傾向
@@ -331,6 +334,8 @@ def sync(preds_file="predictions.json"):
                 "match_id": mid, "league": r["league"],
                 "fixture_id": r.get("fixture_id"),
                 "league_id": r.get("league_id"),
+                "model_source": r.get("model_source"),
+                "sharp_reference_available": bool(r.get("sharp_reference_available")),
                 "home": r["home"], "away": r["away"],
                 "home_en": r.get("home_en"), "away_en": r.get("away_en"),
                 "kickoff": r["kickoff_hkt"],

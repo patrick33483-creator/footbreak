@@ -236,38 +236,63 @@ def analyse_match(m, fx, wx_city_override=None, news=None, prev_snap=None,
     mins = (ko - dt.datetime.now(dt.timezone.utc)).total_seconds() / 60
     home_ch = m["homeTeam"]["name_ch"]
     away_ch = m["awayTeam"]["name_ch"]
-    hname, aname = fx["home_team_display"], fx["away_team_display"]
-    reversed_orientation = bool(fx.get("_orientation_reversed"))
+    hk = H.flatten_odds(m)
+    hname = ((fx or {}).get("home_team_display")
+             or m.get("homeTeam", {}).get("name_en") or home_ch)
+    aname = ((fx or {}).get("away_team_display")
+             or m.get("awayTeam", {}).get("name_en") or away_ch)
+    reversed_orientation = bool((fx or {}).get("_orientation_reversed"))
 
-    # PinnAPI Edge is the live sharp source.  A failed or incomplete provider
-    # response raises through this function so the runner cannot publish stale
-    # predictions/dashboard data.
-    prices = S.fetch_odds([fx["id"]]).get(fx["id"], [])
-    prices = S.orient_prices(prices, reversed_orientation)
-    cur_st = S.structure(prices, hname, aname)
-    now = P.fit_view(cur_st)
+    # PinnAPI is a sharp-market reference, not a prerequisite for producing a
+    # football forecast.  When matching or prices are unavailable, fit the
+    # existing multi-market model from HKJC's current full price surface.  This
+    # keeps forecasts alive without fabricating Pinnacle data.
+    now = op = None
+    model_source = "hkjc_full_market"
+    sharp_reference_available = False
+    sharp_error = None
+    if fx:
+        try:
+            prices = S.fetch_odds([fx["id"]]).get(fx["id"], [])
+            prices = S.orient_prices(prices, reversed_orientation)
+            cur_st = S.structure(prices, hname, aname)
+            now = P.fit_view(cur_st)
+            if now:
+                model_source = "pinnapi"
+                sharp_reference_available = True
+                # PinnAPI does not expose an Optic-style historical opening
+                # endpoint.  Preserve Footbreak's first observed valid quote.
+                op = P.fit_view(S.opening_structure(fx["id"]))
+                S.remember_opening(fx["id"], cur_st)
+            else:
+                sharp_error = "PinnAPI 盤口不足以擬合"
+        except Exception as exc:
+            sharp_error = f"{type(exc).__name__}"
+    else:
+        sharp_error = "賽事未能安全配對"
     if not now:
-        return {"skip": "無法由銳利盤擬合模型"}
-    # PinnAPI does not expose an Optic-style historical opening endpoint.
-    # The first valid PinnAPI quote observed by Footbreak is persisted locally.
-    op = P.fit_view(S.opening_structure(fx["id"]))
-    S.remember_opening(fx["id"], cur_st)
+        now = P.fit_view(hk)
+    if not now:
+        return {"skip": "PinnAPI 不可用，而馬會全盤面亦不足以擬合模型"}
 
     # ── 情境調整 ──
     adjs: list[P.Adj] = []
-    mv_adj, mv_sig = P.movement_adj(op, now)
-    adjs += mv_adj
+    if sharp_reference_available:
+        mv_adj, mv_sig = P.movement_adj(op, now)
+        adjs += mv_adj
+    else:
+        mv_sig = {}
 
-    city = wx_city_override or (fx.get("venue_location") or "").split(",")[0].strip()
+    city = wx_city_override or ((fx or {}).get("venue_location") or "").split(",")[0].strip()
     wx = C.weather_at(city, ko) if city else None
     adjs += P.weather_adj(wx)
 
-    th = (fx.get("home_competitors") or [{}])[0].get("id")
-    ta = (fx.get("away_competitors") or [{}])[0].get("id")
+    th = ((fx or {}).get("home_competitors") or [{}])[0].get("id")
+    ta = ((fx or {}).get("away_competitors") or [{}])[0].get("id")
     fh = C.fatigue(th, ko) if th else {}
     fa = C.fatigue(ta, ko) if ta else {}
-    adjs += P.fatigue_adj(fh, fa, fx.get("league", {}).get("id", ""))
-    adjs += P.venue_adj(bool(fx.get("venue_neutral")), "")
+    adjs += P.fatigue_adj(fh, fa, (fx or {}).get("league", {}).get("id", ""))
+    adjs += P.venue_adj(bool((fx or {}).get("venue_neutral")), "")
 
     if news:
         for n in news.get("adjustments", []):
@@ -284,7 +309,6 @@ def analyse_match(m, fx, wx_city_override=None, news=None, prev_snap=None,
     mat, gp, cp, ph, pd, pa = P.outcome_probs(lh2, la2, rho, mu2, phi)
 
     # ── 對比馬會盤 ──
-    hk = H.flatten_odds(m)
     n_hk = sum(len(hk.get(k) or []) for k in ("HAD", "HDC", "HIL", "CHL"))
     fg = (lh2, la2, rho, now["rmse"], now["n"])
     fc = (mu2, phi, now.get("c_rmse", 0), now.get("c_n", 0)) if (mu2 and phi) else None
@@ -311,13 +335,18 @@ def analyse_match(m, fx, wx_city_override=None, news=None, prev_snap=None,
     return {
         "match_id": m.get("id"), "home": home_ch, "away": away_ch,
         "home_en": hname, "away_en": aname,
-        "fixture_id": fx.get("id"), "league_id": fx.get("league", {}).get("id"),
-        "league": m.get("tournament", {}).get("nameCH") or fx.get("league", {}).get("name"),
+        "fixture_id": (fx or {}).get("id"),
+        "league_id": (fx or {}).get("league", {}).get("id"),
+        "league": (m.get("tournament", {}).get("nameCH")
+                   or (fx or {}).get("league", {}).get("name")),
         "kickoff_hkt": ko.astimezone(HKT).strftime("%Y-%m-%d %H:%M"),
         "mins_to_ko": round(mins, 1),
         "stage": stage_override or stage_of(mins),
-        "venue": fx.get("venue_name"), "venue_city": city,
-        "neutral": bool(fx.get("venue_neutral")),
+        "venue": (fx or {}).get("venue_name"), "venue_city": city,
+        "neutral": bool((fx or {}).get("venue_neutral")),
+        "model_source": model_source,
+        "sharp_reference_available": sharp_reference_available,
+        "sharp_reference_note": sharp_error,
         "hk_pool_opened": (m.get("foPools") or [{}])[0].get("updateAt"),
         "hk_moved_since_last": moved, "hk_max_move_pct": max_move,
         "hk_n_lines_moved": n_moved, "hk_fingerprint": fp,
@@ -347,6 +376,11 @@ def pick_one(res: dict, min_ev=0.015, conf_floor=P.CONF_FLOOR):
     conv = res["conviction"]
     if conv < conf_floor:
         return None, f"信念強度 {conv} 低於門檻 {conf_floor:g} — 資訊唔夠,觀望"
+    # A model fitted from HKJC's own full price surface can identify internal
+    # cross-market inconsistencies, but does not have an independent sharp
+    # reference.  Keep betting available while demanding a larger discrepancy.
+    if res.get("model_source") == "hkjc_full_market":
+        min_ev = max(min_ev, 0.04)
     ok = [c for c in res["candidates"] if c["ev"] >= min_ev]
     if not ok:
         best = max(res["candidates"], key=lambda c: c["ev"]) if res["candidates"] else None
@@ -418,7 +452,14 @@ def main(match_ids=None, horizon_min=700, out="predictions.json",
         key=lambda row: H.parse_kickoff(row)
         or dt.datetime.max.replace(tzinfo=dt.timezone.utc)
     )
-    fixtures = S.list_fixtures()
+    try:
+        fixtures = S.list_fixtures()
+    except Exception as exc:
+        fixtures = []
+        print(
+            "PinnAPI 賽事清單不可用 "
+            f"({type(exc).__name__})；今輪改用馬會全盤面獨立預測"
+        )
     news_all = load_news_adj()
     snaps = load_hk_snaps()
     done = {} if force else done_stages()
@@ -461,21 +502,11 @@ def main(match_ids=None, horizon_min=700, out="predictions.json",
         if not fx:
             fx, sc = S.match_fixture(m, fixtures, ko)
         if not fx:
-            failures += 1
-            results.append(
-                failed_prediction(
-                    m, stage, mins,
-                    "PinnAPI 賽事配對失敗，T-5 資料不足，最終決定不下注"
-                    if stage == "T-5"
-                    else "PinnAPI 賽事配對失敗，本階段只記錄資料不足",
-                )
-            )
             print(
-                f"{mins:6.0f}m {stage:4s} 跳過 "
+                f"{mins:6.0f}m {stage:4s} 降級 "
                 f"{m['homeTeam']['name_ch']} v {m['awayTeam']['name_ch']} "
-                f"— PinnAPI 賽事配對失敗"
+                f"— 無 PinnAPI 安全配對，改用馬會全盤面"
             )
-            continue
         try:
             r = analyse_match(m, fx, news=news_all.get(mid),
                               prev_snap=snaps.get(mid), stage_override=stage)

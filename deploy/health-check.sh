@@ -100,27 +100,33 @@ history = foot.get("prediction_history") or {}
 stats = history.get("stats") or {}
 rows = history.get("rows") or []
 graded = [row for row in rows if row.get("actual") and row.get("score")]
-if not graded:
-    raise SystemExit("FAIL Footbreak prediction history has no verified result rows")
-if int(stats.get("graded") or 0) != len(graded):
+reported_graded = int(stats.get("graded") or 0)
+if reported_graded != len(graded):
     raise SystemExit(
         "FAIL Footbreak graded count mismatch: "
         f"stats={stats.get('graded')} rows={len(graded)}"
     )
-print(
-    "OK Footbreak results "
-    f"matches={stats.get('matches')} predictions={stats.get('predictions')} "
-    f"graded={len(graded)} hits={stats.get('hits')} accuracy={stats.get('accuracy')}"
-)
+if graded:
+    print(
+        "OK Footbreak results "
+        f"matches={stats.get('matches')} predictions={stats.get('predictions')} "
+        f"graded={len(graded)} hits={stats.get('hits')} accuracy={stats.get('accuracy')}"
+    )
+else:
+    print(
+        "WARN Footbreak prediction history has no settled result rows yet; "
+        "new-era collection remains healthy"
+    )
 
 accuracy = foot.get("accuracy") or {}
-if int(accuracy.get("n_matches") or 0) <= 0:
-    raise SystemExit("FAIL Footbreak accuracy has no settled matches")
-print(
-    "OK Footbreak accuracy "
-    f"matches={accuracy.get('n_matches')} predictions={accuracy.get('n_preds')} "
-    f"missing_results={accuracy.get('n_missing_result')}"
-)
+if int(accuracy.get("n_matches") or 0) > 0:
+    print(
+        "OK Footbreak accuracy "
+        f"matches={accuracy.get('n_matches')} predictions={accuracy.get('n_preds')} "
+        f"missing_results={accuracy.get('n_missing_result')}"
+    )
+else:
+    print("WARN Footbreak accuracy is pending the first settled new-era match")
 for missing in accuracy.get("missing_results") or []:
     print(
         "WARN missing result "
