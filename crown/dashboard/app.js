@@ -1049,26 +1049,26 @@ function renderHistory() {
     }</span>`;
   }).join('');
   const historyRows = (items) => items.map((r) => `<tr>
-    <td class="mono nowrap">${r.kickoff ? `${hkDay(r.kickoff)} ${hkClock(r.kickoff)}` : '—'}</td>
-    <td>${esc(r.home)} <span class="dim">v</span> ${esc(r.away)}
+    <td data-label="開賽" class="mono nowrap">${r.kickoff ? `${hkDay(r.kickoff)} ${hkClock(r.kickoff)}` : '—'}</td>
+    <td data-label="賽事">${esc(r.home)} <span class="dim">v</span> ${esc(r.away)}
       <div class="cell-sub">${esc(r.league || '')}</div></td>
-    <td><span class="fx-tag ${TAG[r.stage] || 'tag-wait'}">${esc(r.stage || '—')}</span>
+    <td data-label="階段"><span class="fx-tag ${TAG[r.stage] || 'tag-wait'}">${esc(r.stage || '—')}</span>
       <div class="cell-sub mono">${r.predicted_at ? hkStamp(r.predicted_at) : '—'}</div></td>
-    <td><b class="forecast-pick">${esc(r.forecast || '冇主客和預測')}</b>
+    <td data-label="1X2 輔助"><b class="forecast-pick">${esc(r.forecast || '冇主客和預測')}</b>
       <div class="cell-sub">${r.probability == null ? '正式結果見市場欄' : `最高機率 ${pc(r.probability, 1)}`}${r.likely_score ? ` · 最可能 ${esc(r.likely_score)}` : ''}</div></td>
-    <td class="history-markets-cell">${historyMarkets(r)}<div class="market-summary">${historyMarketResult(r)}</div></td>
-    <td class="${convClass(r.conviction)}">${f2(r.conviction)}</td>
-    <td>${r.simulated_bet
+    <td data-label="各市場預測／結果" class="history-markets-cell">${historyMarkets(r)}<div class="market-summary">${historyMarketResult(r)}</div></td>
+    <td data-label="信念" class="${convClass(r.conviction)}">${f2(r.conviction)}</td>
+    <td data-label="模擬注">${r.simulated_bet
       ? `<span class="stpill pending">有模擬注</span><div class="cell-sub">${esc(r.bet_label || '')}</div>`
       : `<span class="stpill voided">冇落注</span><div class="cell-sub hist-reason">${esc(r.no_bet_reason || '未達條件')}</div>`}</td>
-    <td class="history-result-cell">${r.actual
+    <td data-label="整場賽果" class="history-result-cell">${r.actual
       ? r.correct == null
         ? `<span class="stpill voided">冇主客和預測</span>
            <div class="hist-result"><b>${esc(r.score || '—')}</b> · ${esc(r.actual)}</div>
-           <div class="cell-sub">${esc(r.result_source === 'hkjc_official' ? '馬會官方賽果' : r.result_source || '已核對賽果')}</div>`
+           <div class="cell-sub">${esc(String(r.result_source || '').startsWith('hkjc_official') ? '馬會官方賽果' : r.result_source || '已核對賽果')}</div>`
         : `<span class="respill ${r.correct ? 'r-w' : 'r-l'}">主客和${r.correct ? '命中' : '落空'}</span>
          <div class="hist-result"><b>${esc(r.score || '—')}</b> · ${esc(r.actual)}</div>
-         <div class="cell-sub">${esc(r.result_source === 'hkjc_official' ? '馬會官方賽果' : r.result_source || '已核對賽果')}</div>`
+         <div class="cell-sub">${esc(String(r.result_source || '').startsWith('hkjc_official') ? '馬會官方賽果' : r.result_source || '已核對賽果')}</div>`
       : r.result_status === '不計'
         ? `<span class="stpill voided">不計</span>
            <div class="cell-sub">${esc(r.excluded_reason || '延期／取消／腰斬')}</div>`
@@ -1081,7 +1081,7 @@ function renderHistory() {
         <col class="history-col-bet"><col class="history-col-result">
       </colgroup>
       <tr><th>開賽</th><th>賽事</th><th>階段</th><th>1X2 輔助</th><th>各市場預測／結果</th><th>信念</th><th>模擬注</th><th>整場賽果</th></tr>
-      ${historyRows(items) || `<tr><td colspan="8" class="empty2">${empty}</td></tr>`}
+      ${historyRows(items) || `<tr class="history-empty-row"><td colspan="8" class="empty2">${empty}</td></tr>`}
     </table></div>`;
 
   V.innerHTML = `<div class="ledger-head">
