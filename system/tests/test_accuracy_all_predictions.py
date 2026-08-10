@@ -34,6 +34,10 @@ class AccuracyAllPredictionsTests(unittest.TestCase):
                         "conviction": 60,
                         "final": {"lh": 1.6, "la": 0.9, "rho": 0.0, "mu": None},
                         "now": {},
+                        "market_predictions": [{
+                            "code": "HDC", "condition": "-0.5", "side": "H",
+                            "probability": 0.61, "label": "主 -0.5",
+                        }],
                     }],
                 }
             },
@@ -60,6 +64,12 @@ class AccuracyAllPredictionsTests(unittest.TestCase):
         self.assertEqual(scored["missing_results"], [])
         self.assertEqual(scored["latest"]["n"], 1)
         self.assertEqual(history_count, 1)
+
+    def test_wdl_only_snapshot_is_not_a_learning_sample(self) -> None:
+        self.assertFalse(accuracy.has_scoreable_market_prediction({
+            "prediction_era": accuracy.PREDICTION_ERA,
+            "final": {"lh": 1.5, "la": 1.0},
+        }))
 
 
 if __name__ == "__main__":

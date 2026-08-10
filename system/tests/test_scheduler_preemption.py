@@ -13,14 +13,11 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class SchedulerPreemptionTests(unittest.TestCase):
-    def test_tick_service_preempts_slow_jobs_before_running(self):
+    def test_tick_service_conditionally_preempts_slow_jobs_before_running(self):
         unit = (ROOT / "deploy/systemd/footbreak-tick.service").read_text(
             encoding="utf-8"
         )
-        preempt = unit.index(
-            "ExecStartPre=/usr/bin/systemctl stop "
-            "footbreak-sweep.service footbreak-settle.service"
-        )
+        preempt = unit.index("ExecStartPre=/opt/footbreak/deploy/footbreak-tick-preempt.sh")
         run = unit.index("ExecStart=/opt/footbreak/deploy/run.sh tick")
         self.assertLess(preempt, run)
         self.assertIn("TimeoutStartSec=60", unit)
@@ -32,6 +29,11 @@ class SchedulerPreemptionTests(unittest.TestCase):
                 "ConditionPathExists=!/run/footbreak-t5-priority",
                 slow,
             )
+
+        helper = (ROOT / "deploy/footbreak-tick-preempt.sh").read_text(encoding="utf-8")
+        self.assertIn('t30_due = 5.0 < minutes <= 30.5 and "T-30" not in stages', helper)
+        self.assertIn('t5_due = 0.0 < minutes <= 5.5 and "T-5" not in stages', helper)
+        self.assertIn("/usr/bin/systemctl stop footbreak-sweep.service footbreak-settle.service", helper)
 
     def test_slow_jobs_yield_when_t5_priority_marker_exists(self):
         wrapper = (ROOT / "deploy/run.sh").read_text(encoding="utf-8")

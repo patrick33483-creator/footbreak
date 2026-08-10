@@ -7,9 +7,9 @@ Wants=network-online.target
 Type=oneshot
 WorkingDirectory=/opt/footbreak/system
 # 單一到期隊列同時處理 T-5 及 T-30，程式內已按最近開賽優先。
-# 慢全板掃描或結算若仍在執行，先中止佢哋；兩者輸出均以原子替換。
-ExecStartPre=/usr/bin/touch /run/footbreak-t5-priority
-ExecStartPre=/usr/bin/systemctl stop footbreak-sweep.service footbreak-settle.service
+# 只在真係欠一個到期 T-30 / T-5 階段時先中止慢任務。空 tick 或已
+# 完成 T-30 嘅等待期唔可以反覆殺死賽果結算。
+ExecStartPre=/opt/footbreak/deploy/footbreak-tick-preempt.sh
 ExecStart=/opt/footbreak/deploy/run.sh tick
 ExecStopPost=-/usr/bin/rm -f /run/footbreak-t5-priority
 # 同時開波批次需要完成所有 T-5，再補 T-30。60 秒硬上限仍保證

@@ -133,6 +133,22 @@ def forecast(r):
 
 WDL_LABELS = ("主勝", "和局", "客勝")
 HISTORY_STAGES = ("首預", "T-30", "T-5")
+SCOREABLE_MARKETS = {"HDC", "HIL", "CHL"}
+
+
+def _scoreable_market_predictions(value):
+    rows = []
+    for prediction in value or []:
+        if not isinstance(prediction, dict):
+            continue
+        if prediction.get("code") not in SCOREABLE_MARKETS:
+            continue
+        if prediction.get("side") not in {"H", "A", "L"}:
+            continue
+        if prediction.get("condition", prediction.get("line")) is None:
+            continue
+        rows.append(prediction)
+    return rows
 
 
 def build_prediction_history(watch, bets, accuracy):
@@ -172,9 +188,16 @@ def build_prediction_history(watch, bets, accuracy):
         key = (mid, stage)
         if key in seen:
             return
-        seen.add(key)
         snap = snap or {}
         score = scored.get(key) or {}
+        market_predictions = _scoreable_market_predictions(
+            snap.get("market_predictions") or score.get("market_predictions")
+        )
+        # 「純預測紀錄」係市場方向學習集。只有主客和、或者根本冇
+        # 保存讓球／入球大細／角球方向嘅舊快照，一律唔顯示亦唔計分。
+        if not market_predictions:
+            return
+        seen.add(key)
         result = match_results.get(mid) or {}
         excluded = excluded_results.get(mid)
 
@@ -231,7 +254,7 @@ def build_prediction_history(watch, bets, accuracy):
             "excluded_reason": excluded.get("status") if excluded else None,
             "wdl_brier": score.get("wdl_brier"),
             "wdl_ll": score.get("wdl_ll"),
-            "market_predictions": snap.get("market_predictions") or [],
+            "market_predictions": market_predictions,
             "market_grades": score.get("market_grades") or [],
         })
 

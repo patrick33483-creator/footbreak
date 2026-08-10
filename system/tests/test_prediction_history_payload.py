@@ -15,6 +15,16 @@ from record_picks import PREDICTION_ERA
 ERA = PREDICTION_ERA
 
 
+def market_prediction(code="HDC", condition="-0.5", side="H"):
+    return {
+        "code": code,
+        "condition": condition,
+        "side": side,
+        "probability": 0.61,
+        "label": "測試市場方向",
+    }
+
+
 class PredictionHistoryPayloadTests(unittest.TestCase):
     def test_all_stages_are_kept_and_results_are_joined(self) -> None:
         stage = {
@@ -24,6 +34,7 @@ class PredictionHistoryPayloadTests(unittest.TestCase):
             "conviction": 61.2,
             "final": {"lh": 1.7, "la": 0.8, "rho": 0.0, "mu": None},
             "now": {},
+            "market_predictions": [market_prediction()],
             "no_bet_reason": "未到唯一落注時點 T-5",
         }
         watch = {
@@ -42,6 +53,7 @@ class PredictionHistoryPayloadTests(unittest.TestCase):
                     "stage": "T-30", "conf": 61.2, "wdl_pick": 0,
                     "wdl_act": 0, "wdl_hit": 1, "wdl_pmax": 0.58,
                     "score_top": "1-0",
+                    "market_predictions": [market_prediction()],
                 }],
             }]
         }
@@ -68,8 +80,10 @@ class PredictionHistoryPayloadTests(unittest.TestCase):
                 "match_id": "m1", "home": "主隊", "away": "客隊",
                 "league": "測試聯賽", "kickoff": "2026-08-09 20:00",
                 "stages": [
-                    {"prediction_era": ERA, "stage": "T-30", "conviction": 60},
-                    {"prediction_era": ERA, "stage": "T-5", "conviction": 62},
+                    {"prediction_era": ERA, "stage": "T-30", "conviction": 60,
+                     "market_predictions": [market_prediction()]},
+                    {"prediction_era": ERA, "stage": "T-5", "conviction": 62,
+                     "market_predictions": [market_prediction("HIL", "2.5", "L")]},
                 ],
             }
         }
@@ -89,7 +103,10 @@ class PredictionHistoryPayloadTests(unittest.TestCase):
             "m2": {
                 "match_id": "m2", "home": "主隊", "away": "客隊",
                 "league": "測試聯賽", "kickoff": "2026-08-09 05:30",
-                "stages": [{"prediction_era": ERA, "stage": "首預", "conviction": 55}],
+                "stages": [{
+                    "prediction_era": ERA, "stage": "首預", "conviction": 55,
+                    "market_predictions": [market_prediction()],
+                }],
             }
         }
         accuracy = {
@@ -102,6 +119,30 @@ class PredictionHistoryPayloadTests(unittest.TestCase):
         self.assertEqual(payload["stats"]["pending"], 0)
         self.assertEqual(payload["stats"]["excluded"], 1)
         self.assertEqual(payload["rows"][0]["result_status"], "不計")
+
+    def test_wdl_only_rows_are_removed_and_later_kickoff_is_first(self) -> None:
+        watch = {
+            "old-wdl": {
+                "home": "舊主", "away": "舊客", "kickoff": "2026-08-09 18:00",
+                "stages": [{"prediction_era": ERA, "stage": "T-30"}],
+            },
+            "valid-early": {
+                "home": "早主", "away": "早客", "kickoff": "2026-08-09 19:00",
+                "stages": [{
+                    "prediction_era": ERA, "stage": "T-30",
+                    "market_predictions": [market_prediction()],
+                }],
+            },
+            "valid-late": {
+                "home": "後主", "away": "後客", "kickoff": "2026-08-10 01:00",
+                "stages": [{
+                    "prediction_era": ERA, "stage": "T-5",
+                    "market_predictions": [market_prediction("HIL", "3.0", "H")],
+                }],
+            },
+        }
+        rows = gen_app_data.build_prediction_history(watch, [], None)["rows"]
+        self.assertEqual([row["match_id"] for row in rows], ["valid-late", "valid-early"])
 
 
 if __name__ == "__main__":

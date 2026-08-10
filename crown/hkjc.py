@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 import urllib.request
 from datetime import timedelta
 from pathlib import Path
@@ -117,40 +118,58 @@ def _fetch_official_result_matches(dates: set[str]) -> list[dict[str, Any]]:
         return []
     endpoint = "https://info.cld.hkjc.com/graphql/base/"
     result: dict[str, dict[str, Any]] = {}
+    failed_days: list[tuple[str, Exception]] = []
     for day in sorted(dates):
-        for page in range(_RESULT_MAX_PAGES):
-            start = page * _RESULT_PAGE_SIZE
-            body = json.dumps({"query": _RESULT_QUERY, "variables": {
-                "startDate": day,
-                "endDate": day,
-                "startIndex": start,
-                "endIndex": start + _RESULT_PAGE_SIZE,
-                "teamId": None,
-            }}).encode()
-            request = urllib.request.Request(endpoint, data=body, headers={
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-                "Origin": "https://bet.hkjc.com",
-                "User-Agent": "Mozilla/5.0",
-                "Referer": "https://bet.hkjc.com/",
-            })
-            with urllib.request.urlopen(request, timeout=30) as response:
-                raw = response.read()
-            if raw[:2] == b"\x1f\x8b":
-                import gzip
-                raw = gzip.decompress(raw)
-            response_json = json.loads(raw.decode("utf-8"))
-            if response_json.get("errors"):
-                raise RuntimeError(str(response_json["errors"])[:400])
-            data = response_json.get("data") or {}
-            matches = data.get("matches") or []
-            for match in matches:
-                match_id = str(match.get("id") or "")
-                if match_id:
-                    result[match_id] = match
-            total = int(((data.get("matchNumByDate") or {}).get("total")) or 0)
-            if not matches or start + len(matches) >= total:
+        last_error: Exception | None = None
+        for attempt in range(2):
+            try:
+                day_rows: dict[str, dict[str, Any]] = {}
+                for page in range(_RESULT_MAX_PAGES):
+                    start = page * _RESULT_PAGE_SIZE
+                    body = json.dumps({"query": _RESULT_QUERY, "variables": {
+                        "startDate": day,
+                        "endDate": day,
+                        "startIndex": start,
+                        "endIndex": start + _RESULT_PAGE_SIZE,
+                        "teamId": None,
+                    }}).encode()
+                    request = urllib.request.Request(endpoint, data=body, headers={
+                        "Content-Type": "application/json",
+                        "Accept": "application/json",
+                        "Origin": "https://bet.hkjc.com",
+                        "User-Agent": "Mozilla/5.0",
+                        "Referer": "https://bet.hkjc.com/",
+                    })
+                    with urllib.request.urlopen(request, timeout=30) as response:
+                        raw = response.read()
+                    if raw[:2] == b"\x1f\x8b":
+                        import gzip
+                        raw = gzip.decompress(raw)
+                    response_json = json.loads(raw.decode("utf-8"))
+                    if response_json.get("errors"):
+                        raise RuntimeError(str(response_json["errors"])[:400])
+                    data = response_json.get("data") or {}
+                    matches = data.get("matches") or []
+                    for match in matches:
+                        match_id = str(match.get("id") or "")
+                        if match_id:
+                            day_rows[match_id] = match
+                    total = int(((data.get("matchNumByDate") or {}).get("total")) or 0)
+                    if not matches or start + len(matches) >= total:
+                        break
+                result.update(day_rows)
+                last_error = None
                 break
+            except Exception as exc:
+                last_error = exc
+                if attempt == 0:
+                    time.sleep(1.0)
+        if last_error is not None:
+            failed_days.append((day, last_error))
+    # One bad date must not discard confirmed rows already fetched for other
+    # dates. If every requested date failed, surface the source failure.
+    if failed_days and len(failed_days) == len(dates):
+        raise failed_days[-1][1]
     return list(result.values())
 
 

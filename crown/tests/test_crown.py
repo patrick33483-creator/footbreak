@@ -839,7 +839,9 @@ class CrownSafetyTests(unittest.TestCase):
             config = replace(settings(), state_dir=root / "private-state", web_root=root / "web")
             config.state_dir.mkdir(parents=True)
             (config.state_dir / "prediction_history.json").write_text(
-                '{"rows":[{"match_id":"old","stage":"T-5"}],"stats":{"predictions":1}}',
+                '{"rows":[{"match_id":"old","stage":"T-5","kickoff":"2026-08-10T01:00:00+08:00",'
+                '"market_predictions":[{"code":"HDC","condition":-0.5,"side":"H"}]}],'
+                '"stats":{"predictions":1}}',
                 encoding="utf-8",
             )
             payload = build(config)
@@ -857,6 +859,10 @@ class CrownSafetyTests(unittest.TestCase):
                     "forecast": "主勝", "probability": .55,
                     "outcome": {"home": .55, "draw": .25, "away": .20},
                     "prediction_source": "pinnapi_1x2_no_vig",
+                    "market_predictions": [{
+                        "code": "HDC", "condition": -0.5, "line": -0.5,
+                        "side": "H", "label": "A -0.5", "probability": .60,
+                    }],
                     "pick": None, "no_bet_reason": "資訊階段",
                 }],
             }}}
@@ -875,6 +881,10 @@ class CrownSafetyTests(unittest.TestCase):
                 "ts": "2026-08-09T11:35:00+08:00",
                 "forecast": "主勝",
                 "outcome": {"home": .55, "draw": .25, "away": .20},
+                "market_predictions": [{
+                    "code": "HIL", "condition": 2.5, "line": 2.5,
+                    "side": "H", "label": "大 2.5", "probability": .57,
+                }],
                 "learning_snapshot_id": 1,
                 "learning_attempt": 1,
                 "learning_pre_kickoff": True,

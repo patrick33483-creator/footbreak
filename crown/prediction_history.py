@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import math
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from analysis.learning_store import LearningStore
@@ -26,6 +26,45 @@ def _path(config: Settings):
     return config.state_dir / "prediction_history.json"
 
 
+_SCOREABLE_MARKETS = {"HDC", "HIL", "CHL"}
+
+
+def _has_scoreable_market_prediction(row: dict[str, Any]) -> bool:
+    """WDL-only / empty snapshots are not learning samples."""
+    for prediction in row.get("market_predictions") or []:
+        if not isinstance(prediction, dict):
+            continue
+        if str(prediction.get("code") or "") not in _SCOREABLE_MARKETS:
+            continue
+        if prediction.get("side") not in {"H", "A", "L"}:
+            continue
+        if prediction.get("line", prediction.get("condition")) is None:
+            continue
+        return True
+    return False
+
+
+def normalize_history(history: dict[str, Any]) -> dict[str, Any]:
+    """Purge non-market rows and keep later kickoffs at the top."""
+    rows = [
+        row for row in (history.get("rows") or [])
+        if isinstance(row, dict) and _has_scoreable_market_prediction(row)
+    ]
+
+    def sort_key(row: dict[str, Any]) -> tuple[float, str, int]:
+        kickoff = parse_time(row.get("kickoff"))
+        return (
+            kickoff.timestamp() if kickoff else float("-inf"),
+            str(row.get("predicted_at") or ""),
+            STAGES.get(str(row.get("stage") or ""), 0),
+        )
+
+    rows.sort(key=sort_key, reverse=True)
+    history["rows"] = rows
+    history["stats"] = calculate_stats(rows)
+    return history
+
+
 def load_history(config: Settings) -> dict[str, Any]:
     value = read_json(_path(config), {"rows": [], "stats": {}})
     if not isinstance(value, dict):
@@ -41,7 +80,7 @@ def load_history(config: Settings) -> dict[str, Any]:
         }
     value["rows"] = value.get("rows") if isinstance(value.get("rows"), list) else []
     value["stats"] = value.get("stats") if isinstance(value.get("stats"), dict) else {}
-    return value
+    return normalize_history(value)
 
 
 def _history_row(watch: dict[str, Any], stage: dict[str, Any]) -> dict[str, Any]:
@@ -101,6 +140,8 @@ def archive_watch(config: Settings, ledger: dict[str, Any]) -> dict[str, Any]:
             if stage.get("stage") not in STAGES:
                 continue
             row = _history_row(watch, stage)
+            if not _has_scoreable_market_prediction(row):
+                continue
             old = generated.get(row["history_key"])
             if old is None:
                 rows.append(row)
@@ -116,7 +157,7 @@ def archive_watch(config: Settings, ledger: dict[str, Any]) -> dict[str, Any]:
                 }
                 old.update(row)
                 old.update({key: value for key, value in result_fields.items() if value is not None})
-    history["stats"] = calculate_stats(rows)
+    normalize_history(history)
     write_json_atomic(_path(config), history)
     return history
 
@@ -264,22 +305,36 @@ def grade_history(config: Settings) -> dict[str, Any]:
         parse_time(row.get("kickoff")).strftime("%Y-%m-%d")
         for row in due if parse_time(row.get("kickoff"))
     }
+    # HKJC's result board can file an after-midnight HKT fixture under the
+    # preceding betting-business date.
+    for raw in list(dates):
+        dates.add((datetime.strptime(raw, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d"))
+    titan_error = None
+    official_error = None
     try:
         titan_rows = TitanClient(config).results() if due else []
-    except Exception:
+    except Exception as exc:
+        titan_error = type(exc).__name__
         titan_rows = []
     try:
         official_rows = fetch_official_result_events(dates) if due else []
-    except Exception:
+    except Exception as exc:
+        official_error = type(exc).__name__
         official_rows = []
     titan_by_id = {str(row.get("id")): row for row in titan_rows}
     hkjc_by_id = {str(row.get("id")): row for row in official_rows}
     hkjc_events = [(event, row) for row in official_rows if (event := _hkjc_event(row))]
+    graded_now = 0
     for row in due:
         score, source = _result(row, titan_by_id, hkjc_by_id, hkjc_events)
         if not score:
             row["result_attempted_at"] = iso_hkt()
-            row["result_missing_reason"] = "no_verified_result_match"
+            if titan_error and official_error:
+                row["result_missing_reason"] = (
+                    f"result_sources_unavailable:titan={titan_error};hkjc={official_error}"
+                )
+            else:
+                row["result_missing_reason"] = "no_verified_result_match"
             continue
         try:
             home, away = int(score["home_score"]), int(score["away_score"])
@@ -305,7 +360,20 @@ def grade_history(config: Settings) -> dict[str, Any]:
             "result_missing_reason": None,
         })
         _persist_learning_result(row, score, str(source))
-    history["stats"] = calculate_stats(rows)
+        graded_now += 1
+    history["result_sync"] = {
+        "attempted_at": iso_hkt(),
+        "due": len(due),
+        "titan_rows": len(titan_rows),
+        "hkjc_rows": len(official_rows),
+        "titan_error": titan_error,
+        "hkjc_error": official_error,
+        "graded_now": graded_now,
+        "unresolved": sum(
+            row.get("result_status") not in {"已核實", "不計"} for row in due
+        ),
+    }
+    normalize_history(history)
     write_json_atomic(_path(config), history)
     return history
 

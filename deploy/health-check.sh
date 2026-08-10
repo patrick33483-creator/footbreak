@@ -44,6 +44,14 @@ for service in footbreak-tick.service footbreak-settle.service crown-tick.servic
       expected_preemption=true
       ;;
   esac
+  # 足破到期 T-30/T-5 可以有意以 SIGTERM(15) 搶佔一個正執行緊嘅
+  # settlement。只要定時器仍 active，呢個係正常讓路，唔係資料源壞。
+  if [ "$service" = footbreak-settle.service ] &&
+     [ "$result" = signal ] &&
+     [ "$status" = 15 ] &&
+     systemctl is-active --quiet footbreak-settle.timer; then
+    expected_preemption=true
+  fi
   { [ "$result" = success ] && [ "$status" = 0 ]; } || "$expected_preemption" || {
     echo "FAIL service $service result=$result status=$status" >&2
     exit 1

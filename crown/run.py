@@ -46,9 +46,6 @@ def main() -> int:
     if not result.get("ok"):
         print(result)
         return 3
-    if result.get("fast_noop") and args.mode != "settle":
-        print(result)
-        return 0
     ledger = load_ledger(config)
     history_warning = None
     try:

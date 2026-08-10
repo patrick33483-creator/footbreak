@@ -51,8 +51,23 @@ PREDICTION_SCHEMA_VERSION = 2
 NON_RESULT_STATUS_MARKERS = (
     "SUSPEND", "POSTPON", "CANCEL", "ABANDON", "VOID", "REFUND",
 )
+SCOREABLE_MARKETS = {"HDC", "HIL", "CHL"}
 CONF_BINS = [(0, 45), (45, 52), (52, 58), (58, 64), (64, 200)]
 CONF_LBL = ["<45", "45–52", "52–58", "58–64", "≥64"]
+
+
+def has_scoreable_market_prediction(stage):
+    for prediction in stage.get("market_predictions") or []:
+        if not isinstance(prediction, dict):
+            continue
+        if prediction.get("code") not in SCOREABLE_MARKETS:
+            continue
+        if prediction.get("side") not in {"H", "A", "L"}:
+            continue
+        if prediction.get("condition", prediction.get("line")) is None:
+            continue
+        return True
+    return False
 
 
 def _atomic_json(path, payload):
@@ -159,6 +174,7 @@ def score_stage(st, res):
         "score_top": f"{d['tops'][0][0]}-{d['tops'][0][1]}",
         "score_hit1": int((gh, ga) == d["tops"][0]),
         "score_hit5": int((gh, ga) in d["tops"]),
+        "market_predictions": st.get("market_predictions") or [],
         "market_grades": score_market_predictions(st.get("market_predictions") or [], res),
     }
 
@@ -428,6 +444,7 @@ def run(fetch=True):
         learning_stages = [
             stage for stage in (w.get("stages") or [])
             if stage.get("prediction_era") == PREDICTION_ERA
+            and has_scoreable_market_prediction(stage)
         ]
         if not learning_stages:
             continue

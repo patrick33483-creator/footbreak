@@ -10,6 +10,7 @@ from .common import iso_hkt, parse_time, read_json, write_json_atomic
 from .config import Settings, settings
 from .ledger import recompute_stats
 from .period import in_current_period
+from .prediction_history import normalize_history
 from .state import load_ledger, load_predictions, paths
 
 
@@ -29,6 +30,7 @@ def build(config: Settings) -> dict[str, Any]:
         prediction_history = {"rows": [], "stats": {}}
     prediction_history.setdefault("rows", [])
     prediction_history.setdefault("stats", {})
+    normalize_history(prediction_history)
     # A newly seeded ledger has no calculated stats yet; emit the complete
     # dashboard contract even before the first remote Crown pass.
     recompute_stats(ledger, config)
