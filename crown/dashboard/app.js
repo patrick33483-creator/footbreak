@@ -27,6 +27,7 @@ const MKT = { HDC: '讓球', HIL: '入球大小', CHL: '總角球大小', HAD: '
 const API_BASE = '/api';
 let DATA = null, LIST = [], LED = null, SEL = null, STAGE = 'all', Q = '', VIEW = 'pred';
 let SETTLE_MESSAGE = '', SETTLE_BAD = false, SETTLING = false;
+const FINISHED_MATCH_GRACE_MINUTES = 150;
 
 const kt = (s) => new Date(String(s).replace(' ', 'T') + (/[Z+]/.test(s) ? '' : '+08:00'));
 function hkClock(s) { return kt(s).toLocaleTimeString('zh-HK', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Hong_Kong' }); }
@@ -34,9 +35,13 @@ function hkDay(s) { return kt(s).toLocaleDateString('zh-HK', { month: '2-digit',
 function hkStamp(s) { return kt(s).toLocaleString('zh-HK', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Hong_Kong' }); }
 function minsLeft(s) { return (kt(s) - Date.now()) / 60000; }
 function displayableMatches(matches) {
-  // 後端已固定只輸出當期 12:05 至翌日 11:59 賽事；期間內已開賽
-  // 亦保留到下一期切換，避免賽事一開波就喺主清單消失。
-  return matches || [];
+  // 主清單只服務即時追蹤。開賽後保留 150 分鐘以覆蓋補時／加時，
+  // 之後視為已完場並移到預測紀錄，避免舊場阻住最新賽事。
+  return (matches || []).filter((match) => {
+    const kickoff = kt(match.kickoff_hkt);
+    return Number.isFinite(kickoff.getTime())
+      && (Date.now() - kickoff.getTime()) < FINISHED_MATCH_GRACE_MINUTES * 60000;
+  });
 }
 function cdText(m) {
   if (m < 0) return '已開賽';
@@ -133,12 +138,14 @@ function render() {
   $('#viewHistory').hidden = VIEW !== 'history';
   $$('#nav .navbtn').forEach((b) => b.classList.toggle('is-on', b.dataset.view === VIEW));
   if (VIEW === 'pred') {
+    LIST = displayableMatches(LIST);
     renderKpis(); renderList();
     if (!SEL || !LIST.some((m) => m.match_id === SEL)) {
       const f = LIST.find((m) => m.pick) || LIST[0];
       SEL = f ? f.match_id : null;
     }
     if (SEL) renderDetail(SEL);
+    else $('#detail').innerHTML = '<div class="empty">暫時冇未完場賽事</div>';
   } else if (VIEW === 'history') {
     renderHistory();
   } else {

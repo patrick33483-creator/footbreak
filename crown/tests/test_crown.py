@@ -1307,6 +1307,9 @@ class CrownSafetyTests(unittest.TestCase):
         self.assertIn("grid-template-columns: minmax(190px, 1fr) max-content", styles)
         self.assertIn("overflow-wrap: anywhere", styles)
         self.assertIn("font: 600 12px/1.6 var(--sans)", styles)
+        self.assertIn("const FINISHED_MATCH_GRACE_MINUTES = 150", app)
+        self.assertIn("LIST = displayableMatches(LIST)", app)
+        self.assertIn("暫時冇未完場賽事", app)
 
     def test_prediction_history_fetches_titan_corner_detail_after_strict_checks(self) -> None:
         from crown.prediction_history import _merge_titan_corner_detail, _result
