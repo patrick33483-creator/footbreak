@@ -698,7 +698,10 @@ class CrownSafetyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             config = replace(settings(), state_dir=root / "private-state", web_root=root / "web")
-            kickoff = (datetime.now(self.now.tzinfo) + timedelta(hours=1)).isoformat()
+            # Anchor inside the active board period instead of adding one hour:
+            # between 11:00 and 11:59 HKT that addition crosses the noon
+            # rollover and makes this test depend on wall-clock time.
+            kickoff = (period_bounds()[0] + timedelta(hours=1)).isoformat()
             save_predictions(config, [
                 {"match_id": "crown-only", "kickoff_hkt": kickoff, "hkjc_match_id": None,
                  "book_odds": {"crown": [{"market": "HDC"}]}, "status": "DATA_MISSING"},
