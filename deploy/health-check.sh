@@ -42,6 +42,13 @@ systemctl is-active --quiet footbreak-dashboard-api.service || {
   exit 1
 }
 echo "OK service footbreak-dashboard-api.service active"
+for app_js in /var/www/footbreak/app.js /var/www/crown/app.js; do
+  grep -q 'historyStageMarketMatrix' "$app_js" || {
+    echo "FAIL stale dashboard asset: $app_js has no stage-market matrix" >&2
+    exit 1
+  }
+  echo "OK dashboard stage-market asset $app_js"
+done
 api_ready=0
 for _ in $(seq 1 10); do
   if python3 - <<'PY'
@@ -79,6 +86,12 @@ with urlopen("http://127.0.0.1:8766/api/data", timeout=3) as response:
     footbreak = json.load(response)
 assert crown.get("schema_version") == "crown-dashboard-v2"
 assert "prediction_history" in footbreak
+assert "by_stage_market" in (
+    (crown.get("prediction_history") or {}).get("stats") or {}
+)
+assert "by_stage_market" in (
+    (footbreak.get("prediction_history") or {}).get("stats") or {}
+)
 PY
 echo "OK Crown dashboard API /api/data"
 echo "OK Footbreak dashboard API /api/data"

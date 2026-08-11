@@ -221,6 +221,11 @@ class ResultSourceTests(unittest.TestCase):
         )
         self.assertNotIn("api/settle", app)
         self.assertIn("fetch('data.json?v='", app)
+        index = Path(SYSTEM_DIR.parent, "hkjc-dashboard", "index.html").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("styles.css?v=20260811-stage-market-v2", index)
+        self.assertIn("app.js?v=20260811-stage-market-v2", index)
         self.assertIn("setInterval(() => refresh(true), 60000)", app)
         self.assertIn('class="history-result-cell"', app)
 
