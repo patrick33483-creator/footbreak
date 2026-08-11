@@ -17,17 +17,31 @@ import tempfile
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
-from crown.common import is_non_result_terminal_status
-
 HKT = timezone(timedelta(hours=8))
 HERE = os.path.dirname(os.path.abspath(__file__))
 LEDGER = os.path.join(HERE, "sim_ledger.json")
 PREDS = os.path.join(HERE, "predictions.json")
 RESCACHE = os.path.join(HERE, "cache", "results")
 os.makedirs(RESCACHE, exist_ok=True)
+NON_RESULT_STATUS_MARKERS = (
+    "POSTPON", "CANCEL", "SUSPEND", "ABANDON", "VOID", "REFUND",
+    "推迟", "推遲", "延期", "取消", "腰斩", "腰斬", "中止",
+)
 
 # 賽事平均 ~115 分鐘完場(90+補時+半場+資料入庫延遲)。留 130 分鐘緩衝。
 SETTLE_AFTER_MIN = 130
+
+
+def is_non_result_terminal_status(
+    status, *, refund_pools=None, payout_refund_pools=None
+):
+    """Only explicit provider terminal states can void a pending bet."""
+    text = str(status or "").strip().upper()
+    return bool(
+        refund_pools
+        or payout_refund_pools
+        or any(marker.upper() in text for marker in NON_RESULT_STATUS_MARKERS)
+    )
 
 
 def write_json_atomic(path, payload):
@@ -128,6 +142,9 @@ def fetch_result(fixture_id, refresh=False, require_corners=False):
 
 def fetch_hkjc_statuses(match_ids, dates):
     """HKJC exact-ID states, including suspended/postponed/refunded matches."""
+    root = str(Path(__file__).resolve().parents[1])
+    if root not in sys.path:
+        sys.path.insert(0, root)
     from crown.hkjc import fetch_official_match_statuses
     return fetch_official_match_statuses(
         set(map(str, match_ids)), _hkjc_result_dates(dates)
