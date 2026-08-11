@@ -36,6 +36,7 @@ def _path(config: Settings):
 
 _SCOREABLE_MARKETS = {"HDC", "HIL", "CHL"}
 _CORNER_RESULT_RETRY_DAYS = 7
+_HKJC_RESULT_GRACE_SECONDS = 6 * 60 * 60
 
 
 def _valid_market_prediction(prediction: Any) -> bool:
@@ -357,16 +358,27 @@ def _result(row: dict[str, Any], titan_by_id: dict[str, dict[str, Any]],
     )
     if matched.event:
         return next(data for event, data in hkjc_events if event.id == matched.event.id), "hkjc_official_strict_identity"
-    # A Crown row mapped to HKJC must keep HKJC authoritative for its score
-    # and terminal status.  Titan may only add corner detail after that score
-    # exists.  Crown-only rows can still use strict Titan matching below.
+    # HKJC remains authoritative during the normal result-publication window.
+    # It occasionally leaves an otherwise completed fixture absent for hours;
+    # after the grace period, allow the same strict Titan identity check used
+    # for Crown-only rows rather than leaving both score and corners pending
+    # forever.
     if row.get("hkjc_match_id"):
-        return None, None
+        age_seconds = (datetime.now(HKT) - target.kickoff).total_seconds()
+        if age_seconds < _HKJC_RESULT_GRACE_SECONDS:
+            return None, None
     titan, reversed_order, exact_id = _match_titan_result(row, titan_by_id)
     if titan:
+        source = (
+            "titan_verified_identity"
+            if exact_id
+            else "titan_verified_unique_identity_fallback"
+        )
+        if row.get("hkjc_match_id"):
+            source = f"{source}_after_hkjc_grace"
         return (
             _oriented_titan_result(titan, reversed_order),
-            "titan_verified_identity" if exact_id else "titan_verified_unique_identity_fallback",
+            source,
         )
     return None, None
 

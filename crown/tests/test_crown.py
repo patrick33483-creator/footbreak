@@ -1231,6 +1231,58 @@ class CrownSafetyTests(unittest.TestCase):
         self.assertEqual((score["home_score"], score["away_score"]), (1, 2))
         self.assertEqual(source, "titan_verified_unique_identity_fallback")
 
+    def test_prediction_history_uses_strict_titan_fallback_after_hkjc_grace(self) -> None:
+        from crown.prediction_history import _result
+
+        kickoff = datetime.now(self.now.tzinfo) - timedelta(hours=13)
+        row = {
+            "match_id": "3031468",
+            "titan_match_id": "3031468",
+            "hkjc_match_id": "hkjc-delayed",
+            "league": "League",
+            "home": "中央骏马",
+            "away": "南市台钢",
+            "kickoff": kickoff.isoformat(),
+        }
+        titan = {
+            "id": "3031468",
+            "league": "League",
+            "home": "中央骏马",
+            "away": "南市台钢",
+            "kickoff": kickoff,
+            "home_score": 2,
+            "away_score": 2,
+        }
+        score, source = _result(row, {"3031468": titan}, {}, [])
+        self.assertEqual((score["home_score"], score["away_score"]), (2, 2))
+        self.assertEqual(source, "titan_verified_identity_after_hkjc_grace")
+
+    def test_prediction_history_waits_for_hkjc_during_result_grace(self) -> None:
+        from crown.prediction_history import _result
+
+        kickoff = datetime.now(self.now.tzinfo) - timedelta(hours=3)
+        row = {
+            "match_id": "recent",
+            "titan_match_id": "recent",
+            "hkjc_match_id": "hkjc-recent",
+            "league": "League",
+            "home": "Alpha",
+            "away": "Beta",
+            "kickoff": kickoff.isoformat(),
+        }
+        titan = {
+            "id": "recent",
+            "league": "League",
+            "home": "Alpha",
+            "away": "Beta",
+            "kickoff": kickoff,
+            "home_score": 1,
+            "away_score": 0,
+        }
+        score, source = _result(row, {"recent": titan}, {}, [])
+        self.assertIsNone(score)
+        self.assertIsNone(source)
+
     def test_prediction_history_rejects_ambiguous_titan_identity_fallback(self) -> None:
         from crown.prediction_history import _result
 
