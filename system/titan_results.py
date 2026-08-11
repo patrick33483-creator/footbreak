@@ -6,9 +6,11 @@ score cross-check.  No fuzzy result is ever written when identity is unclear.
 """
 from __future__ import annotations
 
+import json
 import os
 import sys
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -47,6 +49,30 @@ def _kickoff(record: dict[str, Any]) -> datetime | None:
 def fetch_titan_result_rows(client: TitanClient | None = None) -> tuple[TitanClient, list[dict[str, Any]]]:
     client = client or TitanClient(settings())
     return client, client.results()
+
+
+def load_crown_titan_match_map(path: Path | None = None) -> dict[str, str]:
+    """Return unique HKJC -> Titan IDs already verified by Crown ingestion."""
+    source = path or (settings().state_dir / "prediction_history.json")
+    try:
+        payload = json.loads(source.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    candidates: dict[str, set[str]] = {}
+    for row in payload.get("rows") or []:
+        if not isinstance(row, dict):
+            continue
+        hkjc_id = str(row.get("hkjc_match_id") or "").strip()
+        titan_id = str(row.get("titan_match_id") or "").strip()
+        if hkjc_id and titan_id:
+            candidates.setdefault(hkjc_id, set()).add(titan_id)
+    return {
+        hkjc_id: next(iter(titan_ids))
+        for hkjc_id, titan_ids in candidates.items()
+        if len(titan_ids) == 1
+    }
 
 
 def _exact_team_fallback(target: Event, candidates: list[Event]) -> Match:
@@ -112,23 +138,40 @@ def merge_titan_corners(
         for row in rows
         if row.get("id") and isinstance(row.get("kickoff"), datetime)
     ]
-    matched = match_event(
-        target,
-        candidates,
-        team_key=canonical_team_key,
-        league_key=canonical_league_key,
-        allow_reversed=True,
-        require_qualifiers=True,
+    titan_id = str(record.get("titan_match_id") or "").strip()
+    exact_id_candidate = next(
+        (candidate for candidate in candidates if titan_id and candidate.id == titan_id),
+        None,
     )
-    if not matched.event:
-        matched = _exact_team_fallback(target, candidates)
+    exact_cross_source_id = exact_id_candidate is not None
+    if exact_id_candidate:
+        matched = Match(exact_id_candidate, False, 1.0, None)
+    else:
+        matched = match_event(
+            target,
+            candidates,
+            team_key=canonical_team_key,
+            league_key=canonical_league_key,
+            allow_reversed=True,
+            require_qualifiers=True,
+        )
         if not matched.event:
-            return result
+            matched = _exact_team_fallback(target, candidates)
+            if not matched.event:
+                return result
 
     row = matched.event.extra or {}
     titan_home, titan_away = row.get("home_score"), row.get("away_score")
     if titan_home is None or titan_away is None:
         return result
+    official_score = (result.get("goals_home"), result.get("goals_away"))
+    if exact_cross_source_id and None not in official_score:
+        direct_score = (titan_home, titan_away) == official_score
+        reversed_score = (titan_away, titan_home) == official_score
+        if not direct_score and not reversed_score:
+            return result
+        if reversed_score and not direct_score:
+            matched = Match(matched.event, True, matched.score, matched.reason)
     aligned_home, aligned_away = (
         (titan_away, titan_home) if matched.reversed else (titan_home, titan_away)
     )
@@ -150,9 +193,11 @@ def merge_titan_corners(
     merged["corners_home"] = corners_home
     merged["corners_away"] = corners_away
     merged["corners_total"] = detail["corners_total"]
-    merged["source"] = (
-        f"{result.get('source') or 'official'}+"
-        "titan007_match_detail_strict_identity_score"
+    suffix = (
+        "titan007_match_detail_exact_cross_source_id_score"
+        if exact_cross_source_id
+        else "titan007_match_detail_strict_identity_score"
     )
+    merged["source"] = f"{result.get('source') or 'official'}+{suffix}"
     merged["titan_id"] = matched.event.id
     return merged

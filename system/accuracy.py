@@ -497,7 +497,7 @@ def run(fetch=True):
             official_statuses = {}
 
     scored, matches, missing_results, excluded_results = [], [], [], []
-    titan_client, titan_rows = None, []
+    titan_client, titan_rows, crown_titan_ids = None, [], {}
     for mid, w in watch.items():
         learning_stages = [
             stage for stage in (w.get("stages") or [])
@@ -528,8 +528,12 @@ def run(fetch=True):
                     import titan_results as T
                     if titan_client is None:
                         titan_client, titan_rows = T.fetch_titan_result_rows()
+                        crown_titan_ids = T.load_crown_titan_match_map()
+                    titan_record = {**w, "match_id": mid}
+                    if crown_titan_ids.get(str(mid)):
+                        titan_record["titan_match_id"] = crown_titan_ids[str(mid)]
                     res = T.merge_titan_corners(
-                        res, {**w, "match_id": mid},
+                        res, titan_record,
                         client=titan_client, rows=titan_rows,
                     )
                 except Exception:

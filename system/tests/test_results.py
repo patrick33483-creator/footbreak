@@ -215,6 +215,50 @@ class ResultSourceTests(unittest.TestCase):
         self.assertEqual(result["corners_total"], 9)
         client.result_detail.assert_called_once_with("2961747")
 
+    def test_crown_exact_cross_source_id_recovers_corner_result(self) -> None:
+        official = {
+            "goals_home": 2, "goals_away": 0, "goals_total": 2,
+            "corners_home": None, "corners_away": None,
+            "corners_total": None, "source": "hkjc_official",
+        }
+        record = {
+            "match_id": "50072793", "titan_match_id": "3009588",
+            "league": "England - EFL Cup",
+            "home": "普利茅夫", "away": "埃克塞特",
+            "kickoff": "2026-08-11 03:00",
+        }
+        rows = [{
+            "id": "3009588", "league": "英联杯",
+            "home": "普利茅斯", "away": "埃克塞特城",
+            "kickoff": datetime(2026, 8, 11, 3, 0, tzinfo=HKT),
+            "home_score": 2, "away_score": 0,
+        }]
+        client = Mock(spec=TitanClient)
+        client.result_detail.return_value = {
+            "corners_home": 8, "corners_away": 3, "corners_total": 11,
+        }
+        result = titan_results.merge_titan_corners(
+            official, record, client=client, rows=rows
+        )
+        self.assertEqual(result["corners_total"], 11)
+        self.assertEqual(result["titan_id"], "3009588")
+        self.assertIn("exact_cross_source_id_score", result["source"])
+
+    def test_crown_titan_map_requires_one_unique_id_per_hkjc_match(self) -> None:
+        payload = {
+            "rows": [
+                {"hkjc_match_id": "h1", "titan_match_id": "t1"},
+                {"hkjc_match_id": "h1", "titan_match_id": "t1"},
+                {"hkjc_match_id": "h2", "titan_match_id": "t2"},
+                {"hkjc_match_id": "h2", "titan_match_id": "conflict"},
+            ]
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory, "prediction_history.json")
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            result = titan_results.load_crown_titan_match_map(path)
+        self.assertEqual(result, {"h1": "t1"})
+
     def test_public_refresh_uses_static_data_instead_of_missing_api_route(self) -> None:
         app = Path(SYSTEM_DIR.parent, "hkjc-dashboard", "app.js").read_text(
             encoding="utf-8"
