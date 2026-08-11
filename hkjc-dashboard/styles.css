@@ -1216,3 +1216,99 @@ table.calib tr:last-child td { border-bottom: 0; }
 .market-total.all-hit { color: var(--good); border-color: var(--good); }
 .market-total.some-hit { color: var(--amber); border-color: var(--amber); }
 .market-total.none-hit { color: var(--bad); border-color: var(--bad); }
+
+/* ─── 挑戰模型 · 隔離影子研究 ──────────────────────── */
+.chal-note b { color: var(--amber); }
+.chal-stamp {
+  display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2) var(--s4);
+  margin-top: var(--s3); color: var(--ink-3); font-size: var(--text-xs);
+}
+.chal-stamp b { color: var(--ink-2); }
+.chal-stamp.is-stale { color: var(--warn); }
+.chal-stale-flag {
+  padding: 2px 8px; border: 1px solid var(--warn); border-radius: 999px;
+  color: var(--warn); font-weight: 700;
+}
+.chal-grid { display: grid; gap: var(--s4); grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
+.chal-card { min-width: 0; }
+.chal-card.is-review { border-color: color-mix(in oklab, var(--good) 55%, var(--line)); }
+.chal-badge {
+  margin-left: auto; padding: 3px 10px; border-radius: 999px;
+  border: 1px solid var(--line); background: var(--panel-2);
+  color: var(--ink-2); font: 700 var(--text-xs)/1.4 var(--sans); white-space: nowrap;
+}
+.chal-badge.wait { color: var(--ink-3); }
+.chal-badge.hold { color: var(--amber); border-color: var(--amber-dim); background: var(--amber-bg); }
+.chal-badge.review { color: var(--good); border-color: var(--good); background: color-mix(in oklab, var(--good) 16%, transparent); }
+.chal-progress { display: grid; gap: 6px; margin-top: var(--s3); }
+.chal-progress-top, .chal-progress-foot {
+  display: flex; justify-content: space-between; align-items: baseline;
+  gap: var(--s3); font-size: var(--text-xs); color: var(--ink-3);
+}
+.chal-progress-top b { color: var(--ink); font-size: var(--text-sm); }
+.chal-bar { height: 8px; border-radius: 999px; background: var(--panel-2); overflow: hidden; }
+.chal-bar i { display: block; height: 100%; background: var(--amber); }
+.chal-rows { font-size: var(--text-xs); }
+.amber-txt { color: var(--amber); }
+.good-txt { color: var(--good); }
+.bad-txt { color: var(--bad); }
+.chal-split {
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--s2); margin-top: var(--s3);
+}
+.chal-split > div {
+  display: grid; gap: 2px; padding: var(--s2); min-width: 0;
+  border: 1px solid var(--line-soft); border-radius: var(--radius-sm); background: var(--bg-2);
+}
+.chal-split-lbl { color: var(--ink-4); font-size: var(--text-xs); }
+.chal-split b { color: var(--ink); }
+.chal-metrics { margin-top: var(--s3); display: grid; gap: 4px; }
+.chal-metric {
+  display: grid; grid-template-columns: minmax(0, 1.1fr) repeat(3, minmax(0, 1fr));
+  gap: var(--s2); align-items: baseline; padding: 5px var(--s2);
+  border-radius: var(--radius-sm); background: var(--bg-2); min-width: 0;
+}
+.chal-metric-head { background: transparent; color: var(--ink-4); font-size: var(--text-xs); }
+.chal-metric-head span { text-align: right; }
+.chal-metric-head .chal-metric-lbl { text-align: left; }
+.chal-metric-lbl { color: var(--ink-3); font-size: var(--text-xs); min-width: 0; }
+.chal-metric-val {
+  font-family: var(--mono); font-variant-numeric: tabular-nums;
+  font-size: var(--text-xs); text-align: right; color: var(--ink); overflow-wrap: anywhere;
+}
+.chal-delta { color: var(--ink-3); }
+.chal-delta.good { color: var(--good); }
+.chal-delta.bad { color: var(--bad); }
+.chal-hint { margin: 6px 0 0; font-size: var(--text-xs); }
+.chal-reasons { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: var(--s3); }
+.chal-reasons-lbl { color: var(--ink-4); font-size: var(--text-xs); }
+.chal-reason {
+  padding: 3px 8px; border: 1px solid var(--line); border-radius: 999px;
+  background: var(--panel-2); color: var(--ink-2); font-size: var(--text-xs);
+}
+.chal-review {
+  display: grid; gap: 2px; margin-top: var(--s3); padding: var(--s3);
+  border: 1px solid var(--good); border-radius: var(--radius-sm);
+  background: color-mix(in oklab, var(--good) 12%, transparent);
+  color: var(--ink-2); font-size: var(--text-sm);
+}
+.chal-review b { color: var(--good); }
+.chal-review strong { color: var(--warn); }
+.chal-review-top { margin-top: var(--s3); }
+.chal-foot {
+  display: flex; flex-wrap: wrap; justify-content: space-between; gap: var(--s2);
+  margin-top: var(--s3); padding-top: var(--s2); border-top: 1px dashed var(--line-soft);
+  color: var(--ink-4); font-size: var(--text-xs);
+}
+@media (max-width: 600px) {
+  .chal-grid { grid-template-columns: 1fr; }
+  .chal-badge { margin-left: 0; }
+  .chal-split { grid-template-columns: 1fr; }
+  .chal-metric { grid-template-columns: 1fr; gap: 2px; text-align: left; }
+  .chal-metric-val { text-align: left; }
+  .chal-metric-head { display: none; }
+  .chal-metric [data-role="champion"]::before { content: "現行冠軍 "; color: var(--ink-4); font-family: var(--sans); }
+  .chal-metric [data-role="challenger"]::before { content: "挑戰者 "; color: var(--ink-4); font-family: var(--sans); }
+  .chal-delta::before { content: "差距 "; color: var(--ink-4); font-family: var(--sans); }
+  .chal-progress-top, .chal-progress-foot { flex-wrap: wrap; }
+}

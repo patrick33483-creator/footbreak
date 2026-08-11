@@ -130,6 +130,8 @@ async function refresh(silent) {
   } catch (e) {
     if (!silent) flash('更新失敗:' + e.message, true);
   } finally {
+    // 挑戰模型報告獨立讀取:即使主資料或結算失敗,一樣重新攞一次(帶時間戳,不經快取)。
+    if (VIEW === 'chal' || CHAL.state !== 'idle') void loadChallenger({ quiet: silent });
     BUSY = false;
     if (b) { b.classList.remove('spin'); b.disabled = false; }
   }
@@ -149,6 +151,7 @@ function render() {
   $('#viewFc').hidden = VIEW !== 'fc';
   $('#viewLedger').hidden = VIEW !== 'ledger';
   $('#viewShadow').hidden = VIEW !== 'shadow';
+  $('#viewChal').hidden = VIEW !== 'chal';
   $$('#nav .navbtn').forEach((b) => b.classList.toggle('is-on', b.dataset.view === VIEW));
   if (VIEW === 'pred') {
     renderKpis(); renderList();
@@ -161,6 +164,9 @@ function render() {
     renderKpis(); renderFc();
   } else if (VIEW === 'shadow') {
     renderShadow();
+  } else if (VIEW === 'chal') {
+    renderChallenger();
+    if (CHAL.state === 'idle') void loadChallenger({});
   } else {
     renderLedger();
   }
@@ -1522,6 +1528,248 @@ function logCard() {
         <span class="minitag ${(e.n_changes || (e.changes||[]).length) ? 'go' : ''}">${e.kind === '結算' ? '結算' : ((e.n_changes != null ? e.n_changes : (e.changes||[]).length) + ' 項變動')}</span></div>
       ${(e.changes || []).map((c) => `<div class="log-l">${esc(c)}</div>`).join('') || '<div class="log-l dim">無變化</div>'}
     </div>`).join('')}</div></div>`;
+}
+
+/* ══════════════════════ 挑戰模型 · 隔離影子研究 ══════════════════════ */
+/* 純讀取 challenger-status.json。呢度唔會改任何預測、結算、落注、
+ * 訓練或帳目邏輯；候選模型永遠唔會自動套用。 */
+const CHALLENGER_SYSTEM = 'footbreak';
+const CHALLENGER_FILE = 'challenger-status.json';
+const CHALLENGER_MARKETS = ['HDC', 'HIL', 'CHL'];
+const CHALLENGER_REQUIRED_FIXTURES = 100;
+const CHALLENGER_STALE_HOURS = 26;   // 每日 12:20 HKT 跑一次,超過一日即視為過期
+const CHAL_STATUS = {
+  insufficient_data: { text: '樣本未夠', cls: 'wait' },
+  insufficient_chronological_partition: { text: '時序切分未夠', cls: 'wait' },
+  tested_no_safe_upgrade: { text: '已測試 · 未達升級門檻', cls: 'hold' },
+  candidate_passed_human_review_required: { text: '候選通過 · 等人手覆核', cls: 'review' },
+};
+const CHAL_REASON = {
+  minimum_eligible_fixtures: '合資格賽事未夠 100 場',
+  minimum_train_or_holdout_fixtures: '訓練／驗證場次未夠(需 70／30)',
+  minimum_holdout_fixtures: '驗證場次未夠 30 場',
+  identical_holdout_rows: '冠軍同挑戰者驗證樣本唔一致',
+  meaningful_brier_improvement: 'Brier 改善未夠 0.01',
+  log_loss_improved: '對數損失冇改善',
+  accuracy_not_materially_worse: '準確率跌幅超過 2%',
+};
+let CHAL = { state: 'idle', payload: null, error: '', loadedAt: null };
+
+function challengerStatusLabel(status) {
+  return CHAL_STATUS[status] || { text: status ? String(status) : '未知狀態', cls: 'hold' };
+}
+function challengerReasonLabel(reason) {
+  return CHAL_REASON[reason] || String(reason);
+}
+function challengerIsPlainObject(value) {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+function challengerValidate(payload) {
+  if (!challengerIsPlainObject(payload)) return '報告格式不符(唔係物件)';
+  if (!challengerIsPlainObject(payload.policy)) return '報告缺少 policy 欄位';
+  const system = challengerIsPlainObject(payload.systems) ? payload.systems[CHALLENGER_SYSTEM] : null;
+  if (!challengerIsPlainObject(system)) return `報告缺少 ${CHALLENGER_SYSTEM} 系統結果`;
+  if (!challengerIsPlainObject(system.tests)) return '報告缺少市場測試結果';
+  return '';
+}
+function challengerAgeHours(payload) {
+  const stamp = payload && payload.generated_at;
+  if (!stamp) return null;
+  const at = new Date(stamp);
+  if (!Number.isFinite(at.getTime())) return null;
+  return (Date.now() - at.getTime()) / 3600000;
+}
+function challengerStamp(value) {
+  const at = new Date(value);
+  if (!Number.isFinite(at.getTime())) return '—';
+  return at.toLocaleString('zh-HK', {
+    month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
+    hour12: false, timeZone: 'Asia/Hong_Kong',
+  });
+}
+
+async function loadChallenger(options) {
+  const opts = options || {};
+  if (CHAL.state === 'loading') return CHAL.state;
+  const previous = CHAL;
+  CHAL = { state: 'loading', payload: previous.payload, error: '', loadedAt: previous.loadedAt };
+  if (!opts.quiet && VIEW === 'chal') renderChallenger();
+  try {
+    // 每次都加時間戳 + no-store,「更新」掣一定攞到最新一份報告。
+    const response = await fetch(`${CHALLENGER_FILE}?v=${Date.now()}`, { cache: 'no-store' });
+    if (response.status === 404) {
+      CHAL = { state: 'missing', payload: null, error: '', loadedAt: Date.now() };
+    } else if (!response.ok) {
+      CHAL = { state: 'error', payload: null, error: `HTTP ${response.status}`, loadedAt: Date.now() };
+    } else {
+      let payload = null;
+      try {
+        payload = await response.json();
+      } catch (parseError) {
+        CHAL = { state: 'error', payload: null, error: '報告唔係有效 JSON', loadedAt: Date.now() };
+        if (VIEW === 'chal') renderChallenger();
+        return CHAL.state;
+      }
+      const invalid = challengerValidate(payload);
+      CHAL = invalid
+        ? { state: 'error', payload: null, error: invalid, loadedAt: Date.now() }
+        : { state: 'ready', payload, error: '', loadedAt: Date.now() };
+    }
+  } catch (e) {
+    CHAL = { state: 'error', payload: null, error: e.message || '讀取失敗', loadedAt: Date.now() };
+  }
+  if (VIEW === 'chal') renderChallenger();
+  return CHAL.state;
+}
+
+function challengerIsolationNote() {
+  return `<div class="shadow-note chal-note" role="note" data-testid="note-challenger-isolation">
+    <strong>隔離研究</strong>
+    <span>挑戰模型完全隔離,只做離線訓練同回溯評估:<b>永不自動套用</b>,唔會改動任何預測機率、選項、注碼、模擬倉或通知。
+    就算通過全部安全門檻,亦<b>只係等人手覆核</b>,未套用。</span></div>`;
+}
+
+function challengerHead(extra) {
+  return `<div class="ledger-head"><div class="ledger-title-row">
+      <h1 class="pg-h">挑戰模型 <span class="sub">Challenger · 每日 12:20 HKT 離線評估</span></h1>
+      <button class="settle-btn" id="challengerReload" type="button">重新讀取</button>
+    </div>
+    ${challengerIsolationNote()}${extra || ''}</div>`;
+}
+
+function challengerMetricRow(label, championValue, challengerValue, deltaValue, lowerIsBetter, formatter) {
+  const delta = numeric(deltaValue);
+  let tone = '';
+  if (delta != null && Math.abs(delta) > 1e-9) {
+    const better = lowerIsBetter ? delta < 0 : delta > 0;
+    tone = better ? 'good' : 'bad';
+  }
+  const deltaText = delta == null ? '—' : (delta > 0 ? '+' : '') + formatter(delta);
+  return `<div class="chal-metric">
+    <span class="chal-metric-lbl">${label}</span>
+    <span class="chal-metric-val" data-role="champion">${formatter(championValue)}</span>
+    <span class="chal-metric-val" data-role="challenger">${formatter(challengerValue)}</span>
+    <span class="chal-metric-val chal-delta ${tone}">${deltaText}</span>
+  </div>`;
+}
+
+function challengerMarketCard(market, test) {
+  const name = MKT[market] || market;
+  if (!challengerIsPlainObject(test)) {
+    return `<div class="card chal-card" data-testid="card-challenger-${market}">
+      <h2 class="card-h">${name} <span class="sub">${market}</span></h2>
+      <div class="empty2">今次報告冇呢個市場嘅結果。</div></div>`;
+  }
+  const status = String(test.status || '');
+  const label = challengerStatusLabel(status);
+  const eligible = numeric(test.eligible_fixtures) || 0;
+  const required = numeric(test.required_fixtures) || CHALLENGER_REQUIRED_FIXTURES;
+  const remaining = test.remaining_fixtures == null
+    ? Math.max(0, required - eligible)
+    : (numeric(test.remaining_fixtures) || 0);
+  const pctDone = Math.max(0, Math.min(100, required > 0 ? (eligible / required) * 100 : 0));
+  const evaluated = test.champion || test.challenger || test.holdout_fixtures != null;
+  const reasons = Array.isArray(test.rejection_reasons) ? test.rejection_reasons : [];
+  const champion = (test.champion && test.champion.metrics) || {};
+  const challenger = (test.challenger && test.challenger.metrics) || {};
+  const delta = test.delta || {};
+  const reviewing = status === 'candidate_passed_human_review_required';
+
+  let body = `<div class="chal-progress" data-testid="progress-challenger-${market}">
+      <div class="chal-progress-top">
+        <span>合資格獨立賽事(按場計,唔係按紀錄行數)</span>
+        <b class="mono">${eligible} / ${required}</b>
+      </div>
+      <div class="chal-bar"><i style="width:${pctDone.toFixed(1)}%"></i></div>
+      <div class="chal-progress-foot">
+        <span class="dim">已達 ${pctDone.toFixed(0)}%</span>
+        <span class="${remaining > 0 ? 'amber-txt' : 'good-txt'}">${remaining > 0 ? `仲差 ${remaining} 場先夠評估` : '已夠場次評估'}</span>
+      </div>
+      ${numeric(test.eligible_rows) == null ? '' : `<div class="chal-rows dim">對應紀錄行數 ${numeric(test.eligible_rows)} 行(只作參考)</div>`}
+    </div>`;
+
+  if (evaluated) {
+    body += `<div class="chal-split">
+        <div><span class="chal-split-lbl">訓練場次</span><b class="mono">${numeric(test.train_fixtures) == null ? '—' : numeric(test.train_fixtures)}</b></div>
+        <div><span class="chal-split-lbl">驗證場次(holdout)</span><b class="mono">${numeric(test.holdout_fixtures) == null ? '—' : numeric(test.holdout_fixtures)}</b></div>
+        <div><span class="chal-split-lbl">驗證樣本</span><b class="mono">${numeric(challenger.n) == null ? '—' : numeric(challenger.n)}</b></div>
+      </div>
+      <div class="chal-metrics" data-testid="metrics-challenger-${market}">
+        <div class="chal-metric chal-metric-head">
+          <span class="chal-metric-lbl">指標</span><span>現行冠軍</span><span>挑戰者</span><span>差距</span>
+        </div>
+        ${challengerMetricRow('準確率', champion.accuracy, challenger.accuracy, delta.accuracy, false, (x) => pc(x, 1))}
+        ${challengerMetricRow('Brier', champion.brier, challenger.brier, delta.brier, true, (x) => f3(x))}
+        ${challengerMetricRow('對數損失', champion.log_loss, challenger.log_loss, delta.log_loss, true, (x) => f3(x))}
+      </div>
+      <p class="chal-hint dim">Brier 同對數損失越低越好,準確率越高越好;差距 = 挑戰者 − 冠軍。</p>`;
+  }
+
+  if (reasons.length) {
+    body += `<div class="chal-reasons"><span class="chal-reasons-lbl">未能升級原因</span>
+      ${reasons.map((reason) => `<span class="chal-reason">${esc(challengerReasonLabel(reason))}</span>`).join('')}</div>`;
+  } else if (reviewing) {
+    body += `<div class="chal-review" data-testid="banner-challenger-review-${market}">
+      <b>通過全部安全門檻</b>
+      <span>此刻<strong>未套用、亦唔會自動套用</strong>,只係等人手覆核決定。</span></div>`;
+  }
+
+  body += `<div class="chal-foot"><span>自動套用:<b class="bad-txt">否</b></span>
+    <span>影子研究,唔影響現行預測</span></div>`;
+
+  return `<div class="card chal-card ${reviewing ? 'is-review' : ''}" data-testid="card-challenger-${market}">
+    <h2 class="card-h">${name} <span class="sub">${market}</span>
+      <span class="chal-badge ${label.cls}" data-testid="status-challenger-${market}">${esc(label.text)}</span></h2>
+    ${body}</div>`;
+}
+
+function renderChallenger() {
+  const V = $('#viewChal');
+  if (!V) return;
+  if (CHAL.state === 'idle' || (CHAL.state === 'loading' && !CHAL.payload)) {
+    V.innerHTML = challengerHead() +
+      `<div class="card"><div class="empty2" data-testid="state-challenger-loading">正在讀取挑戰模型報告…</div></div>`;
+    challengerBind();
+    return;
+  }
+  if (CHAL.state === 'missing') {
+    V.innerHTML = challengerHead() +
+      `<div class="card"><div class="empty2" data-testid="state-challenger-missing">
+        報告未生成。挑戰模型每日 12:20 HKT 先評估一次,第一次評估之前唔會有檔案。</div></div>`;
+    challengerBind();
+    return;
+  }
+  if (CHAL.state === 'error') {
+    V.innerHTML = challengerHead() +
+      `<div class="card"><div class="empty2 bad-txt" data-testid="state-challenger-error">
+        報告讀取失敗:${esc(CHAL.error || '未知錯誤')}。可以㩒「重新讀取」再試。</div></div>`;
+    challengerBind();
+    return;
+  }
+  const payload = CHAL.payload || {};
+  const system = (payload.systems || {})[CHALLENGER_SYSTEM] || {};
+  const tests = system.tests || {};
+  const ageHours = challengerAgeHours(payload);
+  const stale = ageHours != null && ageHours > CHALLENGER_STALE_HOURS;
+  const reviewRequired = system.review_required === true;
+  let banner = `<div class="chal-stamp ${stale ? 'is-stale' : ''}" data-testid="stamp-challenger">
+      <span>報告時間 <b class="mono">${challengerStamp(payload.generated_at)} HKT</b></span>
+      <span>${ageHours == null ? '時間不明' : `距今 ${ageHours < 1 ? '不足 1' : Math.floor(ageHours)} 小時`}</span>
+      ${stale ? '<span class="chal-stale-flag" data-testid="flag-challenger-stale">報告過期,未見最新一次每日評估</span>' : ''}
+    </div>`;
+  if (reviewRequired) {
+    banner += `<div class="chal-review chal-review-top" data-testid="banner-challenger-review">
+      <b>有候選模型通過安全門檻</b>
+      <span>仍然<strong>未套用</strong>,亦唔會自動套用;只係等人手覆核決定。</span></div>`;
+  }
+  V.innerHTML = challengerHead(banner) +
+    `<div class="chal-grid">${CHALLENGER_MARKETS.map((market) => challengerMarketCard(market, tests[market])).join('')}</div>`;
+  challengerBind();
+}
+
+function challengerBind() {
+  const button = $('#challengerReload');
+  if (button) button.onclick = () => loadChallenger({});
 }
 
 boot();
