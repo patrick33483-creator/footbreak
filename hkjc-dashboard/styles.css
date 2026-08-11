@@ -416,7 +416,11 @@ table.t tr.hi td { background: oklch(78% 0.145 74 / .07); }
 
 
 /* ═══ 導覽 ═══ */
-.nav { display: flex; gap: 2px; background: var(--bg-2); border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 2px; flex-shrink: 0; }
+.nav {
+  display: flex; gap: 2px; background: var(--bg-2); border: 1px solid var(--line);
+  border-radius: var(--radius-sm); padding: 2px; flex-shrink: 0;
+  max-width: 100%; overflow-x: auto; overscroll-behavior-inline: contain;
+}
 .navbtn {
   background: none; border: 0; color: var(--ink-3); cursor: pointer;
   font-family: var(--sans); font-size: var(--text-sm); font-weight: 500;
@@ -759,7 +763,8 @@ table.t.bets td.good { color: var(--good); } table.t.bets td.amber { color: var(
   .hist-panel { padding-left: var(--s4); }
 }
 @media (max-width: 760px) {
-  .nav { align-self: flex-start; }
+  .nav { align-self: stretch; }
+  .navbtn { flex: 1 0 auto; padding-inline: var(--s3); }
   .vd-conv { margin-left: 0; }
   .kpis.wide { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
