@@ -12,6 +12,7 @@ from typing import Any
 
 FOOTBREAK_DATA = Path("/var/www/footbreak/data.json")
 CROWN_HISTORY = Path("/var/lib/footbreak/crown/prediction_history.json")
+CHALLENGER_STATUS = Path("/var/lib/footbreak/challenger/latest.json")
 HKT = timezone(timedelta(hours=8))
 
 
@@ -76,6 +77,50 @@ def timer_state() -> dict[str, str]:
     return state
 
 
+def challenger_state() -> dict[str, Any]:
+    if not CHALLENGER_STATUS.is_file():
+        return {"available": False}
+    payload = load(CHALLENGER_STATUS)
+    systems: dict[str, Any] = {}
+    for system, system_payload in (payload.get("systems") or {}).items():
+        tests = (system_payload or {}).get("tests") or {}
+        systems[system] = {
+            "review_required": bool((system_payload or {}).get("review_required")),
+            "tests": {
+                market: {
+                    key: test.get(key)
+                    for key in (
+                        "status",
+                        "eligible_fixtures",
+                        "eligible_rows",
+                        "required_fixtures",
+                        "remaining_fixtures",
+                        "train_fixtures",
+                        "holdout_fixtures",
+                        "train_rows",
+                        "holdout_rows",
+                        "champion",
+                        "challenger",
+                        "delta",
+                        "checks",
+                        "rejection_reasons",
+                        "model_version_hash",
+                        "auto_apply",
+                    )
+                    if key in test
+                }
+                for market, test in tests.items()
+            },
+        }
+    return {
+        "available": True,
+        "generated_at": payload.get("generated_at"),
+        "policy": payload.get("policy"),
+        "review_required": bool(payload.get("review_required")),
+        "systems": systems,
+    }
+
+
 def main() -> None:
     footbreak = load(FOOTBREAK_DATA)
     crown = load(CROWN_HISTORY)
@@ -105,6 +150,7 @@ def main() -> None:
     audit = {
         "generated_at": datetime.now(HKT).isoformat(),
         "server_timer": timer_state(),
+        "challenger": challenger_state(),
         "crown": {
             "stats": crown.get("stats"),
             "result_sync": crown.get("result_sync"),
