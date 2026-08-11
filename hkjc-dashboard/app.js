@@ -146,6 +146,35 @@ function render() {
   } else {
     renderLedger();
   }
+  requestAnimationFrame(updateScrollDock);
+}
+
+function updateScrollDock() {
+  const dock = $('#scrollDock');
+  if (!dock) return;
+  dock.hidden = document.documentElement.scrollHeight <= window.innerHeight + 80;
+}
+
+function scrollToPageBottom() {
+  let previousMax = -1;
+  let attempts = 0;
+  const advance = () => {
+    const max = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
+    if (Math.abs(window.scrollY - max) < 8 && max === previousMax) return;
+    if (attempts >= 12) {
+      window.scrollTo({ top: max, behavior: 'auto' });
+      return;
+    }
+    previousMax = max;
+    attempts += 1;
+    window.scrollTo({ top: max, behavior: 'smooth' });
+    if ('onscrollend' in window) {
+      window.addEventListener('scrollend', advance, { once: true });
+    } else {
+      setTimeout(advance, 450);
+    }
+  };
+  advance();
 }
 
 function bindUI() {
@@ -159,6 +188,11 @@ function bindUI() {
   });
   $$('#nav .navbtn').forEach((b) => { b.onclick = () => { VIEW = b.dataset.view; render(); }; });
   const rb = $('#refresh'); if (rb) rb.onclick = () => refresh(false);
+  const top = $('#scrollTop');
+  const bottom = $('#scrollBottom');
+  if (top) top.onclick = () => window.scrollTo({ top: 0, behavior: 'smooth' });
+  if (bottom) bottom.onclick = scrollToPageBottom;
+  window.addEventListener('resize', updateScrollDock, { passive: true });
 }
 
 /* ══════════════════════ KPI ══════════════════════ */
@@ -971,7 +1005,19 @@ function historyStageMarketMatrix(stats) {
 function renderFc() {
   const V = $('#viewFc');
   const payload = DATA.prediction_history || { rows: [], stats: {} };
-  const rows = payload.rows || [], s = payload.stats || {};
+  const historyTime = (row) => {
+    const kickoff = Date.parse(row.kickoff || '');
+    const predicted = Date.parse(row.predicted_at || '');
+    return [
+      Number.isFinite(kickoff) ? kickoff : Number.NEGATIVE_INFINITY,
+      Number.isFinite(predicted) ? predicted : Number.NEGATIVE_INFINITY,
+    ];
+  };
+  const rows = [...(payload.rows || [])].sort((left, right) => {
+    const a = historyTime(left), b = historyTime(right);
+    return b[0] - a[0] || b[1] - a[1];
+  });
+  const s = payload.stats || {};
   const gradedRows = rows.filter((r) => r.result_status === '已核對');
   const excludedRows = rows.filter((r) => r.result_status === '不計');
   const pendingRows = rows.filter((r) => r.result_status === '待賽果');

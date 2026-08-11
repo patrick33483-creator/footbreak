@@ -999,6 +999,31 @@ class CrownSafetyTests(unittest.TestCase):
             self.assertEqual(payload["prediction_history"]["rows"][0]["match_id"], "old")
             self.assertEqual(payload["prediction_history"]["stats"]["predictions"], 1)
 
+    def test_prediction_history_removes_non_finite_market_lines(self) -> None:
+        from crown.prediction_history import normalize_history
+
+        history = normalize_history({
+            "rows": [{
+                "match_id": "macarthur", "kickoff": "2026-08-11T19:00:00+08:00",
+                "market_predictions": [
+                    {
+                        "code": "HDC", "condition": "NaN", "side": "H",
+                        "probability": 0.61, "label": "FC麥克阿瑟 NaN",
+                    },
+                    {
+                        "code": "HIL", "condition": 2.5, "side": "H",
+                        "probability": 0.58, "label": "大 2.5",
+                    },
+                ],
+            }],
+            "stats": {},
+        })
+        self.assertEqual(len(history["rows"]), 1)
+        self.assertEqual(
+            [item["code"] for item in history["rows"][0]["market_predictions"]],
+            ["HIL"],
+        )
+
     def test_prediction_history_archives_no_bet_stages_idempotently(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             config = replace(settings(), state_dir=Path(directory))
@@ -1578,11 +1603,18 @@ class CrownSafetyTests(unittest.TestCase):
         self.assertIn("overflow-wrap: anywhere", styles)
         self.assertIn("font: 600 12px/1.6 var(--sans)", styles)
         index = (root / "index.html").read_text(encoding="utf-8")
-        self.assertIn("styles.css?v=20260811-shadow-compare-v1", index)
-        self.assertIn("app.js?v=20260811-shadow-compare-v1", index)
+        self.assertIn("styles.css?v=20260811-scroll-dock-v1", index)
+        self.assertIn("app.js?v=20260811-scroll-dock-v1", index)
+        self.assertIn('id="scrollTop"', index)
+        self.assertIn('id="scrollBottom"', index)
+        self.assertIn("function updateScrollDock()", app)
+        self.assertIn("function scrollToPageBottom()", app)
+        self.assertIn("document.documentElement.scrollHeight", app)
         self.assertIn('data-view="shadow">影子倉', index)
         self.assertIn('id="viewShadow"', index)
         self.assertIn("function renderShadow()", app)
+        self.assertIn("盤口未提供", app)
+        self.assertIn("!Number.isFinite(Number(x))", app)
         self.assertIn("不計入正式模擬倉、動態門檻、自動學習、凱利階段或 Telegram 通知", app)
         self.assertIn("同期表現對照", app)
         self.assertIn("card-shadow-comparison", app)

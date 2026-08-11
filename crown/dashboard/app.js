@@ -5,11 +5,27 @@
 
 const $  = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
-const pc = (x, d = 1) => (x == null ? '—' : (x * 100).toFixed(d) + '%');
-const sg = (x, d = 2) => (x == null ? '—' : (x >= 0 ? '+' : '') + Number(x).toFixed(d));
-const f2 = (x) => (x == null ? '—' : Number(x).toFixed(2));
-const f3 = (x) => (x == null ? '—' : Number(x).toFixed(3));
-const money = (x) => (x == null ? '—' : '$' + Math.round(x).toLocaleString('en-US'));
+const numeric = (x) => (x == null || x === '' || !Number.isFinite(Number(x)) ? null : Number(x));
+const pc = (x, d = 1) => {
+  const n = numeric(x);
+  return n == null ? '—' : (n * 100).toFixed(d) + '%';
+};
+const sg = (x, d = 2) => {
+  const n = numeric(x);
+  return n == null ? '—' : (n >= 0 ? '+' : '') + n.toFixed(d);
+};
+const f2 = (x) => {
+  const n = numeric(x);
+  return n == null ? '—' : n.toFixed(2);
+};
+const f3 = (x) => {
+  const n = numeric(x);
+  return n == null ? '—' : n.toFixed(3);
+};
+const money = (x) => {
+  const n = numeric(x);
+  return n == null ? '—' : '$' + Math.round(n).toLocaleString('en-US');
+};
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
@@ -177,6 +193,35 @@ function render() {
   } else {
     renderLedger();
   }
+  requestAnimationFrame(updateScrollDock);
+}
+
+function updateScrollDock() {
+  const dock = $('#scrollDock');
+  if (!dock) return;
+  dock.hidden = document.documentElement.scrollHeight <= window.innerHeight + 80;
+}
+
+function scrollToPageBottom() {
+  let previousMax = -1;
+  let attempts = 0;
+  const advance = () => {
+    const max = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
+    if (Math.abs(window.scrollY - max) < 8 && max === previousMax) return;
+    if (attempts >= 12) {
+      window.scrollTo({ top: max, behavior: 'auto' });
+      return;
+    }
+    previousMax = max;
+    attempts += 1;
+    window.scrollTo({ top: max, behavior: 'smooth' });
+    if ('onscrollend' in window) {
+      window.addEventListener('scrollend', advance, { once: true });
+    } else {
+      setTimeout(advance, 450);
+    }
+  };
+  advance();
 }
 
 function bindUI() {
@@ -190,6 +235,11 @@ function bindUI() {
   });
   $$('#nav .navbtn').forEach((b) => { b.onclick = () => { VIEW = b.dataset.view; render(); }; });
   const rb = $('#refresh'); if (rb) rb.onclick = () => refresh(false);
+  const top = $('#scrollTop');
+  const bottom = $('#scrollBottom');
+  if (top) top.onclick = () => window.scrollTo({ top: 0, behavior: 'smooth' });
+  if (bottom) bottom.onclick = scrollToPageBottom;
+  window.addEventListener('resize', updateScrollDock, { passive: true });
 }
 
 /* ══════════════════════ KPI ══════════════════════ */
@@ -1091,7 +1141,7 @@ const HIST_SETTLEMENT_LABEL = {
 };
 function historyQuarterLine(raw, signed = true) {
   const q = Math.round(Number(raw) * 4);
-  if (!Number.isFinite(q)) return String(raw ?? '—');
+  if (!Number.isFinite(q)) return '—';
   const values = q % 2 === 0
     ? [q / 4]
     : q > 0
@@ -1104,6 +1154,13 @@ function historyQuarterLine(raw, signed = true) {
 }
 function historyPredictionLabel(r, p) {
   const line = Number(p.line ?? p.condition);
+  if (!Number.isFinite(line)) {
+    if (p.code === 'HDC') {
+      const team = p.side === 'A' ? r.away : r.home;
+      return `${team || '選擇球隊'} · 盤口未提供`;
+    }
+    return '盤口未提供';
+  }
   if (p.code === 'HDC') {
     const team = p.side === 'A' ? r.away : r.home;
     const selectedLine = p.side === 'A' ? -line : line;

@@ -38,27 +38,43 @@ _SCOREABLE_MARKETS = {"HDC", "HIL", "CHL"}
 _CORNER_RESULT_RETRY_DAYS = 7
 
 
+def _valid_market_prediction(prediction: Any) -> bool:
+    if not isinstance(prediction, dict):
+        return False
+    if str(prediction.get("code") or "") not in _SCOREABLE_MARKETS:
+        return False
+    if prediction.get("side") not in {"H", "A", "L"}:
+        return False
+    raw_line = prediction.get("line")
+    if raw_line is None:
+        raw_line = prediction.get("condition")
+    try:
+        line = float(raw_line)
+    except (TypeError, ValueError):
+        return False
+    return math.isfinite(line)
+
+
 def _has_scoreable_market_prediction(row: dict[str, Any]) -> bool:
     """WDL-only / empty snapshots are not learning samples."""
-    for prediction in row.get("market_predictions") or []:
-        if not isinstance(prediction, dict):
-            continue
-        if str(prediction.get("code") or "") not in _SCOREABLE_MARKETS:
-            continue
-        if prediction.get("side") not in {"H", "A", "L"}:
-            continue
-        if prediction.get("line", prediction.get("condition")) is None:
-            continue
-        return True
-    return False
+    return any(
+        _valid_market_prediction(prediction)
+        for prediction in row.get("market_predictions") or []
+    )
 
 
 def normalize_history(history: dict[str, Any]) -> dict[str, Any]:
     """Purge non-market rows and keep later kickoffs at the top."""
-    rows = [
-        row for row in (history.get("rows") or [])
-        if isinstance(row, dict) and _has_scoreable_market_prediction(row)
-    ]
+    rows = []
+    for row in history.get("rows") or []:
+        if not isinstance(row, dict):
+            continue
+        row["market_predictions"] = [
+            prediction for prediction in (row.get("market_predictions") or [])
+            if _valid_market_prediction(prediction)
+        ]
+        if _has_scoreable_market_prediction(row):
+            rows.append(row)
     for row in rows:
         if row.get("result_status") == "已核實":
             row["result_status"] = "已核對"
@@ -461,9 +477,14 @@ _SETTLEMENT_TARGET = {
 def _grade_market(prediction: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
     code = str(prediction.get("code") or "")
     try:
-        line = float(prediction.get("line", prediction.get("condition")))
+        raw_line = prediction.get("line")
+        if raw_line is None:
+            raw_line = prediction.get("condition")
+        line = float(raw_line)
         side = str(prediction["side"])
         probability = float(prediction["probability"])
+        if not math.isfinite(line) or not math.isfinite(probability):
+            raise ValueError("non-finite prediction")
         home, away = int(result["home_score"]), int(result["away_score"])
         if code == "HDC":
             status = settle_handicap(line, side, home, away)

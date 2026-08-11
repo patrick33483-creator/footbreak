@@ -90,6 +90,46 @@ body {
 
 button { font: inherit; color: inherit; cursor: pointer; }
 
+.scroll-dock {
+  position: fixed;
+  right: max(12px, env(safe-area-inset-right));
+  bottom: max(12px, env(safe-area-inset-bottom));
+  z-index: 45;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(44px, 1fr));
+  gap: 6px;
+  padding: 5px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: color-mix(in oklab, var(--bg-2) 92%, transparent);
+  box-shadow: 0 8px 28px oklch(5% 0.01 258 / .42);
+  backdrop-filter: blur(10px);
+}
+.scroll-dock[hidden] { display: none; }
+.scroll-jump {
+  min-width: 44px;
+  min-height: 44px;
+  padding: 4px 8px;
+  border: 1px solid var(--line-soft);
+  border-radius: 7px;
+  background: var(--panel);
+  color: var(--ink-2);
+  display: grid;
+  place-items: center;
+  gap: 0;
+  line-height: 1;
+}
+.scroll-jump:hover { border-color: var(--amber-dim); color: var(--amber); }
+.scroll-jump span { font: 700 18px/1 var(--mono); }
+.scroll-jump b { font: 650 11px/1.35 var(--sans); }
+
+@media (max-width: 620px) {
+  .scroll-dock {
+    right: max(8px, env(safe-area-inset-right));
+    bottom: max(8px, env(safe-area-inset-bottom));
+  }
+}
+
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-track { background: var(--bg); }
 ::-webkit-scrollbar-thumb { background: var(--line); border-radius: 6px; border: 2px solid var(--bg); }
