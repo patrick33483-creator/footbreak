@@ -32,9 +32,14 @@ jobs:
             restart_timers() {
               sudo systemctl start footbreak-tick.timer
               sudo systemctl start footbreak-sweep.timer
+              sudo systemctl start crown-tick.timer
+              sudo systemctl start crown-sweep.timer
+              sudo systemctl start crown-settle.timer
             }
             trap restart_timers EXIT
             sudo systemctl stop footbreak-tick.timer footbreak-sweep.timer
+            sudo systemctl stop crown-tick.timer crown-sweep.timer crown-settle.timer
+            sudo systemctl stop crown-tick.service crown-sweep.service crown-settle.service || true
             for i in $(seq 1 120); do
               sudo flock -n /var/lock/footbreak.lock true && break
               sleep 5
@@ -45,13 +50,9 @@ jobs:
             fi
             echo "=== Footbreak settlement ==="
             sudo /opt/footbreak/deploy/run.sh settle
-            echo "=== Crown dashboard settlement API ==="
-            response=$(curl --fail --silent --show-error --max-time 240 \
-              -X POST http://127.0.0.1:8765/api/settle \
-              -H "Content-Type: application/json" \
-              -H "X-Crown-Action: settle-simulation" \
-              --data "{\"confirm\":\"simulation-only\"}")
-            python3 -c "import json,sys; d=json.load(sys.stdin); assert d.get(\"ok\") is True; print(\"Crown API OK\", d.get(\"settled_count\", 0), d.get(\"pending_count\", 0), d.get(\"warning\"), d.get(\"prediction_result_sync\"))" <<< "$response"
+            echo "=== Crown direct settlement ==="
+            sudo /opt/footbreak/deploy/crown-run.sh settle
+            python3 -c "import json; d=json.load(open(\"/var/www/footbreak-crown/data.json\", encoding=\"utf-8\")); assert d.get(\"schema_version\") == \"crown-dashboard-v2\"; l=d.get(\"ledger\") or {}; print(\"Crown direct OK\", len(l.get(\"bets\") or []), len(l.get(\"shadow_bets\") or []), (d.get(\"prediction_history\") or {}).get(\"result_sync\"))"
             echo "=== Prediction-history production assertions ==="
             sudo /opt/footbreak/.venv/bin/python3 \
               /opt/footbreak/deploy/verify-result-integrity.py

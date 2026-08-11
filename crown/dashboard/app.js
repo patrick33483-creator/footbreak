@@ -42,6 +42,7 @@ const MKT = { HDC: '讓球', HIL: '入球大小', CHL: '總角球大小', HAD: '
 // path to a local-only simulation settlement service.
 const API_BASE = '/api';
 let DATA = null, LIST = [], LED = null, SEL = null, STAGE = 'all', Q = '', VIEW = 'pred';
+let HISTORY_STAGE = 'all';
 let SETTLE_MESSAGE = '', SETTLE_BAD = false, SETTLING = false;
 const FINISHED_MATCH_GRACE_MINUTES = 150;
 
@@ -1267,10 +1268,12 @@ function renderHistory() {
       historyStageRank[row.stage] || 0,
     ];
   };
-  const rows = [...(payload.rows || [])].sort((left, right) => {
+  const rows = [...(payload.rows || [])]
+    .filter((row) => HISTORY_STAGE === 'all' || row.stage === HISTORY_STAGE)
+    .sort((left, right) => {
     const a = historyTime(left), b = historyTime(right);
     return b[0] - a[0] || b[1] - a[1] || b[2] - a[2];
-  });
+    });
   const s = payload.stats || {};
   const accuracy = s.accuracy == null ? '待賽果' : pc(s.accuracy, 1);
   const K = [
@@ -1323,6 +1326,11 @@ function renderHistory() {
       <tr><th>開賽</th><th>賽事</th><th>階段</th><th>1X2 輔助</th><th>各市場預測／結果</th><th>信念</th><th>模擬注</th><th>整場賽果</th></tr>
       ${historyRows(items) || `<tr class="history-empty-row"><td colspan="8" class="empty2">${empty}</td></tr>`}
     </table></div>`;
+  const historyFilters = `<div class="history-stage-filters" role="group" aria-label="按預測階段篩選紀錄">
+    ${[['all', '全部'], ['首預', '首預'], ['T-30', 'T-30'], ['T-5', 'T-5']].map(([value, label]) =>
+      `<button type="button" class="history-stage-filter ${HISTORY_STAGE === value ? 'is-on' : ''}"
+        data-history-stage="${value}" aria-pressed="${HISTORY_STAGE === value}">${label}</button>`).join('')}
+  </div>`;
 
   V.innerHTML = `<div class="ledger-head">
     <h1 class="pg-h">預測紀錄 <span class="sub">有冇落注都照記 · 準確率與模擬倉分開</span></h1>
@@ -1336,9 +1344,13 @@ function renderHistory() {
     ${historyStageMarketMatrix(s)}
     <p class="mx-note">合併市場數字會計首預、T-30、T-5 每個獨立快照；下表將所有狀態合併，按最新開賽時間優先排列。正式學習樣本為當時主線，走水不計入命中率分母；未完場或未取到賽果唔當輸。</p>
   </div>
-  <div class="card"><h2 class="card-h">全部紀錄 <span class="sub">${rows.length} 筆 · 最新開賽時間優先</span></h2>
+  ${historyFilters}
+  <div class="card"><h2 class="card-h">${HISTORY_STAGE === 'all' ? '全部紀錄' : `${HISTORY_STAGE} 紀錄`} <span class="sub">${rows.length} 筆 · 最新開賽時間優先</span></h2>
     ${historyTable(rows, '暫時未有預測紀錄。')}
   </div>`;
+  $$('#viewHistory [data-history-stage]').forEach((button) => {
+    button.onclick = () => { HISTORY_STAGE = button.dataset.historyStage; renderHistory(); };
+  });
 }
 
 function dayStake(bets) {

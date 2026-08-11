@@ -19,6 +19,26 @@ from datetime import datetime
 
 
 class ResultSourceTests(unittest.TestCase):
+    def test_fixture_backfill_covers_official_and_shadow_ledgers(self) -> None:
+        ledger = {
+            "bets": [{"match_id": "5001"}],
+            "shadow_bets": [{"match_id": "5001", "portfolio": "shadow"}],
+        }
+        predictions = [{
+            "match_id": "5001",
+            "fixture_id": "fixture-5001",
+            "league_id": "league-1",
+        }]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory, "predictions.json")
+            path.write_text(json.dumps(predictions), encoding="utf-8")
+            with patch.object(settle, "PREDS", str(path)):
+                self.assertEqual(settle.backfill_fixture_ids(ledger), 2)
+        self.assertEqual(ledger["bets"][0]["fixture_id"], "fixture-5001")
+        self.assertEqual(
+            ledger["shadow_bets"][0]["fixture_id"], "fixture-5001"
+        )
+
     def test_hkjc_results_are_normalized_for_footbreak_settlement(self) -> None:
         official = {
             "50072040": {
@@ -268,8 +288,8 @@ class ResultSourceTests(unittest.TestCase):
         index = Path(SYSTEM_DIR.parent, "hkjc-dashboard", "index.html").read_text(
             encoding="utf-8"
         )
-        self.assertIn("styles.css?v=20260811-history-integrity-v3", index)
-        self.assertIn("app.js?v=20260811-history-integrity-v3", index)
+        self.assertIn("styles.css?v=20260811-shadow-history-filter-v1", index)
+        self.assertIn("app.js?v=20260811-shadow-history-filter-v1", index)
         self.assertIn("setInterval(() => refresh(true), 60000)", app)
         self.assertIn('class="history-result-cell"', app)
 
@@ -278,6 +298,14 @@ class ResultSourceTests(unittest.TestCase):
         )
         self.assertIn(".history-result-cell .hist-result", styles)
         self.assertIn(".history-result-cell .hist-result b", styles)
+
+    def test_manual_settlement_runs_crown_directly_without_http_timeout(self) -> None:
+        workflow = Path(
+            SYSTEM_DIR.parent, ".github", "workflows", "settle.yml"
+        ).read_text(encoding="utf-8")
+        self.assertIn("deploy/crown-run.sh settle", workflow)
+        self.assertNotIn("curl --fail", workflow)
+        self.assertIn("systemctl stop crown-tick.service", workflow)
 
 
 if __name__ == "__main__":

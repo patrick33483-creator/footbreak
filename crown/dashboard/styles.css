@@ -88,6 +88,23 @@ body {
 /* 數字一律等寬 + 表格對齊 */
 .num, .mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
 
+/* ─── 預測紀錄階段篩選 ─────────────────────────────── */
+.history-stage-filters {
+  display: flex; flex-wrap: wrap; gap: var(--s2); margin: var(--s4) 0;
+}
+.history-stage-filter {
+  min-width: 44px; min-height: 44px; padding: 8px 14px;
+  border: 1px solid var(--line); border-radius: var(--radius-sm);
+  background: var(--panel); color: var(--ink-2); font: 600 var(--text-sm)/1.2 var(--sans);
+}
+.history-stage-filter.is-on, .history-stage-filter:hover {
+  border-color: var(--amber); color: var(--amber); background: var(--amber-bg);
+}
+@media (max-width: 620px) {
+  .history-stage-filters { gap: 6px; }
+  .history-stage-filter { flex: 1 1 calc(50% - 6px); }
+}
+
 button { font: inherit; color: inherit; cursor: pointer; }
 
 .scroll-dock {

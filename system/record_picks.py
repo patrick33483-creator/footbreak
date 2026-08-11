@@ -22,6 +22,8 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from analysis.learning_store import LearningStore
+import predict as P
+from settle import recompute_shadow_stats
 
 LEDGER = os.path.join(HERE, "sim_ledger.json")
 HKT = dt.timezone(dt.timedelta(hours=8))
@@ -40,10 +42,14 @@ def load():
         with open(LEDGER, encoding="utf-8") as handle:
             d = json.load(handle)
     else:
-        d = {"bankroll": BANKROLL, "bets": [], "log": []}
+        d = {"bankroll": BANKROLL, "bets": [], "shadow_bets": [], "log": [],
+             "stats": {}, "shadow_stats": {}}
     d.setdefault("watch", {})
     d.setdefault("bets", [])
+    d.setdefault("shadow_bets", [])
     d.setdefault("log", [])
+    d.setdefault("stats", {})
+    d.setdefault("shadow_stats", {})
     return d
 
 
@@ -113,6 +119,83 @@ def _market_predictions(candidates):
             "source": "footbreak_model_current_main_line",
         })
     return sorted(output, key=lambda row: row["code"])
+
+
+def _shadow_pick(result):
+    """Return the isolated no-benchmark T-5 shadow decision, if eligible.
+
+    This intentionally never calls the EV, Kelly, dynamic-threshold, or
+    official-staking paths.  It is a confidence-only observation portfolio.
+    """
+    if result.get("stage") != BET_STAGE:
+        return None
+    if result.get("sharp_reference_available"):
+        return None
+    if float(result.get("conviction") or 0) < float(P.CONF_FLOOR):
+        return None
+    candidates = list(result.get("candidates") or [])
+    if not candidates:
+        return None
+
+    def decided_probability(candidate):
+        probability = float(candidate.get("prob") or 0)
+        push = float(candidate.get("push") or 0)
+        return probability / max(1e-9, 1.0 - push)
+
+    # Main lines are chosen before probability, so a peripheral alternative
+    # never supplants the market's liquid central line merely on probability.
+    main = [candidate for candidate in candidates if candidate.get("is_main")]
+    pool = main or candidates
+    selected = max(
+        pool,
+        key=lambda candidate: (
+            decided_probability(candidate), float(candidate.get("prob") or 0),
+        ),
+    )
+    return {
+        "market": selected.get("market"), "code": selected.get("code"),
+        "condition": selected.get("condition"), "side": selected.get("side"),
+        "label": f"{selected.get('market')} {selected.get('label')}",
+        "odds": selected.get("odds"), "prob": selected.get("prob"),
+        "push": selected.get("push"), "is_main": bool(selected.get("is_main")),
+        "conviction": result.get("conviction"),
+        "stake": round(float(P.BANKROLL) * 0.02, 2),
+    }
+
+
+def _record_shadow_bet(ledger, result, match_id, now):
+    """Persist one immutable shadow row per fixture without touching official bets."""
+    shadow_pick = _shadow_pick(result)
+    if not shadow_pick:
+        return None
+    shadow_bets = ledger.setdefault("shadow_bets", [])
+    if any(str(bet.get("match_id")) == str(match_id) for bet in shadow_bets):
+        return None
+    bet_id = (f"shadow|{match_id}|{shadow_pick['code']}|"
+              f"{shadow_pick['condition']}|{shadow_pick['side']}")
+    shadow_bets.append({
+        "bet_id": bet_id, "match_id": str(match_id),
+        "league": result.get("league"), "fixture_id": result.get("fixture_id"),
+        "league_id": result.get("league_id"), "home": result.get("home"),
+        "away": result.get("away"), "home_en": result.get("home_en"),
+        "away_en": result.get("away_en"), "kickoff": result.get("kickoff_hkt"),
+        "model_source": result.get("model_source"),
+        "sharp_reference_available": False,
+        "market": shadow_pick["market"], "code": shadow_pick["code"],
+        "condition": shadow_pick["condition"], "side": shadow_pick["side"],
+        "label": shadow_pick["label"], "odds": shadow_pick["odds"],
+        "stake": shadow_pick["stake"], "model_prob": shadow_pick["prob"],
+        "push_prob": shadow_pick["push"], "ev": None, "fair": None,
+        "kelly": None, "kelly_full": None, "conviction": shadow_pick["conviction"],
+        "confidence_only": True, "shadow_only": True, "portfolio": "shadow",
+        "first_stage": BET_STAGE, "stage": BET_STAGE, "status": "PENDING",
+        "result": None, "pnl": None, "created_at": now,
+        "history": [{"ts": now, "stage": BET_STAGE, "action": "影子注建立",
+                     "label": shadow_pick["label"], "odds": shadow_pick["odds"],
+                     "stake": shadow_pick["stake"],
+                     "reason": "confidence-only；固定 2% 本金；無 PinnAPI 基準；不計 EV"}],
+    })
+    return bet_id
 
 
 def _snap(r, now):
@@ -276,6 +359,11 @@ def sync(preds_file="predictions.json"):
         if stage != BET_STAGE:
             continue
 
+        # This is deliberately outside the official pick/change path: a
+        # missing independent benchmark can create a shadow observation only,
+        # never an official bet, notification, learning input or threshold.
+        _record_shadow_bet(led, r, mid, now)
+
         pick = r.get("pick")
         day = r["kickoff_hkt"][:10]
         cur = next((b for b in led["bets"]
@@ -402,6 +490,10 @@ def sync(preds_file="predictions.json"):
                        "n_changes": len(changes),
                        "changes": changes or ["今次無落注動作"],
                        "notes": notes[:40]})
+    # Shadow rows appear before their first result-settlement run.  Refresh
+    # their isolated dashboard totals here without recomputing or touching the
+    # official portfolio's stats/staking state.
+    recompute_shadow_stats(led)
     save(led)
     return changes, notes, led
 

@@ -579,6 +579,7 @@ def main():
             r["fc"] = None
 
     bets = led.get("bets", [])
+    shadow_bets = led.get("shadow_bets", [])
     pend = [b for b in bets if b["status"] == "PENDING"]
     done = [b for b in bets if b["status"] == "SETTLED"]
     bank = led.get("bankroll", P.BANKROLL)
@@ -603,6 +604,7 @@ def main():
     ledger = {
         "bankroll": bank,
         "bets": sorted(bets, key=lambda b: b["kickoff"]),
+        "shadow_bets": sorted(shadow_bets, key=lambda b: b.get("kickoff") or ""),
         "log": led.get("log", [])[-30:],
         "stats": {
             "n_pending": len(pend),
@@ -635,6 +637,7 @@ def main():
             "n_watch": len(watch),
             "n_stage_preds": sum(len(w.get("stages") or []) for w in watch.values()),
         },
+        "shadow_stats": led.get("shadow_stats") or {},
     }
 
     # 純預測準繩度記分板(accuracy.py 出,冇就當冇)

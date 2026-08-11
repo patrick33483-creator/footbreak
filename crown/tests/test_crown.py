@@ -1045,7 +1045,7 @@ class CrownSafetyTests(unittest.TestCase):
             encoding="utf-8",
         )
         self.assertIn("Number.isFinite(Number(rawLine))", app)
-        self.assertIn("20260811-history-order-v3", index)
+        self.assertIn("20260811-shadow-history-filter-v1", index)
 
     def test_prediction_history_archives_no_bet_stages_idempotently(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1779,8 +1779,8 @@ class CrownSafetyTests(unittest.TestCase):
         self.assertIn("overflow-wrap: anywhere", styles)
         self.assertIn("font: 600 12px/1.6 var(--sans)", styles)
         index = (root / "index.html").read_text(encoding="utf-8")
-        self.assertIn("styles.css?v=20260811-history-order-v3", index)
-        self.assertIn("app.js?v=20260811-history-order-v3", index)
+        self.assertIn("styles.css?v=20260811-shadow-history-filter-v1", index)
+        self.assertIn("app.js?v=20260811-shadow-history-filter-v1", index)
         self.assertIn("const historyStageRank = { '首預': 1, 'T-30': 2, 'T-5': 3 }", app)
         self.assertIn("row.kickoff_hkt || row.kickoff", app)
         self.assertIn('id="scrollTop"', index)
@@ -1801,7 +1801,14 @@ class CrownSafetyTests(unittest.TestCase):
         self.assertIn("viewport-fit=cover", index)
         self.assertIn("min-width: 100%", styles)
         self.assertIn(".warnbar,", styles)
-        self.assertIn('全部紀錄 <span class="sub">${rows.length} 筆 · 最新開賽時間優先', app)
+        self.assertIn(
+            "${HISTORY_STAGE === 'all' ? '全部紀錄' : `${HISTORY_STAGE} 紀錄`}",
+            app,
+        )
+        self.assertIn(
+            '<span class="sub">${rows.length} 筆 · 最新開賽時間優先',
+            app,
+        )
         self.assertIn("historyTable(rows, '暫時未有預測紀錄。')", app)
         self.assertNotIn("const gradedRows =", app)
         self.assertNotIn("const pendingRows =", app)

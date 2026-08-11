@@ -64,6 +64,46 @@ body {
   font-size: var(--text-base);
   line-height: 1.55;
   -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+}
+
+.history-stage-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s2);
+  margin: var(--s4) 0;
+}
+.history-stage-filter {
+  min-width: 44px;
+  min-height: 44px;
+  padding: 8px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+  color: var(--ink-2);
+  font: 600 var(--text-sm)/1.2 var(--sans);
+}
+.history-stage-filter.is-on,
+.history-stage-filter:hover { border-color: var(--amber); color: var(--amber); background: var(--amber-bg); }
+
+.ledger-title-row { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--s4); flex-wrap: wrap; }
+.settle-btn { min-width: 44px; min-height: 44px; padding: 9px 14px; border: 1px solid var(--amber-dim); border-radius: var(--radius-sm); background: var(--amber-bg); color: var(--amber); font-weight: 700; }
+.shadow-note { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: var(--s3); padding: var(--s3) var(--s4); border: 1px solid color-mix(in oklab, var(--amber) 35%, var(--line)); border-radius: var(--radius-sm); background: var(--amber-bg); color: var(--ink-2); font-size: var(--text-sm); }
+.shadow-note strong { color: var(--amber); }
+.compare-card { margin-bottom: var(--s4); }
+.compare-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--s3); }
+.compare-side { padding: var(--s3); border: 1px solid var(--line-soft); border-radius: var(--radius-sm); background: var(--bg-2); min-width: 0; }
+.compare-side.shadow { border-color: color-mix(in oklab, var(--amber) 45%, var(--line)); }
+.compare-side-head, .compare-metrics > div { display: flex; justify-content: space-between; gap: var(--s3); }
+.compare-side-head { margin-bottom: var(--s2); color: var(--ink); }
+.compare-side-head b, .compare-value { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.compare-metrics { display: grid; gap: 4px; color: var(--ink-3); font-size: var(--text-sm); }
+.compare-value.good { color: var(--good); }.compare-value.bad { color: var(--bad); }
+.compare-caution { margin: var(--s3) 0 0; color: var(--ink-4); font-size: var(--text-xs); }
+@media (max-width: 620px) {
+  .history-stage-filters { gap: 6px; }
+  .history-stage-filter { flex: 1 1 calc(50% - 6px); }
+  .shadow-note, .compare-grid { grid-template-columns: 1fr; }
 }
 
 /* 數字一律等寬 + 表格對齊 */

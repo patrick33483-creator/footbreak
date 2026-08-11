@@ -22,6 +22,7 @@ const VD_CLS = { '落注': 'v-go', '傾向': 'v-lean', '偏向': 'v-soft', '觀�
 const MKT = { HDC: '讓球', HIL: '入球大小', CHL: '總角球大小', HAD: '主客和' };
 
 let DATA = null, LIST = [], LED = null, SEL = null, STAGE = 'all', Q = '', VIEW = 'pred';
+let HISTORY_STAGE = 'all';
 
 const kt = (s) => new Date(String(s).replace(' ', 'T') + (/[Z+]/.test(s) ? '' : '+08:00'));
 function hkClock(s) { return kt(s).toLocaleTimeString('zh-HK', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Hong_Kong' }); }
@@ -65,7 +66,7 @@ function applyData(raw) {
     });
   }
   DATA = raw;
-  LED = raw.ledger || { bets: [], stats: {}, log: [] };
+  LED = raw.ledger || { bets: [], shadow_bets: [], stats: {}, shadow_stats: {}, log: [] };
   LIST = (raw.matches || []).slice()
     .sort((a, b) => kt(a.kickoff_hkt) - kt(b.kickoff_hkt));
   $('#genAt').textContent = hkStamp(raw.generated_at) + ' HKT';
@@ -147,6 +148,7 @@ function render() {
   $('#viewPred').hidden = VIEW !== 'pred';
   $('#viewFc').hidden = VIEW !== 'fc';
   $('#viewLedger').hidden = VIEW !== 'ledger';
+  $('#viewShadow').hidden = VIEW !== 'shadow';
   $$('#nav .navbtn').forEach((b) => b.classList.toggle('is-on', b.dataset.view === VIEW));
   if (VIEW === 'pred') {
     renderKpis(); renderList();
@@ -157,6 +159,8 @@ function render() {
     if (SEL) renderDetail(SEL);
   } else if (VIEW === 'fc') {
     renderKpis(); renderFc();
+  } else if (VIEW === 'shadow') {
+    renderShadow();
   } else {
     renderLedger();
   }
@@ -1031,10 +1035,12 @@ function renderFc() {
       Number.isFinite(predicted) ? predicted : Number.NEGATIVE_INFINITY,
     ];
   };
-  const rows = [...(payload.rows || [])].sort((left, right) => {
+  const rows = [...(payload.rows || [])]
+    .filter((row) => HISTORY_STAGE === 'all' || row.stage === HISTORY_STAGE)
+    .sort((left, right) => {
     const a = historyTime(left), b = historyTime(right);
     return b[0] - a[0] || b[1] - a[1];
-  });
+    });
   const s = payload.stats || {};
   const gradedRows = rows.filter((r) => r.result_status === '已核對');
   const excludedRows = rows.filter((r) => r.result_status === '不計');
@@ -1090,6 +1096,11 @@ function renderFc() {
       <tr><th>開賽</th><th>賽事</th><th>階段</th><th>1X2 輔助</th><th>各市場預測／結果</th><th>信念</th><th>模擬注</th><th>整場賽果</th></tr>
       ${historyRows(items) || `<tr class="history-empty-row"><td colspan="8" class="empty2">${empty}</td></tr>`}
     </table></div>`;
+  const historyFilters = `<div class="history-stage-filters" role="group" aria-label="按預測階段篩選紀錄">
+    ${[['all', '全部'], ['首預', '首預'], ['T-30', 'T-30'], ['T-5', 'T-5']].map(([value, label]) =>
+      `<button type="button" class="history-stage-filter ${HISTORY_STAGE === value ? 'is-on' : ''}"
+        data-history-stage="${value}" aria-pressed="${HISTORY_STAGE === value}">${label}</button>`).join('')}
+  </div>`;
 
   V.innerHTML = `<div class="ledger-head">
     <h1 class="pg-h">純預測紀錄 <span class="sub">有冇落注都照記 · 準確率與模擬倉分開</span></h1>
@@ -1103,6 +1114,7 @@ function renderFc() {
     ${historyStageMarketMatrix(s)}
     <p class="mx-note">合併市場數字會計首預、T-30、T-5 每個獨立快照；下表則按階段分開。正式學習樣本為當時主線，走水不計入命中率分母；未完場或未取到賽果唔當輸。</p>
   </div>
+  ${historyFilters}
   <div class="card"><h2 class="card-h">已核對賽果 <span class="sub">${gradedRows.length} 筆 · 命中 ${s.hits || 0}</span></h2>
     ${historyTable(gradedRows, '暫時未有已核對賽果。')}
   </div>
@@ -1112,6 +1124,9 @@ function renderFc() {
   <div class="card"><h2 class="card-h">不計入準確率 <span class="sub">${excludedRows.length} 筆</span></h2>
     ${historyTable(excludedRows, '目前冇延期、取消或腰斬紀錄。')}
   </div>`;
+  $$('#viewFc [data-history-stage]').forEach((button) => {
+    button.onclick = () => { HISTORY_STAGE = button.dataset.historyStage; renderFc(); };
+  });
 }
 
 /* ══════════════════════ 模擬倉 ══════════════════════ */
@@ -1261,13 +1276,7 @@ function renderLedger() {
     </table></div></div>`;
 
   V.innerHTML = h;
-  $$('#viewLedger .bets tr.brow').forEach((tr) => {
-    tr.onclick = () => {
-      const d = $(`#hist-${tr.dataset.i}`);
-      d.classList.toggle('open');
-      tr.classList.toggle('is-open');
-    };
-  });
+  bindBetRows('#viewLedger');
 }
 
 function dayStake(bets) {
@@ -1276,10 +1285,11 @@ function dayStake(bets) {
              .reduce((a, b) => a + b.stake, 0);
 }
 
-function betRow(b, i) {
+function betRow(b, i, prefix = 'official') {
   const H = b.history || [];
   const chg = H.filter((x) => x.action !== '維持').length;
-  const main = `<tr class="brow ${b.status.toLowerCase()}" data-i="${i}">
+  const target = `${prefix}-hist-${i}`;
+  const main = `<tr class="brow ${b.status.toLowerCase()}" data-i="${i}" data-target="${target}">
     <td class="exp">${H.length ? '▸' : ''}</td>
     <td class="mono nowrap">${hkDay(b.kickoff)} ${hkClock(b.kickoff)}</td>
     <td>${esc(b.home)} <span class="dim">v</span> ${esc(b.away)}<div class="cell-sub">${esc(b.league)}</div></td>
@@ -1288,7 +1298,7 @@ function betRow(b, i) {
     <td>${f2(b.odds)}</td>
     <td class="stk">${money(b.stake)}</td>
     <td>${pc(b.model_prob)}</td>
-    <td class="${b.ev > 0 ? 'ev-p' : 'ev-n'}">${sg(b.ev * 100, 2)}%</td>
+    <td class="${b.ev == null ? 'dim' : b.ev > 0 ? 'ev-p' : 'ev-n'}">${b.ev == null ? '—' : sg(b.ev * 100, 2) + '%'}</td>
     <td class="${convClass(b.conviction)}">${f2(b.conviction)}</td>
     <td>${esc(b.stage)}${chg > 1 ? `<span class="minitag">${chg} 次變動</span>` : ''}</td>
     <td><span class="stpill ${b.status.toLowerCase()}">${ST_LBL[b.status] || b.status}</span></td>
@@ -1296,8 +1306,8 @@ function betRow(b, i) {
     <td class="mono nowrap">${scoreCell(b)}</td>
     <td class="${(b.pnl || 0) > 0 ? 'ev-p' : (b.pnl || 0) < 0 ? 'ev-n' : 'dim'}">${b.pnl == null ? '—' : money(b.pnl)}</td>
   </tr>`;
-  const hist = `<tr class="hrowwrap"><td colspan="14" class="histcell">
-    <div class="hist-panel" id="hist-${i}">
+  const hist = `<tr class="hrowwrap"><td colspan="15" class="histcell">
+    <div class="hist-panel" id="${target}">
       ${b.void_reason ? `<div class="void-note">撤回原因:${esc(b.void_reason)}</div>` : ''}
       <ol class="tl">${H.map((x) => `<li class="tl-i ${x.action === '轉觀望' ? 'x' : x.action === '維持' ? 'keep' : ''}">
         <span class="tl-dot">${ACT_ICO[x.action] || '·'}</span>
@@ -1322,6 +1332,75 @@ function betRow(b, i) {
         </div></li>`).join('')}</ol>
     </div></td></tr>`;
   return main + hist;
+}
+
+function bindBetRows(container) {
+  $$(`${container} .bets tr.brow`).forEach((tr) => {
+    tr.onclick = () => {
+      const panel = document.getElementById(tr.dataset.target);
+      if (!panel) return;
+      panel.classList.toggle('open');
+      tr.classList.toggle('is-open');
+    };
+  });
+}
+
+function comparisonValue(value, formatter, cls = '') {
+  return `<span class="compare-value ${cls}">${value == null ? '—' : formatter(value)}</span>`;
+}
+
+function shadowComparisonCard(comparison) {
+  if (!comparison) return `<div class="card compare-card"><h2 class="card-h">同期表現對照</h2>
+    <div class="empty2">建立第一筆影子注後，系統會由同一時間點開始比較正式倉同影子倉。</div></div>`;
+  const official = comparison.official || {}, shadow = comparison.shadow || {};
+  const metrics = [
+    ['總注數', comparison.official_total_bets || 0, comparison.shadow_total_bets || 0, String],
+    ['已結算', official.n_settled || 0, shadow.n_settled || 0, String],
+    ['命中率', official.hit_rate, shadow.hit_rate, (x) => pc(x, 1)],
+    ['投注額', official.turnover, shadow.turnover, money],
+    ['盈虧', official.pnl, shadow.pnl, money],
+    ['ROI', official.roi, shadow.roi, (x) => pc(x, 2)],
+  ];
+  const side = (name, kind, data) => `<div class="compare-side ${kind}">
+    <div class="compare-side-head"><span>${name}</span><b>${data.n_settled || 0} 筆已結算</b></div>
+    <div class="compare-metrics">${metrics.map(([label, officialValue, shadowValue, formatter]) => {
+      const value = kind === 'official' ? officialValue : shadowValue;
+      const tone = ['盈虧', 'ROI'].includes(label) ? ((value || 0) >= 0 ? 'good' : 'bad') : '';
+      return `<div><span>${label}</span>${comparisonValue(value, formatter, tone)}</div>`;
+    }).join('')}</div></div>`;
+  return `<div class="card compare-card" data-testid="card-shadow-comparison">
+    <h2 class="card-h">同期表現對照 <span class="sub">由 ${hkStamp(comparison.period_start)} HKT 第一筆影子注開始</span></h2>
+    <div class="compare-grid">${side('正式模擬倉', 'official', official)}${side('confidence-only 影子倉', 'shadow', shadow)}</div>
+    <p class="compare-caution">兩邊統計完全分開；樣本未成熟時只作觀察，不會改動正式策略。</p></div>`;
+}
+
+function renderShadow() {
+  const s = LED.shadow_stats || {}, bets = LED.shadow_bets || [], V = $('#viewShadow');
+  const K = [
+    ['虛擬本金', money(LED.bankroll), ''], ['影子注碼', money(s.open_stake), 'amber'],
+    ['佔虛擬本金', pc(s.open_pct, 1), ''], ['待決', s.n_pending || 0, ''],
+    ['已撤回', s.n_voided || 0, ''], ['已結算', s.n_settled || 0, ''],
+    ['影子盈虧', s.n_settled ? money(s.pnl) : '—', (s.pnl || 0) >= 0 ? 'good' : 'bad'],
+    ['影子 ROI', s.roi == null ? '—' : pc(s.roi, 2), (s.roi || 0) >= 0 ? 'good' : 'bad'],
+    ['命中率', s.n_decided ? `${pc(s.hit_rate, 1)} (${s.hits}/${s.n_decided})` : '—', ''],
+    ['影子結餘', money(s.equity != null ? s.equity : LED.bankroll), (s.pnl || 0) >= 0 ? 'good' : 'bad'],
+  ];
+  let h = `<div class="ledger-head"><div class="ledger-title-row"><h1 class="pg-h">confidence-only 影子倉
+    <span class="sub">T-5 · 信念門檻 ${s.conf_floor || 58} · 固定 2% 虛擬本金</span></h1>
+    <button class="settle-btn" id="settleShadowNow" type="button">立即結算</button></div>
+    <div class="shadow-note" role="note"><strong>完全隔離</strong><span>T-5 confidence-only，固定 2%，無 PinnAPI 基準；不計入正式統計、學習或 Telegram。</span></div>
+    <div class="kpis wide">${K.map(([l, v, c]) => `<div class="kpi"><span class="kpi-lbl">${l}</span><span class="kpi-val ${c}">${v}</span></div>`).join('')}</div></div>`;
+  h += shadowComparisonCard(s.comparison);
+  if (!bets.length) h += `<div class="card"><div class="empty2">暫時未有影子注。系統只會記錄無獨立 PinnAPI 基準下的 T-5 高信念機會。</div></div>`;
+  else {
+    if (s.n_settled) h += `<div class="grid g2">${equityCard(s)}${resultCard(s)}</div>${marketCard(s)}`;
+    h += `<div class="card"><h2 class="card-h">影子注單 <span class="sub">${bets.length} 筆 · confidence-only</span></h2>
+      <div class="tbl-wrap"><table class="t bets"><tr><th></th><th>開賽</th><th>賽事</th><th>市場</th><th>投注</th><th>賠率</th><th>注碼</th><th>勝率</th><th>EV</th><th>信念</th><th>最新</th><th>狀態</th><th>結果</th><th>比分</th><th>盈虧</th></tr>
+      ${bets.map((b, i) => betRow(b, i, 'shadow')).join('')}</table></div></div>`;
+  }
+  V.innerHTML = h;
+  $('#settleShadowNow').onclick = () => refresh(false);
+  bindBetRows('#viewShadow');
 }
 
 function scoreCell(b) {
