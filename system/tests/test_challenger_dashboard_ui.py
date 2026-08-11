@@ -103,6 +103,17 @@ class ChallengerDashboardUiTests(unittest.TestCase):
                 self.assertIn("challengerMetricRow('Brier'", app)
                 self.assertIn("challengerMetricRow('對數損失'", app)
 
+    def test_passed_review_filter_is_available_and_accessible(self) -> None:
+        for dashboard in DASHBOARDS:
+            _, app, css = self._files(dashboard)
+            with self.subTest(dashboard=dashboard):
+                self.assertIn('data-testid="button-challenger-filter-all"', app)
+                self.assertIn('data-testid="button-challenger-filter-review"', app)
+                self.assertIn('aria-pressed="${CHAL_FILTER === \'review\'}"', app)
+                self.assertIn("candidate_passed_human_review_required", app)
+                self.assertIn("state-challenger-filter-empty", app)
+                self.assertIn("min-height: 44px", css)
+
     def test_mobile_layout_stacks_without_horizontal_scrolling(self) -> None:
         for dashboard in DASHBOARDS:
             _, _, css = self._files(dashboard)

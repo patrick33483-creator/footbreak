@@ -30,11 +30,12 @@ function loadChallengerModule(appPath) {
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) =>
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const MKT = { HDC: '讓球', HIL: '入球大小', CHL: '總角球大小' };
+  const document = { querySelectorAll: () => [] };
   const factory = new Function(
-    '$', 'numeric', 'pc', 'f3', 'esc', 'MKT', 'VIEW', 'fetch',
-    `${block}\nreturn { renderChallenger, challengerValidate, challengerMarketCard, get CHAL() { return CHAL; }, set CHAL(v) { CHAL = v; }, view: $('#viewChal') };`
+    '$', 'numeric', 'pc', 'f3', 'esc', 'MKT', 'VIEW', 'fetch', 'document',
+    `${block}\nreturn { renderChallenger, challengerValidate, challengerMarketCard, get CHAL() { return CHAL; }, set CHAL(v) { CHAL = v; }, get CHAL_FILTER() { return CHAL_FILTER; }, set CHAL_FILTER(v) { CHAL_FILTER = v; }, view: $('#viewChal') };`
   );
-  return factory($, numeric, pc, f3, esc, MKT, 'chal', async () => { throw new Error('no network'); });
+  return factory($, numeric, pc, f3, esc, MKT, 'chal', async () => { throw new Error('no network'); }, document);
 }
 
 const isoHoursAgo = (hours) => new Date(Date.now() - hours * 3600000).toISOString();
@@ -155,6 +156,27 @@ for (const dashboard of ['hkjc-dashboard/app.js', 'crown/dashboard/app.js']) {
   assert(html().includes('banner-challenger-review'), `${dashboard}: review banner shown`);
   assert(html().includes('仍然<strong>未套用</strong>'), `${dashboard}: banner says not applied`);
   assert(html().includes('card-challenger-HIL'), `${dashboard}: every market card rendered`);
+  assert(html().includes('button-challenger-filter-review'), `${dashboard}: review filter shown`);
+
+  // 只睇已通過／待覆核
+  mod.CHAL_FILTER = 'review';
+  mod.renderChallenger();
+  assert(html().includes('aria-pressed="true"'), `${dashboard}: review filter marked active`);
+  assert(!html().includes('card-challenger-HDC'), `${dashboard}: rejected model hidden by review filter`);
+  assert(html().includes('state-challenger-filter-empty'), `${dashboard}: empty review state shown`);
+
+  mod.CHAL.payload.systems.footbreak.tests.HIL = evaluatedTest({
+    status: 'candidate_passed_human_review_required',
+    rejection_reasons: [],
+  });
+  mod.CHAL.payload.systems.crown.tests.HIL = evaluatedTest({
+    status: 'candidate_passed_human_review_required',
+    rejection_reasons: [],
+  });
+  mod.renderChallenger();
+  assert(html().includes('card-challenger-HIL'), `${dashboard}: passed model shown by review filter`);
+  assert(!html().includes('card-challenger-HDC'), `${dashboard}: non-passed model remains hidden`);
+  assert(!html().includes('state-challenger-filter-empty'), `${dashboard}: empty state removed after pass`);
 }
 
 if (!process.exitCode) console.log('OK challenger dashboard UI smoke');

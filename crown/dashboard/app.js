@@ -1559,6 +1559,7 @@ const CHAL_REASON = {
   accuracy_not_materially_worse: '準確率跌幅超過 2%',
 };
 let CHAL = { state: 'idle', payload: null, error: '', loadedAt: null };
+let CHAL_FILTER = 'all';
 
 function challengerStatusLabel(status) {
   return CHAL_STATUS[status] || { text: status ? String(status) : '未知狀態', cls: 'hold' };
@@ -1655,6 +1656,21 @@ function challengerMetricRow(label, championValue, challengerValue, deltaValue, 
     <span class="chal-metric-val" data-role="champion">${formatter(championValue)}</span>
     <span class="chal-metric-val" data-role="challenger">${formatter(challengerValue)}</span>
     <span class="chal-metric-val chal-delta ${tone}">${deltaText}</span>
+  </div>`;
+}
+
+function challengerFilterControls(tests) {
+  const reviewCount = CHALLENGER_MARKETS.filter((market) =>
+    String((tests[market] || {}).status || '') === 'candidate_passed_human_review_required'
+  ).length;
+  return `<div class="chal-filter" role="group" aria-label="挑戰模型篩選" data-testid="filter-challenger">
+    <span class="chal-filter-lbl">顯示</span>
+    <button type="button" class="chal-filter-btn ${CHAL_FILTER === 'all' ? 'active' : ''}"
+      data-chal-filter="all" data-testid="button-challenger-filter-all"
+      aria-pressed="${CHAL_FILTER === 'all'}">全部 <b>${CHALLENGER_MARKETS.length}</b></button>
+    <button type="button" class="chal-filter-btn ${CHAL_FILTER === 'review' ? 'active' : ''}"
+      data-chal-filter="review" data-testid="button-challenger-filter-review"
+      aria-pressed="${CHAL_FILTER === 'review'}">已通過／待覆核 <b>${reviewCount}</b></button>
   </div>`;
 }
 
@@ -1767,14 +1783,29 @@ function renderChallenger() {
       <b>有候選模型通過安全門檻</b>
       <span>仍然<strong>未套用</strong>,亦唔會自動套用;只係等人手覆核決定。</span></div>`;
   }
+  const visibleMarkets = CHALLENGER_MARKETS.filter((market) =>
+    CHAL_FILTER === 'all' ||
+    String((tests[market] || {}).status || '') === 'candidate_passed_human_review_required'
+  );
+  const cards = visibleMarkets.length
+    ? `<div class="chal-grid">${visibleMarkets.map((market) => challengerMarketCard(market, tests[market])).join('')}</div>`
+    : `<div class="card chal-filter-empty" data-testid="state-challenger-filter-empty">
+        <div class="empty2"><b>暫時冇模型等待覆核</b><span>新候選通過全部安全門檻後,會自動出現喺呢個篩選。</span></div>
+      </div>`;
   V.innerHTML = challengerHead(banner) +
-    `<div class="chal-grid">${CHALLENGER_MARKETS.map((market) => challengerMarketCard(market, tests[market])).join('')}</div>`;
+    challengerFilterControls(tests) + cards;
   challengerBind();
 }
 
 function challengerBind() {
   const button = $('#challengerReload');
   if (button) button.onclick = () => loadChallenger({});
+  document.querySelectorAll('[data-chal-filter]').forEach((filterButton) => {
+    filterButton.onclick = () => {
+      CHAL_FILTER = filterButton.dataset.chalFilter === 'review' ? 'review' : 'all';
+      renderChallenger();
+    };
+  });
 }
 
 boot();
