@@ -49,6 +49,11 @@ for app_js in /var/www/footbreak/app.js /var/www/crown/app.js; do
   }
   echo "OK dashboard corner-result asset $app_js"
 done
+grep -q 'Number.isFinite(Number(rawLine))' /var/www/crown/app.js || {
+  echo "FAIL stale Crown dashboard asset: finite-line guard missing" >&2
+  exit 1
+}
+echo "OK Crown dashboard finite-line guard"
 api_ready=0
 for _ in $(seq 1 10); do
   if python3 - <<'PY'
@@ -148,6 +153,7 @@ echo "OK Crown Telegram enabled"
 
 "$APP_DIR/.venv/bin/python3" - "$FOOTBREAK_DATA" "$CROWN_DATA" <<'PY'
 import json
+import math
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -181,10 +187,37 @@ def scoreable_market_row(row):
             continue
         if prediction.get("side") not in {"H", "A", "L"}:
             continue
-        if prediction.get("condition", prediction.get("line")) is None:
+        raw_line = prediction.get("line")
+        if raw_line is None:
+            raw_line = prediction.get("condition")
+        try:
+            line = float(raw_line)
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(line):
             continue
         return True
     return False
+
+
+def invalid_market_predictions(rows):
+    bad = []
+    for row in rows:
+        for prediction in row.get("market_predictions") or []:
+            raw_line = prediction.get("line")
+            if raw_line is None:
+                raw_line = prediction.get("condition")
+            try:
+                line = float(raw_line)
+            except (TypeError, ValueError):
+                line = float("nan")
+            if (
+                prediction.get("code") not in {"HDC", "HIL", "CHL"}
+                or prediction.get("side") not in {"H", "A", "L"}
+                or not math.isfinite(line)
+            ):
+                bad.append((row, prediction))
+    return bad
 
 
 def kickoff_timestamp(row):
@@ -247,6 +280,12 @@ crown_matches = crown.get("matches") or crown.get("predictions") or []
 print(f"OK Crown dashboard matches={len(crown_matches)}")
 crown_history = crown.get("prediction_history") or {}
 crown_rows = crown_history.get("rows") or []
+crown_invalid = invalid_market_predictions(crown_rows)
+if crown_invalid:
+    raise SystemExit(
+        "FAIL Crown prediction history contains "
+        f"{len(crown_invalid)} invalid/non-finite market prediction(s)"
+    )
 crown_bad = [row for row in crown_rows if not scoreable_market_row(row)]
 if crown_bad:
     raise SystemExit(

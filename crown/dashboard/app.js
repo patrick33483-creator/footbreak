@@ -99,6 +99,19 @@ async function fetchDashboardData() {
 }
 
 function applyData(raw) {
+  const history = raw && raw.prediction_history;
+  if (history && Array.isArray(history.rows)) {
+    history.rows = history.rows.flatMap((row) => {
+      if (!row || typeof row !== 'object') return [];
+      row.market_predictions = (row.market_predictions || []).filter((prediction) => {
+        if (!prediction || !['HDC', 'HIL', 'CHL'].includes(prediction.code)) return false;
+        if (!['H', 'A', 'L'].includes(prediction.side)) return false;
+        const rawLine = prediction.line == null ? prediction.condition : prediction.line;
+        return rawLine !== '' && Number.isFinite(Number(rawLine));
+      });
+      return row.market_predictions.length ? [row] : [];
+    });
+  }
   DATA = raw;
   LED = raw.ledger || { bets: [], shadow_bets: [], stats: {}, shadow_stats: {}, log: [] };
   LIST = displayableMatches(raw.matches).slice()
@@ -1241,17 +1254,19 @@ function historyStageMarketMatrix(stats) {
 function renderHistory() {
   const V = $('#viewHistory');
   const payload = DATA.prediction_history || { rows: [], stats: {} };
+  const historyStageRank = { '首預': 1, 'T-30': 2, 'T-5': 3 };
   const historyTime = (row) => {
-    const kickoff = Date.parse(row.kickoff || '');
+    const kickoff = Date.parse(row.kickoff_hkt || row.kickoff || '');
     const predicted = Date.parse(row.predicted_at || '');
     return [
       Number.isFinite(kickoff) ? kickoff : Number.NEGATIVE_INFINITY,
       Number.isFinite(predicted) ? predicted : Number.NEGATIVE_INFINITY,
+      historyStageRank[row.stage] || 0,
     ];
   };
   const rows = [...(payload.rows || [])].sort((left, right) => {
     const a = historyTime(left), b = historyTime(right);
-    return b[0] - a[0] || b[1] - a[1];
+    return b[0] - a[0] || b[1] - a[1] || b[2] - a[2];
   });
   const gradedRows = rows.filter((r) => r.result_status === '已核對');
   const pendingRows = rows.filter((r) => r.result_status === '待賽果');

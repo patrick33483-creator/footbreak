@@ -1024,6 +1024,16 @@ class CrownSafetyTests(unittest.TestCase):
             ["HIL"],
         )
 
+    def test_crown_frontend_filters_non_finite_history_lines_before_render(self) -> None:
+        app = (Path(__file__).parents[1] / "dashboard" / "app.js").read_text(
+            encoding="utf-8",
+        )
+        index = (Path(__file__).parents[1] / "dashboard" / "index.html").read_text(
+            encoding="utf-8",
+        )
+        self.assertIn("Number.isFinite(Number(rawLine))", app)
+        self.assertIn("20260811-nan-guard-v2", index)
+
     def test_prediction_history_archives_no_bet_stages_idempotently(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             config = replace(settings(), state_dir=Path(directory))
@@ -1603,8 +1613,10 @@ class CrownSafetyTests(unittest.TestCase):
         self.assertIn("overflow-wrap: anywhere", styles)
         self.assertIn("font: 600 12px/1.6 var(--sans)", styles)
         index = (root / "index.html").read_text(encoding="utf-8")
-        self.assertIn("styles.css?v=20260811-scroll-dock-v1", index)
-        self.assertIn("app.js?v=20260811-scroll-dock-v1", index)
+        self.assertIn("styles.css?v=20260811-nan-guard-v2", index)
+        self.assertIn("app.js?v=20260811-nan-guard-v2", index)
+        self.assertIn("const historyStageRank = { '首預': 1, 'T-30': 2, 'T-5': 3 }", app)
+        self.assertIn("row.kickoff_hkt || row.kickoff", app)
         self.assertIn('id="scrollTop"', index)
         self.assertIn('id="scrollBottom"', index)
         self.assertIn("function updateScrollDock()", app)
