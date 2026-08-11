@@ -179,6 +179,90 @@ def _target(row: dict[str, Any]) -> Event | None:
     )
 
 
+def _titan_event(row: dict[str, Any]) -> Event | None:
+    kickoff = parse_time(row.get("kickoff"))
+    if (
+        not kickoff
+        or not row.get("id")
+        or not row.get("home")
+        or not row.get("away")
+        or row.get("home_score") is None
+        or row.get("away_score") is None
+    ):
+        return None
+    return Event(
+        str(row["id"]),
+        str(row.get("league") or ""),
+        str(row["home"]),
+        str(row["away"]),
+        kickoff,
+        row,
+    )
+
+
+def _match_titan_result(
+    row: dict[str, Any],
+    titan_by_id: dict[str, dict[str, Any]],
+) -> tuple[dict[str, Any] | None, bool, bool]:
+    """Return one strictly verified Titan result and its orientation.
+
+    The stored fixture ID remains the preferred path.  Titan can replace an
+    event ID after a schedule correction, so a unique identity fallback is
+    allowed only when kickoff, both teams, league and qualifiers pass the
+    existing strict matcher.
+    """
+    target = _target(row)
+    if target is None:
+        return None, False, False
+
+    titan_id = str(row.get("titan_match_id") or row.get("match_id") or "")
+    exact = titan_by_id.get(titan_id)
+    exact_event = _titan_event(exact) if exact else None
+    if exact_event:
+        matched = match_event(
+            target,
+            [exact_event],
+            team_key=canonical_team_key,
+            league_key=canonical_league_key,
+            allow_reversed=True,
+            require_qualifiers=True,
+        )
+        if matched.event:
+            return exact, matched.reversed, True
+
+    candidates = [
+        event
+        for candidate in titan_by_id.values()
+        if (event := _titan_event(candidate))
+    ]
+    matched = match_event(
+        target,
+        candidates,
+        team_key=canonical_team_key,
+        league_key=canonical_league_key,
+        allow_reversed=True,
+        require_qualifiers=True,
+    )
+    if not matched.event or not isinstance(matched.event.extra, dict):
+        return None, False, False
+    return matched.event.extra, matched.reversed, False
+
+
+def _oriented_titan_result(result: dict[str, Any], reversed_order: bool) -> dict[str, Any]:
+    if not reversed_order:
+        return result
+    oriented = dict(result)
+    oriented["home_score"], oriented["away_score"] = (
+        result.get("away_score"),
+        result.get("home_score"),
+    )
+    oriented["corners_home"], oriented["corners_away"] = (
+        result.get("corners_away"),
+        result.get("corners_home"),
+    )
+    return oriented
+
+
 def _result(row: dict[str, Any], titan_by_id: dict[str, dict[str, Any]],
             hkjc_by_id: dict[str, dict[str, Any]], hkjc_events: list[tuple[Event, dict[str, Any]]]
             ) -> tuple[dict[str, Any] | None, str | None]:
@@ -194,21 +278,12 @@ def _result(row: dict[str, Any], titan_by_id: dict[str, dict[str, Any]],
     )
     if matched.event:
         return next(data for event, data in hkjc_events if event.id == matched.event.id), "hkjc_official_strict_identity"
-    titan = titan_by_id.get(str(row.get("titan_match_id") or row.get("match_id") or ""))
-    if titan and titan.get("home_score") is not None:
-        candidate = Event(
-            str(titan["id"]), str(titan.get("league") or ""), str(titan.get("home") or ""),
-            str(titan.get("away") or ""), titan["kickoff"],
+    titan, reversed_order, exact_id = _match_titan_result(row, titan_by_id)
+    if titan:
+        return (
+            _oriented_titan_result(titan, reversed_order),
+            "titan_verified_identity" if exact_id else "titan_verified_unique_identity_fallback",
         )
-        if match_event(
-            target,
-            [candidate],
-            team_key=canonical_team_key,
-            league_key=canonical_league_key,
-            allow_reversed=False,
-            require_qualifiers=True,
-        ).event:
-            return titan, "titan_verified_identity"
     return None, None
 
 
@@ -222,30 +297,12 @@ def _merge_titan_corner_detail(
     """Fill corners only after exact Titan ID, identity and score checks."""
     if score.get("corners_total") is not None:
         return score, source, "already_present"
-    titan_id = str(row.get("titan_match_id") or row.get("match_id") or "")
-    titan = titan_by_id.get(titan_id)
-    target = _target(row)
-    if not titan or target is None or titan.get("home_score") is None:
+    titan, reversed_order, exact_id = _match_titan_result(row, titan_by_id)
+    if not titan:
         return score, source, "titan_row_missing"
-    candidate = Event(
-        str(titan["id"]),
-        str(titan.get("league") or ""),
-        str(titan.get("home") or ""),
-        str(titan.get("away") or ""),
-        titan["kickoff"],
-    )
-    matched = match_event(
-        target,
-        [candidate],
-        team_key=canonical_team_key,
-        league_key=canonical_league_key,
-        allow_reversed=True,
-        require_qualifiers=True,
-    )
-    if not matched.event:
-        return score, source, f"titan_identity_{matched.reason or 'rejected'}"
+    titan_id = str(titan["id"])
     titan_home, titan_away = titan.get("home_score"), titan.get("away_score")
-    if matched.reversed:
+    if reversed_order:
         titan_home, titan_away = titan_away, titan_home
     try:
         verified_score = (int(score["home_score"]), int(score["away_score"]))
@@ -262,7 +319,7 @@ def _merge_titan_corner_detail(
         return score, source, "titan_detail_corners_missing"
     corners_home = detail.get("corners_home")
     corners_away = detail.get("corners_away")
-    if matched.reversed:
+    if reversed_order:
         corners_home, corners_away = corners_away, corners_home
     merged = {
         **score,
@@ -272,7 +329,10 @@ def _merge_titan_corner_detail(
     }
     return (
         merged,
-        f"{source or 'verified_result'}+titan007_detail_exact_id_identity_score",
+        (
+            f"{source or 'verified_result'}+titan007_detail_"
+            f"{'exact_id' if exact_id else 'unique_identity_fallback'}_identity_score"
+        ),
         "filled",
     )
 

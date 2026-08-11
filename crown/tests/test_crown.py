@@ -1007,6 +1007,61 @@ class CrownSafetyTests(unittest.TestCase):
             self.assertEqual(row["market_grades"][0]["settlement"], "Won")
             self.assertEqual(history["stats"]["by_market"]["HDC"]["hits"], 1)
 
+    def test_prediction_history_recovers_changed_titan_id_by_unique_identity(self) -> None:
+        from crown.prediction_history import _result
+
+        kickoff = datetime(2026, 8, 11, 7, 0, tzinfo=self.now.tzinfo)
+        row = {
+            "match_id": "old-id", "titan_match_id": "old-id",
+            "league": "哥伦甲秋", "home": "麦德林独立", "away": "百万富翁",
+            "kickoff": kickoff.isoformat(),
+        }
+        replacement = {
+            "id": "new-id", "league": "哥伦甲秋",
+            "home": "麦德林独立", "away": "百万富翁",
+            "kickoff": kickoff, "home_score": 1, "away_score": 2,
+        }
+        score, source = _result(row, {"new-id": replacement}, {}, [])
+        self.assertEqual((score["home_score"], score["away_score"]), (1, 2))
+        self.assertEqual(source, "titan_verified_unique_identity_fallback")
+
+    def test_prediction_history_rejects_ambiguous_titan_identity_fallback(self) -> None:
+        from crown.prediction_history import _result
+
+        kickoff = datetime(2026, 8, 11, 7, 0, tzinfo=self.now.tzinfo)
+        row = {
+            "match_id": "old-id", "titan_match_id": "old-id",
+            "league": "League", "home": "Alpha", "away": "Beta",
+            "kickoff": kickoff.isoformat(),
+        }
+        candidates = {
+            key: {
+                "id": key, "league": "League", "home": "Alpha", "away": "Beta",
+                "kickoff": kickoff, "home_score": 1, "away_score": 0,
+            }
+            for key in ("replacement-a", "replacement-b")
+        }
+        score, source = _result(row, candidates, {}, [])
+        self.assertIsNone(score)
+        self.assertIsNone(source)
+
+    def test_prediction_history_orients_reversed_titan_identity_fallback(self) -> None:
+        from crown.prediction_history import _result
+
+        kickoff = datetime(2026, 8, 11, 7, 0, tzinfo=self.now.tzinfo)
+        row = {
+            "match_id": "old-id", "titan_match_id": "old-id",
+            "league": "League", "home": "Alpha", "away": "Beta",
+            "kickoff": kickoff.isoformat(),
+        }
+        replacement = {
+            "id": "new-id", "league": "League", "home": "Beta", "away": "Alpha",
+            "kickoff": kickoff, "home_score": 3, "away_score": 1,
+        }
+        score, source = _result(row, {"new-id": replacement}, {}, [])
+        self.assertEqual((score["home_score"], score["away_score"]), (1, 3))
+        self.assertEqual(source, "titan_verified_unique_identity_fallback")
+
     def test_verified_history_retries_and_grades_late_official_corner_result(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             config = replace(settings(), state_dir=Path(directory))
