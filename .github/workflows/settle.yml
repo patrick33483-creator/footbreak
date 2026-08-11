@@ -39,7 +39,9 @@ jobs:
             trap restart_timers EXIT
             sudo systemctl stop footbreak-tick.timer footbreak-sweep.timer
             sudo systemctl stop crown-tick.timer crown-sweep.timer crown-settle.timer
+            sudo systemctl stop footbreak-tick.service footbreak-sweep.service footbreak-settle.service || true
             sudo systemctl stop crown-tick.service crown-sweep.service crown-settle.service || true
+            sudo rm -f /run/footbreak-t5-priority
             for i in $(seq 1 120); do
               sudo flock -n /var/lock/footbreak.lock true && break
               sleep 5

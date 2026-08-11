@@ -305,6 +305,11 @@ class ResultSourceTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         self.assertIn("deploy/crown-run.sh settle", workflow)
         self.assertNotIn("curl --fail", workflow)
+        self.assertIn(
+            "systemctl stop footbreak-tick.service footbreak-sweep.service footbreak-settle.service",
+            workflow,
+        )
+        self.assertIn("rm -f /run/footbreak-t5-priority", workflow)
         self.assertIn("systemctl stop crown-tick.service", workflow)
 
 
