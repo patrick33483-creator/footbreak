@@ -9,6 +9,7 @@ if str(SYSTEM) not in sys.path:
     sys.path.insert(0, str(SYSTEM))
 
 import run_predict
+import staking
 
 
 class FailClosedPredictionTest(unittest.TestCase):
@@ -69,10 +70,11 @@ class FailClosedPredictionTest(unittest.TestCase):
         self.assertIsNone(result["fixture_id"])
         self.assertIsNotNone(result["final"])
 
-    def test_hkjc_only_model_requires_four_percent_internal_edge(self):
+    def test_hkjc_only_model_never_creates_a_simulation(self):
         result = {
             "conviction": 65.0,
             "model_source": "hkjc_full_market",
+            "sharp_reference_available": False,
             "candidates": [{
                 "market": "入球大小", "code": "HIL", "condition": "2.5",
                 "side": "H", "label": "大 2.5", "odds": 2.0,
@@ -82,7 +84,45 @@ class FailClosedPredictionTest(unittest.TestCase):
         }
         pick, reason = run_predict.pick_one(result)
         self.assertIsNone(pick)
-        self.assertIn("冇一注值博", reason)
+        self.assertIn("禁止由馬會自身盤面建立模擬注", reason)
+
+    def test_market_policy_tightens_after_thirty_bad_settlements(self):
+        bets = [{
+            "status": "SETTLED", "code": "CHL", "stake": 100,
+            "pnl": -100, "result": "Lost", "model_prob": 0.60,
+        } for _ in range(30)]
+        policy = staking.market_entry_thresholds({"bets": bets})["CHL"]
+        self.assertEqual(policy["min_edge"], 0.035)
+        self.assertEqual(policy["confidence_floor"], 62.0)
+        self.assertEqual(policy["reason"], "severe_market_underperformance")
+
+    def test_sharp_candidate_uses_its_market_dynamic_threshold(self):
+        result = {
+            "conviction": 60.0,
+            "model_source": "pinnapi",
+            "sharp_reference_available": True,
+            "candidates": [{
+                "market": "入球大小", "code": "HIL", "condition": "2.5",
+                "side": "H", "label": "大 2.5", "odds": 2.0,
+                "fair": 1.90, "prob": 0.53, "push": 0.0,
+                "ev": 0.06, "kelly_raw": 0.06, "is_main": True,
+            }],
+        }
+        staged = {
+            "fraction": 1 / 3, "cap": 0.04, "level": 1,
+            "label": "測試", "market_mult": {}, "n_settled": 30,
+            "slope": None,
+            "entry_thresholds": {
+                "HIL": {
+                    "min_edge": 0.04, "confidence_floor": 62.0,
+                    "n_settled": 30, "reason": "severe_market_underperformance",
+                },
+            },
+        }
+        with patch.object(run_predict.K, "stage", return_value=staged):
+            pick, reason = run_predict.pick_one(result)
+        self.assertIsNone(pick)
+        self.assertIn("信念 60.0/62", reason)
 
 
 if __name__ == "__main__":

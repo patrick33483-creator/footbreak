@@ -13,9 +13,17 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from .common import HKT, SETTLE_AFTER_SECONDS, iso_hkt, parse_time, read_json, write_json_atomic
+from .common import (
+    HKT,
+    SETTLE_AFTER_SECONDS,
+    is_non_result_terminal_status,
+    iso_hkt,
+    parse_time,
+    read_json,
+    write_json_atomic,
+)
 from .config import Settings
-from .hkjc import fetch_official_result_events
+from .hkjc import fetch_official_match_statuses, fetch_official_result_events
 from .ledger import PREDICTION_ERA, PREDICTION_SCHEMA_VERSION, STAGES
 from .lines import settle_handicap, settle_total
 from .matching import Event, canonical_league_key, canonical_team_key, match_event
@@ -261,6 +269,61 @@ def _oriented_titan_result(result: dict[str, Any], reversed_order: bool) -> dict
         result.get("corners_home"),
     )
     return oriented
+
+
+def _terminal_titan_status(
+    row: dict[str, Any],
+    titan_by_id: dict[str, dict[str, Any]],
+) -> str | None:
+    """Accept a no-contest state only from the stored Titan ID plus identity."""
+    target = _target(row)
+    titan_id = str(row.get("titan_match_id") or row.get("match_id") or "")
+    candidate = titan_by_id.get(titan_id)
+    kickoff = parse_time((candidate or {}).get("kickoff"))
+    if (
+        target is None
+        or not candidate
+        or not kickoff
+        or not is_non_result_terminal_status(candidate.get("status"))
+    ):
+        return None
+    event = Event(
+        titan_id,
+        str(candidate.get("league") or ""),
+        str(candidate.get("home") or ""),
+        str(candidate.get("away") or ""),
+        kickoff,
+    )
+    matched = match_event(
+        target,
+        [event],
+        team_key=canonical_team_key,
+        league_key=canonical_league_key,
+        allow_reversed=True,
+        require_qualifiers=True,
+    )
+    return str(candidate.get("status") or "") if matched.event else None
+
+
+def _exclude_no_contest(row: dict[str, Any], status: str, source: str) -> None:
+    row.update({
+        "actual": None,
+        "score": None,
+        "correct": None,
+        "result_status": "不計",
+        "verified_at": iso_hkt(),
+        "result_source": source,
+        "result_detail": {"terminal_status": status},
+        "market_grades": [
+            {
+                **prediction,
+                "grade_status": "NOT_APPLICABLE",
+                "reason": "fixture_not_played",
+            }
+            for prediction in (row.get("market_predictions") or [])
+        ],
+        "result_missing_reason": None,
+    })
 
 
 def _result(row: dict[str, Any], titan_by_id: dict[str, dict[str, Any]],
@@ -528,13 +591,42 @@ def grade_history(config: Settings) -> dict[str, Any]:
     except Exception as exc:
         official_error = type(exc).__name__
         official_rows = []
+    hkjc_ids = {
+        str(row.get("hkjc_match_id") or "")
+        for row in due if row.get("hkjc_match_id")
+    }
+    try:
+        official_statuses = fetch_official_match_statuses(hkjc_ids, dates) if due else {}
+    except Exception:
+        official_statuses = {}
     titan_by_id = {str(row.get("id")): row for row in titan_rows}
     hkjc_by_id = {str(row.get("id")): row for row in official_rows}
     hkjc_events = [(event, row) for row in official_rows if (event := _hkjc_event(row))]
     footbreak_by_hkjc_id = _footbreak_results_by_hkjc_id()
     graded_now = 0
+    excluded_now = 0
     corner_detail_reasons: Counter[str] = Counter()
     for row in due:
+        hkjc_state = official_statuses.get(str(row.get("hkjc_match_id") or "")) or {}
+        if is_non_result_terminal_status(
+            hkjc_state.get("status"),
+            refund_pools=hkjc_state.get("refund_pools"),
+            payout_refund_pools=hkjc_state.get("payout_refund_pools"),
+        ):
+            _exclude_no_contest(
+                row,
+                str(hkjc_state.get("status") or "REFUNDED"),
+                "hkjc_official_exact_id_terminal_status",
+            )
+            excluded_now += 1
+            continue
+        titan_status = _terminal_titan_status(row, titan_by_id)
+        if titan_status:
+            _exclude_no_contest(
+                row, titan_status, "titan_exact_id_terminal_status"
+            )
+            excluded_now += 1
+            continue
         score, source = _result(row, titan_by_id, hkjc_by_id, hkjc_events)
         hkjc_id = str(row.get("hkjc_match_id") or "")
         cached = footbreak_by_hkjc_id.get(hkjc_id)
@@ -597,6 +689,7 @@ def grade_history(config: Settings) -> dict[str, Any]:
         "titan_error": titan_error,
         "hkjc_error": official_error,
         "graded_now": graded_now,
+        "excluded_now": excluded_now,
         "corner_detail": dict(sorted(corner_detail_reasons.items())),
         "unresolved": sum(
             row.get("result_status") not in {"已核對", "不計"}

@@ -10,7 +10,13 @@ from typing import Any
 from .common import HKT, iso_hkt, parse_time
 from .config import Settings
 from .hkjc import event_from_match, fetch_matches, flatten_odds
-from .ledger import completed_stages, recompute_stats, stage_for, sync_prediction
+from .ledger import (
+    completed_stages,
+    market_entry_thresholds,
+    recompute_stats,
+    stage_for,
+    sync_prediction,
+)
 from .lines import parse_hkjc_total
 from .matching import MATCHING_VERSION, Event, BridgeMatch, bridge_titan_to_pinnapi
 from .pinnapi import PinnapiClient
@@ -191,38 +197,13 @@ def _apply_confidence_only_pick(
     stage: str,
     config: Settings,
 ) -> bool:
-    """Create a conservative simulation without pretending an EV is known."""
-    if stage != "T-5" or not forecasts:
-        return False
-    lead = max(forecasts, key=lambda row: float(row.get("conviction") or 0))
-    if float(lead.get("conviction") or 0) < config.confidence_floor:
+    """Fail closed when no independent same-line market reference exists."""
+    if stage == "T-5":
         base["no_bet_reason"] = (
-            f"未過 T-5 信念門檻（信念 {lead.get('conviction')}/{config.confidence_floor}；"
-            "PinnAPI 無可用同場參考，所以不計 EV）"
+            "PinnAPI 無安全同場基準，confidence-only 入倉已停用；"
+            "保留預測及學習紀錄，但不建立模擬注。"
         )
-        return False
-    stake = round(config.bankroll * 0.02, 2)
-    if stake <= 0:
-        return False
-    pick = {
-        **lead,
-        "stake": stake,
-        "ev": None,
-        "fair": None,
-        "push": None,
-        "kelly_raw": None,
-        "kelly_used": None,
-        "confidence_only": True,
-        "forecast_only": False,
-        "reference": "crown_full_market_no_vig_confidence_only",
-    }
-    base["pick"] = pick
-    base["lead_view"] = pick
-    base["conviction"] = pick["conviction"]
-    base["verdict"] = "模擬注"
-    base["status"] = "SIMULATION_READY"
-    base["no_bet_reason"] = None
-    return True
+    return False
 
 
 def _candidates(crown_prices: list[dict[str, Any]], pinnapi_prices: list[dict[str, Any]], config: Settings,
@@ -426,7 +407,8 @@ def _fixture_baseline_prediction(
 def _prediction(titan: dict[str, Any], bridge: BridgeMatch, h_match: dict[str, Any] | None,
                 stage: str, config: Settings, titan_client: TitanClient, pinnapi_client: PinnapiClient,
                 crown_snapshot: dict[str, Any] | None = None,
-                previous_crown_prices: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+                previous_crown_prices: list[dict[str, Any]] | None = None,
+                entry_policies: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
     event = _event_from_titan(titan)
     minutes = round((event.kickoff - datetime.now(HKT)).total_seconds() / 60, 1)
     base = {
@@ -582,6 +564,27 @@ def _prediction(titan: dict[str, Any], bridge: BridgeMatch, h_match: dict[str, A
     base["pinnapi_timestamp_basis"] = pinnapi.get("timestamp_basis")
     candidates = sorted(candidates + corner_candidates,
                         key=lambda row: (row["ev"], row["conviction"]), reverse=True)
+    policies = entry_policies or {
+        code: {
+            "code": code,
+            "n_settled": 0,
+            "min_samples": 30,
+            "min_edge": config.min_edge,
+            "confidence_floor": config.confidence_floor,
+            "reason": "insufficient_market_sample",
+        }
+        for code in ("HDC", "HIL", "CHL")
+    }
+    for candidate in candidates:
+        candidate["entry_policy"] = policies.get(
+            str(candidate.get("code") or ""),
+            {
+                "min_edge": config.min_edge,
+                "confidence_floor": config.confidence_floor,
+                "reason": "configured_default",
+            },
+        )
+    base["entry_policies"] = policies
     base["candidates"] = candidates
     if candidates:
         # Exact PinnAPI same-line views supersede Crown-only forecasts for
@@ -595,11 +598,17 @@ def _prediction(titan: dict[str, Any], bridge: BridgeMatch, h_match: dict[str, A
         )
         _apply_confidence_only_pick(base, forecasts, stage, config)
         return base
-    lead = candidates[0]
+    eligible = [
+        candidate for candidate in candidates
+        if float(candidate["conviction"]) >= float(candidate["entry_policy"]["confidence_floor"])
+        and float(candidate["ev"]) >= float(candidate["entry_policy"]["min_edge"])
+    ]
+    lead = eligible[0] if eligible else candidates[0]
     base["conviction"] = lead["conviction"]
+    base["lead_view"] = lead
     base["status"] = "REFERENCE_READY"
     base["verdict"] = "傾向" if stage != "T-5" else "觀望"
-    if stage == "T-5" and lead["conviction"] >= config.confidence_floor and lead["ev"] >= config.min_edge:
+    if stage == "T-5" and eligible:
         stake = min(config.bankroll * 0.04, config.bankroll * lead["kelly_used"])
         if stake > 0:
             base["pick"] = lead | {"stake": round(stake, 2)}
@@ -608,7 +617,12 @@ def _prediction(titan: dict[str, Any], bridge: BridgeMatch, h_match: dict[str, A
             base["no_bet_reason"] = None
             return base
     if stage == "T-5":
-        base["no_bet_reason"] = f"未過 T-5 門檻（信念 {lead['conviction']}/{config.confidence_floor}，EV {lead['ev']:.2%}/{config.min_edge:.2%}）"
+        policy = lead["entry_policy"]
+        base["no_bet_reason"] = (
+            f"未過 {lead['code']} 動態門檻（信念 {lead['conviction']}/"
+            f"{policy['confidence_floor']:g}，EV {lead['ev']:.2%}/"
+            f"{policy['min_edge']:.2%}；樣本 {policy.get('n_settled', 0)}）"
+        )
     else:
         base["no_bet_reason"] = f"{stage} 僅記錄資訊，不建立模擬注。"
     return base
@@ -680,6 +694,10 @@ def run(mode: str, config: Settings) -> dict[str, Any]:
         with state_lock(config):
             return settle_due(config)
     ledger = load_ledger(config)
+    entry_policies = {
+        code: market_entry_thresholds(ledger, code, config)
+        for code in ("HDC", "HIL", "CHL")
+    }
     existing_predictions = load_predictions(config)
     if mode == "tick":
         titan_rows = _tick_rows_from_predictions(
@@ -835,6 +853,7 @@ def run(mode: str, config: Settings) -> dict[str, Any]:
                     pinnapi_client,
                     crown_snapshot,
                     previous_crown_prices,
+                    entry_policies,
                 ): str(titan["id"])
                 for (
                     titan, bridge, h_row, stage, crown_snapshot,

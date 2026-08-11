@@ -52,6 +52,42 @@ class ResultSourceTests(unittest.TestCase):
             rows = settle.fetch_hkjc_statuses({"50072899"}, {"2026-08-09"})
         self.assertEqual(rows["50072899"]["status"], "MATCHSUSPENDED")
 
+    def test_settlement_voids_explicit_hkjc_postponement(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            ledger_path = Path(directory, "sim_ledger.json")
+            ledger_path.write_text(json.dumps({
+                "bankroll": 50000,
+                "bets": [{
+                    "bet_id": "b1", "match_id": "50072899",
+                    "home": "主隊", "away": "客隊",
+                    "kickoff": "2026-08-09 10:00",
+                    "market": "讓球", "code": "HDC",
+                    "condition": "-0.5", "side": "H",
+                    "label": "主 -0.5", "odds": 2.0,
+                    "stake": 100, "status": "PENDING",
+                }],
+                "watch": {}, "log": [], "stats": {},
+            }), encoding="utf-8")
+            status = {
+                "50072899": {
+                    "status": "MATCHPOSTPONED",
+                    "refund_pools": [], "payout_refund_pools": [],
+                    "source": "hkjc_official",
+                },
+            }
+            with patch.object(settle, "LEDGER", str(ledger_path)), \
+                 patch.object(settle, "fetch_hkjc_results", return_value={}), \
+                 patch.object(settle, "fetch_hkjc_statuses", return_value=status):
+                stats = settle.run(force=True)
+            saved = json.loads(ledger_path.read_text(encoding="utf-8"))
+        self.assertEqual(saved["bets"][0]["status"], "VOIDED")
+        self.assertEqual(saved["bets"][0]["pnl"], 0.0)
+        self.assertEqual(
+            saved["bets"][0]["settlement_source"],
+            "hkjc_official_exact_id_terminal_status",
+        )
+        self.assertEqual(stats["n_settled"], 0)
+
     def test_corner_required_refreshes_an_incomplete_exact_fixture_cache(self) -> None:
         incomplete = {
             "fixture_id": "fx1", "goals_home": 1, "goals_away": 0,

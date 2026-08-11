@@ -242,3 +242,72 @@ def recompute_stats(ledger: dict[str, Any], config: Settings) -> dict[str, Any]:
     }
     ledger["stats"] = stats
     return stats
+
+
+def market_entry_thresholds(
+    ledger: dict[str, Any],
+    code: str,
+    config: Settings,
+    *,
+    min_samples: int = 30,
+) -> dict[str, Any]:
+    """Return a conservative, performance-driven threshold for one market.
+
+    Small samples never change policy.  Once the market has enough settled
+    observations, poor ROI or probability calibration can only tighten entry;
+    this function never loosens the configured production floor.
+    """
+    settled = [
+        bet for bet in (ledger.get("bets") or [])
+        if bet.get("status") == "SETTLED" and str(bet.get("code") or "") == code
+    ]
+    decided = [bet for bet in settled if bet.get("result") != "Refunded"]
+    stake = sum(float(bet.get("stake") or 0) for bet in settled)
+    profit = sum(float(bet.get("pnl") or 0) for bet in settled)
+    roi = profit / stake if stake else None
+    hit_gap = None
+    comparable = [
+        bet for bet in decided
+        if bet.get("model_prob", bet.get("prob")) is not None
+    ]
+    if comparable:
+        hit = sum(
+            1.0 if bet.get("result") == "Won"
+            else 0.5 if bet.get("result") in {"Half Won", "Half Lost"}
+            else 0.0
+            for bet in comparable
+        )
+        predicted = sum(
+            float(bet.get("model_prob", bet.get("prob")))
+            for bet in comparable
+        )
+        hit_gap = hit / len(comparable) - predicted / len(comparable)
+
+    edge_add = 0.0
+    confidence_add = 0.0
+    reason = "insufficient_market_sample"
+    if len(settled) >= min_samples:
+        reason = "market_performance_stable"
+        if (roi is not None and roi <= -0.10) or (
+            hit_gap is not None and hit_gap <= -0.12
+        ):
+            edge_add, confidence_add = 0.02, 4.0
+            reason = "severe_market_underperformance"
+        elif (roi is not None and roi < 0) or (
+            hit_gap is not None and hit_gap < -0.08
+        ):
+            edge_add, confidence_add = 0.01, 2.0
+            reason = "market_underperformance"
+
+    return {
+        "code": code,
+        "n_settled": len(settled),
+        "min_samples": min_samples,
+        "roi": round(roi, 6) if roi is not None else None,
+        "hit_gap": round(hit_gap, 6) if hit_gap is not None else None,
+        "base_edge": config.min_edge,
+        "base_confidence": config.confidence_floor,
+        "min_edge": round(config.min_edge + edge_add, 6),
+        "confidence_floor": round(config.confidence_floor + confidence_add, 1),
+        "reason": reason,
+    }

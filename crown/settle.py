@@ -4,9 +4,17 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from .common import HKT, SETTLE_AFTER_SECONDS, iso_hkt, parse_time, read_json, write_json_atomic
+from .common import (
+    HKT,
+    SETTLE_AFTER_SECONDS,
+    is_non_result_terminal_status,
+    iso_hkt,
+    parse_time,
+    read_json,
+    write_json_atomic,
+)
 from .config import Settings
-from .hkjc import fetch_official_results
+from .hkjc import fetch_official_match_statuses, fetch_official_results
 from .ledger import recompute_stats
 from .lines import pnl, settle_handicap, settle_total
 from .matching import Event, canonical_league_key, canonical_team_key, match_event
@@ -59,6 +67,58 @@ def _settle(bet: dict[str, Any], score: dict[str, Any], source: str) -> bool:
     bet.setdefault("history", []).append({"ts": iso_hkt(), "stage": "結算", "action": "模擬結算",
                                            "result": result, "source": source})
     return True
+
+
+def _void(bet: dict[str, Any], status: str, source: str) -> None:
+    bet.update({
+        "status": "VOIDED",
+        "result": "Refunded",
+        "pnl": 0.0,
+        "void_reason": f"fixture_not_played:{status}",
+        "settled_at": iso_hkt(),
+        "settlement_source": source,
+    })
+    bet.setdefault("history", []).append({
+        "ts": iso_hkt(),
+        "stage": "結算",
+        "action": "賽事不計",
+        "result": "Refunded",
+        "source": source,
+        "terminal_status": status,
+    })
+
+
+def _verified_titan_terminal_status(
+    bet: dict[str, Any],
+    titan_by_id: dict[str, dict[str, Any]],
+) -> str | None:
+    target = _target(bet)
+    titan_id = str(bet.get("titan_match_id") or bet.get("match_id") or "")
+    titan = titan_by_id.get(titan_id)
+    kickoff = parse_time((titan or {}).get("kickoff"))
+    if (
+        target is None
+        or not titan
+        or not kickoff
+        or not is_non_result_terminal_status(titan.get("status"))
+    ):
+        return None
+    candidate = Event(
+        titan_id,
+        str(titan.get("league") or ""),
+        str(titan.get("home") or ""),
+        str(titan.get("away") or ""),
+        kickoff,
+    )
+    matched = match_event(
+        target,
+        [candidate],
+        team_key=canonical_team_key,
+        league_key=canonical_league_key,
+        allow_reversed=True,
+        require_qualifiers=True,
+    )
+    return str(titan.get("status") or "") if matched.event else None
 
 
 def _verified_titan_corner_score(
@@ -133,6 +193,7 @@ def settle_due(config: Settings) -> dict[str, Any]:
         and not (cache.get(str(bet.get("pinnapi_event_id"))) or {}).get("seen_live")
     ]
     hkjc_results: dict[str, dict[str, Any]] = {}
+    hkjc_statuses: dict[str, dict[str, Any]] = {}
     official_due = fallback + corner_due
     if official_due:
         dates = {parse_time(bet.get("kickoff")).strftime("%Y-%m-%d") for bet in official_due if parse_time(bet.get("kickoff"))}
@@ -141,20 +202,54 @@ def settle_due(config: Settings) -> dict[str, Any]:
             hkjc_results = fetch_official_results(ids, dates)
         except Exception:
             hkjc_results = {}
-    needs_titan_corners = any(
-        (hkjc_results.get(str(bet.get("hkjc_match_id") or "")) or {}).get("corners_total") is None
-        for bet in corner_due
-    )
+        try:
+            hkjc_statuses = fetch_official_match_statuses(ids, dates)
+        except Exception:
+            hkjc_statuses = {}
+    def needs_titan_result(bet: dict[str, Any]) -> bool:
+        hkjc_id = str(bet.get("hkjc_match_id") or "")
+        hkjc_state = hkjc_statuses.get(hkjc_id) or {}
+        if is_non_result_terminal_status(
+            hkjc_state.get("status"),
+            refund_pools=hkjc_state.get("refund_pools"),
+            payout_refund_pools=hkjc_state.get("payout_refund_pools"),
+        ):
+            return False
+        official = hkjc_results.get(hkjc_id)
+        if bet.get("code") == "CHL":
+            return not (official and official.get("corners_total") is not None)
+        live = cache.get(str(bet.get("pinnapi_event_id") or ""), {})
+        return not live.get("seen_live") and official is None
+
     titan_client = TitanClient(config)
     titan_results: list[dict[str, Any]] = []
-    if fallback or needs_titan_corners:
+    if any(needs_titan_result(bet) for bet in due):
         try:
             titan_results = titan_client.results()
         except Exception:
             titan_results = []
     titan_by_id = {str(row.get("id") or ""): row for row in titan_results}
     settled = 0
+    voided = 0
     for bet in due:
+        hkjc_state = hkjc_statuses.get(str(bet.get("hkjc_match_id") or "")) or {}
+        if is_non_result_terminal_status(
+            hkjc_state.get("status"),
+            refund_pools=hkjc_state.get("refund_pools"),
+            payout_refund_pools=hkjc_state.get("payout_refund_pools"),
+        ):
+            _void(
+                bet,
+                str(hkjc_state.get("status") or "REFUNDED"),
+                "hkjc_official_exact_id_terminal_status",
+            )
+            voided += 1
+            continue
+        titan_status = _verified_titan_terminal_status(bet, titan_by_id)
+        if titan_status:
+            _void(bet, titan_status, "titan_exact_id_terminal_status")
+            voided += 1
+            continue
         if bet.get("code") == "CHL":
             official = hkjc_results.get(str(bet.get("hkjc_match_id") or ""))
             if official and official.get("corners_total") is not None and _settle(
@@ -194,4 +289,9 @@ def settle_due(config: Settings) -> dict[str, Any]:
                 continue
     recompute_stats(ledger, config)
     save_ledger(config, ledger)
-    return {"ok": True, "settled": settled, "pending": sum(b.get("status") == "PENDING" for b in ledger["bets"])}
+    return {
+        "ok": True,
+        "settled": settled,
+        "voided": voided,
+        "pending": sum(b.get("status") == "PENDING" for b in ledger["bets"]),
+    }

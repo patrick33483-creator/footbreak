@@ -17,6 +17,8 @@ import tempfile
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
+from crown.common import is_non_result_terminal_status
+
 HKT = timezone(timedelta(hours=8))
 HERE = os.path.dirname(os.path.abspath(__file__))
 LEDGER = os.path.join(HERE, "sim_ledger.json")
@@ -338,6 +340,7 @@ def run(force=False):
             due.append((bet, kickoff))
     changes, unresolved, provider_errors = [], [], []
     official = {}
+    official_statuses = {}
     titan_client, titan_rows = None, []
     if due:
         try:
@@ -349,6 +352,13 @@ def run(force=False):
             # Per-bet OpticOdds fallback below remains available.  A source
             # error only becomes fatal if no fallback can settle that bet.
             official = {}
+        try:
+            official_statuses = fetch_hkjc_statuses(
+                {str(bet.get("match_id") or "") for bet, _ in due if bet.get("match_id")},
+                {kickoff.strftime("%Y-%m-%d") for _, kickoff in due},
+            )
+        except Exception:
+            official_statuses = {}
     for b in led["bets"]:
         if b.get("status") != "PENDING":
             continue
@@ -358,6 +368,30 @@ def run(force=False):
             continue
         mins = (now - ko).total_seconds() / 60
         if not force and mins < SETTLE_AFTER_MIN:
+            continue
+        state = official_statuses.get(str(b.get("match_id") or "")) or {}
+        if is_non_result_terminal_status(
+            state.get("status"),
+            refund_pools=state.get("refund_pools"),
+            payout_refund_pools=state.get("payout_refund_pools"),
+        ):
+            terminal = str(state.get("status") or "REFUNDED")
+            b["status"] = "VOIDED"
+            b["result"] = "Refunded"
+            b["pnl"] = 0.0
+            b["void_reason"] = f"fixture_not_played:{terminal}"
+            b["settled_at"] = now.isoformat(timespec="seconds")
+            b["settlement_source"] = "hkjc_official_exact_id_terminal_status"
+            b.setdefault("history", []).append({
+                "ts": now.isoformat(timespec="seconds"),
+                "stage": "結算",
+                "action": "賽事不計",
+                "result": "Refunded",
+                "terminal_status": terminal,
+            })
+            changes.append(
+                f"⚪ {b['home']} v {b['away']} — 賽事不計 ({terminal})"
+            )
             continue
         res = official.get(str(b.get("match_id") or ""))
         corner_provider_error = None

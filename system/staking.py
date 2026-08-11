@@ -111,6 +111,51 @@ def performance(bets):
             "pred_roi": pred_roi, "hit_gap": hit_gap}
 
 
+def market_entry_thresholds(led=None, base_ev=0.015, base_conf=58.0,
+                            min_samples=30):
+    """Tighten each market from its own settled performance, never loosen it."""
+    if led is None:
+        try:
+            with open(LEDGER, encoding="utf-8") as f:
+                led = json.load(f)
+        except (OSError, ValueError):
+            led = {"bets": []}
+    settled = _settled(led)
+    out = {}
+    for code in ("HDC", "HIL", "CHL"):
+        bets = [b for b in settled if str(b.get("code") or "") == code]
+        perf = performance(bets)
+        edge_add = 0.0
+        confidence_add = 0.0
+        reason = "insufficient_market_sample"
+        if perf["n"] >= min_samples:
+            reason = "market_performance_stable"
+            if ((perf["roi"] is not None and perf["roi"] <= -0.10)
+                    or (perf["hit_gap"] is not None and perf["hit_gap"] <= -0.12)):
+                edge_add, confidence_add = 0.02, 4.0
+                reason = "severe_market_underperformance"
+            elif ((perf["roi"] is not None and perf["roi"] < 0)
+                  or (perf["hit_gap"] is not None and perf["hit_gap"] < -0.08)):
+                edge_add, confidence_add = 0.01, 2.0
+                reason = "market_underperformance"
+        out[code] = {
+            "code": code,
+            "n_settled": perf["n"],
+            "min_samples": min_samples,
+            "roi": round(perf["roi"], 6) if perf["roi"] is not None else None,
+            "hit_gap": (
+                round(perf["hit_gap"], 6)
+                if perf["hit_gap"] is not None else None
+            ),
+            "base_edge": base_ev,
+            "base_confidence": base_conf,
+            "min_edge": round(base_ev + edge_add, 6),
+            "confidence_floor": round(base_conf + confidence_add, 1),
+            "reason": reason,
+        }
+    return out
+
+
 def stage(led=None):
     """回傳目前應採用的注碼階段。"""
     if led is None:
@@ -142,6 +187,7 @@ def stage(led=None):
     st.update({"level": lvl, "n_settled": n, "slope": slope,
                "buckets": buckets, "perf": perf, "demoted": demoted,
                "market_mult": MARKET_MULT,
+               "entry_thresholds": market_entry_thresholds(led),
                "promotion_locked": not ALLOW_UNVALIDATED_UPGRADE,
                "promotion_reason": (
                    "awaiting_locked_out_of_sample_model_and_policy_validation"

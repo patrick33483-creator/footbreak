@@ -11,6 +11,10 @@ from typing import Any
 HKT = timezone(timedelta(hours=8))
 UTC = timezone.utc
 SETTLE_AFTER_SECONDS = 105 * 60
+NON_RESULT_STATUS_MARKERS = (
+    "POSTPON", "CANCEL", "SUSPEND", "ABANDON", "VOID", "REFUND",
+    "推迟", "推遲", "延期", "取消", "腰斩", "腰斬", "中止",
+)
 
 
 def now_hkt() -> datetime:
@@ -29,6 +33,21 @@ def parse_time(value: str | None) -> datetime | None:
         return parsed.replace(tzinfo=HKT) if parsed.tzinfo is None else parsed.astimezone(HKT)
     except (TypeError, ValueError):
         return None
+
+
+def is_non_result_terminal_status(
+    status: Any,
+    *,
+    refund_pools: Any = None,
+    payout_refund_pools: Any = None,
+) -> bool:
+    """Only explicit provider terminal states can exclude a fixture."""
+    text = str(status or "").strip().upper()
+    return bool(
+        refund_pools
+        or payout_refund_pools
+        or any(marker.upper() in text for marker in NON_RESULT_STATUS_MARKERS)
+    )
 
 
 def read_json(path: Path, default: Any) -> Any:

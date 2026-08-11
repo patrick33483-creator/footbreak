@@ -14,7 +14,13 @@ from crown.config import settings
 from crown.dashboard_data import build, write_dashboard_data
 from crown.engine import _candidates, _crown_market_forecasts, _fixture_baseline_prediction, _fresh, _hkjc_chl_candidates, _prediction, _refresh_crown_quote, _tick_rows_from_predictions, _wdl_prediction
 from crown.hkjc import fetch_official_results
-from crown.ledger import completed_stages, recompute_stats, stage_for, sync_prediction
+from crown.ledger import (
+    completed_stages,
+    market_entry_thresholds,
+    recompute_stats,
+    stage_for,
+    sync_prediction,
+)
 from crown.lines import parse_hkjc_handicap, parse_hkjc_total, settle_handicap, settle_total
 from crown.matching import (
     BridgeMatch, Event, Match, bridge_titan_to_pinnapi, canonical_league_key, canonical_team_key, match_event,
@@ -423,7 +429,7 @@ class CrownSafetyTests(unittest.TestCase):
         self.assertEqual(prediction["candidates"], [])
         self.assertIsNone(prediction["pick"])
         self.assertFalse(prediction["sharp_reference_available"])
-        self.assertIn("未過 T-5 信念門檻", prediction["no_bet_reason"])
+        self.assertIn("confidence-only 入倉已停用", prediction["no_bet_reason"])
         self.assertEqual(prediction["edge_reference_status"], "unavailable")
         self.assertIn("不計算 EV", prediction["edge_reference_note"])
         pinnapi_client.lines.assert_not_called()
@@ -499,12 +505,12 @@ class CrownSafetyTests(unittest.TestCase):
         self.assertEqual({row["code"] for row in prediction["forecast_candidates"]}, {"HDC", "HIL"})
         self.assertEqual(prediction["edge_reference_status"], "unavailable")
         self.assertIn("不計算 EV", prediction["edge_reference_note"])
-        self.assertIn("未過 T-5 信念門檻", prediction["no_bet_reason"])
+        self.assertIn("confidence-only 入倉已停用", prediction["no_bet_reason"])
         self.assertEqual(prediction["candidates"], [])
         self.assertIsNone(prediction["pick"])
         pinnapi_client.lines.assert_not_called()
 
-    def test_missing_pinnapi_mapping_allows_fresh_high_confidence_t5_simulation(self) -> None:
+    def test_missing_pinnapi_mapping_never_allows_confidence_only_simulation(self) -> None:
         config = replace(settings(), source_max_age_seconds=90, bankroll=50000)
         kickoff = self.now + timedelta(minutes=5)
         titan = {"id": "titan", "league": "L", "home": "Alpha", "away": "Beta", "kickoff": kickoff}
@@ -527,19 +533,34 @@ class CrownSafetyTests(unittest.TestCase):
                 titan, bridge, None, "T-5", config, Mock(), pinnapi_client,
                 crown_snapshot={"prices": crown},
             )
-        self.assertEqual(prediction["status"], "SIMULATION_READY")
-        self.assertEqual(prediction["verdict"], "模擬注")
-        self.assertTrue(prediction["pick"]["confidence_only"])
-        self.assertIsNone(prediction["pick"]["ev"])
-        self.assertEqual(prediction["pick"]["stake"], 1000)
-        self.assertEqual(prediction["pick"]["label"], "皇冠讓球 主 0/-0.5")
+        self.assertEqual(prediction["status"], "PREDICTION_READY")
+        self.assertEqual(prediction["verdict"], "已預測")
+        self.assertIsNone(prediction["pick"])
+        self.assertIn("confidence-only 入倉已停用", prediction["no_bet_reason"])
         pinnapi_client.lines.assert_not_called()
 
         ledger = {"bankroll": 50000, "bets": [], "watch": {}, "log": [], "stats": {}}
         created = sync_prediction(ledger, prediction, config)
-        self.assertEqual(len(created), 1)
-        self.assertIsNone(ledger["bets"][0]["ev"])
-        self.assertTrue(ledger["bets"][0]["simulation_only"])
+        self.assertEqual(created, [])
+        self.assertEqual(ledger["bets"], [])
+
+    def test_market_entry_thresholds_wait_for_thirty_samples_then_tighten(self) -> None:
+        config = replace(settings(), min_edge=0.02, confidence_floor=58)
+        losing = [{
+            "status": "SETTLED", "code": "HIL", "stake": 100,
+            "pnl": -100, "result": "Lost", "model_prob": 0.60,
+        } for _ in range(30)]
+        ledger = {"bets": losing[:29]}
+        small = market_entry_thresholds(ledger, "HIL", config)
+        self.assertEqual(small["min_edge"], 0.02)
+        self.assertEqual(small["confidence_floor"], 58)
+        self.assertEqual(small["reason"], "insufficient_market_sample")
+
+        ledger["bets"] = losing
+        tightened = market_entry_thresholds(ledger, "HIL", config)
+        self.assertEqual(tightened["min_edge"], 0.04)
+        self.assertEqual(tightened["confidence_floor"], 62)
+        self.assertEqual(tightened["reason"], "severe_market_underperformance")
 
     def test_every_crown_fixture_gets_scoreable_prediction_without_any_quote(self) -> None:
         config = replace(settings(), source_max_age_seconds=90)
@@ -1006,6 +1027,52 @@ class CrownSafetyTests(unittest.TestCase):
             self.assertIsNotNone(history["stats"]["brier"])
             self.assertEqual(row["market_grades"][0]["settlement"], "Won")
             self.assertEqual(history["stats"]["by_market"]["HDC"]["hits"], 1)
+
+    def test_prediction_history_excludes_explicit_titan_postponement(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = replace(settings(), state_dir=Path(directory))
+            kickoff = datetime.now(self.now.tzinfo) - timedelta(hours=3)
+            ledger = {"watch": {"x": {
+                "match_id": "x", "league": "League",
+                "home": "Alpha FC", "away": "Beta FC",
+                "kickoff": kickoff.isoformat(), "titan_match_id": "x",
+                "stages": [{
+                    "match_id": "x", "stage": "T-5",
+                    "ts": (kickoff - timedelta(minutes=5)).isoformat(),
+                    "forecast": "主勝", "probability": .60,
+                    "market_predictions": [{
+                        "code": "HDC", "condition": -0.5, "line": -0.5,
+                        "side": "H", "label": "主 -0.5", "probability": .62,
+                    }],
+                }],
+            }}}
+            archive_watch(config, ledger)
+            status = {
+                "id": "x", "league": "League",
+                "home": "Alpha FC", "away": "Beta FC",
+                "kickoff": kickoff, "status": "推迟",
+                "home_score": None, "away_score": None,
+            }
+            with patch(
+                "crown.prediction_history.TitanClient.results",
+                return_value=[status],
+            ), patch(
+                "crown.prediction_history.fetch_official_result_events",
+                return_value=[],
+            ), patch(
+                "crown.prediction_history.fetch_official_match_statuses",
+                return_value={},
+            ):
+                history = grade_history(config)
+            row = history["rows"][0]
+            self.assertEqual(row["result_status"], "不計")
+            self.assertEqual(
+                row["result_source"], "titan_exact_id_terminal_status"
+            )
+            self.assertEqual(
+                row["market_grades"][0]["reason"], "fixture_not_played"
+            )
+            self.assertEqual(history["result_sync"]["excluded_now"], 1)
 
     def test_prediction_history_recovers_changed_titan_id_by_unique_identity(self) -> None:
         from crown.prediction_history import _result

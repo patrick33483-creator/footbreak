@@ -374,24 +374,48 @@ def analyse_match(m, fx, wx_city_override=None, news=None, prev_snap=None,
 def pick_one(res: dict, min_ev=0.015, conf_floor=P.CONF_FLOOR):
     """每場揀一個結論。回傳 (pick|None, reason)。"""
     conv = res["conviction"]
-    if conv < conf_floor:
-        return None, f"信念強度 {conv} 低於門檻 {conf_floor:g} — 資訊唔夠,觀望"
-    # A model fitted from HKJC's own full price surface can identify internal
-    # cross-market inconsistencies, but does not have an independent sharp
-    # reference.  Keep betting available while demanding a larger discrepancy.
-    if res.get("model_source") == "hkjc_full_market":
-        min_ev = max(min_ev, 0.04)
-    ok = [c for c in res["candidates"] if c["ev"] >= min_ev]
+    if not res.get("sharp_reference_available"):
+        return None, (
+            "無獨立 PinnAPI 同場基準；保留預測及學習紀錄，"
+            "但禁止由馬會自身盤面建立模擬注"
+        )
+    st = K.stage()
+    policies = st.get("entry_thresholds") or K.market_entry_thresholds(
+        base_ev=min_ev, base_conf=conf_floor
+    )
+    for candidate in res["candidates"]:
+        candidate["entry_policy"] = policies.get(
+            str(candidate.get("code") or ""),
+            {
+                "min_edge": min_ev,
+                "confidence_floor": conf_floor,
+                "n_settled": 0,
+                "reason": "configured_default",
+            },
+        )
+    res["entry_thresholds"] = policies
+    ok = [
+        c for c in res["candidates"]
+        if c["ev"] >= float(c["entry_policy"]["min_edge"])
+        and conv >= float(c["entry_policy"]["confidence_floor"])
+    ]
     if not ok:
         best = max(res["candidates"], key=lambda c: c["ev"]) if res["candidates"] else None
-        b = f"(最佳僅 {best['label']} EV {best['ev']:+.2%})" if best else ""
-        return None, f"我嘅預判同馬會盤價基本一致,冇一注值博 {b} — 觀望"
+        if best:
+            policy = best["entry_policy"]
+            detail = (
+                f"{best['label']}：信念 {conv:.1f}/{policy['confidence_floor']:g}，"
+                f"EV {best['ev']:+.2%}/{policy['min_edge']:.2%}，"
+                f"市場樣本 {policy.get('n_settled', 0)}"
+            )
+        else:
+            detail = "沒有可評估市場"
+        return None, f"未過分市場動態門檻（{detail}）— 觀望"
     # 排序:信念 × 價值。主線優先(流通量高、更可信)
     for c in ok:
         c["score"] = c["ev"] * (1.0 + (0.15 if c["is_main"] else 0))
     best = max(ok, key=lambda c: c["score"])
     # ── 分數凱利:階段控制 + 市場折讓 + 信念縮放,最後才套單場上限 ──
-    st = K.stage()
     mkt_mult = float(st["market_mult"].get(best["code"], 1.0))
     frac = best["kelly_raw"] * st["fraction"] * mkt_mult
     frac *= min(1.0, conv / 75.0)          # 信念未夠 75 分按比例縮注
