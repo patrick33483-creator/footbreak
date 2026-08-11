@@ -44,6 +44,7 @@ jobs:
           key_paths = Counter()
           corner_events = []
           corner_market_samples = []
+          special_event_samples = []
           failures = []
 
           def is_corner_event(event):
@@ -98,6 +99,28 @@ jobs:
               if not isinstance(events, list):
                   return
               for event in events:
+                  if isinstance(event, dict) and (
+                      event.get("special")
+                      or event.get("special_category") is not None
+                      or event.get("special_units") is not None
+                  ):
+                      special_event_samples.append({
+                          "parent_event_id": parent_event_id,
+                          "event_id": event.get("event_id") or event.get("id"),
+                          "parent_id": event.get("parent_id"),
+                          "league_name": event.get("league_name"),
+                          "home": event.get("home"),
+                          "away": event.get("away"),
+                          "event_type": event.get("event_type"),
+                          "special": event.get("special"),
+                          "special_category": event.get("special_category"),
+                          "special_units": event.get("special_units"),
+                          "is_have_odds": event.get("is_have_odds"),
+                          "is_have_periods": event.get("is_have_periods"),
+                          "special_market_periods": sorted(
+                              (event.get("special_markets") or {}).keys()
+                          ) if isinstance(event.get("special_markets"), dict) else [],
+                      })
                   if not is_corner_event(event):
                       continue
                   special_markets = event.get("special_markets") or {}
@@ -226,6 +249,7 @@ jobs:
               "events_checked": len(checked),
               "failures": failures,
               "corner_mentions": corner_events,
+              "special_event_samples": special_event_samples,
               "corner_market_samples": corner_market_samples,
               "market_paths": interesting,
               "event_schemas": checked,
