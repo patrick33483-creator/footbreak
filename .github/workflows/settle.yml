@@ -27,6 +27,7 @@ jobs:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
         run: |
+          set +e
           ssh "$DEPLOY_USER@$DEPLOY_HOST" '
             set -e
             restart_timers() {
@@ -83,4 +84,12 @@ jobs:
             echo "=== Prediction-history production assertions ==="
             sudo /opt/footbreak/.venv/bin/python3 \
               /opt/footbreak/deploy/verify-result-integrity.py
-          '
+          ' > /tmp/settlement.log 2>&1
+          settlement_rc=$?
+          set -e
+          cat /tmp/settlement.log
+          if [ "$settlement_rc" -ne 0 ]; then
+            settlement_error=$(tail -n 30 /tmp/settlement.log | tr "\n" " " | sed "s/%/%25/g")
+            echo "::error file=.github/workflows/settle.yml,line=25::$settlement_error"
+            exit "$settlement_rc"
+          fi
