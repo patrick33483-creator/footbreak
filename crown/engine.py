@@ -281,6 +281,72 @@ def _hkjc_chl(match: dict[str, Any] | None) -> list[dict[str, Any]]:
     } for row in flatten_odds(match).get("CHL", [])]
 
 
+def _hkjc_chl_forecasts(
+    hkjc_lines: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Build a forecast-only CHL view from a complete current HKJC market.
+
+    This is the corner equivalent of the Crown HDC/HIL no-vig forecast.  It is
+    valid for prediction history and learning only: without an independent
+    exact-line PinnAPI reference it must never carry EV/Kelly or create a bet.
+    """
+    complete: list[
+        tuple[float, dict[str, Any], dict[str, float]]
+    ] = []
+    reasons: list[str] = []
+    for row in hkjc_lines:
+        line = parse_hkjc_total(row.get("condition"))
+        if line is None:
+            reasons.append(f"invalid_hkjc_chl_line_{row.get('condition')}")
+            continue
+        odds = row.get("odds") or {}
+        try:
+            prices = {side: float(odds.get(side)) for side in ("H", "L")}
+        except (TypeError, ValueError):
+            reasons.append(f"hkjc_incomplete_CHL_{line:g}")
+            continue
+        if any(price <= 1 for price in prices.values()):
+            reasons.append(f"hkjc_invalid_odds_CHL_{line:g}")
+            continue
+        implied = {side: 1 / prices[side] for side in ("H", "L")}
+        denominator = sum(implied.values())
+        probabilities = {
+            side: implied[side] / denominator for side in ("H", "L")
+        }
+        complete.append((line, row, probabilities))
+    if not complete:
+        return [], sorted(set(reasons + ["no_complete_current_hkjc_CHL"]))
+
+    line, row, probabilities = min(
+        complete,
+        key=lambda item: (
+            not bool(item[1].get("main")),
+            abs(item[2]["H"] - 0.5),
+            abs(item[0]),
+            item[0],
+        ),
+    )
+    side = max(("H", "L"), key=lambda item: probabilities[item])
+    probability = probabilities[side]
+    odds = float((row.get("odds") or {})[side])
+    return [{
+        "market": "HKJC角球大細",
+        "code": "CHL",
+        "condition": f"{line:g}",
+        "line": line,
+        "side": side,
+        "label": f"HKJC角球大細 {'大' if side == 'H' else '細'} {row.get('condition')}",
+        "odds": round(odds, 3),
+        "prob": round(probability, 5),
+        "conviction": round(probability * 100, 1),
+        "provider": "HKJC",
+        "source": "hkjc_chl",
+        "bookmaker": "HKJC",
+        "reference": "hkjc_full_market_no_vig",
+        "forecast_only": True,
+    }], sorted(set(reasons))
+
+
 def _hkjc_chl_candidates(
     hkjc_lines: list[dict[str, Any]],
     pinnapi_corner_prices: list[dict[str, Any]],
@@ -466,6 +532,12 @@ def _prediction(titan: dict[str, Any], bridge: BridgeMatch, h_match: dict[str, A
         "prediction_source": None, "sharp_reference_available": False,
         "edge_reference_status": "not_checked", "edge_reference_note": None,
     }
+    corner_forecasts, corner_forecast_reasons = _hkjc_chl_forecasts(
+        base["book_odds"]["hkjc_chl"]
+    )
+    base["forecast_candidates"] = corner_forecasts
+    if corner_forecast_reasons:
+        base["corner_forecast_notes"] = corner_forecast_reasons
     # Crown is the board master.  Fetch and preserve its quote before any
     # HKJC/PinnAPI bridge decision so Crown-only fixtures can still be shown,
     # while edge calculation remains fail-closed without PinnAPI.
@@ -483,7 +555,10 @@ def _prediction(titan: dict[str, Any], bridge: BridgeMatch, h_match: dict[str, A
         base.update(_fixture_baseline_prediction())
         base["status"] = "PREDICTION_READY"
         base["verdict"] = "已預測"
-        base["conviction"] = round(float(base["probability"]) * 100, 1)
+        base["conviction"] = max(
+            [round(float(base["probability"]) * 100, 1)]
+            + [float(row["conviction"]) for row in corner_forecasts]
+        )
         base["edge_reference_status"] = "unavailable"
         base["edge_reference_note"] = "皇冠即時盤及 PinnAPI EV 參考暫不可用；只保留低信念純預測。"
         base["no_bet_reason"] = None
@@ -492,7 +567,8 @@ def _prediction(titan: dict[str, Any], bridge: BridgeMatch, h_match: dict[str, A
     forecasts, forecast_reasons = _crown_market_forecasts(
         crown, config, now, require_fresh=not used_cached_crown
     )
-    base["forecast_candidates"] = forecasts
+    all_forecasts = forecasts + corner_forecasts
+    base["forecast_candidates"] = all_forecasts
     base["crown_quote_cached_forecast_only"] = used_cached_crown
     if used_cached_crown:
         source_times = [
@@ -501,11 +577,21 @@ def _prediction(titan: dict[str, Any], bridge: BridgeMatch, h_match: dict[str, A
             if float(row.get("source_at") or 0) > 0
         ]
         base["crown_cached_source_at"] = min(source_times) if source_times else None
-    if forecasts:
+    if all_forecasts:
         base["status"] = "PREDICTION_READY"
         base["verdict"] = "已預測"
-        base["conviction"] = max(float(row["conviction"]) for row in forecasts)
-        base["prediction_source"] = "crown_full_market_no_vig"
+        base["conviction"] = max(
+            float(row["conviction"]) for row in all_forecasts
+        )
+        base["prediction_source"] = (
+            "crown_and_hkjc_full_market_no_vig"
+            if forecasts and corner_forecasts
+            else (
+                "crown_full_market_no_vig"
+                if forecasts
+                else "hkjc_full_market_no_vig"
+            )
+        )
     base.update(_fixture_baseline_prediction(forecasts))
     base["status"] = "PREDICTION_READY"
     base["verdict"] = "已預測"
@@ -614,9 +700,14 @@ def _prediction(titan: dict[str, Any], bridge: BridgeMatch, h_match: dict[str, A
     base["entry_policies"] = policies
     base["candidates"] = candidates
     if candidates:
-        # Exact PinnAPI same-line views supersede Crown-only forecasts for
-        # learning quality.  They still do not create a bet before T-5.
-        base["forecast_candidates"] = candidates
+        # Exact PinnAPI same-line views supersede same-market no-vig forecasts
+        # for learning quality.  Keep forecast-only markets that have no exact
+        # reference instead of dropping them from prediction history.
+        exact_codes = {str(row.get("code") or "") for row in candidates}
+        base["forecast_candidates"] = candidates + [
+            row for row in all_forecasts
+            if str(row.get("code") or "") not in exact_codes
+        ]
     base["lead_view"] = candidates[0] if candidates else None
     if not candidates:
         prefix = "已保留皇冠全盤預測；" if forecasts else ""

@@ -12,7 +12,7 @@ from unittest.mock import Mock, patch
 
 from crown.config import settings
 from crown.dashboard_data import build, write_dashboard_data
-from crown.engine import _candidates, _crown_market_forecasts, _fixture_baseline_prediction, _fresh, _hkjc_chl_candidates, _prediction, _refresh_crown_quote, _tick_rows_from_predictions, _wdl_prediction
+from crown.engine import _candidates, _crown_market_forecasts, _fixture_baseline_prediction, _fresh, _hkjc_chl_candidates, _hkjc_chl_forecasts, _prediction, _refresh_crown_quote, _tick_rows_from_predictions, _wdl_prediction
 from crown.hkjc import fetch_official_results
 from crown.ledger import (
     completed_stages,
@@ -320,6 +320,30 @@ class CrownSafetyTests(unittest.TestCase):
         self.assertEqual(no_match, [])
         self.assertIn("no_complete_pinnapi_CHL_9.5", no_match_reasons)
 
+    def test_hkjc_corner_forecast_uses_main_complete_line_without_ev(self) -> None:
+        forecasts, reasons = _hkjc_chl_forecasts([
+            {
+                "condition": "9.5",
+                "main": True,
+                "odds": {"H": 1.97, "L": 1.74},
+            },
+            {
+                "condition": "10.5",
+                "main": False,
+                "odds": {"H": 2.48, "L": 1.47},
+            },
+        ])
+        self.assertEqual(reasons, [])
+        self.assertEqual(len(forecasts), 1)
+        forecast = forecasts[0]
+        self.assertEqual(forecast["code"], "CHL")
+        self.assertEqual(forecast["line"], 9.5)
+        self.assertEqual(forecast["side"], "L")
+        self.assertEqual(forecast["reference"], "hkjc_full_market_no_vig")
+        self.assertTrue(forecast["forecast_only"])
+        self.assertNotIn("ev", forecast)
+        self.assertNotIn("kelly_raw", forecast)
+
     def test_hkjc_corner_candidate_fails_closed_for_stale_or_inferred_pinnapi_reference(self) -> None:
         config = replace(settings(), source_max_age_seconds=90, allow_inferred_pinnapi_timestamp=False)
         hkjc = [{"condition": "10", "odds": {"H": 1.95, "L": 1.95}}]
@@ -452,6 +476,71 @@ class CrownSafetyTests(unittest.TestCase):
         self.assertEqual(sync_prediction(ledger, prediction, config), [])
         snapshot = ledger["watch"]["titan"]["stages"][0]
         self.assertEqual({row["code"] for row in snapshot["market_predictions"]}, {"HDC", "HIL"})
+        self.assertEqual(ledger["bets"], [])
+        self.assertEqual(ledger["shadow_bets"], [])
+
+    def test_unmapped_pinnapi_keeps_hkjc_corner_forecast_without_creating_bet(self) -> None:
+        config = replace(settings(), source_max_age_seconds=90)
+        kickoff = self.now + timedelta(minutes=5)
+        titan = {
+            "id": "corner-unmapped", "league": "L", "home": "A",
+            "away": "B", "kickoff": kickoff,
+        }
+        bridge = BridgeMatch(
+            Match(Event("hkjc", "L", "A", "B", kickoff), False, 1.0, None),
+            Match(None, False, 0.0, "team_name_similarity_below_floor"),
+            "hkjc_bilingual_bridge",
+            "hkjc_to_pinnapi:team_name_similarity_below_floor",
+        )
+        titan_client = Mock()
+        titan_client.crown_prices.return_value = [
+            {
+                "market": "HDC", "line": -0.25, "selection": "H",
+                "odds": 1.80, "source_at": 1000,
+            },
+            {
+                "market": "HDC", "line": -0.25, "selection": "A",
+                "odds": 2.05, "source_at": 1000,
+            },
+        ]
+        pinnapi_client = Mock()
+        with patch("crown.engine.datetime") as mocked_datetime, \
+                patch("crown.engine.time.time", return_value=1001), \
+                patch("crown.engine._hkjc_chl", return_value=[{
+                    "condition": "9.5",
+                    "main": True,
+                    "odds": {"H": 1.97, "L": 1.74},
+                    "provider": "HKJC",
+                    "source": "hkjc_chl",
+                }]):
+            mocked_datetime.now.return_value = self.now
+            prediction = _prediction(
+                titan, bridge, {"id": "hkjc"}, "T-5", config,
+                titan_client, pinnapi_client,
+            )
+        corner = next(
+            row for row in prediction["forecast_candidates"]
+            if row["code"] == "CHL"
+        )
+        self.assertEqual(corner["reference"], "hkjc_full_market_no_vig")
+        self.assertTrue(corner["forecast_only"])
+        self.assertNotIn("ev", corner)
+        self.assertEqual(prediction["candidates"], [])
+        self.assertIsNone(prediction["pick"])
+        pinnapi_client.lines.assert_not_called()
+        pinnapi_client.corner_lines.assert_not_called()
+
+        ledger = {
+            "bankroll": 50000, "bets": [], "shadow_bets": [],
+            "watch": {}, "log": [], "stats": {},
+        }
+        self.assertEqual(sync_prediction(ledger, prediction, config), [])
+        snapshot = ledger["watch"]["corner-unmapped"]["stages"][0]
+        stored = next(
+            row for row in snapshot["market_predictions"]
+            if row["code"] == "CHL"
+        )
+        self.assertEqual(stored["source"], "hkjc_full_market_no_vig")
         self.assertEqual(ledger["bets"], [])
         self.assertEqual(ledger["shadow_bets"], [])
 
