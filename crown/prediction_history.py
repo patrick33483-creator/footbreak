@@ -357,6 +357,11 @@ def _result(row: dict[str, Any], titan_by_id: dict[str, dict[str, Any]],
     )
     if matched.event:
         return next(data for event, data in hkjc_events if event.id == matched.event.id), "hkjc_official_strict_identity"
+    # A Crown row mapped to HKJC must keep HKJC authoritative for its score
+    # and terminal status.  Titan may only add corner detail after that score
+    # exists.  Crown-only rows can still use strict Titan matching below.
+    if row.get("hkjc_match_id"):
+        return None, None
     titan, reversed_order, exact_id = _match_titan_result(row, titan_by_id)
     if titan:
         return (

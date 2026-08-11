@@ -1,0 +1,10 @@
+[Unit]
+Description=Footbreak and Crown overdue result reconciliation
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/footbreak/deploy/reconcile-results.sh
+SuccessExitStatus=75
+TimeoutStartSec=25min

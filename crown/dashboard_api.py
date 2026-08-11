@@ -39,14 +39,10 @@ def perform_settlement(config: Settings) -> dict[str, Any]:
         raise RuntimeError(str(result.get("reason") or "settlement_rejected"))
 
     ledger = load_ledger(config)
-    warning = None
-    history = None
-    try:
-        history = update_history(config, ledger)
-    except Exception as exc:
-        # Prediction-history grading is separate from simulation-ledger
-        # settlement.  Keep the settled ledger visible and report a warning.
-        warning = f"prediction_history_{type(exc).__name__}"
+    # The button promises both ledger settlement and prediction-history
+    # reconciliation.  Never return a false success when history grading
+    # failed: the browser must show an error and the automatic timer retries.
+    history = update_history(config, ledger)
 
     write_dashboard_data(config)
     data = read_published_data(config)
@@ -61,10 +57,7 @@ def perform_settlement(config: Settings) -> dict[str, Any]:
         "project_submitted": True,
         "data": data,
     }
-    if isinstance(history, dict):
-        response["prediction_result_sync"] = history.get("result_sync") or {}
-    if warning:
-        response["warning"] = warning
+    response["prediction_result_sync"] = history.get("result_sync") or {}
     return response
 
 

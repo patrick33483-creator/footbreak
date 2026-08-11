@@ -1,0 +1,11 @@
+[Unit]
+Description=Retry Footbreak and Crown prediction results every 30 minutes
+
+[Timer]
+OnCalendar=*:10,40
+Persistent=true
+RandomizedDelaySec=15
+Unit=footbreak-result-reconcile.service
+
+[Install]
+WantedBy=timers.target

@@ -140,6 +140,57 @@ class AccuracyAllPredictionsTests(unittest.TestCase):
         self.assertEqual(grade["grade_status"], "GRADED")
         self.assertEqual(grade["settlement"], "Won")
 
+    def test_external_goal_result_never_replaces_hkjc_official_score(self) -> None:
+        kickoff = datetime.now(accuracy.HKT) - timedelta(hours=3)
+        ledger = {
+            "bets": [],
+            "watch": {
+                "m-fallback": {
+                    "match_id": "m-fallback", "fixture_id": "fx-fallback",
+                    "home": "主隊", "away": "客隊", "league": "聯賽",
+                    "kickoff": kickoff.strftime("%Y-%m-%d %H:%M"),
+                    "stages": [{
+                        "prediction_era": accuracy.PREDICTION_ERA,
+                        "stage": "T-5", "conviction": 64,
+                        "market_predictions": [{
+                            "code": "CHL", "condition": "9.5", "side": "H",
+                            "probability": 0.64, "label": "角球大 9.5",
+                        }],
+                    }],
+                },
+            },
+        }
+        fallback = {
+            "goals_home": 2, "goals_away": 0, "goals_total": 2,
+            "corners_total": None, "source": "opticodds_exact_fixture_id",
+        }
+        enriched = {
+            **fallback, "corners_home": 7, "corners_away": 4,
+            "corners_total": 11,
+            "source": "opticodds_exact_fixture_id+corner_detail",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            ledger_path = Path(directory) / "sim_ledger.json"
+            output_path = Path(directory) / "accuracy.json"
+            history_path = Path(directory) / "accuracy_history.json"
+            ledger_path.write_text(json.dumps(ledger), encoding="utf-8")
+            with patch.object(accuracy, "LEDGER", str(ledger_path)), \
+                 patch.object(accuracy, "OUT", str(output_path)), \
+                 patch.object(accuracy, "HISTORY_OUT", str(history_path)), \
+                 patch.object(accuracy.S, "fetch_hkjc_results", return_value={}), \
+                 patch.object(accuracy.S, "fetch_hkjc_statuses", return_value={}), \
+                 patch.object(
+                     accuracy.S, "fetch_result", return_value=fallback
+                 ) as fetch_result, \
+                 patch.object(
+                     accuracy.S, "merge_missing_corners", return_value=enriched
+                 ) as merge:
+                result = accuracy.run(fetch=True)
+        fetch_result.assert_not_called()
+        merge.assert_not_called()
+        self.assertEqual(result["n_matches"], 0)
+        self.assertEqual(result["n_missing_result"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

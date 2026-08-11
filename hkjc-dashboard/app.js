@@ -3,11 +3,12 @@
 
 const $  = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
-const pc = (x, d = 1) => (x == null ? '—' : (x * 100).toFixed(d) + '%');
-const sg = (x, d = 2) => (x == null ? '—' : (x >= 0 ? '+' : '') + Number(x).toFixed(d));
-const f2 = (x) => (x == null ? '—' : Number(x).toFixed(2));
-const f3 = (x) => (x == null ? '—' : Number(x).toFixed(3));
-const money = (x) => (x == null ? '—' : '$' + Math.round(x).toLocaleString('en-US'));
+const numeric = (x) => (x == null || x === '' || !Number.isFinite(Number(x)) ? null : Number(x));
+const pc = (x, d = 1) => numeric(x) == null ? '—' : (numeric(x) * 100).toFixed(d) + '%';
+const sg = (x, d = 2) => numeric(x) == null ? '—' : (numeric(x) >= 0 ? '+' : '') + numeric(x).toFixed(d);
+const f2 = (x) => numeric(x) == null ? '—' : numeric(x).toFixed(2);
+const f3 = (x) => numeric(x) == null ? '—' : numeric(x).toFixed(3);
+const money = (x) => numeric(x) == null ? '—' : '$' + Math.round(numeric(x)).toLocaleString('en-US');
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
@@ -49,6 +50,26 @@ function heat(p, max) {
 
 /* ══════════════════════ 啟動 ══════════════════════ */
 const API_BASE = '/api';
+function applyData(raw) {
+  const history = raw && raw.prediction_history;
+  if (history && Array.isArray(history.rows)) {
+    history.rows = history.rows.flatMap((row) => {
+      if (!row || typeof row !== 'object') return [];
+      row.market_predictions = (row.market_predictions || []).filter((prediction) => {
+        if (!prediction || !['HDC', 'HIL', 'CHL'].includes(prediction.code)) return false;
+        if (!['H', 'A', 'L'].includes(prediction.side)) return false;
+        const rawLine = prediction.line == null ? prediction.condition : prediction.line;
+        return rawLine !== '' && Number.isFinite(Number(rawLine));
+      });
+      return row.market_predictions.length ? [row] : [];
+    });
+  }
+  DATA = raw;
+  LED = raw.ledger || { bets: [], stats: {}, log: [] };
+  LIST = (raw.matches || []).slice()
+    .sort((a, b) => kt(a.kickoff_hkt) - kt(b.kickoff_hkt));
+  $('#genAt').textContent = hkStamp(raw.generated_at) + ' HKT';
+}
 async function boot() {
   let raw;
   try {
@@ -59,11 +80,7 @@ async function boot() {
     $('#detail').innerHTML = `<div class="empty">資料載入失敗:${esc(e.message)}</div>`;
     return;
   }
-  DATA = raw;
-  LED = raw.ledger || { bets: [], stats: {}, log: [] };
-  LIST = (raw.matches || []).slice()
-    .sort((a, b) => kt(a.kickoff_hkt) - kt(b.kickoff_hkt));
-  $('#genAt').textContent = hkStamp(raw.generated_at) + ' HKT';
+  applyData(raw);
   bindUI();
   render();
   setInterval(render, 30000);
@@ -102,10 +119,7 @@ async function refresh(silent) {
       raw = await r.json();
     }
     const changed = raw.generated_at !== (DATA && DATA.generated_at);
-    DATA = raw;
-    LED = raw.ledger || { bets: [], stats: {}, log: [] };
-    LIST = (raw.matches || []).slice().sort((a, b) => kt(a.kickoff_hkt) - kt(b.kickoff_hkt));
-    $('#genAt').textContent = hkStamp(raw.generated_at) + ' HKT';
+    applyData(raw);
     render();
     if (!silent) {
       flash(settlementBusy
@@ -917,7 +931,7 @@ const HIST_SETTLEMENT_LABEL = {
 };
 function historyQuarterLine(raw, signed = true) {
   const q = Math.round(Number(raw) * 4);
-  if (!Number.isFinite(q)) return String(raw ?? '—');
+  if (!Number.isFinite(q)) return '—';
   const values = q % 2 === 0
     ? [q / 4]
     : q > 0
@@ -927,6 +941,10 @@ function historyQuarterLine(raw, signed = true) {
 }
 function historyPredictionLabel(r, p) {
   const line = Number(p.line ?? p.condition);
+  if (!Number.isFinite(line)) {
+    const team = p.code === 'HDC' ? (p.side === 'A' ? r.away : r.home) : '';
+    return `${team}${team ? ' · ' : ''}盤口未提供`;
+  }
   if (p.code === 'HDC') {
     const team = p.side === 'A' ? r.away : r.home;
     const selectedLine = p.side === 'A' ? -line : line;

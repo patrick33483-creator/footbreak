@@ -1129,14 +1129,17 @@ function bindSettlementButton(buttonId, rerender) {
       const pending = result.pending_count || 0;
       const shadowSettled = result.shadow_settled_count || 0;
       const shadowPending = result.shadow_pending_count || 0;
+      const predictionSync = result.prediction_result_sync || {};
+      const predictionGraded = predictionSync.graded_now || 0;
+      const predictionUnresolved = predictionSync.unresolved || 0;
       SETTLE_BAD = !result.persisted;
       const syncNote = result.project_submitted === false
         ? ' 專案檔案同步暫緩，但本機模擬倉已保存。'
         : '';
       const newTotal = settled + shadowSettled;
       SETTLE_MESSAGE = newTotal
-        ? `完成：正式新結算 ${settled} 注，影子新結算 ${shadowSettled} 注；正式待決 ${pending}，影子待決 ${shadowPending}${result.persisted ? '，已保存。' : '；保存失敗，請稍後再試。'}${syncNote}`
-        : `檢查完成：未有新注可結算；正式待決 ${pending}，影子待決 ${shadowPending}。${syncNote}`;
+        ? `完成：正式新結算 ${settled} 注，影子新結算 ${shadowSettled} 注；預測紀錄新對到 ${predictionGraded} 場、仍待補 ${predictionUnresolved} 場；正式待決 ${pending}，影子待決 ${shadowPending}${result.persisted ? '，已保存。' : '；保存失敗，請稍後再試。'}${syncNote}`
+        : `檢查完成：預測紀錄新對到 ${predictionGraded} 場、仍待補 ${predictionUnresolved} 場；未有新注可結算，正式待決 ${pending}，影子待決 ${shadowPending}。${syncNote}`;
     } catch (e) {
       SETTLE_BAD = true;
       SETTLE_MESSAGE = `結算失敗：${e.message}`;

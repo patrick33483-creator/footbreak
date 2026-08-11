@@ -3,6 +3,7 @@
 唔會叫任何外部 API — 純粹由已有輸出重算分佈。
 """
 import json
+import math
 import re
 import os
 import sys
@@ -150,9 +151,22 @@ def _scoreable_market_predictions(value):
             continue
         if prediction.get("side") not in {"H", "A", "L"}:
             continue
-        if prediction.get("condition", prediction.get("line")) is None:
+        raw_line = prediction.get("line")
+        if raw_line is None:
+            raw_line = prediction.get("condition")
+        try:
+            line = float(raw_line)
+            probability = float(prediction.get("probability"))
+        except (TypeError, ValueError):
             continue
-        rows.append(prediction)
+        if not math.isfinite(line) or not math.isfinite(probability):
+            continue
+        rows.append({
+            **prediction,
+            "condition": line,
+            "line": line,
+            "probability": probability,
+        })
     return rows
 
 
@@ -167,12 +181,32 @@ def sync_prediction_archive(watch, path=None):
     except (OSError, ValueError, TypeError):
         archived = {}
 
+    # 舊版本可能已將 NaN 盤口寫入 archive。每次同步先清洗整個 archive，
+    # 確保壞資料不會因為賽事已離開 live watch 而永久留在預測紀錄。
+    cleaned_archive = {}
+    for mid, match in archived.items():
+        if not isinstance(match, dict):
+            continue
+        cleaned_stages = []
+        for stage in match.get("stages") or []:
+            if not isinstance(stage, dict):
+                continue
+            predictions = _scoreable_market_predictions(stage.get("market_predictions"))
+            if predictions:
+                cleaned_stages.append({**stage, "market_predictions": predictions})
+        if cleaned_stages:
+            cleaned_archive[str(mid)] = {**match, "stages": cleaned_stages}
+    archived = cleaned_archive
+
     for mid, current in (watch or {}).items():
-        stages = [
-            stage for stage in (current.get("stages") or [])
-            if stage.get("prediction_era") == "2026-08-10-market-learning-v2"
-            and _scoreable_market_predictions(stage.get("market_predictions"))
-        ]
+        stages = []
+        for stage in current.get("stages") or []:
+            predictions = _scoreable_market_predictions(stage.get("market_predictions"))
+            if (
+                stage.get("prediction_era") == "2026-08-10-market-learning-v2"
+                and predictions
+            ):
+                stages.append({**stage, "market_predictions": predictions})
         if not stages:
             continue
         mid = str(mid)

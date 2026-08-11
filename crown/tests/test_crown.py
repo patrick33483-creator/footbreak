@@ -1541,7 +1541,7 @@ class CrownSafetyTests(unittest.TestCase):
         self.assertEqual(ledger["bets"][0]["status"], "PENDING")
         detail.assert_not_called()
 
-    def test_dashboard_api_settlement_publishes_ledger_even_if_history_grading_warns(self) -> None:
+    def test_dashboard_api_settlement_fails_if_history_grading_fails(self) -> None:
         from crown.dashboard_api import perform_settlement
 
         config = settings()
@@ -1562,17 +1562,10 @@ class CrownSafetyTests(unittest.TestCase):
             "crown.dashboard_api.read_published_data",
             return_value=dashboard,
         ):
-            result = perform_settlement(config)
+            with self.assertRaisesRegex(RuntimeError, "grading unavailable"):
+                perform_settlement(config)
 
-        self.assertTrue(result["ok"])
-        self.assertTrue(result["persisted"])
-        self.assertEqual(result["settled_count"], 1)
-        self.assertEqual(result["pending_count"], 2)
-        self.assertEqual(result["shadow_settled_count"], 0)
-        self.assertEqual(result["shadow_pending_count"], 0)
-        self.assertEqual(result["data"], dashboard)
-        self.assertEqual(result["warning"], "prediction_history_RuntimeError")
-        publisher.assert_called_once_with(config)
+        publisher.assert_not_called()
 
     def test_dashboard_api_reads_only_valid_published_snapshot(self) -> None:
         from crown.dashboard_api import read_published_data

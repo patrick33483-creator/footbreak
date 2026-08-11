@@ -60,18 +60,36 @@ CONF_BINS = [(0, 45), (45, 52), (52, 58), (58, 64), (64, 200)]
 CONF_LBL = ["<45", "45–52", "52–58", "58–64", "≥64"]
 
 
-def has_scoreable_market_prediction(stage):
-    for prediction in stage.get("market_predictions") or []:
+def scoreable_market_predictions(value):
+    rows = []
+    for prediction in value or []:
         if not isinstance(prediction, dict):
             continue
         if prediction.get("code") not in SCOREABLE_MARKETS:
             continue
         if prediction.get("side") not in {"H", "A", "L"}:
             continue
-        if prediction.get("condition", prediction.get("line")) is None:
+        raw_line = prediction.get("line")
+        if raw_line is None:
+            raw_line = prediction.get("condition")
+        try:
+            line = float(raw_line)
+            probability = float(prediction.get("probability"))
+        except (TypeError, ValueError):
             continue
-        return True
-    return False
+        if not math.isfinite(line) or not math.isfinite(probability):
+            continue
+        rows.append({
+            **prediction,
+            "condition": line,
+            "line": line,
+            "probability": probability,
+        })
+    return rows
+
+
+def has_scoreable_market_prediction(stage):
+    return bool(scoreable_market_predictions(stage.get("market_predictions")))
 
 
 def _atomic_json(path, payload):
@@ -150,6 +168,7 @@ def band(dist, lo=0.10, hi=0.90):
 def score_stage(st, res):
     """一個階段預測 vs 一個賽果 → 一份評分 dict(冇得計嘅欄位留 None)。"""
     d = rebuild(st.get("final"), st.get("now"))
+    market_predictions = scoreable_market_predictions(st.get("market_predictions"))
     gh, ga = res["goals_home"], res["goals_away"]
     tot = gh + ga
     ct = res.get("corners_total")
@@ -170,9 +189,9 @@ def score_stage(st, res):
             "score_act": f"{gh}-{ga}",
             "goals_act": tot,
             "corners_act": ct,
-            "market_predictions": st.get("market_predictions") or [],
+            "market_predictions": market_predictions,
             "market_grades": score_market_predictions(
-                st.get("market_predictions") or [], normalized_res
+                market_predictions, normalized_res
             ),
         }
 
@@ -197,9 +216,9 @@ def score_stage(st, res):
         "score_top": f"{d['tops'][0][0]}-{d['tops'][0][1]}",
         "score_hit1": int((gh, ga) == d["tops"][0]),
         "score_hit5": int((gh, ga) in d["tops"]),
-        "market_predictions": st.get("market_predictions") or [],
+        "market_predictions": market_predictions,
         "market_grades": score_market_predictions(
-            st.get("market_predictions") or [], normalized_res
+            market_predictions, normalized_res
         ),
     }
 
@@ -249,7 +268,7 @@ _SETTLEMENT_TARGET = {
 def score_market_predictions(predictions, res):
     """按當時實際主線逐一評分；不以有冇落注或 EV 作篩選。"""
     grades = []
-    for prediction in predictions:
+    for prediction in scoreable_market_predictions(predictions):
         code = prediction.get("code")
         try:
             probability = float(prediction["probability"])
@@ -512,11 +531,17 @@ def run(fetch=True):
             continue
         if (now - ko).total_seconds() / 60 < SETTLE_AFTER_MIN:
             continue
+        # Footbreak is an HKJC board.  Scores and terminal states must come
+        # from HKJC; external exact-fixture services are corner-detail
+        # fallbacks only and may never replace the official score.
         res = official.get(str(mid))
+        # Corner enrichment is mandatory after an official score is acquired.
         if res and any(
             prediction.get("code") == "CHL"
             for stage in learning_stages
-            for prediction in (stage.get("market_predictions") or [])
+            for prediction in scoreable_market_predictions(
+                stage.get("market_predictions")
+            )
         ):
             try:
                 res = S.merge_missing_corners(res, w.get("fixture_id"))
@@ -540,22 +565,6 @@ def run(fetch=True):
                     # Titan is a corner-only fallback; every other market must
                     # still grade even when that source is temporarily absent.
                     pass
-        if not res:
-            fid = w.get("fixture_id")
-            if not fid:
-                missing_results.append({
-                    "match_id": mid, "home": w.get("home"), "away": w.get("away"),
-                    "league": w.get("league"), "kickoff": w.get("kickoff"),
-                    "reason": "missing_fixture_id",
-                })
-                continue
-            cached = os.path.join(S.RESCACHE, f"{fid}.json")
-            if not os.path.exists(cached) and not fetch:
-                continue
-            try:
-                res = S.fetch_result(fid)
-            except Exception:
-                res = None
         if not res:
             state = official_statuses.get(str(mid)) or {}
             status = str(state.get("status") or "").upper()

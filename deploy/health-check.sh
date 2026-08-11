@@ -9,7 +9,7 @@ echo "=== production health $(TZ=Asia/Hong_Kong date '+%F %T %Z') ==="
 
 for unit in \
   footbreak-tick.timer footbreak-sweep.timer footbreak-settle.timer footbreak-backtest.timer \
-  crown-tick.timer crown-sweep.timer crown-settle.timer; do
+  footbreak-result-reconcile.timer crown-tick.timer crown-sweep.timer crown-settle.timer; do
   systemctl is-enabled --quiet "$unit" || {
     state="$(systemctl is-enabled "$unit" 2>&1 || true)"
     echo "FAIL timer $unit enabled_state=$state" >&2
@@ -54,6 +54,11 @@ grep -q 'Number.isFinite(Number(rawLine))' /var/www/crown/app.js || {
   exit 1
 }
 echo "OK Crown dashboard finite-line guard"
+grep -q 'Number.isFinite(Number(rawLine))' /var/www/footbreak/app.js || {
+  echo "FAIL stale Footbreak dashboard asset: finite-line guard missing" >&2
+  exit 1
+}
+echo "OK Footbreak dashboard finite-line guard"
 grep -q '最新開賽時間優先' /var/www/crown/app.js || {
   echo "FAIL stale Crown dashboard asset: global chronological history missing" >&2
   exit 1
@@ -110,7 +115,7 @@ PY
 echo "OK Crown dashboard API /api/data"
 echo "OK Footbreak dashboard API /api/data"
 
-for service in footbreak-tick.service footbreak-settle.service crown-tick.service crown-sweep.service crown-settle.service; do
+for service in footbreak-tick.service footbreak-settle.service footbreak-result-reconcile.service crown-tick.service crown-sweep.service crown-settle.service; do
   result="$(systemctl show "$service" -p Result --value)"
   status="$(systemctl show "$service" -p ExecMainStatus --value)"
   # Timed jobs deliberately return EX_TEMPFAIL (75) when a higher-priority
@@ -120,6 +125,7 @@ for service in footbreak-tick.service footbreak-settle.service crown-tick.servic
   expected_preemption=false
   case "$service:$status" in
     footbreak-tick.service:75|footbreak-settle.service:75|\
+    footbreak-result-reconcile.service:75|\
     crown-tick.service:75|crown-sweep.service:75|crown-settle.service:75)
       expected_preemption=true
       ;;
@@ -242,6 +248,12 @@ def kickoff_timestamp(row):
 history = foot.get("prediction_history") or {}
 stats = history.get("stats") or {}
 rows = history.get("rows") or []
+foot_invalid = invalid_market_predictions(rows)
+if foot_invalid:
+    raise SystemExit(
+        "FAIL Footbreak prediction history contains "
+        f"{len(foot_invalid)} invalid/non-finite market prediction(s)"
+    )
 bad_rows = [row for row in rows if not scoreable_market_row(row)]
 if bad_rows:
     raise SystemExit(

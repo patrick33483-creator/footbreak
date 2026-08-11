@@ -78,7 +78,8 @@ if systemctl is-active --quiet footbreak-t30.timer ||
   exit 1
 fi
 systemctl enable --now \
-  footbreak-tick.timer footbreak-sweep.timer footbreak-settle.timer
+  footbreak-tick.timer footbreak-sweep.timer footbreak-settle.timer \
+  footbreak-result-reconcile.timer
 systemctl enable crown-dashboard-api.service footbreak-dashboard-api.service
 systemctl restart crown-dashboard-api.service footbreak-dashboard-api.service
 # `systemctl is-active` can briefly report active while a crashing process is
