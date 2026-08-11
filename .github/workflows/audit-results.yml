@@ -3,6 +3,9 @@ name: 稽核正式賽果資料
 on:
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   audit:
     runs-on: ubuntu-24.04
@@ -34,3 +37,14 @@ jobs:
           name: result-state-audit
           path: result-state-audit.json
           retention-days: 1
+
+      - name: 暫存稽核結果供診斷取回
+        run: |
+          cp result-state-audit.json /tmp/result-state-audit.json
+          git checkout --orphan result-audit-state
+          git rm -rf .
+          cp /tmp/result-state-audit.json .
+          git add result-state-audit.json
+          git -c user.name=github-actions -c user.email=actions@github.com \
+            commit -m "Temporary production result audit"
+          git push --force origin HEAD:result-audit-state
