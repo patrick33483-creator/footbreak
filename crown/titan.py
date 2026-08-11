@@ -273,10 +273,25 @@ class TitanClient:
             "total_ok": total_ok,
         }
 
-    def results(self) -> list[dict[str, Any]]:
+    def results(self, dates: set[str] | None = None) -> list[dict[str, Any]]:
+        """Return completed results for the requested HKT calendar dates.
+
+        Settlement callers pass every still-pending kickoff date.  The old
+        fixed three-day window made older missed rows impossible to recover.
+        """
         output: list[dict[str, Any]] = []
-        for offset in (0, -1, -2):
-            day = (datetime.now(HKT) + timedelta(days=offset)).strftime("%Y%m%d")
+        days = {
+            str(value).replace("-", "")
+            for value in (dates or set())
+            if str(value).replace("-", "").isdigit()
+            and len(str(value).replace("-", "")) == 8
+        }
+        if not days:
+            days = {
+                (datetime.now(HKT) + timedelta(days=offset)).strftime("%Y%m%d")
+                for offset in (0, -1, -2)
+            }
+        for day in sorted(days):
             try:
                 output.extend(parse_schedule_page(self._read(f"{self.config.titan_bf_base}/Over_{day}.htm"), day))
             except OSError:

@@ -517,6 +517,10 @@ def run(fetch=True):
 
     scored, matches, missing_results, excluded_results = [], [], [], []
     titan_client, titan_rows, crown_titan_ids = None, [], {}
+    titan_result_dates = {
+        kickoff.strftime("%Y-%m-%d")
+        for _, _, kickoff in eligible
+    }
     for mid, w in watch.items():
         learning_stages = [
             stage for stage in (w.get("stages") or [])
@@ -552,7 +556,9 @@ def run(fetch=True):
                 try:
                     import titan_results as T
                     if titan_client is None:
-                        titan_client, titan_rows = T.fetch_titan_result_rows()
+                        titan_client, titan_rows = T.fetch_titan_result_rows(
+                            dates=titan_result_dates
+                        )
                         crown_titan_ids = T.load_crown_titan_match_map()
                     titan_record = {**w, "match_id": mid}
                     if crown_titan_ids.get(str(mid)):

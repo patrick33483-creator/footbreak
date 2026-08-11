@@ -608,7 +608,7 @@ def grade_history(config: Settings) -> dict[str, Any]:
     official_error = None
     titan_client = TitanClient(config)
     try:
-        titan_rows = titan_client.results() if due else []
+        titan_rows = titan_client.results(dates) if due else []
     except Exception as exc:
         titan_error = type(exc).__name__
         titan_rows = []

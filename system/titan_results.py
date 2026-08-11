@@ -46,9 +46,12 @@ def _kickoff(record: dict[str, Any]) -> datetime | None:
     return parsed.replace(tzinfo=HKT) if parsed.tzinfo is None else parsed.astimezone(HKT)
 
 
-def fetch_titan_result_rows(client: TitanClient | None = None) -> tuple[TitanClient, list[dict[str, Any]]]:
+def fetch_titan_result_rows(
+    client: TitanClient | None = None,
+    dates: set[str] | None = None,
+) -> tuple[TitanClient, list[dict[str, Any]]]:
     client = client or TitanClient(settings())
-    return client, client.results()
+    return client, client.results(dates)
 
 
 def load_crown_titan_match_map(path: Path | None = None) -> dict[str, str]:
