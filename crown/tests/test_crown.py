@@ -12,7 +12,7 @@ from unittest.mock import Mock, patch
 
 from crown.config import settings
 from crown.dashboard_data import build, write_dashboard_data
-from crown.engine import _candidates, _crown_market_forecasts, _fixture_baseline_prediction, _fresh, _hkjc_chl_candidates, _hkjc_chl_forecasts, _prediction, _refresh_crown_quote, _skip_new_confirmed_empty_crown, _tick_rows_from_predictions, _wdl_prediction
+from crown.engine import _candidates, _crown_market_forecasts, _fixture_baseline_prediction, _fresh, _hkjc_chl_candidates, _hkjc_chl_forecasts, _prediction, _refresh_crown_quote, _skip_new_confirmed_empty_crown, _sweep_rows_with_due_existing, _tick_rows_from_predictions, _wdl_prediction
 from crown.hkjc import fetch_official_results
 from crown.ledger import (
     completed_stages,
@@ -1055,6 +1055,57 @@ class CrownSafetyTests(unittest.TestCase):
                                      "stages": [{"stage": "T-5"}]}}}
         rows = _tick_rows_from_predictions(predictions, ledger, self.now)
         self.assertEqual([row["id"] for row in rows], ["t5"])
+
+    def test_sweep_recovers_due_first_look_omitted_from_titan_list(self) -> None:
+        kickoff = self.now + timedelta(hours=3)
+        titan = [{
+            "id": "listed", "league": "L", "home": "A", "away": "B",
+            "kickoff": kickoff + timedelta(hours=1),
+        }]
+        cards = [
+            {
+                "match_id": "omitted", "league": "L", "home": "C", "away": "D",
+                "kickoff_hkt": kickoff.isoformat(),
+            },
+            {
+                "match_id": "listed", "league": "L", "home": "A", "away": "B",
+                "kickoff_hkt": (kickoff + timedelta(hours=1)).isoformat(),
+            },
+        ]
+        ledger = {
+            "watch": {
+                "omitted": {
+                    "matching_version": "old",
+                    "prediction_era": "old",
+                    "stages": [{"stage": "首預", "status": "PREDICTION_READY"}],
+                },
+            },
+        }
+        rows = _sweep_rows_with_due_existing(titan, cards, ledger, self.now)
+        self.assertEqual([row["id"] for row in rows], ["omitted", "listed"])
+
+    def test_sweep_does_not_recover_existing_card_after_t30(self) -> None:
+        kickoff = self.now + timedelta(hours=3)
+        cards = [{
+            "match_id": "late-stage", "league": "L", "home": "A", "away": "B",
+            "kickoff_hkt": kickoff.isoformat(),
+        }]
+        ledger = {
+            "watch": {
+                "late-stage": {
+                    "matching_version": "old",
+                    "prediction_era": "old",
+                    "stages": [
+                        {"stage": "首預", "status": "PREDICTION_READY"},
+                        {"stage": "T-30", "status": "PREDICTION_READY"},
+                    ],
+                },
+            },
+        }
+        self.assertEqual(
+            _sweep_rows_with_due_existing([], cards, ledger, self.now),
+            [],
+        )
 
     def test_late_quote_refresh_never_rolls_back_t5_card(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

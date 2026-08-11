@@ -68,6 +68,45 @@ def _tick_rows_from_predictions(
     return rows
 
 
+def _sweep_rows_with_due_existing(
+    titan_rows: list[dict[str, Any]],
+    predictions: list[dict[str, Any]],
+    ledger: dict[str, Any],
+    now: datetime,
+) -> list[dict[str, Any]]:
+    """Recover stale first-look cards omitted from Titan's current fixture list."""
+    rows = list(titan_rows)
+    seen = {str(row.get("id") or "") for row in rows}
+    for card in predictions:
+        match_id = str(card.get("match_id") or "")
+        kickoff = parse_time(card.get("kickoff_hkt") or card.get("kickoff"))
+        if (
+            not match_id
+            or match_id in seen
+            or kickoff is None
+            or kickoff <= now
+            or not in_current_period(kickoff, now)
+        ):
+            continue
+        done = completed_stages(
+            (ledger.get("watch") or {}).get(match_id, {}),
+            MATCHING_VERSION,
+            PREDICTION_ERA,
+        )
+        if not stage_for((kickoff - now).total_seconds() / 60, True, done):
+            continue
+        rows.append({
+            "id": match_id,
+            "league": card.get("league") or "",
+            "home": card.get("home") or "",
+            "away": card.get("away") or "",
+            "kickoff": kickoff,
+        })
+        seen.add(match_id)
+    rows.sort(key=lambda row: row["kickoff"])
+    return rows
+
+
 def _line_key(market: str, line: float | None) -> tuple[str, int | None]:
     return market, None if line is None else round(line * 4)
 
@@ -845,7 +884,12 @@ def run(mode: str, config: Settings) -> dict[str, Any]:
             }
     titan_client, pinnapi_client = TitanClient(config), PinnapiClient(config)
     if mode == "sweep":
-        titan_rows = titan_client.fixtures()
+        titan_rows = _sweep_rows_with_due_existing(
+            titan_client.fixtures(),
+            existing_predictions,
+            ledger,
+            datetime.now(HKT),
+        )
     pinnapi_rows, hkjc_rows = pinnapi_client.fixtures(), fetch_matches()
     h_events = [(event_from_match(row), row) for row in hkjc_rows]
     h_events = [(event, row) for event, row in h_events if event]
