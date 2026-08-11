@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -14,6 +15,78 @@ import notify
 
 
 class TelegramTransportTests(unittest.TestCase):
+    def test_review_events_only_include_passed_human_review_gates(self) -> None:
+        report = {
+            "systems": {
+                "footbreak": {
+                    "status": "accumulating",
+                    "automatic_upgrade_test": {
+                        "status": "candidate_passed",
+                        "recommended_candidate": "stage:T-5",
+                        "eligible_matches": 300,
+                    },
+                    "market_model_upgrade_tests": {
+                        "tests": {
+                            "HDC": {
+                                "status": "candidate_passed_human_review_required",
+                                "eligible_matches": 100,
+                                "challenger": {"calibration_alpha": 0.8},
+                                "delta": {"brier": -0.02, "accuracy": 0.01},
+                            },
+                            "CHL": {
+                                "status": "waiting_for_100_verified_matches",
+                            },
+                        }
+                    },
+                },
+                "crown": {
+                    "status": "accumulating",
+                    "automatic_upgrade_test": {
+                        "status": "waiting_for_300_matches",
+                    },
+                    "market_model_upgrade_tests": {"tests": {}},
+                },
+            }
+        }
+        events = notify.review_events(report)
+        self.assertEqual(
+            [event["key"] for event in events],
+            ["upgrade:footbreak:stage:T-5", "market:footbreak:HDC:0.8"],
+        )
+
+    def test_review_notification_is_sent_once_per_candidate(self) -> None:
+        report = {
+            "generated_at": "2026-08-11T12:30:00+08:00",
+            "systems": {
+                "footbreak": {
+                    "status": "accumulating",
+                    "automatic_upgrade_test": {
+                        "status": "candidate_passed",
+                        "recommended_candidate": "stage:T-5",
+                        "eligible_matches": 300,
+                    },
+                    "market_model_upgrade_tests": {"tests": {}},
+                }
+            },
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            report_path = Path(tmp) / "report.json"
+            state_path = Path(tmp) / "notify_state.json"
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+            with patch.object(notify, "STATE", str(state_path)), patch.object(
+                notify, "send"
+            ) as sender:
+                self.assertEqual(
+                    notify.main(["--review", "--report", str(report_path)]), 0
+                )
+                self.assertEqual(
+                    notify.main(["--review", "--report", str(report_path)]), 0
+                )
+
+            sender.assert_called_once()
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            self.assertEqual(state["reviews"], ["upgrade:footbreak:stage:T-5"])
+
     def test_long_lived_bot_token_uses_direct_telegram_api(self) -> None:
         response = Mock()
         response.read.return_value = json.dumps({"ok": True}).encode()
@@ -35,4 +108,3 @@ class TelegramTransportTests(unittest.TestCase):
         self.assertEqual(payload["chat_id"], "-123456")
         self.assertEqual(payload["parse_mode"], "HTML")
         external_tool.assert_not_called()
-

@@ -5,6 +5,12 @@ APP_DIR="/opt/footbreak"
 STATE_DIR="/var/lib/footbreak/backtest"
 LEARNING_DB="/var/lib/footbreak/learning/predictions.sqlite"
 
+if [ -f /etc/footbreak.env ]; then
+  set -a
+  . /etc/footbreak.env
+  set +a
+fi
+
 install -d -o root -g root -m 0700 "$STATE_DIR"
 install -d -o root -g www-data -m 0755 /var/www/footbreak /var/www/crown
 
@@ -54,10 +60,17 @@ fi
   echo "immutable learning database is missing; refusing mutable JSON backtest input" >&2
   exit 1
 }
-exec "$APP_DIR/.venv/bin/python3" -m analysis.rolling_backtest \
+"$APP_DIR/.venv/bin/python3" -m analysis.rolling_backtest \
   --footbreak "$FOOTBREAK_HISTORY" \
   --learning-db "$LEARNING_DB" \
   --state "$STATE_DIR/state.json" \
   --out "$STATE_DIR/latest.json" \
   --public /var/www/footbreak/backtest.json \
   --public /var/www/crown/backtest.json
+
+# Only passed safety gates produce a Telegram review request. notify.py keeps
+# its own idempotent review keys, so the daily timer never repeats a candidate.
+if ! "$APP_DIR/.venv/bin/python3" "$APP_DIR/system/notify.py" \
+  --review --report "$STATE_DIR/latest.json"; then
+  echo "模型審核通知失敗；回測結果已保存，下次排程會重試" >&2
+fi

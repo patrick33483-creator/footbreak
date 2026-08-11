@@ -159,6 +159,9 @@ class RollingBacktestTest(unittest.TestCase):
             )
             self.assertEqual(result["overall_status"], "accumulating")
             self.assertFalse(result["policy"]["auto_apply"])
+            self.assertEqual(
+                result["policy"]["notifications"], "passed_threshold_only"
+            )
             self.assertEqual(result["systems"]["crown"]["new_matches"], 0)
             self.assertEqual(result["systems"]["footbreak"]["new_matches"], 0)
             self.assertTrue((root / "public.json").exists())

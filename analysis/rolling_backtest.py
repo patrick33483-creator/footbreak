@@ -384,6 +384,12 @@ def run(
         systems[name]["market_model_upgrade_tests"] = all_market_tests(
             market_rows_by_system[name]
         )
+    review_required = any(
+        item["status"] == "ready_for_human_review"
+        or (item.get("automatic_upgrade_test") or {}).get("status") == "candidate_passed"
+        or bool((item.get("market_model_upgrade_tests") or {}).get("review_required"))
+        for item in systems.values()
+    )
     result = {
         "schema_version": 2,
         "generated_at": now,
@@ -398,7 +404,7 @@ def run(
             "maximum_accuracy_decline": MAX_ACCURACY_DECLINE,
             "maximum_log_loss_increase": MAX_LOG_LOSS_INCREASE,
             "auto_apply": False,
-            "notifications": False,
+            "notifications": "passed_threshold_only",
         },
         "started_at": state["started_at"],
         "overall_status": (
@@ -406,9 +412,7 @@ def run(
             if all(item["status"] == "ready_for_human_review" for item in systems.values())
             else "accumulating"
         ),
-        "review_required": any(
-            item["status"] == "ready_for_human_review" for item in systems.values()
-        ),
+        "review_required": review_required,
         "systems": systems,
     }
     state["last_run_at"] = now

@@ -1,7 +1,7 @@
 """足破 · Telegram 通知系統
 
-只有真正建立注單(T-5 落注)時才發通知。預測、排程、掃描完成及
-結算通知全部停用。
+只有真正建立注單(T-5 落注)，或者模型候選通過既定安全門檻需要
+人工審核時才發通知。預測、排程、掃描完成及結算通知全部停用。
 
   1. 冪等 —— 已通知過嘅注單記喺 notify_state.json,重複執行唔會再發。
      絕對唔會改 sim_ledger.json。
@@ -58,10 +58,14 @@ def load_state():
             s.setdefault("queue", [])
             s.setdefault("sweeps", [])
             s.setdefault("watch", [])
+            s.setdefault("reviews", [])
             return s
         except Exception:
             pass
-    return {"bets": [], "settled": [], "queue": [], "sweeps": [], "watch": []}
+    return {
+        "bets": [], "settled": [], "queue": [], "sweeps": [], "watch": [],
+        "reviews": [],
+    }
 
 
 def save_state(s):
@@ -225,6 +229,74 @@ def settled_msg(led, bets):
             f"命中 {('—' if hr is None else f'{float(hr) * 100:.1f}% ({s.get('hits')}/{s.get('n_decided')})')} · "
             f"戶口 {esc(money(s.get('equity') if s.get('equity') is not None else led.get('bankroll')))}")
     return "\n\n".join([head] + rows + [foot])
+
+
+def review_events(report):
+    """Return stable, deduplicatable human-review events from a backtest report."""
+    events = []
+    labels = {"footbreak": "足破", "crown": "皇冠"}
+    for system, payload in (report.get("systems") or {}).items():
+        label = labels.get(system, system)
+        if payload.get("status") == "ready_for_human_review":
+            baseline_matches = payload.get("baseline_matches", 0)
+            events.append({
+                "key": f"forward:{system}:{baseline_matches}",
+                "system": label,
+                "kind": "前向驗證批次完成",
+                "detail": (
+                    f"新賽事 {payload.get('new_matches', 0)} 場 · "
+                    f"T-5 覆蓋 {float(payload.get('t5_holdout_coverage') or 0) * 100:.1f}%"
+                ),
+            })
+
+        upgrade = payload.get("automatic_upgrade_test") or {}
+        if upgrade.get("status") == "candidate_passed":
+            candidate = str(upgrade.get("recommended_candidate") or "unknown")
+            events.append({
+                "key": f"upgrade:{system}:{candidate}",
+                "system": label,
+                "kind": "整體挑戰者通過",
+                "detail": (
+                    f"候選 {candidate} · "
+                    f"已驗證 {upgrade.get('eligible_matches', 0)} 場"
+                ),
+            })
+
+        market_tests = (
+            (payload.get("market_model_upgrade_tests") or {}).get("tests") or {}
+        )
+        for market, test in market_tests.items():
+            if test.get("status") != "candidate_passed_human_review_required":
+                continue
+            alpha = (test.get("challenger") or {}).get("calibration_alpha")
+            delta = test.get("delta") or {}
+            events.append({
+                "key": f"market:{system}:{market}:{alpha}",
+                "system": label,
+                "kind": f"{market} 校準挑戰者通過",
+                "detail": (
+                    f"alpha {alpha} · 驗證 {test.get('eligible_matches', 0)} 場 · "
+                    f"Brier Δ {delta.get('brier')} · "
+                    f"命中率 Δ {delta.get('accuracy')}"
+                ),
+            })
+    return events
+
+
+def review_msg(events, generated_at=None):
+    rows = [
+        "<b>足破 · 模型候選等待人工審核</b>",
+        esc(generated_at or dt.datetime.now(HKT).isoformat(timespec="minutes")),
+        "",
+    ]
+    for event in events:
+        rows.extend([
+            f"<b>{esc(event['system'])} · {esc(event['kind'])}</b>",
+            f"   {esc(event['detail'])}",
+            "",
+        ])
+    rows.append("模型未有自動套用；請人工審核後先決定是否升級。")
+    return "\n".join(rows)
 
 
 # ─────────────────────────── 發送 ───────────────────────────
@@ -462,6 +534,7 @@ def stake_note_plain():
 
 def main(argv):
     dry = "--dry" in argv
+    mode_review = "--review" in argv
     mode_settled = "--settled" in argv
     mode_sched = "--sched" in argv
     mode_sweep = "--sweep" in argv
@@ -473,8 +546,40 @@ def main(argv):
     if "--window" in argv:
         window = float(argv[argv.index("--window") + 1])
 
-    # User preference: Telegram is a bet alert channel only.  Keep the old
-    # formatters for historical compatibility, but never send these modes.
+    if mode_review:
+        report_path = (
+            argv[argv.index("--report") + 1]
+            if "--report" in argv
+            else "/var/lib/footbreak/backtest/latest.json"
+        )
+        if not os.path.isfile(report_path):
+            print("回測報告不存在 —— 不發送")
+            return 1
+        with open(report_path, encoding="utf-8") as handle:
+            report = json.load(handle)
+        state = load_state()
+        sent = set(state.get("reviews") or [])
+        events = [event for event in review_events(report) if event["key"] not in sent]
+        if not events:
+            print("未有新通過門檻嘅模型候選 —— 不發送")
+            return 0
+        text = review_msg(events, report.get("generated_at"))
+        if dry:
+            print(text)
+            print(f"\n[dry-run] 會通知 {len(events)} 個審核項目,唔會寫狀態")
+            return 0
+        send(text)
+        state["reviews"] = (
+            (state.get("reviews") or []) + [event["key"] for event in events]
+        )[-200:]
+        state["last_sent"] = dt.datetime.now(HKT).isoformat(timespec="seconds")
+        save_state(state)
+        print(f"已發模型人工審核通知({len(events)} 項)")
+        return 0
+
+    # User preference: Telegram is for new bets and passed model-review gates.
+    # Keep the old formatters for historical compatibility, but never send
+    # watch/schedule/sweep/settlement messages.
     if mode_watch or mode_sched or mode_sweep or mode_settled:
         print("此通知類型已停用；Telegram 只發新注單")
         return 0
