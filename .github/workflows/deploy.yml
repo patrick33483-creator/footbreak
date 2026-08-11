@@ -72,5 +72,15 @@ jobs:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
         run: |
+          set +e
           ssh "$DEPLOY_USER@$DEPLOY_HOST" \
-            'sudo /opt/footbreak/deploy/health-check.sh'
+            'sudo /opt/footbreak/deploy/health-check.sh' \
+            > /tmp/health-check.log 2>&1
+          health_rc=$?
+          set -e
+          cat /tmp/health-check.log
+          if [ "$health_rc" -ne 0 ]; then
+            health_error=$(tail -n 30 /tmp/health-check.log | tr "\n" " " | sed "s/%/%25/g")
+            echo "::error file=.github/workflows/deploy.yml,line=70::$health_error"
+            exit "$health_rc"
+          fi
