@@ -1,5 +1,5 @@
 [Unit]
-Description=Footbreak and Crown overdue result reconciliation
+Description=Footbreak and Crown 15-minute result and site integrity audit
 After=network-online.target
 Wants=network-online.target
 

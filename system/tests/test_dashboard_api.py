@@ -25,7 +25,7 @@ class DashboardApiTests(unittest.TestCase):
         self.assertIn("settle-simulation", app)
         self.assertIn("賽果核對完成，已更新到最新資料", app)
         self.assertIn("styles.css?v=20260811-shadow-history-filter-v1", index)
-        self.assertIn("app.js?v=20260811-shadow-history-filter-v1", index)
+        self.assertIn("app.js?v=20260812-stat-audit-v2", index)
 
     def test_perform_settlement_returns_new_prediction_history(self) -> None:
         payload = {

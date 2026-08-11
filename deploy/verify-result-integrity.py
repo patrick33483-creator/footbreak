@@ -6,12 +6,17 @@ from __future__ import annotations
 import json
 import math
 from collections import Counter
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 
 FOOTBREAK_DATA = Path("/var/www/footbreak/data.json")
 CROWN_HISTORY = Path("/var/lib/footbreak/crown/prediction_history.json")
+CROWN_DATA = Path("/var/www/crown/data.json")
+STAGES = ("首預", "T-30", "T-5")
+MARKETS = ("HDC", "HIL", "CHL")
+HKT = timezone(timedelta(hours=8))
 
 
 def load(path: Path) -> Any:
@@ -25,6 +30,12 @@ def rows(payload: Any) -> list[dict[str, Any]]:
         value = payload.get("rows") or []
         return value if isinstance(value, list) else []
     return []
+
+
+def same_accuracy(actual: Any, expected: float | None) -> bool:
+    if actual is None or expected is None:
+        return actual is None and expected is None
+    return math.isclose(float(actual), expected, rel_tol=1e-6)
 
 
 def assert_no_nan(label: str, history_rows: list[dict[str, Any]]) -> None:
@@ -86,8 +97,11 @@ def assert_market_stats_consistent(
     history_rows: list[dict[str, Any]],
     stats: dict[str, Any],
 ) -> None:
-    direct: dict[str, Counter[str]] = {}
-    by_stage: dict[str, dict[str, Counter[str]]] = {}
+    direct = {code: Counter() for code in MARKETS}
+    by_stage = {
+        stage: {code: Counter() for code in MARKETS}
+        for stage in STAGES
+    }
     for row in history_rows:
         stage = str(row.get("stage") or "")
         for grade in row.get("market_grades") or []:
@@ -96,9 +110,11 @@ def assert_market_stats_consistent(
             code = str(grade.get("code") or "")
             if not code:
                 continue
-            direct.setdefault(code, Counter())["graded"] += 1
-            by_stage.setdefault(stage, {}).setdefault(code, Counter())["graded"] += 1
-            if grade.get("settlement") != "Refunded":
+            if code not in direct or stage not in by_stage:
+                continue
+            direct[code]["graded"] += 1
+            by_stage[stage][code]["graded"] += 1
+            if grade.get("hit") is not None:
                 direct[code]["decided"] += 1
                 by_stage[stage][code]["decided"] += 1
                 if grade.get("hit") is True:
@@ -107,26 +123,154 @@ def assert_market_stats_consistent(
 
     reported = stats.get("by_market") or {}
     reported_stage = stats.get("by_stage_market") or {}
-    for code, counts in direct.items():
+    for code in MARKETS:
+        counts = direct[code]
         for key in ("graded", "decided", "hits"):
             assert int((reported.get(code) or {}).get(key, -1)) == counts[key], (
                 label, code, key, reported.get(code), counts
             )
-            stage_sum = sum(
-                int(((markets or {}).get(code) or {}).get(key, 0))
-                for markets in reported_stage.values()
+        expected_accuracy = (
+            counts["hits"] / counts["decided"]
+            if counts["decided"] else None
+        )
+        actual_accuracy = (reported.get(code) or {}).get("accuracy")
+        assert same_accuracy(actual_accuracy, expected_accuracy), (
+            label, code, "accuracy", actual_accuracy, expected_accuracy
+        )
+
+    for stage in STAGES:
+        for code in MARKETS:
+            counts = by_stage[stage][code]
+            cell = (reported_stage.get(stage) or {}).get(code) or {}
+            for key in ("graded", "decided", "hits"):
+                assert int(cell.get(key, -1)) == counts[key], (
+                    label, stage, code, key, cell, counts
+                )
+            expected_accuracy = (
+                counts["hits"] / counts["decided"]
+                if counts["decided"] else None
             )
-            assert stage_sum == counts[key], (
-                label, code, key, "stage_sum", stage_sum, counts[key]
+            actual_accuracy = cell.get("accuracy")
+            assert same_accuracy(actual_accuracy, expected_accuracy), (
+                label, stage, code, "accuracy", actual_accuracy, expected_accuracy
             )
-    print(f"{label} market statistics OK markets={sorted(direct)}")
+            pushes = counts["graded"] - counts["decided"]
+            print(
+                f"{label} {stage} {code} "
+                f"hits={counts['hits']}/{counts['decided']} "
+                f"graded={counts['graded']} pushes={pushes}"
+            )
+    print(f"{label} market statistics exact-cell check OK")
+
+
+def _sort_key(row: dict[str, Any]) -> tuple[float, str, int]:
+    raw = str(row.get("kickoff_hkt") or row.get("kickoff") or "").strip()
+    try:
+        kickoff = datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp()
+    except (TypeError, ValueError):
+        kickoff = float("-inf")
+    return (
+        kickoff,
+        str(row.get("predicted_at") or ""),
+        STAGES.index(str(row.get("stage"))) if str(row.get("stage")) in STAGES else -1,
+    )
+
+
+def assert_unique_and_sorted(label: str, history_rows: list[dict[str, Any]]) -> None:
+    keys = [
+        (str(row.get("match_id") or ""), str(row.get("stage") or ""))
+        for row in history_rows
+    ]
+    missing = [key for key in keys if not all(key)]
+    duplicates = [key for key, count in Counter(keys).items() if count > 1]
+    assert not missing, f"{label} history rows missing match/stage keys: {missing[:20]}"
+    assert not duplicates, f"{label} duplicate match/stage rows: {duplicates[:20]}"
+
+    actual = [_sort_key(row) for row in history_rows]
+    assert actual == sorted(actual, reverse=True), (
+        f"{label} prediction history is not newest-kickoff-first"
+    )
+    print(f"{label} uniqueness/order check OK rows={len(history_rows)}")
+
+
+def report_result_gaps(label: str, history_rows: list[dict[str, Any]]) -> None:
+    cutoff = datetime.now(HKT) - timedelta(hours=4)
+    overdue: list[tuple[str, str, str]] = []
+    overdue_corners: list[tuple[str, str, str]] = []
+    for row in history_rows:
+        raw = str(row.get("kickoff_hkt") or row.get("kickoff") or "").strip()
+        try:
+            kickoff = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            if kickoff.tzinfo is None:
+                kickoff = kickoff.replace(tzinfo=HKT)
+            kickoff = kickoff.astimezone(HKT)
+        except (TypeError, ValueError):
+            continue
+        if kickoff > cutoff or row.get("result_status") in {"已核對", "不計"}:
+            continue
+        item = (
+            str(row.get("match_id") or ""),
+            str(row.get("home") or ""),
+            str(row.get("away") or ""),
+        )
+        overdue.append(item)
+        has_corner_prediction = any(
+            isinstance(prediction, dict) and prediction.get("code") == "CHL"
+            for prediction in (row.get("market_predictions") or [])
+        )
+        has_graded_corner = any(
+            isinstance(grade, dict)
+            and grade.get("code") == "CHL"
+            and grade.get("grade_status") == "GRADED"
+            for grade in (row.get("market_grades") or [])
+        )
+        if has_corner_prediction and not has_graded_corner:
+            overdue_corners.append(item)
+    print(
+        f"{label} result-gap report overdue={len(overdue)} "
+        f"overdue_corners={len(overdue_corners)}"
+    )
+    if overdue:
+        print(f"{label} overdue sample={overdue[:20]}")
+    if overdue_corners:
+        print(f"{label} overdue corner sample={overdue_corners[:20]}")
+
+
+def assert_crown_publication_matches(
+    crown_history: dict[str, Any],
+    crown_public: dict[str, Any],
+) -> None:
+    public_history = crown_public.get("prediction_history") or {}
+    raw_rows = rows(crown_history)
+    public_rows = rows(public_history)
+    assert len(public_rows) == len(raw_rows), (
+        "Crown public/raw prediction row count mismatch",
+        len(public_rows),
+        len(raw_rows),
+    )
+    assert public_history.get("stats") == crown_history.get("stats"), (
+        "Crown public/raw prediction stats mismatch"
+    )
+    raw_keys = [
+        (str(row.get("match_id") or ""), str(row.get("stage") or ""))
+        for row in raw_rows
+    ]
+    public_keys = [
+        (str(row.get("match_id") or ""), str(row.get("stage") or ""))
+        for row in public_rows
+    ]
+    assert public_keys == raw_keys, "Crown public/raw prediction row order mismatch"
+    print(f"Crown publication sync check OK rows={len(raw_rows)}")
 
 
 def main() -> None:
     footbreak = load(FOOTBREAK_DATA)
     crown = load(CROWN_HISTORY)
+    crown_public = load(CROWN_DATA)
     footbreak_rows = rows(footbreak.get("prediction_history") or {})
     crown_rows = rows(crown)
+    assert_unique_and_sorted("Footbreak", footbreak_rows)
+    assert_unique_and_sorted("Crown", crown_rows)
     assert_no_nan("Footbreak", footbreak_rows)
     assert_no_nan("Crown", crown_rows)
     assert_market_stats_consistent(
@@ -135,6 +279,9 @@ def main() -> None:
         (footbreak.get("prediction_history") or {}).get("stats") or {},
     )
     assert_market_stats_consistent("Crown", crown_rows, crown.get("stats") or {})
+    assert_crown_publication_matches(crown, crown_public)
+    report_result_gaps("Footbreak", footbreak_rows)
+    report_result_gaps("Crown", crown_rows)
     verify_known_crown_incident(crown_rows)
 
 

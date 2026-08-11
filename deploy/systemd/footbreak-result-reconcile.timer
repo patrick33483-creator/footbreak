@@ -1,8 +1,8 @@
 [Unit]
-Description=Retry Footbreak and Crown prediction results every 30 minutes
+Description=Audit and reconcile Footbreak and Crown every 15 minutes
 
 [Timer]
-OnCalendar=*:10,40
+OnCalendar=*:0/15
 Persistent=true
 RandomizedDelaySec=15
 Unit=footbreak-result-reconcile.service

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -49,6 +50,32 @@ def compact(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def timer_state() -> dict[str, str]:
+    completed = subprocess.run(
+        [
+            "systemctl",
+            "show",
+            "footbreak-result-reconcile.timer",
+            "--no-pager",
+            "--property=ActiveState",
+            "--property=UnitFileState",
+            "--property=LastTriggerUSec",
+            "--property=NextElapseUSecRealtime",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    state: dict[str, str] = {"returncode": str(completed.returncode)}
+    for line in completed.stdout.splitlines():
+        if "=" in line:
+            key, value = line.split("=", 1)
+            state[key] = value
+    if completed.stderr.strip():
+        state["stderr"] = completed.stderr.strip()
+    return state
+
+
 def main() -> None:
     footbreak = load(FOOTBREAK_DATA)
     crown = load(CROWN_HISTORY)
@@ -77,6 +104,7 @@ def main() -> None:
 
     audit = {
         "generated_at": datetime.now(HKT).isoformat(),
+        "server_timer": timer_state(),
         "crown": {
             "stats": crown.get("stats"),
             "result_sync": crown.get("result_sync"),
@@ -86,6 +114,17 @@ def main() -> None:
         "footbreak": {
             "stats": (footbreak.get("prediction_history") or {}).get("stats"),
             "row_count": len(footbreak_rows),
+            "t5_hdc_rows": [
+                compact(row)
+                for row in footbreak_rows
+                if row.get("stage") == "T-5"
+                and any(
+                    isinstance(grade, dict)
+                    and grade.get("code") == "HDC"
+                    and grade.get("grade_status") == "GRADED"
+                    for grade in (row.get("market_grades") or [])
+                )
+            ],
         },
     }
     print(json.dumps(audit, ensure_ascii=False, indent=2))

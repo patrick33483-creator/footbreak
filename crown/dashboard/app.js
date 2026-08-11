@@ -1242,9 +1242,14 @@ function historyStageMarketMatrix(stats) {
   const matrix = stats.by_stage_market || {};
   const cell = (stage, code) => {
     const x = (matrix[stage] || {})[code] || {};
+    const graded = Number(x.graded || 0);
+    const decided = Number(x.decided || 0);
+    const pushes = Math.max(0, graded - decided);
     return x.accuracy == null
-      ? `<span class="stage-market-empty">待累積</span><small>${x.graded || 0} 個已評分</small>`
-      : `<strong>${pc(x.accuracy, 1)}</strong><small>${x.hits}/${x.decided}</small>`;
+      ? `<span class="stage-market-empty">待累積</span><small>已評分 ${graded}${pushes ? ` · 走水 ${pushes}` : ''}</small>`
+      : `<strong>${pc(x.accuracy, 1)}</strong>
+         <small>命中 ${x.hits}/${decided}</small>
+         <small>已評分 ${graded}${pushes ? ` · 走水 ${pushes}` : ''}</small>`;
   };
   return `<div class="stage-market-block">
     <div class="stage-market-title">分階段市場命中率 <span>每格獨立計算</span></div>
@@ -1292,8 +1297,11 @@ function renderHistory() {
   }).join('');
   const marketSummary = ['HDC', 'HIL', 'CHL'].map((code) => {
     const x = (s.by_market || {})[code] || {};
+    const pushes = Math.max(0, Number(x.graded || 0) - Number(x.decided || 0));
     return `<span class="hist-stage"><b>${HIST_MARKET_LABEL[code]}</b> ${
-      x.accuracy == null ? `待累積 (${x.graded || 0})` : `${pc(x.accuracy, 1)} (${x.hits}/${x.decided})`
+      x.accuracy == null
+        ? `待累積 (已評分 ${x.graded || 0})`
+        : `${pc(x.accuracy, 1)} (命中 ${x.hits}/${x.decided} · 已評分 ${x.graded || 0}${pushes ? ` · 走水 ${pushes}` : ''})`
     }</span>`;
   }).join('');
   const historyRows = (items) => items.map((r) => `<tr>

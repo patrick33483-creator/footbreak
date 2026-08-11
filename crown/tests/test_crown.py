@@ -1780,7 +1780,7 @@ class CrownSafetyTests(unittest.TestCase):
         self.assertIn("font: 600 12px/1.6 var(--sans)", styles)
         index = (root / "index.html").read_text(encoding="utf-8")
         self.assertIn("styles.css?v=20260811-shadow-history-filter-v1", index)
-        self.assertIn("app.js?v=20260811-shadow-history-filter-v1", index)
+        self.assertIn("app.js?v=20260812-stat-audit-v2", index)
         self.assertIn("const historyStageRank = { '首預': 1, 'T-30': 2, 'T-5': 3 }", app)
         self.assertIn("row.kickoff_hkt || row.kickoff", app)
         self.assertIn('id="scrollTop"', index)
