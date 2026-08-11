@@ -153,10 +153,10 @@ nginx -t
 systemctl reload nginx || systemctl restart nginx
 
 # Timer restarts and a pending persistent settlement may run during deployment.
-# Reassert both long-running dashboard APIs only after every timer, static file
-# and nginx operation has completed, then require their sockets to stay live.
+# The APIs were already restarted and HTTP-checked above.  Do not restart them
+# a second time here: doing so creates a race with those queued timer jobs and
+# can make a healthy service miss the final readiness window.
 systemctl enable --now crown-dashboard-api.service footbreak-dashboard-api.service
-systemctl restart crown-dashboard-api.service footbreak-dashboard-api.service
 final_api_ready=0
 for _ in $(seq 1 30); do
   if systemctl is-active --quiet crown-dashboard-api.service &&
