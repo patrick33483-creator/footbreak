@@ -49,7 +49,16 @@ jobs:
               exit 1
             fi
             echo "=== Footbreak settlement ==="
-            sudo /opt/footbreak/deploy/run.sh settle
+            set +e
+            footbreak_output=$(sudo /opt/footbreak/deploy/run.sh settle 2>&1)
+            footbreak_rc=$?
+            set -e
+            printf "%s\n" "$footbreak_output"
+            if [ "$footbreak_rc" -ne 0 ]; then
+              footbreak_error=$(printf "%s\n" "$footbreak_output" | tail -n 20 | tr "\n" " " | sed "s/%/%25/g")
+              echo "::error file=.github/workflows/settle.yml,line=52::$footbreak_error"
+              exit "$footbreak_rc"
+            fi
             echo "=== Crown direct settlement ==="
             sudo /opt/footbreak/deploy/crown-run.sh settle
             python3 -c "import json; d=json.load(open(\"/var/www/footbreak-crown/data.json\", encoding=\"utf-8\")); assert d.get(\"schema_version\") == \"crown-dashboard-v2\"; l=d.get(\"ledger\") or {}; print(\"Crown direct OK\", len(l.get(\"bets\") or []), len(l.get(\"shadow_bets\") or []), (d.get(\"prediction_history\") or {}).get(\"result_sync\"))"
