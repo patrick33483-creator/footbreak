@@ -1779,11 +1779,20 @@ class CrownSafetyTests(unittest.TestCase):
                         {
                             "homeResult": "2",
                             "awayResult": "1",
-                            "ttlCornerResult": "11",
+                            "ttlCornerResult": "-1",
                             "payoutConfirmed": True,
                             "stageId": 5,
                             "resultType": 1,
                             "sequence": 2,
+                        },
+                        {
+                            "homeResult": "5",
+                            "awayResult": "7",
+                            "ttlCornerResult": "-1",
+                            "payoutConfirmed": True,
+                            "stageId": 5,
+                            "resultType": 2,
+                            "sequence": 3,
                         },
                     ],
                 }],
@@ -1797,7 +1806,7 @@ class CrownSafetyTests(unittest.TestCase):
         self.assertEqual(opener.call_count, 2)
         self.assertEqual(rows["wanted"]["home_score"], 2)
         self.assertEqual(rows["wanted"]["away_score"], 1)
-        self.assertEqual(rows["wanted"]["corners_total"], 11)
+        self.assertEqual(rows["wanted"]["corners_total"], 12)
         self.assertEqual(rows["wanted"]["source"], "hkjc_official")
 
 

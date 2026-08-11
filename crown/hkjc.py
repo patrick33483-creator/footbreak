@@ -210,8 +210,30 @@ def fetch_official_result_events(dates: set[str]) -> list[dict[str, Any]]:
         if not rows:
             continue
         row = max(rows, key=lambda item: int(item.get("sequence") or 0))
+        # HKJC's detailed-results page stores corners as a separate market
+        # result stream (resultType=2).  ttlCornerResult on the score stream
+        # is normally -1, so reading only resultType=1 silently loses every
+        # otherwise published corner result.
+        corner_rows = [
+            item for item in (match.get("results") or [])
+            if item.get("payoutConfirmed") is True
+            and str(item.get("stageId")) == "5"
+            and str(item.get("resultType")) == "2"
+        ]
+        corner_row = (
+            max(corner_rows, key=lambda item: int(item.get("sequence") or 0))
+            if corner_rows else None
+        )
         try:
-            corners = int(row["ttlCornerResult"]) if row.get("ttlCornerResult") is not None else None
+            corners = None
+            if corner_row is not None:
+                corner_home = int(corner_row["homeResult"])
+                corner_away = int(corner_row["awayResult"])
+                if corner_home >= 0 and corner_away >= 0:
+                    corners = corner_home + corner_away
+            if corners is None and row.get("ttlCornerResult") is not None:
+                legacy_corners = int(row["ttlCornerResult"])
+                corners = legacy_corners if legacy_corners >= 0 else None
             home_team = match.get("homeTeam") or {}
             away_team = match.get("awayTeam") or {}
             tournament = match.get("tournament") or {}
@@ -224,8 +246,9 @@ def fetch_official_result_events(dates: set[str]) -> list[dict[str, Any]]:
                 "kickoff": match.get("kickOffTime") or match.get("matchDate"),
                 "home_score": int(row["homeResult"]),
                 "away_score": int(row["awayResult"]),
-                # HKJC uses -1 as a missing-data sentinel, not a genuine count.
-                "corners_total": corners if corners is not None and corners >= 0 else None,
+                "corners_home": corner_home if corner_row is not None else None,
+                "corners_away": corner_away if corner_row is not None else None,
+                "corners_total": corners,
                 "source": "hkjc_official",
             }
         except (TypeError, ValueError, KeyError):
