@@ -12,7 +12,7 @@ from unittest.mock import Mock, patch
 
 from crown.config import settings
 from crown.dashboard_data import build, write_dashboard_data
-from crown.engine import _candidates, _crown_market_forecasts, _fixture_baseline_prediction, _fresh, _hkjc_chl_candidates, _hkjc_chl_forecasts, _prediction, _refresh_crown_quote, _tick_rows_from_predictions, _wdl_prediction
+from crown.engine import _candidates, _crown_market_forecasts, _fixture_baseline_prediction, _fresh, _hkjc_chl_candidates, _hkjc_chl_forecasts, _prediction, _refresh_crown_quote, _skip_new_confirmed_empty_crown, _tick_rows_from_predictions, _wdl_prediction
 from crown.hkjc import fetch_official_results
 from crown.ledger import (
     completed_stages,
@@ -563,21 +563,45 @@ class CrownSafetyTests(unittest.TestCase):
         titan_client = Mock()
         titan_client.crown_prices.return_value = []
         pinnapi_client = Mock()
-        with patch("crown.engine.datetime") as mocked_datetime, patch("crown.engine.time.time", return_value=1001):
+        with patch("crown.engine.datetime") as mocked_datetime, \
+                patch("crown.engine.time.time", return_value=1001), \
+                patch("crown.engine._hkjc_chl", return_value=[{
+                    "condition": "9.5",
+                    "main": True,
+                    "odds": {"H": 1.97, "L": 1.74},
+                    "provider": "HKJC",
+                    "source": "hkjc_chl",
+                }]):
             mocked_datetime.now.return_value = self.now
             prediction = _prediction(
-                titan, bridge, None, "T-5", config, titan_client, pinnapi_client,
+                titan, bridge, {"id": "hkjc"}, "T-5", config,
+                titan_client, pinnapi_client,
+                crown_snapshot={"prices": [], "asian_ok": True, "total_ok": True},
                 previous_crown_prices=previous,
             )
         self.assertEqual(prediction["status"], "PREDICTION_READY")
         self.assertEqual(prediction["verdict"], "已預測")
         self.assertTrue(prediction["crown_quote_cached_forecast_only"])
-        self.assertEqual({row["code"] for row in prediction["forecast_candidates"]}, {"HDC", "HIL"})
+        self.assertEqual(
+            {row["code"] for row in prediction["forecast_candidates"]},
+            {"HDC", "HIL", "CHL"},
+        )
         self.assertEqual(prediction["book_odds"]["crown"], previous)
         self.assertEqual(prediction["candidates"], [])
         self.assertIsNone(prediction["pick"])
         self.assertIn("禁止計算 edge 及投注", prediction["no_bet_reason"])
         pinnapi_client.lines.assert_not_called()
+
+    def test_sweep_skips_confirmed_empty_crown_only_without_existing_card(self) -> None:
+        empty = {"prices": [], "asian_ok": True, "total_ok": True}
+        self.assertTrue(_skip_new_confirmed_empty_crown(empty, None))
+        self.assertFalse(_skip_new_confirmed_empty_crown(empty, {
+            "match_id": "existing",
+            "book_odds": {"crown": [{"market": "HDC", "odds": 1.8}]},
+        }))
+        self.assertFalse(_skip_new_confirmed_empty_crown({
+            "prices": [], "asian_ok": False, "total_ok": True,
+        }, None))
 
     def test_missing_pinnapi_mapping_never_blocks_valid_crown_forecast(self) -> None:
         config = replace(settings(), source_max_age_seconds=90)

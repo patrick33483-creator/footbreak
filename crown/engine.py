@@ -801,6 +801,20 @@ def _refresh_crown_quote(
     return refreshed
 
 
+def _skip_new_confirmed_empty_crown(
+    crown_snapshot: dict[str, Any] | None,
+    previous: dict[str, Any] | None,
+) -> bool:
+    """Skip only a brand-new fixture whose two Crown markets are confirmed empty."""
+    return bool(
+        previous is None
+        and crown_snapshot is not None
+        and crown_snapshot.get("asian_ok")
+        and crown_snapshot.get("total_ok")
+        and not crown_snapshot.get("prices")
+    )
+
+
 def run(mode: str, config: Settings) -> dict[str, Any]:
     """Run a remote pass only when the explicit validation gate and PinnAPI key exist."""
     if mode not in {"tick", "sweep", "settle"}:
@@ -907,15 +921,16 @@ def run(mode: str, config: Settings) -> dict[str, Any]:
             )
             continue
         crown_snapshot = refresh_quotes.get(event.id) if mode == "sweep" else None
-        if (
-            crown_snapshot is not None
-            and crown_snapshot.get("asian_ok")
-            and crown_snapshot.get("total_ok")
-            and not crown_snapshot.get("prices")
-        ):
+        if _skip_new_confirmed_empty_crown(crown_snapshot, previous):
             # The fixture exists on Titan's complete schedule but Crown has
-            # neither supported market. Keep it off the Crown board and avoid
-            # unnecessary HKJC/PinnAPI matching until the next 30-minute sweep.
+            # neither supported market and has no earlier valid Crown quote.
+            # Keep a brand-new empty fixture off the Crown board and avoid
+            # unnecessary HKJC/PinnAPI matching until the next sweep.
+            #
+            # An existing card must continue into _prediction(): its last
+            # valid Crown quote is forecast-only, while a current HKJC corner
+            # market can still produce a CHL learning forecast.  Returning
+            # here used to strand old first-look cards before corner handling.
             continue
         stage = stage_for(minutes, mode == "sweep", done)
         if not stage:
