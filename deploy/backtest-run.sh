@@ -3,6 +3,7 @@ set -euo pipefail
 
 APP_DIR="/opt/footbreak"
 STATE_DIR="/var/lib/footbreak/backtest"
+CHALLENGER_DIR="/var/lib/footbreak/challenger"
 LEARNING_DB="/var/lib/footbreak/learning/predictions.sqlite"
 
 if [ -f /etc/footbreak.env ]; then
@@ -12,6 +13,7 @@ if [ -f /etc/footbreak.env ]; then
 fi
 
 install -d -o root -g root -m 0700 "$STATE_DIR"
+install -d -o root -g root -m 0700 "$CHALLENGER_DIR"
 install -d -o root -g www-data -m 0755 /var/www/footbreak /var/www/crown
 
 cd "$APP_DIR"
@@ -67,6 +69,14 @@ fi
   --out "$STATE_DIR/latest.json" \
   --public /var/www/footbreak/backtest.json \
   --public /var/www/crown/backtest.json
+
+# Dedicated, read-only challenger artifact.  It is train/evaluate only: it
+# never writes a live probability, pick, official/shadow ledger, or stake.
+"$APP_DIR/.venv/bin/python3" -m analysis.challenger_model \
+  --learning-db "$LEARNING_DB" \
+  --out "$CHALLENGER_DIR/latest.json" \
+  --public /var/www/footbreak/challenger-status.json \
+  --public /var/www/crown/challenger-status.json
 
 # Only passed safety gates produce a Telegram review request. notify.py keeps
 # its own idempotent review keys, so the daily timer never repeats a candidate.

@@ -59,6 +59,7 @@ def _market_predictions(candidates: list[dict[str, Any]]) -> list[dict[str, Any]
             "line": best.get("line"),
             "side": best.get("side"),
             "label": best.get("label"),
+            "odds": best.get("odds"),
             "probability": best.get("prob"),
             "source": best.get("reference") or "pinnapi_exact_line",
             "provider": best.get("provider") or "Crown",

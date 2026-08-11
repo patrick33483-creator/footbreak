@@ -112,6 +112,7 @@ def _market_predictions(candidates):
             "condition": best.get("condition"),
             "side": best.get("side"),
             "label": best.get("label"),
+            "odds": best.get("odds"),
             "probability": round(decided_probability(best), 6),
             "win_probability": best.get("prob"),
             "push_probability": best.get("push"),
@@ -218,6 +219,13 @@ def _snap(r, now):
         "schema_version": PREDICTION_SCHEMA_VERSION,
         "stage": r["stage"],
         "ts": now,
+        # Fixture context is stored with every immutable stage snapshot so the
+        # offline challenger can encode league/home-away context without
+        # joining mutable live-watch state.
+        "league": r.get("league"),
+        "home": r.get("home"),
+        "away": r.get("away"),
+        "neutral": r.get("neutral"),
         "can_bet": can_bet,
         "mins_to_ko": r.get("mins_to_ko"),
         "conviction": r.get("conviction"),

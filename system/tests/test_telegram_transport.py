@@ -87,6 +87,31 @@ class TelegramTransportTests(unittest.TestCase):
             state = json.loads(state_path.read_text(encoding="utf-8"))
             self.assertEqual(state["reviews"], ["upgrade:footbreak:stage:T-5"])
 
+    def test_feature_challenger_only_creates_review_event_after_gate_passes(self) -> None:
+        report = {
+            "systems": {
+                "crown": {
+                    "model_challenger_tests": {
+                        "tests": {
+                            "HIL": {
+                                "status": "candidate_passed_human_review_required",
+                                "model_version": "challenger-logit-v1",
+                                "model_version_hash": "abc123",
+                                "holdout_fixtures": 30,
+                                "holdout_rows": 60,
+                                "delta": {"brier": -.02, "log_loss": -.01, "accuracy": .01},
+                            },
+                            "CHL": {"status": "tested_no_safe_upgrade"},
+                        },
+                    },
+                },
+            },
+        }
+        self.assertEqual(
+            [event["key"] for event in notify.review_events(report)],
+            ["challenger:crown:HIL:abc123"],
+        )
+
     def test_long_lived_bot_token_uses_direct_telegram_api(self) -> None:
         response = Mock()
         response.read.return_value = json.dumps({"ok": True}).encode()

@@ -280,6 +280,24 @@ def review_events(report):
                     f"命中率 Δ {delta.get('accuracy')}"
                 ),
             })
+        model_tests = (payload.get("model_challenger_tests") or {}).get("tests") or {}
+        for market, test in model_tests.items():
+            if test.get("status") != "candidate_passed_human_review_required":
+                continue
+            delta = test.get("delta") or {}
+            version = str(test.get("model_version_hash") or "unknown")
+            events.append({
+                "key": f"challenger:{system}:{market}:{version}",
+                "system": label,
+                "kind": f"{market} 特徵挑戰模型通過",
+                "detail": (
+                    f"模型 {str(test.get('model_version') or 'unknown')} · "
+                    f"驗證 {test.get('holdout_fixtures', 0)} 場/{test.get('holdout_rows', 0)} 預測 · "
+                    f"Brier Δ {delta.get('brier')} · "
+                    f"log loss Δ {delta.get('log_loss')} · "
+                    f"命中率 Δ {delta.get('accuracy')}"
+                ),
+            })
     return events
 
 

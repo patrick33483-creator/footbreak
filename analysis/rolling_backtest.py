@@ -21,6 +21,7 @@ from analysis.time_order_backtest import (
     with_ci,
 )
 from analysis.champion_challenger import all_market_tests
+from analysis.challenger_model import evaluate_all as evaluate_model_challengers
 from analysis.learning_store import LearningStore
 
 TARGET_NEW_MATCHES = 100
@@ -327,6 +328,7 @@ def run(
     learning_db: Path | None = None,
 ) -> dict[str, Any]:
     now = datetime.now(timezone.utc).isoformat()
+    model_challengers: dict[str, Any] | None = None
     if learning_db is not None:
         if not learning_db.is_file():
             raise FileNotFoundError(
@@ -335,6 +337,10 @@ def run(
         with LearningStore(learning_db) as store:
             crown_wdl, crown_markets = store.backtest_rows("crown")
             footbreak_wdl, footbreak_markets = store.backtest_rows("footbreak")
+            # This is a read-only daily evaluation.  It has no live-model,
+            # ledger, stake, or pick integration and merely makes a passed
+            # candidate available to the existing human-review notifier.
+            model_challengers = evaluate_model_challengers(store)["systems"]
         rows_by_system = {
             "crown": crown_wdl,
             "footbreak": footbreak_wdl,
@@ -384,10 +390,13 @@ def run(
         systems[name]["market_model_upgrade_tests"] = all_market_tests(
             market_rows_by_system[name]
         )
+        if model_challengers is not None:
+            systems[name]["model_challenger_tests"] = model_challengers[name]
     review_required = any(
         item["status"] == "ready_for_human_review"
         or (item.get("automatic_upgrade_test") or {}).get("status") == "candidate_passed"
         or bool((item.get("market_model_upgrade_tests") or {}).get("review_required"))
+        or bool((item.get("model_challenger_tests") or {}).get("review_required"))
         for item in systems.values()
     )
     result = {
@@ -405,6 +414,9 @@ def run(
             "maximum_log_loss_increase": MAX_LOG_LOSS_INCREASE,
             "auto_apply": False,
             "notifications": "passed_threshold_only",
+            "model_challenger": (
+                "daily isolated train/evaluate report only; no runtime probability or pick integration"
+            ),
         },
         "started_at": state["started_at"],
         "overall_status": (

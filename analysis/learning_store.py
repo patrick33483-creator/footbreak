@@ -612,6 +612,106 @@ class LearningStore:
             "log_loss": log_loss,
         }
 
+    def challenger_rows(self, system: str) -> tuple[list[dict[str, Any]], dict[str, int]]:
+        """Return read-only, pre-kickoff market examples for a challenger.
+
+        Unlike :meth:`backtest_rows`, this deliberately retains the immutable
+        prediction payload.  The challenger feature extractor is responsible
+        for using its explicit pre-kickoff whitelist; result/grade content is
+        limited here to the target and the champion probability.  Every stage
+        remains present, so a model may use a prior *prediction* stage without
+        ever splitting one fixture across chronological partitions.
+
+        This method issues no INSERT, UPDATE, or DELETE statements.  Late
+        snapshots stay quarantined and are counted in ``diagnostics`` only.
+        """
+        system = self._valid_system(system)
+        with self._lock:
+            self._ensure_open()
+            diagnostics_row = self._connection.execute(
+                """
+                SELECT
+                    SUM(CASE WHEN pre_kickoff = 1 THEN 1 ELSE 0 END) AS pre_kickoff,
+                    SUM(CASE WHEN pre_kickoff = 0 THEN 1 ELSE 0 END) AS quarantined
+                FROM prediction_snapshots
+                WHERE system = ?
+                """,
+                (system,),
+            ).fetchone()
+            rows = self._connection.execute(
+                """
+                WITH ranked_snapshots AS (
+                    SELECT snapshots.*,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY system, fixture_id, stage
+                               ORDER BY generated_at DESC, snapshot_id DESC
+                           ) AS snapshot_rank
+                    FROM prediction_snapshots AS snapshots
+                    WHERE system = ? AND pre_kickoff = 1
+                ),
+                ranked_grades AS (
+                    SELECT grades.*,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY snapshot_id, market, target
+                               ORDER BY grade_attempt DESC, grade_id DESC
+                           ) AS grade_rank
+                    FROM grades
+                )
+                SELECT snapshots.fixture_id, snapshots.stage, snapshots.generated_at,
+                       snapshots.kickoff, snapshots.payload_json,
+                       grades.market, grades.target, grades.metrics_json
+                FROM ranked_snapshots AS snapshots
+                JOIN ranked_grades AS grades
+                  ON grades.snapshot_id = snapshots.snapshot_id
+                 AND grades.grade_rank = 1
+                WHERE snapshots.snapshot_rank = 1
+                  AND grades.state = 'GRADED'
+                  AND grades.market IN ('HDC', 'HIL', 'CHL')
+                ORDER BY snapshots.kickoff, snapshots.fixture_id,
+                         snapshots.stage, grades.market, grades.target
+                """,
+                (system,),
+            ).fetchall()
+
+        output: list[dict[str, Any]] = []
+        malformed = 0
+        for row in rows:
+            try:
+                payload = json.loads(row["payload_json"])
+                metrics = json.loads(row["metrics_json"])
+                probability = float(metrics["probability"])
+                target = float(metrics["target"])
+                kickoff = datetime.fromisoformat(row["kickoff"])
+                generated_at = datetime.fromisoformat(row["generated_at"])
+                if (
+                    not isinstance(payload, dict)
+                    or not math.isfinite(probability)
+                    or not math.isfinite(target)
+                    or not 0.0 <= probability <= 1.0
+                    or not 0.0 <= target <= 1.0
+                    or generated_at >= kickoff
+                ):
+                    raise ValueError("invalid challenger source row")
+            except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+                malformed += 1
+                continue
+            output.append({
+                "match_id": str(row["fixture_id"]),
+                "kickoff": kickoff,
+                "predicted_at": generated_at,
+                "stage": str(row["stage"]),
+                "market": str(row["market"]),
+                "target_key": str(row["target"]),
+                "probability": probability,
+                "target": target,
+                "payload": payload,
+            })
+        return output, {
+            "pre_kickoff_snapshots": int(diagnostics_row["pre_kickoff"] or 0),
+            "quarantined_snapshots": int(diagnostics_row["quarantined"] or 0),
+            "malformed_or_nonfinite_rows_excluded": malformed,
+        }
+
     def _migrate(self) -> None:
         with self._lock:
             self._connection.execute(

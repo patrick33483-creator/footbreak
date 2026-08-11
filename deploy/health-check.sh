@@ -115,6 +115,27 @@ PY
 echo "OK Crown dashboard API /api/data"
 echo "OK Footbreak dashboard API /api/data"
 
+python3 - <<'PY'
+import json
+from pathlib import Path
+
+for name in ("/var/www/footbreak/challenger-status.json", "/var/www/crown/challenger-status.json"):
+    path = Path(name)
+    if not path.is_file():
+        # It is created by the daily 12:20 HKT timer.  A fresh deploy before
+        # that timer must not fail health solely because no candidate report
+        # has ever been produced.
+        print(f"WARN challenger status pending first daily evaluation: {path}")
+        continue
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    policy = payload.get("policy") or {}
+    if policy.get("mode") != "daily_train_evaluate_candidate_report_only":
+        raise SystemExit(f"FAIL challenger artifact is not isolated daily evaluation: {path}")
+    if policy.get("auto_apply") is not False:
+        raise SystemExit(f"FAIL challenger artifact permits auto apply: {path}")
+    print(f"OK isolated challenger status {path}")
+PY
+
 for service in footbreak-tick.service footbreak-settle.service footbreak-result-reconcile.service crown-tick.service crown-sweep.service crown-settle.service; do
   result="$(systemctl show "$service" -p Result --value)"
   status="$(systemctl show "$service" -p ExecMainStatus --value)"
