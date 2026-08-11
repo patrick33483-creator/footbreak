@@ -314,6 +314,14 @@ class ResultSourceTests(unittest.TestCase):
         self.assertNotIn('/var/www/footbreak-crown/data.json', workflow)
         self.assertIn("systemctl stop crown-tick.service", workflow)
 
+    def test_health_check_accepts_intentional_sigterm_when_timer_is_active(self) -> None:
+        health = Path(
+            SYSTEM_DIR.parent, "deploy", "health-check.sh"
+        ).read_text(encoding="utf-8")
+        self.assertIn('timer="${service%.service}.timer"', health)
+        self.assertIn('systemctl is-active --quiet "$timer"', health)
+        self.assertIn('[ "$status" = 15 ]', health)
+
 
 if __name__ == "__main__":
     unittest.main()
