@@ -68,7 +68,8 @@ def _market_predictions(candidates: list[dict[str, Any]]) -> list[dict[str, Any]
 def _snapshot(prediction: dict[str, Any], stage: str) -> dict[str, Any]:
     snapshot = {key: prediction.get(key) for key in (
         "match_id", "league", "home", "away", "kickoff_hkt", "mins_to_ko", "status", "verdict",
-        "conviction", "no_bet_reason", "pick", "lead_view", "market_sources", "hkjc_match_id",
+        "conviction", "no_bet_reason", "pick", "shadow_pick", "shadow_status",
+        "shadow_no_bet_reason", "lead_view", "market_sources", "hkjc_match_id",
         "titan_match_id", "pinnapi_event_id", "source_snapshot_at", "execution",
         "outcome", "forecast", "probability", "likely_score", "prediction_source",
         "probabilities", "baseline_low_confidence", "edge_reference_status", "edge_reference_note",
@@ -89,6 +90,14 @@ def _snapshot(prediction: dict[str, Any], stage: str) -> dict[str, Any]:
 def _bet_id(prediction: dict[str, Any]) -> str:
     pick = prediction["pick"]
     return f"{prediction['match_id']}|{pick['code']}|{pick['condition']}|{pick['side']}"
+
+
+def _shadow_bet_id(prediction: dict[str, Any]) -> str:
+    pick = prediction["shadow_pick"]
+    return (
+        f"shadow|{prediction['match_id']}|{pick['code']}|"
+        f"{pick['condition']}|{pick['side']}"
+    )
 
 
 def _record_learning_snapshot(
@@ -113,6 +122,9 @@ def _record_learning_snapshot(
 
 def sync_prediction(ledger: dict[str, Any], prediction: dict[str, Any], config: Settings) -> list[str]:
     """Repeated calls are a no-op for a created simulation and notification key."""
+    ledger.setdefault("bets", [])
+    ledger.setdefault("shadow_bets", [])
+    ledger.setdefault("watch", {})
     stage = prediction.get("stage")
     if stage not in STAGES:
         return []
@@ -146,6 +158,41 @@ def sync_prediction(ledger: dict[str, Any], prediction: dict[str, Any], config: 
         stage_rows.sort(key=lambda row: STAGES[row["stage"]])
     else:
         existing.update(snapshot)
+    if stage == "T-5" and prediction.get("shadow_pick"):
+        shadow_bets = ledger["shadow_bets"]
+        # Shadow decisions are also one-per-fixture and idempotent. They are
+        # deliberately stored outside ledger["bets"], which remains the only
+        # official simulation, learning and notification portfolio.
+        if not any(str(bet.get("match_id")) == match_id for bet in shadow_bets):
+            shadow_id = _shadow_bet_id(prediction)
+            shadow_pick = prediction["shadow_pick"]
+            shadow_bets.append({
+                "bet_id": shadow_id, "match_id": match_id,
+                "league": prediction.get("league"), "home": prediction.get("home"),
+                "away": prediction.get("away"), "kickoff": prediction.get("kickoff_hkt"),
+                "titan_match_id": prediction.get("titan_match_id"),
+                "pinnapi_event_id": prediction.get("pinnapi_event_id"),
+                "hkjc_match_id": prediction.get("hkjc_match_id"),
+                "market": shadow_pick["market"], "code": shadow_pick["code"],
+                "condition": shadow_pick["condition"], "side": shadow_pick["side"],
+                "label": shadow_pick["label"], "line": shadow_pick.get("line"),
+                "odds": shadow_pick["odds"], "stake": shadow_pick["stake"],
+                "model_prob": shadow_pick["prob"], "ev": None,
+                "provider": shadow_pick.get("provider"), "source": shadow_pick.get("source"),
+                "bookmaker": shadow_pick.get("bookmaker"),
+                "reference": shadow_pick.get("reference"),
+                "reference_provider": shadow_pick.get("reference_provider"),
+                "confidence_only": True, "shadow_only": True, "portfolio": "shadow",
+                "conviction": shadow_pick.get("conviction"),
+                "first_stage": "T-5", "stage": "T-5", "status": "PENDING",
+                "simulation_only": True, "real_betting_enabled": False,
+                "created_at": iso_hkt(),
+                "history": [{
+                    "ts": iso_hkt(), "stage": "T-5",
+                    "action": "影子注建立", "bet_id": shadow_id,
+                    "reason": "confidence-only；固定 2% 虛擬本金；不計 EV",
+                }],
+            })
     if stage != "T-5" or not prediction.get("pick"):
         return []
     # One final simulation decision per Crown prediction fixture.  A retry or
@@ -175,8 +222,7 @@ def sync_prediction(ledger: dict[str, Any], prediction: dict[str, Any], config: 
     return [bid]
 
 
-def recompute_stats(ledger: dict[str, Any], config: Settings) -> dict[str, Any]:
-    bets = ledger["bets"]
+def _portfolio_stats(bets: list[dict[str, Any]], bankroll: float) -> dict[str, Any]:
     settled = [bet for bet in bets if bet.get("status") == "SETTLED"]
     pending = [bet for bet in bets if bet.get("status") == "PENDING"]
     pnl = round(sum(float(bet.get("pnl") or 0) for bet in settled), 2)
@@ -203,7 +249,7 @@ def recompute_stats(ledger: dict[str, Any], config: Settings) -> dict[str, Any]:
 
     result_names = ("Won", "Half Won", "Refunded", "Half Lost", "Lost")
     res_counts = {name: sum(bet.get("result") == name for bet in settled) for name in result_names}
-    running_equity = config.bankroll
+    running_equity = bankroll
     curve = []
     for bet in sorted(settled, key=lambda row: str(row.get("settled_at") or row.get("created_at") or "")):
         bet_pnl = float(bet.get("pnl") or 0)
@@ -215,15 +261,24 @@ def recompute_stats(ledger: dict[str, Any], config: Settings) -> dict[str, Any]:
             "equity": round(running_equity, 2),
         })
 
-    previous_staking = ((ledger.get("stats") or {}).get("staking") or {})
-    stats = {
+    return {
         "n_pending": len(pending), "n_voided": sum(bet.get("status") == "VOIDED" for bet in bets), "n_settled": len(settled),
         "open_stake": round(sum(float(bet.get("stake") or 0) for bet in pending), 2),
-        "open_pct": round(sum(float(bet.get("stake") or 0) for bet in pending) / config.bankroll, 4) if config.bankroll else 0,
+        "open_pct": round(sum(float(bet.get("stake") or 0) for bet in pending) / bankroll, 4) if bankroll else 0,
         "pnl": pnl, "turnover": turnover, "roi": round(pnl / turnover, 4) if turnover else None,
         "n_decided": len(decided), "hits": hits, "hit_rate": round(hits / len(decided), 4) if decided else None,
-        "equity": round(config.bankroll + pnl, 2), "by_market": by_market, "curve": curve,
+        "equity": round(bankroll + pnl, 2), "by_market": by_market, "curve": curve,
         "res_counts": res_counts,
+    }
+
+
+def recompute_stats(ledger: dict[str, Any], config: Settings) -> dict[str, Any]:
+    bets = ledger.setdefault("bets", [])
+    shadow_bets = ledger.setdefault("shadow_bets", [])
+    base = _portfolio_stats(bets, config.bankroll)
+    previous_staking = ((ledger.get("stats") or {}).get("staking") or {})
+    stats = {
+        **base,
         "daily_cap": config.bankroll, "open_cap": round(config.bankroll * 0.35, 2), "single_cap_pct": 0.04,
         "conf_floor": config.confidence_floor, "bet_stage": "T-5", "n_watch": len(ledger["watch"]),
         "n_stage_preds": sum(len(item.get("stages") or []) for item in ledger["watch"].values()),
@@ -232,7 +287,7 @@ def recompute_stats(ledger: dict[str, Any], config: Settings) -> dict[str, Any]:
             "cap": previous_staking.get("cap", 0.04),
             "label": previous_staking.get("label", "階段一 · 建立樣本"),
             "level": previous_staking.get("level", 1),
-            "n_settled": len(settled),
+            "n_settled": base["n_settled"],
             "slope": previous_staking.get("slope"),
             "buckets": previous_staking.get("buckets", []),
             "perf": previous_staking.get("perf", {}),
@@ -241,6 +296,14 @@ def recompute_stats(ledger: dict[str, Any], config: Settings) -> dict[str, Any]:
         },
     }
     ledger["stats"] = stats
+    ledger["shadow_stats"] = {
+        **_portfolio_stats(shadow_bets, config.bankroll),
+        "conf_floor": config.confidence_floor,
+        "bet_stage": "T-5",
+        "single_cap_pct": 0.02,
+        "mode": "confidence_only_shadow",
+        "excluded_from_official": True,
+    }
     return stats
 
 

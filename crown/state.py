@@ -32,16 +32,21 @@ def paths(config: Settings) -> dict[str, Path]:
 
 
 def default_ledger(bankroll: float) -> dict[str, Any]:
-    return {"bankroll": bankroll, "bets": [], "watch": {}, "log": [], "stats": {}}
+    return {
+        "bankroll": bankroll, "bets": [], "shadow_bets": [], "watch": {},
+        "log": [], "stats": {}, "shadow_stats": {},
+    }
 
 
 def load_ledger(config: Settings) -> dict[str, Any]:
     data = read_json(paths(config)["ledger"], default_ledger(config.bankroll))
     data.setdefault("bankroll", config.bankroll)
     data.setdefault("bets", [])
+    data.setdefault("shadow_bets", [])
     data.setdefault("watch", {})
     data.setdefault("log", [])
     data.setdefault("stats", {})
+    data.setdefault("shadow_stats", {})
     return data
 
 

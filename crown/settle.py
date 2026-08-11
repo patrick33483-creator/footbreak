@@ -64,7 +64,8 @@ def _settle(bet: dict[str, Any], score: dict[str, Any], source: str) -> bool:
     bet.update({"status": "SETTLED", "result": result, "pnl": pnl(result, float(bet["stake"]), float(bet["odds"])),
                 "score": result_score, "settled_at": iso_hkt(),
                 "settlement_source": source})
-    bet.setdefault("history", []).append({"ts": iso_hkt(), "stage": "結算", "action": "模擬結算",
+    action = "影子結算" if bet.get("portfolio") == "shadow" else "模擬結算"
+    bet.setdefault("history", []).append({"ts": iso_hkt(), "stage": "結算", "action": action,
                                            "result": result, "source": source})
     return True
 
@@ -173,10 +174,32 @@ def _verified_titan_corner_score(
 def settle_due(config: Settings) -> dict[str, Any]:
     ledger = load_ledger(config)
     now = datetime.now(HKT)
-    due = [bet for bet in ledger["bets"] if bet.get("status") == "PENDING" and (parse_time(bet.get("kickoff")) and
-           (now - parse_time(bet["kickoff"])).total_seconds() >= SETTLE_AFTER_SECONDS)]
+    official_bets = ledger.setdefault("bets", [])
+    shadow_bets = ledger.setdefault("shadow_bets", [])
+    official_due = [
+        bet for bet in official_bets
+        if bet.get("status") == "PENDING"
+        and parse_time(bet.get("kickoff"))
+        and (now - parse_time(bet["kickoff"])).total_seconds() >= SETTLE_AFTER_SECONDS
+    ]
+    shadow_due = [
+        bet for bet in shadow_bets
+        if bet.get("status") == "PENDING"
+        and parse_time(bet.get("kickoff"))
+        and (now - parse_time(bet["kickoff"])).total_seconds() >= SETTLE_AFTER_SECONDS
+    ]
+    due = official_due + shadow_due
     if not due:
-        return {"ok": True, "settled": 0, "pending": sum(b.get("status") == "PENDING" for b in ledger["bets"])}
+        recompute_stats(ledger, config)
+        return {
+            "ok": True,
+            "settled": 0,
+            "voided": 0,
+            "pending": sum(b.get("status") == "PENDING" for b in official_bets),
+            "shadow_settled": 0,
+            "shadow_voided": 0,
+            "shadow_pending": sum(b.get("status") == "PENDING" for b in shadow_bets),
+        }
     cache: dict[str, Any] = {}
     standard_due = [bet for bet in due if bet.get("code") != "CHL"]
     try:
@@ -194,10 +217,10 @@ def settle_due(config: Settings) -> dict[str, Any]:
     ]
     hkjc_results: dict[str, dict[str, Any]] = {}
     hkjc_statuses: dict[str, dict[str, Any]] = {}
-    official_due = fallback + corner_due
-    if official_due:
-        dates = {parse_time(bet.get("kickoff")).strftime("%Y-%m-%d") for bet in official_due if parse_time(bet.get("kickoff"))}
-        ids = {str(bet.get("hkjc_match_id")) for bet in official_due if bet.get("hkjc_match_id")}
+    result_lookup_due = fallback + corner_due
+    if result_lookup_due:
+        dates = {parse_time(bet.get("kickoff")).strftime("%Y-%m-%d") for bet in result_lookup_due if parse_time(bet.get("kickoff"))}
+        ids = {str(bet.get("hkjc_match_id")) for bet in result_lookup_due if bet.get("hkjc_match_id")}
         try:
             hkjc_results = fetch_official_results(ids, dates)
         except Exception:
@@ -229,8 +252,17 @@ def settle_due(config: Settings) -> dict[str, Any]:
         except Exception:
             titan_results = []
     titan_by_id = {str(row.get("id") or ""): row for row in titan_results}
-    settled = 0
-    voided = 0
+    counters = {
+        "settled": 0,
+        "voided": 0,
+        "shadow_settled": 0,
+        "shadow_voided": 0,
+    }
+
+    def count(outcome: str, bet: dict[str, Any]) -> None:
+        prefix = "shadow_" if bet.get("portfolio") == "shadow" else ""
+        counters[f"{prefix}{outcome}"] += 1
+
     for bet in due:
         hkjc_state = hkjc_statuses.get(str(bet.get("hkjc_match_id") or "")) or {}
         if is_non_result_terminal_status(
@@ -243,19 +275,19 @@ def settle_due(config: Settings) -> dict[str, Any]:
                 str(hkjc_state.get("status") or "REFUNDED"),
                 "hkjc_official_exact_id_terminal_status",
             )
-            voided += 1
+            count("voided", bet)
             continue
         titan_status = _verified_titan_terminal_status(bet, titan_by_id)
         if titan_status:
             _void(bet, titan_status, "titan_exact_id_terminal_status")
-            voided += 1
+            count("voided", bet)
             continue
         if bet.get("code") == "CHL":
             official = hkjc_results.get(str(bet.get("hkjc_match_id") or ""))
             if official and official.get("corners_total") is not None and _settle(
                 bet, official, "hkjc_official_exact_id_corners"
             ):
-                settled += 1
+                count("settled", bet)
                 continue
             if official:
                 verified = _verified_titan_corner_score(
@@ -266,32 +298,35 @@ def settle_due(config: Settings) -> dict[str, Any]:
                     verified,
                     "hkjc_official_score+titan007_detail_exact_id_identity",
                 ):
-                    settled += 1
+                    count("settled", bet)
             continue
         event_id = str(bet.get("pinnapi_event_id") or "")
         live = cache.get(event_id, {})
         if live.get("seen_live"):
             if live.get("no_longer_live") and _settle(bet, live, "pinnapi_live_observed_then_absent"):
-                settled += 1
+                count("settled", bet)
             continue
         target = _target(bet)
         titan_id = str(bet.get("titan_match_id") or "")
         official = hkjc_results.get(str(bet.get("hkjc_match_id") or ""))
         if official and _settle(bet, official, "hkjc_official_exact_id"):
-            settled += 1
+            count("settled", bet)
             continue
         titan = next((row for row in titan_results if str(row.get("id")) == titan_id and row.get("home_score") is not None), None)
         # Stored Titan ID is fast-path only; identity is still checked before it can settle.
         if titan and target:
             candidate = Event(str(titan["id"]), str(titan["league"]), str(titan["home"]), str(titan["away"]), titan["kickoff"])
             if match_event(target, [candidate]).event and _settle(bet, titan, "titan_verified_identity"):
-                settled += 1
+                count("settled", bet)
                 continue
     recompute_stats(ledger, config)
     save_ledger(config, ledger)
     return {
         "ok": True,
-        "settled": settled,
-        "voided": voided,
-        "pending": sum(b.get("status") == "PENDING" for b in ledger["bets"]),
+        "settled": counters["settled"],
+        "voided": counters["voided"],
+        "pending": sum(b.get("status") == "PENDING" for b in official_bets),
+        "shadow_settled": counters["shadow_settled"],
+        "shadow_voided": counters["shadow_voided"],
+        "shadow_pending": sum(b.get("status") == "PENDING" for b in shadow_bets),
     }

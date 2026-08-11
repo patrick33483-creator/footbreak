@@ -428,8 +428,9 @@ class CrownSafetyTests(unittest.TestCase):
         self.assertEqual({row["code"] for row in prediction["forecast_candidates"]}, {"HDC", "HIL"})
         self.assertEqual(prediction["candidates"], [])
         self.assertIsNone(prediction["pick"])
+        self.assertIsNone(prediction["shadow_pick"])
         self.assertFalse(prediction["sharp_reference_available"])
-        self.assertIn("confidence-only 入倉已停用", prediction["no_bet_reason"])
+        self.assertIn("未過影子倉信念門檻", prediction["shadow_no_bet_reason"])
         self.assertEqual(prediction["edge_reference_status"], "unavailable")
         self.assertIn("不計算 EV", prediction["edge_reference_note"])
         pinnapi_client.lines.assert_not_called()
@@ -439,6 +440,7 @@ class CrownSafetyTests(unittest.TestCase):
         snapshot = ledger["watch"]["titan"]["stages"][0]
         self.assertEqual({row["code"] for row in snapshot["market_predictions"]}, {"HDC", "HIL"})
         self.assertEqual(ledger["bets"], [])
+        self.assertEqual(ledger["shadow_bets"], [])
 
     def test_empty_current_crown_uses_last_quote_for_forecast_only_and_never_bets(self) -> None:
         config = replace(settings(), source_max_age_seconds=90)
@@ -505,12 +507,13 @@ class CrownSafetyTests(unittest.TestCase):
         self.assertEqual({row["code"] for row in prediction["forecast_candidates"]}, {"HDC", "HIL"})
         self.assertEqual(prediction["edge_reference_status"], "unavailable")
         self.assertIn("不計算 EV", prediction["edge_reference_note"])
-        self.assertIn("confidence-only 入倉已停用", prediction["no_bet_reason"])
+        self.assertIn("未過影子倉信念門檻", prediction["shadow_no_bet_reason"])
         self.assertEqual(prediction["candidates"], [])
         self.assertIsNone(prediction["pick"])
+        self.assertIsNone(prediction["shadow_pick"])
         pinnapi_client.lines.assert_not_called()
 
-    def test_missing_pinnapi_mapping_never_allows_confidence_only_simulation(self) -> None:
+    def test_missing_pinnapi_mapping_creates_isolated_confidence_shadow_bet(self) -> None:
         config = replace(settings(), source_max_age_seconds=90, bankroll=50000)
         kickoff = self.now + timedelta(minutes=5)
         titan = {"id": "titan", "league": "L", "home": "Alpha", "away": "Beta", "kickoff": kickoff}
@@ -536,13 +539,52 @@ class CrownSafetyTests(unittest.TestCase):
         self.assertEqual(prediction["status"], "PREDICTION_READY")
         self.assertEqual(prediction["verdict"], "已預測")
         self.assertIsNone(prediction["pick"])
-        self.assertIn("confidence-only 入倉已停用", prediction["no_bet_reason"])
+        self.assertEqual(prediction["shadow_status"], "SHADOW_READY")
+        self.assertTrue(prediction["shadow_pick"]["confidence_only"])
+        self.assertTrue(prediction["shadow_pick"]["shadow_only"])
+        self.assertIsNone(prediction["shadow_pick"]["ev"])
+        self.assertEqual(prediction["shadow_pick"]["stake"], 1000)
         pinnapi_client.lines.assert_not_called()
 
         ledger = {"bankroll": 50000, "bets": [], "watch": {}, "log": [], "stats": {}}
         created = sync_prediction(ledger, prediction, config)
         self.assertEqual(created, [])
         self.assertEqual(ledger["bets"], [])
+        self.assertEqual(len(ledger["shadow_bets"]), 1)
+        shadow = ledger["shadow_bets"][0]
+        self.assertEqual(shadow["portfolio"], "shadow")
+        self.assertTrue(shadow["confidence_only"])
+        self.assertIsNone(shadow["ev"])
+        self.assertEqual(shadow["stake"], 1000)
+        self.assertEqual(sync_prediction(ledger, prediction, config), [])
+        self.assertEqual(len(ledger["shadow_bets"]), 1)
+        official_stats = recompute_stats(ledger, config)
+        self.assertEqual(official_stats["n_pending"], 0)
+        self.assertEqual(ledger["shadow_stats"]["n_pending"], 1)
+
+    def test_shadow_results_never_change_official_stats_or_entry_learning(self) -> None:
+        config = replace(settings(), bankroll=50000, min_edge=0.02, confidence_floor=58)
+        official = [{
+            "status": "SETTLED", "code": "HIL", "market": "HIL", "stake": 100,
+            "pnl": -100, "result": "Lost", "model_prob": 0.60,
+        } for _ in range(29)]
+        shadow = [{
+            "status": "SETTLED", "code": "HIL", "market": "HIL", "stake": 1000,
+            "pnl": 900, "result": "Won", "model_prob": 0.70,
+            "portfolio": "shadow", "shadow_only": True,
+        } for _ in range(20)]
+        ledger = {
+            "bankroll": 50000, "bets": official, "shadow_bets": shadow,
+            "watch": {}, "log": [], "stats": {}, "shadow_stats": {},
+        }
+        stats = recompute_stats(ledger, config)
+        self.assertEqual(stats["n_settled"], 29)
+        self.assertEqual(stats["pnl"], -2900)
+        self.assertEqual(ledger["shadow_stats"]["n_settled"], 20)
+        self.assertEqual(ledger["shadow_stats"]["pnl"], 18000)
+        policy = market_entry_thresholds(ledger, "HIL", config)
+        self.assertEqual(policy["n_settled"], 29)
+        self.assertEqual(policy["reason"], "insufficient_market_sample")
 
     def test_market_entry_thresholds_wait_for_thirty_samples_then_tighten(self) -> None:
         config = replace(settings(), min_edge=0.02, confidence_floor=58)
@@ -1295,6 +1337,43 @@ class CrownSafetyTests(unittest.TestCase):
         corner = {"market": "HKJC角球大細", "code": "CHL", "side": "H", "line": 9.5}
         self.assertEqual(_bet_label(corner), "HKJC角球大細 · 大 9.5")
 
+    def test_shadow_bet_settles_separately_from_official_portfolio(self) -> None:
+        config = settings()
+        ledger = {
+            "bankroll": 50000, "watch": {}, "log": [], "stats": {},
+            "shadow_stats": {}, "bets": [],
+            "shadow_bets": [{
+                "bet_id": "shadow|3019098|HIL|2.5|H",
+                "match_id": "3019098", "titan_match_id": "3019098",
+                "league": "德乙", "home": "纽伦堡", "away": "德累斯顿",
+                "kickoff": "2020-01-01T12:00:00+08:00",
+                "market": "HIL", "code": "HIL", "condition": "2.5", "side": "H",
+                "odds": 2.0, "stake": 1000, "status": "PENDING",
+                "portfolio": "shadow", "shadow_only": True,
+            }],
+        }
+        titan = [{
+            "id": "3019098", "league": "德乙", "home": "纽伦堡",
+            "away": "德累斯顿",
+            "kickoff": datetime.fromisoformat("2020-01-01T12:00:00+08:00"),
+            "home_score": 3, "away_score": 0,
+        }]
+        with patch("crown.settle.load_ledger", return_value=ledger), \
+             patch("crown.settle._refresh_live", return_value={}), \
+             patch("crown.settle.fetch_official_results", return_value={}), \
+             patch("crown.settle.fetch_official_match_statuses", return_value={}), \
+             patch("crown.settle.TitanClient.results", return_value=titan), \
+             patch("crown.settle.save_ledger"):
+            result = crown_settle.settle_due(config)
+        self.assertEqual(result["settled"], 0)
+        self.assertEqual(result["shadow_settled"], 1)
+        self.assertEqual(result["pending"], 0)
+        self.assertEqual(result["shadow_pending"], 0)
+        self.assertEqual(ledger["stats"]["n_settled"], 0)
+        self.assertEqual(ledger["shadow_stats"]["n_settled"], 1)
+        self.assertEqual(ledger["shadow_bets"][0]["result"], "Won")
+        self.assertEqual(ledger["shadow_bets"][0]["pnl"], 1000)
+
     def test_chl_settlement_uses_hkjc_exact_id_corners_even_when_live_cache_exists(self) -> None:
         config = settings()
         ledger = {
@@ -1422,6 +1501,8 @@ class CrownSafetyTests(unittest.TestCase):
         self.assertTrue(result["persisted"])
         self.assertEqual(result["settled_count"], 1)
         self.assertEqual(result["pending_count"], 2)
+        self.assertEqual(result["shadow_settled_count"], 0)
+        self.assertEqual(result["shadow_pending_count"], 0)
         self.assertEqual(result["data"], dashboard)
         self.assertEqual(result["warning"], "prediction_history_RuntimeError")
         publisher.assert_called_once_with(config)
@@ -1465,8 +1546,12 @@ class CrownSafetyTests(unittest.TestCase):
         self.assertIn("overflow-wrap: anywhere", styles)
         self.assertIn("font: 600 12px/1.6 var(--sans)", styles)
         index = (root / "index.html").read_text(encoding="utf-8")
-        self.assertIn("styles.css?v=20260811-corner-result-v3", index)
-        self.assertIn("app.js?v=20260811-corner-result-v3", index)
+        self.assertIn("styles.css?v=20260811-shadow-v1", index)
+        self.assertIn("app.js?v=20260811-shadow-v1", index)
+        self.assertIn('data-view="shadow">影子倉', index)
+        self.assertIn('id="viewShadow"', index)
+        self.assertIn("function renderShadow()", app)
+        self.assertIn("不計入正式模擬倉、動態門檻、自動學習、凱利階段或 Telegram 通知", app)
         self.assertIn("minimum-scale=1", index)
         self.assertIn("viewport-fit=cover", index)
         self.assertIn("min-width: 100%", styles)

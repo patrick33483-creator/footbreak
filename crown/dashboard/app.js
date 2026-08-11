@@ -84,7 +84,7 @@ async function fetchDashboardData() {
 
 function applyData(raw) {
   DATA = raw;
-  LED = raw.ledger || { bets: [], stats: {}, log: [] };
+  LED = raw.ledger || { bets: [], shadow_bets: [], stats: {}, shadow_stats: {}, log: [] };
   LIST = displayableMatches(raw.matches).slice()
     .sort((a, b) => kt(a.kickoff_hkt) - kt(b.kickoff_hkt));
   $('#genAt').textContent = hkStamp(raw.generated_at) + ' HKT';
@@ -158,6 +158,7 @@ function flash(msg, bad) {
 function render() {
   $('#viewPred').hidden = VIEW !== 'pred';
   $('#viewLedger').hidden = VIEW !== 'ledger';
+  $('#viewShadow').hidden = VIEW !== 'shadow';
   $('#viewHistory').hidden = VIEW !== 'history';
   $$('#nav .navbtn').forEach((b) => b.classList.toggle('is-on', b.dataset.view === VIEW));
   if (VIEW === 'pred') {
@@ -171,6 +172,8 @@ function render() {
     else $('#detail').innerHTML = '<div class="empty">暫時冇未完場賽事</div>';
   } else if (VIEW === 'history') {
     renderHistory();
+  } else if (VIEW === 'shadow') {
+    renderShadow();
   } else {
     renderLedger();
   }
@@ -902,7 +905,7 @@ function renderLedger() {
 
   if (!bets.length) {
     h += `<div class="card"><div class="empty2">仲未有任何推介記錄</div></div>`;
-    V.innerHTML = h; bindSettlementButton(); return;
+    V.innerHTML = h; bindSettlementButton('settleNow', renderLedger); return;
   }
 
   if (s.n_settled) h += `<div class="grid g2">${equityCard(s)}${resultCard(s)}</div>`;
@@ -912,30 +915,92 @@ function renderLedger() {
     <div class="tbl-wrap"><table class="t bets">
       <tr><th></th><th>開賽</th><th>賽事</th><th>市場</th><th>投注</th><th>賠率</th><th>注碼</th>
           <th>勝率</th><th>EV</th><th>信念</th><th>最新</th><th>狀態</th><th>結果</th><th>比分</th><th>盈虧</th></tr>
-      ${bets.map((b, i) => betRow(b, i)).join('')}
+      ${bets.map((b, i) => betRow(b, i, 'official')).join('')}
     </table></div></div>`;
 
   V.innerHTML = h;
-  bindSettlementButton();
-  $$('#viewLedger .bets tr.brow').forEach((tr) => {
+  bindSettlementButton('settleNow', renderLedger);
+  bindBetRows('#viewLedger');
+}
+
+function bindBetRows(container) {
+  $$(`${container} .bets tr.brow`).forEach((tr) => {
     tr.onclick = () => {
-      const d = $(`#hist-${tr.dataset.i}`);
+      const d = document.getElementById(tr.dataset.target);
+      if (!d) return;
       d.classList.toggle('open');
       tr.classList.toggle('is-open');
     };
   });
 }
 
-function bindSettlementButton() {
-  const b = $('#settleNow');
+function renderShadow() {
+  const s = LED.shadow_stats || {}, bets = LED.shadow_bets || [];
+  const V = $('#viewShadow');
+  const K = [
+    ['虛擬本金', money(LED.bankroll), ''],
+    ['影子注碼', money(s.open_stake), 'amber'],
+    ['佔虛擬本金', pc(s.open_pct, 1), ''],
+    ['待決', s.n_pending || 0, ''],
+    ['已撤回', s.n_voided || 0, ''],
+    ['已結算', s.n_settled || 0, ''],
+    ['影子盈虧', s.n_settled ? money(s.pnl) : '—', (s.pnl || 0) >= 0 ? 'good' : 'bad'],
+    ['影子 ROI', s.roi == null ? '—' : pc(s.roi, 2), (s.roi || 0) >= 0 ? 'good' : 'bad'],
+    ['命中率', s.n_decided ? `${pc(s.hit_rate, 1)} (${s.hits}/${s.n_decided})` : '—',
+      s.n_decided ? ((s.hit_rate || 0) >= 0.5 ? 'good' : 'bad') : ''],
+    ['影子結餘', money(s.equity != null ? s.equity : LED.bankroll),
+      (s.pnl || 0) >= 0 ? 'good' : 'bad'],
+  ];
+  let h = `<div class="ledger-head">
+    <div class="ledger-title-row">
+      <h1 class="pg-h">confidence-only 影子倉
+        <span class="sub">T-5 · 信念門檻 ${s.conf_floor || DATA.signal_policy?.confidence_floor || '—'} · 固定 2% 虛擬本金</span>
+      </h1>
+      <button class="settle-btn" id="settleShadowNow" data-testid="button-settle-shadow" type="button" ${SETTLING || !API_BASE ? 'disabled' : ''}>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5M6.1 9a7 7 0 0 1 11.2-2.3L20 9M4 15l2.7 2.3A7 7 0 0 0 17.9 15"/></svg>
+        <span>${SETTLING ? '結算中…' : '立即結算'}</span>
+      </button>
+    </div>
+    <p class="settle-status ${SETTLE_BAD ? 'bad' : SETTLE_MESSAGE ? 'good' : ''}" data-testid="status-shadow-settlement" aria-live="polite">
+      ${esc(SETTLE_MESSAGE || '同一次核對會更新正式模擬倉及影子倉，兩邊統計保持獨立。')}
+    </p>
+    <div class="shadow-note" role="note">
+      <strong>完全隔離</strong>
+      <span>只測試冇 PinnAPI 安全同場基準時嘅高信念皇冠預測；不計入正式模擬倉、動態門檻、自動學習、凱利階段或 Telegram 通知。</span>
+    </div>
+    <div class="kpis wide">${K.map(([l, v, c]) =>
+      `<div class="kpi"><span class="kpi-lbl">${l}</span><span class="kpi-val ${c}">${v}</span></div>`).join('')}</div>
+  </div>`;
+
+  if (!bets.length) {
+    h += `<div class="card"><div class="empty2">暫時未有影子注。系統會由新嘅 T-5 高信念訊號開始記錄。</div></div>`;
+    V.innerHTML = h;
+    bindSettlementButton('settleShadowNow', renderShadow);
+    return;
+  }
+  if (s.n_settled) h += `<div class="grid g2">${equityCard(s)}${resultCard(s)}</div>`;
+  if (s.n_settled) h += marketCard(s);
+  h += `<div class="card"><h2 class="card-h">影子注單 <span class="sub">${bets.length} 筆 · confidence-only</span></h2>
+    <div class="tbl-wrap"><table class="t bets">
+      <tr><th></th><th>開賽</th><th>賽事</th><th>市場</th><th>投注</th><th>賠率</th><th>注碼</th>
+          <th>勝率</th><th>EV</th><th>信念</th><th>最新</th><th>狀態</th><th>結果</th><th>比分</th><th>盈虧</th></tr>
+      ${bets.map((b, i) => betRow(b, i, 'shadow')).join('')}
+    </table></div></div>`;
+  V.innerHTML = h;
+  bindSettlementButton('settleShadowNow', renderShadow);
+  bindBetRows('#viewShadow');
+}
+
+function bindSettlementButton(buttonId, rerender) {
+  const b = document.getElementById(buttonId);
   if (!b) return;
   b.onclick = async () => {
     if (SETTLING || !API_BASE) return;
-    if (!window.confirm('只會結算已完場、有正式賽果嘅皇冠模擬注。確認立即檢查賽果並結算？')) return;
+    if (!window.confirm('只會核對已完場及有可靠賽果嘅注單。確認同時更新正式模擬倉及獨立影子倉？')) return;
     SETTLING = true;
     SETTLE_BAD = false;
-    SETTLE_MESSAGE = '正在核對正式賽果及更新模擬倉…';
-    renderLedger();
+    SETTLE_MESSAGE = '正在核對正式賽果及更新兩個獨立倉…';
+    rerender();
     try {
       const r = await fetch(`${API_BASE}/settle`, {
         method: 'POST',
@@ -950,19 +1015,22 @@ function bindSettlementButton() {
       applyData(result.data);
       const settled = result.settled_count || 0;
       const pending = result.pending_count || 0;
+      const shadowSettled = result.shadow_settled_count || 0;
+      const shadowPending = result.shadow_pending_count || 0;
       SETTLE_BAD = !result.persisted;
       const syncNote = result.project_submitted === false
         ? ' 專案檔案同步暫緩，但本機模擬倉已保存。'
         : '';
-      SETTLE_MESSAGE = settled
-        ? `完成：新結算 ${settled} 注${pending ? `，另有 ${pending} 注待正式賽果` : ''}${result.persisted ? '，已保存。' : '；保存失敗，請稍後再試。'}${syncNote}`
-        : `檢查完成：未有新注可結算${pending ? `，${pending} 注仍待正式賽果` : ''}。${syncNote}`;
+      const newTotal = settled + shadowSettled;
+      SETTLE_MESSAGE = newTotal
+        ? `完成：正式新結算 ${settled} 注，影子新結算 ${shadowSettled} 注；正式待決 ${pending}，影子待決 ${shadowPending}${result.persisted ? '，已保存。' : '；保存失敗，請稍後再試。'}${syncNote}`
+        : `檢查完成：未有新注可結算；正式待決 ${pending}，影子待決 ${shadowPending}。${syncNote}`;
     } catch (e) {
       SETTLE_BAD = true;
       SETTLE_MESSAGE = `結算失敗：${e.message}`;
     } finally {
       SETTLING = false;
-      renderLedger();
+      rerender();
     }
   };
 }
@@ -1164,10 +1232,11 @@ function dayStake(bets) {
              .reduce((a, b) => a + b.stake, 0);
 }
 
-function betRow(b, i) {
+function betRow(b, i, prefix = 'official') {
   const H = b.history || [];
   const chg = H.filter((x) => x.action !== '維持').length;
-  const main = `<tr class="brow ${b.status.toLowerCase()}" data-i="${i}">
+  const target = `${prefix}-hist-${i}`;
+  const main = `<tr class="brow ${b.status.toLowerCase()}" data-i="${i}" data-target="${target}">
     <td class="exp">${H.length ? '▸' : ''}</td>
     <td class="mono nowrap">${hkDay(b.kickoff)} ${hkClock(b.kickoff)}</td>
     <td>${esc(b.home)} <span class="dim">v</span> ${esc(b.away)}<div class="cell-sub">${esc(b.league)}</div></td>
@@ -1185,7 +1254,7 @@ function betRow(b, i) {
     <td class="${(b.pnl || 0) > 0 ? 'ev-p' : (b.pnl || 0) < 0 ? 'ev-n' : 'dim'}">${b.pnl == null ? '—' : money(b.pnl)}</td>
   </tr>`;
   const hist = `<tr class="hrowwrap"><td colspan="14" class="histcell">
-    <div class="hist-panel" id="hist-${i}">
+    <div class="hist-panel" id="${target}">
       ${b.void_reason ? `<div class="void-note">撤回原因:${esc(b.void_reason)}</div>` : ''}
       <ol class="tl">${H.map((x) => `<li class="tl-i ${x.action === '轉觀望' ? 'x' : x.action === '維持' ? 'keep' : ''}">
         <span class="tl-dot">${ACT_ICO[x.action] || '·'}</span>

@@ -197,13 +197,40 @@ def _apply_confidence_only_pick(
     stage: str,
     config: Settings,
 ) -> bool:
-    """Fail closed when no independent same-line market reference exists."""
-    if stage == "T-5":
-        base["no_bet_reason"] = (
-            "PinnAPI 無安全同場基準，confidence-only 入倉已停用；"
-            "保留預測及學習紀錄，但不建立模擬注。"
+    """Create an isolated confidence-only shadow pick without official EV."""
+    base["shadow_pick"] = None
+    base["shadow_status"] = "NOT_ELIGIBLE"
+    if stage != "T-5" or not forecasts:
+        base["shadow_no_bet_reason"] = "只會在 T-5 以完整皇冠雙邊盤建立影子注。"
+        return False
+    lead = max(forecasts, key=lambda row: float(row.get("conviction") or 0))
+    if float(lead.get("conviction") or 0) < config.confidence_floor:
+        base["shadow_no_bet_reason"] = (
+            f"未過影子倉信念門檻（信念 {lead.get('conviction')}/"
+            f"{config.confidence_floor}；不計 EV）"
         )
-    return False
+        return False
+    stake = round(config.bankroll * 0.02, 2)
+    if stake <= 0:
+        base["shadow_no_bet_reason"] = "影子倉虛擬本金或注碼無效。"
+        return False
+    pick = {
+        **lead,
+        "stake": stake,
+        "ev": None,
+        "fair": None,
+        "push": None,
+        "kelly_raw": None,
+        "kelly_used": None,
+        "confidence_only": True,
+        "shadow_only": True,
+        "forecast_only": False,
+        "reference": "crown_full_market_no_vig_confidence_shadow",
+    }
+    base["shadow_pick"] = pick
+    base["shadow_status"] = "SHADOW_READY"
+    base["shadow_no_bet_reason"] = None
+    return True
 
 
 def _candidates(crown_prices: list[dict[str, Any]], pinnapi_prices: list[dict[str, Any]], config: Settings,

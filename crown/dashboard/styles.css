@@ -389,7 +389,7 @@ table.t tr.hi td { background: oklch(78% 0.145 74 / .07); }
 
 
 /* ═══ 導覽 ═══ */
-.nav { display: flex; gap: 2px; background: var(--bg-2); border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 2px; flex-shrink: 0; }
+.nav { display: flex; gap: 2px; background: var(--bg-2); border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 2px; flex-shrink: 0; max-width: 100%; overflow-x: auto; overscroll-behavior-inline: contain; }
 .navbtn {
   background: none; border: 0; color: var(--ink-3); cursor: pointer;
   font-family: var(--sans); font-size: var(--text-sm); font-weight: 500;
@@ -397,6 +397,22 @@ table.t tr.hi td { background: oklch(78% 0.145 74 / .07); }
 }
 .navbtn:hover { color: var(--ink); }
 .navbtn.is-on { background: var(--amber); color: oklch(20% 0.03 74); font-weight: 700; }
+
+.shadow-note {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: var(--s3);
+  align-items: start;
+  margin: var(--s3) 0 var(--s4);
+  padding: var(--s3) var(--s4);
+  border: 1px solid color-mix(in oklch, var(--amber) 45%, var(--line));
+  border-radius: var(--radius-sm);
+  background: color-mix(in oklch, var(--amber) 8%, var(--panel));
+  color: var(--ink-2);
+  font-size: var(--text-sm);
+  line-height: 1.55;
+}
+.shadow-note strong { color: var(--amber); white-space: nowrap; }
 
 /* ═══ 清單:結論 / 信念 ═══ */
 .conv-pill {
@@ -583,9 +599,14 @@ table.t.bets td.good { color: var(--good); } table.t.bets td.amber { color: var(
   .hist-panel { padding-left: var(--s4); }
 }
 @media (max-width: 760px) {
-  .nav { align-self: flex-start; }
+  .nav { align-self: stretch; }
+  .navbtn { flex: 1 0 auto; padding-inline: var(--s3); }
   .vd-conv { margin-left: 0; }
   .kpis.wide { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+
+@media (max-width: 620px) {
+  .shadow-note { grid-template-columns: 1fr; gap: var(--s1); }
 }
 
 /* ═══ 更新按鈕 / toast ═══ */
