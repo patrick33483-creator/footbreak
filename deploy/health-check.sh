@@ -43,11 +43,11 @@ systemctl is-active --quiet footbreak-dashboard-api.service || {
 }
 echo "OK service footbreak-dashboard-api.service active"
 for app_js in /var/www/footbreak/app.js /var/www/crown/app.js; do
-  grep -q 'historyStageMarketMatrix' "$app_js" || {
-    echo "FAIL stale dashboard asset: $app_js has no stage-market matrix" >&2
+  grep -q 'historyCornerResult' "$app_js" || {
+    echo "FAIL stale dashboard asset: $app_js has no corner-result display" >&2
     exit 1
   }
-  echo "OK dashboard stage-market asset $app_js"
+  echo "OK dashboard corner-result asset $app_js"
 done
 api_ready=0
 for _ in $(seq 1 10); do

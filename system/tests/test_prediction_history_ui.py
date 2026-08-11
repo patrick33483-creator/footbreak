@@ -16,7 +16,10 @@ class PredictionHistoryUiTests(unittest.TestCase):
         self.assertIn('class="history-market-row"', app)
         self.assertIn('class="history-market-pick"', app)
         self.assertIn("各市場預測／結果", app)
+        self.assertIn("function historyCornerResult(r, p)", app)
+        self.assertIn('class="market-actual">賽果 <b>', app)
         self.assertIn("grid-template-columns: minmax(0, 1fr) max-content", css)
+        self.assertIn(".history-market-outcome", css)
         self.assertIn("white-space: nowrap", css)
 
 

@@ -226,6 +226,7 @@ class PredictionHistoryPayloadTests(unittest.TestCase):
                 "match_id": "m5", "home": "主隊", "away": "客隊",
                 "league": "測試聯賽", "kickoff": "2026-08-10 20:00",
                 "score": "1-1",
+                "corners": 11,
                 "stages": [
                     {
                         "stage": stage,
@@ -255,6 +256,8 @@ class PredictionHistoryPayloadTests(unittest.TestCase):
             self.assertEqual(
                 stats["by_stage_market"][stage]["CHL"]["decided"], 1
             )
+        rows = gen_app_data.build_prediction_history(watch, [], accuracy)["rows"]
+        self.assertTrue(all(row["result_detail"]["corners_total"] == 11 for row in rows))
 
 
 if __name__ == "__main__":

@@ -996,12 +996,19 @@ function historyPredictionLabel(r, p) {
   if (p.code === 'CHL') return `${p.side === 'H' ? '大' : '細'} ${historyQuarterLine(line, false)} 角球`;
   return p.label || `${p.condition} ${p.side}`;
 }
+function historyCornerResult(r, p) {
+  if (p.code !== 'CHL') return '';
+  const raw = (r.result_detail || {}).corners_total ?? r.corners_total ?? r.corners;
+  const total = Number(raw);
+  if (!Number.isFinite(total) || total < 0) return '';
+  return `<span class="market-actual">賽果 <b>${Math.trunc(total)}</b> 角</span>`;
+}
 function historyMarkets(r) {
   const grades = Object.fromEntries((r.market_grades || []).map((g) => [g.code, g]));
   return (r.market_predictions || []).map((p) => {
     const g = grades[p.code] || {};
     const settlement = HIST_SETTLEMENT_LABEL[g.settlement] || g.settlement || '';
-    const result = g.grade_status === 'GRADED'
+    const badge = g.grade_status === 'GRADED'
       ? g.hit === true
         ? `<span class="market-hit hit"><b>命中</b> · ${esc(settlement)}</span>`
         : g.hit === false
@@ -1010,6 +1017,10 @@ function historyMarkets(r) {
       : g.reason === 'corners_result_missing'
         ? '<span class="market-hit pending">角球賽果同步中</span>'
         : '<span class="market-hit pending">待賽果</span>';
+    const actual = historyCornerResult(r, p);
+    const result = actual
+      ? `<span class="history-market-outcome">${badge}${actual}</span>`
+      : badge;
     return `<div class="history-market-row">
       <span class="history-market-pick"><b>${HIST_MARKET_LABEL[p.code] || esc(p.code)}</b>
         ${esc(historyPredictionLabel(r, p))}
