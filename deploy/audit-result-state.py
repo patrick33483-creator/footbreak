@@ -11,6 +11,7 @@ from typing import Any
 
 
 FOOTBREAK_DATA = Path("/var/www/footbreak/data.json")
+CROWN_DATA = Path("/var/www/crown/data.json")
 CROWN_HISTORY = Path("/var/lib/footbreak/crown/prediction_history.json")
 CHALLENGER_STATUS = Path("/var/lib/footbreak/challenger/latest.json")
 HKT = timezone(timedelta(hours=8))
@@ -121,8 +122,68 @@ def challenger_state() -> dict[str, Any]:
     }
 
 
+def crown_corner_state(payload: dict[str, Any]) -> dict[str, Any]:
+    now = datetime.now(HKT)
+    recent_cutoff = now - timedelta(hours=12)
+    future_cutoff = now + timedelta(hours=36)
+    audited: list[dict[str, Any]] = []
+    for match in payload.get("matches") or []:
+        try:
+            kickoff = datetime.fromisoformat(
+                str(match.get("kickoff_hkt") or match.get("kickoff") or "").replace(
+                    "Z", "+00:00"
+                )
+            )
+            if kickoff.tzinfo is None:
+                kickoff = kickoff.replace(tzinfo=HKT)
+        except ValueError:
+            continue
+        if not recent_cutoff <= kickoff <= future_cutoff:
+            continue
+        hkjc_chl = (match.get("book_odds") or {}).get("hkjc_chl") or []
+        forecasts = match.get("forecast_candidates") or []
+        candidates = match.get("candidates") or []
+        audited.append(
+            {
+                "match_id": match.get("match_id"),
+                "kickoff_hkt": match.get("kickoff_hkt") or match.get("kickoff"),
+                "home": match.get("home"),
+                "away": match.get("away"),
+                "stage": match.get("stage"),
+                "status": match.get("status"),
+                "hkjc_match_id": match.get("hkjc_match_id"),
+                "pinnapi_event_id": match.get("pinnapi_event_id"),
+                "pinnapi_corner_event_id": match.get("pinnapi_corner_event_id"),
+                "hkjc_chl_lines": len(hkjc_chl),
+                "hkjc_chl": hkjc_chl,
+                "chl_forecast_count": sum(
+                    row.get("code") == "CHL" for row in forecasts
+                ),
+                "chl_candidate_count": sum(
+                    row.get("code") == "CHL" for row in candidates
+                ),
+                "corner_no_bet_reason": match.get("corner_no_bet_reason"),
+                "edge_reference_status": match.get("edge_reference_status"),
+                "edge_reference_note": match.get("edge_reference_note"),
+            }
+        )
+    audited.sort(key=lambda row: str(row.get("kickoff_hkt") or ""), reverse=True)
+    return {
+        "dashboard_generated_at": payload.get("generated_at"),
+        "window": {
+            "from": recent_cutoff.isoformat(),
+            "to": future_cutoff.isoformat(),
+        },
+        "match_count": len(audited),
+        "with_hkjc_chl": sum(bool(row["hkjc_chl_lines"]) for row in audited),
+        "with_chl_forecast": sum(bool(row["chl_forecast_count"]) for row in audited),
+        "matches": audited,
+    }
+
+
 def main() -> None:
     footbreak = load(FOOTBREAK_DATA)
+    crown_dashboard = load(CROWN_DATA)
     crown = load(CROWN_HISTORY)
     crown_rows = rows(crown)
     footbreak_rows = rows(footbreak.get("prediction_history") or {})
@@ -154,6 +215,7 @@ def main() -> None:
         "crown": {
             "stats": crown.get("stats"),
             "result_sync": crown.get("result_sync"),
+            "corner_prediction_audit": crown_corner_state(crown_dashboard),
             "relevant_rows": [compact(row) for row in crown_rows if relevant(row)],
             "row_count": len(crown_rows),
         },
