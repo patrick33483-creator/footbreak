@@ -586,6 +586,38 @@ class CrownSafetyTests(unittest.TestCase):
         self.assertEqual(policy["n_settled"], 29)
         self.assertEqual(policy["reason"], "insufficient_market_sample")
 
+    def test_shadow_comparison_uses_only_official_bets_from_first_shadow_bet(self) -> None:
+        config = settings()
+        official = [
+            {
+                "bet_id": "old", "status": "SETTLED", "result": "Lost",
+                "stake": 1000, "pnl": -1000,
+                "created_at": "2026-08-10T09:00:00+08:00",
+            },
+            {
+                "bet_id": "same-period", "status": "SETTLED", "result": "Won",
+                "stake": 1000, "pnl": 900,
+                "created_at": "2026-08-11T10:30:00+08:00",
+            },
+        ]
+        shadow = [{
+            "bet_id": "shadow", "status": "SETTLED", "result": "Won",
+            "stake": 1000, "pnl": 800,
+            # Legacy rows without an offset are Hong Kong local time.
+            "created_at": "2026-08-11T10:00:00",
+        }]
+        ledger = {
+            "bankroll": 50000, "bets": official, "shadow_bets": shadow,
+            "watch": {}, "log": [], "stats": {}, "shadow_stats": {},
+        }
+        recompute_stats(ledger, config)
+        comparison = ledger["shadow_stats"]["comparison"]
+        self.assertEqual(comparison["definition"], "from_first_shadow_bet")
+        self.assertEqual(comparison["official_total_bets"], 1)
+        self.assertEqual(comparison["shadow_total_bets"], 1)
+        self.assertEqual(comparison["official"]["pnl"], 900)
+        self.assertEqual(comparison["shadow"]["pnl"], 800)
+
     def test_market_entry_thresholds_wait_for_thirty_samples_then_tighten(self) -> None:
         config = replace(settings(), min_edge=0.02, confidence_floor=58)
         losing = [{
@@ -1546,12 +1578,15 @@ class CrownSafetyTests(unittest.TestCase):
         self.assertIn("overflow-wrap: anywhere", styles)
         self.assertIn("font: 600 12px/1.6 var(--sans)", styles)
         index = (root / "index.html").read_text(encoding="utf-8")
-        self.assertIn("styles.css?v=20260811-shadow-v1", index)
-        self.assertIn("app.js?v=20260811-shadow-v1", index)
+        self.assertIn("styles.css?v=20260811-shadow-compare-v1", index)
+        self.assertIn("app.js?v=20260811-shadow-compare-v1", index)
         self.assertIn('data-view="shadow">影子倉', index)
         self.assertIn('id="viewShadow"', index)
         self.assertIn("function renderShadow()", app)
         self.assertIn("不計入正式模擬倉、動態門檻、自動學習、凱利階段或 Telegram 通知", app)
+        self.assertIn("同期表現對照", app)
+        self.assertIn("card-shadow-comparison", app)
+        self.assertIn("同期已結算樣本未各自達到 30 筆", app)
         self.assertIn("minimum-scale=1", index)
         self.assertIn("viewport-fit=cover", index)
         self.assertIn("min-width: 100%", styles)

@@ -413,6 +413,58 @@ table.t tr.hi td { background: oklch(78% 0.145 74 / .07); }
   line-height: 1.55;
 }
 .shadow-note strong { color: var(--amber); white-space: nowrap; }
+.compare-card { overflow: hidden; }
+.compare-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--s3);
+}
+.compare-side {
+  min-width: 0;
+  padding: var(--s3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--panel-2);
+}
+.compare-side.shadow {
+  border-color: color-mix(in oklch, var(--amber) 42%, var(--line));
+}
+.compare-side-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--s2);
+  margin-bottom: var(--s3);
+}
+.compare-side-head span { color: var(--ink); font-weight: 700; }
+.compare-side-head b { color: var(--ink-3); font: 500 0.6875rem/1.4 var(--mono); }
+.compare-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--s2);
+}
+.compare-metrics > div {
+  min-width: 0;
+  padding-top: var(--s2);
+  border-top: 1px solid var(--line);
+}
+.compare-metrics span { display: block; }
+.compare-metrics > div > span:first-child {
+  color: var(--ink-3);
+  font: 500 var(--text-xs)/1.4 var(--sans);
+}
+.compare-value {
+  margin-top: 3px;
+  color: var(--ink);
+  font: 600 var(--text-sm)/1.4 var(--mono);
+  overflow-wrap: anywhere;
+}
+.compare-caution {
+  max-width: none;
+  margin: var(--s3) 0 0;
+  color: var(--ink-2);
+  font: 400 var(--text-xs)/1.55 var(--sans);
+}
 
 /* ═══ 清單:結論 / 信念 ═══ */
 .conv-pill {
@@ -607,6 +659,7 @@ table.t.bets td.good { color: var(--good); } table.t.bets td.amber { color: var(
 
 @media (max-width: 620px) {
   .shadow-note { grid-template-columns: 1fr; gap: var(--s1); }
+  .compare-grid { grid-template-columns: 1fr; }
 }
 
 /* ═══ 更新按鈕 / toast ═══ */

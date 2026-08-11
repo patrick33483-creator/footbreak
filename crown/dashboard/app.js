@@ -972,6 +972,7 @@ function renderShadow() {
       `<div class="kpi"><span class="kpi-lbl">${l}</span><span class="kpi-val ${c}">${v}</span></div>`).join('')}</div>
   </div>`;
 
+  h += shadowComparisonCard(s.comparison);
   if (!bets.length) {
     h += `<div class="card"><div class="empty2">暫時未有影子注。系統會由新嘅 T-5 高信念訊號開始記錄。</div></div>`;
     V.innerHTML = h;
@@ -989,6 +990,54 @@ function renderShadow() {
   V.innerHTML = h;
   bindSettlementButton('settleShadowNow', renderShadow);
   bindBetRows('#viewShadow');
+}
+
+function comparisonValue(value, formatter, cls = '') {
+  return `<span class="compare-value ${cls}">${value == null ? '—' : formatter(value)}</span>`;
+}
+
+function shadowComparisonCard(comparison) {
+  if (!comparison) {
+    return `<div class="card compare-card">
+      <h2 class="card-h">同期表現對照</h2>
+      <div class="empty2">建立第一筆影子注後，系統會由同一時間點開始比較正式倉同影子倉。</div>
+    </div>`;
+  }
+  const official = comparison.official || {}, shadow = comparison.shadow || {};
+  const cols = [
+    ['總注數', comparison.official_total_bets || 0, comparison.shadow_total_bets || 0, (x) => String(x)],
+    ['已結算', official.n_settled || 0, shadow.n_settled || 0, (x) => String(x)],
+    ['命中率', official.hit_rate, shadow.hit_rate, (x) => pc(x, 1)],
+    ['投注額', official.turnover, shadow.turnover, money],
+    ['盈虧', official.pnl, shadow.pnl, money],
+    ['ROI', official.roi, shadow.roi, (x) => pc(x, 2)],
+  ];
+  const row = (name, data, kind) => `<div class="compare-side ${kind}">
+    <div class="compare-side-head">
+      <span>${name}</span>
+      <b>${data.n_settled || 0} 筆已結算</b>
+    </div>
+    <div class="compare-metrics">${cols.map(([label, officialValue, shadowValue, formatter]) => {
+      const value = kind === 'official' ? officialValue : shadowValue;
+      const tone = label === '盈虧' || label === 'ROI'
+        ? ((value || 0) >= 0 ? 'good' : 'bad')
+        : '';
+      return `<div><span>${label}</span>${comparisonValue(value, formatter, tone)}</div>`;
+    }).join('')}</div>
+  </div>`;
+  const enough = Math.min(official.n_settled || 0, shadow.n_settled || 0) >= 30;
+  return `<div class="card compare-card" data-testid="card-shadow-comparison">
+    <h2 class="card-h">同期表現對照
+      <span class="sub">由 ${hkStamp(comparison.period_start)} HKT 第一筆影子注開始</span>
+    </h2>
+    <div class="compare-grid">
+      ${row('正式模擬倉', official, 'official')}
+      ${row('confidence-only 影子倉', shadow, 'shadow')}
+    </div>
+    <p class="compare-caution">${enough
+      ? '兩邊已各有至少 30 筆已結算樣本，可開始觀察穩定性；仍需配合市場分項及回撤判斷。'
+      : '同期已結算樣本未各自達到 30 筆，只作觀察，不應單憑暫時命中率或 ROI 改動正式策略。'}</p>
+  </div>`;
 }
 
 function bindSettlementButton(buttonId, rerender) {

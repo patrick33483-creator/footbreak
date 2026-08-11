@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from analysis.learning_store import LearningStore
@@ -272,16 +273,58 @@ def _portfolio_stats(bets: list[dict[str, Any]], bankroll: float) -> dict[str, A
     }
 
 
+def _bet_time(bet: dict[str, Any]) -> datetime | None:
+    value = bet.get("created_at") or bet.get("kickoff")
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone(timedelta(hours=8)))
+        return parsed.astimezone(timezone.utc)
+    except (TypeError, ValueError):
+        return None
+
+
+def _same_period_comparison(
+    official_bets: list[dict[str, Any]],
+    shadow_bets: list[dict[str, Any]],
+    bankroll: float,
+) -> dict[str, Any] | None:
+    dated_shadow = [(bet, _bet_time(bet)) for bet in shadow_bets]
+    starts = [ts for _, ts in dated_shadow if ts is not None]
+    if not starts:
+        return None
+    start = min(starts)
+    official_period = [
+        bet for bet in official_bets
+        if (ts := _bet_time(bet)) is not None and ts >= start
+    ]
+    shadow_period = [
+        bet for bet, ts in dated_shadow
+        if ts is not None and ts >= start
+    ]
+    return {
+        "period_start": start.isoformat(),
+        "definition": "from_first_shadow_bet",
+        "official_total_bets": len(official_period),
+        "shadow_total_bets": len(shadow_period),
+        "official": _portfolio_stats(official_period, bankroll),
+        "shadow": _portfolio_stats(shadow_period, bankroll),
+    }
+
+
 def recompute_stats(ledger: dict[str, Any], config: Settings) -> dict[str, Any]:
     bets = ledger.setdefault("bets", [])
     shadow_bets = ledger.setdefault("shadow_bets", [])
+    watch = ledger.setdefault("watch", {})
     base = _portfolio_stats(bets, config.bankroll)
     previous_staking = ((ledger.get("stats") or {}).get("staking") or {})
     stats = {
         **base,
         "daily_cap": config.bankroll, "open_cap": round(config.bankroll * 0.35, 2), "single_cap_pct": 0.04,
-        "conf_floor": config.confidence_floor, "bet_stage": "T-5", "n_watch": len(ledger["watch"]),
-        "n_stage_preds": sum(len(item.get("stages") or []) for item in ledger["watch"].values()),
+        "conf_floor": config.confidence_floor, "bet_stage": "T-5", "n_watch": len(watch),
+        "n_stage_preds": sum(len(item.get("stages") or []) for item in watch.values()),
         "staking": {
             "fraction": previous_staking.get("fraction", 1 / 3),
             "cap": previous_staking.get("cap", 0.04),
@@ -303,6 +346,7 @@ def recompute_stats(ledger: dict[str, Any], config: Settings) -> dict[str, Any]:
         "single_cap_pct": 0.02,
         "mode": "confidence_only_shadow",
         "excluded_from_official": True,
+        "comparison": _same_period_comparison(bets, shadow_bets, config.bankroll),
     }
     return stats
 
