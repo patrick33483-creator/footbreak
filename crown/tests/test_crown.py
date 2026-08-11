@@ -776,7 +776,7 @@ class CrownSafetyTests(unittest.TestCase):
         self.assertEqual(snapshot["status"], "PREDICTION_READY")
         self.assertEqual(snapshot["forecast"], prediction["forecast"])
         self.assertTrue(snapshot["baseline_low_confidence"])
-        self.assertEqual(snapshot["prediction_era"], "2026-08-10-every-crown-fixture-v3")
+        self.assertEqual(snapshot["prediction_era"], "2026-08-12-hkjc-corner-forecast-v4")
         self.assertEqual(ledger["bets"], [])
 
     def test_fixture_baseline_uses_crown_handicap_direction_when_available(self) -> None:
@@ -889,6 +889,28 @@ class CrownSafetyTests(unittest.TestCase):
         }
         self.assertEqual(completed_stages(recovered, "same"), {"首預"})
         self.assertIsNone(stage_for(120, True, completed_stages(recovered, "same")))
+
+    def test_prediction_era_refreshes_only_first_look(self) -> None:
+        first_only = {
+            "matching_version": "same",
+            "prediction_era": "old",
+            "stages": [{"stage": "首預", "status": "PREDICTION_READY"}],
+        }
+        self.assertEqual(
+            completed_stages(first_only, "same", "new"),
+            set(),
+        )
+        with_late_stage = {
+            **first_only,
+            "stages": [
+                {"stage": "首預", "status": "PREDICTION_READY"},
+                {"stage": "T-30", "status": "PREDICTION_READY"},
+            ],
+        }
+        self.assertEqual(
+            completed_stages(with_late_stage, "same", "new"),
+            {"首預", "T-30"},
+        )
 
     def test_chl_simulation_stores_hkjc_provider_and_has_its_own_market_stats(self) -> None:
         config = settings()

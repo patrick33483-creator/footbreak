@@ -11,11 +11,15 @@ from .common import iso_hkt
 from .config import Settings
 
 STAGES = {"首預": 1, "T-30": 2, "T-5": 3}
-PREDICTION_ERA = "2026-08-10-every-crown-fixture-v3"
+PREDICTION_ERA = "2026-08-12-hkjc-corner-forecast-v4"
 PREDICTION_SCHEMA_VERSION = 2
 
 
-def completed_stages(watch: dict[str, Any], matching_version: str) -> set[str]:
+def completed_stages(
+    watch: dict[str, Any],
+    matching_version: str,
+    prediction_era: str | None = None,
+) -> set[str]:
     """Refresh stale first looks once without replaying T-30/T-5 decisions."""
     done = {
         str(row.get("stage"))
@@ -26,7 +30,13 @@ def completed_stages(watch: dict[str, Any], matching_version: str) -> set[str]:
         if row.get("stage") and row.get("status") != "DATA_MISSING"
     }
     if (
-        watch.get("matching_version") != matching_version
+        (
+            watch.get("matching_version") != matching_version
+            or (
+                prediction_era is not None
+                and watch.get("prediction_era") != prediction_era
+            )
+        )
         and not done.intersection({"T-30", "T-5"})
     ):
         done.discard("首預")
@@ -136,11 +146,13 @@ def sync_prediction(ledger: dict[str, Any], prediction: dict[str, Any], config: 
         "kickoff": prediction.get("kickoff_hkt"), "titan_match_id": prediction.get("titan_match_id"),
         "pinnapi_event_id": prediction.get("pinnapi_event_id"), "hkjc_match_id": prediction.get("hkjc_match_id"), "stages": [],
         "matching_version": prediction.get("matching_version"),
+        "prediction_era": PREDICTION_ERA,
     })
     watch.update({key: prediction.get(key) for key in (
         "league", "home", "away", "kickoff_hkt", "titan_match_id",
         "pinnapi_event_id", "hkjc_match_id", "matching_version",
     )})
+    watch["prediction_era"] = PREDICTION_ERA
     watch["kickoff"] = prediction.get("kickoff_hkt")
     stage_rows = watch["stages"]
     existing = next((row for row in stage_rows if row.get("stage") == stage), None)

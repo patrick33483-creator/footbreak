@@ -11,6 +11,7 @@ from .common import HKT, iso_hkt, parse_time
 from .config import Settings
 from .hkjc import event_from_match, fetch_matches, flatten_odds
 from .ledger import (
+    PREDICTION_ERA,
     completed_stages,
     market_entry_thresholds,
     recompute_stats,
@@ -51,6 +52,7 @@ def _tick_rows_from_predictions(
         done = completed_stages(
             (ledger.get("watch") or {}).get(match_id, {}),
             MATCHING_VERSION,
+            PREDICTION_ERA,
         )
         if not stage_for(minutes, False, done):
             continue
@@ -887,7 +889,7 @@ def run(mode: str, config: Settings) -> dict[str, Any]:
         if not in_current_period(event.kickoff):
             continue
         watch = ledger["watch"].get(event.id, {})
-        done = completed_stages(watch, MATCHING_VERSION)
+        done = completed_stages(watch, MATCHING_VERSION, PREDICTION_ERA)
         minutes = (event.kickoff - datetime.now(HKT)).total_seconds() / 60
         # Started fixtures remain visible until the 12:00 board rollover, but
         # no pass spends provider calls rebuilding prices after kickoff.
