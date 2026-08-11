@@ -313,6 +313,11 @@ class ResultSourceTests(unittest.TestCase):
         self.assertIn('/var/www/crown/data.json', workflow)
         self.assertNotIn('/var/www/footbreak-crown/data.json', workflow)
         self.assertIn("systemctl stop crown-tick.service", workflow)
+        deploy_workflow = Path(
+            SYSTEM_DIR.parent, ".github", "workflows", "deploy.yml"
+        ).read_text(encoding="utf-8")
+        self.assertIn("group: production-maintenance", workflow)
+        self.assertIn("group: production-maintenance", deploy_workflow)
 
     def test_health_check_accepts_intentional_sigterm_when_timer_is_active(self) -> None:
         health = Path(
