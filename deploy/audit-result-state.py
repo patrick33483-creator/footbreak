@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -16,6 +17,10 @@ CROWN_HISTORY = Path("/var/lib/footbreak/crown/prediction_history.json")
 CROWN_LEDGER = Path("/var/lib/footbreak/crown/ledger.json")
 CHALLENGER_STATUS = Path("/var/lib/footbreak/challenger/latest.json")
 HKT = timezone(timedelta(hours=8))
+sys.path.insert(0, "/opt/footbreak")
+
+from crown.ledger import PREDICTION_ERA, completed_stages  # noqa: E402
+from crown.matching import MATCHING_VERSION  # noqa: E402
 
 
 def load(path: Path) -> Any:
@@ -148,6 +153,11 @@ def crown_corner_state(
         forecasts = match.get("forecast_candidates") or []
         candidates = match.get("candidates") or []
         watch = (ledger.get("watch") or {}).get(str(match.get("match_id")), {})
+        computed_done = completed_stages(
+            watch,
+            MATCHING_VERSION,
+            PREDICTION_ERA,
+        )
         audited.append(
             {
                 "match_id": match.get("match_id"),
@@ -189,6 +199,7 @@ def crown_corner_state(
                     }
                     for row in (watch.get("stages") or [])
                 ],
+                "computed_completed_stages": sorted(computed_done),
             }
         )
     audited.sort(key=lambda row: str(row.get("kickoff_hkt") or ""), reverse=True)
@@ -235,6 +246,10 @@ def main() -> None:
 
     audit = {
         "generated_at": datetime.now(HKT).isoformat(),
+        "production_prediction_versions": {
+            "prediction_era": PREDICTION_ERA,
+            "matching_version": MATCHING_VERSION,
+        },
         "server_timer": timer_state(),
         "challenger": challenger_state(),
         "crown": {
