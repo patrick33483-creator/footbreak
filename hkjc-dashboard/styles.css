@@ -454,7 +454,13 @@ table.t.bets td.good { color: var(--good); } table.t.bets td.amber { color: var(
 
 /* ─── 全量純預測紀錄 ───────────────────── */
 .history-note { margin-bottom: var(--s4); }
+.history-summary-label {
+  margin-bottom: var(--s2);
+  color: var(--ink-4);
+  font: 650 var(--text-xs)/1.4 var(--sans);
+}
 .history-stage-summary { display: flex; flex-wrap: wrap; gap: var(--s2); }
+.history-stage-summary + .history-stage-summary { margin-top: var(--s2); }
 .hist-stage {
   display: inline-flex; gap: var(--s2); align-items: center;
   padding: var(--s2) var(--s3); border: 1px solid var(--line);
@@ -462,6 +468,58 @@ table.t.bets td.good { color: var(--good); } table.t.bets td.amber { color: var(
   font: var(--text-xs)/1.4 var(--mono);
 }
 .hist-stage b { color: var(--amber); }
+.stage-market-block { margin-top: var(--s4); }
+.stage-market-title {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s2);
+  margin-bottom: var(--s2);
+  color: var(--ink);
+  font: 650 var(--text-sm)/1.4 var(--sans);
+}
+.stage-market-title span {
+  color: var(--ink-4);
+  font: 400 var(--text-xs)/1.4 var(--sans);
+}
+.stage-market-table {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+.stage-market-table th,
+.stage-market-table td {
+  padding: var(--s2);
+  border: 1px solid var(--line);
+  text-align: center;
+}
+.stage-market-table thead th {
+  color: var(--ink-3);
+  background: var(--bg-2);
+  font: 600 var(--text-xs)/1.35 var(--sans);
+}
+.stage-market-table tbody th {
+  width: 18%;
+  color: var(--amber);
+  background: var(--panel-2);
+  font: 700 var(--text-xs)/1.35 var(--mono);
+}
+.stage-market-table td {
+  color: var(--ink);
+  font-family: var(--mono);
+}
+.stage-market-table td strong {
+  display: block;
+  font-size: var(--text-sm);
+  line-height: 1.35;
+}
+.stage-market-table td small {
+  display: block;
+  color: var(--ink-4);
+  font-size: var(--text-xs);
+  line-height: 1.35;
+}
+.stage-market-empty { color: var(--ink-3); font-size: var(--text-xs); }
 .history-table { min-width: 920px; }
 .history-table tr { content-visibility: auto; contain-intrinsic-size: 0 58px; }
 .history-table td { vertical-align: top; }
@@ -546,6 +604,9 @@ table.t.bets td.good { color: var(--good); } table.t.bets td.amber { color: var(
   .mt-mid { text-align: left; }
   .mhead { padding: var(--s4); }
   .card { padding: var(--s3); }
+  .stage-market-table th,
+  .stage-market-table td { padding: var(--s2) var(--s1); }
+  .stage-market-title { align-items: flex-start; flex-direction: column; gap: 0; }
   .history-table {
     display: block;
     min-width: 0;

@@ -201,6 +201,61 @@ class PredictionHistoryPayloadTests(unittest.TestCase):
         self.assertIsNone(payload["stats"]["accuracy"])
         self.assertEqual(payload["stats"]["by_market"]["HIL"]["hits"], 1)
 
+    def test_market_accuracy_is_split_by_prediction_stage(self) -> None:
+        stages = ["首預", "T-30", "T-5"]
+        predictions = [
+            market_prediction("CHL", "9.5", side)
+            for side in ("H", "L", "H")
+        ]
+        watch = {
+            "m5": {
+                "match_id": "m5", "home": "主隊", "away": "客隊",
+                "league": "測試聯賽", "kickoff": "2026-08-10 20:00",
+                "stages": [
+                    {
+                        "prediction_era": ERA,
+                        "stage": stage,
+                        "market_predictions": [prediction],
+                    }
+                    for stage, prediction in zip(stages, predictions)
+                ],
+            }
+        }
+        accuracy = {
+            "matches": [{
+                "match_id": "m5", "home": "主隊", "away": "客隊",
+                "league": "測試聯賽", "kickoff": "2026-08-10 20:00",
+                "score": "1-1",
+                "stages": [
+                    {
+                        "stage": stage,
+                        "market_predictions": [prediction],
+                        "market_grades": [{
+                            **prediction,
+                            "grade_status": "GRADED",
+                            "settlement": "Won" if hit else "Lost",
+                            "hit": hit,
+                        }],
+                    }
+                    for stage, prediction, hit in zip(
+                        stages, predictions, (True, False, True)
+                    )
+                ],
+            }],
+        }
+
+        stats = gen_app_data.build_prediction_history(watch, [], accuracy)["stats"]
+
+        self.assertEqual(stats["by_market"]["CHL"]["decided"], 3)
+        self.assertEqual(stats["by_market"]["CHL"]["hits"], 2)
+        self.assertEqual(stats["by_stage_market"]["首預"]["CHL"]["hits"], 1)
+        self.assertEqual(stats["by_stage_market"]["T-30"]["CHL"]["hits"], 0)
+        self.assertEqual(stats["by_stage_market"]["T-5"]["CHL"]["hits"], 1)
+        for stage in stages:
+            self.assertEqual(
+                stats["by_stage_market"][stage]["CHL"]["decided"], 1
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

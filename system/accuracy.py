@@ -636,7 +636,18 @@ def run(fetch=True):
         for stage in match.get("stages") or []:
             if isinstance(stage, dict):
                 scored.append({**stage, "match_id": mid})
-    by_stage = {s: _agg([r for r in scored if r["stage"] == s]) for s in STAGES}
+    stage_rows = {
+        s: [r for r in scored if r["stage"] == s]
+        for s in STAGES
+    }
+    by_stage = {s: _agg(stage_rows[s]) for s in STAGES}
+    by_stage_market = {
+        s: {
+            code: _market_agg(stage_rows[s], code)
+            for code in ("HDC", "HIL", "CHL")
+        }
+        for s in STAGES
+    }
     by_conf = []
     for (lo, hi), lbl in zip(CONF_BINS, CONF_LBL):
         sub = [r for r in scored if r.get("conf") is not None and lo <= r["conf"] < hi]
@@ -663,6 +674,7 @@ def run(fetch=True):
         "market_overall": _market_agg(scored),
         "latest": _agg(final_rows),
         "by_stage": {k: v for k, v in by_stage.items() if v},
+        "by_stage_market": by_stage_market,
         "by_conf": by_conf,
         "calibration": calibration(scored),
         "matches": matches,

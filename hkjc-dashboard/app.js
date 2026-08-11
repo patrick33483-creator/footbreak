@@ -938,6 +938,25 @@ function historyMarketResult(r) {
     ${pushes ? `<div class="cell-sub">走水 ${pushes} 項</div>` : ''}`;
 }
 
+function historyStageMarketMatrix(stats) {
+  const stages = ['首預', 'T-30', 'T-5'];
+  const codes = ['HDC', 'HIL', 'CHL'];
+  const matrix = stats.by_stage_market || {};
+  const cell = (stage, code) => {
+    const x = (matrix[stage] || {})[code] || {};
+    return x.accuracy == null
+      ? `<span class="stage-market-empty">待累積</span><small>${x.graded || 0} 個已評分</small>`
+      : `<strong>${pc(x.accuracy, 1)}</strong><small>${x.hits}/${x.decided}</small>`;
+  };
+  return `<div class="stage-market-block">
+    <div class="stage-market-title">分階段市場命中率 <span>每格獨立計算</span></div>
+    <table class="stage-market-table" aria-label="首預、T-30及T-5各市場命中率">
+      <thead><tr><th>階段</th>${codes.map((code) => `<th>${HIST_MARKET_LABEL[code]}</th>`).join('')}</tr></thead>
+      <tbody>${stages.map((stage) => `<tr><th>${stage}</th>${codes.map((code) => `<td>${cell(stage, code)}</td>`).join('')}</tr>`).join('')}</tbody>
+    </table>
+  </div>`;
+}
+
 function renderFc() {
   const V = $('#viewFc');
   const payload = DATA.prediction_history || { rows: [], stats: {} };
@@ -1003,9 +1022,11 @@ function renderFc() {
       `<div class="kpi"><span class="kpi-lbl">${l}</span><span class="kpi-val ${c}">${v}</span></div>`).join('')}</div>
   </div>
   <div class="card history-note">
+    <div class="history-summary-label">合併總覽</div>
     <div class="history-stage-summary">${stageSummary}</div>
     <div class="history-stage-summary">${marketSummary}</div>
-    <p class="mx-note">正式學習樣本為讓球、入球大細及角球大細當時主線；1X2 只作輔助。開賽 130 分鐘後抓取賽果，成功核對先計命中；未完場或未取到賽果唔當輸。</p>
+    ${historyStageMarketMatrix(s)}
+    <p class="mx-note">合併市場數字會計首預、T-30、T-5 每個獨立快照；下表則按階段分開。正式學習樣本為當時主線，走水不計入命中率分母；未完場或未取到賽果唔當輸。</p>
   </div>
   <div class="card"><h2 class="card-h">已核對賽果 <span class="sub">${gradedRows.length} 筆 · 命中 ${s.hits || 0}</span></h2>
     ${historyTable(gradedRows, '暫時未有已核對賽果。')}

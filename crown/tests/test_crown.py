@@ -29,7 +29,7 @@ from crown.matching import (
 from crown.notify import _bet_label, notify_new
 from crown.pinnapi import parse_fixtures, parse_lines
 from crown.period import in_current_period, is_upcoming_in_current_period, period_bounds
-from crown.prediction_history import archive_watch, grade_history
+from crown.prediction_history import archive_watch, calculate_stats, grade_history
 from crown import settle as crown_settle
 from crown.state import load_predictions, merge_predictions, save_predictions
 from crown.titan import (
@@ -1027,6 +1027,36 @@ class CrownSafetyTests(unittest.TestCase):
             self.assertIsNotNone(history["stats"]["brier"])
             self.assertEqual(row["market_grades"][0]["settlement"], "Won")
             self.assertEqual(history["stats"]["by_market"]["HDC"]["hits"], 1)
+
+    def test_prediction_history_market_accuracy_is_split_by_stage(self) -> None:
+        stages = ("首預", "T-30", "T-5")
+        rows = [
+            {
+                "match_id": "same-match",
+                "stage": stage,
+                "market_grades": [{
+                    "code": "HDC",
+                    "grade_status": "GRADED",
+                    "settlement": "Won" if hit else "Lost",
+                    "hit": hit,
+                    "brier": .16 if hit else .36,
+                    "log_loss": .51 if hit else .92,
+                }],
+            }
+            for stage, hit in zip(stages, (True, False, True))
+        ]
+
+        stats = calculate_stats(rows)
+
+        self.assertEqual(stats["by_market"]["HDC"]["decided"], 3)
+        self.assertEqual(stats["by_market"]["HDC"]["hits"], 2)
+        self.assertEqual(stats["by_stage_market"]["首預"]["HDC"]["hits"], 1)
+        self.assertEqual(stats["by_stage_market"]["T-30"]["HDC"]["hits"], 0)
+        self.assertEqual(stats["by_stage_market"]["T-5"]["HDC"]["hits"], 1)
+        for stage in stages:
+            self.assertEqual(
+                stats["by_stage_market"][stage]["HDC"]["decided"], 1
+            )
 
     def test_prediction_history_excludes_explicit_titan_postponement(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

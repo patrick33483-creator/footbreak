@@ -354,14 +354,13 @@ def build_prediction_history(watch, bets, accuracy):
             "accuracy": (stage_hits / len(stage_graded)) if stage_graded else None,
         }
 
-    by_market = {}
-    for code in ("HDC", "HIL", "CHL"):
+    def market_metrics(market_rows, code):
         grades = [
-            grade for row in rows for grade in (row.get("market_grades") or [])
+            grade for row in market_rows for grade in (row.get("market_grades") or [])
             if grade.get("code") == code and grade.get("grade_status") == "GRADED"
         ]
         decided = [grade for grade in grades if grade.get("hit") is not None]
-        by_market[code] = {
+        return {
             "graded": len(grades),
             "decided": len(decided),
             "hits": sum(grade.get("hit") is True for grade in decided),
@@ -375,6 +374,20 @@ def build_prediction_history(watch, bets, accuracy):
                 if any(grade.get("brier") is not None for grade in grades) else None
             ),
         }
+    by_market = {
+        code: market_metrics(rows, code)
+        for code in ("HDC", "HIL", "CHL")
+    }
+    by_stage_market = {
+        stage: {
+            code: market_metrics(
+                [row for row in rows if row.get("stage") == stage],
+                code,
+            )
+            for code in ("HDC", "HIL", "CHL")
+        }
+        for stage in HISTORY_STAGES
+    }
 
     return {
         "rows": rows,
@@ -388,6 +401,7 @@ def build_prediction_history(watch, bets, accuracy):
             "accuracy": (hits / len(wdl_graded_rows)) if wdl_graded_rows else None,
             "by_stage": by_stage,
             "by_market": by_market,
+            "by_stage_market": by_stage_market,
             "learning_status": "collecting_market_level_shadow_samples",
         },
     }

@@ -767,7 +767,18 @@ def _market_metrics(rows: list[dict[str, Any]], code: str | None = None) -> dict
 
 def calculate_stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
     overall = _metrics(rows)
-    by_stage = {stage: _metrics([row for row in rows if row.get("stage") == stage]) for stage in STAGES}
+    stage_rows = {
+        stage: [row for row in rows if row.get("stage") == stage]
+        for stage in STAGES
+    }
+    by_stage = {stage: _metrics(stage_rows[stage]) for stage in STAGES}
+    by_stage_market = {
+        stage: {
+            code: _market_metrics(stage_rows[stage], code)
+            for code in ("HDC", "HIL", "CHL")
+        }
+        for stage in STAGES
+    }
     latest_by_match: dict[str, dict[str, Any]] = {}
     for row in rows:
         match_id = str(row.get("match_id") or "")
@@ -785,6 +796,7 @@ def calculate_stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "pending": sum(row.get("result_status") == "待賽果" for row in rows),
         **overall,
         "by_stage": by_stage,
+        "by_stage_market": by_stage_market,
         "by_market": {
             code: _market_metrics(rows, code)
             for code in ("HDC", "HIL", "CHL")
