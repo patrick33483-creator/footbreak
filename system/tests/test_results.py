@@ -310,6 +310,8 @@ class ResultSourceTests(unittest.TestCase):
             workflow,
         )
         self.assertIn("rm -f /run/footbreak-t5-priority", workflow)
+        self.assertIn('/var/www/crown/data.json', workflow)
+        self.assertNotIn('/var/www/footbreak-crown/data.json', workflow)
         self.assertIn("systemctl stop crown-tick.service", workflow)
 
 
