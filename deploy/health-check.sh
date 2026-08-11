@@ -54,6 +54,15 @@ grep -q 'Number.isFinite(Number(rawLine))' /var/www/crown/app.js || {
   exit 1
 }
 echo "OK Crown dashboard finite-line guard"
+grep -q '最新開賽時間優先' /var/www/crown/app.js || {
+  echo "FAIL stale Crown dashboard asset: global chronological history missing" >&2
+  exit 1
+}
+if grep -q 'const gradedRows =' /var/www/crown/app.js; then
+  echo "FAIL stale Crown dashboard asset: status grouping still breaks chronological order" >&2
+  exit 1
+fi
+echo "OK Crown dashboard global chronological history"
 api_ready=0
 for _ in $(seq 1 10); do
   if python3 - <<'PY'
