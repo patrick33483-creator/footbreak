@@ -35,6 +35,7 @@ from crown.state import load_predictions, merge_predictions, save_predictions
 from crown.titan import (
     crown_prices_from_pages,
     parse_crown_fixture_ids,
+    parse_match_header,
     parse_match_statistics,
     parse_schedule_page,
 )
@@ -66,6 +67,18 @@ class CrownSafetyTests(unittest.TestCase):
         self.assertIsNone(parse_match_statistics(
             'var teamTvStatisticData = "0,not-a-number,2,0,0";'
         ))
+
+    def test_titan_completed_match_header_score_is_parsed_fail_closed(self) -> None:
+        fields = [""] * 16
+        fields[0], fields[1], fields[4] = "中央骏马", "南市台钢", "-1"
+        fields[5], fields[10], fields[11], fields[15] = (
+            "20260811110000", "2", "2", "亚挑联"
+        )
+        result = parse_match_header("^".join(fields), "3031468")
+        self.assertEqual(result["home_score"], 2)
+        self.assertEqual(result["away_score"], 2)
+        fields[4] = "3"
+        self.assertIsNone(parse_match_header("^".join(fields), "3031468"))
 
     def test_matching_requires_unique_same_event_and_team_ids_for_hkjc(self) -> None:
         good = Event("good", "League", "Alpha", "Beta", self.now + timedelta(minutes=2))
@@ -1212,6 +1225,114 @@ class CrownSafetyTests(unittest.TestCase):
                 row["market_grades"][0]["reason"], "fixture_not_played"
             )
             self.assertEqual(history["result_sync"]["excluded_now"], 1)
+
+    def test_valid_hkjc_score_wins_over_refunded_pool_status(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = replace(settings(), state_dir=Path(directory))
+            kickoff = datetime.now(self.now.tzinfo) - timedelta(hours=3)
+            ledger = {"watch": {"x": {
+                "match_id": "x", "hkjc_match_id": "50072834",
+                "league": "League", "home": "Alpha FC", "away": "Beta FC",
+                "kickoff": kickoff.isoformat(), "titan_match_id": "x",
+                "stages": [{
+                    "match_id": "x", "stage": "T-5",
+                    "ts": (kickoff - timedelta(minutes=5)).isoformat(),
+                    "forecast": "客勝", "probability": .60,
+                    "market_predictions": [{
+                        "code": "HIL", "condition": 2.5, "line": 2.5,
+                        "side": "H", "label": "大 2.5", "probability": .62,
+                    }],
+                }],
+            }}}
+            archive_watch(config, ledger)
+            official = {
+                "id": "50072834", "league": "League",
+                "home": "Alpha FC", "away": "Beta FC",
+                "kickoff": kickoff, "home_score": 1, "away_score": 2,
+            }
+            with patch(
+                "crown.prediction_history.TitanClient.results", return_value=[]
+            ), patch(
+                "crown.prediction_history.fetch_official_result_events",
+                return_value=[official],
+            ), patch(
+                "crown.prediction_history.fetch_official_match_statuses",
+                return_value={"50072834": {
+                    "status": "INPLAYMATCHENDED",
+                    "refund_pools": ["CHL"],
+                }},
+            ):
+                history = grade_history(config)
+            row = history["rows"][0]
+            self.assertEqual(row["result_status"], "已核對")
+            self.assertEqual(row["score"], "1-2")
+            self.assertEqual(row["result_source"], "hkjc_official_exact_id")
+
+    def test_prediction_history_recovers_exact_titan_detail_omitted_from_index(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = replace(settings(), state_dir=Path(directory))
+            kickoff = datetime.now(self.now.tzinfo) - timedelta(hours=8)
+            ledger = {"watch": {"3031468": {
+                "match_id": "3031468", "titan_match_id": "3031468",
+                "league": "亚挑联", "home": "中央骏马", "away": "南市台钢",
+                "kickoff": kickoff.isoformat(),
+                "stages": [{
+                    "match_id": "3031468", "stage": "T-5",
+                    "ts": (kickoff - timedelta(minutes=5)).isoformat(),
+                    "forecast": "和局", "probability": .40,
+                    "market_predictions": [{
+                        "code": "HIL", "condition": 3.5, "line": 3.5,
+                        "side": "H", "label": "大 3.5", "probability": .58,
+                    }],
+                }],
+            }}}
+            archive_watch(config, ledger)
+            detail = {
+                "id": "3031468", "league": "亚挑联",
+                "home": "中央骏马", "away": "南市台钢",
+                "kickoff": kickoff, "status": "完",
+                "home_score": 2, "away_score": 2,
+                "corners_home": 3, "corners_away": 7, "corners_total": 10,
+            }
+            with patch(
+                "crown.prediction_history.TitanClient.results", return_value=[]
+            ), patch(
+                "crown.prediction_history.TitanClient.result_detail",
+                return_value=detail,
+            ), patch(
+                "crown.prediction_history.fetch_official_result_events",
+                return_value=[],
+            ), patch(
+                "crown.prediction_history.fetch_official_match_statuses",
+                return_value={},
+            ):
+                history = grade_history(config)
+            row = history["rows"][0]
+            self.assertEqual(row["result_status"], "已核對")
+            self.assertEqual(row["score"], "2-2")
+            self.assertEqual(row["result_detail"]["corners_total"], 10)
+            self.assertEqual(
+                row["result_source"], "titan007_direct_detail_exact_id"
+            )
+
+    def test_normalizer_retries_ended_hkjc_row_wrongly_marked_not_applicable(self) -> None:
+        from crown.prediction_history import normalize_history
+
+        row = {
+            "match_id": "x", "stage": "T-5",
+            "market_predictions": [{
+                "code": "HIL", "line": 2.5, "side": "H", "probability": .6,
+            }],
+            "result_status": "不計",
+            "result_source": "hkjc_official_exact_id_terminal_status",
+            "result_detail": {"terminal_status": "INPLAYMATCHENDED"},
+            "market_grades": [{"code": "HIL", "grade_status": "NOT_APPLICABLE"}],
+        }
+        history = normalize_history({"rows": [row]})
+        recovered = history["rows"][0]
+        self.assertEqual(recovered["result_status"], "待賽果")
+        self.assertEqual(recovered["market_grades"], [])
+        self.assertIsNone(recovered["result_source"])
 
     def test_prediction_history_recovers_changed_titan_id_by_unique_identity(self) -> None:
         from crown.prediction_history import _result

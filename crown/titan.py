@@ -97,6 +97,36 @@ def parse_match_statistics(source: str) -> dict[str, int] | None:
     return None
 
 
+def parse_match_header(source: str, titan_id: str) -> dict[str, Any] | None:
+    """Parse Titan's stable analysis-header record for one exact fixture ID.
+
+    Fields 4, 10 and 11 are respectively match state, home score and away
+    score in the same record used by Titan's live detail page.  Only a
+    completed match (state -1) with a numeric score is accepted.
+    """
+    fields = source.strip().split("^")
+    if len(fields) < 16 or fields[4].strip() != "-1":
+        return None
+    try:
+        home_score = int(fields[10])
+        away_score = int(fields[11])
+        kickoff = datetime.strptime(fields[5], "%Y%m%d%H%M%S").replace(tzinfo=HKT)
+    except (ValueError, IndexError):
+        return None
+    if home_score < 0 or away_score < 0:
+        return None
+    return {
+        "id": str(titan_id),
+        "home": fields[0].strip(),
+        "away": fields[1].strip(),
+        "league": fields[15].strip(),
+        "kickoff": kickoff,
+        "status": "完",
+        "home_score": home_score,
+        "away_score": away_score,
+    }
+
+
 def parse_crown_fixture_ids(source: str) -> set[str]:
     """Return the exact fixture IDs exposed by Titan's company-id feed."""
     try:
@@ -177,7 +207,7 @@ class TitanClient:
         self.config = config
 
     @staticmethod
-    def _read(url: str) -> str:
+    def _read(url: str, encoding: str = "gb18030") -> str:
         last_error: OSError | None = None
         for attempt in range(2):
             is_vip_odds = "vip.titan007.com/" in url
@@ -207,7 +237,7 @@ class TitanClient:
             )
             try:
                 with urllib.request.urlopen(request, timeout=25) as response:
-                    return response.read().decode("gb18030", errors="replace")
+                    return response.read().decode(encoding, errors="replace")
             except OSError as exc:
                 last_error = exc
                 if attempt < 1:
@@ -299,17 +329,25 @@ class TitanClient:
         return list({row["id"]: row for row in output}.values())
 
     def result_detail(self, titan_id: str) -> dict[str, Any] | None:
-        """Return machine-readable full-time statistics for one numeric ID."""
+        """Return an exact-ID completed score and available full-time stats."""
         titan_id = str(titan_id)
         if not titan_id.isdigit():
             return None
+        header = parse_match_header(
+            self._read(
+                "https://livestatic.titan007.com/phone/txt/analysisheader/cn/"
+                f"{titan_id[0]}/{titan_id[1:3]}/{titan_id}.txt",
+                encoding="utf-8",
+            ),
+            titan_id,
+        )
+        if not header:
+            return None
         stats = parse_match_statistics(
             self._read(f"https://live.titan007.com/detail/{titan_id}cn.htm")
-        )
-        if not stats:
-            return None
+        ) or {}
         return {
-            "titan_id": titan_id,
+            **header,
             **stats,
             "source": "titan007_match_detail",
         }

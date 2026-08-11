@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import math
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -73,11 +74,52 @@ def verify_known_crown_incident(crown_rows: list[dict[str, Any]]) -> None:
             if prediction.get("code") == "CHL"
         ]
         if corner_markets:
-            assert (row.get("actual") or {}).get("corners_total") == 10, row
+            assert (row.get("result_detail") or {}).get("corners_total") == 10, row
     print(
         "Crown incident 3031468 OK "
         f"records={len(incident)} score=2-2 corners=10"
     )
+
+
+def assert_market_stats_consistent(
+    label: str,
+    history_rows: list[dict[str, Any]],
+    stats: dict[str, Any],
+) -> None:
+    direct: dict[str, Counter[str]] = {}
+    by_stage: dict[str, dict[str, Counter[str]]] = {}
+    for row in history_rows:
+        stage = str(row.get("stage") or "")
+        for grade in row.get("market_grades") or []:
+            if not isinstance(grade, dict) or grade.get("grade_status") != "GRADED":
+                continue
+            code = str(grade.get("code") or "")
+            if not code:
+                continue
+            direct.setdefault(code, Counter())["graded"] += 1
+            by_stage.setdefault(stage, {}).setdefault(code, Counter())["graded"] += 1
+            if grade.get("settlement") != "Refunded":
+                direct[code]["decided"] += 1
+                by_stage[stage][code]["decided"] += 1
+                if grade.get("hit") is True:
+                    direct[code]["hits"] += 1
+                    by_stage[stage][code]["hits"] += 1
+
+    reported = stats.get("by_market") or {}
+    reported_stage = stats.get("by_stage_market") or {}
+    for code, counts in direct.items():
+        for key in ("graded", "decided", "hits"):
+            assert int((reported.get(code) or {}).get(key, -1)) == counts[key], (
+                label, code, key, reported.get(code), counts
+            )
+            stage_sum = sum(
+                int(((markets or {}).get(code) or {}).get(key, 0))
+                for markets in reported_stage.values()
+            )
+            assert stage_sum == counts[key], (
+                label, code, key, "stage_sum", stage_sum, counts[key]
+            )
+    print(f"{label} market statistics OK markets={sorted(direct)}")
 
 
 def main() -> None:
@@ -87,6 +129,12 @@ def main() -> None:
     crown_rows = rows(crown)
     assert_no_nan("Footbreak", footbreak_rows)
     assert_no_nan("Crown", crown_rows)
+    assert_market_stats_consistent(
+        "Footbreak",
+        footbreak_rows,
+        (footbreak.get("prediction_history") or {}).get("stats") or {},
+    )
+    assert_market_stats_consistent("Crown", crown_rows, crown.get("stats") or {})
     verify_known_crown_incident(crown_rows)
 
 

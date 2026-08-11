@@ -79,6 +79,28 @@ def normalize_history(history: dict[str, Any]) -> dict[str, Any]:
     for row in rows:
         if row.get("result_status") == "已核實":
             row["result_status"] = "已核對"
+        detail = row.get("result_detail")
+        terminal_status = (
+            str(detail.get("terminal_status") or "").upper()
+            if isinstance(detail, dict)
+            else ""
+        )
+        if (
+            row.get("result_status") == "不計"
+            and row.get("result_source") == "hkjc_official_exact_id_terminal_status"
+            and "MATCHENDED" in terminal_status
+        ):
+            row.update({
+                "actual": None,
+                "score": None,
+                "correct": None,
+                "result_status": "待賽果",
+                "verified_at": None,
+                "result_source": None,
+                "result_detail": None,
+                "market_grades": [],
+                "result_missing_reason": "retry_after_invalid_terminal_classification",
+            })
 
     def sort_key(row: dict[str, Any]) -> tuple[float, str, int]:
         kickoff = parse_time(row.get("kickoff"))
@@ -383,6 +405,39 @@ def _result(row: dict[str, Any], titan_by_id: dict[str, dict[str, Any]],
     return None, None
 
 
+def _direct_titan_result(
+    row: dict[str, Any],
+    client: TitanClient,
+) -> dict[str, Any] | None:
+    """Recover a completed exact-ID result omitted from Titan's date index."""
+    target = _target(row)
+    titan_id = str(row.get("titan_match_id") or row.get("match_id") or "")
+    if target is None or not titan_id.isdigit():
+        return None
+    if row.get("hkjc_match_id"):
+        age_seconds = (datetime.now(HKT) - target.kickoff).total_seconds()
+        if age_seconds < _HKJC_RESULT_GRACE_SECONDS:
+            return None
+    try:
+        detail = client.result_detail(titan_id)
+    except Exception:
+        return None
+    event = _titan_event(detail) if detail else None
+    if event is None:
+        return None
+    matched = match_event(
+        target,
+        [event],
+        team_key=canonical_team_key,
+        league_key=canonical_league_key,
+        allow_reversed=True,
+        require_qualifiers=True,
+    )
+    if not matched.event:
+        return None
+    return _oriented_titan_result(detail, matched.reversed)
+
+
 def _merge_titan_corner_detail(
     row: dict[str, Any],
     score: dict[str, Any],
@@ -646,7 +701,20 @@ def grade_history(config: Settings) -> dict[str, Any]:
     corner_detail_reasons: Counter[str] = Counter()
     for row in due:
         hkjc_state = official_statuses.get(str(row.get("hkjc_match_id") or "")) or {}
-        if is_non_result_terminal_status(
+        score, source = _result(row, titan_by_id, hkjc_by_id, hkjc_events)
+        hkjc_id = str(row.get("hkjc_match_id") or "")
+        cached = footbreak_by_hkjc_id.get(hkjc_id)
+        if score and score.get("corners_total") is None and cached and cached.get("corners_total") is not None:
+            score = {**score, "corners_total": cached["corners_total"]}
+            source = f"{source}+footbreak_corner_exact_hkjc_id"
+        elif not score and cached:
+            score = cached
+            source = str(cached.get("source"))
+        if not score:
+            score = _direct_titan_result(row, titan_client)
+            if score:
+                source = "titan007_direct_detail_exact_id"
+        if not score and is_non_result_terminal_status(
             hkjc_state.get("status"),
             refund_pools=hkjc_state.get("refund_pools"),
             payout_refund_pools=hkjc_state.get("payout_refund_pools"),
@@ -658,22 +726,13 @@ def grade_history(config: Settings) -> dict[str, Any]:
             )
             excluded_now += 1
             continue
-        titan_status = _terminal_titan_status(row, titan_by_id)
+        titan_status = _terminal_titan_status(row, titan_by_id) if not score else None
         if titan_status:
             _exclude_no_contest(
                 row, titan_status, "titan_exact_id_terminal_status"
             )
             excluded_now += 1
             continue
-        score, source = _result(row, titan_by_id, hkjc_by_id, hkjc_events)
-        hkjc_id = str(row.get("hkjc_match_id") or "")
-        cached = footbreak_by_hkjc_id.get(hkjc_id)
-        if score and score.get("corners_total") is None and cached and cached.get("corners_total") is not None:
-            score = {**score, "corners_total": cached["corners_total"]}
-            source = f"{source}+footbreak_corner_exact_hkjc_id"
-        elif not score and cached:
-            score = cached
-            source = str(cached.get("source"))
         if not score:
             row["result_attempted_at"] = iso_hkt()
             if titan_error and official_error:
