@@ -13,6 +13,7 @@ from typing import Any
 FOOTBREAK_DATA = Path("/var/www/footbreak/data.json")
 CROWN_DATA = Path("/var/www/crown/data.json")
 CROWN_HISTORY = Path("/var/lib/footbreak/crown/prediction_history.json")
+CROWN_LEDGER = Path("/var/lib/footbreak/crown/ledger.json")
 CHALLENGER_STATUS = Path("/var/lib/footbreak/challenger/latest.json")
 HKT = timezone(timedelta(hours=8))
 
@@ -122,7 +123,10 @@ def challenger_state() -> dict[str, Any]:
     }
 
 
-def crown_corner_state(payload: dict[str, Any]) -> dict[str, Any]:
+def crown_corner_state(
+    payload: dict[str, Any],
+    ledger: dict[str, Any],
+) -> dict[str, Any]:
     now = datetime.now(HKT)
     recent_cutoff = now - timedelta(hours=12)
     future_cutoff = now + timedelta(hours=36)
@@ -143,6 +147,7 @@ def crown_corner_state(payload: dict[str, Any]) -> dict[str, Any]:
         hkjc_chl = (match.get("book_odds") or {}).get("hkjc_chl") or []
         forecasts = match.get("forecast_candidates") or []
         candidates = match.get("candidates") or []
+        watch = (ledger.get("watch") or {}).get(str(match.get("match_id")), {})
         audited.append(
             {
                 "match_id": match.get("match_id"),
@@ -151,6 +156,11 @@ def crown_corner_state(payload: dict[str, Any]) -> dict[str, Any]:
                 "away": match.get("away"),
                 "stage": match.get("stage"),
                 "status": match.get("status"),
+                "generated_at": match.get("generated_at"),
+                "prediction_source": match.get("prediction_source"),
+                "forecast_codes": [
+                    row.get("code") for row in forecasts
+                ],
                 "hkjc_match_id": match.get("hkjc_match_id"),
                 "pinnapi_event_id": match.get("pinnapi_event_id"),
                 "pinnapi_corner_event_id": match.get("pinnapi_corner_event_id"),
@@ -165,6 +175,20 @@ def crown_corner_state(payload: dict[str, Any]) -> dict[str, Any]:
                 "corner_no_bet_reason": match.get("corner_no_bet_reason"),
                 "edge_reference_status": match.get("edge_reference_status"),
                 "edge_reference_note": match.get("edge_reference_note"),
+                "watch_matching_version": watch.get("matching_version"),
+                "watch_prediction_era": watch.get("prediction_era"),
+                "watch_stages": [
+                    {
+                        "stage": row.get("stage"),
+                        "ts": row.get("ts"),
+                        "prediction_era": row.get("prediction_era"),
+                        "market_codes": [
+                            item.get("code")
+                            for item in (row.get("market_predictions") or [])
+                        ],
+                    }
+                    for row in (watch.get("stages") or [])
+                ],
             }
         )
     audited.sort(key=lambda row: str(row.get("kickoff_hkt") or ""), reverse=True)
@@ -185,6 +209,7 @@ def main() -> None:
     footbreak = load(FOOTBREAK_DATA)
     crown_dashboard = load(CROWN_DATA)
     crown = load(CROWN_HISTORY)
+    crown_ledger = load(CROWN_LEDGER)
     crown_rows = rows(crown)
     footbreak_rows = rows(footbreak.get("prediction_history") or {})
     cutoff = datetime.now(HKT) - timedelta(hours=4)
@@ -215,7 +240,10 @@ def main() -> None:
         "crown": {
             "stats": crown.get("stats"),
             "result_sync": crown.get("result_sync"),
-            "corner_prediction_audit": crown_corner_state(crown_dashboard),
+            "corner_prediction_audit": crown_corner_state(
+                crown_dashboard,
+                crown_ledger,
+            ),
             "relevant_rows": [compact(row) for row in crown_rows if relevant(row)],
             "row_count": len(crown_rows),
         },
