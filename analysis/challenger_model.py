@@ -27,6 +27,8 @@ MODEL_VERSION = "challenger-logit-v1"
 FEATURE_SCHEMA_VERSION = "pre_kickoff-market-v1"
 HIL_MODEL_VERSION = "challenger-logit-hil-v2"
 HIL_FEATURE_SCHEMA_VERSION = "pre_kickoff-hil-market-v2"
+HIL_V3_MODEL_VERSION = "challenger-logit-hil-v3-frozen-prospective"
+HIL_V3_STATE_SCHEMA_VERSION = 1
 STAGE_RANK = {"首預": 1.0, "T-30": 2.0, "T-5": 3.0}
 MARKETS = ("HDC", "HIL", "CHL")
 
@@ -45,6 +47,16 @@ CLIP = 1e-6
 HIL_L2 = 12.0
 HIL_CALIBRATION_FRACTION = 0.80
 HIL_BLEND_WEIGHTS = tuple(item / 20.0 for item in range(21))
+HIL_V3_MIN_PROSPECTIVE_FIXTURES = 30
+HIL_V3_MIN_WALK_FORWARD_TRAIN_FIXTURES = 70
+HIL_V3_WALK_FORWARD_FOLDS = 3
+# This deliberately small, declared-before-selection grid is the whole v3
+# search space.  It is selected from pre-freeze, pre-v2-holdout history only.
+HIL_V3_SPECS = (
+    {"id": "market_anchor", "l2": 12.0, "blend_weight": 0.0},
+    {"id": "conservative_25", "l2": 12.0, "blend_weight": 0.25},
+    {"id": "conservative_50", "l2": 20.0, "blend_weight": 0.50},
+)
 
 # This is intentionally a whitelist.  Result fields in an accidentally
 # malformed payload cannot enter the model even if present in SQLite.
@@ -529,6 +541,324 @@ def calibrate_hil_market_anchor(
     }
 
 
+def _fixture_order(rows: list[dict[str, Any]]) -> tuple[list[str], dict[str, datetime]]:
+    """Return unique fixtures chronologically, keeping stages attached later."""
+    kickoff_by_fixture: dict[str, datetime] = {}
+    for row in rows:
+        fixture = str(row["match_id"])
+        kickoff = row["kickoff"]
+        kickoff_by_fixture[fixture] = min(kickoff_by_fixture.get(fixture, kickoff), kickoff)
+    ordered = sorted(kickoff_by_fixture, key=lambda fixture: (kickoff_by_fixture[fixture], fixture))
+    return ordered, kickoff_by_fixture
+
+
+def _walk_forward_folds(rows: list[dict[str, Any]]) -> list[tuple[set[str], set[str]]]:
+    """Produce deterministic expanding-window fixture folds, never row folds."""
+    ordered, _ = _fixture_order(rows)
+    remaining = len(ordered) - HIL_V3_MIN_WALK_FORWARD_TRAIN_FIXTURES
+    if remaining < HIL_V3_WALK_FORWARD_FOLDS:
+        return []
+    base, extra = divmod(remaining, HIL_V3_WALK_FORWARD_FOLDS)
+    start = HIL_V3_MIN_WALK_FORWARD_TRAIN_FIXTURES
+    folds: list[tuple[set[str], set[str]]] = []
+    for index in range(HIL_V3_WALK_FORWARD_FOLDS):
+        size = base + (1 if index < extra else 0)
+        validation = set(ordered[start:start + size])
+        if not validation:
+            return []
+        folds.append((set(ordered[:start]), validation))
+        start += size
+    return folds
+
+
+def _v3_specification(spec: dict[str, Any]) -> dict[str, Any]:
+    """Join a declared v3 blend option to its compact immutable schema."""
+    return {
+        "id": str(spec["id"]),
+        "l2": float(spec["l2"]),
+        "blend_weight": float(spec["blend_weight"]),
+        "numeric_features": HIL_NUMERIC_FEATURES,
+        "categorical_features": HIL_CATEGORICAL_FEATURES,
+    }
+
+
+def _score_v3_spec(
+    rows: list[dict[str, Any]], spec: dict[str, Any], folds: list[tuple[set[str], set[str]]]
+) -> dict[str, Any]:
+    """Walk-forward score one predeclared option without seeing later fixtures."""
+    candidate_probability: list[float] = []
+    champion_probability: list[float] = []
+    scored_rows: list[dict[str, Any]] = []
+    fold_counts: list[dict[str, int]] = []
+    for train_ids, validation_ids in folds:
+        train = [row for row in rows if str(row["match_id"]) in train_ids]
+        validation = [row for row in rows if str(row["match_id"]) in validation_ids]
+        if not train or not validation:
+            continue
+        encoder, coefficients = fit_logistic(
+            train,
+            numeric_features=tuple(spec["numeric_features"]),
+            categorical_features=tuple(spec["categorical_features"]),
+            l2=float(spec["l2"]),
+        )
+        raw = predict(encoder, coefficients, validation)
+        champion = [float(row["probability"]) for row in validation]
+        candidate_probability.extend(_blend_probabilities(raw, champion, float(spec["blend_weight"])))
+        champion_probability.extend(champion)
+        scored_rows.extend(validation)
+        fold_counts.append({
+            "train_fixtures": len(train_ids),
+            "validation_fixtures": len(validation_ids),
+            "validation_rows": len(validation),
+        })
+    return {
+        "id": spec["id"],
+        "l2": spec["l2"],
+        "blend_weight": spec["blend_weight"],
+        "folds": fold_counts,
+        "metrics": probability_metrics(candidate_probability, scored_rows),
+        "champion_metrics": probability_metrics(champion_probability, scored_rows),
+    }
+
+
+def _select_v3_spec(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Select from the fixed v3 grid using only expanding historical folds."""
+    folds = _walk_forward_folds(rows)
+    if len(folds) != HIL_V3_WALK_FORWARD_FOLDS:
+        return None
+    candidates = [
+        _score_v3_spec(rows, _v3_specification(item), folds)
+        for item in HIL_V3_SPECS
+    ]
+    baseline = next(item for item in candidates if item["id"] == "market_anchor")
+    eligible = [
+        item for item in candidates
+        if item["metrics"]["brier"] is not None
+        and item["metrics"]["log_loss"] is not None
+        and baseline["metrics"]["brier"] is not None
+        and baseline["metrics"]["log_loss"] is not None
+        and float(item["metrics"]["brier"]) < float(baseline["metrics"]["brier"])
+        and float(item["metrics"]["log_loss"]) < float(baseline["metrics"]["log_loss"])
+    ]
+    selected = min(
+        eligible or [baseline],
+        key=lambda item: (
+            float(item["metrics"]["brier"]),
+            float(item["metrics"]["log_loss"]),
+            float(item["blend_weight"]),
+            str(item["id"]),
+        ),
+    )
+    return {
+        "method": "predeclared_three_option_expanding_window_walk_forward",
+        "fold_count": len(folds),
+        "status": (
+            "non_anchor_selected_with_both_walk_forward_proper_scores_improved"
+            if selected["id"] != "market_anchor"
+            else "market_anchor_retained_no_walk_forward_proper_score_improvement"
+        ),
+        "selected_id": selected["id"],
+        "candidates": candidates,
+    }
+
+
+def _encoder_state(encoder: TrainOnlyEncoder) -> dict[str, Any]:
+    return {
+        "numeric_features": list(encoder.numeric_features),
+        "categorical_features": list(encoder.categorical_features),
+        "medians": encoder.medians,
+        "scales": encoder.scales,
+        "categories": {key: list(value) for key, value in encoder.categories.items()},
+        "feature_names": encoder.feature_names,
+    }
+
+
+def _encoder_from_state(payload: dict[str, Any]) -> TrainOnlyEncoder:
+    encoder = TrainOnlyEncoder(
+        tuple(str(item) for item in payload["numeric_features"]),
+        tuple(str(item) for item in payload["categorical_features"]),
+    )
+    encoder.medians = {str(key): float(value) for key, value in payload["medians"].items()}
+    encoder.scales = {str(key): float(value) for key, value in payload["scales"].items()}
+    encoder.categories = {
+        str(key): tuple(str(item) for item in value)
+        for key, value in payload["categories"].items()
+    }
+    encoder.feature_names = [str(item) for item in payload["feature_names"]]
+    return encoder
+
+
+def _state_version_hash(state: dict[str, Any]) -> str:
+    """Hash the frozen private model state without recursively hashing itself."""
+    copy = json.loads(_canonical(state))
+    copy.get("frozen", {}).pop("version_hash", None)
+    return _sha256(copy)
+
+
+def build_hil_v3_state(rows: list[dict[str, Any]], cutoff: datetime) -> dict[str, Any] | None:
+    """Freeze a Crown-HIL v3 model using only history strictly before cutoff.
+
+    The final chronological 30% of the pre-cutoff history is deliberately
+    excluded from selection.  That keeps the already-inspected v2 outer
+    holdout out of every v3 hyperparameter/blend decision.
+    """
+    cutoff = cutoff.astimezone(timezone.utc)
+    historical = [row for row in rows if row["kickoff"] < cutoff]
+    featured = build_feature_rows(historical)
+    selection_ids, excluded_ids, _ = chronological_fixture_split(featured)
+    selection = [row for row in featured if str(row["match_id"]) in selection_ids]
+    selected = _select_v3_spec(selection)
+    if selected is None:
+        return None
+    selected_declared = next(
+        item for item in HIL_V3_SPECS if item["id"] == selected["selected_id"]
+    )
+    spec = _v3_specification(selected_declared)
+    encoder, coefficients = fit_logistic(
+        selection,
+        numeric_features=HIL_NUMERIC_FEATURES,
+        categorical_features=HIL_CATEGORICAL_FEATURES,
+        l2=float(spec["l2"]),
+    )
+    ordered_selection, selection_kickoffs = _fixture_order(selection)
+    state: dict[str, Any] = {
+        "schema_version": HIL_V3_STATE_SCHEMA_VERSION,
+        "kind": "crown_hil_v3_frozen_prospective_shadow",
+        "created_at": cutoff.isoformat(),
+        "freeze_cutoff": cutoff.isoformat(),
+        "frozen": {
+            "model_version": HIL_V3_MODEL_VERSION,
+            "feature_schema_version": HIL_FEATURE_SCHEMA_VERSION,
+            "selected_spec": {
+                "id": spec["id"],
+                "l2": spec["l2"],
+                "blend_weight": spec["blend_weight"],
+            },
+        },
+        "selection": {
+            **selected,
+            "historical_fixtures_before_cutoff": len({str(row["match_id"]) for row in featured}),
+            "selection_fixtures": len(selection_ids),
+            "excluded_recent_holdout_fixtures": len(excluded_ids),
+            "selection_period": _period(ordered_selection, selection_kickoffs),
+        },
+        # This executable model stays exclusively in the 0600 state file and
+        # is never copied to a public challenger-status report.
+        "private_model": {
+            "encoder": _encoder_state(encoder),
+            "coefficients": [round(value, 12) for value in coefficients],
+        },
+    }
+    state["frozen"]["version_hash"] = _state_version_hash(state)
+    return state
+
+
+def _load_v3_state(path: Path) -> dict[str, Any]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if (
+        not isinstance(payload, dict)
+        or payload.get("schema_version") != HIL_V3_STATE_SCHEMA_VERSION
+        or payload.get("kind") != "crown_hil_v3_frozen_prospective_shadow"
+        or not isinstance(payload.get("private_model"), dict)
+        or _state_version_hash(payload) != payload.get("frozen", {}).get("version_hash")
+    ):
+        raise ValueError(f"invalid or altered frozen HIL v3 state: {path}")
+    return payload
+
+
+def atomic_create_state(path: Path, payload: dict[str, Any], mode: int = 0o600) -> bool:
+    """Atomically create a freeze state once; never replace a concurrent one."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary, mode)
+        try:
+            os.link(temporary, path)
+        except FileExistsError:
+            return False
+        return True
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def _v3_public_selection(selection: dict[str, Any]) -> dict[str, Any]:
+    """Expose audit status, never private coefficients or encoder contents."""
+    return {
+        "method": selection["method"],
+        "fold_count": selection["fold_count"],
+        "status": selection["status"],
+        "selected_id": selection["selected_id"],
+        "historical_fixtures_before_cutoff": selection["historical_fixtures_before_cutoff"],
+        "selection_fixtures": selection["selection_fixtures"],
+        "excluded_recent_holdout_fixtures": selection["excluded_recent_holdout_fixtures"],
+        "candidates": [
+            {
+                "id": item["id"],
+                "l2": item["l2"],
+                "blend_weight": item["blend_weight"],
+                "metrics": item["metrics"],
+                "champion_metrics": item["champion_metrics"],
+            }
+            for item in selection["candidates"]
+        ],
+    }
+
+
+def evaluate_hil_v3_prospective(rows: list[dict[str, Any]], state: dict[str, Any]) -> dict[str, Any]:
+    """Score only fixture stages strictly after a state’s immutable cutoff."""
+    cutoff = datetime.fromisoformat(str(state["freeze_cutoff"])).astimezone(timezone.utc)
+    future = build_feature_rows([row for row in rows if row["kickoff"] > cutoff])
+    fixture_ids = {str(row["match_id"]) for row in future}
+    frozen = state["frozen"]
+    report: dict[str, Any] = {
+        "model_version": frozen["model_version"],
+        "state_version_hash": frozen["version_hash"],
+        "freeze_cutoff": cutoff.isoformat(),
+        "selected_spec": {
+            "id": frozen["selected_spec"]["id"],
+            "blend_weight": frozen["selected_spec"]["blend_weight"],
+        },
+        "selection": _v3_public_selection(state["selection"]),
+        "minimum_prospective_fixtures": HIL_V3_MIN_PROSPECTIVE_FIXTURES,
+        "prospective_fixtures": len(fixture_ids),
+        "prospective_rows": len(future),
+        "remaining_fixtures": max(0, HIL_V3_MIN_PROSPECTIVE_FIXTURES - len(fixture_ids)),
+        "grouping": "unique_fixture_with_all_pre_kickoff_stages_preserved",
+        "auto_apply": False,
+        "probability_artifact_written": False,
+    }
+    if len(fixture_ids) < HIL_V3_MIN_PROSPECTIVE_FIXTURES:
+        return {**report, "status": "prospective_shadow_collecting"}
+    encoder = _encoder_from_state(state["private_model"]["encoder"])
+    coefficients = [float(value) for value in state["private_model"]["coefficients"]]
+    raw = predict(encoder, coefficients, future)
+    champion_probability = [float(row["probability"]) for row in future]
+    challenger_probability = _blend_probabilities(
+        raw, champion_probability, float(frozen["selected_spec"]["blend_weight"])
+    )
+    champion = probability_metrics(champion_probability, future)
+    challenger = probability_metrics(challenger_probability, future)
+    gate = promotion_gate(champion, challenger, len(fixture_ids))
+    return {
+        **report,
+        "status": (
+            "candidate_passed_human_review_required"
+            if gate["passed"] else "prospective_tested_no_safe_upgrade"
+        ),
+        "champion": {"metrics": champion},
+        "challenger": {"metrics": challenger, "raw_model_metrics": probability_metrics(raw, future)},
+        "delta": gate["deltas"],
+        "checks": gate["checks"],
+        "rejection_reasons": gate["rejection_reasons"],
+    }
+
+
 def promotion_gate(champion: dict[str, Any], challenger: dict[str, Any], holdout_fixtures: int) -> dict[str, Any]:
     def delta(key: str) -> float | None:
         if champion.get(key) is None or challenger.get(key) is None:
@@ -669,17 +999,66 @@ def evaluate_market(rows: list[dict[str, Any]], system: str, market: str, diagno
     }
 
 
-def evaluate_all(store: LearningStore) -> dict[str, Any]:
+def evaluate_all(
+    store: LearningStore, *, hil_v3_state_path: Path | None = None, now: datetime | None = None
+) -> dict[str, Any]:
     systems: dict[str, Any] = {}
+    crown_hil_v3: dict[str, Any] | None = None
     for system in ("footbreak", "crown"):
         rows, diagnostics = store.challenger_rows(system)
         tests = {market: evaluate_market(rows, system, market, diagnostics) for market in MARKETS}
+        if system == "crown":
+            state_path = hil_v3_state_path
+            if state_path is None:
+                # Some legacy callers embed the ordinary v1/v2 report inside a
+                # separate rolling-backtest document.  They intentionally do
+                # not own a persistent challenger-state directory, so v3 must
+                # not silently freeze/retrain there.
+                state = None
+                crown_hil_v3 = {
+                    "status": "prospective_shadow_collecting",
+                    "freeze_cutoff": None,
+                    "minimum_prospective_fixtures": HIL_V3_MIN_PROSPECTIVE_FIXTURES,
+                    "prospective_fixtures": 0,
+                    "prospective_rows": 0,
+                    "remaining_fixtures": HIL_V3_MIN_PROSPECTIVE_FIXTURES,
+                    "reason": "persistent_state_path_required_for_v3_freeze",
+                    "auto_apply": False,
+                    "probability_artifact_written": False,
+                }
+            elif state_path.exists():
+                state = _load_v3_state(state_path)
+            else:
+                freeze_at = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+                state = build_hil_v3_state(
+                    [row for row in rows if str(row.get("market")) == "HIL"], freeze_at
+                )
+                if state is not None:
+                    atomic_create_state(state_path, state)
+                    state = _load_v3_state(state_path)
+            if state_path is not None and state is None:
+                crown_hil_v3 = {
+                    "status": "prospective_shadow_collecting",
+                    "freeze_cutoff": None,
+                    "minimum_prospective_fixtures": HIL_V3_MIN_PROSPECTIVE_FIXTURES,
+                    "prospective_fixtures": 0,
+                    "prospective_rows": 0,
+                    "remaining_fixtures": HIL_V3_MIN_PROSPECTIVE_FIXTURES,
+                    "reason": "insufficient_pre_freeze_history_for_three_walk_forward_folds",
+                    "auto_apply": False,
+                    "probability_artifact_written": False,
+                }
+            elif state is not None:
+                crown_hil_v3 = evaluate_hil_v3_prospective(
+                    [row for row in rows if str(row.get("market")) == "HIL"], state
+                )
+            tests["HIL"]["prospective_v3"] = crown_hil_v3
         systems[system] = {
             "tests": tests,
             "review_required": any(
                 item["status"] == "candidate_passed_human_review_required"
                 for item in tests.values()
-            ),
+            ) or (crown_hil_v3 or {}).get("status") == "candidate_passed_human_review_required",
         }
     return {
         "schema_version": 1,
@@ -698,6 +1077,12 @@ def evaluate_all(store: LearningStore) -> dict[str, Any]:
                 "Crown HIL uses a compact line/price/stage-movement schema and "
                 "a chronological train-only market-anchor calibration; a nonzero "
                 "blend weight requires both inner Brier and log-loss improvement."
+            ),
+            "HIL_v3": (
+                "Crown HIL v3 is a frozen prospective shadow only: one small "
+                "predeclared blend grid is selected by expanding walk-forward "
+                "folds before a private immutable cutoff, then only strictly "
+                "later fixture stages count toward a 30-unique-fixture review."
             ),
             "post_kickoff": "quarantined snapshots excluded",
             "result_fields": "not in feature whitelist",
@@ -725,11 +1110,19 @@ def atomic_write(path: Path, payload: dict[str, Any], mode: int) -> None:
             os.unlink(temporary)
 
 
-def run(learning_db: Path, output_path: Path, public_paths: list[Path] | None = None) -> dict[str, Any]:
+def run(
+    learning_db: Path,
+    output_path: Path,
+    public_paths: list[Path] | None = None,
+    *,
+    hil_v3_state_path: Path | None = None,
+    now: datetime | None = None,
+) -> dict[str, Any]:
     if not learning_db.is_file():
         raise FileNotFoundError(f"immutable learning database does not exist: {learning_db}")
+    state_path = hil_v3_state_path or output_path.parent / "crown_hil_v3_state.json"
     with LearningStore(learning_db) as store:
-        report = evaluate_all(store)
+        report = evaluate_all(store, hil_v3_state_path=state_path, now=now)
     atomic_write(output_path, report, 0o600)
     for path in public_paths or []:
         atomic_write(path, report, 0o644)
@@ -741,8 +1134,12 @@ def main() -> None:
     parser.add_argument("--learning-db", type=Path, required=True)
     parser.add_argument("--out", type=Path, default=Path("/var/lib/footbreak/challenger/latest.json"))
     parser.add_argument("--public", type=Path, action="append", default=[])
+    parser.add_argument(
+        "--hil-v3-state", type=Path,
+        default=Path("/var/lib/footbreak/challenger/crown_hil_v3_state.json"),
+    )
     args = parser.parse_args()
-    report = run(args.learning_db, args.out, args.public)
+    report = run(args.learning_db, args.out, args.public, hil_v3_state_path=args.hil_v3_state)
     print(json.dumps({
         "generated_at": report["generated_at"],
         "review_required": report["review_required"],

@@ -95,26 +95,55 @@ def challenger_state() -> dict[str, Any]:
             "review_required": bool((system_payload or {}).get("review_required")),
             "tests": {
                 market: {
-                    key: test.get(key)
-                    for key in (
-                        "status",
-                        "eligible_fixtures",
-                        "eligible_rows",
-                        "required_fixtures",
-                        "remaining_fixtures",
-                        "train_fixtures",
-                        "holdout_fixtures",
-                        "train_rows",
-                        "holdout_rows",
-                        "champion",
-                        "challenger",
-                        "delta",
-                        "checks",
-                        "rejection_reasons",
-                        "model_version_hash",
-                        "auto_apply",
-                    )
-                    if key in test
+                    **{
+                        key: test.get(key)
+                        for key in (
+                            "status",
+                            "eligible_fixtures",
+                            "eligible_rows",
+                            "required_fixtures",
+                            "remaining_fixtures",
+                            "train_fixtures",
+                            "holdout_fixtures",
+                            "train_rows",
+                            "holdout_rows",
+                            "champion",
+                            "challenger",
+                            "delta",
+                            "checks",
+                            "rejection_reasons",
+                            "model_version_hash",
+                            "auto_apply",
+                        )
+                        if key in test
+                    },
+                    **(
+                        {
+                            "prospective_v3": {
+                                key: test["prospective_v3"].get(key)
+                                for key in (
+                                    "status",
+                                    "model_version",
+                                    "state_version_hash",
+                                    "freeze_cutoff",
+                                    "selected_spec",
+                                    "minimum_prospective_fixtures",
+                                    "prospective_fixtures",
+                                    "prospective_rows",
+                                    "remaining_fixtures",
+                                    "champion",
+                                    "challenger",
+                                    "delta",
+                                    "checks",
+                                    "rejection_reasons",
+                                    "auto_apply",
+                                )
+                                if key in test["prospective_v3"]
+                            }
+                        }
+                        if isinstance(test.get("prospective_v3"), dict)
+                        else {}
+                    ),
                 }
                 for market, test in tests.items()
             },

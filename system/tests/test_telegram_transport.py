@@ -112,6 +112,33 @@ class TelegramTransportTests(unittest.TestCase):
             ["challenger:crown:HIL:abc123"],
         )
 
+    def test_frozen_prospective_hil_v3_notifies_only_after_all_gates_pass(self) -> None:
+        report = {
+            "systems": {
+                "crown": {
+                    "tests": {
+                        "HIL": {
+                            "prospective_v3": {
+                                "status": "prospective_shadow_collecting",
+                                "state_version_hash": "frozen-1",
+                            },
+                        },
+                    },
+                },
+            },
+        }
+        self.assertEqual(notify.review_events(report), [])
+        report["systems"]["crown"]["tests"]["HIL"]["prospective_v3"].update({
+            "status": "candidate_passed_human_review_required",
+            "prospective_fixtures": 30,
+            "prospective_rows": 88,
+            "delta": {"brier": -.02, "log_loss": -.01, "accuracy": .01},
+        })
+        self.assertEqual(
+            [event["key"] for event in notify.review_events(report)],
+            ["prospective-v3:crown:HIL:frozen-1"],
+        )
+
     def test_long_lived_bot_token_uses_direct_telegram_api(self) -> None:
         response = Mock()
         response.read.return_value = json.dumps({"ok": True}).encode()

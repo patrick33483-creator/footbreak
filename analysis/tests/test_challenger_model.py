@@ -11,9 +11,12 @@ from pathlib import Path
 from analysis.challenger_model import (
     HIL_FEATURE_SCHEMA_VERSION,
     HIL_MODEL_VERSION,
+    HIL_V3_MODEL_VERSION,
     TrainOnlyEncoder,
+    build_hil_v3_state,
     build_feature_rows,
     chronological_fixture_split,
+    evaluate_hil_v3_prospective,
     evaluate_market,
     fit_logistic,
     predict,
@@ -271,6 +274,83 @@ class ChallengerModelTests(unittest.TestCase):
         )
         self.assertFalse(first["auto_apply"])
         self.assertFalse(first["challenger"]["probability_artifact_written"])
+
+    def test_hil_v3_freeze_is_deterministic_and_excludes_same_or_pre_cutoff_fixtures(self) -> None:
+        cutoff = datetime(2026, 7, 20, tzinfo=timezone.utc)
+        history = [
+            self._hil_source_row(index, target=float(index % 2 == 0))
+            for index in range(200)
+        ]
+        # The helper starts on 2026-01-01, so all 200 history fixtures are
+        # strictly earlier than this cutoff.  This one is exactly at cutoff
+        # and must never become either selection history or prospective score.
+        same_day = self._hil_source_row(400, target=1.0)
+        same_day["match_id"] = "same-cutoff"
+        same_day["kickoff"] = cutoff
+        same_day["predicted_at"] = cutoff - timedelta(minutes=5)
+        first = build_hil_v3_state(history + [same_day], cutoff)
+        second = build_hil_v3_state(copy.deepcopy(history + [same_day]), cutoff)
+        self.assertIsNotNone(first)
+        self.assertEqual(first, second)
+        assert first is not None
+        self.assertEqual(first["frozen"]["model_version"], HIL_V3_MODEL_VERSION)
+        self.assertEqual(first["selection"]["selection_fixtures"], 140)
+        self.assertEqual(first["selection"]["excluded_recent_holdout_fixtures"], 60)
+        self.assertEqual(first["selection"]["fold_count"], 3)
+        self.assertEqual(len(first["selection"]["candidates"]), 3)
+        self.assertNotIn("same-cutoff", json.dumps(first, ensure_ascii=False))
+
+        future = []
+        for index in range(29):
+            row = self._hil_source_row(500 + index, target=float(index % 2))
+            row["match_id"] = f"future-{index:02d}"
+            row["kickoff"] = cutoff + timedelta(days=index + 1)
+            row["predicted_at"] = row["kickoff"] - timedelta(minutes=5)
+            future.append(row)
+        collecting = evaluate_hil_v3_prospective(history + [same_day] + future, first)
+        self.assertEqual(collecting["status"], "prospective_shadow_collecting")
+        self.assertEqual(collecting["prospective_fixtures"], 29)
+        self.assertEqual(collecting["remaining_fixtures"], 1)
+        self.assertFalse(collecting["auto_apply"])
+        self.assertFalse(collecting["probability_artifact_written"])
+        self.assertNotIn("private_model", collecting)
+        self.assertNotIn("coefficients", json.dumps(collecting))
+
+        row = self._hil_source_row(600, target=1.0)
+        row["match_id"] = "future-30"
+        row["kickoff"] = cutoff + timedelta(days=31)
+        row["predicted_at"] = row["kickoff"] - timedelta(minutes=5)
+        reviewed = evaluate_hil_v3_prospective(history + [same_day] + future + [row], first)
+        self.assertIn(
+            reviewed["status"],
+            ("prospective_tested_no_safe_upgrade", "candidate_passed_human_review_required"),
+        )
+        self.assertEqual(reviewed["prospective_fixtures"], 30)
+        self.assertEqual(reviewed["champion"]["metrics"]["n"], reviewed["challenger"]["metrics"]["n"])
+
+    def test_hil_v3_state_is_restart_persistent_and_does_not_retrain_while_collecting(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            database = root / "learning.sqlite"
+            output, public, state = root / "challenger.json", root / "public.json", root / "v3-state.json"
+            # 200 pre-cutoff rows leave 140 fixtures for walk-forward selection;
+            # the fixture exactly at the July cutoff is excluded, leaving 39
+            # strictly-future fixtures for the prospective-only window.
+            self._record_market_rows(database, 240, system="crown", market="HIL")
+            cutoff = datetime(2026, 7, 20, tzinfo=timezone.utc)
+            first = run(database, output, [public], hil_v3_state_path=state, now=cutoff)
+            frozen_bytes = state.read_bytes()
+            second = run(database, output, [public], hil_v3_state_path=state, now=cutoff + timedelta(days=3))
+            self.assertEqual(state.read_bytes(), frozen_bytes)
+            self.assertEqual(oct(state.stat().st_mode & 0o777), "0o600")
+            first_v3 = first["systems"]["crown"]["tests"]["HIL"]["prospective_v3"]
+            second_v3 = second["systems"]["crown"]["tests"]["HIL"]["prospective_v3"]
+            self.assertEqual(first_v3["freeze_cutoff"], cutoff.isoformat())
+            self.assertEqual(first_v3, second_v3)
+            self.assertEqual(first_v3["prospective_fixtures"], 39)
+            public_v3 = json.loads(public.read_text(encoding="utf-8"))["systems"]["crown"]["tests"]["HIL"]["prospective_v3"]
+            self.assertNotIn("private_model", public_v3)
+            self.assertNotIn("coefficients", json.dumps(public_v3))
 
     def test_promotion_gate_requires_all_metric_and_accuracy_conditions(self) -> None:
         champion = {"n": 30, "brier": .30, "log_loss": .70, "accuracy": .60}

@@ -83,6 +83,25 @@ for (const dashboard of ['hkjc-dashboard/app.js', 'crown/dashboard/app.js']) {
   assert(mod.challengerValidate(null) !== '', `${dashboard}: rejects non-object`);
   assert(mod.challengerValidate({ policy: {}, systems: {} }) !== '', `${dashboard}: rejects missing system`);
 
+  if (dashboard === 'crown/dashboard/app.js') {
+    const v3 = mod.challengerMarketCard('HIL', evaluatedTest({
+      prospective_v3: {
+        status: 'prospective_shadow_collecting',
+        freeze_cutoff: isoHoursAgo(8),
+        selected_spec: { id: 'conservative_25' },
+        minimum_prospective_fixtures: 30,
+        prospective_fixtures: 12,
+        prospective_rows: 31,
+        remaining_fixtures: 18,
+        auto_apply: false,
+      },
+    }));
+    assert(v3.includes('section-challenger-hil-v3'), `${dashboard}: v3 prospective panel`);
+    assert(v3.includes('前瞻影子樣本收集中'), `${dashboard}: v3 collecting status`);
+    assert(v3.includes('12 / 30'), `${dashboard}: v3 unique fixture progress`);
+    assert(v3.includes('自動套用:<b class="bad-txt">否</b>'), `${dashboard}: v3 stays isolated`);
+  }
+
   // 樣本不足
   const insufficient = mod.challengerMarketCard('CHL', {
     status: 'insufficient_data',

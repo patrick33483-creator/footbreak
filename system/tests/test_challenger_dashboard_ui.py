@@ -92,6 +92,20 @@ class ChallengerDashboardUiTests(unittest.TestCase):
                 ):
                     self.assertIn(label, app)
 
+    def test_crown_hil_card_renders_frozen_prospective_v3_progress(self) -> None:
+        _, app, css = self._files("crown/dashboard")
+        for marker in (
+            "prospective_shadow_collecting",
+            "prospective_tested_no_safe_upgrade",
+            "function challengerProspectiveV3(test)",
+            'data-testid="section-challenger-hil-v3"',
+            'data-testid="status-challenger-hil-v3"',
+            "嚴格凍結後才計入",
+            "不會重訓或改變",
+        ):
+            self.assertIn(marker, app)
+        self.assertIn(".chal-v3", css)
+
     def test_unique_fixture_progress_and_metrics_are_rendered(self) -> None:
         for dashboard in DASHBOARDS:
             _, app, _ = self._files(dashboard)

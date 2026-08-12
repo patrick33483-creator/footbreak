@@ -235,6 +235,28 @@ def review_events(report):
     """Return stable, deduplicatable human-review events from a backtest report."""
     events = []
     labels = {"footbreak": "足破", "crown": "皇冠"}
+    # The standalone challenger report is still notification-isolated: only a
+    # completed frozen prospective v3 window that clears every existing gate
+    # may enter this already-existing human-review channel.
+    challenger_hil = (
+        (((report.get("systems") or {}).get("crown") or {}).get("tests") or {})
+        .get("HIL", {}).get("prospective_v3") or {}
+    )
+    if challenger_hil.get("status") == "candidate_passed_human_review_required":
+        version = str(challenger_hil.get("state_version_hash") or "unknown")
+        delta = challenger_hil.get("delta") or {}
+        events.append({
+            "key": f"prospective-v3:crown:HIL:{version}",
+            "system": "皇冠",
+            "kind": "HIL v3 前瞻影子模型通過",
+            "detail": (
+                f"凍結後 {challenger_hil.get('prospective_fixtures', 0)} 場/"
+                f"{challenger_hil.get('prospective_rows', 0)} 預測 · "
+                f"Brier Δ {delta.get('brier')} · "
+                f"log loss Δ {delta.get('log_loss')} · "
+                f"命中率 Δ {delta.get('accuracy')}"
+            ),
+        })
     for system, payload in (report.get("systems") or {}).items():
         label = labels.get(system, system)
         if payload.get("status") == "ready_for_human_review":

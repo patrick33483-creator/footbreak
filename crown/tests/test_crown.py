@@ -1231,7 +1231,7 @@ class CrownSafetyTests(unittest.TestCase):
             encoding="utf-8",
         )
         self.assertIn("Number.isFinite(Number(rawLine))", app)
-        self.assertIn("20260812-challenger-filter-v2", index)
+        self.assertIn("20260812-hil-v3-prospective", index)
 
     def test_prediction_history_archives_no_bet_stages_idempotently(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -2035,8 +2035,8 @@ class CrownSafetyTests(unittest.TestCase):
         self.assertIn("overflow-wrap: anywhere", styles)
         self.assertIn("font: 600 12px/1.6 var(--sans)", styles)
         index = (root / "index.html").read_text(encoding="utf-8")
-        self.assertIn("styles.css?v=20260812-challenger-filter-v2", index)
-        self.assertIn("app.js?v=20260812-challenger-filter-v2", index)
+        self.assertIn("styles.css?v=20260812-hil-v3-prospective", index)
+        self.assertIn("app.js?v=20260812-hil-v3-prospective", index)
         self.assertIn("const historyStageRank = { '首預': 1, 'T-30': 2, 'T-5': 3 }", app)
         self.assertIn("row.kickoff_hkt || row.kickoff", app)
         self.assertIn('id="scrollTop"', index)

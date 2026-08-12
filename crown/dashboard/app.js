@@ -1547,6 +1547,8 @@ const CHAL_STATUS = {
   insufficient_data: { text: '樣本未夠', cls: 'wait' },
   insufficient_chronological_partition: { text: '時序切分未夠', cls: 'wait' },
   tested_no_safe_upgrade: { text: '已測試 · 未達升級門檻', cls: 'hold' },
+  prospective_shadow_collecting: { text: '前瞻影子樣本收集中', cls: 'wait' },
+  prospective_tested_no_safe_upgrade: { text: '前瞻測試 · 未達升級門檻', cls: 'hold' },
   candidate_passed_human_review_required: { text: '候選通過 · 等人手覆核', cls: 'review' },
 };
 const CHAL_REASON = {
@@ -1660,9 +1662,11 @@ function challengerMetricRow(label, championValue, challengerValue, deltaValue, 
 }
 
 function challengerFilterControls(tests) {
-  const reviewCount = CHALLENGER_MARKETS.filter((market) =>
-    String((tests[market] || {}).status || '') === 'candidate_passed_human_review_required'
-  ).length;
+  const reviewCount = CHALLENGER_MARKETS.filter((market) => {
+    const test = tests[market] || {};
+    return String(test.status || '') === 'candidate_passed_human_review_required' ||
+      String((test.prospective_v3 || {}).status || '') === 'candidate_passed_human_review_required';
+  }).length;
   return `<div class="chal-filter" role="group" aria-label="挑戰模型篩選" data-testid="filter-challenger">
     <span class="chal-filter-lbl">顯示</span>
     <button type="button" class="chal-filter-btn ${CHAL_FILTER === 'all' ? 'active' : ''}"
@@ -1672,6 +1676,47 @@ function challengerFilterControls(tests) {
       data-chal-filter="review" data-testid="button-challenger-filter-review"
       aria-pressed="${CHAL_FILTER === 'review'}">已通過／待覆核 <b>${reviewCount}</b></button>
   </div>`;
+}
+
+function challengerProspectiveV3(test) {
+  if (!challengerIsPlainObject(test)) return '';
+  const status = String(test.status || '');
+  const label = challengerStatusLabel(status);
+  const fixtures = numeric(test.prospective_fixtures) || 0;
+  const required = numeric(test.minimum_prospective_fixtures) || 30;
+  const remaining = test.remaining_fixtures == null ? Math.max(0, required - fixtures) : (numeric(test.remaining_fixtures) || 0);
+  const pct = Math.max(0, Math.min(100, required > 0 ? fixtures / required * 100 : 0));
+  const champion = (test.champion && test.champion.metrics) || {};
+  const challenger = (test.challenger && test.challenger.metrics) || {};
+  const delta = test.delta || {};
+  const reviewed = status === 'candidate_passed_human_review_required';
+  let body = `<div class="chal-progress">
+      <div class="chal-progress-top"><span>前瞻獨立賽事(保留每個賽前階段)</span><b class="mono">${fixtures} / ${required}</b></div>
+      <div class="chal-bar"><i style="width:${pct.toFixed(1)}%"></i></div>
+      <div class="chal-progress-foot"><span class="dim">嚴格凍結後才計入</span>
+        <span class="${remaining > 0 ? 'amber-txt' : 'good-txt'}">${remaining > 0 ? `仲差 ${remaining} 場先覆核` : '已夠 30 場前瞻測試'}</span></div>
+      <div class="chal-rows dim">凍結截點 ${esc(challengerStamp(test.freeze_cutoff))} · 報告行數 ${numeric(test.prospective_rows) == null ? 0 : numeric(test.prospective_rows)}</div>
+    </div>`;
+  if (test.champion && test.challenger) {
+    body += `<div class="chal-metrics" data-testid="metrics-challenger-hil-v3">
+      <div class="chal-metric chal-metric-head"><span class="chal-metric-lbl">前瞻指標</span><span>現行冠軍</span><span>HIL v3</span><span>差距</span></div>
+      ${challengerMetricRow('準確率', champion.accuracy, challenger.accuracy, delta.accuracy, false, (x) => pc(x, 1))}
+      ${challengerMetricRow('Brier', champion.brier, challenger.brier, delta.brier, true, (x) => f3(x))}
+      ${challengerMetricRow('對數損失', champion.log_loss, challenger.log_loss, delta.log_loss, true, (x) => f3(x))}
+    </div>`;
+  }
+  if (Array.isArray(test.rejection_reasons) && test.rejection_reasons.length) {
+    body += `<div class="chal-reasons"><span class="chal-reasons-lbl">未能升級原因</span>
+      ${test.rejection_reasons.map((reason) => `<span class="chal-reason">${esc(challengerReasonLabel(reason))}</span>`).join('')}</div>`;
+  } else if (reviewed) {
+    body += `<div class="chal-review" data-testid="banner-challenger-hil-v3-review"><b>前瞻樣本通過全部安全門檻</b>
+      <span>仍然<strong>未套用、亦唔會自動套用</strong>,只係通知人手覆核。</span></div>`;
+  }
+  return `<section class="chal-v3" data-testid="section-challenger-hil-v3">
+    <h3>HIL v3 · 前瞻凍結影子驗證 <span class="chal-badge ${label.cls}" data-testid="status-challenger-hil-v3">${esc(label.text)}</span></h3>
+    <p class="chal-hint dim">規格 ${esc((test.selected_spec || {}).id || '待凍結')}；不會重訓或改變，直至前瞻視窗完成。</p>
+    ${body}<div class="chal-foot"><span>自動套用:<b class="bad-txt">否</b></span><span>只作隔離人手覆核</span></div>
+  </section>`;
 }
 
 function challengerMarketCard(market, test) {
@@ -1737,6 +1782,7 @@ function challengerMarketCard(market, test) {
 
   body += `<div class="chal-foot"><span>自動套用:<b class="bad-txt">否</b></span>
     <span>影子研究,唔影響現行預測</span></div>`;
+  if (market === 'HIL') body += challengerProspectiveV3(test.prospective_v3);
 
   return `<div class="card chal-card ${reviewing ? 'is-review' : ''}" data-testid="card-challenger-${market}">
     <h2 class="card-h">${name} <span class="sub">${market}</span>
@@ -1783,10 +1829,12 @@ function renderChallenger() {
       <b>有候選模型通過安全門檻</b>
       <span>仍然<strong>未套用</strong>,亦唔會自動套用;只係等人手覆核決定。</span></div>`;
   }
-  const visibleMarkets = CHALLENGER_MARKETS.filter((market) =>
-    CHAL_FILTER === 'all' ||
-    String((tests[market] || {}).status || '') === 'candidate_passed_human_review_required'
-  );
+  const visibleMarkets = CHALLENGER_MARKETS.filter((market) => {
+    const test = tests[market] || {};
+    return CHAL_FILTER === 'all' ||
+      String(test.status || '') === 'candidate_passed_human_review_required' ||
+      String((test.prospective_v3 || {}).status || '') === 'candidate_passed_human_review_required';
+  });
   const cards = visibleMarkets.length
     ? `<div class="chal-grid">${visibleMarkets.map((market) => challengerMarketCard(market, tests[market])).join('')}</div>`
     : `<div class="card chal-filter-empty" data-testid="state-challenger-filter-empty">

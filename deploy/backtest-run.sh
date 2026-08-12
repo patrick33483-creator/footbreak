@@ -75,6 +75,7 @@ fi
 "$APP_DIR/.venv/bin/python3" -m analysis.challenger_model \
   --learning-db "$LEARNING_DB" \
   --out "$CHALLENGER_DIR/latest.json" \
+  --hil-v3-state "$CHALLENGER_DIR/crown_hil_v3_state.json" \
   --public /var/www/footbreak/challenger-status.json \
   --public /var/www/crown/challenger-status.json
 
@@ -83,4 +84,8 @@ fi
 if ! "$APP_DIR/.venv/bin/python3" "$APP_DIR/system/notify.py" \
   --review --report "$STATE_DIR/latest.json"; then
   echo "模型審核通知失敗；回測結果已保存，下次排程會重試" >&2
+fi
+if ! "$APP_DIR/.venv/bin/python3" "$APP_DIR/system/notify.py" \
+  --review --report "$CHALLENGER_DIR/latest.json"; then
+  echo "挑戰模型審核通知失敗；隔離報告已保存，下次排程會重試" >&2
 fi
