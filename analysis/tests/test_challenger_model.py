@@ -9,6 +9,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from analysis.challenger_model import (
+    HIL_FEATURE_SCHEMA_VERSION,
+    HIL_MODEL_VERSION,
     TrainOnlyEncoder,
     build_feature_rows,
     chronological_fixture_split,
@@ -58,27 +60,31 @@ class ChallengerModelTests(unittest.TestCase):
             },
         }
 
-    def _record_market_rows(self, database: Path, count: int) -> None:
+    def _record_market_rows(
+        self, database: Path, count: int, *, system: str = "footbreak", market: str = "HDC"
+    ) -> None:
         with LearningStore(database) as store:
             for index in range(count):
                 kickoff = datetime(2026, 1, 1, tzinfo=timezone.utc) + timedelta(days=index)
                 snapshot = store.record_snapshot(
-                    "footbreak", f"m{index:03d}", "T-5",
+                    system, f"m{index:03d}", "T-5",
                     kickoff - timedelta(minutes=5), kickoff,
                     {
                         "league": "League A", "final": {"lh": 1.2, "la": 0.9},
                         "market_predictions": [{
-                            "code": "HDC", "condition": "-0.5", "side": "H",
-                            "probability": 0.7,
+                            "code": market,
+                            "condition": "2.5" if market == "HIL" else "-0.5",
+                            "line": 2.5 if market == "HIL" else -.5,
+                            "side": "H", "odds": 1.9, "probability": 0.7,
                         }],
                     },
                 )
                 result = store.record_result(
-                    "footbreak", f"m{index:03d}", home_score=1, away_score=0, source="test"
+                    system, f"m{index:03d}", home_score=1, away_score=0, source="test"
                 )
                 target = float(index % 2 == 0)
                 store.record_grade(
-                    snapshot, "HDC", "-0.5|H", "GRADED",
+                    snapshot, market, "2.5|H" if market == "HIL" else "-0.5|H", "GRADED",
                     {
                         "probability": 0.7, "target": target, "hit": bool(target),
                         "brier": (0.7 - target) ** 2, "log_loss": 0.5,
@@ -174,6 +180,98 @@ class ChallengerModelTests(unittest.TestCase):
         self.assertEqual(first_weights, second_weights)
         self.assertEqual(predict(first_encoder, first_weights, rows), predict(second_encoder, second_weights, rows))
 
+    def test_hil_v2_uses_only_compact_pre_kickoff_line_price_stage_schema(self) -> None:
+        rows = []
+        for index, stage, line, odds, probability in (
+            (1, "首預", 2.5, 1.91, .53),
+            (1, "T-30", 2.75, 1.82, .56),
+            (1, "T-5", 2.75, 1.74, .59),
+        ):
+            row = self._source_row(index, market="HIL", stage=stage, target=1.0)
+            row["target_key"] = f"{line}|H"
+            row["probability"] = probability
+            row["payload"]["market_predictions"][0].update({
+                "condition": str(line), "line": line, "odds": odds, "side": "H",
+            })
+            row["payload"]["outcome"] = {"home": .40, "draw": .31, "away": .29}
+            # These fields are deliberately present in the payload to prove
+            # that HIL v2's compact encoder cannot use them.
+            row["payload"]["result_detail"] = {"home_score": 77, "away_score": 66}
+            row["payload"]["actual"] = "post-kickoff-result"
+            rows.append(row)
+        featured = build_feature_rows(rows)
+        latest = featured[-1]["numeric"]
+        self.assertAlmostEqual(latest["market_implied_probability"], 1 / 1.74)
+        self.assertEqual(latest["stage_line_delta"], 0.0)
+        self.assertAlmostEqual(latest["stage_odds_delta"], -0.08)
+        self.assertAlmostEqual(latest["stage_implied_probability_delta"], (1 / 1.74) - (1 / 1.82))
+
+        report = evaluate_market(
+            [
+                self._hil_source_row(index, target=float(index % 2))
+                for index in range(100)
+            ],
+            "crown", "HIL", {},
+        )
+        self.assertEqual(report["model_version"], HIL_MODEL_VERSION)
+        self.assertEqual(report["feature_schema_version"], HIL_FEATURE_SCHEMA_VERSION)
+        self.assertNotIn("league", report["numeric_features"])
+        self.assertNotIn("league", report["categorical_features"])
+        self.assertIn("stage_odds_delta", report["numeric_features"])
+        self.assertFalse(any(
+            forbidden in item["feature"]
+            for item in report["coefficient_importance"]
+            for forbidden in ("result", "actual", "footbreak_", "league")
+        ))
+        hdc = evaluate_market(
+            [self._source_row(index) for index in range(100)], "crown", "HDC", {}
+        )
+        self.assertEqual(hdc["model_version"], "challenger-logit-v1")
+        self.assertIn("league", hdc["categorical_features"])
+        footbreak_hil = evaluate_market(
+            [self._hil_source_row(index, target=float(index % 2)) for index in range(100)],
+            "footbreak", "HIL", {},
+        )
+        self.assertEqual(footbreak_hil["model_version"], "challenger-logit-v1")
+        self.assertIn("league", footbreak_hil["categorical_features"])
+
+    def _hil_source_row(self, index: int, *, target: float) -> dict:
+        row = self._source_row(index, market="HIL", target=target)
+        line = 2.25 + .25 * (index % 4)
+        odds = 1.72 + .03 * (index % 5)
+        row["target_key"] = f"{line}|H"
+        row["probability"] = .51 + .01 * (index % 7)
+        row["payload"]["market_predictions"][0].update({
+            "condition": str(line), "line": line, "odds": odds, "side": "H",
+        })
+        row["payload"]["outcome"] = {
+            "home": .37, "draw": .25 + .01 * (index % 3), "away": .38 - .01 * (index % 3),
+        }
+        return row
+
+    def test_hil_calibration_is_deterministic_and_never_uses_locked_holdout(self) -> None:
+        rows = [
+            self._hil_source_row(index, target=float(index % 2 == 0))
+            for index in range(100)
+        ]
+        first = evaluate_market(rows, "crown", "HIL", {})
+        second = evaluate_market(copy.deepcopy(rows), "crown", "HIL", {})
+        self.assertEqual(first["train_fixtures"], 70)
+        self.assertEqual(first["holdout_fixtures"], 30)
+        self.assertEqual(first["holdout_rows"], second["holdout_rows"])
+        self.assertEqual(first["calibration"], second["calibration"])
+        self.assertEqual(first["challenger"]["metrics"], second["challenger"]["metrics"])
+        self.assertEqual(
+            first["calibration"]["fit_fixtures"] + first["calibration"]["calibration_fixtures"],
+            first["train_fixtures"],
+        )
+        self.assertLess(
+            first["calibration"]["fit_fixtures"] + first["calibration"]["calibration_fixtures"],
+            first["train_fixtures"] + first["holdout_fixtures"],
+        )
+        self.assertFalse(first["auto_apply"])
+        self.assertFalse(first["challenger"]["probability_artifact_written"])
+
     def test_promotion_gate_requires_all_metric_and_accuracy_conditions(self) -> None:
         champion = {"n": 30, "brier": .30, "log_loss": .70, "accuracy": .60}
         good = {"n": 30, "brier": .289, "log_loss": .69, "accuracy": .59}
@@ -189,7 +287,7 @@ class ChallengerModelTests(unittest.TestCase):
             database, output, public = root / "learning.sqlite", root / "challenger.json", root / "public.json"
             ledger = root / "official-ledger.json"
             ledger.write_text(json.dumps({"bets": [{"stake": 100}], "shadow_bets": [{"stake": 2}]}), encoding="utf-8")
-            self._record_market_rows(database, 3)
+            self._record_market_rows(database, 100, system="crown", market="HIL")
             before_ledger = ledger.read_bytes()
             connection = sqlite3.connect(database)
             before_rows = connection.execute("SELECT COUNT(*) FROM prediction_snapshots").fetchone()[0]
@@ -204,8 +302,14 @@ class ChallengerModelTests(unittest.TestCase):
             self.assertTrue(output.exists())
             self.assertTrue(public.exists())
             self.assertEqual(oct(public.stat().st_mode & 0o777), "0o644")
-            self.assertFalse(first["review_required"])
+            # Even a synthetic candidate that clears offline gates remains an
+            # isolated report and never changes a live probability or ledger.
+            self.assertFalse(first["policy"]["auto_apply"])
             self.assertEqual(first["systems"], second["systems"])
+            hil = first["systems"]["crown"]["tests"]["HIL"]
+            self.assertEqual(hil["model_version"], HIL_MODEL_VERSION)
+            self.assertFalse(hil["auto_apply"])
+            self.assertFalse(hil["challenger"]["probability_artifact_written"])
 
 
 if __name__ == "__main__":
