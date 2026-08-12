@@ -139,6 +139,30 @@ PY
 for service in footbreak-tick.service footbreak-settle.service footbreak-result-reconcile.service crown-tick.service crown-sweep.service crown-settle.service; do
   result="$(systemctl show "$service" -p Result --value)"
   status="$(systemctl show "$service" -p ExecMainStatus --value)"
+  timer="${service%.service}.timer"
+  recovered_after_timeout=false
+  # A tick that reaches its hard runtime limit is still a real failure, but
+  # the active timer immediately retries it.  Deployment often lands in the
+  # short interval between that timeout and the retry, so verify the retry
+  # instead of reporting a stale red state.  A second timeout, another error,
+  # or no successful retry within 75 seconds still fails health.
+  if [ "$result" = timeout ] &&
+     [ "$status" = 15 ] &&
+     systemctl is-active --quiet "$timer"; then
+    echo "WARN service $service timed out; waiting for one timer retry"
+    for _ in $(seq 1 15); do
+      sleep 5
+      result="$(systemctl show "$service" -p Result --value)"
+      status="$(systemctl show "$service" -p ExecMainStatus --value)"
+      if [ "$result" = success ] && [ "$status" = 0 ]; then
+        recovered_after_timeout=true
+        break
+      fi
+      if [ "$result" != timeout ] || [ "$status" != 15 ]; then
+        break
+      fi
+    done
+  fi
   # Timed jobs deliberately return EX_TEMPFAIL (75) when a higher-priority
   # pass or the same mode already owns its lock.  The timers retry; this is
   # scheduler pre-emption / duplicate-trigger rejection, not a provider or
@@ -153,7 +177,6 @@ for service in footbreak-tick.service footbreak-settle.service footbreak-result-
   esac
   # 部署更新或到期 T-30/T-5 可以有意以 SIGTERM(15) 停止一個正執行緊嘅
   # 定時工作。只要對應 timer 仍 active，下一輪會正常重跑，唔係資料源壞。
-  timer="${service%.service}.timer"
   if [ "$result" = signal ] &&
      [ "$status" = 15 ] &&
      systemctl is-active --quiet "$timer"; then
@@ -165,6 +188,8 @@ for service in footbreak-tick.service footbreak-settle.service footbreak-result-
   }
   if "$expected_preemption"; then
     echo "OK service $service preempted(status=75); timer retry active"
+  elif "$recovered_after_timeout"; then
+    echo "OK service $service recovered on timer retry"
   else
     echo "OK service $service"
   fi
