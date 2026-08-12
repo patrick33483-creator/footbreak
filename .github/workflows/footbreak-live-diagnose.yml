@@ -120,6 +120,60 @@ jobs:
               })
           PY
 
+          echo "=== Crown pending shadow settlement detail ==="
+          PYTHONPATH=/opt/footbreak /opt/footbreak/.venv/bin/python3 -u - <<'PY'
+          from datetime import datetime
+
+          from crown.common import HKT, SETTLE_AFTER_SECONDS, parse_time
+          from crown.config import settings
+          from crown.hkjc import fetch_official_match_statuses, fetch_official_results
+          from crown.state import load_ledger
+          from crown.titan import TitanClient
+
+          config = settings()
+          now = datetime.now(HKT)
+          shadow = [
+              bet for bet in (load_ledger(config).get("shadow_bets") or [])
+              if bet.get("status") == "PENDING"
+          ]
+          dates = {
+              parse_time(bet.get("kickoff")).strftime("%Y-%m-%d")
+              for bet in shadow if parse_time(bet.get("kickoff"))
+          }
+          ids = {
+              str(bet.get("hkjc_match_id"))
+              for bet in shadow if bet.get("hkjc_match_id")
+          }
+          official = fetch_official_results(ids, dates) if shadow else {}
+          statuses = fetch_official_match_statuses(ids, dates) if shadow else {}
+          client = TitanClient(config)
+          titan_rows = client.results() if shadow else []
+          titan_by_id = {str(row.get("id")): row for row in titan_rows}
+          for bet in shadow:
+              kickoff = parse_time(bet.get("kickoff"))
+              titan_id = str(bet.get("titan_match_id") or bet.get("match_id") or "")
+              detail = None
+              detail_error = None
+              try:
+                  detail = client.result_detail(titan_id)
+              except Exception as exc:
+                  detail_error = f"{type(exc).__name__}: {exc}"
+              print({
+                  "bet": bet,
+                  "due": bool(
+                      kickoff
+                      and (now - kickoff).total_seconds() >= SETTLE_AFTER_SECONDS
+                  ),
+                  "official": official.get(str(bet.get("hkjc_match_id") or "")),
+                  "official_status": statuses.get(
+                      str(bet.get("hkjc_match_id") or "")
+                  ),
+                  "titan": titan_by_id.get(titan_id),
+                  "titan_detail": detail,
+                  "titan_detail_error": detail_error,
+              })
+          PY
+
           echo "=== priority marker and lock ==="
           ls -la /run/footbreak-t5-priority /var/lock/footbreak.lock 2>&1 || true
           fuser -v /var/lock/footbreak.lock 2>&1 || true
