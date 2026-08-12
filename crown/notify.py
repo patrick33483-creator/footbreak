@@ -1,7 +1,8 @@
-"""Idempotent Crown Telegram bet and T-5 corner forecast notifications."""
+"""Idempotent Crown Telegram bet and fresh T-5 signal notifications."""
 from __future__ import annotations
 
 import json
+import math
 import urllib.request
 from typing import Any
 
@@ -50,7 +51,11 @@ def _bet_label(bet: dict[str, Any]) -> str:
 def _load(config: Settings) -> dict[str, Any]:
     state = read_json(paths(config)["notify"], {"bets": []})
     state.setdefault("bets", [])
+    # Keep the retired corner key for compatibility with state already on a
+    # server.  New signals use their own versioned keys and never inspect
+    # historical predictions.
     state.setdefault("corner_t5", [])
+    state.setdefault("signals", [])
     return state
 
 
@@ -64,51 +69,184 @@ def _send(config: Settings, text: str) -> None:
         pass
 
 
-def _corner_forecast(prediction: dict[str, Any]) -> dict[str, Any] | None:
-    if str(prediction.get("stage") or "") != "T-5":
+def _finite_positive(value: Any) -> float | None:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
         return None
-    kickoff = parse_time(
-        str(prediction.get("kickoff_hkt") or prediction.get("kickoff") or "")
+    return numeric if math.isfinite(numeric) and numeric > 0 else None
+
+
+def _numeric_line(value: Any) -> float | None:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    return numeric if math.isfinite(numeric) else None
+
+
+def _stage_market(stage: dict[str, Any], code: str) -> dict[str, Any] | None:
+    """Read only the immutable selected-market snapshot, never an opposite quote."""
+    rows = [
+        row for row in (stage.get("market_predictions") or [])
+        if isinstance(row, dict) and str(row.get("code") or "") == code
+    ]
+    # A stage is malformed/ambiguous if it persisted more than one selected
+    # direction for this market.  Do not try to choose one after the fact.
+    return rows[0] if len(rows) == 1 else None
+
+
+def _fixture_identity(watch: dict[str, Any], stage: dict[str, Any]) -> str | None:
+    """Return a stable, complete identity without any fuzzy/fallback match."""
+    fields = ("match_id", "kickoff_hkt", "home", "away")
+    values = {field: str(stage.get(field) or "").strip() for field in fields}
+    if not all(values.values()):
+        return None
+    if str(watch.get("match_id") or "").strip() != values["match_id"]:
+        return None
+    for field in ("kickoff_hkt", "home", "away"):
+        watch_value = str(
+            watch.get(field) or (watch.get("kickoff") if field == "kickoff_hkt" else "")
+        ).strip()
+        if not watch_value or watch_value != values[field]:
+            return None
+    return "|".join(values[field] for field in fields)
+
+
+def _fresh_stage(
+    ledger: dict[str, Any], fresh_t5: Any
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], str] | None:
+    """Resolve only an ID handed over by the just-completed persistence pass."""
+    match_id = (
+        str(fresh_t5.get("match_id") or "")
+        if isinstance(fresh_t5, dict)
+        else str(fresh_t5 or "")
     )
+    watch = (ledger.get("watch") or {}).get(match_id)
+    if not isinstance(watch, dict):
+        return None
+    rows = [
+        row for row in (watch.get("stages") or [])
+        if isinstance(row, dict) and row.get("stage") == "T-5"
+    ]
+    if len(rows) != 1:
+        return None
+    stage = rows[0]
+    identity = _fixture_identity(watch, stage)
+    if identity is None:
+        return None
+    kickoff = parse_time(str(stage.get("kickoff_hkt") or ""))
     if kickoff is None or kickoff <= now_hkt():
         return None
-    for field in ("forecast_candidates", "candidates"):
-        for forecast in prediction.get(field) or []:
-            if str(forecast.get("code") or "") == "CHL":
-                return forecast
-    return None
+    return watch, stage, {"kickoff": kickoff}, identity
 
 
-def _corner_message(
-    prediction: dict[str, Any], forecast: dict[str, Any]
+def _signal_message(
+    system: str,
+    stage: dict[str, Any],
+    kickoff,
+    market: str,
+    selection: str,
+    line: str,
+    odds: float,
+    reason: str,
 ) -> str:
-    kickoff = parse_time(
-        str(prediction.get("kickoff_hkt") or prediction.get("kickoff") or "")
-    )
-    kickoff_text = kickoff.strftime("%d/%m %H:%M") if kickoff else "時間未定"
-    probability = float(
-        forecast.get("prob")
-        or (float(forecast.get("conviction") or 0) / 100)
-    )
-    odds = float(forecast.get("odds") or 0)
-    league = str(prediction.get("league") or "").strip()
+    league = str(stage.get("league") or "").strip()
     lines = [
-        "皇冠 T-5 角球預測",
-        f"{kickoff_text} HKT" + (f" · {league}" if league else ""),
-        f"{prediction.get('home') or ''} vs {prediction.get('away') or ''}",
-        f"預測：{_bet_label(forecast)}",
-        f"信心：{probability:.1%}",
+        f"{system} T-5 訊號",
+        f"開賽：{kickoff.strftime('%d/%m %H:%M')} HKT" + (f" · {league}" if league else ""),
+        f"對賽：{stage.get('home') or ''} vs {stage.get('away') or ''}",
+        f"市場：{market}",
+        f"選擇：{selection}",
+        f"盤口：{line}",
+        f"選項實際賠率：{odds:.3f}",
+        f"觸發：{reason}",
+        "只作通知，絕不實際投注。",
     ]
-    if odds > 1:
-        lines.append(f"參考賠率：{odds:.2f}")
-    lines.append("只作預測通知，不代表符合模擬投注門檻。")
     return "\n".join(lines)
+
+
+def _hdc_signal(
+    watch: dict[str, Any], stage: dict[str, Any], kickoff, identity: str
+) -> tuple[str, str] | None:
+    """Three exact persisted stages must agree on one HDC direction and line."""
+    ordered: list[dict[str, Any]] = []
+    for name in ("首預", "T-30", "T-5"):
+        rows = [
+            row for row in (watch.get("stages") or [])
+            if isinstance(row, dict) and row.get("stage") == name
+        ]
+        if len(rows) != 1 or _fixture_identity(watch, rows[0]) != identity:
+            return None
+        selected = _stage_market(rows[0], "HDC")
+        if selected is None:
+            return None
+        ordered.append(selected)
+    sides = [str(row.get("side") or "") for row in ordered]
+    lines = [_numeric_line(row.get("line", row.get("condition"))) for row in ordered]
+    if any(side not in {"H", "A"} for side in sides) or any(line is None for line in lines):
+        return None
+    # Exact numeric equality, not a rounded/display comparison.
+    if len(set(sides)) != 1 or not (lines[0] == lines[1] == lines[2]):
+        return None
+    odds = _finite_positive(ordered[-1].get("odds"))
+    if odds is None:
+        return None
+    selected_side, home_line = sides[-1], lines[-1]
+    team_raw = stage.get("home") if selected_side == "H" else stage.get("away")
+    team = str(team_raw or "").strip()
+    if not team:
+        return None
+    selected_line = home_line if selected_side == "H" else -home_line
+    line_text = _quarter_line(selected_line)
+    key = f"crown|{identity}|T-5|HDC|three-stage-v1|{selected_side}|{home_line:g}"
+    return key, _signal_message(
+        "皇冠", stage, kickoff, "皇冠讓球", f"{team} {line_text}", line_text, odds,
+        "首預、T-30、T-5 三段同一方向、同一盤口。",
+    )
+
+
+def _chl_signal(
+    stage: dict[str, Any], kickoff, identity: str
+) -> tuple[str, str] | None:
+    selected = _stage_market(stage, "CHL")
+    if selected is None or str(selected.get("side") or "") != "L":
+        return None
+    numeric_line = _numeric_line(selected.get("line", selected.get("condition")))
+    odds = _finite_positive(selected.get("odds"))
+    if numeric_line is None or odds is None:
+        return None
+    line_text = _quarter_line(numeric_line, signed=False)
+    key = f"crown|{identity}|T-5|CHL|under-v1|{numeric_line:g}"
+    return key, _signal_message(
+        "皇冠", stage, kickoff, "角球大細", "角球細", line_text, odds,
+        "T-5 最終選擇角球細。",
+    )
+
+
+def _fresh_signal_events(
+    ledger: dict[str, Any], fresh_t5_predictions: list[Any] | None
+) -> list[tuple[str, str]]:
+    """Build notifications only from newly persisted T-5 identities."""
+    events: list[tuple[str, str]] = []
+    for item in fresh_t5_predictions or []:
+        resolved = _fresh_stage(ledger, item)
+        if resolved is None:
+            continue
+        watch, stage, context, identity = resolved
+        for event in (
+            _hdc_signal(watch, stage, context["kickoff"], identity),
+            _chl_signal(stage, context["kickoff"], identity),
+        ):
+            if event is not None:
+                events.append(event)
+    return events
 
 
 def notify_new(
     ledger: dict[str, Any],
     config: Settings,
-    predictions: list[dict[str, Any]] | None = None,
+    fresh_t5_predictions: list[Any] | None = None,
 ) -> int:
     # Sweep and tick intentionally fetch providers concurrently.  Serialize
     # the notification read/send/commit so both processes cannot send the same
@@ -134,20 +272,21 @@ def notify_new(
             state["bets"].append(bid)
             seen.add(bid)
             sent += 1
-        seen_corners = set(state["corner_t5"])
-        for prediction in predictions or []:
-            forecast = _corner_forecast(prediction)
-            if forecast is None:
+        seen_signals = set(state["signals"])
+        for notification_id, message in _fresh_signal_events(
+            ledger, fresh_t5_predictions
+        ):
+            if notification_id in seen_signals:
                 continue
-            notification_id = (
-                f"{prediction.get('match_id')}|T-5|CHL"
-            )
-            if notification_id in seen_corners:
-                continue
-            _send(config, _corner_message(prediction, forecast))
-            state["corner_t5"].append(notification_id)
-            seen_corners.add(notification_id)
+            _send(config, message)
+            state["signals"].append(notification_id)
+            seen_signals.add(notification_id)
             sent += 1
+            # Commit each signal key immediately.  If a later independent
+            # signal's transport call fails, a retry cannot duplicate this
+            # one; no prediction/ledger state is involved here.
+            state["updated_at"] = iso_hkt()
+            write_json_atomic(paths(config)["notify"], state)
         state["updated_at"] = iso_hkt()
         write_json_atomic(paths(config)["notify"], state)
         return sent

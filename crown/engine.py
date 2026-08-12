@@ -1057,6 +1057,10 @@ def run(mode: str, config: Settings) -> dict[str, Any]:
         # committed while this one was fetching quotes.
         ledger = load_ledger(config)
         emitted: list[str] = []
+        # These are IDs only, collected after a T-5 snapshot has been newly
+        # persisted.  The caller passes them to notifications; it never scans
+        # old cards/history after a deploy.
+        fresh_t5_predictions: list[str] = []
         for prediction in stage_predictions:
             kickoff = datetime.fromisoformat(str(prediction["kickoff_hkt"]))
             if kickoff.tzinfo is None:
@@ -1065,10 +1069,22 @@ def run(mode: str, config: Settings) -> dict[str, Any]:
                 # A quote request admitted just before kickoff may return after
                 # the match starts.  It must never become a T-5 bet.
                 continue
+            stage = str(prediction.get("stage") or "")
+            match_id = str(prediction.get("match_id") or "")
+            prior_t5 = any(
+                row.get("stage") == "T-5"
+                for row in ((ledger.get("watch") or {}).get(match_id, {}).get("stages") or [])
+                if isinstance(row, dict)
+            )
             emitted += sync_prediction(ledger, prediction, config)
             prediction["stages"] = list(
                 ledger["watch"].get(str(prediction["match_id"]), {}).get("stages") or []
             )
+            if stage == "T-5" and not prior_t5 and any(
+                row.get("stage") == "T-5" for row in prediction["stages"]
+                if isinstance(row, dict)
+            ):
+                fresh_t5_predictions.append(match_id)
         recompute_stats(ledger, config)
         ledger["log"].append({"ts": iso_hkt(), "kind": mode, "n_changes": len(emitted),
                               "changes": emitted or ["今次無模擬注動作"], "simulation_only": True})
@@ -1077,4 +1093,5 @@ def run(mode: str, config: Settings) -> dict[str, Any]:
         retained = merge_predictions(config, predictions)
     return {"ok": True, "mode": mode, "predictions": len(predictions), "retained_predictions": len(retained),
             "simulations_created": len(emitted), "mapping": mapping,
-            "pinnapi_fixtures": len(pinnapi_rows), "titan_fixtures": len(titan_rows), "hkjc_fixtures": len(h_events)}
+            "pinnapi_fixtures": len(pinnapi_rows), "titan_fixtures": len(titan_rows), "hkjc_fixtures": len(h_events),
+            "fresh_t5_predictions": fresh_t5_predictions}

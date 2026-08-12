@@ -110,6 +110,11 @@ def _market_predictions(candidates):
             "code": code,
             "market": best.get("market"),
             "condition": best.get("condition"),
+            # Preserve the selected market's exact numeric line for isolated
+            # notification-only T-5 signals.  This does not affect pricing,
+            # staking, settlement, model learning, or any official/shadow
+            # ledger decision.
+            "line": best.get("line", best.get("condition")),
             "side": best.get("side"),
             "label": best.get("label"),
             "odds": best.get("odds"),
@@ -298,6 +303,7 @@ def sync(preds_file="predictions.json"):
         preds = json.load(handle)
     now = dt.datetime.now(HKT).isoformat(timespec="seconds")
     changes, notes = [], []
+    fresh_t5_signal_ids = []
 
     for r in preds:
         mid = str(r["match_id"])
@@ -361,6 +367,8 @@ def sync(preds_file="predictions.json"):
             lbl = snap["pick"]["label"] if snap["pick"] else "無明顯傾向"
             notes.append(f"📝 {r['home']} v {r['away']} — {stage} "
                          f"{snap['verdict']}:{lbl}(信念 {r['conviction']:.1f})")
+            if stage == BET_STAGE:
+                fresh_t5_signal_ids.append(mid)
         w["stages"].sort(key=lambda x: STAGE_ORDER.get(x["stage"], 9))
 
         # ── 2. 只有 T-5 才可以落注 ───────────────────────────
@@ -503,6 +511,15 @@ def sync(preds_file="predictions.json"):
     # official portfolio's stats/staking state.
     recompute_shadow_stats(led)
     save(led)
+    if fresh_t5_signal_ids:
+        # Notification is strictly after the immutable live snapshot has been
+        # saved.  A delivery failure is deliberately non-fatal and cannot
+        # alter the saved prediction/ledger transaction.
+        try:
+            import notify
+            notify.notify_fresh_t5_signals(led, fresh_t5_signal_ids)
+        except Exception as exc:
+            notes.append(f"Telegram T-5 訊號發送失敗({type(exc).__name__})；已保存預測，唔影響注單。")
     return changes, notes, led
 
 

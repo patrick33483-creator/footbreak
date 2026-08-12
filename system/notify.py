@@ -17,6 +17,7 @@
 import datetime as dt
 import html
 import json
+import math
 import os
 import subprocess
 import sys
@@ -73,6 +74,127 @@ def save_state(s):
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(s, f, ensure_ascii=False, indent=1)
     os.replace(tmp, STATE)
+
+
+def _finite_positive(value):
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    return numeric if math.isfinite(numeric) and numeric > 0 else None
+
+
+def _exact_numeric_line(value):
+    """Validate a stored total line without silently normalizing a bad value."""
+    text = "" if value is None else str(value).strip()
+    if not text:
+        return None
+    try:
+        parts = [float(part.strip()) for part in text.split("/")]
+    except ValueError:
+        return None
+    if not parts or any(not math.isfinite(part) for part in parts):
+        return None
+    return text
+
+
+def _fresh_t5_stage(ledger, item):
+    """Resolve only a just-persisted T-5 identity; never scan old history."""
+    mid = str(item.get("match_id") or "") if isinstance(item, dict) else str(item or "")
+    watch = (ledger.get("watch") or {}).get(mid)
+    if not isinstance(watch, dict):
+        return None
+    t5 = [stage for stage in (watch.get("stages") or [])
+          if isinstance(stage, dict) and stage.get("stage") == "T-5"]
+    if len(t5) != 1:
+        return None
+    stage = t5[0]
+    kickoff_text = str(watch.get("kickoff") or "")
+    if not (
+        mid
+        and str(watch.get("match_id") or "") == mid
+        and kickoff_text
+        and stage.get("home") == watch.get("home")
+        and stage.get("away") == watch.get("away")
+    ):
+        return None
+    try:
+        kickoff = dt.datetime.fromisoformat(kickoff_text)
+    except ValueError:
+        return None
+    if kickoff.tzinfo is None:
+        kickoff = kickoff.replace(tzinfo=HKT)
+    if kickoff <= dt.datetime.now(HKT):
+        return None
+    return mid, watch, stage, kickoff
+
+
+def _footbreak_hil_under_event(ledger, item):
+    resolved = _fresh_t5_stage(ledger, item)
+    if resolved is None:
+        return None
+    mid, watch, stage, kickoff = resolved
+    rows = [row for row in (stage.get("market_predictions") or [])
+            if isinstance(row, dict) and row.get("code") == "HIL"]
+    # A snapshot must contain one unambiguous selected direction.  In
+    # particular, never fall back to the opposite side's price.
+    if len(rows) != 1:
+        return None
+    selected = rows[0]
+    if selected.get("side") != "L":
+        return None
+    line = _exact_numeric_line(selected.get("line", selected.get("condition")))
+    odds = _finite_positive(selected.get("odds"))
+    if line is None or odds is None:
+        return None
+    identity = "|".join((
+        mid, kickoff.isoformat(), str(watch.get("home") or ""),
+        str(watch.get("away") or ""),
+    ))
+    key = f"footbreak|{identity}|T-5|HIL|under-v1|{line}"
+    league = str(watch.get("league") or "").strip()
+    text = "\n".join([
+        "足破 T-5 訊號",
+        f"開賽：{kickoff.strftime('%d/%m %H:%M')} HKT" + (f" · {esc(league)}" if league else ""),
+        f"對賽：{esc(watch.get('home') or '')} vs {esc(watch.get('away') or '')}",
+        "市場：入球大細",
+        "選擇：入球細",
+        f"盤口：{esc(line)}",
+        f"選項實際賠率：{odds:.3f}",
+        "觸發：T-5 最終選擇入球細。",
+        "只作通知，絕不實際投注。",
+    ])
+    return key, text
+
+
+def notify_fresh_t5_signals(ledger, fresh_t5):
+    """Send only explicit, post-persistence Footbreak T-5 HIL-under signals.
+
+    Callers provide identities from the persistence transaction.  This avoids
+    deployment backfill and keeps the notification path isolated from bets,
+    ledgers, probabilities, staking, settlement and learning.
+    """
+    state = load_state()
+    seen = set(state.get("signals") or [])
+    sent = 0
+    for item in fresh_t5 or []:
+        event = _footbreak_hil_under_event(ledger, item)
+        if event is None:
+            continue
+        key, text = event
+        if key in seen:
+            continue
+        send(text)
+        state.setdefault("signals", []).append(key)
+        seen.add(key)
+        sent += 1
+        state["last_sent"] = dt.datetime.now(HKT).isoformat(timespec="seconds")
+        # Persist every successful key before any subsequent independent
+        # delivery.  This makes retry handling idempotent even if a later
+        # signal transport call fails.
+        state["signals"] = state["signals"][-800:]
+        save_state(state)
+    return sent
 
 
 def load_ledger():

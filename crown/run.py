@@ -9,7 +9,7 @@ from .dashboard_data import write_dashboard_data
 from .engine import run
 from .notify import notify_new
 from .prediction_history import update_history
-from .state import load_ledger, load_predictions
+from .state import load_ledger
 
 
 def _ensure_dashboard_path(path) -> None:
@@ -52,7 +52,12 @@ def main() -> int:
         update_history(config, ledger)
     except Exception as exc:
         history_warning = f"prediction_history_{type(exc).__name__}"
-    notify_new(ledger, config, load_predictions(config))
+    try:
+        notify_new(ledger, config, result.get("fresh_t5_predictions") or [])
+    except Exception as exc:
+        # Signals are notification-only.  A transport failure must never roll
+        # back or corrupt the already committed live prediction state.
+        result["notification_warning"] = f"telegram_{type(exc).__name__}"
     write_dashboard_data(config)
     if history_warning:
         result["warning"] = history_warning

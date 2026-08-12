@@ -1815,32 +1815,39 @@ class CrownSafetyTests(unittest.TestCase):
             config = replace(
                 settings(), state_dir=Path(directory), telegram_enabled=False
             )
-            prediction = {
-                "match_id": "corner-1",
-                "stage": "T-5",
+            stage = {
+                "match_id": "corner-1", "stage": "T-5",
                 "kickoff_hkt": "2099-08-12T20:00:00+08:00",
                 "league": "測試聯賽",
                 "home": "主隊",
                 "away": "客隊",
-                "forecast_candidates": [{
+                "market_predictions": [{
                     "market": "HKJC角球大細",
                     "code": "CHL",
                     "side": "L",
                     "line": 9.5,
-                    "prob": 0.533,
                     "odds": 1.88,
                 }],
             }
+            ledger = {"bets": [], "watch": {"corner-1": {
+                "match_id": "corner-1",
+                "kickoff": stage["kickoff_hkt"],
+                "kickoff_hkt": stage["kickoff_hkt"],
+                "league": stage["league"],
+                "home": stage["home"], "away": stage["away"],
+                "stages": [stage],
+            }}}
             with patch("crown.notify._send") as sender:
-                self.assertEqual(notify_new({"bets": []}, config, [prediction]), 1)
-                self.assertEqual(notify_new({"bets": []}, config, [prediction]), 0)
+                self.assertEqual(notify_new(ledger, config, ["corner-1"]), 1)
+                self.assertEqual(notify_new(ledger, config, ["corner-1"]), 0)
                 sender.assert_called_once()
                 message = sender.call_args.args[1]
-                self.assertIn("皇冠 T-5 角球預測", message)
-                self.assertIn("預測：HKJC角球大細 · 細 9.5", message)
-                self.assertIn("信心：53.3%", message)
-                self.assertIn("參考賠率：1.88", message)
-                self.assertIn("不代表符合模擬投注門檻", message)
+                self.assertIn("皇冠 T-5 訊號", message)
+                self.assertIn("市場：角球大細", message)
+                self.assertIn("選擇：角球細", message)
+                self.assertIn("盤口：9.5", message)
+                self.assertIn("選項實際賠率：1.880", message)
+                self.assertIn("只作通知，絕不實際投注。", message)
 
     def test_corner_forecast_notification_rejects_non_t5_and_started_matches(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
