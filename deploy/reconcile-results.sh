@@ -56,10 +56,12 @@ else
   echo "Prediction-history integrity audit OK"
 fi
 
-# 資料健康報告(唯讀診斷)。喺同一個 15 分鐘週期平價重生,但係完全隔離:
-# 佢唔會改任何預測、結算、注碼或儀表板資料,亦唔會令呢個 job 失敗。
+# 資料健康報告(唯讀診斷)。喺同一個 15 分鐘週期平價重生,完全唔會改
+# 預測、結算、注碼或儀表板資料。生成異常會交俾下面嘅 Telegram 健康
+# 告警；告警傳送失敗必須令 service 失敗，確保下個週期可見及重試。
 # 每日 12:20 嘅 backtest 排程另外保證至少一日一次重寫。
 DATA_HEALTH_DIR="${DATA_HEALTH_DIR:-/var/lib/footbreak/data-health}"
+health_generation_failed=0
 if [ -s "$LEARNING_DB" ]; then
   install -d -o root -g root -m 0700 "$DATA_HEALTH_DIR" 2>/dev/null || true
   echo "=== $(TZ=Asia/Hong_Kong date '+%F %T') 資料健康報告重生 ==="
@@ -72,9 +74,31 @@ if [ -s "$LEARNING_DB" ]; then
     echo "資料健康報告 OK"
   else
     echo "資料健康報告生成失敗；結算與整合性審核不受影響，下個週期會重試" >&2
+    health_generation_failed=1
   fi
 else
-  echo "未有 learning 資料庫，略過資料健康報告"
+  echo "未有 learning 資料庫；資料健康報告無法生成" >&2
+  health_generation_failed=1
+fi
+
+# 只讀兩個公開 aggregate 報告；呢個 CLI 會安全讀取 /etc/footbreak.env
+# 內兩個 Telegram assignment（唔會 shell-source 或執行檔案內容）。正常
+# 時只寫本地 log，完全唔發 Telegram；異常每 15 分鐘都照發，刻意不去重。
+echo "=== $(TZ=Asia/Hong_Kong date '+%F %T') 資料健康告警檢查 ==="
+health_alert_args=(
+  --footbreak-report /var/www/footbreak/data-health.json
+  --crown-report /var/www/crown/data-health.json
+  --env-file /etc/footbreak.env
+)
+if [ "$health_generation_failed" -eq 1 ]; then
+  health_alert_args+=(--generation-failed)
+fi
+if PYTHONPATH="$APP_DIR" "$APP_DIR/.venv/bin/python3" -m analysis.health_alert \
+  "${health_alert_args[@]}"; then
+  echo "資料健康告警檢查 OK"
+else
+  echo "資料健康告警傳送失敗；保留所有預測與結算資料，下個週期會重試" >&2
+  failed=1
 fi
 
 exit "$failed"

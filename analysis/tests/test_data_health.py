@@ -557,9 +557,9 @@ class DataHealthTest(unittest.TestCase):
 
 
 class DataHealthJobIsolationTest(unittest.TestCase):
-    """A data-health failure must never block an existing production job."""
+    """Health generation stays read-only; alert-delivery failures are visible."""
 
-    def test_backtest_and_reconcile_never_abort_on_data_health_failure(self) -> None:
+    def test_health_generation_is_guarded_but_reconcile_alert_delivery_can_fail(self) -> None:
         root = Path(__file__).resolve().parents[2]
         backtest = (root / "deploy" / "backtest-run.sh").read_text(encoding="utf-8")
         reconcile = (root / "deploy" / "reconcile-results.sh").read_text(encoding="utf-8")
@@ -582,10 +582,18 @@ class DataHealthJobIsolationTest(unittest.TestCase):
                 after = script.split("analysis.data_health", 1)[1]
                 block = after.split("\nfi\n", 1)[0]
                 self.assertNotIn("exit 1", block)
-                self.assertNotIn("failed=1", block)
+                self.assertNotIn("\n    failed=1", block)
                 self.assertIn("資料健康報告生成失敗", block)
-        # The 15-minute reconciler must never fail because of this report.
-        self.assertNotIn("failed=1", reconcile.split("analysis.data_health", 1)[1])
+        # The generation itself stays isolated.  A separate direct-Telegram
+        # alert checks both public reports after generation; only delivery
+        # failure marks the reconciliation service failed for retry/visibility.
+        self.assertIn("analysis.health_alert", reconcile)
+        self.assertIn("--footbreak-report /var/www/footbreak/data-health.json", reconcile)
+        self.assertIn("--crown-report /var/www/crown/data-health.json", reconcile)
+        self.assertIn("--env-file /etc/footbreak.env", reconcile)
+        self.assertIn("--generation-failed", reconcile)
+        alert_block = reconcile.split("analysis.health_alert", 1)[1].split("\nfi\n", 1)[0]
+        self.assertIn("failed=1", alert_block)
 
     def test_nginx_serves_the_artifact_with_no_store(self) -> None:
         root = Path(__file__).resolve().parents[2]
