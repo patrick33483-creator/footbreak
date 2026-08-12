@@ -1794,6 +1794,62 @@ class CrownSafetyTests(unittest.TestCase):
                 self.assertEqual(notify_new(ledger, config), 0)
                 sender.assert_called_once()
 
+    def test_t5_corner_forecast_notification_is_deduplicated(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = replace(
+                settings(), state_dir=Path(directory), telegram_enabled=False
+            )
+            prediction = {
+                "match_id": "corner-1",
+                "stage": "T-5",
+                "kickoff_hkt": "2099-08-12T20:00:00+08:00",
+                "league": "測試聯賽",
+                "home": "主隊",
+                "away": "客隊",
+                "forecast_candidates": [{
+                    "market": "HKJC角球大細",
+                    "code": "CHL",
+                    "side": "L",
+                    "line": 9.5,
+                    "prob": 0.533,
+                    "odds": 1.88,
+                }],
+            }
+            with patch("crown.notify._send") as sender:
+                self.assertEqual(notify_new({"bets": []}, config, [prediction]), 1)
+                self.assertEqual(notify_new({"bets": []}, config, [prediction]), 0)
+                sender.assert_called_once()
+                message = sender.call_args.args[1]
+                self.assertIn("皇冠 T-5 角球預測", message)
+                self.assertIn("預測：HKJC角球大細 · 細 9.5", message)
+                self.assertIn("信心：53.3%", message)
+                self.assertIn("參考賠率：1.88", message)
+                self.assertIn("不代表符合模擬投注門檻", message)
+
+    def test_corner_forecast_notification_rejects_non_t5_and_started_matches(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = replace(
+                settings(), state_dir=Path(directory), telegram_enabled=False
+            )
+            base = {
+                "match_id": "corner-2",
+                "stage": "T-30",
+                "kickoff_hkt": "2099-08-12T20:00:00+08:00",
+                "forecast_candidates": [{
+                    "code": "CHL", "side": "H", "line": 10.5, "prob": 0.52
+                }],
+            }
+            started = base | {
+                "match_id": "corner-3",
+                "stage": "T-5",
+                "kickoff_hkt": "2020-08-12T20:00:00+08:00",
+            }
+            with patch("crown.notify._send") as sender:
+                self.assertEqual(
+                    notify_new({"bets": []}, config, [base, started]), 0
+                )
+                sender.assert_not_called()
+
     def test_crown_notification_uses_selected_team_handicap_view(self) -> None:
         home = {"market": "HDC", "side": "H", "line": -0.25, "home": "主隊", "away": "客隊"}
         away = {"market": "HDC", "side": "A", "line": 0.25, "home": "主隊", "away": "客隊"}

@@ -9,7 +9,7 @@ from .dashboard_data import write_dashboard_data
 from .engine import run
 from .notify import notify_new
 from .prediction_history import update_history
-from .state import load_ledger
+from .state import load_ledger, load_predictions
 
 
 def _ensure_dashboard_path(path) -> None:
@@ -52,7 +52,7 @@ def main() -> int:
         update_history(config, ledger)
     except Exception as exc:
         history_warning = f"prediction_history_{type(exc).__name__}"
-    notify_new(ledger, config)
+    notify_new(ledger, config, load_predictions(config))
     write_dashboard_data(config)
     if history_warning:
         result["warning"] = history_warning
