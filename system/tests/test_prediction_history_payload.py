@@ -256,6 +256,8 @@ class PredictionHistoryPayloadTests(unittest.TestCase):
             self.assertEqual(
                 stats["by_stage_market"][stage]["CHL"]["decided"], 1
             )
+        consensus = stats["three_stage_consensus"]["markets"]["CHL"]
+        self.assertEqual(consensus["same_direction"]["fixtures"], 0)
         rows = gen_app_data.build_prediction_history(watch, [], accuracy)["rows"]
         self.assertTrue(all(row["result_detail"]["corners_total"] == 11 for row in rows))
 

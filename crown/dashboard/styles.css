@@ -1497,3 +1497,63 @@ table.t.history-table td {
   }
   .health-cell-key::before { content: none; }
 }
+
+/* ─── 預測紀錄 · 三階段一致命中率 ───────────────────── */
+.consensus-block { margin-top: var(--s4); min-width: 0; }
+.consensus-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--s2);
+  min-width: 0;
+}
+.consensus-card {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: var(--s3);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-sm);
+  background: var(--bg-2);
+}
+.consensus-card-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s2);
+}
+.consensus-card-head b { color: var(--amber); font-size: var(--text-sm); }
+.consensus-sample {
+  padding: 2px 7px;
+  border: 1px solid var(--warn);
+  border-radius: 999px;
+  color: var(--warn);
+  font-size: var(--text-xs);
+  white-space: nowrap;
+}
+.consensus-sample.enough { border-color: var(--good); color: var(--good); }
+.consensus-rate {
+  margin-top: var(--s2);
+  color: var(--ink);
+  font: 700 var(--text-lg)/1.15 var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+.consensus-rate.empty { color: var(--ink-3); font-size: var(--text-sm); }
+.consensus-meta,
+.consensus-detail,
+.consensus-exact,
+.consensus-note {
+  color: var(--ink-3);
+  font-size: var(--text-xs);
+  overflow-wrap: anywhere;
+}
+.consensus-exact {
+  margin-top: var(--s2);
+  padding-top: var(--s2);
+  border-top: 1px dashed var(--line-soft);
+  color: var(--ink-2);
+}
+.consensus-note { margin: var(--s2) 0 0; }
+@media (max-width: 620px) {
+  .consensus-grid { grid-template-columns: 1fr; }
+}

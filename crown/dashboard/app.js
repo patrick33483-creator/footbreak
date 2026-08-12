@@ -1272,6 +1272,37 @@ function historyStageMarketMatrix(stats) {
   </div>`;
 }
 
+function historyConsensusCards(stats) {
+  const markets = ((stats.three_stage_consensus || {}).markets) || {};
+  const codes = ['HDC', 'HIL', 'CHL'];
+  const card = (code) => {
+    const market = markets[code] || {};
+    const stable = market.same_direction || {};
+    const primary = stable.primary || {};
+    const exact = (market.same_direction_and_line || {}).primary || {};
+    const enough = Number(primary.decided || 0) >= 30;
+    return `<article class="consensus-card">
+      <div class="consensus-card-head">
+        <b>${HIST_MARKET_LABEL[code]}</b>
+        <span class="consensus-sample ${enough ? 'enough' : ''}">${enough ? '樣本達標' : '樣本不足'}</span>
+      </div>
+      <div class="consensus-rate ${primary.accuracy == null ? 'empty' : ''}">${
+        primary.accuracy == null ? '待累積' : pc(primary.accuracy, 1)
+      }</div>
+      <div class="consensus-meta">命中 ${primary.hits || 0}/${primary.decided || 0} · 方向一致 ${stable.fixtures || 0} 場</div>
+      <div class="consensus-detail">盤口曾變 ${stable.line_changed_fixtures || 0} 場</div>
+      <div class="consensus-exact">方向＋盤口完全一致 ${
+        exact.accuracy == null ? '待累積' : `${pc(exact.accuracy, 1)} (${exact.hits || 0}/${exact.decided || 0})`
+      }</div>
+    </article>`;
+  };
+  return `<section class="consensus-block" aria-label="首預、T-30及T-5方向一致命中率">
+    <div class="stage-market-title">三階段一致命中率 <span>首預、T-30、T-5 同方向 · 每場只計一次，以 T-5 盤口結算</span></div>
+    <div class="consensus-grid">${codes.map(card).join('')}</div>
+    <p class="consensus-note">走水及未能評分紀錄不計入命中率分母；少於 30 個已決定樣本只作觀察。</p>
+  </section>`;
+}
+
 function renderHistory() {
   const V = $('#viewHistory');
   const payload = DATA.prediction_history || { rows: [], stats: {} };
@@ -1362,6 +1393,7 @@ function renderHistory() {
     <div class="history-stage-summary">${stageSummary}</div>
     <div class="history-stage-summary">${marketSummary}</div>
     ${historyStageMarketMatrix(s)}
+    ${historyConsensusCards(s)}
     <p class="mx-note">合併市場數字會計首預、T-30、T-5 每個獨立快照；下表將所有狀態合併，按最新開賽時間優先排列。正式學習樣本為當時主線，走水不計入命中率分母；未完場或未取到賽果唔當輸。</p>
   </div>
   ${historyFilters}

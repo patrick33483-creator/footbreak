@@ -43,6 +43,25 @@ class PredictionHistoryUiTests(unittest.TestCase):
             self.assertIn("min-width: 44px", css)
             self.assertIn("min-height: 44px", css)
 
+    def test_both_dashboards_render_three_stage_consensus_without_mobile_overflow(self) -> None:
+        for dashboard in ("hkjc-dashboard", "crown/dashboard"):
+            root = ROOT / dashboard
+            app = (root / "app.js").read_text(encoding="utf-8")
+            css = (root / "styles.css").read_text(encoding="utf-8")
+
+            self.assertIn("function historyConsensusCards(stats)", app)
+            self.assertIn("stats.three_stage_consensus", app)
+            self.assertIn("三階段一致命中率", app)
+            self.assertIn("每場只計一次，以 T-5 盤口結算", app)
+            self.assertIn("少於 30 個已決定樣本只作觀察", app)
+            self.assertIn(".consensus-grid", css)
+            self.assertIn("grid-template-columns: repeat(3, minmax(0, 1fr))", css)
+            self.assertRegex(
+                css,
+                r"@media \(max-width: 620px\) \{\s*"
+                r"\.consensus-grid \{ grid-template-columns: 1fr; \}",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

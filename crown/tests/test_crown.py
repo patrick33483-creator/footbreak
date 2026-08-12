@@ -1238,7 +1238,7 @@ class CrownSafetyTests(unittest.TestCase):
             encoding="utf-8",
         )
         self.assertIn("Number.isFinite(Number(rawLine))", app)
-        self.assertIn("20260812-data-health-chl-v2", index)
+        self.assertIn("20260813-data-health-three-stage-consensus", index)
 
     def test_prediction_history_archives_no_bet_stages_idempotently(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1351,6 +1351,8 @@ class CrownSafetyTests(unittest.TestCase):
                 "stage": stage,
                 "market_grades": [{
                     "code": "HDC",
+                    "side": "H",
+                    "line": -0.5,
                     "grade_status": "GRADED",
                     "settlement": "Won" if hit else "Lost",
                     "hit": hit,
@@ -1372,6 +1374,11 @@ class CrownSafetyTests(unittest.TestCase):
             self.assertEqual(
                 stats["by_stage_market"][stage]["HDC"]["decided"], 1
             )
+        consensus = stats["three_stage_consensus"]["markets"]["HDC"]
+        self.assertEqual(consensus["same_direction"]["fixtures"], 1)
+        self.assertEqual(consensus["same_direction"]["primary"]["decided"], 1)
+        self.assertEqual(consensus["same_direction"]["primary"]["hits"], 1)
+        self.assertEqual(consensus["same_direction"]["primary"]["accuracy"], 1.0)
 
     def test_prediction_history_excludes_explicit_titan_postponement(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -2132,8 +2139,8 @@ class CrownSafetyTests(unittest.TestCase):
         self.assertIn("overflow-wrap: anywhere", styles)
         self.assertIn("font: 600 12px/1.6 var(--sans)", styles)
         index = (root / "index.html").read_text(encoding="utf-8")
-        self.assertIn("styles.css?v=20260812-data-health-chl-v2", index)
-        self.assertIn("app.js?v=20260812-data-health-chl-v2", index)
+        self.assertIn("styles.css?v=20260813-data-health-three-stage-consensus", index)
+        self.assertIn("app.js?v=20260813-data-health-three-stage-consensus", index)
         self.assertIn("const historyStageRank = { '首預': 1, 'T-30': 2, 'T-5': 3 }", app)
         self.assertIn("row.kickoff_hkt || row.kickoff", app)
         self.assertIn('id="scrollTop"', index)

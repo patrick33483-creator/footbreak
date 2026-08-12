@@ -430,6 +430,8 @@ def build_prediction_history(watch, bets, accuracy):
         for stage in HISTORY_STAGES
     }
 
+    from analysis.three_stage_consensus import calculate_three_stage_consensus
+
     return {
         "rows": rows,
         "stats": {
@@ -443,6 +445,7 @@ def build_prediction_history(watch, bets, accuracy):
             "by_stage": by_stage,
             "by_market": by_market,
             "by_stage_market": by_stage_market,
+            "three_stage_consensus": calculate_three_stage_consensus(rows),
             "learning_status": "collecting_market_level_shadow_samples",
         },
     }

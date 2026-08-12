@@ -25,6 +25,11 @@ sys.path.insert(0, "/opt/footbreak")
 
 from crown.ledger import PREDICTION_ERA, completed_stages  # noqa: E402
 from crown.matching import MATCHING_VERSION  # noqa: E402
+from analysis.three_stage_consensus import (  # noqa: E402
+    MARKETS,
+    STAGES,
+    calculate_three_stage_consensus,
+)
 
 
 def load(path: Path) -> Any:
@@ -428,6 +433,128 @@ def crown_corner_state(
     }
 
 
+def prediction_condition_analysis(rows_: list[dict[str, Any]]) -> dict[str, Any]:
+    """Read-only T-5 condition slices; one fixture-market observation each."""
+    grouped: dict[tuple[str, str], dict[str, dict[str, Any]]] = {}
+    league_by_match: dict[str, str] = {}
+    for row in rows_:
+        match_id = str(row.get("match_id") or "")
+        stage = str(row.get("stage") or "")
+        if not match_id or stage not in STAGES:
+            continue
+        league_by_match[match_id] = str(row.get("league") or "未知聯賽")
+        for grade in row.get("market_grades") or []:
+            if not isinstance(grade, dict):
+                continue
+            code = str(grade.get("code") or "")
+            if code in MARKETS:
+                grouped.setdefault((match_id, code), {})[stage] = grade
+
+    observations: list[dict[str, Any]] = []
+    for (match_id, code), stage_grades in grouped.items():
+        grade = stage_grades.get("T-5")
+        if (
+            not grade
+            or grade.get("grade_status") != "GRADED"
+            or grade.get("hit") is None
+        ):
+            continue
+        all_stages = all(stage in stage_grades for stage in STAGES)
+        sides = (
+            {str(stage_grades[stage].get("side") or "") for stage in STAGES}
+            if all_stages else set()
+        )
+        same_direction = all_stages and len(sides) == 1 and "" not in sides
+        lines: list[float] = []
+        if same_direction:
+            for stage in STAGES:
+                raw = stage_grades[stage].get("line")
+                if raw is None:
+                    raw = stage_grades[stage].get("condition")
+                try:
+                    lines.append(float(raw))
+                except (TypeError, ValueError):
+                    break
+        same_line = (
+            same_direction
+            and len(lines) == len(STAGES)
+            and len(set(lines)) == 1
+        )
+        try:
+            probability = float(grade.get("probability"))
+        except (TypeError, ValueError):
+            probability = None
+        if probability is None:
+            confidence_band = "missing"
+        elif probability < .55:
+            confidence_band = "<55%"
+        elif probability < .60:
+            confidence_band = "55-60%"
+        elif probability < .65:
+            confidence_band = "60-65%"
+        else:
+            confidence_band = ">=65%"
+        observations.append({
+            "match_id": match_id,
+            "market": code,
+            "side": str(grade.get("side") or ""),
+            "league": league_by_match.get(match_id, "未知聯賽"),
+            "hit": grade.get("hit") is True,
+            "confidence_band": confidence_band,
+            "same_direction": same_direction,
+            "same_line": same_line,
+        })
+
+    def aggregate(key_fn, *, minimum: int = 1) -> list[dict[str, Any]]:
+        buckets: dict[str, list[dict[str, Any]]] = {}
+        for observation in observations:
+            buckets.setdefault(str(key_fn(observation)), []).append(observation)
+        output = []
+        for key, bucket in buckets.items():
+            if len(bucket) < minimum:
+                continue
+            hits = sum(row["hit"] for row in bucket)
+            output.append({
+                "condition": key,
+                "decided": len(bucket),
+                "hits": hits,
+                "accuracy": round(hits / len(bucket), 6),
+            })
+        return sorted(
+            output,
+            key=lambda row: (-row["accuracy"], -row["decided"], row["condition"]),
+        )
+
+    return {
+        "primary_unit": "one fixture-market at T-5",
+        "minimum_reliable_sample": 30,
+        "observations": len(observations),
+        "by_market": aggregate(lambda row: row["market"]),
+        "by_market_direction": aggregate(
+            lambda row: f"{row['market']}|{row['side']}"
+        ),
+        "by_market_confidence": aggregate(
+            lambda row: f"{row['market']}|{row['confidence_band']}"
+        ),
+        "by_market_stability": aggregate(
+            lambda row: (
+                f"{row['market']}|"
+                + (
+                    "same_direction_same_line"
+                    if row["same_line"]
+                    else "same_direction_line_moved"
+                    if row["same_direction"]
+                    else "changed_or_incomplete"
+                )
+            )
+        ),
+        "by_league_market_min_10": aggregate(
+            lambda row: f"{row['market']}|{row['league']}",
+            minimum=10,
+        ),
+    }
+
+
 def main() -> None:
     footbreak = load(FOOTBREAK_DATA)
     crown_dashboard = load(CROWN_DATA)
@@ -468,6 +595,8 @@ def main() -> None:
         "crown": {
             "stats": crown.get("stats"),
             "result_sync": crown.get("result_sync"),
+            "three_stage_consensus": calculate_three_stage_consensus(crown_rows),
+            "condition_analysis": prediction_condition_analysis(crown_rows),
             "corner_prediction_audit": crown_corner_state(
                 crown_dashboard,
                 crown_ledger,
@@ -477,6 +606,8 @@ def main() -> None:
         },
         "footbreak": {
             "stats": (footbreak.get("prediction_history") or {}).get("stats"),
+            "three_stage_consensus": calculate_three_stage_consensus(footbreak_rows),
+            "condition_analysis": prediction_condition_analysis(footbreak_rows),
             "row_count": len(footbreak_rows),
             "t5_hdc_rows": [
                 compact(row)
