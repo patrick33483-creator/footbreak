@@ -149,16 +149,26 @@ class CrownT5SignalNotificationTests(unittest.TestCase):
             )
         sender.assert_not_called()
 
-    def test_non_fresh_t30_or_first_stage_never_trigger(self) -> None:
+    def test_upcoming_unacknowledged_t5_is_recovered_without_fresh_handoff(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, patch("crown.notify._send") as sender:
+            self.assertEqual(notify_new(_ledger(), self._config(directory), []), 2)
+        self.assertEqual(sender.call_count, 2)
+
+    def test_t30_or_first_stage_never_trigger(self) -> None:
         non_t5 = _ledger()
         non_t5["watch"]["safe-fixture-1"]["stages"] = non_t5["watch"]["safe-fixture-1"]["stages"][:2]
         with tempfile.TemporaryDirectory() as directory, patch("crown.notify._send") as sender:
-            self.assertEqual(notify_new(_ledger(), self._config(directory), []), 0)
-            self.assertEqual(notify_new(_ledger(), self._config(directory), ["unknown"]), 0)
             self.assertEqual(
                 notify_new(non_t5, self._config(directory), ["safe-fixture-1"]), 0
             )
         sender.assert_not_called()
+
+    def test_disabled_transport_does_not_acknowledge_signal(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = self._config(directory)
+            self.assertEqual(notify_new(_ledger(), config, ["safe-fixture-1"]), 0)
+            state = json.loads((config.state_dir / "notify_state.json").read_text())
+            self.assertEqual(state["signals"], [])
 
     def test_signal_idempotency(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -182,3 +192,6 @@ class CrownT5SignalNotificationTests(unittest.TestCase):
             self.assertEqual(load_predictions(config), live_predictions)
             notify_path = config.state_dir / "notify_state.json"
             self.assertFalse(notify_path.exists())
+            with patch("crown.notify._send") as sender:
+                self.assertEqual(notify_new(ledger, config, []), 2)
+            self.assertEqual(sender.call_count, 2)

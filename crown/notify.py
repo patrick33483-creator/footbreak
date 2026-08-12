@@ -59,14 +59,15 @@ def _load(config: Settings) -> dict[str, Any]:
     return state
 
 
-def _send(config: Settings, text: str) -> None:
+def _send(config: Settings, text: str) -> bool:
     if not (config.telegram_enabled and config.telegram_bot_token and config.telegram_chat_id):
-        return
+        return False
     body = json.dumps({"chat_id": config.telegram_chat_id, "text": text}).encode()
     request = urllib.request.Request(f"https://api.telegram.org/bot{config.telegram_bot_token}/sendMessage", data=body,
                                      headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(request, timeout=20):
         pass
+    return True
 
 
 def _finite_positive(value: Any) -> float | None:
@@ -227,9 +228,26 @@ def _chl_signal(
 def _fresh_signal_events(
     ledger: dict[str, Any], fresh_t5_predictions: list[Any] | None
 ) -> list[tuple[str, str]]:
-    """Build notifications only from newly persisted T-5 identities."""
+    """Build notifications from fresh or still-upcoming unacknowledged T-5 rows.
+
+    The bounded recovery scan is intentionally limited by ``_fresh_stage`` to
+    fixtures whose kickoff is still in the future.  It recovers a signal after
+    a deployment boundary or temporary Telegram failure without ever sending a
+    stale betting prompt after kickoff.
+    """
     events: list[tuple[str, str]] = []
-    for item in fresh_t5_predictions or []:
+    items = list(fresh_t5_predictions or [])
+    items.extend(str(match_id) for match_id in (ledger.get("watch") or {}))
+    seen_items: set[str] = set()
+    for item in items:
+        match_id = (
+            str(item.get("match_id") or "")
+            if isinstance(item, dict)
+            else str(item or "")
+        )
+        if not match_id or match_id in seen_items:
+            continue
+        seen_items.add(match_id)
         resolved = _fresh_stage(ledger, item)
         if resolved is None:
             continue
@@ -260,7 +278,7 @@ def notify_new(
                 continue
             stake = float(bet.get("stake") or 0)
             odds = float(bet.get("odds") or 0)
-            _send(
+            delivered = _send(
                 config,
                 "皇冠模擬注單\n"
                 f"{bet['home']} vs {bet['away']}\n"
@@ -269,6 +287,8 @@ def notify_new(
                 f"注碼：HK${stake:,.0f}\n"
                 "只作模擬，絕不實際投注。",
             )
+            if delivered is False:
+                continue
             state["bets"].append(bid)
             seen.add(bid)
             sent += 1
@@ -278,7 +298,9 @@ def notify_new(
         ):
             if notification_id in seen_signals:
                 continue
-            _send(config, message)
+            delivered = _send(config, message)
+            if delivered is False:
+                continue
             state["signals"].append(notification_id)
             seen_signals.add(notification_id)
             sent += 1
