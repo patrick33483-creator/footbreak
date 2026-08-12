@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import gzip
 import json
+import os
 import tempfile
 import unittest
 from stat import S_IMODE
@@ -29,7 +30,13 @@ from crown.matching import (
 from crown.notify import _bet_label, notify_new
 from crown.pinnapi import parse_fixtures, parse_lines
 from crown.period import in_current_period, is_upcoming_in_current_period, period_bounds
-from crown.prediction_history import archive_watch, calculate_stats, grade_history
+from crown.prediction_history import (
+    _persist_learning_exclusion,
+    archive_watch,
+    calculate_stats,
+    grade_history,
+)
+from analysis.learning_store import LearningStore
 from crown import settle as crown_settle
 from crown.state import load_predictions, merge_predictions, save_predictions
 from crown.titan import (
@@ -1411,6 +1418,40 @@ class CrownSafetyTests(unittest.TestCase):
                 row["market_grades"][0]["reason"], "fixture_not_played"
             )
             self.assertEqual(history["result_sync"]["excluded_now"], 1)
+
+    def test_terminal_history_exclusion_is_persisted_to_learning_store(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "learning.sqlite"
+            with LearningStore(path) as store:
+                snapshot = store.record_snapshot(
+                    "crown", "terminal-1", "T-5",
+                    "2026-08-09T11:55:00+08:00",
+                    "2026-08-09T12:00:00+08:00",
+                    {"market_predictions": []},
+                )
+            row = {
+                "match_id": "terminal-1",
+                "learning_snapshot_id": snapshot["snapshot_id"],
+                "market_grades": [{
+                    "code": "HIL", "condition": "2.5", "side": "H",
+                    "grade_status": "NOT_APPLICABLE",
+                }],
+            }
+            with patch.dict(os.environ, {"LEARNING_DB_PATH": str(path)}):
+                _persist_learning_exclusion(
+                    row, "MATCHPOSTPONED",
+                    "hkjc_official_exact_id_terminal_status",
+                )
+            with LearningStore(path) as store:
+                result = store._connection.execute(  # noqa: SLF001
+                    "SELECT terminal_status FROM results WHERE system = 'crown'"
+                ).fetchone()
+                grade = store._connection.execute(  # noqa: SLF001
+                    "SELECT state FROM grades WHERE snapshot_id = ? AND market = 'HIL'",
+                    (snapshot["snapshot_id"],),
+                ).fetchone()
+        self.assertEqual(result["terminal_status"], "MATCHPOSTPONED")
+        self.assertEqual(grade["state"], "NOT_APPLICABLE")
 
     def test_valid_hkjc_score_wins_over_refunded_pool_status(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

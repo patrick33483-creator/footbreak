@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from analysis.learning_store import LearningStore
+from analysis.learning_store import LATEST_SCHEMA_VERSION, LearningStore
 
 
 KICKOFF = "2026-08-10T12:00:00+08:00"
@@ -21,7 +21,7 @@ class LearningStoreTest(unittest.TestCase):
         self.addCleanup(directory.cleanup)
         return directory, store
 
-    def test_snapshot_is_immutable_idempotent_and_retries_are_attempts(self) -> None:
+    def test_snapshot_changed_pre_kickoff_replay_is_suppressed_and_audited(self) -> None:
         _, store = self._store()
         first = store.record_snapshot(
             "footbreak",
@@ -55,13 +55,20 @@ class LearningStoreTest(unittest.TestCase):
         self.assertFalse(first["idempotent"])
         self.assertEqual(duplicate["snapshot_id"], first["snapshot_id"])
         self.assertTrue(duplicate["idempotent"])
-        self.assertEqual(retry["attempt"], 2)
-        self.assertNotEqual(retry["snapshot_id"], first["snapshot_id"])
+        self.assertEqual(retry["attempt"], 1)
+        self.assertEqual(retry["snapshot_id"], first["snapshot_id"])
+        self.assertTrue(retry["suppressed_duplicate_stage"])
         self.assertEqual(
             store._connection.execute(  # noqa: SLF001 - verifies database invariant
                 "SELECT COUNT(*) FROM prediction_snapshots"
             ).fetchone()[0],
-            2,
+            1,
+        )
+        self.assertEqual(
+            store._connection.execute(  # noqa: SLF001 - verifies audit retention
+                "SELECT COUNT(*) FROM snapshot_suppression_audit"
+            ).fetchone()[0],
+            1,
         )
         with self.assertRaises(sqlite3.IntegrityError):
             store._connection.execute(
@@ -108,7 +115,73 @@ class LearningStoreTest(unittest.TestCase):
         self.assertEqual(summary["quarantined_snapshots"], 1)
         self.assertEqual(summary["systems"]["crown"]["pre_kickoff_snapshots"], 1)
 
-    def test_backtest_export_uses_latest_valid_snapshot_and_excludes_late_attempt(self) -> None:
+    def test_legacy_duplicate_reconciliation_keeps_most_complete_row_with_audit(self) -> None:
+        _, store = self._store()
+        first = store.record_snapshot(
+            "crown", "legacy-1", "T-30", EARLY, KICKOFF,
+            {
+                "league": "League",
+                "market_predictions": [{
+                    "code": "HIL", "condition": "2.5", "side": "H",
+                    "probability": .55, "odds": 1.9,
+                }],
+            },
+        )
+        payload = {
+            "league": "League", "home": "Alpha", "away": "Beta",
+            "market_predictions": [
+                {
+                    "code": "HIL", "condition": "2.5", "side": "H",
+                    "probability": .55, "odds": 1.9,
+                },
+                {
+                    "code": "HDC", "condition": "-0.5", "side": "A",
+                    "probability": .51, "odds": 1.95,
+                },
+            ],
+        }
+        payload_json, payload_hash = store._json_with_hash(payload, "payload")  # noqa: SLF001
+        store._connection.execute(  # noqa: SLF001 - synthesizes a pre-v2 legacy row
+            """
+            INSERT INTO prediction_snapshots (
+                system, fixture_id, stage, attempt, generated_at, kickoff,
+                pre_kickoff, payload_json, payload_sha256, model_version,
+                schema_version, model_run_id, recorded_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "crown", "legacy-1", "T-30", 2,
+                "2026-08-10T03:40:00.000000+00:00",
+                "2026-08-10T04:00:00.000000+00:00", 1,
+                payload_json, payload_hash, "legacy", "1", None,
+                "2026-08-10T03:40:00.000000+00:00",
+            ),
+        )
+
+        first_pass = store.reconcile_stage_duplicates("crown")
+        second_pass = store.reconcile_stage_duplicates("crown")
+        resolution = store._connection.execute(  # noqa: SLF001
+            """
+            SELECT canonical_snapshot_id, candidates_json, selection_rule
+            FROM stage_snapshot_reconciliations
+            WHERE system = 'crown' AND fixture_id = 'legacy-1' AND stage = 'T-30'
+            """
+        ).fetchone()
+
+        self.assertEqual(first_pass["reconciled"], 1)
+        self.assertEqual(second_pass["reconciled"], 0)
+        self.assertEqual(second_pass["already_reconciled"], 1)
+        self.assertNotEqual(int(resolution["canonical_snapshot_id"]), first["snapshot_id"])
+        self.assertEqual(len(json.loads(resolution["candidates_json"])), 2)
+        self.assertIn("max(valid_complete_market_selections", resolution["selection_rule"])
+        self.assertEqual(
+            store._connection.execute(  # noqa: SLF001 - raw audit evidence remains
+                "SELECT COUNT(*) FROM prediction_snapshots WHERE fixture_id = 'legacy-1'"
+            ).fetchone()[0],
+            2,
+        )
+
+    def test_backtest_export_uses_canonical_pre_kickoff_snapshot_and_excludes_late_attempt(self) -> None:
         _, store = self._store()
         earlier = store.record_snapshot(
             "footbreak", "match-303", "T-5", EARLY, KICKOFF,
@@ -149,7 +222,7 @@ class LearningStoreTest(unittest.TestCase):
 
         wdl_rows, market_rows = store.backtest_rows("footbreak")
         self.assertEqual(len(wdl_rows), 1)
-        self.assertEqual(wdl_rows[0]["conf"], 62)
+        self.assertEqual(wdl_rows[0]["conf"], 55)
         self.assertEqual(wdl_rows[0]["hit"], 1)
         self.assertEqual(len(market_rows), 1)
         self.assertEqual(market_rows[0]["brier"], .16)
@@ -265,7 +338,7 @@ class LearningStoreTest(unittest.TestCase):
         self.assertEqual(snapshot["attempt"], 1)
         self.assertEqual(
             store._connection.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0],
-            1,
+            LATEST_SCHEMA_VERSION,
         )
         self.assertEqual(
             store._connection.execute("PRAGMA journal_mode").fetchone()[0].lower(),

@@ -288,6 +288,28 @@ class DataHealthTest(unittest.TestCase):
         self.assertEqual(result["stale_unresolved_fixtures"], 1)
         self.assertEqual(result["coverage"], 0.0)
 
+    def test_verified_terminal_no_contest_counts_as_result_coverage(self) -> None:
+        """A postponed/cancelled exact-ID decision is terminal, not stale."""
+        database = self.directory / "learning.sqlite"
+        kickoff = NOW - timedelta(days=1)
+        with LearningStore(database) as store:
+            store.record_snapshot(
+                "crown", "postponed", "T-5", kickoff - timedelta(hours=1), kickoff,
+                {"league": "英超", "conviction": 60,
+                 "market_predictions": [market_prediction("HDC")]},
+            )
+            store.record_result(
+                "crown", "postponed", terminal_status="MATCHPOSTPONED",
+                source="hkjc_official_exact_id_terminal_status",
+                provenance={"terminal_reason": "fixture_not_played"},
+            )
+        report = build_reports(database, now=NOW)["crown"]
+        result = report["completeness"]["overall"]["result"]
+        self.assertEqual(result["settle_due_fixtures"], 1)
+        self.assertEqual(result["fixtures_with_result"], 1)
+        self.assertEqual(result["stale_unresolved_fixtures"], 0)
+        self.assertEqual(result["coverage"], 1.0)
+
     def test_result_coverage_and_sources_come_from_raw_counts(self) -> None:
         database = Fixtures(self.directory).build(fixtures=12)
         report = build_reports(database, now=NOW)["footbreak"]
@@ -432,7 +454,7 @@ class DataHealthTest(unittest.TestCase):
             json.dumps(public_view(reports[system]), allow_nan=False)
 
     # ── 9. duplicate stage keys and quarantined rows ──────────────────────
-    def test_duplicate_stage_attempts_are_reported_but_counted_once(self) -> None:
+    def test_changed_stage_replays_are_suppressed_before_they_reach_health(self) -> None:
         database = self.directory / "learning.sqlite"
         kickoff = NOW - timedelta(days=1)
         with LearningStore(database) as store:
@@ -452,7 +474,7 @@ class DataHealthTest(unittest.TestCase):
         self.assertEqual(overall["unique_fixtures"], 1)
         self.assertEqual(overall["stage_rows"], 1)
         self.assertEqual(overall["prediction_rows"], 1)
-        self.assertEqual(overall["duplicate_stage_keys"], 1)
+        self.assertEqual(overall["duplicate_stage_keys"], 0)
         self.assertEqual(overall["quarantined_post_kickoff_rows"], 1)
         codes = {issue["code"] for issue in report["issues"]}
         self.assertIn("post_kickoff_quarantined_rows", codes)

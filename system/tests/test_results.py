@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -13,6 +14,8 @@ if str(SYSTEM_DIR) not in sys.path:
 
 import settle
 import titan_results
+import accuracy
+from analysis.learning_store import LearningStore
 from crown.common import HKT
 from crown.titan import TitanClient
 from datetime import datetime
@@ -107,6 +110,39 @@ class ResultSourceTests(unittest.TestCase):
             "hkjc_official_exact_id_terminal_status",
         )
         self.assertEqual(stats["n_settled"], 0)
+
+    def test_terminal_footbreak_exclusion_is_persisted_to_learning_store(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "learning.sqlite"
+            with LearningStore(path) as store:
+                snapshot = store.record_snapshot(
+                    "footbreak", "terminal-2", "T-30",
+                    "2026-08-09T11:30:00+08:00",
+                    "2026-08-09T12:00:00+08:00",
+                    {"market_predictions": []},
+                )
+            stages = [{
+                "learning_snapshot_id": snapshot["snapshot_id"],
+                "market_predictions": [{
+                    "code": "HDC", "condition": "-0.5", "side": "H",
+                    "probability": .6,
+                }],
+            }]
+            with patch.dict(os.environ, {"LEARNING_DB_PATH": str(path)}):
+                accuracy._persist_learning_exclusion(
+                    "terminal-2", {"fixture_id": "optic-2"}, stages,
+                    "MATCHCANCELLED", "hkjc_official_exact_id_terminal_status",
+                )
+            with LearningStore(path) as store:
+                result = store._connection.execute(  # noqa: SLF001
+                    "SELECT terminal_status FROM results WHERE system = 'footbreak'"
+                ).fetchone()
+                grade = store._connection.execute(  # noqa: SLF001
+                    "SELECT state FROM grades WHERE snapshot_id = ? AND market = 'HDC'",
+                    (snapshot["snapshot_id"],),
+                ).fetchone()
+        self.assertEqual(result["terminal_status"], "MATCHCANCELLED")
+        self.assertEqual(grade["state"], "NOT_APPLICABLE")
 
     def test_corner_required_refreshes_an_incomplete_exact_fixture_cache(self) -> None:
         incomplete = {

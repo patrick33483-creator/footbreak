@@ -37,6 +37,10 @@ def _path(config: Settings):
 _SCOREABLE_MARKETS = {"HDC", "HIL", "CHL"}
 _CORNER_RESULT_RETRY_DAYS = 7
 _HKJC_RESULT_GRACE_SECONDS = 6 * 60 * 60
+_TERMINAL_RESULT_SOURCES = {
+    "hkjc_official_exact_id_terminal_status",
+    "titan_exact_id_terminal_status",
+}
 
 
 def _valid_market_prediction(prediction: Any) -> bool:
@@ -633,10 +637,77 @@ def _persist_learning_result(row: dict[str, Any], score: dict[str, Any], source:
             )
 
 
+def _persist_learning_exclusion(row: dict[str, Any], status: str, source: str) -> None:
+    """Persist a verified non-played fixture so health coverage is terminal too."""
+    path = os.environ.get("LEARNING_DB_PATH")
+    snapshot_id = row.get("learning_snapshot_id")
+    if not path or not snapshot_id:
+        return
+    from analysis.learning_store import LearningStore
+
+    with LearningStore(path) as store:
+        result = store.record_result(
+            "crown",
+            str(row.get("match_id")),
+            terminal_status=str(status or "REFUNDED"),
+            source=source,
+            provenance={
+                "hkjc_match_id": row.get("hkjc_match_id"),
+                "titan_match_id": row.get("titan_match_id"),
+                "pinnapi_event_id": row.get("pinnapi_event_id"),
+                "terminal_reason": "fixture_not_played",
+            },
+        )
+        if row.get("forecast"):
+            store.record_grade(
+                int(snapshot_id),
+                "WDL",
+                str(row.get("forecast")),
+                "NOT_APPLICABLE",
+                {"reason": "fixture_not_played", "terminal_status": status},
+                result_id=result["result_id"],
+            )
+        for grade in row.get("market_grades") or []:
+            store.record_grade(
+                int(snapshot_id),
+                str(grade.get("code") or "UNKNOWN"),
+                f"{grade.get('condition')}|{grade.get('side')}",
+                "NOT_APPLICABLE",
+                {
+                    **grade,
+                    "reason": "fixture_not_played",
+                    "terminal_status": status,
+                },
+                result_id=result["result_id"],
+            )
+
+
 def grade_history(config: Settings) -> dict[str, Any]:
     history = load_history(config)
     rows = history["rows"]
     now = datetime.now(HKT)
+
+    # Older history entries could already be safely marked 不計 before the
+    # learning result table started retaining terminal no-contests.  Backfill
+    # only exact-ID terminal decisions already recorded by trusted sources;
+    # this is idempotent and never guesses a score or terminal state.
+    exclusions_backfilled = 0
+    for row in rows:
+        detail = row.get("result_detail")
+        source = str(row.get("result_source") or "")
+        terminal_status = (
+            str(detail.get("terminal_status") or "")
+            if isinstance(detail, dict)
+            else ""
+        )
+        if (
+            row.get("result_status") == "不計"
+            and source in _TERMINAL_RESULT_SOURCES
+            and terminal_status
+        ):
+            _persist_learning_exclusion(row, terminal_status, source)
+            exclusions_backfilled += 1
+
     def pending_corner_result(row: dict[str, Any], kickoff: datetime) -> bool:
         if not any(
             str(prediction.get("code") or "") == "CHL"
@@ -724,11 +795,19 @@ def grade_history(config: Settings) -> dict[str, Any]:
                 str(hkjc_state.get("status") or "REFUNDED"),
                 "hkjc_official_exact_id_terminal_status",
             )
+            _persist_learning_exclusion(
+                row,
+                str(hkjc_state.get("status") or "REFUNDED"),
+                "hkjc_official_exact_id_terminal_status",
+            )
             excluded_now += 1
             continue
         titan_status = _terminal_titan_status(row, titan_by_id) if not score else None
         if titan_status:
             _exclude_no_contest(
+                row, titan_status, "titan_exact_id_terminal_status"
+            )
+            _persist_learning_exclusion(
                 row, titan_status, "titan_exact_id_terminal_status"
             )
             excluded_now += 1
@@ -787,6 +866,7 @@ def grade_history(config: Settings) -> dict[str, Any]:
         "hkjc_error": official_error,
         "graded_now": graded_now,
         "excluded_now": excluded_now,
+        "terminal_exclusions_backfilled": exclusions_backfilled,
         "corner_detail": dict(sorted(corner_detail_reasons.items())),
         "unresolved": sum(
             row.get("result_status") not in {"已核對", "不計"}

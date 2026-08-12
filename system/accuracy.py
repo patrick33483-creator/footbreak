@@ -350,6 +350,44 @@ def _persist_learning_result(mid, w, res, rows):
                     f"{grade.get('condition')}|{grade.get('side')}",
                     str(grade.get("grade_status") or "NOT_APPLICABLE"),
                     grade,
+                result_id=result["result_id"],
+            )
+
+
+def _persist_learning_exclusion(mid, w, stages, status, source):
+    """Record an explicit verified no-contest as a terminal learning result."""
+    path = os.environ.get("LEARNING_DB_PATH")
+    if not path:
+        return
+    with LearningStore(path) as store:
+        result = store.record_result(
+            "footbreak",
+            mid,
+            terminal_status=str(status or "REFUNDED"),
+            source=source,
+            provenance={
+                "fixture_id": w.get("fixture_id"),
+                "hkjc_match_id": mid,
+                "terminal_reason": "fixture_not_played",
+            },
+        )
+        for stage in stages:
+            snapshot_id = stage.get("learning_snapshot_id")
+            if not snapshot_id:
+                continue
+            for prediction in scoreable_market_predictions(
+                stage.get("market_predictions")
+            ):
+                store.record_grade(
+                    snapshot_id,
+                    str(prediction.get("code") or "UNKNOWN"),
+                    f"{prediction.get('condition')}|{prediction.get('side')}",
+                    "NOT_APPLICABLE",
+                    {
+                        **prediction,
+                        "reason": "fixture_not_played",
+                        "terminal_status": status,
+                    },
                     result_id=result["result_id"],
                 )
 
@@ -576,10 +614,21 @@ def run(fetch=True):
             status = str(state.get("status") or "").upper()
             refund = bool(state.get("refund_pools") or state.get("payout_refund_pools"))
             if refund or any(marker in status for marker in NON_RESULT_STATUS_MARKERS):
+                source = str(
+                    state.get("source")
+                    or "hkjc_official_exact_id_terminal_status"
+                )
+                _persist_learning_exclusion(
+                    mid,
+                    w,
+                    learning_stages,
+                    status or "REFUNDED",
+                    source,
+                )
                 excluded_results.append({
                     "match_id": mid, "home": w.get("home"), "away": w.get("away"),
                     "league": w.get("league"), "kickoff": w.get("kickoff"),
-                    "status": status or "REFUNDED", "source": state.get("source"),
+                    "status": status or "REFUNDED", "source": source,
                     "reason": "non_result_terminal_state",
                 })
                 continue

@@ -253,7 +253,7 @@ class ReadOnlyLearningSource:
             self._connection = None  # type: ignore[assignment]
 
     def snapshot_rows(self, system: str) -> list[sqlite3.Row]:
-        """Latest pre-kickoff snapshot per (fixture, stage), deterministic order."""
+        """Canonical pre-kickoff snapshot per (fixture, stage), deterministic order."""
         return self._connection.execute(
             """
             WITH ranked AS (
@@ -265,6 +265,15 @@ class ReadOnlyLearningSource:
                        ) AS snapshot_rank
                 FROM prediction_snapshots
                 WHERE system = ? AND pre_kickoff = 1
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM stage_snapshot_reconciliations AS reconciliation
+                      WHERE reconciliation.system = prediction_snapshots.system
+                        AND reconciliation.fixture_id = prediction_snapshots.fixture_id
+                        AND reconciliation.stage = prediction_snapshots.stage
+                        AND reconciliation.canonical_snapshot_id
+                            != prediction_snapshots.snapshot_id
+                  )
             )
             SELECT * FROM ranked WHERE snapshot_rank = 1
             ORDER BY kickoff, fixture_id, stage, snapshot_id
@@ -273,11 +282,21 @@ class ReadOnlyLearningSource:
         ).fetchall()
 
     def stage_attempt_counts(self, system: str) -> list[sqlite3.Row]:
+        """Unreconciled active duplicate stage keys, never market selections."""
         return self._connection.execute(
             """
             SELECT fixture_id, stage, COUNT(*) AS attempts
             FROM prediction_snapshots
             WHERE system = ? AND pre_kickoff = 1
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM stage_snapshot_reconciliations AS reconciliation
+                  WHERE reconciliation.system = prediction_snapshots.system
+                    AND reconciliation.fixture_id = prediction_snapshots.fixture_id
+                    AND reconciliation.stage = prediction_snapshots.stage
+                    AND reconciliation.canonical_snapshot_id
+                        != prediction_snapshots.snapshot_id
+              )
             GROUP BY fixture_id, stage
             HAVING COUNT(*) > 1
             ORDER BY fixture_id, stage
@@ -330,6 +349,15 @@ class ReadOnlyLearningSource:
                        ) AS snapshot_rank
                 FROM prediction_snapshots
                 WHERE system = ? AND pre_kickoff = 1
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM stage_snapshot_reconciliations AS reconciliation
+                      WHERE reconciliation.system = prediction_snapshots.system
+                        AND reconciliation.fixture_id = prediction_snapshots.fixture_id
+                        AND reconciliation.stage = prediction_snapshots.stage
+                        AND reconciliation.canonical_snapshot_id
+                            != prediction_snapshots.snapshot_id
+                  )
             ),
             ranked_grades AS (
                 SELECT grade_id, snapshot_id, market, target, state, metrics_json,

@@ -1,10 +1,9 @@
 """Immutable SQLite store for learning from Footbreak and Crown predictions.
 
-The store deliberately records every materially different prediction attempt.  It
-never overwrites a prediction, result, or grade: repeated submissions of the
-same canonical content are idempotent, while changed content receives the next
-attempt number.  That makes later backtests auditable and protects them from
-post-kickoff data leakage.
+Each pre-kickoff fixture/stage has one learning snapshot.  Replayed or changed
+submissions are retained in an immutable audit trail rather than becoming a
+second learning sample.  This keeps the training and health keys unique while
+preserving the original evidence needed to explain a reconciliation decision.
 """
 from __future__ import annotations
 
@@ -22,7 +21,7 @@ from typing import Any, Iterator
 
 VALID_SYSTEMS = frozenset(("footbreak", "crown"))
 VALID_STAGES = frozenset(("首預", "T-30", "T-5"))
-LATEST_SCHEMA_VERSION = 1
+LATEST_SCHEMA_VERSION = 2
 
 
 class LearningStore:
@@ -83,9 +82,11 @@ class LearningStore:
         """Append one prediction snapshot and return its immutable identity.
 
         Canonically identical payloads for the same system, fixture, and stage
-        return the original snapshot.  A changed payload gets the next
-        ``attempt`` for that system/fixture/stage.  A generated time at or after
-        kickoff is retained and marked quarantined instead of being dropped.
+        return the original snapshot.  A changed *pre-kickoff* replay is
+        recorded in ``snapshot_suppression_audit`` and returns the existing
+        learning snapshot: there is deliberately one learning row per
+        (system, fixture, stage).  A generated time at or after kickoff is
+        retained and marked quarantined instead of being dropped.
         """
         system = self._valid_system(system)
         fixture_id = self._identifier(fixture_id, "fixture_id")
@@ -103,6 +104,46 @@ class LearningStore:
             raise TypeError("model_run_id must be an integer or None")
 
         with self._write_transaction():
+            # A legacy database can contain more than one pre-kickoff row for
+            # the same learning key.  Resolve it before accepting a replay so
+            # the caller always receives the deterministic canonical row.
+            existing_stage = self._connection.execute(
+                """
+                SELECT snapshot_id, attempt, pre_kickoff, payload_sha256,
+                       generated_at, kickoff, payload_json, recorded_at
+                FROM prediction_snapshots
+                WHERE system = ? AND fixture_id = ? AND stage = ?
+                  AND pre_kickoff = ?
+                ORDER BY snapshot_id
+                """,
+                (system, fixture_id, stage, pre_kickoff),
+            ).fetchall()
+            if pre_kickoff and existing_stage:
+                canonical = self._canonical_stage_snapshot(
+                    system, fixture_id, stage, existing_stage
+                )
+                if payload_sha256 != canonical["payload_sha256"]:
+                    self._connection.execute(
+                        """
+                        INSERT OR IGNORE INTO snapshot_suppression_audit (
+                            system, fixture_id, stage, canonical_snapshot_id,
+                            candidate_generated_at, candidate_kickoff,
+                            candidate_payload_json, candidate_payload_sha256,
+                            disposition, recorded_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            system, fixture_id, stage, canonical["snapshot_id"],
+                            generated, scheduled, payload_json, payload_sha256,
+                            "suppressed_changed_pre_kickoff_submission", self._now(),
+                        ),
+                    )
+                response = self._snapshot_response(canonical, idempotent=True)
+                response["suppressed_duplicate_stage"] = (
+                    payload_sha256 != canonical["payload_sha256"]
+                )
+                return response
+
             duplicate = self._connection.execute(
                 """
                 SELECT snapshot_id, attempt, pre_kickoff, payload_sha256
@@ -154,6 +195,70 @@ class LearningStore:
                 "pre_kickoff": bool(pre_kickoff),
                 "quarantined": not bool(pre_kickoff),
                 "payload_sha256": payload_sha256,
+            }
+
+    def reconcile_stage_duplicates(self, system: str | None = None) -> dict[str, Any]:
+        """Canonically project legacy duplicate pre-kickoff stage rows.
+
+        Raw rows are never changed or deleted.  For every legacy duplicate key,
+        a single immutable reconciliation record selects the most complete
+        snapshot; ties use the latest pre-kickoff generation time and then the
+        lowest immutable snapshot id.  The method is safe to run every 15
+        minutes: already reconciled keys are untouched.
+        """
+        if system is not None:
+            system = self._valid_system(system)
+        where = "WHERE pre_kickoff = 1"
+        params: tuple[Any, ...] = ()
+        if system is not None:
+            where += " AND system = ?"
+            params = (system,)
+        with self._write_transaction():
+            groups = self._connection.execute(
+                f"""
+                SELECT system, fixture_id, stage
+                FROM prediction_snapshots
+                {where}
+                GROUP BY system, fixture_id, stage
+                HAVING COUNT(*) > 1
+                ORDER BY system, fixture_id, stage
+                """,
+                params,
+            ).fetchall()
+            reconciled = 0
+            already_reconciled = 0
+            for group in groups:
+                existing = self._connection.execute(
+                    """
+                    SELECT reconciliation_id
+                    FROM stage_snapshot_reconciliations
+                    WHERE system = ? AND fixture_id = ? AND stage = ?
+                    """,
+                    (group["system"], group["fixture_id"], group["stage"]),
+                ).fetchone()
+                if existing is not None:
+                    already_reconciled += 1
+                    continue
+                rows = self._connection.execute(
+                    """
+                    SELECT snapshot_id, attempt, pre_kickoff, payload_sha256,
+                           generated_at, kickoff, payload_json, recorded_at
+                    FROM prediction_snapshots
+                    WHERE system = ? AND fixture_id = ? AND stage = ?
+                      AND pre_kickoff = 1
+                    ORDER BY snapshot_id
+                    """,
+                    (group["system"], group["fixture_id"], group["stage"]),
+                ).fetchall()
+                self._insert_stage_reconciliation(
+                    group["system"], group["fixture_id"], group["stage"], rows
+                )
+                reconciled += 1
+            return {
+                "system": system,
+                "duplicate_stage_keys_seen": len(groups),
+                "reconciled": reconciled,
+                "already_reconciled": already_reconciled,
             }
 
     def record_result(
@@ -425,6 +530,134 @@ class LearningStore:
                 "manifest_sha256": manifest_sha256,
             }
 
+    def _canonical_stage_snapshot(
+        self,
+        system: str,
+        fixture_id: str,
+        stage: str,
+        rows: list[sqlite3.Row],
+    ) -> sqlite3.Row:
+        """Return the active row, creating an immutable legacy decision if needed."""
+        existing = self._connection.execute(
+            """
+            SELECT canonical_snapshot_id
+            FROM stage_snapshot_reconciliations
+            WHERE system = ? AND fixture_id = ? AND stage = ?
+            """,
+            (system, fixture_id, stage),
+        ).fetchone()
+        if existing is not None:
+            snapshot_id = int(existing["canonical_snapshot_id"])
+            selected = next(
+                (row for row in rows if int(row["snapshot_id"]) == snapshot_id),
+                None,
+            )
+            if selected is not None:
+                return selected
+            # A foreign-key-protected reconciliation cannot normally reach this
+            # branch; fail closed rather than silently choosing a new row.
+            raise RuntimeError("stage reconciliation references a missing snapshot")
+        if len(rows) == 1:
+            return rows[0]
+        return self._insert_stage_reconciliation(system, fixture_id, stage, rows)
+
+    def _insert_stage_reconciliation(
+        self,
+        system: str,
+        fixture_id: str,
+        stage: str,
+        rows: list[sqlite3.Row],
+    ) -> sqlite3.Row:
+        """Insert one immutable decision for a legacy duplicate stage key."""
+        if len(rows) < 2:
+            raise ValueError("a stage reconciliation requires at least two rows")
+        ranked = sorted(
+            rows,
+            key=lambda row: (
+                self._snapshot_completeness(row),
+                str(row["generated_at"]),
+                -int(row["snapshot_id"]),
+            ),
+            reverse=True,
+        )
+        selected = ranked[0]
+        evidence = [
+            {
+                "snapshot_id": int(row["snapshot_id"]),
+                "attempt": int(row["attempt"]),
+                "payload_sha256": str(row["payload_sha256"]),
+                "generated_at": str(row["generated_at"]),
+                "completeness": list(self._snapshot_completeness(row)),
+            }
+            for row in sorted(rows, key=lambda item: int(item["snapshot_id"]))
+        ]
+        self._connection.execute(
+            """
+            INSERT INTO stage_snapshot_reconciliations (
+                system, fixture_id, stage, canonical_snapshot_id,
+                selection_rule, candidates_json, reconciled_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                system,
+                fixture_id,
+                stage,
+                int(selected["snapshot_id"]),
+                (
+                    "max(valid_complete_market_selections,"
+                    "valid_market_selections,identity_fields);"
+                    "latest_generated_at;lowest_snapshot_id"
+                ),
+                self._canonical_json(evidence),
+                self._now(),
+            ),
+        )
+        return selected
+
+    @staticmethod
+    def _snapshot_completeness(row: sqlite3.Row) -> tuple[int, int, int]:
+        """Score immutable payload completeness without using any result data."""
+        try:
+            payload = json.loads(str(row["payload_json"]))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+        predictions = payload.get("market_predictions")
+        if not isinstance(predictions, list):
+            predictions = []
+        selections: set[tuple[str, str, str]] = set()
+        complete: set[tuple[str, str, str]] = set()
+        for prediction in predictions:
+            if not isinstance(prediction, dict):
+                continue
+            code = str(prediction.get("code") or "").strip()
+            line = prediction.get("line", prediction.get("condition"))
+            side = str(prediction.get("side") or "").strip()
+            if not code or line is None or line == "" or not side:
+                continue
+            key = (code, str(line), side)
+            selections.add(key)
+            probability = LearningStore._finite_number(prediction.get("probability"))
+            odds = LearningStore._finite_number(prediction.get("odds"))
+            if probability is not None and 0.0 <= probability <= 1.0 and odds is not None:
+                complete.add(key)
+        identity_fields = sum(
+            bool(str(payload.get(field) or "").strip())
+            for field in ("league", "home", "away", "kickoff_hkt", "hkjc_match_id", "titan_match_id")
+        )
+        return len(complete), len(selections), identity_fields
+
+    @staticmethod
+    def _finite_number(value: Any) -> float | None:
+        if isinstance(value, bool) or value is None or value == "":
+            return None
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return None
+        return number if math.isfinite(number) else None
+
     def summary(self) -> dict[str, Any]:
         """Return compact operational counts without exposing mutable records."""
         with self._lock:
@@ -504,6 +737,15 @@ class LearningStore:
                            ) AS snapshot_rank
                     FROM prediction_snapshots AS snapshots
                     WHERE system = ? AND pre_kickoff = 1
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM stage_snapshot_reconciliations AS reconciliation
+                          WHERE reconciliation.system = snapshots.system
+                            AND reconciliation.fixture_id = snapshots.fixture_id
+                            AND reconciliation.stage = snapshots.stage
+                            AND reconciliation.canonical_snapshot_id
+                                != snapshots.snapshot_id
+                      )
                 ),
                 ranked_grades AS (
                     SELECT grades.*,
@@ -648,6 +890,15 @@ class LearningStore:
                            ) AS snapshot_rank
                     FROM prediction_snapshots AS snapshots
                     WHERE system = ? AND pre_kickoff = 1
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM stage_snapshot_reconciliations AS reconciliation
+                          WHERE reconciliation.system = snapshots.system
+                            AND reconciliation.fixture_id = snapshots.fixture_id
+                            AND reconciliation.stage = snapshots.stage
+                            AND reconciliation.canonical_snapshot_id
+                                != snapshots.snapshot_id
+                      )
                 ),
                 ranked_grades AS (
                     SELECT grades.*,
@@ -956,6 +1207,70 @@ _MIGRATIONS: tuple[tuple[int, str], ...] = (
         BEFORE DELETE ON grades
         BEGIN
             SELECT RAISE(ABORT, 'grades are immutable');
+        END;
+        """,
+    ),
+    (
+        2,
+        """
+        -- A reconciliation is an immutable projection over legacy rows.  It
+        -- never changes the source snapshots or their historical attempts.
+        CREATE TABLE stage_snapshot_reconciliations (
+            reconciliation_id INTEGER PRIMARY KEY,
+            system TEXT NOT NULL CHECK (system IN ('footbreak', 'crown')),
+            fixture_id TEXT NOT NULL,
+            stage TEXT NOT NULL CHECK (stage IN ('首預', 'T-30', 'T-5')),
+            canonical_snapshot_id INTEGER NOT NULL
+                REFERENCES prediction_snapshots(snapshot_id),
+            selection_rule TEXT NOT NULL,
+            candidates_json TEXT NOT NULL,
+            reconciled_at TEXT NOT NULL,
+            UNIQUE (system, fixture_id, stage)
+        );
+        CREATE INDEX stage_snapshot_reconciliations_canonical_idx
+            ON stage_snapshot_reconciliations (canonical_snapshot_id);
+        CREATE TRIGGER stage_snapshot_reconciliations_immutable_update
+        BEFORE UPDATE ON stage_snapshot_reconciliations
+        BEGIN
+            SELECT RAISE(ABORT, 'stage_snapshot_reconciliations are immutable');
+        END;
+        CREATE TRIGGER stage_snapshot_reconciliations_immutable_delete
+        BEFORE DELETE ON stage_snapshot_reconciliations
+        BEGIN
+            SELECT RAISE(ABORT, 'stage_snapshot_reconciliations are immutable');
+        END;
+
+        -- Changed replays are retained independently so suppressing a second
+        -- learning row never erases the candidate payload or its timing.
+        CREATE TABLE snapshot_suppression_audit (
+            audit_id INTEGER PRIMARY KEY,
+            system TEXT NOT NULL CHECK (system IN ('footbreak', 'crown')),
+            fixture_id TEXT NOT NULL,
+            stage TEXT NOT NULL CHECK (stage IN ('首預', 'T-30', 'T-5')),
+            canonical_snapshot_id INTEGER NOT NULL
+                REFERENCES prediction_snapshots(snapshot_id),
+            candidate_generated_at TEXT NOT NULL,
+            candidate_kickoff TEXT NOT NULL,
+            candidate_payload_json TEXT NOT NULL,
+            candidate_payload_sha256 TEXT NOT NULL CHECK (length(candidate_payload_sha256) = 64),
+            disposition TEXT NOT NULL,
+            recorded_at TEXT NOT NULL,
+            UNIQUE (
+                system, fixture_id, stage, candidate_payload_sha256,
+                candidate_generated_at
+            )
+        );
+        CREATE INDEX snapshot_suppression_audit_stage_idx
+            ON snapshot_suppression_audit (system, fixture_id, stage, audit_id);
+        CREATE TRIGGER snapshot_suppression_audit_immutable_update
+        BEFORE UPDATE ON snapshot_suppression_audit
+        BEGIN
+            SELECT RAISE(ABORT, 'snapshot_suppression_audit rows are immutable');
+        END;
+        CREATE TRIGGER snapshot_suppression_audit_immutable_delete
+        BEFORE DELETE ON snapshot_suppression_audit
+        BEGIN
+            SELECT RAISE(ABORT, 'snapshot_suppression_audit rows are immutable');
         END;
         """,
     ),
