@@ -428,6 +428,98 @@ def crown_corner_state(
     }
 
 
+def crown_three_stage_consensus(rows_: list[dict[str, Any]]) -> dict[str, Any]:
+    """Aggregate Crown fixtures whose prediction direction survives all stages.
+
+    The primary result is one fixture per market, settled at the T-5 line.  This
+    prevents three correlated stage rows from being counted as three separate
+    predictions.  Exact-line agreement is exposed separately because the same
+    side at three stages is not necessarily the same bet when its line moved.
+    """
+    stages = ("首預", "T-30", "T-5")
+    markets = ("HDC", "HIL", "CHL")
+    grouped: dict[tuple[str, str], dict[str, dict[str, Any]]] = {}
+    for row in rows_:
+        match_id = str(row.get("match_id") or "")
+        stage = str(row.get("stage") or "")
+        if not match_id or stage not in stages:
+            continue
+        for grade in row.get("market_grades") or []:
+            if not isinstance(grade, dict):
+                continue
+            code = str(grade.get("code") or "")
+            if code not in markets:
+                continue
+            grouped.setdefault((match_id, code), {})[stage] = grade
+
+    result: dict[str, Any] = {}
+    for code in markets:
+        consistent: list[dict[str, dict[str, Any]]] = []
+        exact: list[dict[str, dict[str, Any]]] = []
+        for (match_id, grouped_code), stage_grades in grouped.items():
+            del match_id
+            if grouped_code != code or any(stage not in stage_grades for stage in stages):
+                continue
+            sides = {str(stage_grades[stage].get("side") or "") for stage in stages}
+            if len(sides) != 1 or "" in sides:
+                continue
+            consistent.append(stage_grades)
+            lines: list[float] = []
+            for stage in stages:
+                raw = stage_grades[stage].get("line")
+                if raw is None:
+                    raw = stage_grades[stage].get("condition")
+                try:
+                    lines.append(float(raw))
+                except (TypeError, ValueError):
+                    break
+            if len(lines) == len(stages) and len(set(lines)) == 1:
+                exact.append(stage_grades)
+
+        def metrics(
+            samples: list[dict[str, dict[str, Any]]],
+            stage: str,
+        ) -> dict[str, Any]:
+            grades = [
+                sample[stage]
+                for sample in samples
+                if sample[stage].get("grade_status") == "GRADED"
+                and sample[stage].get("hit") is not None
+            ]
+            hits = sum(grade.get("hit") is True for grade in grades)
+            return {
+                "fixtures": len(samples),
+                "decided": len(grades),
+                "hits": hits,
+                "accuracy": round(hits / len(grades), 6) if grades else None,
+            }
+
+        result[code] = {
+            "primary_unit": "one_fixture_t5_settlement",
+            "same_direction": {
+                "fixtures": len(consistent),
+                "line_changed_fixtures": len(consistent) - len(exact),
+                "primary": metrics(consistent, "T-5"),
+                "stage_diagnostics": {
+                    stage: metrics(consistent, stage) for stage in stages
+                },
+            },
+            "same_direction_and_line": {
+                "fixtures": len(exact),
+                "primary": metrics(exact, "T-5"),
+                "stage_diagnostics": {
+                    stage: metrics(exact, stage) for stage in stages
+                },
+            },
+        }
+    return {
+        "definition": "same selection side at 首預, T-30 and T-5",
+        "primary_unit": "one unique fixture per market, graded at T-5 line",
+        "pushes_excluded": True,
+        "markets": result,
+    }
+
+
 def main() -> None:
     footbreak = load(FOOTBREAK_DATA)
     crown_dashboard = load(CROWN_DATA)
@@ -468,6 +560,7 @@ def main() -> None:
         "crown": {
             "stats": crown.get("stats"),
             "result_sync": crown.get("result_sync"),
+            "three_stage_consensus": crown_three_stage_consensus(crown_rows),
             "corner_prediction_audit": crown_corner_state(
                 crown_dashboard,
                 crown_ledger,
