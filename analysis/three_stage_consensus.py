@@ -6,6 +6,8 @@ from typing import Any
 
 STAGES = ("首預", "T-30", "T-5")
 MARKETS = ("HDC", "HIL", "CHL")
+MARKET_LABELS = {"HDC": "讓球", "HIL": "入球大細", "CHL": "角球大細"}
+RANKING_MIN_DECIDED = 30
 
 
 def _line(grade: dict[str, Any]) -> float | None:
@@ -138,9 +140,40 @@ def calculate_three_stage_consensus(
                 },
             },
         }
+    ranking_candidates = []
+    for code in MARKETS:
+        for item in markets[code]["same_direction_and_line"]["breakdown"]:
+            if item["accuracy"] is None:
+                continue
+            ranking_candidates.append({
+                "market": code,
+                "market_label": MARKET_LABELS[code],
+                "condition_key": item["key"],
+                "condition_label": item["label"],
+                "fixtures": item["fixtures"],
+                "decided": item["decided"],
+                "hits": item["hits"],
+                "accuracy": item["accuracy"],
+                "sample_qualified": item["decided"] > RANKING_MIN_DECIDED,
+            })
+    ranking_candidates.sort(key=lambda item: (
+        -int(item["sample_qualified"]),
+        -item["accuracy"],
+        -item["decided"],
+        MARKETS.index(item["market"]),
+        item["condition_key"],
+    ))
+
     return {
         "definition": "same selection side at 首預, T-30 and T-5",
         "primary_unit": "one unique fixture per market, graded at T-5 line",
         "pushes_excluded": True,
+        "ranking": {
+            "scope": "same direction and exact line at all three stages",
+            "minimum_decided": RANKING_MIN_DECIDED,
+            "priority": "qualified sample first, then accuracy, then decided sample",
+            "top": ranking_candidates[:3],
+            "candidate_count": len(ranking_candidates),
+        },
         "markets": markets,
     }

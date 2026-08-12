@@ -324,8 +324,8 @@ class ResultSourceTests(unittest.TestCase):
         index = Path(SYSTEM_DIR.parent, "hkjc-dashboard", "index.html").read_text(
             encoding="utf-8"
         )
-        self.assertIn("styles.css?v=20260813-data-health-shadow-condition-consensus-breakdown", index)
-        self.assertIn("app.js?v=20260813-data-health-shadow-condition-consensus-breakdown", index)
+        self.assertIn("styles.css?v=20260813-data-health-shadow-condition-consensus-ranking", index)
+        self.assertIn("app.js?v=20260813-data-health-shadow-condition-consensus-ranking", index)
         self.assertIn("setInterval(() => refresh(true), 60000)", app)
         self.assertIn('class="history-result-cell"', app)
 

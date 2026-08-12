@@ -1278,7 +1278,21 @@ function historyStageMarketMatrix(stats) {
 }
 
 function historyConsensusCards(stats) {
-  const markets = ((stats.three_stage_consensus || {}).markets) || {};
+  const report = stats.three_stage_consensus || {};
+  const markets = report.markets || {};
+  const ranking = report.ranking || {};
+  const rankCards = (ranking.top || []).map((item, index) => {
+    const qualified = item.sample_qualified === true;
+    return `<article class="consensus-rank-card">
+      <div class="consensus-rank-head">
+        <span class="consensus-rank-number">#${index + 1}</span>
+        <span class="consensus-sample ${qualified ? 'enough' : ''}">${qualified ? '樣本達標' : '只作觀察'}</span>
+      </div>
+      <b>${esc(item.market_label || item.market)} · ${esc(item.condition_label || '')}</b>
+      <div class="consensus-rank-rate">${pc(item.accuracy, 1)}</div>
+      <small>命中 ${item.hits || 0}/${item.decided || 0} · 收錄 ${item.fixtures || 0} 場</small>
+    </article>`;
+  }).join('');
   const codes = ['HDC', 'HIL', 'CHL'];
   const card = (code) => {
     const market = markets[code] || {};
@@ -1319,6 +1333,11 @@ function historyConsensusCards(stats) {
     </article>`;
   };
   return `<section class="consensus-block" aria-label="首預、T-30及T-5方向一致命中率">
+    <div class="consensus-ranking-block" aria-label="最高命中條件自動排名">
+      <div class="stage-market-title">最高命中條件自動排名 <span>已決定樣本多於 ${ranking.minimum_decided || 30} 場優先，再按命中率排序</span></div>
+      <div class="consensus-ranking-grid">${rankCards || '<div class="consensus-ranking-empty">暫時未有已結算條件可排名</div>'}</div>
+      <p class="consensus-ranking-note">只統計首預、T-30、T-5 方向及盤口完全一致、並以 T-5 結算的場次。命中率排名唔等於 +EV，仍要配合實際賠率、ROI 同 CLV 驗證。</p>
+    </div>
     <div class="stage-market-title">三階段一致命中率 <span>首預、T-30、T-5 同方向 · 每場只計一次，以 T-5 盤口結算</span></div>
     <div class="consensus-grid">${codes.map(card).join('')}</div>
     <p class="consensus-note">走水及未能評分紀錄不計入命中率分母；少於 30 個已決定樣本只作觀察。</p>

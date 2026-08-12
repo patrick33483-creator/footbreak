@@ -1467,6 +1467,55 @@ table.calib tr:last-child td { border-bottom: 0; }
 
 /* ─── 預測紀錄 · 三階段一致命中率 ───────────────────── */
 .consensus-block { margin-top: var(--s4); min-width: 0; }
+.consensus-ranking-block {
+  margin-bottom: var(--s4);
+  min-width: 0;
+}
+.consensus-ranking-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--s2);
+  min-width: 0;
+}
+.consensus-rank-card {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  padding: var(--s3);
+  border: 1px solid color-mix(in srgb, var(--amber) 40%, var(--line-soft));
+  border-radius: var(--radius-sm);
+  background: linear-gradient(145deg, color-mix(in srgb, var(--amber) 6%, var(--bg-2)), var(--bg-2));
+}
+.consensus-rank-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s2);
+}
+.consensus-rank-number {
+  color: var(--amber);
+  font: 700 var(--text-sm)/1 var(--mono);
+}
+.consensus-rank-card > b { color: var(--ink); font-size: var(--text-sm); overflow-wrap: anywhere; }
+.consensus-rank-rate {
+  color: var(--ink);
+  font: 700 var(--text-xl)/1.1 var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+.consensus-rank-card small,
+.consensus-ranking-note,
+.consensus-ranking-empty {
+  color: var(--ink-3);
+  font-size: var(--text-xs);
+  overflow-wrap: anywhere;
+}
+.consensus-ranking-note { margin: var(--s2) 0 0; }
+.consensus-ranking-empty {
+  grid-column: 1 / -1;
+  padding: var(--s3);
+  border: 1px dashed var(--line-soft);
+  border-radius: var(--radius-sm);
+}
 .consensus-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -1551,7 +1600,8 @@ table.calib tr:last-child td { border-bottom: 0; }
 }
 .consensus-note { margin: var(--s2) 0 0; }
 @media (max-width: 620px) {
-  .consensus-grid { grid-template-columns: 1fr; }
+  .consensus-grid,
+  .consensus-ranking-grid { grid-template-columns: 1fr; }
   .consensus-split-row { grid-template-columns: minmax(82px, auto) minmax(0, 1fr); }
 }
 

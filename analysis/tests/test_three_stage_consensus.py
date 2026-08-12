@@ -124,6 +124,38 @@ class ThreeStageConsensusTests(unittest.TestCase):
         self.assertEqual(breakdown["under"]["hits"], 1)
         self.assertEqual(breakdown["under"]["accuracy"], 1.0)
 
+    def test_ranking_prioritises_qualified_samples_then_accuracy(self) -> None:
+        rows = []
+        for index in range(31):
+            hit = index < 20
+            rows.extend(
+                row(f"hil-under-{index}", stage, "HIL", "L", 2.5, hit)
+                for stage in STAGES
+            )
+        for index in range(30):
+            hit = index < 25
+            rows.extend(
+                row(f"chl-under-{index}", stage, "CHL", "L", 9.5, hit)
+                for stage in STAGES
+            )
+        for index in range(2):
+            rows.extend(
+                row(f"scratch-home-{index}", stage, "HDC", "H", 0.0, True)
+                for stage in STAGES
+            )
+
+        ranking = calculate_three_stage_consensus(rows)["ranking"]
+
+        self.assertEqual(ranking["minimum_decided"], 30)
+        self.assertEqual(ranking["candidate_count"], 3)
+        self.assertEqual(
+            [(item["market"], item["condition_key"]) for item in ranking["top"]],
+            [("HIL", "under"), ("HDC", "scratch_home"), ("CHL", "under")],
+        )
+        self.assertTrue(ranking["top"][0]["sample_qualified"])
+        self.assertFalse(ranking["top"][1]["sample_qualified"])
+        self.assertFalse(ranking["top"][2]["sample_qualified"])
+
 
 if __name__ == "__main__":
     unittest.main()

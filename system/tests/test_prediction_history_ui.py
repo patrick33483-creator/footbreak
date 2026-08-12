@@ -57,13 +57,18 @@ class PredictionHistoryUiTests(unittest.TestCase):
             self.assertIn("exactGroup.breakdown", app)
             self.assertIn("完全一致拆分", app)
             self.assertIn('class="consensus-split-row"', app)
+            self.assertIn("最高命中條件自動排名", app)
+            self.assertIn("命中率排名唔等於 +EV", app)
+            self.assertIn('class="consensus-rank-card"', app)
             self.assertIn(".consensus-grid", css)
             self.assertIn(".consensus-split-row", css)
+            self.assertIn(".consensus-ranking-grid", css)
             self.assertIn("grid-template-columns: repeat(3, minmax(0, 1fr))", css)
             self.assertRegex(
                 css,
                 r"@media \(max-width: 620px\) \{\s*"
-                r"\.consensus-grid \{ grid-template-columns: 1fr; \}",
+                r"\.consensus-grid,\s*"
+                r"\.consensus-ranking-grid \{ grid-template-columns: 1fr; \}",
             )
 
 
