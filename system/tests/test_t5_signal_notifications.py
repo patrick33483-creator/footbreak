@@ -63,6 +63,7 @@ class FootbreakT5SignalNotificationTests(unittest.TestCase):
         cases = [
             _ledger(side="H", odds=1.91),
             _ledger(side="L", odds=None),
+            _ledger(side="L", odds=1.699),
         ]
         wrong_side = _ledger(side="L", odds=None)
         wrong_side["watch"]["footbreak-safe-1"]["stages"][0]["market_predictions"].append({
@@ -80,6 +81,19 @@ class FootbreakT5SignalNotificationTests(unittest.TestCase):
                         notify.notify_fresh_t5_signals(ledger, ["footbreak-safe-1"]), 0
                     )
                 sender.assert_not_called()
+
+    def test_exact_1_70_boundary_is_sent(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            state = str(Path(directory) / "notify_state.json")
+            with patch.object(notify, "STATE", state), patch.object(notify, "send") as sender:
+                self.assertEqual(
+                    notify.notify_fresh_t5_signals(
+                        _ledger(side="L", odds=1.70), ["footbreak-safe-1"]
+                    ),
+                    1,
+                )
+            sender.assert_called_once()
+            self.assertIn("選項實際賠率：1.700", sender.call_args.args[0])
 
     def test_recovers_upcoming_signal_and_transport_failure_keeps_ledger(self) -> None:
         ledger = _ledger()

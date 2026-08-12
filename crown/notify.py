@@ -11,6 +11,9 @@ from .config import Settings
 from .state import paths, state_lock
 
 
+MIN_T5_SIGNAL_ODDS = 1.70
+
+
 def _quarter_line(value: Any, signed: bool = True) -> str:
     try:
         line = float(value)
@@ -191,7 +194,7 @@ def _hdc_signal(
     if len(set(sides)) != 1 or not (lines[0] == lines[1] == lines[2]):
         return None
     odds = _finite_positive(ordered[-1].get("odds"))
-    if odds is None:
+    if odds is None or odds < MIN_T5_SIGNAL_ODDS:
         return None
     selected_side, home_line = sides[-1], lines[-1]
     team_raw = stage.get("home") if selected_side == "H" else stage.get("away")
@@ -215,7 +218,7 @@ def _chl_signal(
         return None
     numeric_line = _numeric_line(selected.get("line", selected.get("condition")))
     odds = _finite_positive(selected.get("odds"))
-    if numeric_line is None or odds is None:
+    if numeric_line is None or odds is None or odds < MIN_T5_SIGNAL_ODDS:
         return None
     line_text = _quarter_line(numeric_line, signed=False)
     key = f"crown|{identity}|T-5|CHL|under-v1|{numeric_line:g}"

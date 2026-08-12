@@ -1553,9 +1553,39 @@ table.t.history-table td {
   border-top: 1px dashed var(--line-soft);
   color: var(--ink-2);
 }
+.consensus-split {
+  display: grid;
+  gap: 5px;
+  margin-top: var(--s2);
+  min-width: 0;
+}
+.consensus-split-title {
+  color: var(--ink-4);
+  font-size: var(--text-xs);
+}
+.consensus-split-row {
+  display: grid;
+  grid-template-columns: minmax(68px, auto) minmax(0, 1fr);
+  align-items: baseline;
+  gap: var(--s2);
+  min-width: 0;
+  padding: 4px 0;
+  border-top: 1px solid var(--line-soft);
+  font-size: var(--text-xs);
+}
+.consensus-split-row b { color: var(--ink-2); }
+.consensus-split-row span {
+  min-width: 0;
+  color: var(--ink-3);
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
 .consensus-note { margin: var(--s2) 0 0; }
 @media (max-width: 620px) {
   .consensus-grid { grid-template-columns: 1fr; }
+  .consensus-split-row { grid-template-columns: minmax(82px, auto) minmax(0, 1fr); }
 }
 
 

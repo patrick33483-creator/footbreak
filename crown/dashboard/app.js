@@ -1284,8 +1284,21 @@ function historyConsensusCards(stats) {
     const market = markets[code] || {};
     const stable = market.same_direction || {};
     const primary = stable.primary || {};
-    const exact = (market.same_direction_and_line || {}).primary || {};
+    const exactGroup = market.same_direction_and_line || {};
+    const exact = exactGroup.primary || {};
+    const breakdown = exactGroup.breakdown || [];
     const enough = Number(primary.decided || 0) >= 30;
+    const split = breakdown.map((item) => {
+      const decided = Number(item.decided || 0);
+      const fixtures = Number(item.fixtures || 0);
+      const result = item.accuracy == null
+        ? '待累積'
+        : `${pc(item.accuracy, 1)} (${item.hits || 0}/${decided})`;
+      return `<div class="consensus-split-row">
+        <b>${esc(item.label || item.key || '未分類')}</b>
+        <span>${fixtures} 場 · ${result}</span>
+      </div>`;
+    }).join('');
     return `<article class="consensus-card">
       <div class="consensus-card-head">
         <b>${HIST_MARKET_LABEL[code]}</b>
@@ -1299,6 +1312,10 @@ function historyConsensusCards(stats) {
       <div class="consensus-exact">方向＋盤口完全一致 ${
         exact.accuracy == null ? '待累積' : `${pc(exact.accuracy, 1)} (${exact.hits || 0}/${exact.decided || 0})`
       }</div>
+      <div class="consensus-split" aria-label="${HIST_MARKET_LABEL[code]}方向及盤口完全一致拆分">
+        <div class="consensus-split-title">完全一致拆分</div>
+        ${split}
+      </div>
     </article>`;
   };
   return `<section class="consensus-block" aria-label="首預、T-30及T-5方向一致命中率">

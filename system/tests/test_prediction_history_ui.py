@@ -54,7 +54,11 @@ class PredictionHistoryUiTests(unittest.TestCase):
             self.assertIn("三階段一致命中率", app)
             self.assertIn("每場只計一次，以 T-5 盤口結算", app)
             self.assertIn("少於 30 個已決定樣本只作觀察", app)
+            self.assertIn("exactGroup.breakdown", app)
+            self.assertIn("完全一致拆分", app)
+            self.assertIn('class="consensus-split-row"', app)
             self.assertIn(".consensus-grid", css)
+            self.assertIn(".consensus-split-row", css)
             self.assertIn("grid-template-columns: repeat(3, minmax(0, 1fr))", css)
             self.assertRegex(
                 css,

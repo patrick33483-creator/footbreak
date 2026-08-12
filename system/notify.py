@@ -145,7 +145,7 @@ def _footbreak_hil_under_event(ledger, item):
         return None
     line = _exact_numeric_line(selected.get("line", selected.get("condition")))
     odds = _finite_positive(selected.get("odds"))
-    if line is None or odds is None:
+    if line is None or odds is None or odds < 1.70:
         return None
     identity = "|".join((
         mid, kickoff.isoformat(), str(watch.get("home") or ""),

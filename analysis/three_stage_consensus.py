@@ -37,6 +37,46 @@ def _metrics(
     }
 
 
+def _breakdown(
+    samples: list[dict[str, dict[str, Any]]],
+    code: str,
+) -> list[dict[str, Any]]:
+    """Split exact three-stage samples by the selected T-5 market role."""
+    if code == "HDC":
+        definitions = (
+            ("home_giving", "主讓"),
+            ("home_receiving", "主受讓"),
+            ("scratch_home", "平手盤（主）"),
+            ("scratch_away", "平手盤（客）"),
+            ("away_giving", "客讓"),
+            ("away_receiving", "客受讓"),
+        )
+
+        def category(sample: dict[str, dict[str, Any]]) -> str | None:
+            grade = sample["T-5"]
+            side = str(grade.get("side") or "")
+            line = _line(grade)
+            if line is None or side not in {"H", "A"}:
+                return None
+            if abs(line) < 1e-9:
+                return "scratch_home" if side == "H" else "scratch_away"
+            if side == "H":
+                return "home_giving" if line < 0 else "home_receiving"
+            return "away_giving" if line > 0 else "away_receiving"
+    else:
+        definitions = (("over", "大"), ("under", "細"))
+
+        def category(sample: dict[str, dict[str, Any]]) -> str | None:
+            side = str(sample["T-5"].get("side") or "")
+            return {"H": "over", "L": "under"}.get(side)
+
+    output = []
+    for key, label in definitions:
+        subset = [sample for sample in samples if category(sample) == key]
+        output.append({"key": key, "label": label, **_metrics(subset, "T-5")})
+    return output
+
+
 def calculate_three_stage_consensus(
     rows: list[dict[str, Any]],
 ) -> dict[str, Any]:
@@ -91,6 +131,7 @@ def calculate_three_stage_consensus(
             "same_direction_and_line": {
                 "fixtures": len(same_direction_and_line),
                 "primary": _metrics(same_direction_and_line, "T-5"),
+                "breakdown": _breakdown(same_direction_and_line, code),
                 "stage_diagnostics": {
                     stage: _metrics(same_direction_and_line, stage)
                     for stage in STAGES

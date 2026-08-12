@@ -149,6 +149,45 @@ class CrownT5SignalNotificationTests(unittest.TestCase):
             )
         sender.assert_not_called()
 
+    def test_rejects_odds_below_1_70_but_accepts_exact_boundary(self) -> None:
+        low_hdc = (
+            _market("HDC", "H", -0.25, 1.91),
+            _market("HDC", "H", -0.25, 1.92),
+            _market("HDC", "H", -0.25, 1.699),
+        )
+        with tempfile.TemporaryDirectory() as directory, patch("crown.notify._send") as sender:
+            self.assertEqual(
+                notify_new(
+                    _ledger(
+                        low_hdc,
+                        t5_markets=[_market("CHL", "L", 9.5, 1.699)],
+                    ),
+                    self._config(directory),
+                    ["safe-fixture-1"],
+                ),
+                0,
+            )
+        sender.assert_not_called()
+
+        boundary_hdc = (
+            _market("HDC", "H", -0.25, 1.91),
+            _market("HDC", "H", -0.25, 1.92),
+            _market("HDC", "H", -0.25, 1.70),
+        )
+        with tempfile.TemporaryDirectory() as directory, patch("crown.notify._send") as sender:
+            self.assertEqual(
+                notify_new(
+                    _ledger(
+                        boundary_hdc,
+                        t5_markets=[_market("CHL", "L", 9.5, 1.70)],
+                    ),
+                    self._config(directory),
+                    ["safe-fixture-1"],
+                ),
+                2,
+            )
+        self.assertEqual(sender.call_count, 2)
+
     def test_upcoming_unacknowledged_t5_is_recovered_without_fresh_handoff(self) -> None:
         with tempfile.TemporaryDirectory() as directory, patch("crown.notify._send") as sender:
             self.assertEqual(notify_new(_ledger(), self._config(directory), []), 2)
