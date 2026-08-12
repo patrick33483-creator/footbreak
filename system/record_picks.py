@@ -511,15 +511,15 @@ def sync(preds_file="predictions.json"):
     # official portfolio's stats/staking state.
     recompute_shadow_stats(led)
     save(led)
-    if fresh_t5_signal_ids:
-        # Notification is strictly after the immutable live snapshot has been
-        # saved.  A delivery failure is deliberately non-fatal and cannot
-        # alter the saved prediction/ledger transaction.
-        try:
-            import notify
-            notify.notify_fresh_t5_signals(led, fresh_t5_signal_ids)
-        except Exception as exc:
-            notes.append(f"Telegram T-5 訊號發送失敗({type(exc).__name__})；已保存預測，唔影響注單。")
+    # Notification is strictly after the immutable live snapshot has been
+    # saved.  Every pass also retries an unacknowledged T-5 while its kickoff
+    # is still in the future.  A delivery failure remains non-fatal and cannot
+    # alter the saved prediction/ledger transaction.
+    try:
+        import notify
+        notify.notify_fresh_t5_signals(led, fresh_t5_signal_ids)
+    except Exception as exc:
+        notes.append(f"Telegram T-5 訊號發送失敗({type(exc).__name__})；已保存預測，唔影響注單。")
     return changes, notes, led
 
 

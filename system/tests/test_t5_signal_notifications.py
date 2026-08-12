@@ -81,14 +81,15 @@ class FootbreakT5SignalNotificationTests(unittest.TestCase):
                     )
                 sender.assert_not_called()
 
-    def test_requires_explicit_fresh_handoff_and_transport_failure_keeps_ledger(self) -> None:
+    def test_recovers_upcoming_signal_and_transport_failure_keeps_ledger(self) -> None:
         ledger = _ledger()
         with tempfile.TemporaryDirectory() as directory:
             state_path = Path(directory) / "notify_state.json"
             with patch.object(notify, "STATE", str(state_path)), patch.object(notify, "send") as sender:
-                self.assertEqual(notify.notify_fresh_t5_signals(ledger, []), 0)
-            sender.assert_not_called()
+                self.assertEqual(notify.notify_fresh_t5_signals(ledger, []), 1)
+            sender.assert_called_once()
 
+            state_path.unlink()
             before = copy.deepcopy(ledger)
             with patch.object(notify, "STATE", str(state_path)), \
                  patch.object(notify, "send", side_effect=RuntimeError("transport down")):
@@ -96,6 +97,10 @@ class FootbreakT5SignalNotificationTests(unittest.TestCase):
                     notify.notify_fresh_t5_signals(ledger, ["footbreak-safe-1"])
             self.assertEqual(ledger, before)
             self.assertFalse(state_path.exists())
+            with patch.object(notify, "STATE", str(state_path)), \
+                 patch.object(notify, "send") as sender:
+                self.assertEqual(notify.notify_fresh_t5_signals(ledger, []), 1)
+            sender.assert_called_once()
 
     def test_record_picks_dispatches_only_after_new_t5_snapshot_is_saved(self) -> None:
         kickoff = (datetime.now(record_picks.HKT) + timedelta(minutes=20)).strftime(

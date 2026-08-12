@@ -99,7 +99,7 @@ def _exact_numeric_line(value):
 
 
 def _fresh_t5_stage(ledger, item):
-    """Resolve only a just-persisted T-5 identity; never scan old history."""
+    """Resolve an exact T-5 identity only while its fixture is still upcoming."""
     mid = str(item.get("match_id") or "") if isinstance(item, dict) else str(item or "")
     watch = (ledger.get("watch") or {}).get(mid)
     if not isinstance(watch, dict):
@@ -168,16 +168,24 @@ def _footbreak_hil_under_event(ledger, item):
 
 
 def notify_fresh_t5_signals(ledger, fresh_t5):
-    """Send only explicit, post-persistence Footbreak T-5 HIL-under signals.
+    """Send fresh or recoverable upcoming Footbreak T-5 HIL-under signals.
 
-    Callers provide identities from the persistence transaction.  This avoids
-    deployment backfill and keeps the notification path isolated from bets,
-    ledgers, probabilities, staking, settlement and learning.
+    Fresh identities are checked first, then the current watch list is scanned
+    for an unacknowledged T-5 whose kickoff is still in the future.  This
+    recovers a temporary Telegram/deployment failure but never backfills a
+    stale betting prompt after kickoff.
     """
     state = load_state()
     seen = set(state.get("signals") or [])
     sent = 0
-    for item in fresh_t5 or []:
+    items = list(fresh_t5 or [])
+    items.extend(str(match_id) for match_id in (ledger.get("watch") or {}))
+    seen_items = set()
+    for item in items:
+        mid = str(item.get("match_id") or "") if isinstance(item, dict) else str(item or "")
+        if not mid or mid in seen_items:
+            continue
+        seen_items.add(mid)
         event = _footbreak_hil_under_event(ledger, item)
         if event is None:
             continue
