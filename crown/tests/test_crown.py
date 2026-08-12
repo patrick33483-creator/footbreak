@@ -1800,6 +1800,76 @@ class CrownSafetyTests(unittest.TestCase):
         self.assertEqual(ledger["shadow_bets"][0]["result"], "Won")
         self.assertEqual(ledger["shadow_bets"][0]["pnl"], 1000)
 
+    def test_shadow_bet_recovers_exact_titan_detail_omitted_from_result_index(self) -> None:
+        config = settings()
+        ledger = {
+            "bankroll": 50000, "watch": {}, "log": [], "stats": {},
+            "shadow_stats": {}, "bets": [],
+            "shadow_bets": [{
+                "bet_id": "shadow|3056238|HDC|0|A",
+                "match_id": "3056238", "titan_match_id": "3056238",
+                "league": "葡U23", "home": "葡萄牙体育U23", "away": "莱里亚U23",
+                "kickoff": "2020-01-01T12:00:00+08:00",
+                "market": "讓球", "code": "HDC", "condition": "0", "side": "A",
+                "odds": 1.6, "stake": 1000, "status": "PENDING",
+                "portfolio": "shadow", "shadow_only": True,
+            }],
+        }
+        detail = {
+            "id": "3056238", "league": "葡U23",
+            "home": "葡萄牙体育U23", "away": "莱里亚U23",
+            "kickoff": datetime.fromisoformat("2020-01-01T12:00:00+08:00"),
+            "status": "完", "home_score": 1, "away_score": 1,
+        }
+        with patch("crown.settle.load_ledger", return_value=ledger), \
+             patch("crown.settle._refresh_live", return_value={}), \
+             patch("crown.settle.fetch_official_results", return_value={}), \
+             patch("crown.settle.fetch_official_match_statuses", return_value={}), \
+             patch("crown.settle.TitanClient.results", return_value=[]), \
+             patch("crown.settle.TitanClient.result_detail", return_value=detail), \
+             patch("crown.settle.save_ledger"):
+            result = crown_settle.settle_due(config)
+        self.assertEqual(result["shadow_settled"], 1)
+        self.assertEqual(result["shadow_pending"], 0)
+        self.assertEqual(ledger["shadow_bets"][0]["result"], "Refunded")
+        self.assertEqual(
+            ledger["shadow_bets"][0]["settlement_source"],
+            "titan007_detail_exact_id_identity",
+        )
+
+    def test_shadow_detail_fallback_rejects_identity_mismatch(self) -> None:
+        config = settings()
+        ledger = {
+            "bankroll": 50000, "watch": {}, "log": [], "stats": {},
+            "shadow_stats": {}, "bets": [],
+            "shadow_bets": [{
+                "bet_id": "shadow|3056238|HDC|0|A",
+                "match_id": "3056238", "titan_match_id": "3056238",
+                "league": "葡U23", "home": "葡萄牙体育U23", "away": "莱里亚U23",
+                "kickoff": "2020-01-01T12:00:00+08:00",
+                "market": "讓球", "code": "HDC", "condition": "0", "side": "A",
+                "odds": 1.6, "stake": 1000, "status": "PENDING",
+                "portfolio": "shadow", "shadow_only": True,
+            }],
+        }
+        wrong_detail = {
+            "id": "3056238", "league": "葡U23",
+            "home": "其他球隊", "away": "錯誤球隊",
+            "kickoff": datetime.fromisoformat("2020-01-01T12:00:00+08:00"),
+            "status": "完", "home_score": 1, "away_score": 1,
+        }
+        with patch("crown.settle.load_ledger", return_value=ledger), \
+             patch("crown.settle._refresh_live", return_value={}), \
+             patch("crown.settle.fetch_official_results", return_value={}), \
+             patch("crown.settle.fetch_official_match_statuses", return_value={}), \
+             patch("crown.settle.TitanClient.results", return_value=[]), \
+             patch("crown.settle.TitanClient.result_detail", return_value=wrong_detail), \
+             patch("crown.settle.save_ledger"):
+            result = crown_settle.settle_due(config)
+        self.assertEqual(result["shadow_settled"], 0)
+        self.assertEqual(result["shadow_pending"], 1)
+        self.assertEqual(ledger["shadow_bets"][0]["status"], "PENDING")
+
     def test_chl_settlement_uses_hkjc_exact_id_corners_even_when_live_cache_exists(self) -> None:
         config = settings()
         ledger = {

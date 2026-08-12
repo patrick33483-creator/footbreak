@@ -171,6 +171,55 @@ def _verified_titan_corner_score(
     return {**official, "corners_total": corners}
 
 
+def _verified_titan_detail_score(
+    bet: dict[str, Any],
+    client: TitanClient,
+) -> dict[str, Any] | None:
+    """Recover a completed exact-ID result omitted from Titan's result index."""
+    target = _target(bet)
+    titan_id = str(bet.get("titan_match_id") or bet.get("match_id") or "")
+    if target is None or not titan_id:
+        return None
+    try:
+        detail = client.result_detail(titan_id)
+    except (KeyError, TypeError, ValueError, OSError):
+        return None
+    kickoff = parse_time((detail or {}).get("kickoff"))
+    if (
+        not detail
+        or str(detail.get("id") or "") != titan_id
+        or kickoff is None
+        or detail.get("home_score") is None
+        or detail.get("away_score") is None
+    ):
+        return None
+    candidate = Event(
+        titan_id,
+        str(detail.get("league") or ""),
+        str(detail.get("home") or ""),
+        str(detail.get("away") or ""),
+        kickoff,
+    )
+    matched = match_event(
+        target,
+        [candidate],
+        team_key=canonical_team_key,
+        league_key=canonical_league_key,
+        allow_reversed=True,
+        require_qualifiers=True,
+    )
+    if not matched.event:
+        return None
+    try:
+        home_score = int(detail["home_score"])
+        away_score = int(detail["away_score"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if matched.reversed:
+        home_score, away_score = away_score, home_score
+    return {"home_score": home_score, "away_score": away_score}
+
+
 def settle_due(config: Settings) -> dict[str, Any]:
     ledger = load_ledger(config)
     now = datetime.now(HKT)
@@ -317,6 +366,15 @@ def settle_due(config: Settings) -> dict[str, Any]:
         if titan and target:
             candidate = Event(str(titan["id"]), str(titan["league"]), str(titan["home"]), str(titan["away"]), titan["kickoff"])
             if match_event(target, [candidate]).event and _settle(bet, titan, "titan_verified_identity"):
+                count("settled", bet)
+                continue
+        if not titan:
+            detail_score = _verified_titan_detail_score(bet, titan_client)
+            if detail_score and _settle(
+                bet,
+                detail_score,
+                "titan007_detail_exact_id_identity",
+            ):
                 count("settled", bet)
                 continue
     recompute_stats(ledger, config)
