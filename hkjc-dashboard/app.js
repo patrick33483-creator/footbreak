@@ -132,6 +132,8 @@ async function refresh(silent) {
   } finally {
     // 挑戰模型報告獨立讀取:即使主資料或結算失敗,一樣重新攞一次(帶時間戳,不經快取)。
     if (VIEW === 'chal' || CHAL.state !== 'idle') void loadChallenger({ quiet: silent });
+    // 資料健康報告同樣獨立讀取,唔會被主資料或結算失敗拖累。
+    if (VIEW === 'health' || HEALTH.state !== 'idle') void loadHealth({ quiet: silent });
     BUSY = false;
     if (b) { b.classList.remove('spin'); b.disabled = false; }
   }
@@ -152,6 +154,7 @@ function render() {
   $('#viewLedger').hidden = VIEW !== 'ledger';
   $('#viewShadow').hidden = VIEW !== 'shadow';
   $('#viewChal').hidden = VIEW !== 'chal';
+  $('#viewHealth').hidden = VIEW !== 'health';
   $$('#nav .navbtn').forEach((b) => b.classList.toggle('is-on', b.dataset.view === VIEW));
   if (VIEW === 'pred') {
     renderKpis(); renderList();
@@ -167,6 +170,9 @@ function render() {
   } else if (VIEW === 'chal') {
     renderChallenger();
     if (CHAL.state === 'idle') void loadChallenger({});
+  } else if (VIEW === 'health') {
+    renderHealth();
+    if (HEALTH.state === 'idle') void loadHealth({});
   } else {
     renderLedger();
   }
@@ -1528,6 +1534,561 @@ function logCard() {
         <span class="minitag ${(e.n_changes || (e.changes||[]).length) ? 'go' : ''}">${e.kind === '結算' ? '結算' : ((e.n_changes != null ? e.n_changes : (e.changes||[]).length) + ' 項變動')}</span></div>
       ${(e.changes || []).map((c) => `<div class="log-l">${esc(c)}</div>`).join('') || '<div class="log-l dim">無變化</div>'}
     </div>`).join('')}</div></div>`;
+}
+
+/* ══════════════════════ 資料健康 · 完整率及錯誤分層 ══════════════════════ */
+/* 純讀取 data-health.json 嘅唯讀診斷面板。呢度唔會改任何預測、結算、落注、
+ * 注碼或通知;報告本身亦係唯讀生成,唔會重訓、唔會自動套用。
+ * 主要樣本永遠係「獨立賽事」;階段列只作參考,唔可以當獨立樣本。 */
+const HEALTH_SYSTEM = 'footbreak';
+const HEALTH_FILE = 'data-health.json';
+const HEALTH_STALE_HOURS = 26;
+const HEALTH_MIN_FIXTURES = 30;
+const HEALTH_MARKETS = ['HDC', 'HIL', 'CHL'];
+const HEALTH_DIMENSIONS = [
+  { id: 'market', label: '市場' },
+  { id: 'stage', label: '階段' },
+  { id: 'league', label: '聯賽' },
+  { id: 'direction', label: '方向' },
+  { id: 'confidence', label: '信念' },
+];
+const HEALTH_FILTER_DIMENSIONS = ['market', 'stage', 'league', 'direction'];
+const HEALTH_STATUS = {
+  ok: { text: '資料健康', cls: 'review' },
+  watch: { text: '有待留意', cls: 'hold' },
+  degraded: { text: '資料有缺口', cls: 'bad' },
+  insufficient_data: { text: '樣本未夠', cls: 'wait' },
+  no_data: { text: '未有資料', cls: 'wait' },
+  unavailable: { text: '資料源不可用', cls: 'bad' },
+};
+const HEALTH_SEVERITY = { high: '嚴重', warn: '注意', info: '參考' };
+const HEALTH_ISSUE_LABEL = {
+  post_kickoff_quarantined_rows: '開賽後才寫入的預測(已隔離)',
+  malformed_payload_rows: '無法解析的預測內容',
+  nonfinite_prediction_values: 'NaN／無限值欄位',
+  duplicate_market_keys_in_stage: '同一階段重複市場鍵',
+  invalid_stage_rows: '階段值不合法',
+  malformed_market_prediction_rows: '格式錯誤的市場預測列',
+  stage_rows_without_market_predictions: '冇市場預測的階段列',
+  unsupported_market_rows: '非 HDC／HIL／CHL 市場列',
+  stale_unresolved_results: '過寬限期仍然冇賽果',
+  stale_missing_corner_results: '超過重試期仍然缺角球賽果',
+  missing_corner_results: '缺角球賽果(仍在重試期)',
+  missing_probability: '缺失或不合法機率',
+  missing_line: '缺失盤口線',
+  missing_odds: '缺失賠率',
+  missing_selection_side: '缺失選擇方向',
+  missing_source: '缺失資料來源',
+  missing_provider: '缺失供應商',
+  missing_league: '缺失聯賽',
+  missing_stage: '缺失階段',
+};
+const HEALTH_MISSING_LABEL = {
+  probability: '機率', line: '盤口線', odds: '賠率', selection_side: '方向',
+  league: '聯賽', stage: '階段', source: '來源', provider: '供應商',
+  result: '賽果', corner_total: '角球賽果',
+};
+let HEALTH = { state: 'idle', payload: null, error: '', loadedAt: null };
+/* unit:'primary' = 每場每市場最新階段(消除同一場嘅重複階段列);
+ * unit:'all_stages' = 全部階段列(彼此相關,只作參考)。
+ * 兩者嘅指標單位都係「已結算預測列」,獨立賽事只係樣本量基礎。 */
+let HEALTH_FILTER = {
+  market: 'all', stage: 'all', league: 'all', direction: 'all',
+  sample: 'all', unit: 'primary',
+};
+const HEALTH_UNIT_LABEL = {
+  primary: '主要診斷:每場每市場最新階段',
+  all_stages: '全部階段列(相關,只作參考)',
+};
+const HEALTH_UNIT_NOTE = {
+  primary: '每場每市場每個方向只取最新賽前階段(T-5 > T-30 > 首預),'
+    + '所以冇同一場嘅重複階段列。指標單位仍然係已結算預測列。',
+  all_stages: '包含同一場嘅首預／T-30／T-5,呢啲係高度相關嘅重複量度,'
+    + '唔可以當獨立樣本;只作參考。',
+};
+
+/* 按目前單位揀返對應嘅切面同基準。primary 缺失時安全回退到全部階段列,
+ * 但標籤會照實講返用咗邊個單位,唔會扮成 primary。 */
+function healthSliceSource(payload) {
+  const primary = healthIsPlainObject(payload.primary_diagnostic)
+    ? payload.primary_diagnostic : null;
+  const wantsPrimary = HEALTH_FILTER.unit !== 'all_stages';
+  if (wantsPrimary && primary && healthIsPlainObject(primary.error_slices)) {
+    return {
+      unit: 'primary',
+      slices: primary.error_slices,
+      baseline: healthIsPlainObject(primary.baseline) ? primary.baseline : {},
+      available: true,
+    };
+  }
+  return {
+    unit: 'all_stages',
+    slices: healthIsPlainObject(payload.error_slices) ? payload.error_slices : {},
+    baseline: healthIsPlainObject(payload.baseline) ? payload.baseline : {},
+    available: !wantsPrimary || !primary,
+    fellBack: wantsPrimary && !primary,
+  };
+}
+
+/* 一句講清指標單位,放喺每個分層表上面,避免有人當佢係每場一行。 */
+function healthUnitCaption(source) {
+  const baseline = source.baseline || {};
+  const correlated = baseline.correlated_stage_rows === true
+    || (source.unit === 'all_stages');
+  return `<p class="health-unit-note" data-testid="note-health-metric-unit"
+      data-metric-unit="${source.unit === 'primary'
+        ? 'graded_prediction_rows_latest_stage_per_fixture_market'
+        : 'graded_prediction_rows'}"
+      data-correlated-stage-rows="${correlated}">
+    指標單位:<b>已結算預測列</b>(命中率／Brier／對數損失都係逐行相加),
+    <b>唔係每場一行</b>;獨立賽事只係樣本量基礎同 ≥${HEALTH_MIN_FIXTURES} 場門檻依據。
+    目前單位:<b>${esc(HEALTH_UNIT_LABEL[source.unit])}</b>——${esc(HEALTH_UNIT_NOTE[source.unit])}
+    ${correlated ? '<b class="bad-txt">同一場有多個相關階段列,唔可以當獨立樣本。</b>' : ''}
+    ${source.fellBack ? '<b class="bad-txt">報告未有主要診斷區塊,已回退到全部階段列。</b>' : ''}
+  </p>`;
+}
+
+function healthIsPlainObject(value) {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+function healthInt(value) {
+  const parsed = numeric(value);
+  return parsed == null ? 0 : Math.round(parsed);
+}
+function healthPct(value) {
+  return numeric(value) == null ? '—' : pc(value, 1);
+}
+function healthStatusLabel(status) {
+  return HEALTH_STATUS[status] || { text: status ? String(status) : '未知狀態', cls: 'hold' };
+}
+function healthIssueLabel(issue) {
+  return issue.label || HEALTH_ISSUE_LABEL[issue.code] || String(issue.code || '未知問題');
+}
+function healthValidate(payload) {
+  if (!healthIsPlainObject(payload)) return '報告格式不符(唔係物件)';
+  if (payload.report !== 'data_health') return '報告類型不符';
+  if (payload.system !== HEALTH_SYSTEM) return `報告唔係 ${HEALTH_SYSTEM} 系統`;
+  if (!healthIsPlainObject(payload.policy)) return '報告缺少 policy 欄位';
+  if (!healthIsPlainObject(payload.completeness)) return '報告缺少完整率欄位';
+  if (payload.status !== 'unavailable' && !healthIsPlainObject(payload.error_slices)) {
+    return '報告缺少錯誤分層欄位';
+  }
+  return '';
+}
+function healthAgeHours(payload) {
+  const stamp = payload && payload.generated_at;
+  if (!stamp) return null;
+  const at = new Date(stamp);
+  if (!Number.isFinite(at.getTime())) return null;
+  return (Date.now() - at.getTime()) / 3600000;
+}
+function healthStamp(value) {
+  const at = new Date(value);
+  if (!Number.isFinite(at.getTime())) return '—';
+  return at.toLocaleString('zh-HK', {
+    month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
+    hour12: false, timeZone: 'Asia/Hong_Kong',
+  });
+}
+
+async function loadHealth(options) {
+  const opts = options || {};
+  if (HEALTH.state === 'loading') return HEALTH.state;
+  const previous = HEALTH;
+  HEALTH = { state: 'loading', payload: previous.payload, error: '', loadedAt: previous.loadedAt };
+  if (!opts.quiet && VIEW === 'health') renderHealth();
+  try {
+    // 每次都加時間戳 + no-store,「重新讀取」一定攞到最新一份報告。
+    const response = await fetch(`${HEALTH_FILE}?v=${Date.now()}`, { cache: 'no-store' });
+    if (response.status === 404) {
+      HEALTH = { state: 'missing', payload: null, error: '', loadedAt: Date.now() };
+    } else if (!response.ok) {
+      HEALTH = { state: 'error', payload: null, error: `HTTP ${response.status}`, loadedAt: Date.now() };
+    } else {
+      let payload = null;
+      try {
+        payload = await response.json();
+      } catch (parseError) {
+        HEALTH = { state: 'error', payload: null, error: '報告唔係有效 JSON', loadedAt: Date.now() };
+        if (VIEW === 'health') renderHealth();
+        return HEALTH.state;
+      }
+      const invalid = healthValidate(payload);
+      HEALTH = invalid
+        ? { state: 'error', payload: null, error: invalid, loadedAt: Date.now() }
+        : { state: 'ready', payload, error: '', loadedAt: Date.now() };
+    }
+  } catch (e) {
+    HEALTH = { state: 'error', payload: null, error: e.message || '讀取失敗', loadedAt: Date.now() };
+  }
+  if (VIEW === 'health') renderHealth();
+  return HEALTH.state;
+}
+
+function healthReadOnlyNote() {
+  return `<div class="shadow-note health-note" role="note" data-testid="note-health-readonly">
+    <strong>唯讀診斷</strong>
+    <span>資料健康報告只做讀取同統計:<b>唔會改動任何預測、賽果、結算、注碼、模擬倉或通知</b>,
+    亦<b>唔會重訓、唔會自動套用</b>。主要樣本係<b>獨立賽事(按場計)</b>;
+    階段列(首預／T-30／T-5)只作參考,同一場<b>唔可以當三場</b>。</span></div>`;
+}
+
+function healthHead(extra) {
+  return `<div class="ledger-head"><div class="ledger-title-row">
+      <h1 class="pg-h">資料健康 <span class="sub">完整率及錯誤分層 · 唯讀診斷</span></h1>
+      <button class="settle-btn" id="healthReload" type="button">重新讀取</button>
+    </div>
+    ${healthReadOnlyNote()}${extra || ''}</div>`;
+}
+
+function healthKpi(label, value, sub, tone) {
+  return `<div class="health-kpi ${tone || ''}">
+    <span class="health-kpi-lbl">${esc(label)}</span>
+    <b class="health-kpi-val mono">${value}</b>
+    <span class="health-kpi-sub">${sub == null ? '' : esc(sub)}</span>
+  </div>`;
+}
+
+function healthKpiRow(payload) {
+  const overall = ((payload.completeness || {}).overall) || {};
+  const result = overall.result || {};
+  const corner = overall.corner_result || {};
+  const baseline = payload.baseline || {};
+  const counts = payload.issue_counts || {};
+  const resultTone = numeric(result.coverage) != null && numeric(result.coverage) < 0.98 ? 'bad' : '';
+  const cornerTone = numeric(corner.coverage) != null && numeric(corner.coverage) < 0.9 ? 'bad' : '';
+  return `<div class="health-kpis" data-testid="kpis-health">
+    ${healthKpi('獨立賽事(主要樣本)', healthInt(overall.unique_fixtures), '同一場只算一場')}
+    ${healthKpi('階段列(只作參考)', healthInt(overall.stage_rows), '首預／T-30／T-5')}
+    ${healthKpi('市場預測列(只作參考)', healthInt(overall.prediction_rows), '每場每階段每方向')}
+    ${healthKpi('賽果覆蓋率', healthPct(result.coverage), `過寬限期 ${healthInt(result.settle_due_fixtures)} 場`, resultTone)}
+    ${healthKpi('角球賽果覆蓋率', healthPct(corner.coverage), `CHL 場次 ${healthInt(corner.corner_prediction_fixtures)}`, cornerTone)}
+    ${healthKpi('已評估獨立賽事(樣本量)', healthInt(baseline.unique_fixtures),
+      `整體命中率 ${healthPct(baseline.accuracy)} · 由 ${healthInt(baseline.graded_rows)} 條已結算預測列相加`)}
+    ${healthKpi('資料問題', healthInt(counts.total), `嚴重 ${healthInt(counts.high)} · 注意 ${healthInt(counts.warn)}`,
+      healthInt(counts.high) ? 'bad' : '')}
+  </div>`;
+}
+
+function healthOptions(values, selected) {
+  return values.map((item) =>
+    `<option value="${esc(item.value)}"${item.value === selected ? ' selected' : ''}>${esc(item.text)}</option>`
+  ).join('');
+}
+
+function healthFilterControls(payload) {
+  const source = healthSliceSource(payload);
+  const slices = source.slices || {};
+  const build = (dimension) => {
+    const items = Array.isArray(slices[dimension]) ? slices[dimension] : [];
+    return [{ value: 'all', text: '全部' }].concat(items.map((item) => ({
+      value: String(item.key),
+      text: `${item.label || item.key}(${healthInt(item.unique_fixtures)} 場)`,
+    })));
+  };
+  const labels = { market: '市場', stage: '階段', league: '聯賽', direction: '方向' };
+  const selects = HEALTH_FILTER_DIMENSIONS.map((dimension) => `
+    <label class="health-filter-field">
+      <span class="health-filter-lbl">${labels[dimension]}</span>
+      <select class="health-select" data-health-filter="${dimension}"
+        data-testid="select-health-${dimension}">${healthOptions(build(dimension), HEALTH_FILTER[dimension])}</select>
+    </label>`).join('');
+  return `<div class="health-filter" role="group" aria-label="資料健康篩選" data-testid="filter-health">
+    <div class="health-filter-field health-unit-field">
+      <span class="health-filter-lbl">指標單位</span>
+      <div class="health-sample-btns">
+        <button type="button" class="chal-filter-btn ${source.unit === 'primary' ? 'active' : ''}"
+          data-health-unit="primary" data-testid="button-health-unit-primary"
+          aria-pressed="${source.unit === 'primary'}">每場每市場最新階段</button>
+        <button type="button" class="chal-filter-btn ${source.unit === 'all_stages' ? 'active' : ''}"
+          data-health-unit="all_stages" data-testid="button-health-unit-all-stages"
+          aria-pressed="${source.unit === 'all_stages'}">全部階段列(參考)</button>
+      </div>
+    </div>
+    ${selects}
+    <div class="health-filter-field">
+      <span class="health-filter-lbl">樣本</span>
+      <div class="health-sample-btns">
+        <button type="button" class="chal-filter-btn ${HEALTH_FILTER.sample === 'all' ? 'active' : ''}"
+          data-health-sample="all" data-testid="button-health-sample-all"
+          aria-pressed="${HEALTH_FILTER.sample === 'all'}">全部</button>
+        <button type="button" class="chal-filter-btn ${HEALTH_FILTER.sample === 'sufficient' ? 'active' : ''}"
+          data-health-sample="sufficient" data-testid="button-health-sample-sufficient"
+          aria-pressed="${HEALTH_FILTER.sample === 'sufficient'}">只睇樣本足夠(≥${HEALTH_MIN_FIXTURES} 場)</button>
+      </div>
+    </div>
+    <button type="button" class="chal-filter-btn health-reset" data-health-reset="1"
+      data-testid="button-health-reset">清除篩選</button>
+  </div>`;
+}
+
+function healthAppliedFilters() {
+  const labels = { market: '市場', stage: '階段', league: '聯賽', direction: '方向' };
+  const parts = HEALTH_FILTER_DIMENSIONS
+    .filter((dimension) => HEALTH_FILTER[dimension] !== 'all')
+    .map((dimension) => `${labels[dimension]}:${HEALTH_FILTER[dimension]}`);
+  if (HEALTH_FILTER.sample === 'sufficient') parts.push(`樣本:≥${HEALTH_MIN_FIXTURES} 場`);
+  const unit = HEALTH_FILTER.unit === 'all_stages' ? 'all_stages' : 'primary';
+  return `<div class="health-applied" data-testid="applied-health-filters">
+    <span class="health-applied-lbl">生效篩選</span>
+    <span class="health-applied-val">${parts.length ? esc(parts.join(' · ')) : '全部(未篩選)'}</span>
+    <span class="health-applied-unit" data-testid="applied-health-unit">單位:${esc(HEALTH_UNIT_LABEL[unit])}</span>
+    <span class="health-applied-note">切面係單維度彙總,篩選只影響顯示,唔會交叉相乘。</span>
+  </div>`;
+}
+
+function healthSliceVisible(dimension, item) {
+  if (HEALTH_FILTER.sample === 'sufficient' && item.sample_status !== 'sufficient') return false;
+  const selected = HEALTH_FILTER[dimension];
+  if (!selected || selected === 'all') return true;
+  return String(item.key) === String(selected);
+}
+
+function healthCell(label, value, extraClass) {
+  return `<span class="health-cell ${extraClass || ''}" data-label="${esc(label)}">${value}</span>`;
+}
+
+function healthSliceRow(item) {
+  const insufficient = item.sample_status !== 'sufficient';
+  const ci = Array.isArray(item.accuracy_ci95)
+    ? `${pc(item.accuracy_ci95[0], 0)}–${pc(item.accuracy_ci95[1], 0)}`
+    : '—';
+  return `<div class="health-row ${insufficient ? 'is-small' : ''}"
+      data-testid="row-health-slice-${esc(item.dimension)}-${esc(item.key)}">
+    ${healthCell('切面', `<b>${esc(item.label || item.key)}</b>${insufficient
+      ? '<span class="health-flag" data-testid="flag-health-small-sample">樣本不足</span>' : ''}`, 'health-cell-key')}
+    ${healthCell('獨立賽事(樣本量)', healthInt(item.unique_fixtures))}
+    ${healthCell('預測列(指標單位)', `${healthInt(item.graded_rows == null ? item.rows : item.graded_rows)}${
+      item.correlated_stage_rows === true
+        ? '<span class="health-flag" data-testid="flag-health-correlated">相關階段列</span>' : ''}`)}
+    ${healthCell('已判定列', healthInt(item.decided_rows))}
+    ${healthCell('命中', healthInt(item.hits))}
+    ${healthCell('和局退款', healthInt(item.pushes))}
+    ${healthCell('命中率', insufficient ? '<span class="dim">樣本不足</span>' : healthPct(item.accuracy))}
+    ${healthCell('Wilson 95%', insufficient ? '—' : ci)}
+    ${healthCell('Brier', insufficient ? '—' : f3(item.brier))}
+    ${healthCell('對數損失', insufficient ? '—' : f3(item.log_loss))}
+  </div>`;
+}
+
+function healthSliceHead() {
+  return `<div class="health-row health-row-head" aria-hidden="true">
+    <span class="health-cell health-cell-key">切面</span>
+    <span class="health-cell">獨立賽事(樣本量)</span>
+    <span class="health-cell">預測列(指標單位)</span>
+    <span class="health-cell">已判定列</span>
+    <span class="health-cell">命中</span>
+    <span class="health-cell">和局退款</span>
+    <span class="health-cell">命中率</span>
+    <span class="health-cell">Wilson 95%</span>
+    <span class="health-cell">Brier</span>
+    <span class="health-cell">對數損失</span>
+  </div>`;
+}
+
+function healthSlicesSection(payload) {
+  const source = healthSliceSource(payload);
+  const slices = source.slices || {};
+  const blocks = HEALTH_DIMENSIONS.map((dimension) => {
+    const items = (Array.isArray(slices[dimension.id]) ? slices[dimension.id] : [])
+      .filter((item) => healthSliceVisible(dimension.id, item));
+    if (!items.length) return '';
+    return `<div class="card health-card" data-testid="card-health-slices-${dimension.id}">
+      <h2 class="card-h">${dimension.label}分層 <span class="sub">${items.length} 個切面</span></h2>
+      <div class="health-table">${healthSliceHead()}${items.map(healthSliceRow).join('')}</div>
+    </div>`;
+  }).filter(Boolean).join('');
+  const caption = healthUnitCaption(source);
+  if (!blocks) {
+    return `<h2 class="health-section-h">錯誤分層 <span class="sub">獨立賽事係樣本量基礎,指標單位係已結算預測列</span></h2>
+      ${caption}<div class="card" data-testid="state-health-slices-empty"><div class="empty2">
+      <b>今次篩選冇任何切面</b><span>可以㩒「清除篩選」睇返全部切面。</span></div></div>`;
+  }
+  return `<h2 class="health-section-h">錯誤分層 <span class="sub">獨立賽事係樣本量基礎,指標單位係已結算預測列</span></h2>
+    ${caption}${blocks}`;
+}
+
+function healthIssuesSection(payload) {
+  const marketFilter = HEALTH_FILTER.market;
+  const issues = (Array.isArray(payload.issues) ? payload.issues : []).filter((issue) => {
+    if (marketFilter === 'all') return true;
+    const scope = String(issue.scope || '');
+    return scope === 'overall' || scope === `market:${marketFilter}`;
+  });
+  const overall = ((payload.completeness || {}).overall) || {};
+  const byMarket = ((payload.completeness || {}).by_market) || {};
+  const markets = HEALTH_MARKETS.filter((market) =>
+    (marketFilter === 'all' || marketFilter === market) && byMarket[market]);
+  const marketCards = markets.map((market) => {
+    const item = byMarket[market] || {};
+    const missing = item.missing_or_invalid || {};
+    const chips = Object.keys(HEALTH_MISSING_LABEL)
+      .filter((field) => healthInt(missing[field]) > 0)
+      .map((field) =>
+        `<span class="health-chip bad">${HEALTH_MISSING_LABEL[field]} ${healthInt(missing[field])}</span>`)
+      .join('') || '<span class="health-chip good">冇缺失欄位</span>';
+    return `<div class="card health-card" data-testid="card-health-market-${market}">
+      <h2 class="card-h">${MKT[market] || market} <span class="sub">${market}</span></h2>
+      <div class="health-grid">
+        <div><span class="health-grid-lbl">獨立賽事</span><b class="mono">${healthInt(item.unique_fixtures)}</b></div>
+        <div><span class="health-grid-lbl">階段列(參考)</span><b class="mono">${healthInt(item.stage_rows)}</b></div>
+        <div><span class="health-grid-lbl">預測列(參考)</span><b class="mono">${healthInt(item.prediction_rows)}</b></div>
+        <div><span class="health-grid-lbl">已結算</span><b class="mono">${healthInt(item.graded_rows)}</b></div>
+        <div><span class="health-grid-lbl">待結算</span><b class="mono">${healthInt(item.pending_rows)}</b></div>
+        <div><span class="health-grid-lbl">不適用</span><b class="mono">${healthInt(item.excluded_rows)}</b></div>
+        <div><span class="health-grid-lbl">賽果覆蓋</span><b class="mono">${healthPct((item.result || {}).coverage)}</b></div>
+        <div><span class="health-grid-lbl">角球覆蓋</span><b class="mono">${healthPct((item.corner_result || {}).coverage)}</b></div>
+      </div>
+      <div class="health-chips">${chips}</div>
+    </div>`;
+  }).join('');
+  const issueRows = issues.length
+    ? issues.map((issue) => `<div class="health-row health-issue sev-${esc(issue.severity)}"
+        data-testid="row-health-issue-${esc(issue.code)}">
+      ${healthCell('嚴重度', `<span class="health-sev ${esc(issue.severity)}">${HEALTH_SEVERITY[issue.severity] || esc(issue.severity)}</span>`, 'health-cell-key')}
+      ${healthCell('問題', esc(healthIssueLabel(issue)))}
+      ${healthCell('範圍', esc(issue.scope === 'overall' ? '整體' : String(issue.scope || '—')))}
+      ${healthCell('數量', healthInt(issue.count))}
+      ${healthCell('說明', esc(issue.detail || '—'))}
+    </div>`).join('')
+    : `<div class="empty2" data-testid="state-health-no-issues">呢個篩選冇偵測到完整率問題。</div>`;
+  const dup = healthInt(overall.duplicate_stage_keys);
+  const quarantined = healthInt(overall.quarantined_post_kickoff_rows);
+  return `<h2 class="health-section-h">完整率問題 <span class="sub">重複階段鍵 ${dup} · 開賽後隔離列 ${quarantined}</span></h2>
+    <div class="card health-card" data-testid="card-health-issues">
+      <h2 class="card-h">偵測到的問題 <span class="sub">${issues.length} 項</span></h2>
+      <div class="health-table">${issueRows}</div>
+    </div>${marketCards}`;
+}
+
+function healthRecommendationsSection(payload) {
+  const diagnostics = payload.hil_v4_diagnostics || {};
+  const all = Array.isArray(diagnostics.recommendations) ? diagnostics.recommendations : [];
+  const items = all.filter((item) => {
+    if (item.kind !== 'weak_slice') return true;
+    const evidence = item.evidence || {};
+    const dimension = String(evidence.dimension || '');
+    if (!HEALTH_FILTER_DIMENSIONS.includes(dimension)) return true;
+    return healthSliceVisible(dimension, evidence);
+  });
+  const families = Array.isArray(diagnostics.feature_families) ? diagnostics.feature_families : [];
+  const familyRows = families.map((family) => `<div class="health-row"
+      data-testid="row-health-family-${esc(family.id)}">
+    ${healthCell('特徵族', `<b>${esc(family.label || family.id)}</b>${family.critical ? '<span class="health-flag">關鍵</span>' : ''}`, 'health-cell-key')}
+    ${healthCell('覆蓋率', healthPct(family.coverage))}
+    ${healthCell('有值列', `${healthInt(family.present_rows)} / ${healthInt(family.rows)}`)}
+  </div>`).join('');
+  const cards = items.length
+    ? items.map((item) => `<div class="card health-card health-rec prio-${esc(item.priority)}"
+        data-testid="card-health-rec-${esc(item.id)}">
+      <h2 class="card-h">${esc(item.title || item.id)}
+        <span class="chal-badge ${item.priority === 'high' ? 'hold' : 'wait'}">${item.priority === 'high' ? '優先' : '次要'}</span></h2>
+      <p class="health-rec-detail">${esc(item.detail || '')}</p>
+    </div>`).join('')
+    : `<div class="card" data-testid="state-health-no-rec"><div class="empty2">
+        <b>暫時冇合資格建議</b><span>樣本少於 ${HEALTH_MIN_FIXTURES} 場獨立賽事的切面唔會用嚟做任何建議。</span></div></div>`;
+  return `<h2 class="health-section-h">HIL v4 診斷建議 <span class="sub">只係診斷,唔係模型</span></h2>
+    <div class="card health-card health-rec-note" data-testid="note-health-hil-v4">
+      <b>唔會自動套用、唔會重訓</b>
+      <span>呢節只指出缺失特徵族同穩定表現最弱嘅切面,供人手判斷。
+      所有觀察只係<strong>關聯,並非因果</strong>;樣本不足嘅切面永遠唔會產生建議。
+      <b data-testid="note-health-rec-unit">證據一律取自「每場每市場最新階段」主要診斷</b>——
+      同一場嘅重複階段列彼此相關,<strong>絕對唔會當作獨立證據</strong>;
+      ≥${HEALTH_MIN_FIXTURES} 場門檻仍然以獨立賽事數計算。
+      自動套用:<b class="bad-txt">否</b>。</span>
+    </div>
+    <div class="card health-card" data-testid="card-health-families">
+      <h2 class="card-h">HIL 特徵族覆蓋率 <span class="sub">低覆蓋 = 資料缺口,唔等於原因</span></h2>
+      <div class="health-table">${familyRows || '<div class="empty2">冇特徵族資料。</div>'}</div>
+    </div>
+    ${cards}`;
+}
+
+function renderHealth() {
+  const V = $('#viewHealth');
+  if (!V) return;
+  if (HEALTH.state === 'idle' || (HEALTH.state === 'loading' && !HEALTH.payload)) {
+    V.innerHTML = healthHead() +
+      `<div class="card"><div class="empty2" data-testid="state-health-loading">正在讀取資料健康報告…</div></div>`;
+    healthBind();
+    return;
+  }
+  if (HEALTH.state === 'missing') {
+    V.innerHTML = healthHead() +
+      `<div class="card"><div class="empty2" data-testid="state-health-missing">
+        報告未生成。伺服器每日至少重寫一次(結算週期亦會重生),第一次生成之前唔會有檔案。</div></div>`;
+    healthBind();
+    return;
+  }
+  if (HEALTH.state === 'error') {
+    V.innerHTML = healthHead() +
+      `<div class="card"><div class="empty2 bad-txt" data-testid="state-health-error">
+        報告讀取失敗:${esc(HEALTH.error || '未知錯誤')}。可以㩒「重新讀取」再試。</div></div>`;
+    healthBind();
+    return;
+  }
+  const payload = HEALTH.payload || {};
+  const ageHours = healthAgeHours(payload);
+  const stale = ageHours != null && ageHours > HEALTH_STALE_HOURS;
+  const label = healthStatusLabel(payload.status);
+  let banner = `<div class="chal-stamp ${stale ? 'is-stale' : ''}" data-testid="stamp-health">
+      <span class="chal-badge ${label.cls}" data-testid="status-health">${esc(label.text)}</span>
+      <span>報告時間 <b class="mono">${healthStamp(payload.generated_at)} HKT</b></span>
+      <span>${ageHours == null ? '時間不明' : `距今 ${ageHours < 1 ? '不足 1' : Math.floor(ageHours)} 小時`}</span>
+      ${stale ? '<span class="chal-stale-flag" data-testid="flag-health-stale">報告過期,未見最新一次伺服器重生</span>' : ''}
+    </div>`;
+  if (payload.status === 'unavailable') {
+    V.innerHTML = healthHead(banner) +
+      `<div class="card"><div class="empty2 bad-txt" data-testid="state-health-unavailable">
+        資料源不可用(${esc(payload.status_reason || '未知原因')})。報告唔會憑空推算,亦唔會顯示舊數。</div></div>`;
+    healthBind();
+    return;
+  }
+  if (payload.status === 'insufficient_data' || payload.status === 'no_data') {
+    banner += `<div class="chal-review chal-review-top health-warn" data-testid="banner-health-insufficient">
+      <b>整體樣本未夠</b>
+      <span>已評估獨立賽事少於 ${HEALTH_MIN_FIXTURES} 場,所有命中率／Brier 只作觀察,<strong>唔應該用嚟落任何結論</strong>。</span></div>`;
+  }
+  V.innerHTML = healthHead(banner) +
+    healthKpiRow(payload) +
+    healthFilterControls(payload) +
+    healthAppliedFilters() +
+    healthIssuesSection(payload) +
+    healthSlicesSection(payload) +
+    healthRecommendationsSection(payload);
+  healthBind();
+}
+
+function healthBind() {
+  const button = $('#healthReload');
+  if (button) button.onclick = () => loadHealth({});
+  document.querySelectorAll('[data-health-filter]').forEach((select) => {
+    select.onchange = () => {
+      HEALTH_FILTER[select.dataset.healthFilter] = select.value;
+      renderHealth();
+    };
+  });
+  document.querySelectorAll('[data-health-unit]').forEach((element) => {
+    element.onclick = () => {
+      HEALTH_FILTER.unit = element.dataset.healthUnit === 'all_stages' ? 'all_stages' : 'primary';
+      renderHealth();
+    };
+  });
+  document.querySelectorAll('[data-health-sample]').forEach((element) => {
+    element.onclick = () => {
+      HEALTH_FILTER.sample = element.dataset.healthSample === 'sufficient' ? 'sufficient' : 'all';
+      renderHealth();
+    };
+  });
+  document.querySelectorAll('[data-health-reset]').forEach((element) => {
+    element.onclick = () => {
+      HEALTH_FILTER = {
+        market: 'all', stage: 'all', league: 'all', direction: 'all',
+        sample: 'all', unit: 'primary',
+      };
+      renderHealth();
+    };
+  });
 }
 
 /* ══════════════════════ 挑戰模型 · 隔離影子研究 ══════════════════════ */

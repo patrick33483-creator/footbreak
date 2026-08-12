@@ -16,6 +16,10 @@ CROWN_DATA = Path("/var/www/crown/data.json")
 CROWN_HISTORY = Path("/var/lib/footbreak/crown/prediction_history.json")
 CROWN_LEDGER = Path("/var/lib/footbreak/crown/ledger.json")
 CHALLENGER_STATUS = Path("/var/lib/footbreak/challenger/latest.json")
+DATA_HEALTH_REPORTS = {
+    "footbreak": Path("/var/www/footbreak/data-health.json"),
+    "crown": Path("/var/www/crown/data-health.json"),
+}
 HKT = timezone(timedelta(hours=8))
 sys.path.insert(0, "/opt/footbreak")
 
@@ -119,6 +123,49 @@ def challenger_state() -> dict[str, Any]:
                     },
                     **(
                         {
+                            "prospective_chl": {
+                                key: test["prospective_chl"].get(key)
+                                for key in (
+                                    "market",
+                                    "status",
+                                    "model_version",
+                                    "state_version_hash",
+                                    "freeze_cutoff",
+                                    "cutoff_boundary",
+                                    "primary_unit",
+                                    "primary_stage_rule",
+                                    "selected_strategy",
+                                    "selection",
+                                    "minimum_prospective_fixtures",
+                                    "strong_sample_fixtures",
+                                    "prospective_fixtures",
+                                    "prospective_rows",
+                                    "remaining_fixtures",
+                                    "sample_warning",
+                                    "stage_diagnostics",
+                                    "closing_reference",
+                                    "feature_coverage",
+                                    "champion",
+                                    "baselines",
+                                    "challenger",
+                                    "delta",
+                                    "checks",
+                                    "rejection_reasons",
+                                    "shadow_returns",
+                                    "champion_shadow_returns",
+                                    "reason",
+                                    "auto_apply",
+                                    "retraining",
+                                    "live_integration",
+                                )
+                                if key in test["prospective_chl"]
+                            }
+                        }
+                        if isinstance(test.get("prospective_chl"), dict)
+                        else {}
+                    ),
+                    **(
+                        {
                             "prospective_v3": {
                                 key: test["prospective_v3"].get(key)
                                 for key in (
@@ -154,6 +201,142 @@ def challenger_state() -> dict[str, Any]:
         "policy": payload.get("policy"),
         "review_required": bool(payload.get("review_required")),
         "systems": systems,
+    }
+
+
+def data_health_state() -> dict[str, Any]:
+    """Compact, row-free summary of both public data-health artifacts.
+
+    Only aggregate counts, coverage ratios, issue counts and recommendation
+    titles are exposed.  No fixture identifier, payload, coefficient, or raw
+    private row can reach the audit output, and a missing or malformed report
+    never fails the audit.
+    """
+    systems: dict[str, Any] = {}
+    for system, path in DATA_HEALTH_REPORTS.items():
+        if not path.is_file():
+            systems[system] = {"available": False, "reason": "artifact_missing"}
+            continue
+        try:
+            report = load(path)
+        except (OSError, json.JSONDecodeError) as exc:
+            systems[system] = {"available": False, "reason": type(exc).__name__}
+            continue
+        if not isinstance(report, dict) or report.get("report") != "data_health":
+            systems[system] = {"available": False, "reason": "unexpected_report"}
+            continue
+        try:
+            summary = data_health_summary(report)
+        except Exception as exc:  # pragma: no cover - defensive only
+            systems[system] = {"available": False, "reason": type(exc).__name__}
+            continue
+        systems[system] = {"available": True, **summary}
+    return {
+        "read_only": True,
+        "auto_apply": False,
+        "retraining": False,
+        "primary_sample": "unique_fixtures",
+        "stage_rows_are_reference_only": True,
+        "systems": systems,
+    }
+
+
+def data_health_summary(report: dict[str, Any]) -> dict[str, Any]:
+    """Whitelist projection of one data-health report."""
+    overall = (report.get("completeness") or {}).get("overall") or {}
+    result = overall.get("result") or {}
+    corner = overall.get("corner_result") or {}
+    baseline = report.get("baseline") or {}
+    primary = report.get("primary_diagnostic") or {}
+    primary_baseline = primary.get("baseline") or {}
+    diagnostics = report.get("hil_v4_diagnostics") or {}
+    return {
+        "schema_version": report.get("schema_version"),
+        "system": report.get("system"),
+        "generated_at": report.get("generated_at"),
+        "status": report.get("status"),
+        "status_reason": report.get("status_reason"),
+        "counts": {
+            key: overall.get(key, 0)
+            for key in (
+                "unique_fixtures",
+                "stage_rows",
+                "prediction_rows",
+                "graded_rows",
+                "pending_rows",
+                "excluded_rows",
+                "duplicate_stage_keys",
+                "quarantined_post_kickoff_rows",
+            )
+        },
+        "coverage": {
+            "result": result.get("coverage"),
+            "corner_result": corner.get("coverage"),
+            "stale_unresolved_fixtures": result.get("stale_unresolved_fixtures", 0),
+            "stale_missing_corner_fixtures": corner.get("stale_beyond_retry_fixtures", 0),
+        },
+        # The metric unit travels with every number so an audit reader can
+        # never mistake a graded-row aggregate for one row per fixture.
+        "metrics_policy": {
+            key: (report.get("metrics_policy") or {}).get(key)
+            for key in (
+                "sample_basis",
+                "metric_unit",
+                "correlated_stage_rows",
+                "primary_diagnostic_metric_unit",
+                "metrics_are_one_per_fixture",
+                "recommendation_evidence_unit",
+            )
+        },
+        "baseline": {
+            key: baseline.get(key)
+            for key in (
+                "unique_fixtures",
+                "graded_rows",
+                "accuracy",
+                "brier",
+                "log_loss",
+                "sample_status",
+                "sample_basis",
+                "metric_unit",
+                "correlated_stage_rows",
+            )
+        },
+        "primary_diagnostic_baseline": {
+            "metric_unit": primary.get("unit"),
+            "stage_priority": primary.get("stage_priority"),
+            **{
+                key: primary_baseline.get(key)
+                for key in (
+                    "unique_fixtures",
+                    "graded_rows",
+                    "accuracy",
+                    "brier",
+                    "log_loss",
+                    "sample_status",
+                    "sample_basis",
+                    "correlated_stage_rows",
+                )
+            },
+        },
+        "issue_counts": report.get("issue_counts") or {},
+        "top_issues": [
+            {key: issue.get(key) for key in ("code", "severity", "scope", "count")}
+            for issue in (report.get("issues") or [])[:5]
+            if isinstance(issue, dict)
+        ],
+        "top_recommendations": [
+            {key: item.get(key) for key in ("id", "kind", "priority", "title")}
+            for item in (diagnostics.get("recommendations") or [])[:5]
+            if isinstance(item, dict)
+        ],
+        "recommendation_evidence_unit": diagnostics.get("evidence_unit"),
+        "recommendation_uses_repeated_stage_rows": diagnostics.get(
+            "evidence_uses_repeated_stage_rows"
+        ),
+        "minimum_unique_fixtures": (report.get("policy") or {}).get(
+            "minimum_unique_fixtures"
+        ),
     }
 
 
@@ -281,6 +464,7 @@ def main() -> None:
         },
         "server_timer": timer_state(),
         "challenger": challenger_state(),
+        "data_health": data_health_state(),
         "crown": {
             "stats": crown.get("stats"),
             "result_sync": crown.get("result_sync"),

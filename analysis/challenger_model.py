@@ -1000,10 +1000,20 @@ def evaluate_market(rows: list[dict[str, Any]], system: str, market: str, diagno
 
 
 def evaluate_all(
-    store: LearningStore, *, hil_v3_state_path: Path | None = None, now: datetime | None = None
+    store: LearningStore,
+    *,
+    hil_v3_state_path: Path | None = None,
+    chl_state_path: Path | None = None,
+    now: datetime | None = None,
 ) -> dict[str, Any]:
+    # Imported here rather than at module scope: the Crown CHL prospective
+    # module depends on this module's fitting helpers, and it must stay an
+    # optional, isolated add-on to the existing evaluation.
+    from analysis import crown_chl_prospective
+
     systems: dict[str, Any] = {}
     crown_hil_v3: dict[str, Any] | None = None
+    crown_chl: dict[str, Any] | None = None
     for system in ("footbreak", "crown"):
         rows, diagnostics = store.challenger_rows(system)
         tests = {market: evaluate_market(rows, system, market, diagnostics) for market in MARKETS}
@@ -1053,12 +1063,26 @@ def evaluate_all(
                     [row for row in rows if str(row.get("market")) == "HIL"], state
                 )
             tests["HIL"]["prospective_v3"] = crown_hil_v3
+            # Crown-only CHL frozen prospective shadow.  It is isolated from
+            # HIL v3, from the data-health report, and from every live path.
+            try:
+                crown_chl = crown_chl_prospective.resolve(
+                    [row for row in rows if str(row.get("market")) == "CHL"],
+                    chl_state_path,
+                    now=now,
+                )
+            except (OSError, ValueError) as exc:
+                crown_chl = crown_chl_prospective.collecting_report(
+                    f"state_unavailable:{type(exc).__name__}"
+                )
+            tests["CHL"]["prospective_chl"] = crown_chl
         systems[system] = {
             "tests": tests,
             "review_required": any(
                 item["status"] == "candidate_passed_human_review_required"
                 for item in tests.values()
-            ) or (crown_hil_v3 or {}).get("status") == "candidate_passed_human_review_required",
+            ) or (crown_hil_v3 or {}).get("status") == "candidate_passed_human_review_required"
+            or (crown_chl or {}).get("status") == "candidate_passed_human_review_required",
         }
     return {
         "schema_version": 1,
@@ -1083,6 +1107,14 @@ def evaluate_all(
                 "predeclared blend grid is selected by expanding walk-forward "
                 "folds before a private immutable cutoff, then only strictly "
                 "later fixture stages count toward a 30-unique-fixture review."
+            ),
+            "CHL_prospective": (
+                "Crown CHL is a frozen prospective shadow only: the primary "
+                "unit is one deterministic row per unique fixture using the "
+                "predeclared T-5 > T-30 > 首預 stage rule, strategies are "
+                "selected by expanding walk-forward folds strictly before an "
+                "immutable cutoff, and stage metrics are correlated secondary "
+                "diagnostics only."
             ),
             "post_kickoff": "quarantined snapshots excluded",
             "result_fields": "not in feature whitelist",
@@ -1110,22 +1142,52 @@ def atomic_write(path: Path, payload: dict[str, Any], mode: int) -> None:
             os.unlink(temporary)
 
 
+# Keys that must never reach a world-readable artifact.  The private report
+# under /var/lib/footbreak keeps them for the operator audit.
+PRIVATE_TEST_KEYS = ("coefficient_importance", "private_model", "training_source")
+
+
+def public_report(report: dict[str, Any]) -> dict[str, Any]:
+    """Strip encoder state, coefficients, and raw rows from the public copy."""
+    payload = json.loads(json.dumps(report, ensure_ascii=False))
+    for system in (payload.get("systems") or {}).values():
+        for test in ((system or {}).get("tests") or {}).values():
+            if not isinstance(test, dict):
+                continue
+            for key in PRIVATE_TEST_KEYS:
+                test.pop(key, None)
+            for nested_key in ("prospective_v3", "prospective_chl"):
+                nested = test.get(nested_key)
+                if isinstance(nested, dict):
+                    for key in PRIVATE_TEST_KEYS:
+                        nested.pop(key, None)
+    return payload
+
+
 def run(
     learning_db: Path,
     output_path: Path,
     public_paths: list[Path] | None = None,
     *,
     hil_v3_state_path: Path | None = None,
+    chl_state_path: Path | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
     if not learning_db.is_file():
         raise FileNotFoundError(f"immutable learning database does not exist: {learning_db}")
     state_path = hil_v3_state_path or output_path.parent / "crown_hil_v3_state.json"
+    corner_state_path = chl_state_path or output_path.parent / "crown_chl_state.json"
     with LearningStore(learning_db) as store:
-        report = evaluate_all(store, hil_v3_state_path=state_path, now=now)
+        report = evaluate_all(
+            store,
+            hil_v3_state_path=state_path,
+            chl_state_path=corner_state_path,
+            now=now,
+        )
     atomic_write(output_path, report, 0o600)
+    public = public_report(report)
     for path in public_paths or []:
-        atomic_write(path, report, 0o644)
+        atomic_write(path, public, 0o644)
     return report
 
 
@@ -1138,8 +1200,18 @@ def main() -> None:
         "--hil-v3-state", type=Path,
         default=Path("/var/lib/footbreak/challenger/crown_hil_v3_state.json"),
     )
+    parser.add_argument(
+        "--chl-state", type=Path,
+        default=Path("/var/lib/footbreak/challenger/crown_chl_state.json"),
+    )
     args = parser.parse_args()
-    report = run(args.learning_db, args.out, args.public, hil_v3_state_path=args.hil_v3_state)
+    report = run(
+        args.learning_db,
+        args.out,
+        args.public,
+        hil_v3_state_path=args.hil_v3_state,
+        chl_state_path=args.chl_state,
+    )
     print(json.dumps({
         "generated_at": report["generated_at"],
         "review_required": report["review_required"],

@@ -106,6 +106,47 @@ class ChallengerDashboardUiTests(unittest.TestCase):
             self.assertIn(marker, app)
         self.assertIn(".chal-v3", css)
 
+    def test_crown_chl_card_renders_frozen_prospective_section(self) -> None:
+        _, app, css = self._files("crown/dashboard")
+        for marker in (
+            "function challengerProspectiveCHL(test)",
+            'data-testid="section-challenger-chl-prospective"',
+            'data-testid="status-challenger-chl"',
+            'data-testid="table-challenger-chl-stages"',
+            'data-testid="flag-challenger-chl-feature-coverage"',
+            'data-testid="flag-challenger-chl-weak-sample"',
+            "insufficient_feature_coverage",
+            "主樣本階段規則(已凍結)",
+            "每場一行,唔係每階段一行",
+            "唔可以相加當獨立樣本",
+            "證明唔到正期望值",
+            "if (market === 'CHL') body += challengerProspectiveCHL(test.prospective_chl);",
+        ):
+            self.assertIn(marker, app)
+        self.assertIn(".chal-chl", css)
+        # The two frozen prospective panels stay separate.
+        self.assertIn("if (market === 'HIL') body += challengerProspectiveV3", app)
+
+    def test_footbreak_dashboard_has_no_crown_only_chl_model(self) -> None:
+        _, footbreak, _ = self._files("hkjc-dashboard")
+        for marker in (
+            "challengerProspectiveCHL",
+            "prospective_chl",
+            "section-challenger-chl-prospective",
+            "CHL 前瞻凍結影子驗證",
+        ):
+            self.assertNotIn(marker, footbreak)
+
+    def test_crown_chl_mobile_layout_stacks(self) -> None:
+        _, _, css = self._files("crown/dashboard")
+        block = css.split(".chal-chl {", 1)[1]
+        self.assertIn("@media (max-width: 600px)", block)
+        mobile = block.split("@media (max-width: 600px)", 1)[1]
+        self.assertIn(".chal-chl-row { grid-template-columns: 1fr;", mobile)
+        self.assertIn(".chal-chl-head { display: none; }", mobile)
+        self.assertIn("content: attr(data-label)", mobile)
+        self.assertIn("overflow-wrap: anywhere", block)
+
     def test_unique_fixture_progress_and_metrics_are_rendered(self) -> None:
         for dashboard in DASHBOARDS:
             _, app, _ = self._files(dashboard)

@@ -4,6 +4,7 @@ set -euo pipefail
 APP_DIR="/opt/footbreak"
 STATE_DIR="/var/lib/footbreak/backtest"
 CHALLENGER_DIR="/var/lib/footbreak/challenger"
+DATA_HEALTH_DIR="/var/lib/footbreak/data-health"
 LEARNING_DB="/var/lib/footbreak/learning/predictions.sqlite"
 
 if [ -f /etc/footbreak.env ]; then
@@ -14,6 +15,7 @@ fi
 
 install -d -o root -g root -m 0700 "$STATE_DIR"
 install -d -o root -g root -m 0700 "$CHALLENGER_DIR"
+install -d -o root -g root -m 0700 "$DATA_HEALTH_DIR"
 install -d -o root -g www-data -m 0755 /var/www/footbreak /var/www/crown
 
 cd "$APP_DIR"
@@ -76,8 +78,20 @@ fi
   --learning-db "$LEARNING_DB" \
   --out "$CHALLENGER_DIR/latest.json" \
   --hil-v3-state "$CHALLENGER_DIR/crown_hil_v3_state.json" \
+  --chl-state "$CHALLENGER_DIR/crown_chl_state.json" \
   --public /var/www/footbreak/challenger-status.json \
   --public /var/www/crown/challenger-status.json
+
+# 資料健康報告(唯讀診斷)。每日至少重寫一次;15 分鐘結算週期亦會平價重生。
+# 佢絕對唔可以阻塞回測、結算、通知或任何既有工作,所以失敗只會記 log。
+if ! "$APP_DIR/.venv/bin/python3" -m analysis.data_health \
+  --learning-db "$LEARNING_DB" \
+  --out "$DATA_HEALTH_DIR/latest.json" \
+  --public-footbreak /var/www/footbreak/data-health.json \
+  --public-crown /var/www/crown/data-health.json \
+  --lock /var/lock/footbreak-data-health.lock >/dev/null; then
+  echo "資料健康報告生成失敗；其餘每日工作照常完成，下次排程會重試" >&2
+fi
 
 # Only passed safety gates produce a Telegram review request. notify.py keeps
 # its own idempotent review keys, so the daily timer never repeats a candidate.

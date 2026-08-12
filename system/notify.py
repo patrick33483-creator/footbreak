@@ -257,6 +257,28 @@ def review_events(report):
                 f"命中率 Δ {delta.get('accuracy')}"
             ),
         })
+    # The Crown CHL frozen prospective shadow uses the same isolated rule: it
+    # may only enter this channel after every final gate has already passed.
+    challenger_chl = (
+        (((report.get("systems") or {}).get("crown") or {}).get("tests") or {})
+        .get("CHL", {}).get("prospective_chl") or {}
+    )
+    if challenger_chl.get("status") == "candidate_passed_human_review_required":
+        version = str(challenger_chl.get("state_version_hash") or "unknown")
+        delta = challenger_chl.get("delta") or {}
+        events.append({
+            "key": f"prospective-chl:crown:CHL:{version}",
+            "system": "皇冠",
+            "kind": "CHL 前瞻凍結影子模型通過",
+            "detail": (
+                f"策略 {challenger_chl.get('selected_strategy') or 'unknown'} · "
+                f"凍結後 {challenger_chl.get('prospective_fixtures', 0)} 場獨立賽事"
+                f"（參考 {challenger_chl.get('prospective_rows', 0)} 階段列）· "
+                f"Brier Δ {delta.get('brier')} · "
+                f"log loss Δ {delta.get('log_loss')} · "
+                f"命中率 Δ {delta.get('accuracy')}"
+            ),
+        })
     for system, payload in (report.get("systems") or {}).items():
         label = labels.get(system, system)
         if payload.get("status") == "ready_for_human_review":

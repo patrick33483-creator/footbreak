@@ -100,6 +100,139 @@ for (const dashboard of ['hkjc-dashboard/app.js', 'crown/dashboard/app.js']) {
     assert(v3.includes('前瞻影子樣本收集中'), `${dashboard}: v3 collecting status`);
     assert(v3.includes('12 / 30'), `${dashboard}: v3 unique fixture progress`);
     assert(v3.includes('自動套用:<b class="bad-txt">否</b>'), `${dashboard}: v3 stays isolated`);
+
+    // 皇冠 CHL 前瞻凍結影子驗證(獨立於 HIL v3,亦獨立於資料健康)
+    const chlCollecting = mod.challengerMarketCard('CHL', evaluatedTest({
+      prospective_chl: {
+        status: 'prospective_shadow_collecting',
+        freeze_cutoff: isoHoursAgo(30),
+        primary_unit: 'one_row_per_unique_fixture',
+        primary_stage_rule: ['T-5', 'T-30', '首預'],
+        selected_strategy: 'always_under',
+        minimum_prospective_fixtures: 30,
+        strong_sample_fixtures: 100,
+        prospective_fixtures: 29,
+        prospective_rows: 74,
+        remaining_fixtures: 1,
+        stage_diagnostics: [
+          { stage: '首預', unique_fixtures: 29, rows: 29, champion: { hit_rate: 0.48, brier: 0.25 }, always_under: { hit_rate: 0.52 }, correlated_secondary_diagnostic: true },
+          { stage: 'T-30', unique_fixtures: 27, rows: 27, champion: { hit_rate: 0.5, brier: 0.248 }, always_under: { hit_rate: 0.5 }, correlated_secondary_diagnostic: true },
+          { stage: 'T-5', unique_fixtures: 18, rows: 18, champion: { hit_rate: 0.55, brier: 0.244 }, always_under: { hit_rate: 0.45 }, correlated_secondary_diagnostic: true },
+        ],
+        closing_reference: { available: true, coverage: 0.62, benchmark_only: true, metrics: { hit_rate: 0.55 } },
+        auto_apply: false,
+      },
+    }));
+    assert(chlCollecting.includes('section-challenger-chl-prospective'), `${dashboard}: CHL prospective panel`);
+    assert(chlCollecting.includes('前瞻影子樣本收集中'), `${dashboard}: CHL collecting status`);
+    assert(chlCollecting.includes('29 / 30'), `${dashboard}: CHL unique fixture progress`);
+    assert(chlCollecting.includes('每場一行,唔係每階段一行'), `${dashboard}: CHL primary unit stated`);
+    assert(chlCollecting.includes('T-5 &gt; T-30 &gt; 首預') || chlCollecting.includes('T-5 > T-30 > 首預'),
+      `${dashboard}: frozen primary-stage rule shown`);
+    assert(chlCollecting.includes('永遠買細(under)基準'), `${dashboard}: selected strategy shown`);
+    assert(chlCollecting.includes('table-challenger-chl-stages'), `${dashboard}: CHL stage diagnostics shown`);
+    assert(chlCollecting.includes('唔可以相加當獨立樣本'), `${dashboard}: stage rows are not independent`);
+    assert(chlCollecting.includes('自動套用:<b class="bad-txt">否</b>'), `${dashboard}: CHL stays isolated`);
+    assert(!chlCollecting.includes('section-challenger-hil-v3'), `${dashboard}: CHL card has no HIL v3 section`);
+    assert(!v3.includes('section-challenger-chl-prospective'), `${dashboard}: HIL card has no CHL section`);
+
+    const chlFeature = mod.challengerMarketCard('CHL', evaluatedTest({
+      prospective_chl: {
+        status: 'insufficient_feature_coverage',
+        freeze_cutoff: isoHoursAgo(40),
+        primary_stage_rule: ['T-5', 'T-30', '首預'],
+        selected_strategy: 'team_corner_feature',
+        minimum_prospective_fixtures: 30,
+        prospective_fixtures: 41,
+        prospective_rows: 110,
+        rejection_reasons: ['insufficient_feature_coverage'],
+        auto_apply: false,
+      },
+    }));
+    assert(chlFeature.includes('flag-challenger-chl-feature-coverage'), `${dashboard}: CHL feature coverage flag`);
+    assert(chlFeature.includes('唔會憑空填數'), `${dashboard}: CHL never invents features`);
+
+    const chlPassed = mod.challengerMarketCard('CHL', evaluatedTest({
+      prospective_chl: {
+        status: 'candidate_passed_human_review_required',
+        freeze_cutoff: isoHoursAgo(200),
+        primary_stage_rule: ['T-5', 'T-30', '首預'],
+        selected_strategy: 'always_under',
+        minimum_prospective_fixtures: 30,
+        strong_sample_fixtures: 100,
+        prospective_fixtures: 44,
+        prospective_rows: 121,
+        remaining_fixtures: 0,
+        sample_warning: 'below_strong_sample',
+        champion: { metrics: { accuracy: 0.5, brier: 0.25, log_loss: 0.69, hit_rate: 0.5, hit_rate_ci95: [0.36, 0.64], unique_fixtures: 44 } },
+        challenger: { metrics: { accuracy: 0.56, brier: 0.235, log_loss: 0.67, hit_rate: 0.56, unique_fixtures: 44 } },
+        baselines: { always_under: { hit_rate: 0.56, unique_fixtures: 44 } },
+        closing_reference: { available: false, status: 'unavailable_no_t5_snapshot', coverage: 0 },
+        shadow_returns: {
+          strategy: 'always_under', roi: 0.031, clv: null,
+          reason: 'closing_odds_unavailable', rows: 44, aligned_rows: 44, direction_flips: 0,
+        },
+        delta: { accuracy: 0.06, brier: -0.015, log_loss: -0.02 },
+        rejection_reasons: [],
+        auto_apply: false,
+      },
+    }));
+    assert(chlPassed.includes('banner-challenger-chl-review'), `${dashboard}: CHL passed banner`);
+    assert(chlPassed.includes('未套用、亦唔會自動套用'), `${dashboard}: CHL passed never implies applied`);
+    assert(chlPassed.includes('flag-challenger-chl-weak-sample'), `${dashboard}: CHL weak sample warning`);
+    assert(chlPassed.includes('Wilson 95%'), `${dashboard}: CHL Wilson interval shown`);
+    assert(chlPassed.includes('不可用'), `${dashboard}: CHL closing reference unavailable`);
+    assert(chlPassed.includes('證明唔到正期望值'), `${dashboard}: CHL never claims +EV`);
+    // An aligned shadow return still may never read as an edge.
+    assert(chlPassed.includes('唔代表優勢,亦唔係 +EV'), `${dashboard}: CHL never implies +EV`);
+    assert(chlPassed.includes('方向對齊 44/44 場'), `${dashboard}: CHL shows direction alignment`);
+    assert(chlPassed.includes('影子回報 · 所揀方向:永遠買細(under)基準'),
+      `${dashboard}: CHL shadow return names the strategy direction`);
+
+    // A strategy that flips away from the priced side must show no ROI at all.
+    const chlFlipped = mod.challengerMarketCard('CHL', evaluatedTest({
+      prospective_chl: {
+        status: 'prospective_tested_no_safe_upgrade',
+        freeze_cutoff: isoHoursAgo(200),
+        primary_stage_rule: ['T-5', 'T-30', '首預'],
+        selected_strategy: 'always_under',
+        minimum_prospective_fixtures: 30,
+        prospective_fixtures: 41,
+        prospective_rows: 110,
+        remaining_fixtures: 0,
+        champion: { metrics: { accuracy: 0.5, brier: 0.25, log_loss: 0.69, hit_rate: 0.5, unique_fixtures: 41 } },
+        challenger: { metrics: { accuracy: 0.49, brier: 0.26, log_loss: 0.7, hit_rate: 0.49, unique_fixtures: 41 } },
+        baselines: { always_under: { hit_rate: 0.49, unique_fixtures: 41 } },
+        closing_reference: { available: false, status: 'unavailable_no_t5_snapshot', coverage: 0 },
+        shadow_returns: {
+          strategy: 'always_under', roi: null, clv: null,
+          reason: 'opposite_side_price_unavailable',
+          rows: 41, aligned_rows: 0, direction_flips: 41,
+        },
+        delta: { accuracy: -0.01, brier: 0.01, log_loss: 0.01 },
+        rejection_reasons: ['meaningful_brier_improvement'],
+        auto_apply: false,
+      },
+    }));
+    assert(chlFlipped.includes('不可計算'), `${dashboard}: flipped shadow ROI is not computed`);
+    assert(chlFlipped.includes('策略揀咗另一邊,但冇該方向嘅賽前實際賠率'),
+      `${dashboard}: flipped shadow ROI states a precise reason`);
+    assert(chlFlipped.includes('reason-challenger-chl-shadow'),
+      `${dashboard}: unavailable shadow ROI exposes its reason node`);
+    assert(chlFlipped.includes('反向 41 場'), `${dashboard}: direction flips are surfaced`);
+    assert(!/影子回報[^<]*<b class="mono">[+-]?[0-9]/.test(chlFlipped),
+      `${dashboard}: no numeric ROI may be rendered when direction is unaligned`);
+  }
+
+  if (dashboard === 'hkjc-dashboard/app.js') {
+    // Footbreak must not pretend the Crown-only CHL model exists.
+    const footbreakChl = mod.challengerMarketCard('CHL', evaluatedTest({
+      prospective_chl: { status: 'candidate_passed_human_review_required', prospective_fixtures: 44 },
+    }));
+    assert(!footbreakChl.includes('section-challenger-chl-prospective'),
+      'footbreak dashboard must not render the Crown CHL prospective section');
+    assert(!footbreakChl.includes('前瞻凍結影子驗證'),
+      'footbreak dashboard must not mention the Crown CHL prospective model');
   }
 
   // 樣本不足
