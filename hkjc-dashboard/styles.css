@@ -1524,3 +1524,16 @@ table.calib tr:last-child td { border-bottom: 0; }
 @media (max-width: 620px) {
   .consensus-grid { grid-template-columns: 1fr; }
 }
+
+
+/* ─── 凍結後條件影子報告：只讀卡片，窄螢幕無橫向溢出 ─── */
+.condition-card, .condition-grid, .condition-kpi { min-width: 0; }
+.condition-copy { color: var(--ink-3); font-size: var(--text-sm); overflow-wrap: anywhere; }
+.condition-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--s2); margin-top: var(--s3); }
+.condition-kpi { display: grid; gap: 3px; padding: var(--s3); border: 1px solid var(--line-soft); border-radius: var(--radius-sm); background: var(--bg-2); }
+.condition-kpi span, .condition-kpi small { color: var(--ink-4); overflow-wrap: anywhere; }
+.condition-kpi b { color: var(--ink); font-size: var(--text-lg); overflow-wrap: anywhere; }
+.condition-counts { display: flex; flex-wrap: wrap; gap: var(--s2); margin-top: var(--s3); color: var(--ink-3); font-size: var(--text-xs); }
+.condition-counts span { min-width: 0; overflow-wrap: anywhere; padding: 3px 7px; border: 1px solid var(--line-soft); border-radius: 999px; }
+@media (max-width: 600px) { .condition-grid { grid-template-columns: 1fr 1fr; } .condition-counts { display: grid; grid-template-columns: 1fr; } }
+@media (max-width: 375px) { .condition-grid { grid-template-columns: 1fr; } .condition-card { overflow-x: hidden; } }

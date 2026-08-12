@@ -157,6 +157,23 @@ CROWN_STATE_DIR=/var/lib/footbreak/crown CROWN_WEB_ROOT=/var/www/crown \
 chown root:www-data /var/www/crown/data.json
 chmod 0644 /var/www/crown/data.json
 
+# Generate the isolated report-only condition artifacts immediately after a
+# deploy, rather than leaving both dashboards at 404 until the next 15-minute
+# reconciliation cycle.  This reads the immutable learning DB only and stays
+# non-fatal so it cannot block prediction, settlement, or dashboard rollout.
+LEARNING_DB=/var/lib/footbreak/learning/predictions.sqlite
+SHADOW_CONDITIONS_DIR=/var/lib/footbreak/shadow-conditions
+if [ -s "$LEARNING_DB" ]; then
+  install -d -o root -g root -m 0700 "$SHADOW_CONDITIONS_DIR"
+  if ! PYTHONPATH="$APP_DIR" "$APP_DIR/.venv/bin/python3" -m analysis.shadow_conditions \
+    --learning-db "$LEARNING_DB" \
+    --state "$SHADOW_CONDITIONS_DIR/state.json" \
+    --public-footbreak /var/www/footbreak/shadow-condition-report.json \
+    --public-crown /var/www/crown/shadow-condition-report.json >/dev/null; then
+    echo "條件影子報告生成失敗；網站及結算部署不受影響，下個 15 分鐘週期會重試" >&2
+  fi
+fi
+
 echo "▸ 重載 nginx"
 install -m 0644 "$APP_DIR/deploy/nginx-footbreak.conf" /etc/nginx/sites-available/footbreak
 install -m 0644 "$APP_DIR/deploy/nginx-crown.conf" /etc/nginx/sites-available/crown

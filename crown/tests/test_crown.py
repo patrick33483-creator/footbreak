@@ -3,6 +3,8 @@ from __future__ import annotations
 import gzip
 import json
 import os
+import shutil
+import subprocess
 import tempfile
 import unittest
 from stat import S_IMODE
@@ -1238,7 +1240,14 @@ class CrownSafetyTests(unittest.TestCase):
             encoding="utf-8",
         )
         self.assertIn("Number.isFinite(Number(rawLine))", app)
-        self.assertIn("20260813-data-health-three-stage-consensus", index)
+        self.assertIn("20260813-data-health-shadow-condition-reports", index)
+
+    def test_crown_history_orders_fixture_groups_and_stages(self) -> None:
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("node is unavailable")
+        smoke = Path(__file__).with_name("prediction_history_order_smoke.mjs")
+        subprocess.run([node, str(smoke)], check=True)
 
     def test_prediction_history_archives_no_bet_stages_idempotently(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -2119,8 +2128,10 @@ class CrownSafetyTests(unittest.TestCase):
         app = (root / "app.js").read_text(encoding="utf-8")
         styles = (root / "styles.css").read_text(encoding="utf-8")
 
-        self.assertIn("const historyTime = (row)", app)
-        self.assertIn("b[0] - a[0] || b[1] - a[1]", app)
+        self.assertIn("const HISTORY_STAGE_RANK = { '首預': 1, 'T-30': 2, 'T-5': 3 };", app)
+        self.assertIn("function historyFixtureIdentity(row, index)", app)
+        self.assertIn("function orderHistoryRows(rows)", app)
+        self.assertIn("right.kickoff - left.kickoff || left.key.localeCompare(right.key)", app)
         self.assertNotIn("全部預測紀錄", app)
         self.assertIn('class="history-market-row"', app)
         self.assertIn("function historyCornerResult(r, p)", app)
@@ -2139,9 +2150,9 @@ class CrownSafetyTests(unittest.TestCase):
         self.assertIn("overflow-wrap: anywhere", styles)
         self.assertIn("font: 600 12px/1.6 var(--sans)", styles)
         index = (root / "index.html").read_text(encoding="utf-8")
-        self.assertIn("styles.css?v=20260813-data-health-three-stage-consensus", index)
-        self.assertIn("app.js?v=20260813-data-health-three-stage-consensus", index)
-        self.assertIn("const historyStageRank = { '首預': 1, 'T-30': 2, 'T-5': 3 }", app)
+        self.assertIn("styles.css?v=20260813-data-health-shadow-condition-reports", index)
+        self.assertIn("app.js?v=20260813-data-health-shadow-condition-reports", index)
+        self.assertIn("const HISTORY_STAGE_RANK = { '首預': 1, 'T-30': 2, 'T-5': 3 };", app)
         self.assertIn("row.kickoff_hkt || row.kickoff", app)
         self.assertIn('id="scrollTop"', index)
         self.assertIn('id="scrollBottom"', index)

@@ -5,6 +5,7 @@ APP_DIR="/opt/footbreak"
 STATE_DIR="/var/lib/footbreak/backtest"
 CHALLENGER_DIR="/var/lib/footbreak/challenger"
 DATA_HEALTH_DIR="/var/lib/footbreak/data-health"
+SHADOW_CONDITIONS_DIR="/var/lib/footbreak/shadow-conditions"
 LEARNING_DB="/var/lib/footbreak/learning/predictions.sqlite"
 
 if [ -f /etc/footbreak.env ]; then
@@ -16,6 +17,7 @@ fi
 install -d -o root -g root -m 0700 "$STATE_DIR"
 install -d -o root -g root -m 0700 "$CHALLENGER_DIR"
 install -d -o root -g root -m 0700 "$DATA_HEALTH_DIR"
+install -d -o root -g root -m 0700 "$SHADOW_CONDITIONS_DIR"
 install -d -o root -g www-data -m 0755 /var/www/footbreak /var/www/crown
 
 cd "$APP_DIR"
@@ -91,6 +93,17 @@ if ! "$APP_DIR/.venv/bin/python3" -m analysis.data_health \
   --public-crown /var/www/crown/data-health.json \
   --lock /var/lock/footbreak-data-health.lock >/dev/null; then
   echo "資料健康報告生成失敗；其餘每日工作照常完成，下次排程會重試" >&2
+fi
+
+# Dedicated report-only condition diagnostics.  A failure is non-fatal: it
+# must never delay the existing backtest, settlement, health, or notification
+# paths and it owns no live/simulation state.
+if ! "$APP_DIR/.venv/bin/python3" -m analysis.shadow_conditions \
+  --learning-db "$LEARNING_DB" \
+  --state "$SHADOW_CONDITIONS_DIR/state.json" \
+  --public-footbreak /var/www/footbreak/shadow-condition-report.json \
+  --public-crown /var/www/crown/shadow-condition-report.json >/dev/null; then
+  echo "條件影子報告生成失敗；既有每日工作照常完成，下次排程會重試" >&2
 fi
 
 # Only passed safety gates produce a Telegram review request. notify.py keeps

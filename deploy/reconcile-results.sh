@@ -61,6 +61,7 @@ fi
 # 告警；告警傳送失敗必須令 service 失敗，確保下個週期可見及重試。
 # 每日 12:20 嘅 backtest 排程另外保證至少一日一次重寫。
 DATA_HEALTH_DIR="${DATA_HEALTH_DIR:-/var/lib/footbreak/data-health}"
+SHADOW_CONDITIONS_DIR="${SHADOW_CONDITIONS_DIR:-/var/lib/footbreak/shadow-conditions}"
 health_generation_failed=0
 if [ -s "$LEARNING_DB" ]; then
   install -d -o root -g root -m 0700 "$DATA_HEALTH_DIR" 2>/dev/null || true
@@ -79,6 +80,19 @@ if [ -s "$LEARNING_DB" ]; then
 else
   echo "未有 learning 資料庫；資料健康報告無法生成" >&2
   health_generation_failed=1
+fi
+
+# A cheap 15-minute read-only regeneration.  It deliberately has no impact on
+# data-health guards, settlement exit status, or any notification path.
+if [ -s "$LEARNING_DB" ]; then
+  install -d -o root -g root -m 0700 "$SHADOW_CONDITIONS_DIR" 2>/dev/null || true
+  if ! PYTHONPATH="$APP_DIR" "$APP_DIR/.venv/bin/python3" -m analysis.shadow_conditions \
+    --learning-db "$LEARNING_DB" \
+    --state "$SHADOW_CONDITIONS_DIR/state.json" \
+    --public-footbreak /var/www/footbreak/shadow-condition-report.json \
+    --public-crown /var/www/crown/shadow-condition-report.json >/dev/null; then
+    echo "條件影子報告生成失敗；結算及資料健康狀態不受影響" >&2
+  fi
 fi
 
 # 只讀兩個公開 aggregate 報告。健康／結算異常 Telegram 通知已按用戶要求

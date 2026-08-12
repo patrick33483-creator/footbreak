@@ -134,6 +134,7 @@ async function refresh(silent) {
     if (VIEW === 'chal' || CHAL.state !== 'idle') void loadChallenger({ quiet: silent });
     // 資料健康報告同樣獨立讀取,唔會被主資料或結算失敗拖累。
     if (VIEW === 'health' || HEALTH.state !== 'idle') void loadHealth({ quiet: silent });
+    if (VIEW === 'condition' || CONDITION.state !== 'idle') void loadCondition({ quiet: silent });
     BUSY = false;
     if (b) { b.classList.remove('spin'); b.disabled = false; }
   }
@@ -155,6 +156,7 @@ function render() {
   $('#viewShadow').hidden = VIEW !== 'shadow';
   $('#viewChal').hidden = VIEW !== 'chal';
   $('#viewHealth').hidden = VIEW !== 'health';
+  $('#viewCondition').hidden = VIEW !== 'condition';
   $$('#nav .navbtn').forEach((b) => b.classList.toggle('is-on', b.dataset.view === VIEW));
   if (VIEW === 'pred') {
     renderKpis(); renderList();
@@ -173,6 +175,9 @@ function render() {
   } else if (VIEW === 'health') {
     renderHealth();
     if (HEALTH.state === 'idle') void loadHealth({});
+  } else if (VIEW === 'condition') {
+    renderCondition();
+    if (CONDITION.state === 'idle') void loadCondition({});
   } else {
     renderLedger();
   }
@@ -2124,6 +2129,77 @@ function healthBind() {
 }
 
 /* ══════════════════════ 挑戰模型 · 隔離影子研究 ══════════════════════ */
+
+/* 純讀取 shadow-condition-report.json。此報告與既有挑戰模型、影子倉、
+ * 結算、注碼及通知完全分離；只呈現凍結後的前瞻條件診斷。 */
+const CONDITION_FILE = 'shadow-condition-report.json';
+const CONDITION_SYSTEM = 'footbreak';
+const CONDITION_ID = 'footbreak_hil_t5_under';
+const CONDITION_STALE_HOURS = 1;
+let CONDITION = { state: 'idle', payload: null, error: '' };
+function conditionObject(value) { return value && typeof value === 'object' && !Array.isArray(value); }
+function conditionValidate(payload) {
+  if (!conditionObject(payload) || payload.report !== 'shadow_conditions') return '報告格式不符';
+  if (payload.system !== CONDITION_SYSTEM || payload.condition_id !== CONDITION_ID) return '報告系統或條件不符';
+  if (!conditionObject(payload.condition) || !conditionObject(payload.condition.metrics)) return '報告缺少條件指標';
+  return '';
+}
+function conditionAge(value) {
+  const date = new Date(value || '');
+  return Number.isFinite(date.getTime()) ? (Date.now() - date.getTime()) / 3600000 : null;
+}
+async function loadCondition(options) {
+  const opts = options || {};
+  CONDITION = { ...CONDITION, state: 'loading', error: '' };
+  if (!opts.quiet && VIEW === 'condition') renderCondition();
+  try {
+    const response = await fetch(`${CONDITION_FILE}?v=${Date.now()}`, { cache: 'no-store' });
+    if (response.status === 404) { CONDITION = { state: 'missing', payload: null, error: '' }; return; }
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const payload = await response.json();
+    const invalid = conditionValidate(payload);
+    CONDITION = invalid ? { state: 'error', payload: null, error: invalid } : { state: 'ready', payload, error: '' };
+  } catch (error) {
+    CONDITION = { state: 'error', payload: null, error: error.message || '讀取失敗' };
+  } finally {
+    if (VIEW === 'condition') renderCondition();
+  }
+}
+function conditionKpi(label, value, sub) {
+  return `<div class="condition-kpi"><span>${esc(label)}</span><b class="mono">${value}</b><small>${esc(sub || '')}</small></div>`;
+}
+function renderCondition() {
+  const V = $('#viewCondition'); if (!V) return;
+  const head = `<div class="ledger-head"><div><h1>條件影子報告</h1><p class="dim">只作報告 / 不自動套用</p></div><button class="settle-btn" id="conditionReload" type="button">重新讀取</button></div>`;
+  if (CONDITION.state === 'idle' || CONDITION.state === 'loading') {
+    V.innerHTML = head + '<div class="card"><div class="empty2" data-testid="state-condition-loading">正在讀取條件影子報告…</div></div>';
+  } else if (CONDITION.state === 'missing') {
+    V.innerHTML = head + '<div class="card"><div class="empty2" data-testid="state-condition-missing">報告尚未生成；不會回填凍結前歷史。</div></div>';
+  } else if (CONDITION.state === 'error') {
+    V.innerHTML = head + `<div class="card"><div class="empty2 bad-txt" data-testid="state-condition-error">${esc(CONDITION.error)}</div></div>`;
+  } else {
+    const payload = CONDITION.payload, report = payload.condition, metrics = report.metrics || {}, counts = metrics.counts || {}, progress = report.progress || {};
+    const age = conditionAge(payload.generated_at), stale = age != null && age > CONDITION_STALE_HOURS;
+    const qualified = numeric(progress.decided_unique_fixtures) || 0, required = numeric(progress.required_unique_decided_fixtures) || 100;
+    const pct = Math.min(100, qualified * 100 / required);
+    V.innerHTML = head + `<div class="shadow-note condition-note" data-testid="note-condition-isolation"><strong>只作報告 / 不自動套用</strong><span>完全隔離：唔會改機率、推介、正式／confidence-only 影子倉、注碼、Telegram 或模型升級。</span></div>
+      <section class="card condition-card" data-testid="card-shadow-condition-${CONDITION_SYSTEM}">
+        <h2 class="card-h">${esc(report.condition || '')} <span class="chal-badge ${report.status === 'human_review_ready' ? 'go' : 'wait'}" data-testid="status-shadow-condition">${report.status === 'human_review_ready' ? '可供人手覆核' : '收集中／樣本不足'}</span></h2>
+        <p class="condition-copy">${esc(report.qualification || '')}；每場只算一次，並且只取凍結截點後開賽的不可變賽前列。已合資格 ${numeric(progress.qualified_unique_fixtures) || 0} 場；進度只計已判定場。</p>
+        <div class="chal-progress"><div class="chal-progress-top"><span>前瞻獨立賽事進度</span><b class="mono">${qualified} / ${required}</b></div><div class="chal-bar"><i style="width:${pct.toFixed(1)}%"></i></div><div class="chal-progress-foot"><span>凍結截點 ${esc(hkStamp(report.freeze_cutoff))} HKT</span><span>${stale ? '報告過期' : '報告最新'}</span></div></div>
+        <div class="condition-grid">
+          ${conditionKpi('命中率', pc(metrics.hit_rate, 1), `命中 ${numeric(counts.hits) || 0} / 已判定 ${numeric(counts.decided) || 0}`)}
+          ${conditionKpi('ROI', pc(metrics.roi, 2), metrics.roi_reason || '使用實際選邊賽前賠率')}
+          ${conditionKpi('CLV', sg(metrics.clv, 3), metrics.clv_reason || '同市場／方向／盤口收盤價')}
+          ${conditionKpi('Brier', f3(metrics.brier), metrics.brier_reason || '賽前機率對不可變結算目標')}
+        </div>
+        <div class="condition-counts"><span>走水／退款 ${numeric(counts.pushes_refunds) || 0}</span><span>半贏 ${numeric(counts.half_won) || 0}</span><span>半輸 ${numeric(counts.half_lost) || 0}</span><span>賽果不可用 ${numeric(counts.outcome_unavailable) || 0}</span><span>選邊賠率缺失 ${numeric(counts.missing_selected_direction_odds) || 0}</span><span>同向收盤價缺失 ${numeric(counts.missing_same_direction_closing_quote) || 0}</span></div>
+        <p class="condition-copy"><b>指標定義：</b>命中率排除退款／走水及未有賽果；ROI 只在所有已判定場有實際所選方向的賽前賠率才顯示；CLV 只在每場保存同市場、同方向、同盤口收盤價才顯示；Brier 用保存的賽前機率及結算目標（半贏 .75、退款 .5、半輸 .25）。</p>
+      </section>`;
+  }
+  const reload = $('#conditionReload'); if (reload) reload.onclick = () => loadCondition({});
+}
+
 /* 純讀取 challenger-status.json。呢度唔會改任何預測、結算、落注、
  * 訓練或帳目邏輯；候選模型永遠唔會自動套用。 */
 const CHALLENGER_SYSTEM = 'footbreak';

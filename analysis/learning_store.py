@@ -963,6 +963,100 @@ class LearningStore:
             "malformed_or_nonfinite_rows_excluded": malformed,
         }
 
+    def shadow_condition_rows(self, system: str) -> tuple[list[dict[str, Any]], dict[str, int]]:
+        """Return immutable pre-kickoff snapshots plus their latest grades.
+
+        This is intentionally a narrower, report-only reader than the
+        challenger API.  It retains ungraded snapshots so a prospective
+        condition report can count pending/unavailable settlements without
+        ever turning them into accuracy evidence.  It performs no writes.
+        """
+        system = self._valid_system(system)
+        with self._lock:
+            self._ensure_open()
+            diagnostics_row = self._connection.execute(
+                """
+                SELECT SUM(CASE WHEN pre_kickoff = 1 THEN 1 ELSE 0 END) AS pre_kickoff,
+                       SUM(CASE WHEN pre_kickoff = 0 THEN 1 ELSE 0 END) AS quarantined
+                FROM prediction_snapshots WHERE system = ?
+                """,
+                (system,),
+            ).fetchone()
+            rows = self._connection.execute(
+                """
+                WITH ranked_snapshots AS (
+                    SELECT snapshots.*,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY system, fixture_id, stage
+                               ORDER BY generated_at DESC, snapshot_id DESC
+                           ) AS snapshot_rank
+                    FROM prediction_snapshots AS snapshots
+                    WHERE system = ? AND pre_kickoff = 1
+                      AND NOT EXISTS (
+                          SELECT 1 FROM stage_snapshot_reconciliations AS reconciliation
+                          WHERE reconciliation.system = snapshots.system
+                            AND reconciliation.fixture_id = snapshots.fixture_id
+                            AND reconciliation.stage = snapshots.stage
+                            AND reconciliation.canonical_snapshot_id != snapshots.snapshot_id
+                      )
+                ), ranked_grades AS (
+                    SELECT grades.*,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY snapshot_id, market, target
+                               ORDER BY grade_attempt DESC, grade_id DESC
+                           ) AS grade_rank
+                    FROM grades
+                )
+                SELECT snapshots.snapshot_id, snapshots.fixture_id, snapshots.stage,
+                       snapshots.generated_at, snapshots.kickoff, snapshots.payload_json,
+                       grades.market, grades.target, grades.state, grades.metrics_json
+                FROM ranked_snapshots AS snapshots
+                LEFT JOIN ranked_grades AS grades
+                  ON grades.snapshot_id = snapshots.snapshot_id AND grades.grade_rank = 1
+                WHERE snapshots.snapshot_rank = 1
+                ORDER BY snapshots.kickoff, snapshots.fixture_id, snapshots.stage,
+                         grades.market, grades.target
+                """,
+                (system,),
+            ).fetchall()
+
+        snapshots: dict[int, dict[str, Any]] = {}
+        malformed = 0
+        for row in rows:
+            try:
+                snapshot_id = int(row["snapshot_id"])
+                kickoff = datetime.fromisoformat(row["kickoff"])
+                predicted_at = datetime.fromisoformat(row["generated_at"])
+                payload = json.loads(row["payload_json"])
+                if not isinstance(payload, dict) or predicted_at >= kickoff:
+                    raise ValueError("invalid snapshot")
+            except (TypeError, ValueError, json.JSONDecodeError):
+                malformed += 1
+                continue
+            record = snapshots.setdefault(snapshot_id, {
+                "match_id": str(row["fixture_id"]), "stage": str(row["stage"]),
+                "kickoff": kickoff, "predicted_at": predicted_at, "payload": payload,
+                "grades": [],
+            })
+            if row["market"] is None:
+                continue
+            try:
+                metrics = json.loads(row["metrics_json"])
+                if not isinstance(metrics, dict):
+                    raise ValueError("invalid grade metrics")
+            except (TypeError, ValueError, json.JSONDecodeError):
+                malformed += 1
+                continue
+            record["grades"].append({
+                "market": str(row["market"]), "target_key": str(row["target"]),
+                "state": str(row["state"]), "metrics": metrics,
+            })
+        return list(snapshots.values()), {
+            "pre_kickoff_snapshots": int(diagnostics_row["pre_kickoff"] or 0),
+            "quarantined_snapshots": int(diagnostics_row["quarantined"] or 0),
+            "malformed_rows_excluded": malformed,
+        }
+
     def _migrate(self) -> None:
         with self._lock:
             self._connection.execute(

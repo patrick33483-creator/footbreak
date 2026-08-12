@@ -180,6 +180,7 @@ class DataHealthDashboardUiTests(unittest.TestCase):
                 self.assertEqual(len(versions), 2)
                 self.assertEqual(len(set(versions)), 1, versions)
                 self.assertIn("data-health", versions[0])
+                self.assertIn("shadow-condition", versions[0])
 
     def test_node_syntax_and_render_smoke(self) -> None:
         node = shutil.which("node")
