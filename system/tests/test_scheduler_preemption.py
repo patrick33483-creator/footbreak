@@ -49,6 +49,14 @@ class SchedulerPreemptionTests(unittest.TestCase):
         wrapper = (ROOT / "deploy/run.sh").read_text(encoding="utf-8")
         self.assertIn('elif [ -e "$PRIORITY_MARKER" ]; then', wrapper)
         self.assertIn('TICK_LOCK_WAIT_SECONDS:-2', wrapper)
+        self.assertIn(
+            'export PYTHONPATH="$APP_DIR${PYTHONPATH:+:$PYTHONPATH}"',
+            wrapper,
+        )
+        self.assertLess(
+            wrapper.index('export PYTHONPATH="$APP_DIR${PYTHONPATH:+:$PYTHONPATH}"'),
+            wrapper.index('cd "$APP_DIR/system"'),
+        )
         timer = (ROOT / "deploy/systemd/footbreak-settle.timer").read_text(
             encoding="utf-8"
         )

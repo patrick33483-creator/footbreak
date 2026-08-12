@@ -180,9 +180,9 @@ jobs:
           ps -eo pid,lstart,etime,cmd | grep -E 'run_all|deploy/run.sh|footbreak' | grep -v grep || true
 
           echo "=== recent tick journal ==="
-          journalctl -u footbreak-tick.service --since "-25 minutes" --no-pager -o short-iso | tail -n 500 || true
+          journalctl -u footbreak-tick.service --since "-90 minutes" --no-pager -o short-iso | tail -n 1200 || true
           echo "=== recent t30 journal ==="
-          journalctl -u footbreak-t30.service --since "-25 minutes" --no-pager -o short-iso | tail -n 300 || true
+          journalctl -u footbreak-t30.service --since "-90 minutes" --no-pager -o short-iso | tail -n 600 || true
           echo "=== recent Crown tick journal ==="
           journalctl -u crown-tick.service --since "-25 minutes" --no-pager -o short-iso | tail -n 500 || true
           echo "=== recent Crown settlement journal ==="
