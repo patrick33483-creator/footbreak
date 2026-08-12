@@ -90,6 +90,22 @@ class HealthAlertTests(unittest.TestCase):
         self.assertIn("皇冠：重複=0", message)
         self.assertIn("重複階段鍵", message)
 
+    def test_no_telegram_keeps_abnormal_audit_local(self) -> None:
+        self.write_reports(footbreak=report("footbreak", duplicate_stage_keys=2))
+        sender = Mock()
+        with patch("builtins.print") as local_log:
+            result = health_alert.main(
+                self.argv("--no-telegram"),
+                sender=sender,
+                now=NOW,
+                environ={},
+            )
+        self.assertEqual(result, 0)
+        sender.assert_not_called()
+        rendered = "\n".join(str(call.args[0]) for call in local_log.call_args_list)
+        self.assertIn("abnormal; Telegram disabled", rendered)
+        self.assertIn("足破：重複=2", rendered)
+
     def test_missing_or_incomplete_corner_coverage_alerts(self) -> None:
         for coverage, expected in ((None, "角球覆蓋缺失"), (0.999, "角球覆蓋不足")):
             with self.subTest(coverage=coverage):

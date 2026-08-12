@@ -584,13 +584,14 @@ class DataHealthJobIsolationTest(unittest.TestCase):
                 self.assertNotIn("exit 1", block)
                 self.assertNotIn("\n    failed=1", block)
                 self.assertIn("資料健康報告生成失敗", block)
-        # The generation itself stays isolated.  A separate direct-Telegram
-        # alert checks both public reports after generation; only delivery
-        # failure marks the reconciliation service failed for retry/visibility.
+        # The generation itself stays isolated.  The 15-minute reconciler
+        # still evaluates both public reports but keeps health anomalies local;
+        # Telegram is disabled without affecting other product notifications.
         self.assertIn("analysis.health_alert", reconcile)
         self.assertIn("--footbreak-report /var/www/footbreak/data-health.json", reconcile)
         self.assertIn("--crown-report /var/www/crown/data-health.json", reconcile)
-        self.assertIn("--env-file /etc/footbreak.env", reconcile)
+        self.assertIn("--no-telegram", reconcile)
+        self.assertNotIn("--env-file /etc/footbreak.env", reconcile)
         self.assertIn("--generation-failed", reconcile)
         alert_block = reconcile.split("analysis.health_alert", 1)[1].split("\nfi\n", 1)[0]
         self.assertIn("failed=1", alert_block)

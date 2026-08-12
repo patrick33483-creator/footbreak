@@ -309,6 +309,11 @@ def main(
         action="store_true",
         help="Alert even if existing artifacts happen to look healthy.",
     )
+    parser.add_argument(
+        "--no-telegram",
+        action="store_true",
+        help="Keep evaluating and logging health locally, but never send Telegram.",
+    )
     args = parser.parse_args(argv)
     evaluation = evaluate_reports(
         {"footbreak": args.footbreak_report, "crown": args.crown_report},
@@ -318,6 +323,10 @@ def main(
     stamp = moment.strftime("%Y-%m-%d %H:%M:%S HKT")
     if not evaluation.abnormal:
         print(f"{stamp} data-health alert: normal; Telegram not sent")
+        return 0
+    if args.no_telegram:
+        print(f"{stamp} data-health alert: abnormal; Telegram disabled")
+        print(format_message(evaluation, now=moment))
         return 0
 
     try:

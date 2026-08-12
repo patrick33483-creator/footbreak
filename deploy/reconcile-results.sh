@@ -81,14 +81,13 @@ else
   health_generation_failed=1
 fi
 
-# 只讀兩個公開 aggregate 報告；呢個 CLI 會安全讀取 /etc/footbreak.env
-# 內兩個 Telegram assignment（唔會 shell-source 或執行檔案內容）。正常
-# 時只寫本地 log，完全唔發 Telegram；異常每 15 分鐘都照發，刻意不去重。
-echo "=== $(TZ=Asia/Hong_Kong date '+%F %T') 資料健康告警檢查 ==="
+# 只讀兩個公開 aggregate 報告。健康／結算異常 Telegram 通知已按用戶要求
+# 停用；正常及異常都只寫本地 journal，唔會影響其他預測／投注通知。
+echo "=== $(TZ=Asia/Hong_Kong date '+%F %T') 資料健康本地稽核 ==="
 health_alert_args=(
   --footbreak-report /var/www/footbreak/data-health.json
   --crown-report /var/www/crown/data-health.json
-  --env-file /etc/footbreak.env
+  --no-telegram
 )
 if [ "$health_generation_failed" -eq 1 ]; then
   health_alert_args+=(--generation-failed)
@@ -97,7 +96,7 @@ if PYTHONPATH="$APP_DIR" "$APP_DIR/.venv/bin/python3" -m analysis.health_alert \
   "${health_alert_args[@]}"; then
   echo "資料健康告警檢查 OK"
 else
-  echo "資料健康告警傳送失敗；保留所有預測與結算資料，下個週期會重試" >&2
+  echo "資料健康本地稽核失敗；保留所有預測與結算資料，下個週期會重試" >&2
   failed=1
 fi
 
