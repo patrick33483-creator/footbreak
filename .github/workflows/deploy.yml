@@ -64,8 +64,19 @@ jobs:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
         run: |
-          ssh "$DEPLOY_USER@$DEPLOY_HOST" \
-            'sudo /opt/footbreak/deploy/update.sh main'
+          if ! ssh "$DEPLOY_USER@$DEPLOY_HOST" \
+            'sudo /opt/footbreak/deploy/update.sh main'; then
+            echo "正常更新失敗；用 GitHub 官方 SSH 443 備援拉取最新部署腳本後重試"
+            ssh "$DEPLOY_USER@$DEPLOY_HOST" \
+              'sudo bash -c '"'"'
+                set -euo pipefail
+                cd /opt/footbreak
+                export GIT_SSH_COMMAND="ssh -i /home/radar/.ssh/footbreak_github -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/home/radar/.ssh/known_hosts -o ConnectTimeout=10 -o Hostname=ssh.github.com -p 443 -o HostKeyAlias=github.com"
+                git fetch --quiet origin main
+                git reset --hard --quiet origin/main
+                exec /opt/footbreak/deploy/update.sh main
+              '"'"''
+          fi
 
       - name: 部署後完整健康檢查
         env:

@@ -68,6 +68,16 @@ class ShadowConditionDashboardUiTests(unittest.TestCase):
         self.assertIn("下個 15 分鐘週期會重試", update)
         self.assertRegex(update, r"if ! PYTHONPATH=.*analysis\.shadow_conditions")
 
+    def test_deploy_has_github_ssh_443_fallback(self) -> None:
+        update = (ROOT / "deploy" / "update.sh").read_text(encoding="utf-8")
+        workflow = (ROOT / ".github" / "workflows" / "deploy.yml").read_text(encoding="utf-8")
+        for content in (update, workflow):
+            self.assertIn("Hostname=ssh.github.com", content)
+            self.assertIn("HostKeyAlias=github.com", content)
+            self.assertIn("-p 443", content)
+        self.assertIn("ConnectTimeout=10", update)
+        self.assertIn("git reset --hard --quiet origin/main", workflow)
+
     def test_mobile_guards_do_not_introduce_horizontal_overflow(self) -> None:
         for dashboard in ("hkjc-dashboard", "crown/dashboard"):
             _, _, css = self.files(dashboard)

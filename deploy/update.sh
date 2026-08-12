@@ -22,8 +22,12 @@ sync_crown_web_root() {
 cd "$APP_DIR"
 
 echo "▸ 拉取最新程式碼($BRANCH)"
-GIT_SSH_COMMAND="ssh -i /home/radar/.ssh/footbreak_github -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/home/radar/.ssh/known_hosts" \
-  git fetch --quiet origin "$BRANCH"
+GITHUB_SSH_BASE="ssh -i /home/radar/.ssh/footbreak_github -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/home/radar/.ssh/known_hosts -o ConnectTimeout=10"
+if ! GIT_SSH_COMMAND="$GITHUB_SSH_BASE" git fetch --quiet origin "$BRANCH"; then
+  echo "  GitHub SSH 22 無法連線，改用官方 SSH 443 備援"
+  GIT_SSH_COMMAND="$GITHUB_SSH_BASE -o Hostname=ssh.github.com -p 443 -o HostKeyAlias=github.com" \
+    git fetch --quiet origin "$BRANCH"
+fi
 BEFORE=$(git rev-parse HEAD)
 git reset --hard --quiet "origin/$BRANCH"
 AFTER=$(git rev-parse HEAD)
