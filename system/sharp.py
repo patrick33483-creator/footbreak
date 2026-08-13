@@ -5,9 +5,11 @@ The public Footbreak interface remains unchanged:
   fetch_odds([fixture_id]) -> {fixture_id: price rows}
   structure(rows, home, away) -> HAD/HDC/HIL/CHL model structure
 
-Internally it uses PinnAPI Edge only.  There is no OpticOdds fallback and no
-disk-cache fallback for a failed live provider request: a provider failure must
-propagate to the systemd service instead of silently rebuilding stale output.
+Internally it uses PinnAPI Edge only. There is no OpticOdds fallback. A
+strictly identity-bound, timestamped, still-pre-kickoff last-good PinnAPI
+snapshot may support forecast/diagnostic continuity after a bounded live retry;
+it is always labelled fallback and is barred from EV, Kelly, portfolios and
+betting notifications.
 """
 import json
 import os
@@ -15,12 +17,22 @@ import re
 import difflib
 import unicodedata
 import sys
+import time
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 
 HKT = timezone(timedelta(hours=8))
 CACHE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cache")
 os.makedirs(CACHE, exist_ok=True)
+# Last-good quotes are intentionally distinct from opening quotes.  They are
+# never a silent replacement for live PinnAPI data: they can support a
+# pre-kickoff forecast/diagnostic only and are marked so all EV/Kelly/bet paths
+# remain closed.
+LAST_GOOD_TTL_SECONDS = int(os.environ.get("PINNAPI_LAST_GOOD_TTL_SECONDS", "600"))
+LIVE_RETRY_ATTEMPTS = max(1, int(os.environ.get("PINNAPI_LIVE_RETRY_ATTEMPTS", "2")))
+LIVE_RETRY_BACKOFF_SECONDS = max(
+    0.0, float(os.environ.get("PINNAPI_LIVE_RETRY_BACKOFF_SECONDS", "0.25"))
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -249,7 +261,179 @@ def american_to_dec(p):
     return 1 + (p / 100 if p > 0 else 100 / -p)
 
 
-def fetch_odds(fixture_ids):
+def _last_good_path(fixture_id: str) -> str:
+    # PinnAPI IDs are opaque provider data.  Restrict a filesystem component
+    # defensively even though callers already pass string identifiers.
+    safe_id = re.sub(r"[^A-Za-z0-9_.-]", "_", str(fixture_id))
+    return os.path.join(CACHE, "pinnapi_last_good", f"{safe_id}.json")
+
+
+def _parse_kickoff(value):
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed.astimezone(timezone.utc)
+
+
+def _strict_identity(fixture_id: str, fixture_identity: dict | None) -> dict | None:
+    """Return a minimal exact identity or None when fallback cannot be safe."""
+    if not isinstance(fixture_identity, dict):
+        return None
+    kickoff = _parse_kickoff(fixture_identity.get("start_date"))
+    home = norm(fixture_identity.get("home_team_display") or "")
+    away = norm(fixture_identity.get("away_team_display") or "")
+    if (
+        str(fixture_identity.get("id") or "") != str(fixture_id)
+        or kickoff is None
+        or not home
+        or not away
+    ):
+        return None
+    return {
+        "fixture_id": str(fixture_id),
+        "kickoff": kickoff.isoformat(),
+        "home": home,
+        "away": away,
+    }
+
+
+def _save_last_good(fixture_id: str, identity: dict | None, prices: list[dict]) -> None:
+    """Atomically retain a live, identity-bound snapshot for diagnostic fallback."""
+    if not identity or not prices:
+        return
+    path = _last_good_path(fixture_id)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    payload = {
+        "schema_version": 1,
+        "saved_at": datetime.now(timezone.utc).isoformat(),
+        "identity": identity,
+        "prices": prices,
+    }
+    temp = f"{path}.tmp-{os.getpid()}-{time.time_ns()}"
+    try:
+        with open(temp, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, separators=(",", ":"))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp, path)
+    finally:
+        try:
+            os.unlink(temp)
+        except FileNotFoundError:
+            pass
+
+
+def _load_last_good(fixture_id: str, fixture_identity: dict | None) -> list[dict] | None:
+    """Load only a fresh, exact-identity, still-pre-kickoff snapshot."""
+    identity = _strict_identity(fixture_id, fixture_identity)
+    if not identity:
+        return None
+    try:
+        with open(_last_good_path(fixture_id), encoding="utf-8") as handle:
+            cached = json.load(handle)
+    except (OSError, ValueError, json.JSONDecodeError):
+        return None
+    if not isinstance(cached, dict) or cached.get("identity") != identity:
+        return None
+    saved_at = _parse_kickoff(cached.get("saved_at"))
+    kickoff = _parse_kickoff(identity["kickoff"])
+    prices = cached.get("prices")
+    now = datetime.now(timezone.utc)
+    if (
+        saved_at is None
+        or kickoff is None
+        or not isinstance(prices, list)
+        or not prices
+        or now >= kickoff
+    ):
+        return None
+    age = max(0.0, (now - saved_at).total_seconds())
+    if age > LAST_GOOD_TTL_SECONDS:
+        return None
+    out = []
+    for row in prices:
+        if not isinstance(row, dict):
+            return None
+        restored = dict(row)
+        restored.update({
+            "provider": "pinnapi",
+            "provider_live": False,
+            "source": "fallback",
+            "data_age_seconds": round(age, 3),
+            "fallback_reason": "pinnapi_live_unavailable",
+        })
+        out.append(restored)
+    return out
+
+
+def _live_prices(client, fixture_id: str) -> list[dict]:
+    """Fetch one live quote with bounded retry/backoff; no stale downgrade."""
+    last_error = None
+    parsed = None
+    for attempt in range(LIVE_RETRY_ATTEMPTS):
+        try:
+            parsed = client.lines(fixture_id)
+            break
+        except Exception as exc:  # provider exceptions are mapped below
+            last_error = exc
+            if attempt + 1 < LIVE_RETRY_ATTEMPTS and LIVE_RETRY_BACKOFF_SECONDS:
+                time.sleep(LIVE_RETRY_BACKOFF_SECONDS * (2 ** attempt))
+    if parsed is None:
+        raise ProviderError(
+            f"PinnAPI lines unavailable for {fixture_id} "
+            f"after {LIVE_RETRY_ATTEMPTS} attempt(s) ({type(last_error).__name__})"
+        ) from last_error
+    prices = parsed.get("prices") or []
+    if not prices:
+        raise ProviderError(f"PinnAPI returned no full-match prices for {fixture_id}")
+    observed_at = datetime.now(timezone.utc)
+    source_at = parsed.get("source_at")
+    try:
+        source_age = max(0.0, observed_at.timestamp() - float(source_at))
+    except (TypeError, ValueError):
+        source_age = 0.0
+    merged = [
+        dict(
+            price,
+            provider="pinnapi",
+            event_id=fixture_id,
+            provider_live=True,
+            source="pinnapi_live",
+            data_age_seconds=round(source_age, 3),
+            timestamp_inferred=bool(parsed.get("timestamp_inferred")),
+            snapshot_observed_at=observed_at.isoformat(),
+        )
+        for price in prices
+    ]
+    try:
+        corners = client.corner_lines(fixture_id)
+    except Exception:
+        # CHL is optional and fail-closed.  The normal match markets above
+        # remain valid rather than turning a special-market outage into a
+        # whole-fixture provider failure.
+        corners = None
+    if corners:
+        for price in corners.get("prices") or []:
+            if price.get("market") != "CHL":
+                continue
+            merged.append(dict(
+                price,
+                provider="pinnapi",
+                event_id=fixture_id,
+                corner_event_id=corners.get("corner_event_id"),
+                provider_live=True,
+                source="pinnapi_live",
+                data_age_seconds=round(source_age, 3),
+                timestamp_inferred=bool(corners.get("timestamp_inferred")),
+                snapshot_observed_at=observed_at.isoformat(),
+            ))
+    return merged
+
+
+def fetch_odds(fixture_ids, *, fixture_identities=None):
     """Fetch full-match PinnAPI prices for every requested event or raise.
 
     PinnAPI exposes per-event prematch lines rather than Optic's batch endpoint.
@@ -260,41 +444,36 @@ def fetch_odds(fixture_ids):
     but must not discard otherwise usable HDC/HIL/1X2 data.
     """
     out = {}
-    client = _client()
+    identities = fixture_identities or {}
+    try:
+        client = _client()
+    except Exception as exc:
+        client = None
+        client_error = exc
+    else:
+        client_error = None
     for fixture_id in dict.fromkeys(str(item) for item in fixture_ids):
         try:
-            parsed = client.lines(fixture_id)
+            if client is None:
+                raise ProviderError(
+                    f"PinnAPI client unavailable ({type(client_error).__name__})"
+                ) from client_error
+            merged = _live_prices(client, fixture_id)
+            _save_last_good(
+                fixture_id, _strict_identity(fixture_id, identities.get(fixture_id)), merged
+            )
+            out[fixture_id] = merged
+            continue
         except Exception as exc:
-            raise ProviderError(f"PinnAPI lines unavailable for {fixture_id} ({type(exc).__name__})") from exc
-        prices = parsed.get("prices") or []
-        if not prices:
-            raise ProviderError(f"PinnAPI returned no full-match prices for {fixture_id}")
-        merged = [
-            dict(price, provider="pinnapi", event_id=fixture_id,
-                 timestamp_inferred=bool(parsed.get("timestamp_inferred")))
-            for price in prices
-        ]
-        try:
-            corners = client.corner_lines(fixture_id)
-        except Exception:
-            # CHL is optional and fail-closed.  The normal match markets above
-            # remain valid rather than turning a special-market outage into a
-            # whole-fixture provider failure.
-            corners = None
-        if corners:
-            for price in corners.get("prices") or []:
-                # The parser accepts only one verified full-match corner child.
-                # Keep CHL only; CHDC has no Footbreak model/settlement path.
-                if price.get("market") != "CHL":
-                    continue
-                merged.append(dict(
-                    price,
-                    provider="pinnapi",
-                    event_id=fixture_id,
-                    corner_event_id=corners.get("corner_event_id"),
-                    timestamp_inferred=bool(corners.get("timestamp_inferred")),
-                ))
-        out[fixture_id] = merged
+            fallback = _load_last_good(fixture_id, identities.get(fixture_id))
+            if fallback is not None:
+                out[fixture_id] = fallback
+                continue
+            if isinstance(exc, ProviderError):
+                raise
+            raise ProviderError(
+                f"PinnAPI lines unavailable for {fixture_id} ({type(exc).__name__})"
+            ) from exc
     return out
 
 

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
@@ -20,6 +21,7 @@ DATA_HEALTH_REPORTS = {
     "footbreak": Path("/var/www/footbreak/data-health.json"),
     "crown": Path("/var/www/crown/data-health.json"),
 }
+PINNAPI_SOURCE_HEALTH_REPORT = Path("/var/www/footbreak/pinnapi-source-health.json")
 HKT = timezone(timedelta(hours=8))
 sys.path.insert(0, "/opt/footbreak")
 
@@ -345,6 +347,144 @@ def data_health_summary(report: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def pinnapi_source_health_state() -> dict[str, Any]:
+    """Return a small aggregate-only multi-system health summary; never raise."""
+    if not PINNAPI_SOURCE_HEALTH_REPORT.is_file():
+        return {"available": False, "reason": "artifact_missing"}
+    try:
+        report = load(PINNAPI_SOURCE_HEALTH_REPORT)
+    except (OSError, json.JSONDecodeError) as exc:
+        return {"available": False, "reason": type(exc).__name__}
+    if not isinstance(report, dict) or report.get("report") != "pinnapi_source_health":
+        return {"available": False, "reason": "unexpected_report"}
+    policy = report.get("policy") or {}
+    systems: dict[str, Any] = {}
+    for system, value in (report.get("systems") or {}).items():
+        if not isinstance(value, dict):
+            continue
+        metrics = value.get("primary_metrics") or {}
+        coverage = value.get("coverage") or {}
+        systems[str(system)] = {
+            "fixture_categories": {
+                key: (value.get("fixture_categories") or {}).get(key, 0)
+                for key in (
+                    "no_prediction_due_to_source",
+                    "predicted_but_unmatched",
+                    "with_pinnapi",
+                    "without_pinnapi",
+                )
+            },
+            "coverage": {
+                key: coverage.get(key)
+                for key in (
+                    "observed_pre_kickoff_stage_rows",
+                    "observed_unique_fixtures",
+                    "observed_stage_rows_with_source_status",
+                    "observed_stage_rows_without_source_status",
+                )
+            } | {
+                "historical_no_prediction_count": {
+                    key: (
+                        coverage.get("historical_no_prediction_count")
+                        or coverage.get("historical_no_prediction_due_to_pinnapi")
+                        or {}
+                    ).get(key)
+                    for key in ("observed_count", "count_status", "reason")
+                }
+            },
+            "primary_metrics": {
+                key: {
+                    item: (metrics.get(key) or {}).get(item)
+                    for item in (
+                        "fixture_market_latest_stage_rows", "settled_decisions",
+                        "pushes_excluded", "unsettled_or_ungraded", "hits", "hit_rate",
+                    )
+                }
+                for key in ("all", "with_pinnapi", "without_pinnapi")
+            },
+            "top_league_candidates": [
+                {
+                    key: row.get(key)
+                    for key in (
+                        "league", "fixtures", "missing_rate", "delay_rate", "match_rate",
+                        "settled_decisions", "hit_rate", "sample_status", "candidate_only",
+                    )
+                }
+                for row in (value.get("league_health_candidates") or [])[:10]
+                if isinstance(row, dict)
+            ],
+        }
+    combined = report.get("combined_summary") or {}
+    return {
+        "available": True,
+        "read_only": bool(report.get("read_only")),
+        "generated_at": report.get("generated_at"),
+        "window": {
+            key: (report.get("window") or {}).get(key)
+            for key in ("days", "from", "to")
+        },
+        "combined_summary": {
+            "fixture_categories": {
+                key: (combined.get("fixture_categories") or {}).get(key, 0)
+                for key in (
+                    "no_prediction_due_to_source",
+                    "predicted_but_unmatched",
+                    "with_pinnapi",
+                    "without_pinnapi",
+                )
+            },
+            "coverage": (combined.get("coverage") or {}),
+            "primary_metrics": (combined.get("primary_metrics") or {}),
+        },
+        "policy": {
+            key: policy.get(key)
+            for key in (
+                "primary_unit", "push_and_unsettled_excluded_from_hit_rate",
+                "minimum_league_fixtures", "league_candidates_are_not_auto_filtered",
+                "historical_no_prediction_counts_are_observed_lower_bounds",
+            )
+        },
+        "systems": systems,
+        "journal_supplemental": pinnapi_journal_supplemental_state(),
+    }
+
+
+def pinnapi_journal_supplemental_state() -> dict[str, Any]:
+    """Bounded local journal counts; never expose lines, IDs, teams, or errors."""
+    units = (
+        "footbreak-tick.service", "footbreak-t30.service", "footbreak-sweep.service",
+        "crown-tick.service", "crown-sweep.service",
+    )
+    try:
+        completed = subprocess.run(
+            [
+                "journalctl", "--since", "14 days ago", "--no-pager", "--output=cat",
+                "--lines=4000", *[f"--unit={unit}" for unit in units],
+            ],
+            check=False, capture_output=True, text=True, timeout=8,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {"available": False, "reason": type(exc).__name__}
+    if completed.returncode not in {0, 1}:
+        return {"available": False, "reason": f"journalctl_rc_{completed.returncode}"}
+    lines = completed.stdout.splitlines()
+    invocation_pattern = re.compile(r"(?:═══|Starting |Started |run_predict\.py|crown.*(?:tick|sweep))", re.I)
+    pinnapi_pattern = re.compile(r"pinnapi", re.I)
+    error_pattern = re.compile(r"(?:unavailable|不可用|providererror|error|failed|outage)", re.I)
+    pinnapi_lines = [line for line in lines if pinnapi_pattern.search(line)]
+    return {
+        "available": True,
+        "window_days": 14,
+        "lines_scanned": len(lines),
+        "lines_truncated_at": 4000,
+        "service_invocations_observed": sum(bool(invocation_pattern.search(line)) for line in lines),
+        "pinnapi_mentions_observed": len(pinnapi_lines),
+        "pinnapi_error_mentions_observed": sum(bool(error_pattern.search(line)) for line in pinnapi_lines),
+        "counts_are_supplemental_not_fixture_level": True,
+        "raw_journal_lines_excluded": True,
+    }
+
+
 def crown_corner_state(
     payload: dict[str, Any],
     ledger: dict[str, Any],
@@ -592,6 +732,7 @@ def main() -> None:
         "server_timer": timer_state(),
         "challenger": challenger_state(),
         "data_health": data_health_state(),
+        "pinnapi_source_health": pinnapi_source_health_state(),
         "crown": {
             "stats": crown.get("stats"),
             "result_sync": crown.get("result_sync"),

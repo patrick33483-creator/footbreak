@@ -268,3 +268,42 @@ class FootbreakPinnapiSharpTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class PinnapiLastGoodFallbackTests(unittest.TestCase):
+    def test_exact_fresh_last_good_is_diagnostic_only(self) -> None:
+        kickoff = datetime.now(timezone.utc) + timedelta(minutes=30)
+        fixture = {
+            "id": "event-1", "start_date": kickoff.isoformat(),
+            "home_team_display": "Home FC", "away_team_display": "Away FC",
+        }
+        parsed = {"prices": [{"market": "HIL", "line": 2.5, "selection": "H", "odds": 1.91,
+                              "source_at": datetime.now(timezone.utc).timestamp()},
+                             {"market": "HIL", "line": 2.5, "selection": "L", "odds": 1.99,
+                              "source_at": datetime.now(timezone.utc).timestamp()}]}
+        class GoodClient:
+            def lines(self, _event_id): return parsed
+            def corner_lines(self, _event_id): return {"prices": []}
+        class BrokenClient:
+            def lines(self, _event_id): raise RuntimeError("outage")
+
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(sharp, "CACHE", directory), \
+             patch.object(sharp, "LIVE_RETRY_ATTEMPTS", 1), \
+             patch.object(sharp, "_client", return_value=GoodClient()):
+            live = sharp.fetch_odds(["event-1"], fixture_identities={"event-1": fixture})["event-1"]
+            self.assertTrue(all(row["provider_live"] for row in live))
+            with patch.object(sharp, "_client", return_value=BrokenClient()):
+                fallback = sharp.fetch_odds(["event-1"], fixture_identities={"event-1": fixture})["event-1"]
+        self.assertTrue(all(not row["provider_live"] for row in fallback))
+        self.assertTrue(all(row["source"] == "fallback" for row in fallback))
+        self.assertTrue(all(row["data_age_seconds"] <= sharp.LAST_GOOD_TTL_SECONDS for row in fallback))
+
+    def test_no_identity_never_allows_last_good_fallback(self) -> None:
+        class BrokenClient:
+            def lines(self, _event_id): raise RuntimeError("outage")
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(sharp, "CACHE", directory), \
+             patch.object(sharp, "LIVE_RETRY_ATTEMPTS", 1), \
+             patch.object(sharp, "_client", return_value=BrokenClient()):
+            with self.assertRaises(sharp.ProviderError):
+                sharp.fetch_odds(["event-1"])

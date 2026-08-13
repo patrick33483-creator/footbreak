@@ -82,6 +82,25 @@ else
   health_generation_failed=1
 fi
 
+# PinnAPI source health is a separate read-only diagnostic.  It has no provider
+# request, no model/ledger/result write, and deliberately never changes this
+# reconciliation service's exit status: settlement must remain available even
+# if the optional source-health artifact cannot be regenerated.
+PINNAPI_SOURCE_HEALTH_DIR="${PINNAPI_SOURCE_HEALTH_DIR:-/var/lib/footbreak/pinnapi-source-health}"
+if [ -s "$LEARNING_DB" ]; then
+  install -d -o root -g root -m 0700 "$PINNAPI_SOURCE_HEALTH_DIR" 2>/dev/null || true
+  echo "=== $(TZ=Asia/Hong_Kong date '+%F %T') PinnAPI 來源健康報告重生 ==="
+  if PYTHONPATH="$APP_DIR" "$APP_DIR/.venv/bin/python3" -m analysis.pinnapi_source_health \
+    --learning-db "$LEARNING_DB" \
+    --out "$PINNAPI_SOURCE_HEALTH_DIR/latest.json" \
+    --public /var/www/footbreak/pinnapi-source-health.json \
+    --lock /var/lock/footbreak-pinnapi-source-health.lock >/dev/null; then
+    echo "PinnAPI 來源健康報告 OK"
+  else
+    echo "PinnAPI 來源健康報告生成失敗；不影響結算、完整性審核或通知" >&2
+  fi
+fi
+
 # A cheap 15-minute read-only regeneration.  It deliberately has no impact on
 # data-health guards, settlement exit status, or any notification path.
 if [ -s "$LEARNING_DB" ]; then

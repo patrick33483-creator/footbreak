@@ -86,6 +86,24 @@ class FailClosedPredictionTest(unittest.TestCase):
         self.assertIsNone(pick)
         self.assertIn("禁止由馬會自身盤面建立模擬注", reason)
 
+    def test_fallback_snapshot_never_enters_ev_kelly_or_betting(self):
+        result = {
+            "conviction": 70.0,
+            "model_source": "pinnapi_fallback",
+            "provider_live": False,
+            "source": "fallback",
+            "sharp_reference_available": False,
+            "candidates": [{
+                "market": "入球大小", "code": "HIL", "condition": "2.5",
+                "side": "H", "label": "大 2.5", "odds": 2.0,
+                "fair": 1.8, "prob": .56, "push": 0, "ev": .12,
+                "kelly_raw": .12, "is_main": True,
+            }],
+        }
+        pick, reason = run_predict.pick_one(result)
+        self.assertIsNone(pick)
+        self.assertIn("禁止 EV、Kelly、正式倉及投注通知", reason)
+
     def test_market_policy_tightens_after_thirty_bad_settlements(self):
         bets = [{
             "status": "SETTLED", "code": "CHL", "stake": 100,

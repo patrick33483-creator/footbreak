@@ -85,6 +85,8 @@ def _snapshot(prediction: dict[str, Any], stage: str) -> dict[str, Any]:
         "titan_match_id", "pinnapi_event_id", "source_snapshot_at", "execution",
         "outcome", "forecast", "probability", "likely_score", "prediction_source",
         "probabilities", "baseline_low_confidence", "edge_reference_status", "edge_reference_note",
+        "sharp_reference_available", "source_status", "pinnapi_source_at",
+        "pinnapi_timestamp_inferred", "pinnapi_timestamp_basis",
         "pinnapi_corner_event_id", "pinnapi_corner_source_at", "pinnapi_corner_timestamp_inferred",
         "matching_version", "crown_quote_cached_forecast_only", "crown_cached_source_at",
     )} | {
@@ -96,6 +98,19 @@ def _snapshot(prediction: dict[str, Any], stage: str) -> dict[str, Any]:
             prediction.get("forecast_candidates") or prediction.get("candidates") or []
         ),
     }
+    # Persist only compact, verifiable provider provenance for the immutable
+    # source-health report.  It distinguishes an unmatched PinnAPI fixture
+    # from a matched-but-unavailable quote without making PinnAPI a prerequisite
+    # for Crown's pure forecast path.
+    if not snapshot.get("source_status"):
+        if snapshot.get("sharp_reference_available") is True:
+            snapshot["source_status"] = "pinnapi_live"
+        elif not snapshot.get("pinnapi_event_id"):
+            snapshot["source_status"] = "pinnapi_fixture_unmatched"
+        elif snapshot.get("edge_reference_status") == "unavailable":
+            snapshot["source_status"] = "pinnapi_live_unavailable"
+        else:
+            snapshot["source_status"] = "pinnapi_status_unobserved"
     return snapshot
 
 

@@ -135,6 +135,84 @@ class AuditDataHealthSummaryTests(unittest.TestCase):
             state = self.audit.data_health_state()
         self.assertEqual(state["systems"]["crown"]["reason"], "unexpected_report")
 
+    def test_pinnapi_source_health_is_compact_and_missing_is_safe(self) -> None:
+        report = {
+            "report": "pinnapi_source_health",
+            "read_only": True,
+            "generated_at": "2026-08-13T00:00:00+00:00",
+            "window": {"days": 14, "from": "a", "to": "b"},
+            "systems": {"footbreak": {
+                "fixture_categories": {
+                    "no_prediction_due_to_source": 2,
+                    "predicted_but_unmatched": 3,
+                    "with_pinnapi": 10,
+                    "without_pinnapi": 5,
+                },
+                "coverage": {"observed_pre_kickoff_stage_rows": 20,
+                             "historical_no_prediction_due_to_pinnapi": {
+                                 "observed_count": 2, "count_status": "lower_bound",
+                             }},
+                "primary_metrics": {
+                    "all": {"settled_decisions": 8, "hit_rate": .5},
+                    "with_pinnapi": {"settled_decisions": 5, "hit_rate": .6},
+                    "without_pinnapi": {"settled_decisions": 3, "hit_rate": 1 / 3},
+                },
+                "league_health_candidates": [{
+                    "league": "公開聯賽", "fixtures": 10, "missing_rate": .2,
+                    "delay_rate": .1, "match_rate": .8, "settled_decisions": 5,
+                    "hit_rate": .6, "sample_status": "sufficient", "candidate_only": True,
+                    "fixture_id": "MUST_NOT_LEAK",
+                }],
+            }, "crown": {
+                "fixture_categories": {}, "coverage": {
+                    "historical_no_prediction_due_to_pinnapi": {"count_status": "unavailable"},
+                }, "primary_metrics": {}, "league_health_candidates": [],
+            }},
+            "combined_summary": {
+                "fixture_categories": {"with_pinnapi": 10},
+                "coverage": {"historical_no_prediction_count_status": "lower_bound_or_unavailable"},
+                "primary_metrics": {"all": {"settled_decisions": 8, "hit_rate": .5}},
+            },
+            "policy": {
+                "primary_unit": "one_latest_pre_kickoff_stage_per_fixture_market",
+                "league_candidates_are_not_auto_filtered": True,
+            },
+        }
+        path = self.directory / "pinnapi-source-health.json"
+        path.write_text(json.dumps(report), encoding="utf-8")
+        with patch.object(self.audit, "PINNAPI_SOURCE_HEALTH_REPORT", path):
+            summary = self.audit.pinnapi_source_health_state()
+        self.assertTrue(summary["available"])
+        self.assertEqual(summary["combined_summary"]["fixture_categories"]["with_pinnapi"], 10)
+        self.assertEqual(summary["systems"]["footbreak"]["top_league_candidates"][0]["league"], "公開聯賽")
+        self.assertEqual(
+            summary["systems"]["footbreak"]["coverage"]
+            ["historical_no_prediction_count"]["count_status"], "lower_bound"
+        )
+        self.assertNotIn("MUST_NOT_LEAK", json.dumps(summary, ensure_ascii=False))
+        with patch.object(self.audit, "PINNAPI_SOURCE_HEALTH_REPORT", self.directory / "none.json"):
+            self.assertEqual(
+                self.audit.pinnapi_source_health_state()["reason"], "artifact_missing"
+            )
+
+    def test_pinnapi_journal_summary_is_bounded_and_excludes_raw_lines(self) -> None:
+        completed = type("Completed", (), {
+            "returncode": 0,
+            "stdout": (
+                "Started footbreak tick\n"
+                "PinnAPI fixtures unavailable ProviderError team SECRET v TEAM\n"
+                "ordinary line\n"
+            ),
+        })()
+        with patch.object(self.audit.subprocess, "run", return_value=completed):
+            summary = self.audit.pinnapi_journal_supplemental_state()
+        self.assertTrue(summary["available"])
+        self.assertEqual(summary["lines_scanned"], 3)
+        self.assertEqual(summary["pinnapi_mentions_observed"], 1)
+        self.assertEqual(summary["pinnapi_error_mentions_observed"], 1)
+        self.assertTrue(summary["raw_journal_lines_excluded"])
+        self.assertNotIn("SECRET", json.dumps(summary))
+
 
 class AuditCrownChlWhitelistTests(unittest.TestCase):
     def setUp(self) -> None:

@@ -135,6 +135,10 @@ def _shadow_pick(result):
     """
     if result.get("stage") != BET_STAGE:
         return None
+    if result.get("source") == "fallback":
+        # A cached PinnAPI quote is diagnostic-only.  Do not let it enter even
+        # the isolated no-benchmark shadow portfolio.
+        return None
     if result.get("sharp_reference_available"):
         return None
     if float(result.get("conviction") or 0) < float(P.CONF_FLOOR):
@@ -237,6 +241,15 @@ def _snap(r, now):
         "model_source": r.get("model_source"),
         "sharp_reference_available": bool(r.get("sharp_reference_available")),
         "sharp_reference_note": r.get("sharp_reference_note"),
+        # Source provenance is deliberately persisted with the immutable stage
+        # snapshot so source-health analysis can be calculated entirely from
+        # raw rows.  `fallback` never authorises a pick, EV, Kelly, official
+        # portfolio row, shadow row, or notification.
+        "provider_live": bool(r.get("provider_live")),
+        "source": r.get("source"),
+        "data_age_seconds": r.get("data_age_seconds"),
+        "source_status": r.get("source_status"),
+        "pinnapi_fixture_identity": r.get("pinnapi_fixture_identity"),
         "verdict": verdict,
         "no_bet_reason": r.get("no_bet_reason"),
         # 只有 T-5 嘅 pick 會變成真注;前兩段只係傾向

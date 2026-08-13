@@ -251,27 +251,67 @@ def analyse_match(m, fx, wx_city_override=None, news=None, prev_snap=None,
     model_source = "hkjc_full_market"
     sharp_reference_available = False
     sharp_error = None
+    provider_live = False
+    source = "hkjc_full_market"
+    data_age_seconds = None
+    source_status = "pinnapi_fixture_unmatched" if not fx else "pinnapi_not_requested"
+    pinnapi_identity = None
     if fx:
         try:
-            prices = S.fetch_odds([fx["id"]]).get(fx["id"], [])
+            prices = S.fetch_odds(
+                [fx["id"]], fixture_identities={str(fx["id"]): fx}
+            ).get(fx["id"], [])
+            provider_live = bool(prices) and all(
+                bool(row.get("provider_live")) for row in prices
+                if isinstance(row, dict)
+            )
+            fallback_used = bool(prices) and any(
+                row.get("source") == "fallback"
+                for row in prices if isinstance(row, dict)
+            )
+            ages = [
+                float(row.get("data_age_seconds"))
+                for row in prices
+                if isinstance(row, dict) and row.get("data_age_seconds") is not None
+            ]
+            data_age_seconds = round(max(ages), 3) if ages else None
+            pinnapi_identity = {
+                "fixture_id": str(fx["id"]),
+                "kickoff": fx.get("start_date"),
+                "home": fx.get("home_team_display"),
+                "away": fx.get("away_team_display"),
+            }
             prices = S.orient_prices(prices, reversed_orientation)
             cur_st = S.structure(prices, hname, aname)
             now = P.fit_view(cur_st)
             if now:
-                model_source = "pinnapi"
-                sharp_reference_available = True
+                model_source = "pinnapi" if provider_live else "pinnapi_fallback"
+                source = "pinnapi_live" if provider_live else "fallback"
+                source_status = (
+                    "pinnapi_live" if provider_live
+                    else "pinnapi_fallback_diagnostic_only"
+                )
+                # A fallback quote is only a bounded diagnostic/forecast
+                # continuity aid.  It is never an independent current market
+                # benchmark and therefore can never enable EV, Kelly, an
+                # official/shadow portfolio entry, or notification.
+                sharp_reference_available = provider_live and not fallback_used
                 # PinnAPI does not expose an Optic-style historical opening
                 # endpoint.  Preserve Footbreak's first observed valid quote.
                 op = P.fit_view(S.opening_structure(fx["id"]))
-                S.remember_opening(fx["id"], cur_st)
+                if provider_live:
+                    S.remember_opening(fx["id"], cur_st)
             else:
                 sharp_error = "PinnAPI 盤口不足以擬合"
         except Exception as exc:
             sharp_error = f"{type(exc).__name__}"
+            source_status = "pinnapi_live_unavailable_no_safe_fallback"
     else:
         sharp_error = "賽事未能安全配對"
     if not now:
         now = P.fit_view(hk)
+        source = "hkjc_full_market"
+        provider_live = False
     if not now:
         return {"skip": "PinnAPI 不可用，而馬會全盤面亦不足以擬合模型"}
 
@@ -312,7 +352,14 @@ def analyse_match(m, fx, wx_city_override=None, news=None, prev_snap=None,
     n_hk = sum(len(hk.get(k) or []) for k in ("HAD", "HDC", "HIL", "CHL"))
     fg = (lh2, la2, rho, now["rmse"], now["n"])
     fc = (mu2, phi, now.get("c_rmse", 0), now.get("c_n", 0)) if (mu2 and phi) else None
-    cands = M.evaluate(hk, fg, fc, home_ch, away_ch)
+    # A fallback snapshot may produce a forecast, but it must not be compared
+    # with current HKJC prices to calculate EV/Kelly or create any bet-like
+    # candidate.  A live PinnAPI reference and HKJC-only pure prediction keep
+    # their existing behaviour.
+    cands = (
+        M.evaluate(hk, fg, fc, home_ch, away_ch)
+        if source != "fallback" else []
+    )
 
     fp = hk_odds_fingerprint(m)
     prev_fp = (prev_snap or {}).get("fingerprint")
@@ -347,6 +394,11 @@ def analyse_match(m, fx, wx_city_override=None, news=None, prev_snap=None,
         "model_source": model_source,
         "sharp_reference_available": sharp_reference_available,
         "sharp_reference_note": sharp_error,
+        "provider_live": provider_live,
+        "source": source,
+        "data_age_seconds": data_age_seconds,
+        "source_status": source_status,
+        "pinnapi_fixture_identity": pinnapi_identity,
         "hk_pool_opened": (m.get("foPools") or [{}])[0].get("updateAt"),
         "hk_moved_since_last": moved, "hk_max_move_pct": max_move,
         "hk_n_lines_moved": n_moved, "hk_fingerprint": fp,
@@ -374,6 +426,17 @@ def analyse_match(m, fx, wx_city_override=None, news=None, prev_snap=None,
 def pick_one(res: dict, min_ev=0.015, conf_floor=P.CONF_FLOOR):
     """每場揀一個結論。回傳 (pick|None, reason)。"""
     conv = res["conviction"]
+    if (
+        res.get("source") == "fallback"
+        or (
+            res.get("provider_live") is False
+            and res.get("model_source") == "pinnapi_fallback"
+        )
+    ):
+        return None, (
+            "PinnAPI 暫存快照只可維持賽前預測／診斷；"
+            "禁止 EV、Kelly、正式倉及投注通知"
+        )
     if not res.get("sharp_reference_available"):
         return None, (
             "無獨立 PinnAPI 同場基準；保留預測及學習紀錄，"
@@ -431,7 +494,8 @@ def pick_one(res: dict, min_ev=0.015, conf_floor=P.CONF_FLOOR):
     return best, ""
 
 
-def failed_prediction(m: dict, stage: str, mins: float, reason: str) -> dict:
+def failed_prediction(m: dict, stage: str, mins: float, reason: str,
+                      *, reason_code: str = "source_or_model_unavailable") -> dict:
     """Persist a fail-closed timed decision instead of leaving the UI waiting."""
     ko = H.parse_kickoff(m)
     return {
@@ -452,6 +516,11 @@ def failed_prediction(m: dict, stage: str, mins: float, reason: str) -> dict:
         "lead_view": None,
         "can_bet": stage == "T-5",
         "no_bet_reason": reason,
+        "provider_live": False,
+        "source": "unavailable",
+        "data_age_seconds": None,
+        "source_status": reason_code,
+        "pinnapi_fixture_identity": None,
         "final": None,
         "outcome": None,
         "hk_fingerprint": hk_odds_fingerprint(m),
@@ -541,6 +610,7 @@ def main(match_ids=None, horizon_min=700, out="predictions.json",
                     m, stage, mins,
                     f"即時數據分析失敗（{type(exc).__name__}），"
                     + ("T-5 最終決定不下注" if stage == "T-5" else "本階段記錄資料不足"),
+                    reason_code="analysis_exception",
                 )
             )
             print(
@@ -556,6 +626,7 @@ def main(match_ids=None, horizon_min=700, out="predictions.json",
                     m, stage, mins,
                     f"無可用模型（{r['skip']}），"
                     + ("T-5 最終決定不下注" if stage == "T-5" else "本階段記錄資料不足"),
+                    reason_code="no_prediction_due_to_source",
                 )
             )
             print(
