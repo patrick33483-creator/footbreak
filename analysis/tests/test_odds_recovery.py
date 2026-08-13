@@ -8,7 +8,8 @@ from analysis.odds_recovery import (
     prediction_targets, report, snapshot_identity, PrivateResponseCache,
     ProviderFetcher, parse_titan_change_rows, titan_candidate,
     parse_tipsme_chart_ticks, tipsme_candidate, tipsme_crosswalk,
-    provider_entries, _entry, _validate_entry,
+    provider_entries, _entry, _validate_entry, artifact_inventory,
+    parse_zgzcw_history_ticks, zgzcw_candidate, zgzcw_crosswalk,
 )
 from crown.prediction_history import calculate_stats
 SYSTEM_DIR = Path(__file__).resolve().parents[2] / "system"
@@ -24,7 +25,12 @@ def row(system="footbreak", odds=None, match_id="event-1"):
 
 def quote(fixture="persisted:event-1", line="-0.5", side="H", odds="1.70", observed="2026-08-10T09:59:00+08:00"):
     from analysis.odds_recovery import _quote
-    return _quote(fixture, "HDC", line, side, odds, observed, "fixture", "hash")
+    result = _quote(fixture, "HDC", line, side, odds, observed, "fixture", "hash")
+    if result is not None:
+        # Direct sidecar construction in these overlay tests models an already
+        # reviewed exact-window artifact; production selection derives this.
+        result["evidence_quality"] = "A"
+    return result
 
 class OddsRecoveryTests(unittest.TestCase):
     def test_line_canonicalization_and_exact_boundary(self):
@@ -50,6 +56,76 @@ class OddsRecoveryTests(unittest.TestCase):
             quote(odds="1.80", observed="2026-08-10T09:00:00+08:00"), quote(odds="1.90"),
         ])
         self.assertIsNone(reason); self.assertEqual(found["odds"], "1.9")
+
+    def test_stage_cutoffs_quality_grades_and_audit_only_overlay(self):
+        staged = row()
+        staged.update({"kickoff": "2026-08-10T10:30:00+08:00"})
+        target = prediction_targets([staged], "footbreak")[0][0]  # T-5 cutoff = 10:25, but predicted_at=10:00 wins.
+        # The immutable prediction timestamp remains a no-lookahead ceiling.
+        exact, reason = choose_quote(target, [quote(observed="2026-08-10T09:59:00+08:00")])
+        self.assertIsNone(reason)
+        self.assertEqual(exact["evidence_quality"], "A")
+        self.assertEqual(exact["selection_method"], "locf_cutoff")
+
+        late_prediction = copy.deepcopy(staged)
+        late_prediction["predicted_at"] = "2026-08-10T10:26:00+08:00"
+        target = prediction_targets([late_prediction], "footbreak")[0][0]
+        fresh, _ = choose_quote(
+            target, [quote(observed="2026-08-10T10:15:00+08:00")],
+            exact_window_seconds=60, freshness_seconds={"T-5": 900, "T-30": 3600},
+        )
+        stale, _ = choose_quote(
+            target, [quote(observed="2026-08-10T10:00:00+08:00")],
+            exact_window_seconds=60, freshness_seconds={"T-5": 900, "T-30": 3600},
+        )
+        self.assertEqual(fresh["evidence_quality"], "B")
+        self.assertEqual(fresh["selection_age_seconds"], 600.0)
+        self.assertEqual(stale["evidence_quality"], "C")
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "overlay.json"
+            apply(path, [_entry(target, stale)])
+            projected = overlay_rows([late_prediction], "footbreak", path)
+        self.assertIsNone(projected[0]["market_predictions"][0]["odds"])
+
+    def test_opening_selects_earliest_valid_pre_kickoff_quote(self):
+        opening = row()
+        opening.update({"stage": "首預", "predicted_at": "2026-08-10T10:00:00+08:00", "kickoff": "2026-08-10T12:00:00+08:00"})
+        target = prediction_targets([opening], "footbreak")[0][0]
+        found, reason = choose_quote(target, [
+            quote(odds="1.8", observed="2026-08-10T09:50:00+08:00"),
+            quote(odds="1.7", observed="2026-08-10T08:00:00+08:00"),
+        ])
+        self.assertIsNone(reason)
+        self.assertEqual(found["odds"], "1.7")
+        self.assertEqual(found["evidence_quality"], "A")
+        self.assertEqual(found["selection_method"], "opening_earliest_pre_kickoff")
+
+    def test_safe_artifact_inventory_has_no_path_or_payload(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "hk_snapshots.json").write_text('{"secret":"must not be reported"}')
+            target = root / "nested"
+            target.mkdir()
+            (target / "ledger.json").write_text("{}")
+            manifest = artifact_inventory({"footbreak": [root], "crown": []})
+        rendered = json.dumps(manifest)
+        self.assertEqual(manifest["systems"]["footbreak"]["candidate_files"], 2)
+        self.assertNotIn("secret", rendered)
+        self.assertNotIn(str(root), rendered)
+
+    def test_approximate_local_evidence_is_reported_but_not_sidecar_candidate(self):
+        with tempfile.TemporaryDirectory() as directory:
+            evidence = Path(directory) / "snapshot.json"
+            evidence.write_text(json.dumps({
+                "match_id": "event-1", "saved_at": "2026-08-10T09:59:00+08:00",
+                "hk_odds": {"HDC": [{"condition": "-0.5", "odds": {"H": 1.7}}]},
+            }))
+            output, entries = report({"footbreak": [row()]}, {"footbreak": [evidence]})
+        details = output["systems"]["footbreak"]
+        self.assertEqual(details["evidence_quality_grades"], {"C": 1})
+        self.assertEqual(details["audit_only_candidate_count"], 1)
+        self.assertEqual(details["primary_eligible_candidate_count"], 0)
+        self.assertEqual(entries, [])
 
     def test_bad_odds_and_ambiguous_fixture_are_unrecoverable(self):
         target = prediction_targets([row()], "footbreak")[0][0]
@@ -102,7 +178,9 @@ class OddsRecoveryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             p = Path(directory) / "snapshot.json"
             p.write_text(json.dumps({"match_id": "event-1", "stage": "T-30", "saved_at": "2026-08-10T09:59:00+08:00", "hk_odds": {"HDC": [{"condition": "-0.5", "odds": {"H": 1.7, "A": 2.1}}]}}))
-            output, entries = report({"footbreak": [row()], "crown": [row("crown")]}, {"footbreak": [p], "crown": []})
+            history_row = row()
+            history_row["kickoff"] = "2026-08-10T10:05:00+08:00"
+            output, entries = report({"footbreak": [history_row], "crown": [row("crown")]}, {"footbreak": [p], "crown": []})
         self.assertEqual(output["systems"]["footbreak"]["missing_total"], 1)
         self.assertEqual(output["systems"]["footbreak"]["recovered_candidate_count"], 1)
         self.assertEqual(len(entries), 1)
@@ -521,6 +599,7 @@ class ProviderRecoveryTests(unittest.TestCase):
         target["row"] = {"hkjc_match_id": "HK-1", "tipsme_match_id": "TM-1"}
         self.assertIsNone(tipsme_crosswalk(target))
         target["row"]["tipsme_hkjc_match_id"] = "HK-1"
+        target["row"]["tipsme_provider_id_evidence"] = True
         self.assertEqual(tipsme_crosswalk(target), "TM-1")
         # A visible current price without a timestamp is never historical evidence.
         sparse = '{"market":"hdp","line":"-0.5","home":0.70,"away":0.90,"current":true}'
@@ -529,6 +608,77 @@ class ProviderRecoveryTests(unittest.TestCase):
         quote, reason = tipsme_candidate(target, sparse, "https://example.test/tipsme")
         self.assertIsNone(quote)
         self.assertEqual(reason, "no_qualifying_prior_quote")
+
+    def test_zgzcw_is_exact_crosswalk_bookmaker_timestamp_and_line_only(self):
+        target = self.target(stage="T-5", market="HIL", side="H", line="2.5")
+        target["row"]["zgzcw_crosswalk"] = {
+            "provider_id_evidence": True, "zgzcw_match_id": "ZG-7",
+            "bookmaker_id": "CROWN", "source_anchor_id": "titan-77",
+        }
+        self.assertEqual(zgzcw_crosswalk(target), ("ZG-7", "CROWN"))
+        source = json.dumps([
+            {"market": "overunder", "bookmaker_id": "OTHER", "line": "2.5", "home": "9.0", "under": "9.0",
+             "odds_format": "decimal", "timestamp": "2026-01-01T00:03:00+08:00"},
+            {"market": "overunder", "bookmaker_id": "CROWN", "line": "2.5", "home": "1.82", "under": "2.02",
+             "odds_format": "decimal", "timestamp": "2026-01-01T00:03:00+08:00"},
+            {"market": "overunder", "bookmaker_id": "CROWN", "line": "2.75", "home": "1.70", "under": "2.10",
+             "odds_format": "decimal", "timestamp": "2026-01-01T00:04:00+08:00"},
+        ])
+        ticks = parse_zgzcw_history_ticks(source, "HIL", "CROWN")
+        self.assertEqual(len(ticks), 4)  # H/L sides for the exact and wrong lines.
+        candidate, reason = zgzcw_candidate(target, source, "https://example.test/zgzcw", "CROWN")
+        self.assertIsNone(reason)
+        self.assertEqual(candidate["odds"], "1.82")
+        self.assertEqual(candidate["provider_evidence"]["company_id"], "CROWN")
+        self.assertEqual(candidate["provider_evidence"]["native_odds_format"], "decimal")
+        self.assertEqual(candidate["evidence_quality"], "B")
+        target["row"]["zgzcw_crosswalk"]["source_anchor_id"] = "different"
+        self.assertIsNone(zgzcw_crosswalk(target))
+
+    def test_tipsme_corner_needs_crosswalk_and_explicit_timestamped_tick(self):
+        target = self.target(stage="T-5", market="CHL", side="H", line="9.5")
+        target["row"] = {
+            "hkjc_match_id": "HK-CORNER",
+            "tipsme_crosswalk": {
+                "hkjc_match_id": "HK-CORNER", "tipsme_match_id": "TM-CORNER",
+                "provider_id_evidence": True,
+            },
+            "kickoff": self.KICKOFF,
+        }
+        payload = json.dumps({
+            "market": "corner", "line": "9.5", "home": "0.88", "under": "0.92",
+            "odds_format": "hong_kong", "timestamp": "2026-01-01T00:03:00+08:00",
+        })
+
+        class Response:
+            status = 200
+            def read(self, *_): return payload.encode()
+            def __enter__(self): return self
+            def __exit__(self, *_): return False
+
+        with tempfile.TemporaryDirectory() as directory, patch("urllib.request.urlopen", return_value=Response()):
+            entries, audit = provider_entries(
+                [target], providers={"tipsme"}, cache_dir=Path(directory), rate_per_second=100,
+                retries=0, tipsme_url_template="https://example.test/{MATCH_ID}/{market}",
+            )
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["market_code"], "CHL")
+        self.assertEqual(entries[0]["evidence_quality"], "B")
+        self.assertEqual(audit["pages_fetched"], 1)
+
+    def test_provider_page_budget_is_enforced(self):
+        class Response:
+            status = 200
+            def read(self, *_): return b"<html>ok</html>"
+            def __enter__(self): return self
+            def __exit__(self, *_): return False
+
+        with tempfile.TemporaryDirectory() as directory:
+            fetcher = ProviderFetcher(PrivateResponseCache(Path(directory)), rate_per_second=100, retries=0, max_pages=1)
+            with patch("urllib.request.urlopen", return_value=Response()) as opener:
+                result = fetcher.get_many(["https://example.test/a", "https://example.test/b"])
+        self.assertEqual(opener.call_count, 1)
+        self.assertEqual(result["https://example.test/b"][2], "request_budget_exhausted")
 
 class DecimalLike:
     def __str__(self): return "1.700"

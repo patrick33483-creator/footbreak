@@ -19,6 +19,7 @@ import re
 import socket
 import threading
 import time
+import urllib.parse
 import urllib.error
 import urllib.request
 from collections import Counter
@@ -29,8 +30,16 @@ from pathlib import Path
 from typing import Any, Iterable
 
 SCHEMA_VERSION = 1
-PARSER_VERSION = "odds-recovery-provider-v1"
+PARSER_VERSION = "odds-recovery-provider-v2"
 MARKETS = {"HDC", "HIL", "CHL"}
+PRIMARY_EVIDENCE_QUALITIES = {"A", "B"}
+AUDIT_ONLY_EVIDENCE_QUALITY = "C"
+DEFAULT_EXACT_WINDOW_SECONDS = 60.0
+DEFAULT_FRESHNESS_SECONDS = {"T-30": 3600.0, "T-5": 900.0}
+DEFAULT_PROVIDER_MAX_PAGES = 250
+DEFAULT_PROVIDER_MAX_RESPONSE_BYTES = 4 * 1024 * 1024
+DEFAULT_ARTIFACT_MAX_BYTES = 16 * 1024 * 1024
+DEFAULT_ARTIFACT_MAX_FILES = 5000
 DEFAULT_ALLOWLIST = {
     "footbreak": (
         "system/snapshots", "system/hk_snapshots.json", "system/prediction_history_archive.json",
@@ -331,12 +340,28 @@ def _evidence_records(data: Any, *, source_name: str) -> Iterable[dict[str, Any]
         yield from keyed_mapping(data)
 
 
-def evidence_from_paths(system: str, paths: Iterable[Path], root: Path) -> tuple[list[dict[str, Any]], Counter, list[dict[str, str]]]:
+def evidence_from_paths(
+    system: str,
+    paths: Iterable[Path],
+    root: Path,
+    *,
+    max_file_bytes: int = DEFAULT_ARTIFACT_MAX_BYTES,
+    max_files: int = DEFAULT_ARTIFACT_MAX_FILES,
+) -> tuple[list[dict[str, Any]], Counter, list[dict[str, str]]]:
+    """Read only bounded JSON artifacts and return no payload text or paths."""
     quotes: list[dict[str, Any]] = []
     reasons: Counter = Counter()
     provenance: list[dict[str, str]] = []
-    for path in _iter_json_paths(paths):
+    for number, path in enumerate(_iter_json_paths(paths), start=1):
+        if number > max_files:
+            reasons["evidence_file_budget_exhausted"] += 1
+            break
         try:
+            # Do not follow a symlink out of an operator-approved evidence
+            # directory, and do not load an unexpectedly large raw payload.
+            if path.is_symlink() or path.stat().st_size > max_file_bytes:
+                reasons["unsafe_or_oversize_evidence_file"] += 1
+                continue
             raw = path.read_bytes(); data = json.loads(raw)
         except (OSError, UnicodeDecodeError, json.JSONDecodeError):
             reasons["malformed_evidence_file"] += 1; continue
@@ -351,16 +376,129 @@ def evidence_from_paths(system: str, paths: Iterable[Path], root: Path) -> tuple
     return quotes, reasons, provenance
 
 
-def choose_quote(target: dict[str, Any], evidence: Iterable[dict[str, Any]]) -> tuple[dict[str, Any] | None, str | None]:
+def artifact_inventory(paths_by_system: dict[str, list[Path]]) -> dict[str, Any]:
+    """Return a safe, aggregate manifest of candidate immutable artifacts.
+
+    This deliberately reports neither paths nor payloads.  It is useful before
+    provider access to show whether local/server evidence was actually
+    available, while retaining the existing source-hash-only provenance in
+    detailed recovery reports.
+    """
+    systems: dict[str, Any] = {}
+    for system, paths in paths_by_system.items():
+        files = 0
+        bytes_total = 0
+        rejected = Counter()
+        names = Counter()
+        for number, path in enumerate(_iter_json_paths(paths), start=1):
+            if number > DEFAULT_ARTIFACT_MAX_FILES:
+                rejected["file_budget_exhausted"] += 1
+                break
+            try:
+                if path.is_symlink() or not path.is_file():
+                    rejected["symlink_or_non_regular"] += 1
+                    continue
+                size = path.stat().st_size
+            except OSError:
+                rejected["unreadable"] += 1
+                continue
+            if size > DEFAULT_ARTIFACT_MAX_BYTES:
+                rejected["oversize"] += 1
+                continue
+            files += 1
+            bytes_total += size
+            # Basenames are only classified so a public report cannot expose
+            # a server directory structure or raw source naming convention.
+            if path.name in {"hk_snapshots.json", "prediction_history_archive.json", "sim_ledger.json", "ledger.json"}:
+                names[path.name] += 1
+            elif path.name == "data.json":
+                names["dashboard_data.json"] += 1
+            else:
+                names["snapshot_or_json_artifact"] += 1
+        systems[system] = {
+            "candidate_files": files,
+            "candidate_bytes": bytes_total,
+            "artifact_classes": dict(sorted(names.items())),
+            "rejected": dict(sorted(rejected.items())),
+        }
+    return {"scan_policy": "bounded_regular_json_only", "max_files_per_system": DEFAULT_ARTIFACT_MAX_FILES, "systems": systems}
+
+
+def _stage_cutoff(target: dict[str, Any]) -> tuple[datetime, bool, str]:
+    """Return a no-lookahead stage cutoff and whether it is kickoff-grounded."""
+    predicted = target["predicted_at"]
+    kickoff = _kickoff_for_target(target)
+    stage = target.get("stage")
+    if kickoff is None:
+        return predicted, False, "prediction_timestamp_fallback"
+    if stage == "首預":
+        return min(kickoff, predicted), True, "opening_earliest_pre_kickoff"
+    if stage == "T-30":
+        return min(kickoff - timedelta(minutes=30), predicted), True, "locf_cutoff"
+    if stage == "T-5":
+        return min(kickoff - timedelta(minutes=5), predicted), True, "locf_cutoff"
+    return predicted, False, "prediction_timestamp_fallback"
+
+
+def _evidence_quality(
+    target: dict[str, Any],
+    quote: dict[str, Any],
+    cutoff: datetime,
+    kickoff_grounded: bool,
+    selection_method: str,
+    *,
+    exact_window_seconds: float,
+    freshness_seconds: dict[str, float],
+) -> tuple[str, float | None]:
+    """Grade only timing quality; exact identity is always required separately."""
+    if not kickoff_grounded:
+        return AUDIT_ONLY_EVIDENCE_QUALITY, None
+    if target.get("stage") == "首預":
+        # The requirement for opening is the first valid pre-kickoff quote,
+        # rather than closeness to kickoff.
+        return "A", None
+    age = round((cutoff - quote["observed_at"]).total_seconds(), 6)
+    if age < 0:
+        return AUDIT_ONLY_EVIDENCE_QUALITY, None
+    if age <= max(0.0, exact_window_seconds):
+        return "A", age
+    ceiling = freshness_seconds.get(str(target.get("stage")))
+    if ceiling is not None and age <= ceiling:
+        return "B", age
+    return AUDIT_ONLY_EVIDENCE_QUALITY, age
+
+
+def choose_quote(
+    target: dict[str, Any],
+    evidence: Iterable[dict[str, Any]],
+    *,
+    exact_window_seconds: float = DEFAULT_EXACT_WINDOW_SECONDS,
+    freshness_seconds: dict[str, float] | None = None,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Select a stage-correct quote and decorate it with auditable quality."""
     exact = [q for q in evidence if q["fixture_identity"] == target["fixture_identity"]
              and q["market_code"] == target["market_code"] and q["line"] == target["line"]
              and q["side"] == target["side"]]
     if not exact:
         return None, "no_exact_fixture_market_line_side_evidence"
-    prior = [q for q in exact if q["observed_at"] <= target["predicted_at"]]
+    cutoff, kickoff_grounded, method = _stage_cutoff(target)
+    prior = [q for q in exact if q["observed_at"] <= cutoff]
     if not prior:
         return None, "only_post_prediction_evidence"
-    return max(prior, key=lambda q: q["observed_at"]), None
+    selected = min(prior, key=lambda q: q["observed_at"]) if target.get("stage") == "首預" else max(prior, key=lambda q: q["observed_at"])
+    quality, age = _evidence_quality(
+        target, selected, cutoff, kickoff_grounded, method,
+        exact_window_seconds=exact_window_seconds,
+        freshness_seconds=freshness_seconds or DEFAULT_FRESHNESS_SECONDS,
+    )
+    return {
+        **selected,
+        "evidence_quality": quality,
+        "evidence_target_timestamp": cutoff,
+        "freshness_ceiling_seconds": (freshness_seconds or DEFAULT_FRESHNESS_SECONDS).get(str(target.get("stage"))),
+        "selection_method": method,
+        "selection_age_seconds": age,
+    }, None
 
 
 _ENTRY_BODY_FIELDS = (
@@ -368,12 +506,18 @@ _ENTRY_BODY_FIELDS = (
     "selected_odds", "observed_at", "evidence_source_kind",
     "evidence_source_hash", "evidence_age_seconds",
 )
-_ENTRY_OPTIONAL_FIELDS = {"provider_evidence"}
+_ENTRY_OPTIONAL_FIELDS = {
+    "provider_evidence", "evidence_quality", "evidence_target_timestamp",
+    "freshness_ceiling_seconds", "selection_method",
+}
 
 
 def _validate_entry(entry: Any) -> dict[str, Any]:
     """Fail closed unless an entry is a canonical, self-authenticating quote."""
-    if not isinstance(entry, dict) or set(entry) not in ({*_ENTRY_BODY_FIELDS, "entry_hash"}, {*_ENTRY_BODY_FIELDS, "entry_hash", *_ENTRY_OPTIONAL_FIELDS}):
+    if not isinstance(entry, dict) or not set(_ENTRY_BODY_FIELDS).issubset(entry) or "entry_hash" not in entry:
+        raise ValueError("malformed_sidecar_entry")
+    allowed = {*_ENTRY_BODY_FIELDS, "entry_hash", *_ENTRY_OPTIONAL_FIELDS}
+    if set(entry) - allowed:
         raise ValueError("malformed_sidecar_entry")
     if any(not isinstance(entry.get(key), str) or not entry.get(key) for key in (
         "system", "snapshot_identity", "market_code", "line", "side",
@@ -396,9 +540,25 @@ def _validate_entry(entry: Any) -> dict[str, Any]:
         raise ValueError("malformed_sidecar_entry")
     if "provider_evidence" in entry:
         _validate_provider_evidence(entry["provider_evidence"], entry)
+    quality = entry.get("evidence_quality", AUDIT_ONLY_EVIDENCE_QUALITY)
+    if quality not in {"A", "B", AUDIT_ONLY_EVIDENCE_QUALITY}:
+        raise ValueError("malformed_evidence_quality")
+    if "evidence_target_timestamp" in entry:
+        if not isinstance(entry["evidence_target_timestamp"], str):
+            raise ValueError("malformed_evidence_quality")
+        parse_time(entry["evidence_target_timestamp"])
+    if "freshness_ceiling_seconds" in entry:
+        ceiling = entry["freshness_ceiling_seconds"]
+        if ceiling is not None and (isinstance(ceiling, bool) or not isinstance(ceiling, (int, float)) or not math.isfinite(ceiling) or ceiling < 0):
+            raise ValueError("malformed_evidence_quality")
+    if "selection_method" in entry and entry["selection_method"] not in {
+        "opening_earliest_pre_kickoff", "locf_cutoff", "prediction_timestamp_fallback",
+    }:
+        raise ValueError("malformed_evidence_quality")
     body = {key: entry[key] for key in _ENTRY_BODY_FIELDS}
-    if "provider_evidence" in entry:
-        body["provider_evidence"] = entry["provider_evidence"]
+    for key in _ENTRY_OPTIONAL_FIELDS:
+        if key in entry:
+            body[key] = entry[key]
     if entry["entry_hash"] != _sha(body):
         raise ValueError("sidecar_entry_hash_mismatch")
     return entry
@@ -416,14 +576,45 @@ def _sidecar(path: Path) -> dict[str, Any]:
     return data
 
 
+def _entry_quality(entry: dict[str, Any]) -> str:
+    """Read legacy entries conservatively without changing their bytes/hash."""
+    explicit = entry.get("evidence_quality")
+    if explicit in {"A", "B", AUDIT_ONLY_EVIDENCE_QUALITY}:
+        return explicit
+    # Version-1 entries had a verified exact identity and explicit age but no
+    # grade.  Preserve only those inside the new default stage freshness
+    # ceiling as B/LOCF; all other legacy evidence is audit-only.
+    try:
+        stage = str(entry["snapshot_identity"]).split("|", 3)[2]
+        age = float(entry["evidence_age_seconds"])
+    except (IndexError, KeyError, TypeError, ValueError):
+        return AUDIT_ONLY_EVIDENCE_QUALITY
+    ceiling = DEFAULT_FRESHNESS_SECONDS.get(stage)
+    return "B" if ceiling is not None and 0 <= age <= ceiling else AUDIT_ONLY_EVIDENCE_QUALITY
+
+
 def _entry(target: dict[str, Any], quote: dict[str, Any]) -> dict[str, Any]:
+    age = quote.get("selection_age_seconds")
+    if isinstance(age, bool) or not isinstance(age, (int, float)) or not math.isfinite(age) or age < 0:
+        age = round((target["predicted_at"] - quote["observed_at"]).total_seconds(), 6)
     body = {"system": target["system"], "snapshot_identity": target["snapshot_identity"],
             "market_code": target["market_code"], "line": target["line"], "side": target["side"],
             "selected_odds": quote["odds"], "observed_at": quote["observed_at"].isoformat(),
             "evidence_source_kind": quote["source_kind"], "evidence_source_hash": quote["source_ref"],
-            "evidence_age_seconds": round((target["predicted_at"] - quote["observed_at"]).total_seconds(), 6)}
+            "evidence_age_seconds": age}
     if quote.get("provider_evidence") is not None:
         body["provider_evidence"] = quote["provider_evidence"]
+    # Every newly generated candidate writes an explicit grade and timing
+    # policy.  Grade-less legacy entries are handled conservatively by
+    # _entry_quality without rewriting their hashes.
+    body["evidence_quality"] = quote.get("evidence_quality", AUDIT_ONLY_EVIDENCE_QUALITY)
+    target_timestamp = quote.get("evidence_target_timestamp")
+    if isinstance(target_timestamp, datetime):
+        body["evidence_target_timestamp"] = target_timestamp.isoformat()
+    if "freshness_ceiling_seconds" in quote:
+        body["freshness_ceiling_seconds"] = quote["freshness_ceiling_seconds"]
+    if quote.get("selection_method"):
+        body["selection_method"] = quote["selection_method"]
     return {**body, "entry_hash": _sha(body)}
 
 
@@ -434,18 +625,23 @@ def _validate_provider_evidence(value: Any, entry: dict[str, Any]) -> None:
     required = {"provider", "source_url_hash", "company_id", "native_odds_format", "native_price", "normalized_decimal", "quote_timestamp", "target_timestamp", "age_seconds", "parser_version"}
     if not isinstance(value, dict) or set(value) != required:
         raise ValueError("malformed_provider_evidence")
-    if value["provider"] not in {"titan_crown", "tipsme_hkjc"}:
+    if value["provider"] not in {"titan_crown", "zgzcw_history", "tipsme_hkjc"}:
         raise ValueError("malformed_provider_evidence")
     if not all(isinstance(value[key], str) and value[key] for key in ("source_url_hash", "company_id", "native_odds_format", "native_price", "normalized_decimal", "quote_timestamp", "target_timestamp", "parser_version")):
         raise ValueError("malformed_provider_evidence")
-    if value["parser_version"] != PARSER_VERSION or value["normalized_decimal"] != entry["selected_odds"]:
+    if value["parser_version"] not in {"odds-recovery-provider-v1", PARSER_VERSION} or value["normalized_decimal"] != entry["selected_odds"]:
         raise ValueError("malformed_provider_evidence")
     parse_time(value["quote_timestamp"]); parse_time(value["target_timestamp"])
     try:
         native = _decimal(value["native_price"])
     except ValueError:
         raise ValueError("malformed_provider_evidence") from None
-    if value["native_odds_format"] == "hong_kong" and _decimal(value["normalized_decimal"], odds=True) != native + Decimal("1"):
+    normalized = _decimal(value["normalized_decimal"], odds=True)
+    if value["native_odds_format"] == "hong_kong" and normalized != native + Decimal("1"):
+        raise ValueError("malformed_provider_evidence")
+    if value["native_odds_format"] == "decimal" and normalized != native:
+        raise ValueError("malformed_provider_evidence")
+    if value["native_odds_format"] not in {"hong_kong", "decimal"}:
         raise ValueError("malformed_provider_evidence")
     age = value["age_seconds"]
     if isinstance(age, bool) or not isinstance(age, (float, int)) or age < 0 or not math.isfinite(age):
@@ -507,17 +703,22 @@ class PrivateResponseCache:
 class ProviderFetcher:
     """Fetch each URL at most once while bounding starts and simultaneous I/O."""
     def __init__(self, cache: PrivateResponseCache, rate_per_second: float = 1.0,
-                 retries: int = 2, timeout_seconds: float = 25.0, workers: int = 1):
+                 retries: int = 2, timeout_seconds: float = 25.0, workers: int = 1,
+                 max_pages: int = DEFAULT_PROVIDER_MAX_PAGES,
+                 max_response_bytes: int = DEFAULT_PROVIDER_MAX_RESPONSE_BYTES):
         self.cache = cache
         self.rate_per_second = max(0.1, rate_per_second)
         self.retries = max(0, retries)
         self.timeout_seconds = max(0.1, timeout_seconds)
         self.workers = max(1, min(32, int(workers)))
+        self.max_pages = max(1, int(max_pages))
+        self.max_response_bytes = max(1024, int(max_response_bytes))
         self._state_lock = threading.RLock()
         self._start_lock = threading.Lock()
         self._next_start = 0.0
         self._results: dict[str, tuple[str | None, bool, str | None]] = {}
         self._inflight: dict[str, threading.Event] = {}
+        self._planned_pages = 0
         self.pages_fetched = 0
         self.cache_hits = 0
         self.http_failures = 0
@@ -552,9 +753,18 @@ class ProviderFetcher:
     def get_many(self, urls: Iterable[str]) -> dict[str, tuple[str | None, bool, str | None]]:
         """Fetch a deterministic unique URL set with controlled concurrency."""
         unique = sorted(set(urls))
+        with self._state_lock:
+            uncached = [url for url in unique if url not in self._results]
+            available = max(0, self.max_pages - self._planned_pages)
+            allowed_new = set(uncached[:available])
+            self._planned_pages += len(allowed_new)
+        allowed = [url for url in unique if url not in uncached or url in allowed_new]
+        skipped = [url for url in unique if url in uncached and url not in allowed_new]
         with ThreadPoolExecutor(max_workers=self.workers, thread_name_prefix="provider-fetch") as pool:
-            futures = {url: pool.submit(self.get, url) for url in unique}
-            return {url: futures[url].result() for url in unique}
+            futures = {url: pool.submit(self.get, url) for url in allowed}
+            results = {url: futures[url].result() for url in allowed}
+        results.update({url: (None, False, "request_budget_exhausted") for url in skipped})
+        return {url: results[url] for url in unique}
 
     def _complete(self, url: str, result: tuple[str | None, bool, str | None]) -> tuple[str | None, bool, str | None]:
         with self._state_lock:
@@ -614,9 +824,15 @@ class ProviderFetcher:
             try:
                 request = urllib.request.Request(url, headers=self._request_headers(url))
                 with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
-                    body = response.read(); status = int(getattr(response, "status", 200) or 200)
+                    try:
+                        body = response.read(self.max_response_bytes + 1)
+                    except TypeError:  # Minimal offline test doubles may omit size.
+                        body = response.read()
+                    status = int(getattr(response, "status", 200) or 200)
                 if status != 200:
                     raise OSError(f"http_{status}")
+                if len(body) > self.max_response_bytes:
+                    raise OSError("response_too_large")
                 self.cache.put(url, body, status)
                 with self._state_lock:
                     self.pages_fetched += 1
@@ -737,20 +953,55 @@ def parse_titan_change_rows(source: str, market: str, kickoff: datetime, company
     return sorted(rows, key=lambda row: row["observed_at"])
 
 
-def _provider_quote(target: dict[str, Any], tick: dict[str, Any], target_time: datetime, *, provider: str, source_url: str, company_id: str) -> dict[str, Any] | None:
+def _provider_quote(
+    target: dict[str, Any],
+    tick: dict[str, Any],
+    target_time: datetime,
+    *,
+    provider: str,
+    source_url: str,
+    company_id: str,
+    native_odds_format: str = "hong_kong",
+    exact_window_seconds: float = DEFAULT_EXACT_WINDOW_SECONDS,
+    freshness_seconds: dict[str, float] | None = None,
+    selection_method: str = "locf_cutoff",
+) -> dict[str, Any] | None:
     try:
         native = _decimal(tick["price"])
-        decimal = native + Decimal("1")
-        return _quote(target["fixture_identity"], target["market_code"], target["line"], target["side"], decimal, tick["observed_at"], f"provider_{provider}", _url_hash(source_url), target["stage"], {
+        decimal = native + Decimal("1") if native_odds_format == "hong_kong" else native
+        candidate = _quote(target["fixture_identity"], target["market_code"], target["line"], target["side"], decimal, tick["observed_at"], f"provider_{provider}", _url_hash(source_url), target["stage"], {
             "provider": provider, "source_url_hash": _url_hash(source_url), "company_id": company_id,
-            "native_odds_format": "hong_kong", "native_price": str(native), "normalized_decimal": str(decimal.normalize()),
+            "native_odds_format": native_odds_format, "native_price": str(native), "normalized_decimal": str(decimal.normalize()),
             "quote_timestamp": tick["observed_at"].isoformat(), "target_timestamp": target_time.isoformat(),
             "age_seconds": round((target_time - tick["observed_at"]).total_seconds(), 6), "parser_version": PARSER_VERSION,
         })
+        if candidate is None:
+            return None
+        _, kickoff_grounded, _ = _stage_cutoff(target)
+        quality, age = _evidence_quality(
+            target, candidate, target_time, kickoff_grounded, selection_method,
+            exact_window_seconds=exact_window_seconds,
+            freshness_seconds=freshness_seconds or DEFAULT_FRESHNESS_SECONDS,
+        )
+        return {
+            **candidate,
+            "evidence_quality": quality,
+            "evidence_target_timestamp": target_time,
+            "freshness_ceiling_seconds": (freshness_seconds or DEFAULT_FRESHNESS_SECONDS).get(target["stage"]),
+            "selection_method": selection_method,
+            "selection_age_seconds": age,
+        }
     except (KeyError, ValueError): return None
 
 
-def titan_candidate(target: dict[str, Any], source: str, url: str) -> tuple[dict[str, Any] | None, str | None]:
+def titan_candidate(
+    target: dict[str, Any],
+    source: str,
+    url: str,
+    *,
+    exact_window_seconds: float = DEFAULT_EXACT_WINDOW_SECONDS,
+    freshness_seconds: dict[str, float] | None = None,
+) -> tuple[dict[str, Any] | None, str | None]:
     kickoff = _kickoff_for_target(target)
     if not kickoff: return None, "kickoff_context_unavailable"
     if target["market_code"] not in {"HDC", "HIL"}: return None, "provider_market_unsupported"
@@ -768,7 +1019,11 @@ def titan_candidate(target: dict[str, Any], source: str, url: str) -> tuple[dict
         selected = max(eligible, key=lambda row: row["observed_at"]) if eligible else None
     else: return None, "unsupported_stage"
     if not selected: return None, "no_qualifying_prior_quote"
-    return _provider_quote(target, selected, target_time, provider="titan_crown", source_url=url, company_id="3"), None
+    return _provider_quote(
+        target, selected, target_time, provider="titan_crown", source_url=url, company_id="3",
+        exact_window_seconds=exact_window_seconds, freshness_seconds=freshness_seconds,
+        selection_method="opening_earliest_pre_kickoff" if target["stage"] == "首預" else "locf_cutoff",
+    ), None
 
 
 def tipsme_crosswalk(target: dict[str, Any]) -> str | None:
@@ -776,7 +1031,9 @@ def tipsme_crosswalk(target: dict[str, Any]) -> str | None:
     hkjc = str(row.get("hkjc_match_id") or "").strip()
     direct = str(row.get("tipsme_match_id") or "").strip()
     bridge = row.get("tipsme_crosswalk")
-    if direct and str(row.get("tipsme_hkjc_match_id") or "").strip() == hkjc and hkjc:
+    # A coincidental pair of IDs is not a crosswalk.  Retain it only when the
+    # persisted record explicitly says the provider IDs were verified.
+    if direct and str(row.get("tipsme_hkjc_match_id") or "").strip() == hkjc and hkjc and row.get("tipsme_provider_id_evidence") is True:
         return direct
     if isinstance(bridge, dict) and hkjc and str(bridge.get("hkjc_match_id") or "").strip() == hkjc:
         value = str(bridge.get("tipsme_match_id") or "").strip()
@@ -819,36 +1076,177 @@ def parse_tipsme_chart_ticks(source: str, market: str) -> list[dict[str, Any]]:
                 price = _decimal(price)
                 normalized_line = canonical_line(line)
             except ValueError: continue
-            out.append({"line": normalized_line, "side": side, "price": price, "observed_at": observed, "opening": bool(node.get("opening") or node.get("isOpening") or node.get("initial") or node.get("label") == "初")})
+            native_format = str(node.get("odds_format") or node.get("oddsFormat") or "").strip().lower()
+            if native_format not in {"hong_kong", "decimal"}:
+                continue
+            out.append({"line": normalized_line, "side": side, "price": price, "observed_at": observed,
+                        "opening": bool(node.get("opening") or node.get("isOpening") or node.get("initial") or node.get("label") == "初"),
+                        "native_odds_format": native_format})
     return out
 
-def tipsme_candidate(target: dict[str, Any], source: str, url: str) -> tuple[dict[str, Any] | None, str | None]:
+def tipsme_candidate(
+    target: dict[str, Any],
+    source: str,
+    url: str,
+    *,
+    exact_window_seconds: float = DEFAULT_EXACT_WINDOW_SECONDS,
+    freshness_seconds: dict[str, float] | None = None,
+) -> tuple[dict[str, Any] | None, str | None]:
     kickoff = _kickoff_for_target(target)
     if not kickoff: return None, "kickoff_context_unavailable"
     ticks = [tick for tick in parse_tipsme_chart_ticks(source, target["market_code"]) if tick["line"] == target["line"] and tick["side"] == target["side"]]
     if target["stage"] == "首預":
-        eligible = [tick for tick in ticks if tick["opening"] and tick["observed_at"] <= kickoff]; at = kickoff
+        # A chart's earliest verified pre-kickoff tick is the only defensible
+        # opening reconstruction; a presentational "opening" label is not
+        # required and must not be guessed when absent.
+        eligible = [tick for tick in ticks if tick["observed_at"] <= kickoff]; at = kickoff
         selected = min(eligible, key=lambda row: row["observed_at"]) if eligible else None
     elif target["stage"] in {"T-30", "T-5"}:
         at = kickoff - timedelta(minutes=30 if target["stage"] == "T-30" else 5)
         eligible = [tick for tick in ticks if tick["observed_at"] <= at]; selected = max(eligible, key=lambda row: row["observed_at"]) if eligible else None
     else: return None, "unsupported_stage"
     if not selected: return None, "no_qualifying_prior_quote"
-    return _provider_quote(target, selected, at, provider="tipsme_hkjc", source_url=url, company_id="hkjc"), None
+    # Corners are permitted only through this exact crosswalk plus an explicit
+    # timestamped chart tick.  Missing format/line/side/timestamp has already
+    # failed closed in the parser.
+    return _provider_quote(
+        target, selected, at, provider="tipsme_hkjc", source_url=url, company_id="hkjc",
+        native_odds_format=selected["native_odds_format"],
+        exact_window_seconds=exact_window_seconds, freshness_seconds=freshness_seconds,
+        selection_method="opening_earliest_pre_kickoff" if target["stage"] == "首預" else "locf_cutoff",
+    ), None
+
+
+def zgzcw_crosswalk(target: dict[str, Any]) -> tuple[str, str] | None:
+    """Require an explicit, provider-ID-backed source crosswalk for ZGZCW."""
+    row = target.get("row") or {}
+    bridge = row.get("zgzcw_crosswalk")
+    if not isinstance(bridge, dict) or bridge.get("provider_id_evidence") is not True:
+        return None
+    source_id = str(bridge.get("zgzcw_match_id") or row.get("zgzcw_match_id") or "").strip()
+    bookmaker_id = str(bridge.get("bookmaker_id") or row.get("zgzcw_bookmaker_id") or "").strip()
+    if not source_id or not bookmaker_id:
+        return None
+    anchor = _titan_id_for_target(target) or str(row.get("hkjc_match_id") or "").strip()
+    if not anchor or str(bridge.get("source_anchor_id") or "").strip() != anchor:
+        return None
+    return source_id, bookmaker_id
+
+
+def parse_zgzcw_history_ticks(source: str, market: str, bookmaker_id: str) -> list[dict[str, Any]]:
+    """Parse only self-identifying, timestamped, exact-bookmaker ZGZCW ticks.
+
+    A configurable endpoint is deliberately required.  The public URL shape
+    was not established in the repository handoffs, so this parser does not
+    invent one or infer an event by team name.  It accepts only embedded JSON
+    nodes that name market, bookmaker, line, price format and timestamp.
+    """
+    if market not in {"HDC", "HIL"}:
+        return []
+    decoder = json.JSONDecoder()
+    blobs: list[Any] = []
+    for match in re.finditer(r"[\[{]", source):
+        try:
+            value, _ = decoder.raw_decode(source[match.start():])
+            blobs.append(value)
+        except json.JSONDecodeError:
+            continue
+    market_tags = {"HDC": {"hdc", "handicap", "asian_handicap"}, "HIL": {"hil", "overunder", "over_under", "total"}}
+    result: list[dict[str, Any]] = []
+    for node in _walk_json(blobs):
+        tag = str(node.get("market") or node.get("marketType") or node.get("type") or "").strip().lower()
+        if tag not in market_tags[market]:
+            continue
+        tick_bookmaker = str(node.get("bookmaker_id") or node.get("company_id") or node.get("bookmakerId") or "").strip()
+        if tick_bookmaker != bookmaker_id:
+            continue
+        observed = _tipsme_time(node.get("timestamp", node.get("time", node.get("changed_at"))))
+        native_format = str(node.get("odds_format") or node.get("oddsFormat") or "").strip().lower()
+        line = node.get("line", node.get("handicap", node.get("condition")))
+        if observed is None or line is None or native_format not in {"hong_kong", "decimal"}:
+            continue
+        try:
+            normalized_line = canonical_line(line)
+        except ValueError:
+            continue
+        sides = (
+            ("H", node.get("home", node.get("homeOdds"))),
+            ("A" if market == "HDC" else "L", node.get("away" if market == "HDC" else "under",
+                                                          node.get("awayOdds" if market == "HDC" else "underOdds"))),
+        )
+        for side, price in sides:
+            try:
+                result.append({
+                    "line": normalized_line, "side": side, "price": _decimal(price),
+                    "observed_at": observed, "native_odds_format": native_format,
+                    "opening": bool(node.get("opening") or node.get("isOpening") or node.get("initial")),
+                    "bookmaker_id": tick_bookmaker,
+                })
+            except ValueError:
+                continue
+    deduplicated = {
+        (tick["line"], tick["side"], str(tick["price"]), tick["observed_at"].isoformat(), tick["bookmaker_id"]): tick
+        for tick in result
+    }
+    return sorted(deduplicated.values(), key=lambda tick: tick["observed_at"])
+
+
+def zgzcw_candidate(
+    target: dict[str, Any],
+    source: str,
+    url: str,
+    bookmaker_id: str,
+    *,
+    exact_window_seconds: float = DEFAULT_EXACT_WINDOW_SECONDS,
+    freshness_seconds: dict[str, float] | None = None,
+) -> tuple[dict[str, Any] | None, str | None]:
+    kickoff = _kickoff_for_target(target)
+    if kickoff is None:
+        return None, "kickoff_context_unavailable"
+    if target["market_code"] not in {"HDC", "HIL"}:
+        return None, "provider_market_unsupported"
+    ticks = [
+        tick for tick in parse_zgzcw_history_ticks(source, target["market_code"], bookmaker_id)
+        if tick["line"] == target["line"] and tick["side"] == target["side"] and tick["bookmaker_id"] == bookmaker_id
+    ]
+    if not ticks:
+        return None, "no_exact_fixture_market_line_side_bookmaker_evidence"
+    if target["stage"] == "首預":
+        at = min(kickoff, target["predicted_at"])
+        eligible = [tick for tick in ticks if tick["observed_at"] <= at]
+        selected = min(eligible, key=lambda tick: tick["observed_at"]) if eligible else None
+    elif target["stage"] in {"T-30", "T-5"}:
+        at = min(kickoff - timedelta(minutes=30 if target["stage"] == "T-30" else 5), target["predicted_at"])
+        eligible = [tick for tick in ticks if tick["observed_at"] <= at]
+        selected = max(eligible, key=lambda tick: tick["observed_at"]) if eligible else None
+    else:
+        return None, "unsupported_stage"
+    if selected is None:
+        return None, "no_qualifying_prior_quote"
+    return _provider_quote(
+        target, selected, at, provider="zgzcw_history", source_url=url, company_id=bookmaker_id,
+        native_odds_format=selected["native_odds_format"],
+        exact_window_seconds=exact_window_seconds, freshness_seconds=freshness_seconds,
+        selection_method="opening_earliest_pre_kickoff" if target["stage"] == "首預" else "locf_cutoff",
+    ), None
 
 
 def provider_entries(targets: list[dict[str, Any]], *, providers: set[str], cache_dir: Path,
                      rate_per_second: float, retries: int, timeout_seconds: float = 25.0,
-                     workers: int = 1, tipsme_url_template: str | None = None) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+                     workers: int = 1, tipsme_url_template: str | None = None,
+                     zgzcw_url_template: str | None = None,
+                     exact_window_seconds: float = DEFAULT_EXACT_WINDOW_SECONDS,
+                     freshness_seconds: dict[str, float] | None = None,
+                     max_pages: int = DEFAULT_PROVIDER_MAX_PAGES) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Resolve pages in batches, but evaluate each target in original order.
 
-    Titan is always evaluated before Tipsme as before.  Tipsme pages are
-    requested only for targets that Titan did not recover, so page batching
-    cannot broaden recovery eligibility or change provider precedence.
+    The ladder is local evidence (handled by report), Titan company-ID 3,
+    ZGZCW exact-crosswalk histories, then Tipsme.  A later source is requested
+    only when every preceding rung failed for that exact target.
     """
     fetcher = ProviderFetcher(
         PrivateResponseCache(cache_dir), rate_per_second, retries,
-        timeout_seconds=timeout_seconds, workers=workers,
+        timeout_seconds=timeout_seconds, workers=workers, max_pages=max_pages,
     )
     entries: list[dict[str, Any]] = []; recovered = Counter(); failures = Counter(); attempted = set()
     plans: list[dict[str, Any]] = []
@@ -871,7 +1269,44 @@ def provider_entries(targets: list[dict[str, Any]], *, providers: set[str], cach
         if err:
             plan["reason"] = "http_failure"
         elif source is not None:
-            plan["candidate"], plan["reason"] = titan_candidate(plan["target"], source, url)
+            plan["candidate"], plan["reason"] = titan_candidate(
+                plan["target"], source, url, exact_window_seconds=exact_window_seconds,
+                freshness_seconds=freshness_seconds,
+            )
+
+    for plan in plans:
+        if plan["candidate"] is not None or "zgzcw" not in providers:
+            continue
+        target = plan["target"]
+        crosswalk = zgzcw_crosswalk(target)
+        if not crosswalk:
+            plan["reason"] = "zgzcw_exact_id_crosswalk_unavailable"
+        elif not zgzcw_url_template:
+            plan["reason"] = "zgzcw_public_url_unconfigured"
+        else:
+            match_id, bookmaker_id = crosswalk
+            attempted.add(("zgzcw", match_id, bookmaker_id))
+            plan["zgzcw_bookmaker_id"] = bookmaker_id
+            plan["zgzcw_url"] = zgzcw_url_template.format(
+                MATCH_ID=match_id, match_id=match_id, BOOKMAKER_ID=bookmaker_id, bookmaker_id=bookmaker_id,
+                market={"HDC": "hdp", "HIL": "hilo", "CHL": "corner"}[target["market_code"]],
+            )
+
+    zgzcw_pages = fetcher.get_many(plan["zgzcw_url"] for plan in plans if "zgzcw_url" in plan)
+    for plan in plans:
+        if plan["candidate"] is not None:
+            continue
+        url = plan.get("zgzcw_url")
+        if not url:
+            continue
+        source, _cached, err = zgzcw_pages[url]
+        if err:
+            plan["reason"] = "http_failure"
+        elif source is not None:
+            plan["candidate"], plan["reason"] = zgzcw_candidate(
+                plan["target"], source, url, plan["zgzcw_bookmaker_id"],
+                exact_window_seconds=exact_window_seconds, freshness_seconds=freshness_seconds,
+            )
 
     for plan in plans:
         if plan["candidate"] is not None or "tipsme" not in providers:
@@ -900,7 +1335,10 @@ def provider_entries(targets: list[dict[str, Any]], *, providers: set[str], cach
         if err:
             plan["reason"] = "http_failure"
         elif source is not None:
-            plan["candidate"], plan["reason"] = tipsme_candidate(plan["target"], source, url)
+            plan["candidate"], plan["reason"] = tipsme_candidate(
+                plan["target"], source, url, exact_window_seconds=exact_window_seconds,
+                freshness_seconds=freshness_seconds,
+            )
 
     for plan in plans:
         target = plan["target"]; candidate = plan["candidate"]; reason = plan["reason"]
@@ -919,37 +1357,71 @@ def provider_entries(targets: list[dict[str, Any]], *, providers: set[str], cach
         "cache_hits": fetcher.cache_hits,
         "http_failures": fetcher.http_failures,
         "timeout_failures": fetcher.timeout_failures,
+        "request_budget": max_pages,
         "targets_recovered_by_stage_market_source": dict(sorted(recovered.items())),
         "stale_age_bands": dict(sorted(bands.items())),
-        "parser_failures": dict(sorted((key, value) for key, value in failures.items() if key not in {"http_failure", "exact_id_crosswalk_unavailable"})),
+        "parser_failures": dict(sorted((key, value) for key, value in failures.items() if key not in {"http_failure", "exact_id_crosswalk_unavailable", "zgzcw_exact_id_crosswalk_unavailable"})),
         "no_qualifying_prior_quote": failures.get("no_qualifying_prior_quote", 0),
         "exact_id_crosswalk_unavailable": failures.get("exact_id_crosswalk_unavailable", 0),
     }
 
-def report(rows_by_system: dict[str, list[dict[str, Any]]], paths_by_system: dict[str, list[Path]], *, provider_options: dict[str, Any] | None = None) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+def report(
+    rows_by_system: dict[str, list[dict[str, Any]]],
+    paths_by_system: dict[str, list[Path]],
+    *,
+    provider_options: dict[str, Any] | None = None,
+    exact_window_seconds: float = DEFAULT_EXACT_WINDOW_SECONDS,
+    freshness_seconds: dict[str, float] | None = None,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     all_entries: list[dict[str, Any]] = []
     systems: dict[str, Any] = {}
+    freshness_seconds = freshness_seconds or DEFAULT_FRESHNESS_SECONDS
     for system, rows in rows_by_system.items():
         targets, target_reasons = prediction_targets(rows, system)
         evidence, evidence_reasons, provenance = evidence_from_paths(system, paths_by_system.get(system, []), Path("."))
-        recovered: Counter = Counter(); unresolved = target_reasons + evidence_reasons; ages: list[float] = []
+        recovered: Counter = Counter(); unresolved = target_reasons + evidence_reasons; ages: list[float] = []; qualities: Counter = Counter()
         candidates: list[dict[str, Any]] = []
         for target in targets:
-            quote, reason = choose_quote(target, evidence)
+            quote, reason = choose_quote(
+                target, evidence, exact_window_seconds=exact_window_seconds,
+                freshness_seconds=freshness_seconds,
+            )
             if not quote:
                 unresolved[reason or "unknown"] += 1; continue
-            candidate = _entry(target, quote); candidates.append(candidate); all_entries.append(candidate)
+            candidate = _entry(target, quote); candidates.append(candidate)
+            # C evidence is surfaced only as aggregate audit coverage.  It is
+            # intentionally not persisted into the overlay, so it cannot
+            # conflict with or block a later exact/fresh provider recovery.
+            if candidate["evidence_quality"] in PRIMARY_EVIDENCE_QUALITIES:
+                all_entries.append(candidate)
             recovered[f"{target['stage']}|{target['market_code']}|{quote['source_kind']}"] += 1
             ages.append(candidate["evidence_age_seconds"])
+            qualities[candidate["evidence_quality"]] += 1
         systems[system] = {"missing_total": missing_selected_odds_count(rows),
                            "strict_identity_target_total": len(targets),
                            "recovered_candidate_count": len(candidates),
+                           "primary_eligible_candidate_count": sum(qualities[q] for q in PRIMARY_EVIDENCE_QUALITIES),
+                           "audit_only_candidate_count": qualities[AUDIT_ONLY_EVIDENCE_QUALITY],
+                           "evidence_quality_grades": dict(sorted(qualities.items())),
                            "recovered_by_stage_market_source": dict(sorted(recovered.items())),
                            "unrecoverable_reasons": dict(sorted(unresolved.items())),
                            "evidence_age_seconds": {"count": len(ages), "min": min(ages) if ages else None,
                                "max": max(ages) if ages else None, "median": sorted(ages)[len(ages)//2] if ages else None},
                            "evidence_files": len(provenance), "provenance": provenance}
-    output = {"schema_version": SCHEMA_VERSION, "mode": "dry_run", "systems": systems}
+    output = {
+        "schema_version": SCHEMA_VERSION,
+        "mode": "dry_run",
+        "recovery_ladder": ["local_immutable_evidence", "titan_company_id_3", "zgzcw_exact_history", "tipsme_exact_crosswalk"],
+        "quality_policy": {
+            "A": "exact_window_or_verified_opening",
+            "B": "locf_within_freshness_ceiling",
+            "C": "approximate_audit_only_never_primary_statistics",
+            "exact_window_seconds": exact_window_seconds,
+            "freshness_seconds": freshness_seconds,
+        },
+        "artifact_inventory": artifact_inventory(paths_by_system),
+        "systems": systems,
+    }
     if provider_options:
         unresolved_targets = []
         indexed = {(entry["system"], entry["snapshot_identity"], entry["market_code"], entry["line"], entry["side"]) for entry in all_entries}
@@ -957,11 +1429,26 @@ def report(rows_by_system: dict[str, list[dict[str, Any]]], paths_by_system: dic
             for target in prediction_targets(rows, system)[0]:
                 key = (system, target["snapshot_identity"], target["market_code"], target["line"], target["side"])
                 if key not in indexed: unresolved_targets.append(target)
-        supplied, provider_audit = provider_entries(unresolved_targets, **provider_options)
-        all_entries.extend(supplied); output["provider_assisted"] = provider_audit
+        supplied, provider_audit = provider_entries(
+            unresolved_targets,
+            exact_window_seconds=exact_window_seconds,
+            freshness_seconds=freshness_seconds,
+            **provider_options,
+        )
+        all_entries.extend(entry for entry in supplied if entry.get("evidence_quality") in PRIMARY_EVIDENCE_QUALITIES)
+        output["provider_assisted"] = provider_audit
         for entry in supplied:
             system = entry["system"]; systems[system]["recovered_candidate_count"] += 1
-            marker = f"{entry.get("stage", "provider")}|{entry["market_code"]}|{entry["evidence_source_kind"]}"
+            if entry.get("evidence_quality") in PRIMARY_EVIDENCE_QUALITIES:
+                systems[system]["primary_eligible_candidate_count"] += 1
+            else:
+                systems[system]["audit_only_candidate_count"] += 1
+            systems[system]["evidence_quality_grades"][entry.get("evidence_quality", AUDIT_ONLY_EVIDENCE_QUALITY)] = systems[system]["evidence_quality_grades"].get(entry.get("evidence_quality", AUDIT_ONLY_EVIDENCE_QUALITY), 0) + 1
+            try:
+                stage = entry["snapshot_identity"].split("|", 3)[2]
+            except (AttributeError, IndexError):
+                stage = "provider"
+            marker = f"{stage}|{entry['market_code']}|{entry['evidence_source_kind']}"
             systems[system]["recovered_by_stage_market_source"][marker] = systems[system]["recovered_by_stage_market_source"].get(marker, 0) + 1
     return output, all_entries
 
@@ -1019,9 +1506,14 @@ def overlay_rows(rows: list[dict[str, Any]], system: str, sidecar_path: str | Pa
                 try: line = canonical_line(collection.get("line") if collection.get("line") is not None else collection.get("condition"))
                 except ValueError: continue
                 entry = index.get((system, ident, collection.get("code"), line, collection.get("side")))
-                if entry:
+                # Grade C is deliberately retained only for audit/conflict
+                # review.  It can never populate odds buckets or primary
+                # >=1.70/<1.70 statistics through the public projections.
+                quality = _entry_quality(entry) if entry else AUDIT_ONLY_EVIDENCE_QUALITY
+                if entry and quality in PRIMARY_EVIDENCE_QUALITIES:
                     collection["odds"] = float(entry["selected_odds"])
                     collection["recovery_provenance"] = "historical_exact_prior"
+                    collection["recovery_evidence_quality"] = quality
     return result
 
 
@@ -1046,17 +1538,24 @@ def main() -> None:
     provider_mode = parser.add_mutually_exclusive_group()
     provider_mode.add_argument("--provider-audit", action="store_true", help="explicitly enable network provider audit; no sidecar write")
     provider_mode.add_argument("--provider-apply", action="store_true", help="explicitly enable network provider audit and append candidates")
-    parser.add_argument("--provider", action="append", choices=("titan", "tipsme"), default=[], help="network provider to use (repeatable)")
+    parser.add_argument("--provider", action="append", choices=("titan", "zgzcw", "tipsme"), default=[], help="network provider to use (repeatable)")
     parser.add_argument("--provider-cache", type=Path, help="private 0700/0600 raw-response cache directory")
     parser.add_argument("--provider-rate", type=float, default=1.0, help="maximum provider requests per second (default 1)")
     parser.add_argument("--provider-retries", type=int, default=2)
     parser.add_argument("--provider-timeout", type=float, default=25.0, help="per-request timeout seconds (default 25)")
     parser.add_argument("--provider-workers", type=int, default=1, help="concurrent provider page workers, capped at 32 (default 1)")
+    parser.add_argument("--provider-max-pages", type=int, default=DEFAULT_PROVIDER_MAX_PAGES, help="total unique provider-page budget (default 250)")
+    parser.add_argument("--exact-window-seconds", type=float, default=DEFAULT_EXACT_WINDOW_SECONDS, help="A-grade cutoff window for T-30/T-5")
+    parser.add_argument("--freshness-t30-seconds", type=float, default=DEFAULT_FRESHNESS_SECONDS["T-30"], help="B-grade LOCF ceiling for T-30")
+    parser.add_argument("--freshness-t5-seconds", type=float, default=DEFAULT_FRESHNESS_SECONDS["T-5"], help="B-grade LOCF ceiling for T-5")
     parser.add_argument("--tipsme-url-template", help="verified public Tipsme URL template; uses {MATCH_ID} and {market}")
+    parser.add_argument("--zgzcw-url-template", help="verified public ZGZCW timestamp-history template; uses {MATCH_ID}, {BOOKMAKER_ID}, and {market}")
     args = parser.parse_args()
     if args.provider and not (args.provider_audit or args.provider_apply): parser.error("--provider requires --provider-audit or --provider-apply")
     if (args.provider_audit or args.provider_apply) and not args.provider: parser.error("provider mode requires at least one --provider")
     if (args.provider_audit or args.provider_apply) and not args.provider_cache: parser.error("provider mode requires --provider-cache private directory")
+    if args.exact_window_seconds < 0 or args.freshness_t30_seconds < 0 or args.freshness_t5_seconds < 0 or args.provider_max_pages < 1:
+        parser.error("freshness, exact-window, and provider page budgets must be non-negative (pages >= 1)")
     if (args.apply or args.provider_apply) and args.apply_confirmation != "APPLY_HISTORICAL_ODDS_RECOVERY":
         parser.error("--apply and --provider-apply require --apply-confirmation APPLY_HISTORICAL_ODDS_RECOVERY")
     paths = {system: [] for system in ("footbreak", "crown")}
@@ -1072,9 +1571,15 @@ def main() -> None:
             "providers": set(args.provider), "cache_dir": args.provider_cache,
             "rate_per_second": args.provider_rate, "retries": args.provider_retries,
             "timeout_seconds": args.provider_timeout, "workers": args.provider_workers,
-            "tipsme_url_template": args.tipsme_url_template,
+            "tipsme_url_template": args.tipsme_url_template, "zgzcw_url_template": args.zgzcw_url_template,
+            "max_pages": args.provider_max_pages,
         }
-    result, entries = report({"footbreak": _load_rows(args.footbreak_history), "crown": _load_rows(args.crown_history)}, paths, provider_options=provider_options)
+    freshness = {"T-30": args.freshness_t30_seconds, "T-5": args.freshness_t5_seconds}
+    result, entries = report(
+        {"footbreak": _load_rows(args.footbreak_history), "crown": _load_rows(args.crown_history)},
+        paths, provider_options=provider_options, exact_window_seconds=args.exact_window_seconds,
+        freshness_seconds=freshness,
+    )
     if args.apply or args.provider_apply:
         result["mode"] = "provider_apply" if args.provider_apply else "apply"; result["apply"] = apply(args.sidecar, entries)
     elif args.provider_audit:

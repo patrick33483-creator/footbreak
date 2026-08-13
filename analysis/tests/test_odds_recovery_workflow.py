@@ -137,6 +137,10 @@ class HistoricalOddsRecoveryWorkflowTests(unittest.TestCase):
         self.assertIn("--provider-timeout 8", workflow)
         self.assertIn("--provider-retries 0", workflow)
         self.assertIn("--provider-workers 8", workflow)
+        self.assertIn("--provider-max-pages 250", workflow)
+        self.assertIn("--exact-window-seconds 60", workflow)
+        self.assertIn("--freshness-t30-seconds 3600", workflow)
+        self.assertIn("--freshness-t5-seconds 900", workflow)
 
     def test_regeneration_verifier_reads_the_same_private_overlay(self) -> None:
         workflow = workflow_text()

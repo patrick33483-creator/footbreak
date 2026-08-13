@@ -134,6 +134,10 @@ jobs:
             --provider-timeout 8 \
             --provider-retries 0 \
             --provider-workers 8 \
+            --provider-max-pages 250 \
+            --exact-window-seconds 60 \
+            --freshness-t30-seconds 3600 \
+            --freshness-t5-seconds 900 \
             --provider-cache "$runner_tmp/provider-cache" \
             --footbreak-history "$runner_tmp/footbreak-targets.json" \
             --crown-history "$runner_tmp/crown-titan-targets.json" \
@@ -273,6 +277,10 @@ jobs:
             --provider-timeout 8 \
             --provider-retries 0 \
             --provider-workers 8 \
+            --provider-max-pages 250 \
+            --exact-window-seconds 60 \
+            --freshness-t30-seconds 3600 \
+            --freshness-t5-seconds 900 \
             --provider-cache /var/lib/footbreak/private/odds-recovery-provider-cache \
             --footbreak-history /var/www/footbreak/data.json \
             --crown-history /var/lib/footbreak/crown/prediction_history.json \
