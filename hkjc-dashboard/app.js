@@ -19,7 +19,13 @@ const STAGE_DESC = {
   'T-5': '開賽前 5 分鐘 · 唯一落注時點',
 };
 const VD_CLS = { '落注': 'v-go', '傾向': 'v-lean', '偏向': 'v-soft', '觀望': 'v-wait', '無傾向': 'v-none' };
-const MKT = { HDC: '讓球', HIL: '入球大小', CHL: '總角球大小', HAD: '主客和' };
+const MKT = { HDC: '讓球', HIL: '入球大細', CHL: '角球大細', HAD: '主客和' };
+const ODDS_SOURCE_LABEL = {
+  'titan007-crown-id-3': '皇冠盤（Titan007）',
+  'hkjc-current-board': '馬會即時盤',
+  hkjc: '馬會盤',
+};
+const oddsSourceLabel = (value) => ODDS_SOURCE_LABEL[value] || value || '未提供';
 
 let DATA = null, LIST = [], LED = null, SEL = null, STAGE = 'all', Q = '', VIEW = 'pred';
 let HISTORY_STAGE = 'all';
@@ -419,13 +425,14 @@ function currentOddsCard(m) {
     : '';
   const items = rows.map((row) => {
     const odds = Number(row.odds);
+    const observedAt = row.observed_board_at || row.observed_at;
     const price = Number.isFinite(odds) && odds > 1
       ? `賠率 ${odds.toFixed(2)}`
       : `賠率缺失 · ${esc(reason[row.reason] || row.reason || '未有已保存現價')}`;
-    return `<div class="current-odds-row"><b>${esc(row.code || '—')}</b>
+    return `<div class="current-odds-row"><b>${esc(MKT[row.code] || row.code || '—')}</b>
       <span>${esc(row.line ?? '—')} · ${esc(side(row))}</span>
       <span class="${Number.isFinite(odds) && odds > 1 ? '' : 'missing'}">${price}</span>
-      <small>${esc(row.source || '—')} · ${esc(row.observed_board_at || row.observed_at || '時間未提供')}</small>
+      <small>資料來源：${esc(oddsSourceLabel(row.source))} · 記錄時間：${observedAt ? esc(hkStamp(observedAt)) : '未提供'}</small>
     </div>`;
   }).join('');
   const empty = m.current_odds_status === 'missing' && !rows.length
@@ -434,7 +441,7 @@ function currentOddsCard(m) {
   return `<div class="card current-odds">
     <h2 class="card-h">目前已選賠率 <span class="sub">只供未開賽卡片參考；不會改寫首預／T-30／T-5 歷史</span></h2>
     <div class="current-odds-list">${items || empty}</div>
-    <p class="current-odds-note">來源 ${esc(m.current_odds_refresh_source || '—')}${seen}</p>
+    <p class="current-odds-note">更新來源：${esc(oddsSourceLabel(m.current_odds_refresh_source))}${seen}</p>
   </div>`;
 }
 
@@ -1085,16 +1092,15 @@ function historyStageMarketMatrix(stats) {
     const pushes = Number(x.pushes || 0);
     const groups = x.odds_groups || {};
     const low = groups.below_1_70 || {};
-    const missing = groups.missing || {};
     return x.accuracy == null
       ? `<span class="stage-market-empty">≥1.70 待累積</span><small>已評分 ${graded}${pushes ? ` · 走水 ${pushes}` : ''}</small>`
       : `<strong>≥1.70 ${pc(x.accuracy, 1)}</strong>
          <small>命中 ${x.hits}/${decided}</small>
          <small>已評分 ${graded}${pushes ? ` · 走水 ${pushes}` : ''}</small>
-         <small>&lt;1.70 ${low.hits || 0}/${low.decided || 0} · 缺賠率 ${missing.graded || 0}</small>`;
+         <small>&lt;1.70 ${low.hits || 0}/${low.decided || 0}</small>`;
   };
   return `<div class="stage-market-block">
-    <div class="stage-market-title">分階段市場命中率 <span>主統計：選邊賠率 ≥1.70；低賠／缺賠率獨立稽核</span></div>
+    <div class="stage-market-title">分階段市場命中率 <span>只計有有效賠率紀錄；主統計為選邊賠率 ≥1.70</span></div>
     <table class="stage-market-table" aria-label="首預、T-30及T-5各市場命中率（選邊賠率大於等於1.70）">
       <thead><tr><th>階段</th>${codes.map((code) => `<th>${HIST_MARKET_LABEL[code]}</th>`).join('')}</tr></thead>
       <tbody>${stages.map((stage) => `<tr><th>${stage}</th>${codes.map((code) => `<td>${cell(stage, code)}</td>`).join('')}</tr>`).join('')}</tbody>
@@ -1117,7 +1123,6 @@ function historyConsensusCards(stats) {
           <span>平均 ${f2(kept.average_odds)}</span>
           <span class="low">&lt;1.70 獨立 ${low.hits || 0}/${low.decided || 0} (${low.accuracy == null ? '—' : pc(low.accuracy, 1)})</span>
           <span>佔有賠率 ${pc(low.share, 1)} · 平均 ${f2(low.average_odds)}</span>
-          ${audit.missing_odds ? `<span>缺賠率 ${audit.missing_odds}</span>` : ''}
         </div>`
       : '<div class="consensus-odds-audit unavailable">賠率資料不足，未能檢查熱門盤偏差</div>';
     return `<article class="consensus-rank-card">
@@ -1235,12 +1240,11 @@ function renderFc() {
     const pushes = Number(x.pushes || 0);
     const groups = x.odds_groups || {};
     const low = groups.below_1_70 || {};
-    const missing = groups.missing || {};
     return `<span class="hist-stage"><b>${HIST_MARKET_LABEL[code]}</b> ${
       x.accuracy == null
         ? `≥1.70 待累積 (已評分 ${x.graded || 0})`
         : `≥1.70 ${pc(x.accuracy, 1)} (命中 ${x.hits}/${x.decided} · 已評分 ${x.graded || 0}${pushes ? ` · 走水 ${pushes}` : ''})`
-    }<small>＜1.70 ${low.hits || 0}/${low.decided || 0} · 缺賠率 ${missing.graded || 0}</small></span>`;
+    }<small>＜1.70 ${low.hits || 0}/${low.decided || 0}</small></span>`;
   }).join('');
   const historyRows = (items) => items.map((r) => `<tr>
     <td data-label="開賽" class="mono nowrap">${r.kickoff ? `${hkDay(r.kickoff)} ${hkClock(r.kickoff)}` : '—'}</td>

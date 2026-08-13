@@ -433,7 +433,7 @@ class OddsRecoveryTests(unittest.TestCase):
                         "odds": None, "grade_status": "GRADED", "hit": True}]}]}]}
                 foot = gen_app_data.build_prediction_history(watch, [], accuracy)
                 self.assertEqual(foot["stats"]["by_market"]["HDC"]["graded"], 1)
-                self.assertEqual(foot["stats"]["by_market"]["HDC"]["odds_groups"]["missing"]["graded"], 0)
+                self.assertEqual(foot["stats"]["by_market"]["HDC"]["excluded_missing_odds"], 0)
                 self.assertEqual(foot["stats"]["by_market"]["HDC"]["odds_groups"]["at_or_above_1_70"]["graded"], 1)
                 crown_rows = overlay_rows([{
                     "match_id": "event-1", "stage": "T-5", "predicted_at": TS,

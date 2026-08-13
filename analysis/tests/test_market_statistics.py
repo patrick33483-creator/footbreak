@@ -50,8 +50,9 @@ class MarketStatisticsTests(unittest.TestCase):
         self.assertEqual((metrics["graded"], metrics["decided"], metrics["hits"]), (2, 1, 1))
         self.assertEqual(metrics["pushes"], 1)
         self.assertEqual((groups["below_1_70"]["graded"], groups["below_1_70"]["decided"]), (1, 1))
-        self.assertEqual((groups["missing"]["graded"], groups["missing"]["decided"], groups["missing"]["hits"]), (2, 2, 1))
-        self.assertEqual((metrics["all_odds"]["graded"], metrics["all_odds"]["decided"], metrics["all_odds"]["hits"]), (5, 4, 2))
+        self.assertNotIn("missing", groups)
+        self.assertEqual(metrics["excluded_missing_odds"], 2)
+        self.assertEqual((metrics["all_odds"]["graded"], metrics["all_odds"]["decided"], metrics["all_odds"]["hits"]), (3, 2, 1))
         self.assertEqual(
             sum(group["graded"] for group in groups.values()),
             metrics["all_odds"]["graded"],

@@ -54,7 +54,7 @@ class TelegramTransportTests(unittest.TestCase):
             ["upgrade:footbreak:stage:T-5", "market:footbreak:HDC:0.8"],
         )
 
-    def test_review_notification_is_sent_once_per_candidate(self) -> None:
+    def test_review_notification_mode_is_retired(self) -> None:
         report = {
             "generated_at": "2026-08-11T12:30:00+08:00",
             "systems": {
@@ -83,9 +83,8 @@ class TelegramTransportTests(unittest.TestCase):
                     notify.main(["--review", "--report", str(report_path)]), 0
                 )
 
-            sender.assert_called_once()
-            state = json.loads(state_path.read_text(encoding="utf-8"))
-            self.assertEqual(state["reviews"], ["upgrade:footbreak:stage:T-5"])
+            sender.assert_not_called()
+            self.assertFalse(state_path.exists())
 
     def test_feature_challenger_only_creates_review_event_after_gate_passes(self) -> None:
         report = {

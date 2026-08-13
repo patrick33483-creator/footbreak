@@ -40,24 +40,17 @@ def _ledger(side="L", odds=1.91, line="2.5"):
 
 
 class FootbreakT5SignalNotificationTests(unittest.TestCase):
-    def test_hil_under_sends_exact_selected_odds_and_is_idempotent(self) -> None:
+    def test_hil_under_signal_is_retired(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             state = str(Path(directory) / "notify_state.json")
             with patch.object(notify, "STATE", state), patch.object(notify, "send") as sender:
                 self.assertEqual(
-                    notify.notify_fresh_t5_signals(_ledger(), ["footbreak-safe-1"]), 1
+                    notify.notify_fresh_t5_signals(_ledger(), ["footbreak-safe-1"]), 0
                 )
                 self.assertEqual(
                     notify.notify_fresh_t5_signals(_ledger(), ["footbreak-safe-1"]), 0
                 )
-            sender.assert_called_once()
-            message = sender.call_args.args[0]
-            self.assertIn("足破 T-5 訊號", message)
-            self.assertIn("市場：入球大細", message)
-            self.assertIn("選擇：入球細", message)
-            self.assertIn("盤口：2.5", message)
-            self.assertIn("選項實際賠率：1.910", message)
-            self.assertIn("只作通知，絕不實際投注。", message)
+            sender.assert_not_called()
 
     def test_rejects_non_under_missing_or_wrong_side_odds_and_non_t5(self) -> None:
         cases = [
@@ -82,7 +75,7 @@ class FootbreakT5SignalNotificationTests(unittest.TestCase):
                     )
                 sender.assert_not_called()
 
-    def test_exact_1_70_boundary_is_sent(self) -> None:
+    def test_exact_1_70_boundary_stays_silent(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             state = str(Path(directory) / "notify_state.json")
             with patch.object(notify, "STATE", state), patch.object(notify, "send") as sender:
@@ -90,31 +83,31 @@ class FootbreakT5SignalNotificationTests(unittest.TestCase):
                     notify.notify_fresh_t5_signals(
                         _ledger(side="L", odds=1.70), ["footbreak-safe-1"]
                     ),
-                    1,
+                    0,
                 )
-            sender.assert_called_once()
-            self.assertIn("選項實際賠率：1.700", sender.call_args.args[0])
+            sender.assert_not_called()
 
     def test_recovers_upcoming_signal_and_transport_failure_keeps_ledger(self) -> None:
         ledger = _ledger()
         with tempfile.TemporaryDirectory() as directory:
             state_path = Path(directory) / "notify_state.json"
             with patch.object(notify, "STATE", str(state_path)), patch.object(notify, "send") as sender:
-                self.assertEqual(notify.notify_fresh_t5_signals(ledger, []), 1)
-            sender.assert_called_once()
+                self.assertEqual(notify.notify_fresh_t5_signals(ledger, []), 0)
+            sender.assert_not_called()
 
-            state_path.unlink()
+            state_path.unlink(missing_ok=True)
             before = copy.deepcopy(ledger)
             with patch.object(notify, "STATE", str(state_path)), \
                  patch.object(notify, "send", side_effect=RuntimeError("transport down")):
-                with self.assertRaisesRegex(RuntimeError, "transport down"):
-                    notify.notify_fresh_t5_signals(ledger, ["footbreak-safe-1"])
+                self.assertEqual(
+                    notify.notify_fresh_t5_signals(ledger, ["footbreak-safe-1"]), 0
+                )
             self.assertEqual(ledger, before)
             self.assertFalse(state_path.exists())
             with patch.object(notify, "STATE", str(state_path)), \
                  patch.object(notify, "send") as sender:
-                self.assertEqual(notify.notify_fresh_t5_signals(ledger, []), 1)
-            sender.assert_called_once()
+                self.assertEqual(notify.notify_fresh_t5_signals(ledger, []), 0)
+            sender.assert_not_called()
 
     def test_record_picks_dispatches_only_after_new_t5_snapshot_is_saved(self) -> None:
         kickoff = (datetime.now(record_picks.HKT) + timedelta(minutes=20)).strftime(

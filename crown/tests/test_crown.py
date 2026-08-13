@@ -1533,10 +1533,11 @@ class CrownSafetyTests(unittest.TestCase):
             self.assertIsNotNone(history["stats"]["brier"])
             self.assertEqual(row["market_grades"][0]["settlement"], "Won")
             market = history["stats"]["by_market"]["HDC"]
-            # This legacy fixture deliberately has no selected odds: it must
-            # remain visible in the missing-price audit, never the ≥1.70 rate.
+            # This legacy fixture deliberately has no selected odds. It stays
+            # in immutable history but is excluded from every priced statistic.
             self.assertEqual(market["hits"], 0)
-            self.assertEqual(market["odds_groups"]["missing"]["hits"], 1)
+            self.assertEqual(market["all_odds"]["hits"], 0)
+            self.assertEqual(market["excluded_missing_odds"], 1)
 
     def test_prediction_history_market_accuracy_is_split_by_stage(self) -> None:
         stages = ("首預", "T-30", "T-5")
@@ -1988,16 +1989,16 @@ class CrownSafetyTests(unittest.TestCase):
         self.assertEqual(stats["by_market"]["讓球"]["n"], 2)
         self.assertEqual(len(stats["curve"]), 2)
 
-    def test_notifications_are_deduplicated_and_disabled_by_default(self) -> None:
+    def test_crown_simulated_bet_notification_is_retired(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             config = replace(settings(), state_dir=Path(directory), telegram_enabled=False)
             ledger = {"bets": [{"bet_id": "a", "status": "PENDING", "home": "A", "away": "B", "label": "x", "odds": 2}]}
             with patch("crown.notify._send") as sender:
-                self.assertEqual(notify_new(ledger, config), 1)
                 self.assertEqual(notify_new(ledger, config), 0)
-                sender.assert_called_once()
+                self.assertEqual(notify_new(ledger, config), 0)
+                sender.assert_not_called()
 
-    def test_t5_corner_forecast_notification_is_deduplicated(self) -> None:
+    def test_t5_corner_forecast_notification_is_retired(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             config = replace(
                 settings(), state_dir=Path(directory), telegram_enabled=False
@@ -2025,16 +2026,9 @@ class CrownSafetyTests(unittest.TestCase):
                 "stages": [stage],
             }}}
             with patch("crown.notify._send") as sender:
-                self.assertEqual(notify_new(ledger, config, ["corner-1"]), 1)
                 self.assertEqual(notify_new(ledger, config, ["corner-1"]), 0)
-                sender.assert_called_once()
-                message = sender.call_args.args[1]
-                self.assertIn("皇冠 T-5 訊號", message)
-                self.assertIn("市場：角球大細", message)
-                self.assertIn("選擇：角球細", message)
-                self.assertIn("盤口：9.5", message)
-                self.assertIn("選項實際賠率：1.880", message)
-                self.assertIn("只作通知，絕不實際投注。", message)
+                self.assertEqual(notify_new(ledger, config, ["corner-1"]), 0)
+                sender.assert_not_called()
 
     def test_corner_forecast_notification_rejects_non_t5_and_started_matches(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

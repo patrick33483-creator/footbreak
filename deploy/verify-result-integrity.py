@@ -116,7 +116,7 @@ def assert_market_stats_consistent(
 
         groups = cell.get("odds_groups")
         assert isinstance(groups, dict), (*context, "missing odds_groups")
-        expected_groups = ("at_or_above_1_70", "below_1_70", "missing")
+        expected_groups = ("at_or_above_1_70", "below_1_70")
         for key in expected_groups:
             assert isinstance(groups.get(key), dict), (*context, "missing odds group", key)
 
@@ -132,6 +132,12 @@ def assert_market_stats_consistent(
                 grouped_total,
                 all_odds,
             )
+        excluded_missing = cell.get("excluded_missing_odds")
+        assert isinstance(excluded_missing, int) and excluded_missing >= 0, (
+            *context,
+            "invalid excluded_missing_odds",
+            excluded_missing,
+        )
 
         for group_key in expected_groups:
             group = groups[group_key]
@@ -148,9 +154,13 @@ def assert_market_stats_consistent(
         return all_odds
 
     direct = {code: Counter() for code in MARKETS}
+    direct_missing = Counter()
     by_stage = {
         stage: {code: Counter() for code in MARKETS}
         for stage in STAGES
+    }
+    by_stage_missing = {
+        stage: Counter() for stage in STAGES
     }
     for row in history_rows:
         stage = str(row.get("stage") or "")
@@ -161,6 +171,14 @@ def assert_market_stats_consistent(
             if not code:
                 continue
             if code not in direct or stage not in by_stage:
+                continue
+            try:
+                odds = float(grade.get("odds"))
+            except (TypeError, ValueError):
+                odds = float("nan")
+            if not math.isfinite(odds) or odds <= 1.0:
+                direct_missing[code] += 1
+                by_stage_missing[stage][code] += 1
                 continue
             direct[code]["graded"] += 1
             by_stage[stage][code]["graded"] += 1
@@ -176,6 +194,11 @@ def assert_market_stats_consistent(
     for code in MARKETS:
         counts = direct[code]
         cell = audit_cell(reported.get(code) or {}, (label, code))
+        assert int((reported.get(code) or {}).get("excluded_missing_odds", -1)) == direct_missing[code], (
+            label, code, "excluded_missing_odds",
+            (reported.get(code) or {}).get("excluded_missing_odds"),
+            direct_missing[code],
+        )
         for key in ("graded", "decided", "hits"):
             assert int(cell.get(key, -1)) == counts[key], (
                 label, code, key, cell, counts
@@ -195,6 +218,12 @@ def assert_market_stats_consistent(
             cell = audit_cell(
                 (reported_stage.get(stage) or {}).get(code) or {},
                 (label, stage, code),
+            )
+            raw_cell = (reported_stage.get(stage) or {}).get(code) or {}
+            assert int(raw_cell.get("excluded_missing_odds", -1)) == by_stage_missing[stage][code], (
+                label, stage, code, "excluded_missing_odds",
+                raw_cell.get("excluded_missing_odds"),
+                by_stage_missing[stage][code],
             )
             for key in ("graded", "decided", "hits"):
                 assert int(cell.get(key, -1)) == counts[key], (

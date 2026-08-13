@@ -62,6 +62,17 @@ def _samples_by_odds(
     return selected
 
 
+def _priced_samples(
+    samples: list[dict[str, dict[str, Any]]],
+    stage: str = "T-5",
+) -> list[dict[str, dict[str, Any]]]:
+    """Return only samples with a valid selected price at the grading stage."""
+    return (
+        _samples_by_odds(samples, "low", stage)
+        + _samples_by_odds(samples, "eligible", stage)
+    )
+
+
 def _odds_bias(
     samples: list[dict[str, dict[str, Any]]],
     stage: str = "T-5",
@@ -203,9 +214,13 @@ def calculate_three_stage_consensus(
 
         markets[code] = {
             "same_direction": {
-                "fixtures": len(same_direction),
+                "fixtures": len(_priced_samples(same_direction)),
+                "excluded_missing_odds": (
+                    len(same_direction) - len(_priced_samples(same_direction))
+                ),
                 "line_changed_fixtures": (
-                    len(same_direction) - len(same_direction_and_line)
+                    len(_priced_samples(same_direction))
+                    - len(_priced_samples(same_direction_and_line))
                 ),
                 "primary": _metrics(
                     _samples_by_odds(same_direction, "eligible"),
@@ -213,11 +228,16 @@ def calculate_three_stage_consensus(
                 ),
                 "odds_segments": _odds_bias(same_direction),
                 "stage_diagnostics": {
-                    stage: _metrics(same_direction, stage) for stage in STAGES
+                    stage: _metrics(_priced_samples(same_direction), stage)
+                    for stage in STAGES
                 },
             },
             "same_direction_and_line": {
-                "fixtures": len(same_direction_and_line),
+                "fixtures": len(_priced_samples(same_direction_and_line)),
+                "excluded_missing_odds": (
+                    len(same_direction_and_line)
+                    - len(_priced_samples(same_direction_and_line))
+                ),
                 "primary": _metrics(
                     _samples_by_odds(same_direction_and_line, "eligible"),
                     "T-5",
@@ -225,7 +245,7 @@ def calculate_three_stage_consensus(
                 "odds_segments": _odds_bias(same_direction_and_line),
                 "breakdown": _breakdown(same_direction_and_line, code),
                 "stage_diagnostics": {
-                    stage: _metrics(same_direction_and_line, stage)
+                    stage: _metrics(_priced_samples(same_direction_and_line), stage)
                     for stage in STAGES
                 },
             },

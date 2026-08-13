@@ -1,8 +1,8 @@
 """Shared, auditable market-prediction statistics.
 
 The public market hit rate is deliberately scoped to selected decimal odds
-``>= 1.70``.  Lower prices and missing/non-finite prices are retained in
-separate audit cohorts and never leak into the public denominator.
+``>= 1.70``. Lower prices remain a separate cohort. Missing/non-finite prices
+are excluded from every statistical aggregate and exposed only as a count.
 """
 from __future__ import annotations
 
@@ -69,9 +69,10 @@ def _aggregate(grades: Iterable[dict[str, Any]]) -> dict[str, Any]:
 def market_metrics(rows: Iterable[dict[str, Any]], code: str | None = None) -> dict[str, Any]:
     """Aggregate scored market grades with explicit selected-odds cohorts.
 
-    Top-level metrics are the primary ``>=1.70`` scope.  ``all_odds`` is a
-    complete audit total; its three ``odds_groups`` are mutually exclusive and
-    sum exactly to it.  A graded push stays in its odds group but is excluded
+    Top-level metrics are the primary ``>=1.70`` scope. ``all_odds`` contains
+    every valid priced row; its two ``odds_groups`` are mutually exclusive and
+    sum exactly to it. Missing-price rows are reported only by
+    ``excluded_missing_odds``. A graded push stays in its odds group but is excluded
     from every decided denominator.  Pending/ungraded rows are absent from all
     market statistics rather than being counted as losses.
     """
@@ -88,12 +89,17 @@ def market_metrics(rows: Iterable[dict[str, Any]], code: str | None = None) -> d
         for bucket in ("at_or_above_1_70", "below_1_70", "missing")
     }
     high = _aggregate(cohorts["at_or_above_1_70"])
-    groups = {bucket: _aggregate(items) for bucket, items in cohorts.items()}
-    all_odds = _aggregate(grades)
+    groups = {
+        bucket: _aggregate(cohorts[bucket])
+        for bucket in ("at_or_above_1_70", "below_1_70")
+    }
+    priced = cohorts["at_or_above_1_70"] + cohorts["below_1_70"]
+    all_odds = _aggregate(priced)
     return {
         **high,
         "odds_scope": "selected_odds_at_or_above_1_70",
         "odds_threshold": ODDS_THRESHOLD,
         "all_odds": all_odds,
         "odds_groups": groups,
+        "excluded_missing_odds": len(cohorts["missing"]),
     }

@@ -181,35 +181,21 @@ class ResultIntegrityVerifierTests(unittest.TestCase):
                 "predicted_at": "2026-08-12T19:55:00+08:00",
                 "stage": "T-5",
                 "market_grades": [
-                    {"code": "HDC", "grade_status": "GRADED", "hit": True},
-                    {"code": "HIL", "grade_status": "GRADED", "hit": None},
+                    {
+                        "code": "HDC", "grade_status": "GRADED",
+                        "hit": True, "odds": 1.80,
+                    },
+                    {
+                        "code": "HIL", "grade_status": "GRADED",
+                        "hit": None, "odds": 1.80,
+                    },
                 ],
             }
         ]
-        empty = {"graded": 0, "decided": 0, "hits": 0, "accuracy": None}
-        stats = {
-            "by_market": {
-                "HDC": {"graded": 1, "decided": 1, "hits": 1, "accuracy": 1.0},
-                "HIL": {"graded": 1, "decided": 0, "hits": 0, "accuracy": None},
-                "CHL": dict(empty),
-            },
-            "by_stage_market": {
-                stage: {
-                    code: (
-                        {"graded": 1, "decided": 1, "hits": 1, "accuracy": 1.0}
-                        if stage == "T-5" and code == "HDC"
-                        else {"graded": 1, "decided": 0, "hits": 0, "accuracy": None}
-                        if stage == "T-5" and code == "HIL"
-                        else dict(empty)
-                    )
-                    for code in verify.MARKETS
-                }
-                for stage in verify.STAGES
-            },
-        }
+        stats = calculate_stats(rows)
         verify.assert_market_stats_consistent("test", rows, stats)
 
-        stats["by_stage_market"]["首預"]["HDC"]["graded"] = 1
+        stats["by_stage_market"]["首預"]["HDC"]["all_odds"]["graded"] = 1
         with self.assertRaises(AssertionError):
             verify.assert_market_stats_consistent("test", rows, stats)
 
@@ -242,7 +228,10 @@ class ResultIntegrityVerifierTests(unittest.TestCase):
                 "match_id": "priced",
                 "stage": "T-5",
                 "market_grades": [
-                    {"code": "HIL", "grade_status": "GRADED", "hit": True},
+                    {
+                        "code": "HIL", "grade_status": "GRADED",
+                        "hit": True, "odds": 1.80,
+                    },
                 ],
             },
             {
@@ -255,33 +244,31 @@ class ResultIntegrityVerifierTests(unittest.TestCase):
         ]
         empty = {"graded": 0, "decided": 0, "hits": 0, "pushes": 0, "accuracy": None}
 
-        def tiered(all_odds, high=None, low=None, missing=None):
+        def tiered(all_odds, high=None, low=None, excluded_missing_odds=0):
             high = high or dict(empty)
             low = low or dict(empty)
-            missing = missing or dict(empty)
             return {
                 **high,
                 "all_odds": all_odds,
                 "odds_groups": {
                     "at_or_above_1_70": high,
                     "below_1_70": low,
-                    "missing": missing,
                 },
+                "excluded_missing_odds": excluded_missing_odds,
             }
 
-        hil_all = {"graded": 2, "decided": 2, "hits": 1, "pushes": 0, "accuracy": 0.5}
+        hil_all = {"graded": 1, "decided": 1, "hits": 1, "pushes": 0, "accuracy": 1.0}
         hil_high = {"graded": 1, "decided": 1, "hits": 1, "pushes": 0, "accuracy": 1.0}
-        hil_missing = {"graded": 1, "decided": 1, "hits": 0, "pushes": 0, "accuracy": 0.0}
         stats = {
             "by_market": {
                 "HDC": tiered(dict(empty)),
-                "HIL": tiered(hil_all, high=hil_high, missing=hil_missing),
+                "HIL": tiered(hil_all, high=hil_high, excluded_missing_odds=1),
                 "CHL": tiered(dict(empty)),
             },
             "by_stage_market": {
                 stage: {
                     code: (
-                        tiered(hil_all, high=hil_high, missing=hil_missing)
+                        tiered(hil_all, high=hil_high, excluded_missing_odds=1)
                         if stage == "T-5" and code == "HIL"
                         else tiered(dict(empty))
                     )
@@ -292,7 +279,7 @@ class ResultIntegrityVerifierTests(unittest.TestCase):
         }
         verify.assert_market_stats_consistent("test", rows, stats)
 
-        stats["by_market"]["HIL"]["odds_groups"]["missing"]["hits"] = 1
+        stats["by_market"]["HIL"]["excluded_missing_odds"] = 0
         with self.assertRaises(AssertionError):
             verify.assert_market_stats_consistent("test", rows, stats)
 

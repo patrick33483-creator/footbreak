@@ -45,6 +45,13 @@ class PredictionHistoryUiTests(unittest.TestCase):
             self.assertIn("grid-template-columns: minmax(0, 1fr);", css)
             self.assertIn("function currentOddsCard(m)", app)
             self.assertIn("目前已選賠率", app)
+            self.assertIn("HDC: '讓球'", app)
+            self.assertIn("HIL: '入球大細'", app)
+            self.assertIn("CHL: '角球大細'", app)
+            self.assertIn("${esc(MKT[row.code] || row.code || '—')}", app)
+            self.assertIn("資料來源：", app)
+            self.assertIn("記錄時間：", app)
+            self.assertIn("更新來源：", app)
             self.assertIn("current_selected_odds_journal", app)
             self.assertIn("observed_board_at", app)
             self.assertIn(".current-odds-list", css)
@@ -77,7 +84,7 @@ class PredictionHistoryUiTests(unittest.TestCase):
             self.assertIn("wdl_graded", app)
             self.assertIn("wdl_hits", app)
             self.assertIn("wdl_accuracy", app)
-            self.assertIn("主統計：選邊賠率 ≥1.70", app)
+            self.assertIn("只計有有效賠率紀錄；主統計為選邊賠率 ≥1.70", app)
 
     def test_both_dashboards_render_three_stage_consensus_without_mobile_overflow(self) -> None:
         for dashboard in ("hkjc-dashboard", "crown/dashboard"):

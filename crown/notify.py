@@ -1,4 +1,4 @@
-"""Idempotent Crown Telegram bet and fresh T-5 signal notifications."""
+"""Idempotent Crown three-stage HDC Telegram signal notifications."""
 from __future__ import annotations
 
 import json
@@ -9,6 +9,7 @@ from typing import Any
 from .common import iso_hkt, now_hkt, parse_time, read_json, write_json_atomic
 from .config import Settings
 from .state import paths, state_lock
+from analysis.three_stage_consensus import calculate_three_stage_consensus
 
 
 MIN_T5_SIGNAL_ODDS = 1.70
@@ -171,7 +172,11 @@ def _signal_message(
 
 
 def _hdc_signal(
-    watch: dict[str, Any], stage: dict[str, Any], kickoff, identity: str
+    history_rows: list[dict[str, Any]],
+    watch: dict[str, Any],
+    stage: dict[str, Any],
+    kickoff,
+    identity: str,
 ) -> tuple[str, str] | None:
     """Three exact persisted stages must agree on one HDC direction and line."""
     ordered: list[dict[str, Any]] = []
@@ -203,33 +208,62 @@ def _hdc_signal(
         return None
     selected_line = home_line if selected_side == "H" else -home_line
     line_text = _quarter_line(selected_line)
+    condition = _hdc_condition_label(history_rows, selected_side, home_line)
     key = f"crown|{identity}|T-5|HDC|three-stage-v1|{selected_side}|{home_line:g}"
     return key, _signal_message(
         "皇冠", stage, kickoff, "皇冠讓球", f"{team} {line_text}", line_text, odds,
-        "首預、T-30、T-5 三段同一方向、同一盤口。",
+        f"首預、T-30、T-5 三段同一方向、同一盤口。\n條件：{condition}",
     )
 
 
-def _chl_signal(
-    stage: dict[str, Any], kickoff, identity: str
-) -> tuple[str, str] | None:
-    selected = _stage_market(stage, "CHL")
-    if selected is None or str(selected.get("side") or "") != "L":
+def _hdc_condition(side: str, home_line: float) -> tuple[str, str] | None:
+    if side not in {"H", "A"}:
         return None
-    numeric_line = _numeric_line(selected.get("line", selected.get("condition")))
-    odds = _finite_positive(selected.get("odds"))
-    if numeric_line is None or odds is None or odds < MIN_T5_SIGNAL_ODDS:
-        return None
-    line_text = _quarter_line(numeric_line, signed=False)
-    key = f"crown|{identity}|T-5|CHL|under-v1|{numeric_line:g}"
-    return key, _signal_message(
-        "皇冠", stage, kickoff, "角球大細", "角球細", line_text, odds,
-        "T-5 最終選擇角球細。",
+    if abs(home_line) < 1e-9:
+        return (
+            ("scratch_home", "平手盤（主）")
+            if side == "H"
+            else ("scratch_away", "平手盤（客）")
+        )
+    if side == "H":
+        return (
+            ("home_giving", "主讓")
+            if home_line < 0
+            else ("home_receiving", "主受讓")
+        )
+    return (
+        ("away_giving", "客讓")
+        if home_line > 0
+        else ("away_receiving", "客受讓")
     )
+
+
+def _hdc_condition_label(
+    history_rows: list[dict[str, Any]], selected_side: str, home_line: float
+) -> str:
+    category = _hdc_condition(selected_side, home_line)
+    if category is None:
+        return "讓球類型未能分類"
+    key, label = category
+    stats = calculate_three_stage_consensus(history_rows)
+    breakdown = (
+        (((stats.get("markets") or {}).get("HDC") or {})
+         .get("same_direction_and_line") or {})
+        .get("breakdown") or []
+    )
+    item = next((row for row in breakdown if row.get("key") == key), None)
+    decided = int((item or {}).get("decided") or 0)
+    hits = int((item or {}).get("hits") or 0)
+    accuracy = (item or {}).get("accuracy")
+    if decided <= 0 or accuracy is None:
+        return f"{label}≥1.70 累積中（0/0）"
+    return f"{label}≥1.70 {float(accuracy) * 100:.1f}%（{hits}/{decided}）"
 
 
 def _fresh_signal_events(
-    ledger: dict[str, Any], fresh_t5_predictions: list[Any] | None
+    ledger: dict[str, Any],
+    fresh_t5_predictions: list[Any] | None,
+    history_rows: list[dict[str, Any]],
 ) -> list[tuple[str, str]]:
     """Build notifications from fresh or still-upcoming unacknowledged T-5 rows.
 
@@ -255,12 +289,9 @@ def _fresh_signal_events(
         if resolved is None:
             continue
         watch, stage, context, identity = resolved
-        for event in (
-            _hdc_signal(watch, stage, context["kickoff"], identity),
-            _chl_signal(stage, context["kickoff"], identity),
-        ):
-            if event is not None:
-                events.append(event)
+        event = _hdc_signal(history_rows, watch, stage, context["kickoff"], identity)
+        if event is not None:
+            events.append(event)
     return events
 
 
@@ -274,30 +305,18 @@ def notify_new(
     # bet after reading the same old notify state.
     with state_lock(config):
         state, sent = _load(config), 0
-        seen = set(state["bets"])
-        for bet in ledger.get("bets", []):
-            bid = str(bet.get("bet_id"))
-            if bet.get("status") != "PENDING" or bid in seen:
-                continue
-            stake = float(bet.get("stake") or 0)
-            odds = float(bet.get("odds") or 0)
-            delivered = _send(
-                config,
-                "皇冠模擬注單\n"
-                f"{bet['home']} vs {bet['away']}\n"
-                f"投注：{_bet_label(bet)}\n"
-                f"賠率：{odds:.2f}\n"
-                f"注碼：HK${stake:,.0f}\n"
-                "只作模擬，絕不實際投注。",
-            )
-            if delivered is False:
-                continue
-            state["bets"].append(bid)
-            seen.add(bid)
-            sent += 1
+        history = read_json(config.state_dir / "prediction_history.json", {})
+        history_rows = (
+            history.get("rows") or []
+            if isinstance(history, dict)
+            else history if isinstance(history, list) else []
+        )
+        history_rows = [row for row in history_rows if isinstance(row, dict)]
+        # Crown simulated-bet notifications are retired.  Keep the old state
+        # key readable so an existing server state remains schema-compatible.
         seen_signals = set(state["signals"])
         for notification_id, message in _fresh_signal_events(
-            ledger, fresh_t5_predictions
+            ledger, fresh_t5_predictions, history_rows
         ):
             if notification_id in seen_signals:
                 continue

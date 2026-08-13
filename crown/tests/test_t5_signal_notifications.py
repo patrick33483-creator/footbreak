@@ -64,20 +64,54 @@ class CrownT5SignalNotificationTests(unittest.TestCase):
     def _config(self, directory: str):
         return replace(settings(), state_dir=Path(directory), telegram_enabled=False)
 
-    def test_qualifying_hdc_three_stage_and_chl_under_send_selected_odds(self) -> None:
+    def test_only_qualifying_hdc_three_stage_signal_is_sent(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             with patch("crown.notify._send") as sender:
                 self.assertEqual(
-                    notify_new(_ledger(), self._config(directory), ["safe-fixture-1"]), 2
+                    notify_new(_ledger(), self._config(directory), ["safe-fixture-1"]), 1
                 )
             messages = [call.args[1] for call in sender.call_args_list]
             self.assertTrue(any("市場：皇冠讓球" in text for text in messages))
             self.assertTrue(any("選擇：主隊 -0/0.5" in text for text in messages))
             self.assertTrue(any("選項實際賠率：1.930" in text for text in messages))
-            self.assertTrue(any("市場：角球大細" in text for text in messages))
-            self.assertTrue(any("選擇：角球細" in text for text in messages))
-            self.assertTrue(any("選項實際賠率：1.880" in text for text in messages))
+            self.assertTrue(any("條件：主讓≥1.70 累積中（0/0）" in text for text in messages))
+            self.assertFalse(any("角球" in text for text in messages))
             self.assertTrue(all("只作通知，絕不實際投注。" in text for text in messages))
+
+    def test_hdc_signal_uses_settled_priced_history_for_category_rate(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = self._config(directory)
+            rows = []
+            for fixture, hit in (
+                ("hist-1", True),
+                ("hist-2", True),
+                ("hist-3", True),
+                ("hist-4", False),
+            ):
+                for stage in ("首預", "T-30", "T-5"):
+                    rows.append({
+                        "match_id": fixture,
+                        "stage": stage,
+                        "market_grades": [{
+                            "code": "HDC",
+                            "side": "H",
+                            "line": -0.25,
+                            "grade_status": "GRADED",
+                            "hit": hit,
+                            "odds": 1.80,
+                        }],
+                    })
+            (config.state_dir / "prediction_history.json").write_text(
+                json.dumps({"rows": rows}), encoding="utf-8"
+            )
+            with patch("crown.notify._send") as sender:
+                self.assertEqual(
+                    notify_new(_ledger(), config, ["safe-fixture-1"]), 1
+                )
+            self.assertIn(
+                "條件：主讓≥1.70 75.0%（3/4）",
+                sender.call_args.args[1],
+            )
 
     def test_hdc_rejects_changed_direction_line_and_incomplete_stages(self) -> None:
         cases = [
@@ -184,14 +218,14 @@ class CrownT5SignalNotificationTests(unittest.TestCase):
                     self._config(directory),
                     ["safe-fixture-1"],
                 ),
-                2,
+                1,
             )
-        self.assertEqual(sender.call_count, 2)
+        self.assertEqual(sender.call_count, 1)
 
     def test_upcoming_unacknowledged_t5_is_recovered_without_fresh_handoff(self) -> None:
         with tempfile.TemporaryDirectory() as directory, patch("crown.notify._send") as sender:
-            self.assertEqual(notify_new(_ledger(), self._config(directory), []), 2)
-        self.assertEqual(sender.call_count, 2)
+            self.assertEqual(notify_new(_ledger(), self._config(directory), []), 1)
+        self.assertEqual(sender.call_count, 1)
 
     def test_t30_or_first_stage_never_trigger(self) -> None:
         non_t5 = _ledger()
@@ -213,9 +247,9 @@ class CrownT5SignalNotificationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             config = self._config(directory)
             with patch("crown.notify._send") as sender:
-                self.assertEqual(notify_new(_ledger(), config, ["safe-fixture-1"]), 2)
+                self.assertEqual(notify_new(_ledger(), config, ["safe-fixture-1"]), 1)
                 self.assertEqual(notify_new(_ledger(), config, ["safe-fixture-1"]), 0)
-            self.assertEqual(sender.call_count, 2)
+            self.assertEqual(sender.call_count, 1)
 
     def test_transport_failure_never_corrupts_live_prediction_state(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -232,5 +266,5 @@ class CrownT5SignalNotificationTests(unittest.TestCase):
             notify_path = config.state_dir / "notify_state.json"
             self.assertFalse(notify_path.exists())
             with patch("crown.notify._send") as sender:
-                self.assertEqual(notify_new(ledger, config, []), 2)
-            self.assertEqual(sender.call_count, 2)
+                self.assertEqual(notify_new(ledger, config, []), 1)
+            self.assertEqual(sender.call_count, 1)

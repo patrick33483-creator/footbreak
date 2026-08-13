@@ -1,7 +1,7 @@
 """足破 · Telegram 通知系統
 
-只有真正建立注單(T-5 落注)，或者模型候選通過既定安全門檻需要
-人工審核時才發通知。預測、排程、掃描完成及結算通知全部停用。
+只有真正建立雷達模擬注單(T-5 落注)才發通知。預測訊號、模型候選、
+健康異常、排程、掃描完成及結算通知全部停用。
 
   1. 冪等 —— 已通知過嘅注單記喺 notify_state.json,重複執行唔會再發。
      絕對唔會改 sim_ledger.json。
@@ -168,41 +168,8 @@ def _footbreak_hil_under_event(ledger, item):
 
 
 def notify_fresh_t5_signals(ledger, fresh_t5):
-    """Send fresh or recoverable upcoming Footbreak T-5 HIL-under signals.
-
-    Fresh identities are checked first, then the current watch list is scanned
-    for an unacknowledged T-5 whose kickoff is still in the future.  This
-    recovers a temporary Telegram/deployment failure but never backfills a
-    stale betting prompt after kickoff.
-    """
-    state = load_state()
-    seen = set(state.get("signals") or [])
-    sent = 0
-    items = list(fresh_t5 or [])
-    items.extend(str(match_id) for match_id in (ledger.get("watch") or {}))
-    seen_items = set()
-    for item in items:
-        mid = str(item.get("match_id") or "") if isinstance(item, dict) else str(item or "")
-        if not mid or mid in seen_items:
-            continue
-        seen_items.add(mid)
-        event = _footbreak_hil_under_event(ledger, item)
-        if event is None:
-            continue
-        key, text = event
-        if key in seen:
-            continue
-        send(text)
-        state.setdefault("signals", []).append(key)
-        seen.add(key)
-        sent += 1
-        state["last_sent"] = dt.datetime.now(HKT).isoformat(timespec="seconds")
-        # Persist every successful key before any subsequent independent
-        # delivery.  This makes retry handling idempotent even if a later
-        # signal transport call fails.
-        state["signals"] = state["signals"][-800:]
-        save_state(state)
-    return sent
+    """Retired compatibility entry point; T-5 HIL-under alerts stay silent."""
+    return 0
 
 
 def load_ledger():
@@ -739,37 +706,10 @@ def main(argv):
         window = float(argv[argv.index("--window") + 1])
 
     if mode_review:
-        report_path = (
-            argv[argv.index("--report") + 1]
-            if "--report" in argv
-            else "/var/lib/footbreak/backtest/latest.json"
-        )
-        if not os.path.isfile(report_path):
-            print("回測報告不存在 —— 不發送")
-            return 1
-        with open(report_path, encoding="utf-8") as handle:
-            report = json.load(handle)
-        state = load_state()
-        sent = set(state.get("reviews") or [])
-        events = [event for event in review_events(report) if event["key"] not in sent]
-        if not events:
-            print("未有新通過門檻嘅模型候選 —— 不發送")
-            return 0
-        text = review_msg(events, report.get("generated_at"))
-        if dry:
-            print(text)
-            print(f"\n[dry-run] 會通知 {len(events)} 個審核項目,唔會寫狀態")
-            return 0
-        send(text)
-        state["reviews"] = (
-            (state.get("reviews") or []) + [event["key"] for event in events]
-        )[-200:]
-        state["last_sent"] = dt.datetime.now(HKT).isoformat(timespec="seconds")
-        save_state(state)
-        print(f"已發模型人工審核通知({len(events)} 項)")
+        print("模型候選 Telegram 通知已停用；只保留雷達模擬注")
         return 0
 
-    # User preference: Telegram is for new bets and passed model-review gates.
+    # User preference: Footbreak Telegram is only for new radar simulation bets.
     # Keep the old formatters for historical compatibility, but never send
     # watch/schedule/sweep/settlement messages.
     if mode_watch or mode_sched or mode_sweep or mode_settled:
