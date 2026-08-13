@@ -367,6 +367,20 @@ class ProviderRecoveryTests(unittest.TestCase):
         self.assertIsNone(quote)
         self.assertEqual(reason, "no_qualifying_prior_quote")
 
+    def test_titan_parses_exact_chinese_handicap_lines_and_receiving_sign(self):
+        source = """
+        <tr><td></td><td></td><td>0.86</td><td>受讓半球</td><td>0.84</td><td>12-31 23:30</td><td>即</td></tr>
+        <tr><td></td><td></td><td>0.91</td><td>半球/一球</td><td>0.85</td><td>12-31 23:40</td><td>即</td></tr>
+        """
+        receiving = self.target(stage="T-5", market="HDC", side="H", line="0.5")
+        giving = self.target(stage="T-5", market="HDC", side="A", line="-0.75")
+        home_quote, home_reason = titan_candidate(receiving, source, "https://example.test/titan-hdc")
+        away_quote, away_reason = titan_candidate(giving, source, "https://example.test/titan-hdc")
+        self.assertIsNone(home_reason)
+        self.assertIsNone(away_reason)
+        self.assertEqual(home_quote["odds"], "1.86")
+        self.assertEqual(away_quote["odds"], "1.85")
+
     def test_private_cache_reuses_raw_response_without_network(self):
         with tempfile.TemporaryDirectory() as directory:
             cache = PrivateResponseCache(Path(directory))

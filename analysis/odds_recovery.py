@@ -659,8 +659,37 @@ def _numeric_cell(value: str) -> Decimal | None:
 
 def _titan_line(raw: str, market: str) -> str | None:
     value = _numeric_cell(raw)
-    if value is None: return None
-    if market == "HDC" and not raw.strip().startswith(("-", "+")):
+    if value is None and market == "HDC":
+        text = re.sub(r"\s+", "", raw.strip()).replace("讓", "让").replace("兩", "两")
+        receiving = text.startswith("受让")
+        if receiving:
+            text = text[2:]
+        chinese_lines = {
+            "平手": Decimal("0"),
+            "平手/半球": Decimal("0.25"),
+            "半球": Decimal("0.5"),
+            "半球/一球": Decimal("0.75"),
+            "一球": Decimal("1"),
+            "一球/球半": Decimal("1.25"),
+            "球半": Decimal("1.5"),
+            "球半/两球": Decimal("1.75"),
+            "两球": Decimal("2"),
+            "两球/两球半": Decimal("2.25"),
+            "两球半": Decimal("2.5"),
+            "两球半/三球": Decimal("2.75"),
+            "三球": Decimal("3"),
+            "三球/三球半": Decimal("3.25"),
+            "三球半": Decimal("3.5"),
+            "三球半/四球": Decimal("3.75"),
+            "四球": Decimal("4"),
+        }
+        magnitude = chinese_lines.get(text)
+        if magnitude is None:
+            return None
+        value = magnitude if receiving else -magnitude
+    if value is None:
+        return None
+    if market == "HDC" and _numeric_cell(raw) is not None and not raw.strip().startswith(("-", "+")):
         value = -value
     if market == "HIL": value = abs(value)
     try: return canonical_line(value)
@@ -683,11 +712,26 @@ def parse_titan_change_rows(source: str, market: str, kickoff: datetime, company
         before_time = cells[:next((i for i, text in enumerate(cells) if _TIME.search(text)), len(cells))]
         numeric = [(i, _numeric_cell(text)) for i, text in enumerate(before_time)]
         numeric = [(i, value) for i, value in numeric if value is not None]
-        if len(numeric) < 3: continue
-        # Price / line / price is the verified movement-row ordering; take its
-        # last triple before timestamp so sequence/table index cells cannot win.
-        home, line_raw, away = numeric[-3:]
-        line = _titan_line(before_time[line_raw[0]], market)
+        textual_lines = [
+            (i, _titan_line(text, market))
+            for i, text in enumerate(before_time)
+            if market == "HDC" and _numeric_cell(text) is None and _titan_line(text, market) is not None
+        ]
+        if textual_lines:
+            line_index, line = textual_lines[-1]
+            before_prices = [(i, value) for i, value in numeric if i < line_index and value > 0]
+            after_prices = [(i, value) for i, value in numeric if i > line_index and value > 0]
+            if not before_prices or not after_prices:
+                continue
+            home = before_prices[-1]
+            away = after_prices[0]
+        else:
+            if len(numeric) < 3:
+                continue
+            # Numeric provider rows are price / line / price.  Take the last
+            # triple before timestamp so sequence/table index cells cannot win.
+            home, line_raw, away = numeric[-3:]
+            line = _titan_line(before_time[line_raw[0]], market)
         if not line or home[1] <= 0 or away[1] <= 0: continue
         rows.append({"line": line, "H": home[1], "A" if market == "HDC" else "L": away[1], "observed_at": observed, "status": "即", "company_id": company_id})
     return sorted(rows, key=lambda row: row["observed_at"])
