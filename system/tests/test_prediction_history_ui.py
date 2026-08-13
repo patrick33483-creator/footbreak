@@ -24,7 +24,7 @@ class PredictionHistoryUiTests(unittest.TestCase):
         self.assertIn("const historyTime = (row)", app)
         self.assertIn("b[0] - a[0] || b[1] - a[1]", app)
 
-    def test_both_dashboards_show_saved_or_missing_odds_without_mobile_overflow(self) -> None:
+    def test_both_dashboards_show_only_predictions_with_saved_odds(self) -> None:
         for dashboard in ("hkjc-dashboard", "crown/dashboard"):
             root = ROOT / dashboard
             app = (root / "app.js").read_text(encoding="utf-8")
@@ -32,15 +32,12 @@ class PredictionHistoryUiTests(unittest.TestCase):
 
             self.assertIn("function historyOdds(p)", app)
             self.assertIn("賠率 ${odds.toFixed(2)}", app)
-            self.assertIn("賠率缺失 · ${esc(reason)}", app)
-            self.assertIn("selected_quote_unavailable", app)
+            self.assertIn("Number.isFinite(odds) && odds > 1", app)
+            self.assertNotIn("賠率缺失 · ${esc(reason)}", app)
             self.assertIn("history-market-meta", app)
             self.assertIn("${historyOdds(p)}", app)
-            self.assertIn(".history-market-odds.missing", css)
             self.assertIn("overflow-wrap: anywhere", css)
             self.assertIn("flex-wrap: wrap", css)
-            # The compact screen layout has one responsive column, so a long
-            # missing-price reason cannot force the history table sideways.
             self.assertIn("@media (max-width: 620px)", css)
             self.assertIn("grid-template-columns: minmax(0, 1fr);", css)
             self.assertIn("function currentOddsCard(m)", app)
@@ -55,6 +52,15 @@ class PredictionHistoryUiTests(unittest.TestCase):
             self.assertIn("current_selected_odds_journal", app)
             self.assertIn("observed_board_at", app)
             self.assertIn(".current-odds-list", css)
+
+    def test_crown_current_predictions_use_chinese_market_wording(self) -> None:
+        app = (ROOT / "crown" / "dashboard" / "app.js").read_text(encoding="utf-8")
+        self.assertIn("function chinesePredictionLabel(prediction)", app)
+        self.assertIn("讓球 ${side === 'H' ? '主隊'", app)
+        self.assertIn("入球${side === 'H' ? '大'", app)
+        self.assertIn("角球${side === 'H' ? '大'", app)
+        self.assertIn("未有平博同方向盤口，未計預期價值", app)
+        self.assertNotIn("未有 Pinnacle 同路盤，未計 EV", app)
 
     def test_both_dashboards_include_top_and_bottom_shortcuts(self) -> None:
         for dashboard in ("hkjc-dashboard", "crown/dashboard"):
@@ -101,7 +107,7 @@ class PredictionHistoryUiTests(unittest.TestCase):
             self.assertIn("完全一致拆分", app)
             self.assertIn('class="consensus-split-row"', app)
             self.assertIn("最高命中條件自動排名", app)
-            self.assertIn("命中率排名唔等於 +EV", app)
+            self.assertIn("命中率排名唔等於預期價值", app)
             self.assertIn('class="consensus-rank-card"', app)
             self.assertIn("item.odds_bias", app)
             self.assertIn("≥1.70 主統計", app)

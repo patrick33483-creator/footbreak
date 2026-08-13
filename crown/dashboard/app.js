@@ -37,6 +37,19 @@ const STAGE_DESC = {
 };
 const VD_CLS = { '落注': 'v-go', '傾向': 'v-lean', '偏向': 'v-soft', '已預測': 'v-lean', '觀望': 'v-wait', '無傾向': 'v-none' };
 const MKT = { HDC: '讓球', HIL: '入球大細', CHL: '角球大細', HAD: '主客和' };
+
+function chinesePredictionLabel(prediction) {
+  if (!prediction) return '無方向';
+  const code = String(prediction.code || prediction.market || '').toUpperCase();
+  const side = String(prediction.side || '').toUpperCase();
+  const rawLine = prediction.line ?? prediction.condition;
+  const line = Number(rawLine);
+  const lineText = Number.isFinite(line) ? historyQuarterLine(line, code === 'HDC') : String(rawLine || '').trim();
+  if (code === 'HDC') return `讓球 ${side === 'H' ? '主隊' : side === 'A' ? '客隊' : '選擇'}${lineText ? ` ${lineText}` : ''}`;
+  if (code === 'HIL') return `入球${side === 'H' ? '大' : side === 'L' ? '細' : '方向'}${lineText ? ` ${lineText}` : ''}`;
+  if (code === 'CHL') return `角球${side === 'H' ? '大' : side === 'L' ? '細' : '方向'}${lineText ? ` ${lineText}` : ''}`;
+  return String(prediction.label || `${rawLine || ''} ${side || ''}`).trim() || '無方向';
+}
 const ODDS_SOURCE_LABEL = {
   'titan007-crown-id-3': '皇冠盤（Titan007）',
   'hkjc-current-board': '馬會即時盤',
@@ -114,7 +127,9 @@ function applyData(raw) {
         if (!prediction || !['HDC', 'HIL', 'CHL'].includes(prediction.code)) return false;
         if (!['H', 'A', 'L'].includes(prediction.side)) return false;
         const rawLine = prediction.line == null ? prediction.condition : prediction.line;
-        return rawLine !== '' && Number.isFinite(Number(rawLine));
+        const odds = Number(prediction.odds);
+        return rawLine !== '' && Number.isFinite(Number(rawLine))
+          && Number.isFinite(odds) && odds > 1;
       });
       return row.market_predictions.length ? [row] : [];
     });
@@ -684,7 +699,7 @@ function runRow(x, isFinal, all) {
   if (prev) {
     const pl = (x2) => {
       const q = x2.pick || (x2.lead && (x2.lead.ev || 0) > 0 ? x2.lead : null);
-      return q ? q.label : ((x2.market_predictions || []).map((r) => r.label).join(' · ') || '無方向');
+      return q ? chinesePredictionLabel(q) : ((x2.market_predictions || []).map(chinesePredictionLabel).join(' · ') || '無方向');
     };
     const a = pl(prev), b = pl(x);
     const dc = (x.conviction ?? 0) - (prev.conviction ?? 0);
@@ -695,17 +710,17 @@ function runRow(x, isFinal, all) {
 
   const soft = ld && (ld.ev || 0) > 0;
   const main = p
-    ? `<span class="run-pick">${esc(p.label)} <b>@${f2(p.odds)}</b></span>
+    ? `<span class="run-pick">${esc(chinesePredictionLabel(p))} <b>賠率 ${f2(p.odds)}</b></span>
        ${isFinal && p.stake ? `<span class="run-stake">${money(p.stake)}</span>` : ''}
-       <span class="run-num">勝率 ${pc(p.prob)} · EV ${sg(p.ev * 100, 2)}%</span>`
+       <span class="run-num">勝率 ${pc(p.prob)} · 預期價值 ${sg(p.ev * 100, 2)}%</span>`
     : soft
-      ? `<span class="run-pick dimp">${esc(ld.label)}</span>
-         <span class="run-num">勝率 ${pc(ld.prob)} · EV ${sg((ld.ev || 0) * 100, 2)}%</span>`
+      ? `<span class="run-pick dimp">${esc(chinesePredictionLabel(ld))}</span>
+         <span class="run-num">勝率 ${pc(ld.prob)} · 預期價值 ${sg((ld.ev || 0) * 100, 2)}%</span>`
       : forecasts.length
-        ? `<span class="run-pick dimp">${forecasts.map((r) => esc(r.label)).join(' · ')}</span>
-           <span class="run-num">${forecasts.map((r) => `預測概率 ${pc(r.probability, 1)}`).join(' · ')} · 未有 Pinnacle 同路盤，未計 EV</span>`
+        ? `<span class="run-pick dimp">${forecasts.map((r) => esc(chinesePredictionLabel(r))).join(' · ')}</span>
+           <span class="run-num">${forecasts.map((r) => `預測概率 ${pc(r.probability, 1)}`).join(' · ')} · 未有平博同方向盤口，未計預期價值</span>`
       : `<span class="run-pick dimp">無明顯方向</span>
-         ${ld ? `<span class="run-num">最佳候選 ${esc(ld.label)} · EV ${sg((ld.ev || 0) * 100, 2)}%,全部負值</span>` : ''}`;
+         ${ld ? `<span class="run-num">最佳候選 ${esc(chinesePredictionLabel(ld))} · 預期價值 ${sg((ld.ev || 0) * 100, 2)}%，全部負值</span>` : ''}`;
 
   const facts = [];
   if (x.final) facts.push(`我終值 總入球 ${f2(x.final.total)} · 主客差 ${sg(x.final.supremacy)} · 角球 ${f2(x.final.mu)}`);
@@ -1263,15 +1278,7 @@ function historyOdds(p) {
   if (Number.isFinite(odds) && odds > 1) {
     return `<span class="history-market-odds">賠率 ${odds.toFixed(2)}</span>`;
   }
-  const reasons = {
-    selected_quote_unavailable: '未有可用選邊賠率',
-    no_selected_market_quote: '未有已選市場賠率',
-    one_or_more_selected_quotes_unavailable: '部分已選賠率不可用',
-    current_exact_quote_unavailable: '目前未有相同盤口賠率',
-  };
-  const raw = p.odds_reason || p.reason || '未有已保存賠率';
-  const reason = reasons[raw] || String(raw);
-  return `<span class="history-market-odds missing">賠率缺失 · ${esc(reason)}</span>`;
+  return '';
 }
 
 function historyCornerResult(r, p) {
@@ -1433,11 +1440,11 @@ function historyConsensusCards(stats) {
     <div class="consensus-ranking-block" aria-label="最高命中條件自動排名">
       <div class="stage-market-title">最高命中條件自動排名 <span>只計 T-5 賠率 ≥1.70；樣本多於 ${ranking.minimum_decided || 30} 場優先</span></div>
       <div class="consensus-ranking-grid">${rankCards || '<div class="consensus-ranking-empty">暫時未有已結算條件可排名</div>'}</div>
-      <p class="consensus-ranking-note">主排名已抽走 T-5 賠率低於 1.70 及缺賠率場次；低賠結果獨立列出，不會推高主統計。命中率排名唔等於 +EV，仍要配合 ROI 同 CLV 驗證。</p>
+      <p class="consensus-ranking-note">主排名只使用有 T-5 有效賠率嘅場次；低賠結果獨立列出，不會推高主統計。命中率排名唔等於預期價值，仍要配合回報率同收市價值驗證。</p>
     </div>
     <div class="stage-market-title">三階段一致命中率 <span>首預、T-30、T-5 同方向 · 每場只計一次，以 T-5 盤口結算</span></div>
     <div class="consensus-grid">${codes.map(card).join('')}</div>
-    <p class="consensus-note">主統計只計 T-5 賠率 ≥1.70；低於 1.70 獨立顯示，缺賠率、走水及未能評分紀錄不計入分母。</p>
+    <p class="consensus-note">主統計只計 T-5 賠率 ≥1.70；低於 1.70 獨立顯示，走水及未能評分紀錄不計入分母。</p>
   </section>`;
 }
 

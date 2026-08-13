@@ -66,7 +66,9 @@ function applyData(raw) {
         if (!prediction || !['HDC', 'HIL', 'CHL'].includes(prediction.code)) return false;
         if (!['H', 'A', 'L'].includes(prediction.side)) return false;
         const rawLine = prediction.line == null ? prediction.condition : prediction.line;
-        return rawLine !== '' && Number.isFinite(Number(rawLine));
+        const odds = Number(prediction.odds);
+        return rawLine !== '' && Number.isFinite(Number(rawLine))
+          && Number.isFinite(odds) && odds > 1;
       });
       return row.market_predictions.length ? [row] : [];
     });
@@ -1023,15 +1025,7 @@ function historyOdds(p) {
   if (Number.isFinite(odds) && odds > 1) {
     return `<span class="history-market-odds">賠率 ${odds.toFixed(2)}</span>`;
   }
-  const reasons = {
-    selected_quote_unavailable: '未有可用選邊賠率',
-    no_selected_market_quote: '未有已選市場賠率',
-    one_or_more_selected_quotes_unavailable: '部分已選賠率不可用',
-    current_exact_quote_unavailable: '目前未有相同盤口賠率',
-  };
-  const raw = p.odds_reason || p.reason || '未有已保存賠率';
-  const reason = reasons[raw] || String(raw);
-  return `<span class="history-market-odds missing">賠率缺失 · ${esc(reason)}</span>`;
+  return '';
 }
 
 function historyCornerResult(r, p) {
@@ -1191,11 +1185,11 @@ function historyConsensusCards(stats) {
     <div class="consensus-ranking-block" aria-label="最高命中條件自動排名">
       <div class="stage-market-title">最高命中條件自動排名 <span>只計 T-5 賠率 ≥1.70；樣本多於 ${ranking.minimum_decided || 30} 場優先</span></div>
       <div class="consensus-ranking-grid">${rankCards || '<div class="consensus-ranking-empty">暫時未有已結算條件可排名</div>'}</div>
-      <p class="consensus-ranking-note">主排名已抽走 T-5 賠率低於 1.70 及缺賠率場次；低賠結果獨立列出，不會推高主統計。命中率排名唔等於 +EV，仍要配合 ROI 同 CLV 驗證。</p>
+      <p class="consensus-ranking-note">主排名只使用有 T-5 有效賠率嘅場次；低賠結果獨立列出，不會推高主統計。命中率排名唔等於預期價值，仍要配合回報率同收市價值驗證。</p>
     </div>
     <div class="stage-market-title">三階段一致命中率 <span>首預、T-30、T-5 同方向 · 每場只計一次，以 T-5 盤口結算</span></div>
     <div class="consensus-grid">${codes.map(card).join('')}</div>
-    <p class="consensus-note">主統計只計 T-5 賠率 ≥1.70；低於 1.70 獨立顯示，缺賠率、走水及未能評分紀錄不計入分母。</p>
+    <p class="consensus-note">主統計只計 T-5 賠率 ≥1.70；低於 1.70 獨立顯示，走水及未能評分紀錄不計入分母。</p>
   </section>`;
 }
 
