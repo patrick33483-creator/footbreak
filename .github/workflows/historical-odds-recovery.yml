@@ -9,7 +9,7 @@ on:
         default: AUDIT
         type: string
       provider_mode:
-        description: 'LOCAL keeps the read-only audit offline. TITAN_AUDIT enables bounded server-side Titan recovery; TITAN_APPLY also requires the exact apply confirmation.'
+        description: 'LOCAL keeps the read-only audit offline. TITAN_AUDIT warms a private cache on the runner and audits on the server; TITAN_APPLY also requires the exact apply confirmation.'
         required: true
         default: LOCAL
         type: choice
@@ -32,7 +32,7 @@ jobs:
           printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
-      - name: 只讀盤點歷史賠率證據
+      - name: 只讀盤點歷史賠率證據（正式環境權威來源）
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
@@ -54,21 +54,220 @@ jobs:
           name: historical-odds-recovery-audit
           path: historical-odds-recovery-audit.json
           retention-days: 7
-      - name: 明確啟用 Titan 供應商輔助稽核（只在伺服器）
+      - name: GitHub 預熱私有 Titan 快取並安全交接
         if: ${{ inputs.provider_mode == 'TITAN_AUDIT' || inputs.provider_mode == 'TITAN_APPLY' }}
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
         run: |
+          set -euo pipefail
+          runner_tmp="$(mktemp -d)"
+          remote_input_dir=""
+          remote_transfer_dir=""
+          target="$DEPLOY_USER@$DEPLOY_HOST"
+          cleanup() {
+            set +e
+            rm -rf -- "${runner_tmp:-}"
+            if [ -n "${remote_input_dir:-}" ]; then
+              ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=20 "$target" "rm -rf -- $(printf '%q' "$remote_input_dir")" >/dev/null 2>&1
+            fi
+            if [ -n "${remote_transfer_dir:-}" ]; then
+              ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=20 "$target" "rm -rf -- $(printf '%q' "$remote_transfer_dir")" >/dev/null 2>&1
+            fi
+          }
+          trap cleanup EXIT
+
+          # Export only the fields needed to construct strict Crown/Titan targets.
+          # The compact file stays in private mktemp directories and is never logged
+          # or uploaded; Footbreak is not copied because Titan recovery is Crown-only.
+          remote_input_dir="$(ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=20 "$target" 'umask 077; mktemp -d /tmp/footbreak-odds-recovery-input.XXXXXX')"
+          ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=20 "$target" "sudo env PYTHONPATH=/opt/footbreak /opt/footbreak/.venv/bin/python3 - $(printf '%q' "$remote_input_dir")" <<'PY'
+          import json
+          import os
+          import sys
+          from pathlib import Path
+
+          from analysis.odds_recovery import _load_rows, prediction_targets
+
+          destination = Path(sys.argv[1])
+          owner = destination.stat()
+          kept_row_fields = (
+              "match_id", "fixture_id", "hkjc_match_id", "titan_match_id",
+              "stage", "predicted_at", "ts", "kickoff_hkt", "kickoff",
+              "start_time", "match_time",
+          )
+
+          compact = []
+          # Emit one synthetic row for each currently missing exact target, not
+          # a history row.  Retain only its stable identity, timing context,
+          # and the unresolved market/line/side needed by the runner audit.
+          targets, _ = prediction_targets(
+              _load_rows(Path("/var/lib/footbreak/crown/prediction_history.json")),
+              "crown",
+          )
+          for target in targets:
+              if target["market_code"] not in {"HDC", "HIL"}:
+                  continue
+              row = target["row"]
+              item = {key: row[key] for key in kept_row_fields if key in row}
+              item["market_predictions"] = [{
+                  "code": target["market_code"], "line": target["line"],
+                  "side": target["side"], "odds": None,
+              }]
+              compact.append(item)
+          output = destination / "crown-titan-targets.json"
+          output.write_text(json.dumps(compact, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+          os.chown(output, owner.st_uid, owner.st_gid)
+          os.chmod(output, 0o600)
+          PY
+          scp -q "$target:$remote_input_dir/crown-titan-targets.json" "$runner_tmp/crown-titan-targets.json"
+          printf '[]' > "$runner_tmp/footbreak-targets.json"
+          chmod 600 "$runner_tmp/footbreak-targets.json" "$runner_tmp/crown-titan-targets.json"
+          install -d -m 700 "$runner_tmp/empty-evidence" "$runner_tmp/provider-cache"
+
+          # This is intentionally provider-audit only: the checked-out runner
+          # can warm raw responses but cannot mutate the production sidecar.
+          python3 analysis/odds_recovery.py \
+            --provider-audit \
+            --provider titan \
+            --provider-rate 1 \
+            --provider-timeout 8 \
+            --provider-retries 0 \
+            --provider-workers 8 \
+            --provider-cache "$runner_tmp/provider-cache" \
+            --footbreak-history "$runner_tmp/footbreak-targets.json" \
+            --crown-history "$runner_tmp/crown-titan-targets.json" \
+            --sidecar "$runner_tmp/runner-never-written-sidecar.json" \
+            --allow "footbreak=$runner_tmp/empty-evidence" \
+            --allow "crown=$runner_tmp/empty-evidence" > "$runner_tmp/runner-provider-warm-audit.json"
+          cp "$runner_tmp/runner-provider-warm-audit.json" historical-odds-recovery-provider-warm.json
+
+          # Package only cache entries, after enforcing private modes.  The
+          # archive is never an artifact and is removed by the EXIT trap.
+          chmod 700 "$runner_tmp/provider-cache"
+          find "$runner_tmp/provider-cache" -xdev -type f \( -name '*.raw' -o -name '*.json' \) -exec chmod 600 {} +
+          if find "$runner_tmp/provider-cache" -xdev -mindepth 1 \( -type l -o -type d \) -print -quit | grep -q .; then
+            echo 'unexpected private cache layout' >&2
+            exit 1
+          fi
+          cache_archive="$runner_tmp/provider-cache.tar.gz"
+          tar --format=posix --numeric-owner --owner=0 --group=0 --mode='u=rwX,go=' -C "$runner_tmp/provider-cache" -czf "$cache_archive" .
+          chmod 600 "$cache_archive"
+
+          remote_transfer_dir="$(ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=20 "$target" 'umask 077; mktemp -d /tmp/footbreak-odds-recovery-cache.XXXXXX')"
+          scp -q "$cache_archive" "$target:$remote_transfer_dir/provider-cache.tar.gz"
+
+          # Validate every archive member before writing the production cache.
+          # No archive member may create a link, traverse a path, or use a name
+          # outside the exact hash-addressed raw/metadata cache layout.
+          ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=20 "$target" "sudo /opt/footbreak/.venv/bin/python3 - $(printf '%q' "$remote_transfer_dir/provider-cache.tar.gz")" <<'PY'
+          import json
+          import os
+          import re
+          import shutil
+          import sys
+          import tarfile
+          import tempfile
+          from pathlib import Path, PurePosixPath
+
+          archive = Path(sys.argv[1])
+          private_root = Path("/var/lib/footbreak/private")
+          final_cache = private_root / "odds-recovery-provider-cache"
+          cache_name = re.compile(r"^[0-9a-f]{64}\.(?:raw|json)$")
+          max_member_bytes = 32 * 1024 * 1024
+          max_total_bytes = 256 * 1024 * 1024
+
+          def fail(reason):
+              raise SystemExit("invalid provider cache archive: " + reason)
+
+          if archive.is_symlink() or not archive.is_file():
+              fail("archive_path")
+          if archive.stat().st_size > max_total_bytes:
+              fail("archive_too_large")
+          private_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+          if private_root.is_symlink() or not private_root.is_dir():
+              fail("private_root")
+          os.chmod(private_root, 0o700)
+
+          with tarfile.open(archive, "r:gz") as tar:
+              files = {}
+              total = 0
+              for member in tar.getmembers():
+                  name = member.name
+                  if name in {".", "./"}:
+                      if not member.isdir():
+                          fail("root_not_directory")
+                      continue
+                  path = PurePosixPath(name)
+                  if path.is_absolute() or ".." in path.parts or len(path.parts) != 1:
+                      fail("path_traversal")
+                  if not cache_name.fullmatch(path.name):
+                      fail("unexpected_name")
+                  if not member.isfile() or member.issym() or member.islnk() or member.size < 0:
+                      fail("link_or_non_regular_member")
+                  normalized_name = path.name
+                  if member.size > max_member_bytes or normalized_name in files:
+                      fail("member_size_or_duplicate")
+                  total += member.size
+                  if total > max_total_bytes:
+                      fail("total_size")
+                  files[normalized_name] = member
+              stems = {name.rsplit(".", 1)[0] for name in files}
+              if any({stem + ".raw", stem + ".json"} - files.keys() for stem in stems):
+                  fail("unpaired_cache_entry")
+              for stem in stems:
+                  stream = tar.extractfile(files[stem + ".json"])
+                  if stream is None:
+                      fail("metadata_missing")
+                  try:
+                      metadata = json.loads(stream.read().decode("utf-8"))
+                  except (UnicodeDecodeError, json.JSONDecodeError):
+                      fail("metadata_json")
+                  if not isinstance(metadata, dict) or metadata.get("url_hash") != stem or metadata.get("http_status") != 200:
+                      fail("metadata_integrity")
+
+              if final_cache.exists() and (final_cache.is_symlink() or not final_cache.is_dir()):
+                  fail("destination_cache")
+              final_cache.mkdir(mode=0o700, parents=True, exist_ok=True)
+              os.chmod(final_cache, 0o700)
+              for child in final_cache.iterdir():
+                  if child.is_symlink() or not child.is_file() or not cache_name.fullmatch(child.name):
+                      fail("destination_layout")
+                  os.chmod(child, 0o600)
+              stage = Path(tempfile.mkdtemp(prefix=".odds-recovery-cache.", dir=private_root))
+              try:
+                  os.chmod(stage, 0o700)
+                  for name in sorted(files):
+                      source = tar.extractfile(files[name])
+                      if source is None:
+                          fail("member_read")
+                      destination = stage / name
+                      with destination.open("xb") as output:
+                          shutil.copyfileobj(source, output, length=1024 * 1024)
+                          output.flush()
+                          os.fsync(output.fileno())
+                      os.chmod(destination, 0o600)
+                  for name in sorted(files):
+                      os.replace(stage / name, final_cache / name)
+                  os.chmod(final_cache, 0o700)
+              finally:
+                  shutil.rmtree(stage, ignore_errors=True)
+          os.chmod(archive, 0o600)
+          PY
+
+          # The server re-reads its current complete histories and evidence.
+          # It is the only place provider apply may append the private sidecar.
           mode=--provider-audit
+          confirmation=AUDIT
           # An unconfirmed TITAN_APPLY is deliberately audit-only: it must
           # neither append the overlay nor trigger public projection rebuilds.
           if [ "${{ inputs.provider_mode }}" = "TITAN_APPLY" ] && [ "${{ inputs.apply_confirmation }}" = "APPLY_HISTORICAL_ODDS_RECOVERY" ]; then
             mode=--provider-apply
+            confirmation=APPLY_HISTORICAL_ODDS_RECOVERY
           fi
-          ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=20 "$DEPLOY_USER@$DEPLOY_HOST" "sudo /opt/footbreak/.venv/bin/python3 /opt/footbreak/analysis/odds_recovery.py \
+          ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=20 "$target" "sudo /opt/footbreak/.venv/bin/python3 /opt/footbreak/analysis/odds_recovery.py \
             $mode \
-            --apply-confirmation '${{ inputs.apply_confirmation }}' \
+            --apply-confirmation $confirmation \
             --provider titan \
             --provider-rate 1 \
             --provider-timeout 8 \
@@ -85,12 +284,14 @@ jobs:
             --allow crown=/var/lib/footbreak/crown/prediction_history.json \
             --allow crown=/var/lib/footbreak/crown/ledger.json \
             --allow crown=/var/lib/footbreak/crown/source_snapshots" > historical-odds-recovery-provider.json
-      - name: 保存供應商輔助摘要（不含原始資料）
+      - name: 保存供應商輔助摘要（僅聚合 JSON）
         if: ${{ inputs.provider_mode == 'TITAN_AUDIT' || inputs.provider_mode == 'TITAN_APPLY' }}
         uses: actions/upload-artifact@v4
         with:
           name: historical-odds-recovery-provider
-          path: historical-odds-recovery-provider.json
+          path: |
+            historical-odds-recovery-provider-warm.json
+            historical-odds-recovery-provider.json
           retention-days: 7
       - name: 明確確認後才寫入私有 sidecar
         if: ${{ inputs.apply_confirmation == 'APPLY_HISTORICAL_ODDS_RECOVERY' && inputs.provider_mode == 'LOCAL' }}
@@ -121,22 +322,23 @@ jobs:
             export PYTHONPATH=/opt/footbreak
             export ODDS_RECOVERY_SIDECAR=/var/lib/footbreak/private/odds-recovery-overlay.json
             PYTHON=/opt/footbreak/.venv/bin/python3
-            sudo env PYTHONPATH="$PYTHONPATH" ODDS_RECOVERY_SIDECAR="$ODDS_RECOVERY_SIDECAR" "$PYTHON" /opt/footbreak/deploy/regenerate-odds-recovery-dashboard.py --data /var/www/footbreak/data.json
-            sudo env PYTHONPATH="$PYTHONPATH" ODDS_RECOVERY_SIDECAR="$ODDS_RECOVERY_SIDECAR" "$PYTHON" -m crown.dashboard_data --out /var/www/crown/data.json
-            sudo env PYTHONPATH="$PYTHONPATH" ODDS_RECOVERY_SIDECAR="$ODDS_RECOVERY_SIDECAR" "$PYTHON" -m analysis.data_health --learning-db /var/lib/footbreak/learning/predictions.sqlite --out /var/lib/footbreak/data-health/latest.json --public-footbreak /var/www/footbreak/data-health.json --public-crown /var/www/crown/data-health.json --lock /var/lock/footbreak-data-health.lock
-            sudo env PYTHONPATH="$PYTHONPATH" "$PYTHON" /opt/footbreak/deploy/verify-result-integrity.py
-            sudo env PYTHONPATH="$PYTHONPATH" "$PYTHON" /opt/footbreak/deploy/audit-result-state.py' > historical-odds-recovery-regeneration-audit.txt
-      - name: 保存套用摘要（不含原始資料）
+            sudo env PYTHONPATH="$PYTHONPATH" ODDS_RECOVERY_SIDECAR="$ODDS_RECOVERY_SIDECAR" "$PYTHON" /opt/footbreak/deploy/regenerate-odds-recovery-dashboard.py --data /var/www/footbreak/data.json >/dev/null
+            sudo env PYTHONPATH="$PYTHONPATH" ODDS_RECOVERY_SIDECAR="$ODDS_RECOVERY_SIDECAR" "$PYTHON" -m crown.dashboard_data --out /var/www/crown/data.json >/dev/null
+            sudo env PYTHONPATH="$PYTHONPATH" ODDS_RECOVERY_SIDECAR="$ODDS_RECOVERY_SIDECAR" "$PYTHON" -m analysis.data_health --learning-db /var/lib/footbreak/learning/predictions.sqlite --out /var/lib/footbreak/data-health/latest.json --public-footbreak /var/www/footbreak/data-health.json --public-crown /var/www/crown/data-health.json --lock /var/lock/footbreak-data-health.lock >/dev/null
+            sudo env PYTHONPATH="$PYTHONPATH" "$PYTHON" /opt/footbreak/deploy/verify-result-integrity.py >/dev/null
+            sudo env PYTHONPATH="$PYTHONPATH" "$PYTHON" /opt/footbreak/deploy/audit-result-state.py >/dev/null'
+          printf '%s\n' '{"schema_version":1,"mode":"regeneration_audit","status":"completed"}' > historical-odds-recovery-regeneration-audit.json
+      - name: 保存套用摘要（僅聚合 JSON）
         if: ${{ inputs.apply_confirmation == 'APPLY_HISTORICAL_ODDS_RECOVERY' && inputs.provider_mode == 'LOCAL' }}
         uses: actions/upload-artifact@v4
         with:
           name: historical-odds-recovery-apply
           path: historical-odds-recovery-apply.json
           retention-days: 7
-      - name: 保存重生後驗證稽核
+      - name: 保存重生後驗證稽核（僅聚合 JSON）
         if: ${{ inputs.apply_confirmation == 'APPLY_HISTORICAL_ODDS_RECOVERY' && (inputs.provider_mode == 'LOCAL' || inputs.provider_mode == 'TITAN_APPLY') }}
         uses: actions/upload-artifact@v4
         with:
           name: historical-odds-recovery-regeneration-audit
-          path: historical-odds-recovery-regeneration-audit.txt
+          path: historical-odds-recovery-regeneration-audit.json
           retention-days: 7
