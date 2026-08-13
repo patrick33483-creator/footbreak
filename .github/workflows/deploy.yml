@@ -103,9 +103,17 @@ jobs:
         run: |
           # refresh is explicitly dashboard-quote-only: no ledger/history
           # mutation, settlement, simulation, or Telegram notification.
+          set +e
           ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=20 \
             "$DEPLOY_USER@$DEPLOY_HOST" \
             'sudo /opt/footbreak/deploy/crown-run.sh refresh'
+          refresh_rc=$?
+          set -e
+          if [ "$refresh_rc" -eq 75 ]; then
+            echo "Crown current-quote refresh is already running; reuse that protected run."
+          elif [ "$refresh_rc" -ne 0 ]; then
+            exit "$refresh_rc"
+          fi
 
       - name: 部署後只刷新未開賽 Footbreak 現價（不重跑階段）
         env:
@@ -115,6 +123,14 @@ jobs:
           # This command updates a separate current-quote journal for future
           # cards only. It does not run prediction, ledger, settlement, bet,
           # learning, or notification paths and fails closed on board errors.
+          set +e
           ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=20 \
             "$DEPLOY_USER@$DEPLOY_HOST" \
             'sudo /opt/footbreak/deploy/footbreak-refresh-current-odds.sh'
+          refresh_rc=$?
+          set -e
+          if [ "$refresh_rc" -eq 75 ]; then
+            echo "Footbreak current-quote refresh is already running; reuse that protected run."
+          elif [ "$refresh_rc" -ne 0 ]; then
+            exit "$refresh_rc"
+          fi
