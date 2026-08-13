@@ -18,6 +18,20 @@ SPEC.loader.exec_module(verify)
 
 
 class ResultIntegrityVerifierTests(unittest.TestCase):
+    def test_top_level_check_failure_exposes_only_stable_category(self):
+        def fail_with_sensitive_payload():
+            raise AssertionError({"fixture_id": "secret-fixture"})
+
+        with self.assertRaisesRegex(
+            AssertionError,
+            r"^integrity_check=crown_market_stats$",
+        ) as error:
+            verify.run_integrity_check(
+                "crown_market_stats",
+                fail_with_sensitive_payload,
+            )
+        self.assertNotIn("secret-fixture", str(error.exception))
+
     def test_crown_publication_accepts_recovery_overlay_without_mutating_raw(self):
         raw_row = {
             "match_id": "3031468",

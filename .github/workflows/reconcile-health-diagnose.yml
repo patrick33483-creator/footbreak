@@ -105,6 +105,15 @@ jobs:
           echo "integrity_crown_public_rows=$(count_journal_matches 'Crown public prediction rows do not match the recovery overlay projection')"
           echo "integrity_crown_public_stats=$(count_journal_matches 'Crown public prediction stats do not match the recovery overlay projection')"
           echo "integrity_crown_public_order=$(count_journal_matches 'Crown public/projected prediction row order mismatch')"
+          verifier_output="$(
+            cd /opt/footbreak &&
+            .venv/bin/python3 deploy/verify-result-integrity.py 2>&1 || true
+          )"
+          verifier_category="$(
+            grep -Eo 'integrity_check=[a-z_]+' <<<"$verifier_output" |
+              sort -u | paste -sd, - || true
+          )"
+          echo "current_integrity_category=${verifier_category:-none}"
           echo "phase_data_health_generation_failures=$(count_journal_matches '資料健康報告生成失敗')"
           echo "phase_data_health_audit_failures=$(count_journal_matches '資料健康本地稽核失敗')"
           echo "phase_crown_disabled_skips=$(count_journal_matches 'Crown reconciliation skipped')"

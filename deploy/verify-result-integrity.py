@@ -343,23 +343,54 @@ def assert_crown_publication_matches(
     )
 
 
+def run_integrity_check(name: str, check: Any, *args: Any) -> None:
+    """Run one verifier section while exposing only a stable failure category."""
+    try:
+        check(*args)
+    except AssertionError:
+        raise AssertionError(f"integrity_check={name}") from None
+
+
 def main() -> None:
     footbreak = load(FOOTBREAK_DATA)
     crown = load(CROWN_HISTORY)
     crown_public = load(CROWN_DATA)
     footbreak_rows = rows(footbreak.get("prediction_history") or {})
     crown_rows = rows(crown)
-    assert_unique_and_sorted("Footbreak", footbreak_rows)
-    assert_unique_and_sorted("Crown", crown_rows)
-    assert_no_nan("Footbreak", footbreak_rows)
-    assert_no_nan("Crown", crown_rows)
-    assert_market_stats_consistent(
+    run_integrity_check(
+        "footbreak_history_shape",
+        assert_unique_and_sorted,
+        "Footbreak",
+        footbreak_rows,
+    )
+    run_integrity_check(
+        "crown_history_shape",
+        assert_unique_and_sorted,
+        "Crown",
+        crown_rows,
+    )
+    run_integrity_check("footbreak_finite_values", assert_no_nan, "Footbreak", footbreak_rows)
+    run_integrity_check("crown_finite_values", assert_no_nan, "Crown", crown_rows)
+    run_integrity_check(
+        "footbreak_market_stats",
+        assert_market_stats_consistent,
         "Footbreak",
         footbreak_rows,
         (footbreak.get("prediction_history") or {}).get("stats") or {},
     )
-    assert_market_stats_consistent("Crown", crown_rows, crown.get("stats") or {})
-    assert_crown_publication_matches(crown, crown_public)
+    run_integrity_check(
+        "crown_market_stats",
+        assert_market_stats_consistent,
+        "Crown",
+        crown_rows,
+        crown.get("stats") or {},
+    )
+    run_integrity_check(
+        "crown_publication_projection",
+        assert_crown_publication_matches,
+        crown,
+        crown_public,
+    )
     report_result_gaps("Footbreak", footbreak_rows)
     report_result_gaps("Crown", crown_rows)
     verify_known_crown_incident(crown_rows)

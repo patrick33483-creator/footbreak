@@ -46,6 +46,9 @@ class ReconcileHealthDiagnoseWorkflowTests(unittest.TestCase):
             "'duplicate match/stage rows')",
             text,
         )
+        self.assertIn("current_integrity_category=${verifier_category:-none}", text)
+        self.assertIn("grep -Eo 'integrity_check=[a-z_]+'", text)
+        self.assertNotIn('echo "$verifier_output"', text)
         self.assertNotIn("journalctl -u footbreak-result-reconcile.service --no-pager", text)
         self.assertNotIn('echo "$journal"', text)
         self.assertNotIn("cat /etc/footbreak", text)
