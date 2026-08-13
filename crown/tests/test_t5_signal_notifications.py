@@ -113,6 +113,46 @@ class CrownT5SignalNotificationTests(unittest.TestCase):
                 sender.call_args.args[1],
             )
 
+    def test_low_odds_signal_uses_low_odds_category_rate(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = self._config(directory)
+            rows = []
+            for fixture, hit in (("low-1", True), ("low-2", False)):
+                for stage in ("首預", "T-30", "T-5"):
+                    rows.append({
+                        "match_id": fixture,
+                        "stage": stage,
+                        "market_grades": [{
+                            "code": "HDC",
+                            "side": "H",
+                            "line": -0.25,
+                            "grade_status": "GRADED",
+                            "hit": hit,
+                            "odds": 1.55,
+                        }],
+                    })
+            (config.state_dir / "prediction_history.json").write_text(
+                json.dumps({"rows": rows}), encoding="utf-8"
+            )
+            low_hdc = (
+                _market("HDC", "H", -0.25, 1.52),
+                _market("HDC", "H", -0.25, 1.56),
+                _market("HDC", "H", -0.25, 1.58),
+            )
+            with patch("crown.notify._send") as sender:
+                self.assertEqual(
+                    notify_new(
+                        _ledger(low_hdc, t5_markets=[]),
+                        config,
+                        ["safe-fixture-1"],
+                    ),
+                    1,
+                )
+            self.assertIn(
+                "條件：主讓<1.70 50.0%（1/2）",
+                sender.call_args.args[1],
+            )
+
     def test_hdc_rejects_changed_direction_line_and_incomplete_stages(self) -> None:
         cases = [
             (
@@ -183,7 +223,7 @@ class CrownT5SignalNotificationTests(unittest.TestCase):
             )
         sender.assert_not_called()
 
-    def test_rejects_odds_below_1_70_but_accepts_exact_boundary(self) -> None:
+    def test_accepts_valid_odds_below_1_70_and_exact_boundary(self) -> None:
         low_hdc = (
             _market("HDC", "H", -0.25, 1.91),
             _market("HDC", "H", -0.25, 1.92),
@@ -199,9 +239,10 @@ class CrownT5SignalNotificationTests(unittest.TestCase):
                     self._config(directory),
                     ["safe-fixture-1"],
                 ),
-                0,
+                1,
             )
-        sender.assert_not_called()
+        self.assertEqual(sender.call_count, 1)
+        self.assertIn("條件：主讓<1.70 累積中（0/0）", sender.call_args.args[1])
 
         boundary_hdc = (
             _market("HDC", "H", -0.25, 1.91),

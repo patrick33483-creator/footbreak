@@ -12,7 +12,7 @@ from .state import paths, state_lock
 from analysis.three_stage_consensus import calculate_three_stage_consensus
 
 
-MIN_T5_SIGNAL_ODDS = 1.70
+ODDS_TIER_THRESHOLD = 1.70
 
 
 def _quarter_line(value: Any, signed: bool = True) -> str:
@@ -199,7 +199,7 @@ def _hdc_signal(
     if len(set(sides)) != 1 or not (lines[0] == lines[1] == lines[2]):
         return None
     odds = _finite_positive(ordered[-1].get("odds"))
-    if odds is None or odds < MIN_T5_SIGNAL_ODDS:
+    if odds is None:
         return None
     selected_side, home_line = sides[-1], lines[-1]
     team_raw = stage.get("home") if selected_side == "H" else stage.get("away")
@@ -208,7 +208,9 @@ def _hdc_signal(
         return None
     selected_line = home_line if selected_side == "H" else -home_line
     line_text = _quarter_line(selected_line)
-    condition = _hdc_condition_label(history_rows, selected_side, home_line)
+    condition = _hdc_condition_label(
+        history_rows, selected_side, home_line, odds
+    )
     key = f"crown|{identity}|T-5|HDC|three-stage-v1|{selected_side}|{home_line:g}"
     return key, _signal_message(
         "皇冠", stage, kickoff, "皇冠讓球", f"{team} {line_text}", line_text, odds,
@@ -239,7 +241,10 @@ def _hdc_condition(side: str, home_line: float) -> tuple[str, str] | None:
 
 
 def _hdc_condition_label(
-    history_rows: list[dict[str, Any]], selected_side: str, home_line: float
+    history_rows: list[dict[str, Any]],
+    selected_side: str,
+    home_line: float,
+    selected_odds: float,
 ) -> str:
     category = _hdc_condition(selected_side, home_line)
     if category is None:
@@ -252,12 +257,23 @@ def _hdc_condition_label(
         .get("breakdown") or []
     )
     item = next((row for row in breakdown if row.get("key") == key), None)
-    decided = int((item or {}).get("decided") or 0)
-    hits = int((item or {}).get("hits") or 0)
-    accuracy = (item or {}).get("accuracy")
+    if selected_odds >= ODDS_TIER_THRESHOLD:
+        tier_label = "≥1.70"
+        cohort = (item or {}).get("odds_bias", {}).get(
+            "at_or_above_threshold", item or {}
+        )
+    else:
+        tier_label = "<1.70"
+        cohort = (item or {}).get("odds_bias", {}).get("low_odds", {})
+    decided = int(cohort.get("decided") or 0)
+    hits = int(cohort.get("hits") or 0)
+    accuracy = cohort.get("accuracy")
     if decided <= 0 or accuracy is None:
-        return f"{label}≥1.70 累積中（0/0）"
-    return f"{label}≥1.70 {float(accuracy) * 100:.1f}%（{hits}/{decided}）"
+        return f"{label}{tier_label} 累積中（0/0）"
+    return (
+        f"{label}{tier_label} {float(accuracy) * 100:.1f}%"
+        f"（{hits}/{decided}）"
+    )
 
 
 def _fresh_signal_events(
