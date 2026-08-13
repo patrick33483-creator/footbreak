@@ -35,7 +35,9 @@ def rows(payload: Any) -> list[dict[str, Any]]:
 def same_accuracy(actual: Any, expected: float | None) -> bool:
     if actual is None or expected is None:
         return actual is None and expected is None
-    return math.isclose(float(actual), expected, rel_tol=1e-6)
+    # Dashboard statistics are serialized to six decimal places. Accept only
+    # the maximum half-unit rounding distance while keeping count checks exact.
+    return math.isclose(float(actual), expected, rel_tol=1e-6, abs_tol=5e-7)
 
 
 def assert_no_nan(label: str, history_rows: list[dict[str, Any]]) -> None:
@@ -97,6 +99,44 @@ def assert_market_stats_consistent(
     history_rows: list[dict[str, Any]],
     stats: dict[str, Any],
 ) -> None:
+    def audit_cell(cell: dict[str, Any], context: tuple[str, ...]) -> dict[str, Any]:
+        all_odds = cell.get("all_odds")
+        if not isinstance(all_odds, dict):
+            return cell
+
+        groups = cell.get("odds_groups")
+        assert isinstance(groups, dict), (*context, "missing odds_groups")
+        expected_groups = ("at_or_above_1_70", "below_1_70", "missing")
+        for key in expected_groups:
+            assert isinstance(groups.get(key), dict), (*context, "missing odds group", key)
+
+        for count_key in ("graded", "decided", "hits", "pushes"):
+            grouped_total = sum(
+                int((groups.get(group_key) or {}).get(count_key, 0))
+                for group_key in expected_groups
+            )
+            assert grouped_total == int(all_odds.get(count_key, 0)), (
+                *context,
+                count_key,
+                "odds group total mismatch",
+                grouped_total,
+                all_odds,
+            )
+
+        for group_key in expected_groups:
+            group = groups[group_key]
+            decided = int(group.get("decided", 0))
+            hits = int(group.get("hits", 0))
+            expected_accuracy = hits / decided if decided else None
+            assert same_accuracy(group.get("accuracy"), expected_accuracy), (
+                *context,
+                group_key,
+                "accuracy",
+                group.get("accuracy"),
+                expected_accuracy,
+            )
+        return all_odds
+
     direct = {code: Counter() for code in MARKETS}
     by_stage = {
         stage: {code: Counter() for code in MARKETS}
@@ -125,15 +165,16 @@ def assert_market_stats_consistent(
     reported_stage = stats.get("by_stage_market") or {}
     for code in MARKETS:
         counts = direct[code]
+        cell = audit_cell(reported.get(code) or {}, (label, code))
         for key in ("graded", "decided", "hits"):
-            assert int((reported.get(code) or {}).get(key, -1)) == counts[key], (
-                label, code, key, reported.get(code), counts
+            assert int(cell.get(key, -1)) == counts[key], (
+                label, code, key, cell, counts
             )
         expected_accuracy = (
             counts["hits"] / counts["decided"]
             if counts["decided"] else None
         )
-        actual_accuracy = (reported.get(code) or {}).get("accuracy")
+        actual_accuracy = cell.get("accuracy")
         assert same_accuracy(actual_accuracy, expected_accuracy), (
             label, code, "accuracy", actual_accuracy, expected_accuracy
         )
@@ -141,7 +182,10 @@ def assert_market_stats_consistent(
     for stage in STAGES:
         for code in MARKETS:
             counts = by_stage[stage][code]
-            cell = (reported_stage.get(stage) or {}).get(code) or {}
+            cell = audit_cell(
+                (reported_stage.get(stage) or {}).get(code) or {},
+                (label, stage, code),
+            )
             for key in ("graded", "decided", "hits"):
                 assert int(cell.get(key, -1)) == counts[key], (
                     label, stage, code, key, cell, counts
