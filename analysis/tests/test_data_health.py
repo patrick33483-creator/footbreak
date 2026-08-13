@@ -47,6 +47,17 @@ def market_prediction(code: str, *, side="H", condition="0.5", odds=1.9, probabi
     }
 
 
+def record_snapshot(store: LearningStore, system: str, *args, **kwargs):
+    """Create an explicitly versioned sample for the current-system report."""
+    return store.record_snapshot(
+        system,
+        *args,
+        model_version=data_health.COMPARABLE_MODEL_VERSION[system],
+        schema_version="2",
+        **kwargs,
+    )
+
+
 class Fixtures:
     """Builds a small immutable learning database on disk."""
 
@@ -93,7 +104,7 @@ class Fixtures:
                         "info": {"weather": True, "news": False, "hk_lines": 4},
                         "movement": {"d_total": 0.1},
                     }
-                    snapshot = store.record_snapshot(
+                    snapshot = record_snapshot(store,
                         system, fixture_id, stage, generated, kickoff, payload,
                     )
                     if result is None:
@@ -200,7 +211,7 @@ class DataHealthTest(unittest.TestCase):
         database = self.directory / "learning.sqlite"
         kickoff = NOW - timedelta(days=2)
         with LearningStore(database) as store:
-            snapshot = store.record_snapshot(
+            snapshot = record_snapshot(store,
                 "footbreak", "bad1", "T-5", kickoff - timedelta(hours=1), kickoff,
                 {
                     "league": "英超",
@@ -242,7 +253,7 @@ class DataHealthTest(unittest.TestCase):
                 result = store.record_result(
                     "crown", fixture_id, home_score=1, away_score=1, source="titan",
                 )
-                snapshot = store.record_snapshot(
+                snapshot = record_snapshot(store,
                     "crown", fixture_id, "T-5", kickoff - timedelta(hours=1), kickoff,
                     {"league": "西甲", "conviction": 60,
                      "market_predictions": [market_prediction("CHL", side="L", condition="9.5")]},
@@ -270,13 +281,13 @@ class DataHealthTest(unittest.TestCase):
         with LearningStore(database) as store:
             # inside the 105-minute grace window: not yet stale
             fresh_kickoff = NOW - timedelta(minutes=30)
-            store.record_snapshot(
+            record_snapshot(store,
                 "footbreak", "fresh", "T-5", fresh_kickoff - timedelta(hours=1), fresh_kickoff,
                 {"league": "英超", "conviction": 60,
                  "market_predictions": [market_prediction("HDC")]},
             )
             old_kickoff = NOW - timedelta(days=1)
-            store.record_snapshot(
+            record_snapshot(store,
                 "footbreak", "old", "T-5", old_kickoff - timedelta(hours=1), old_kickoff,
                 {"league": "英超", "conviction": 60,
                  "market_predictions": [market_prediction("HDC")]},
@@ -293,7 +304,7 @@ class DataHealthTest(unittest.TestCase):
         database = self.directory / "learning.sqlite"
         kickoff = NOW - timedelta(days=1)
         with LearningStore(database) as store:
-            store.record_snapshot(
+            record_snapshot(store,
                 "crown", "postponed", "T-5", kickoff - timedelta(hours=1), kickoff,
                 {"league": "英超", "conviction": 60,
                  "market_predictions": [market_prediction("HDC")]},
@@ -380,7 +391,7 @@ class DataHealthTest(unittest.TestCase):
         database = self.directory / "learning.sqlite"
         kickoff = NOW - timedelta(days=1)
         with LearningStore(database) as store:
-            store.record_snapshot(
+            record_snapshot(store,
                 "crown", "SECRET-FIXTURE-9001", "T-5", kickoff - timedelta(hours=1), kickoff,
                 {
                     "league": "西甲",
@@ -459,12 +470,12 @@ class DataHealthTest(unittest.TestCase):
         kickoff = NOW - timedelta(days=1)
         with LearningStore(database) as store:
             for probability in (0.51, 0.52, 0.53):
-                store.record_snapshot(
+                record_snapshot(store,
                     "footbreak", "dup1", "T-5", kickoff - timedelta(hours=2), kickoff,
                     {"league": "英超", "conviction": 60,
                      "market_predictions": [market_prediction("HDC", probability=probability)]},
                 )
-            store.record_snapshot(
+            record_snapshot(store,
                 "footbreak", "dup1", "T-5", kickoff + timedelta(minutes=5), kickoff,
                 {"league": "英超", "conviction": 60,
                  "market_predictions": [market_prediction("HDC", probability=0.9)]},
@@ -483,7 +494,7 @@ class DataHealthTest(unittest.TestCase):
         database = self.directory / "learning.sqlite"
         kickoff = NOW - timedelta(days=1)
         with LearningStore(database) as store:
-            store.record_snapshot(
+            record_snapshot(store,
                 "crown", "dupmk", "T-30", kickoff - timedelta(hours=1), kickoff,
                 {"league": "意甲", "conviction": 60, "market_predictions": [
                     market_prediction("HIL", side="L", condition="2.5"),
@@ -499,7 +510,7 @@ class DataHealthTest(unittest.TestCase):
         database = self.directory / "learning.sqlite"
         kickoff = NOW - timedelta(days=1)
         with LearningStore(database) as store:
-            late = store.record_snapshot(
+            late = record_snapshot(store,
                 "crown", "late1", "T-5", kickoff + timedelta(minutes=10), kickoff,
                 {"league": "法甲", "conviction": 90,
                  "market_predictions": [market_prediction("HIL")]},
@@ -544,7 +555,7 @@ class DataHealthTest(unittest.TestCase):
         database = self.directory / "learning.sqlite"
         with LearningStore(database) as store:
             kickoff = NOW - timedelta(days=1)
-            store.record_snapshot(
+            record_snapshot(store,
                 "crown", "x1", "T-5", kickoff - timedelta(hours=1), kickoff,
                 {"league": "英超", "conviction": 60,
                  "market_predictions": [market_prediction("HIL")]},

@@ -24,8 +24,8 @@ class DashboardApiTests(unittest.TestCase):
         self.assertIn("X-Footbreak-Action", app)
         self.assertIn("settle-simulation", app)
         self.assertIn("賽果核對完成，已更新到最新資料", app)
-        self.assertIn("styles.css?v=20260813-data-health-shadow-condition-consensus-ranking", index)
-        self.assertIn("app.js?v=20260813-data-health-shadow-condition-consensus-ranking", index)
+        self.assertIn("styles.css?v=20260813-data-health-shadow-condition-consensus-ranking-odds-tier-v2", index)
+        self.assertIn("app.js?v=20260813-data-health-shadow-condition-consensus-ranking-odds-tier-v2", index)
 
     def test_perform_settlement_returns_new_prediction_history(self) -> None:
         payload = {

@@ -36,9 +36,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Sequence
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 REPORT_NAME = "data_health"
 SYSTEMS: tuple[str, ...] = ("footbreak", "crown")
+COMPARABLE_MODEL_VERSION = {
+    "footbreak": "2026-08-10-market-learning-v2",
+    "crown": "2026-08-12-hkjc-corner-forecast-v4",
+}
 MARKETS: tuple[str, ...] = ("HDC", "HIL", "CHL")
 STAGES: tuple[str, ...] = ("首預", "T-30", "T-5")
 STAGE_ORDER = {stage: index for index, stage in enumerate(STAGES)}
@@ -252,7 +256,9 @@ class ReadOnlyLearningSource:
             self._connection.close()
             self._connection = None  # type: ignore[assignment]
 
-    def snapshot_rows(self, system: str) -> list[sqlite3.Row]:
+    def snapshot_rows(
+        self, system: str, model_version: str | None = None,
+    ) -> list[sqlite3.Row]:
         """Canonical pre-kickoff snapshot per (fixture, stage), deterministic order."""
         return self._connection.execute(
             """
@@ -265,6 +271,7 @@ class ReadOnlyLearningSource:
                        ) AS snapshot_rank
                 FROM prediction_snapshots
                 WHERE system = ? AND pre_kickoff = 1
+                  AND (? IS NULL OR model_version = ?)
                   AND NOT EXISTS (
                       SELECT 1
                       FROM stage_snapshot_reconciliations AS reconciliation
@@ -278,7 +285,7 @@ class ReadOnlyLearningSource:
             SELECT * FROM ranked WHERE snapshot_rank = 1
             ORDER BY kickoff, fixture_id, stage, snapshot_id
             """,
-            (system,),
+            (system, model_version, model_version),
         ).fetchall()
 
     def stage_attempt_counts(self, system: str) -> list[sqlite3.Row]:
@@ -337,7 +344,9 @@ class ReadOnlyLearningSource:
             (system,),
         ).fetchall()
 
-    def grade_rows(self, system: str) -> list[sqlite3.Row]:
+    def grade_rows(
+        self, system: str, model_version: str | None = None,
+    ) -> list[sqlite3.Row]:
         """Latest grade revision per (pre-kickoff snapshot, market, target)."""
         return self._connection.execute(
             """
@@ -349,6 +358,7 @@ class ReadOnlyLearningSource:
                        ) AS snapshot_rank
                 FROM prediction_snapshots
                 WHERE system = ? AND pre_kickoff = 1
+                  AND (? IS NULL OR model_version = ?)
                   AND NOT EXISTS (
                       SELECT 1
                       FROM stage_snapshot_reconciliations AS reconciliation
@@ -375,7 +385,7 @@ class ReadOnlyLearningSource:
             WHERE s.snapshot_rank = 1
             ORDER BY s.fixture_id, s.stage, g.market, g.target, g.grade_id
             """,
-            (system,),
+            (system, model_version, model_version),
         ).fetchall()
 
 
@@ -1081,8 +1091,14 @@ def build_system_report(
     system: str,
     now: datetime,
 ) -> dict[str, Any]:
-    snapshots = source.snapshot_rows(system)
-    grades = source.grade_rows(system)
+    model_version = COMPARABLE_MODEL_VERSION[system]
+    # Match each dashboard's visible model era.  The two all-history counts
+    # below are retained solely for reconciliation and never blended into
+    # comparable metrics.
+    snapshots = source.snapshot_rows(system, model_version)
+    grades = source.grade_rows(system, model_version)
+    all_history_snapshots = source.snapshot_rows(system)
+    all_history_grades = source.grade_rows(system)
     results = {str(row["fixture_id"]): row for row in source.result_rows(system)}
     quarantined_rows, quarantined_fixtures = source.quarantined_counts(system)
     duplicate_stage_keys = source.stage_attempt_counts(system)
@@ -1101,6 +1117,12 @@ def build_system_report(
     overall["quarantined_post_kickoff_fixtures"] = quarantined_fixtures
     overall["duplicate_stage_keys"] = len(duplicate_stage_keys)
     overall["structural_issues"] = dict(sorted(structural.items()))
+    overall["all_history_audit"] = {
+        "snapshot_rows": len(all_history_snapshots),
+        "graded_rows": sum(
+            str(row["state"] or "") == "GRADED" for row in all_history_grades
+        ),
+    }
 
     by_market = {
         market: completeness_for(rows, results, now, market=market)
@@ -1177,6 +1199,11 @@ def build_system_report(
         "schema_version": SCHEMA_VERSION,
         "report": REPORT_NAME,
         "system": system,
+        "scope": {
+            "model_version": model_version,
+            "pre_kickoff_only": True,
+            "description": "目前模型版本；全歷史只保留於 all_history_audit 作稽核。",
+        },
         "generated_at": now.isoformat(),
         "status": status,
         "policy": policy_block(),
@@ -1270,6 +1297,11 @@ def unavailable_report(system: str, now: datetime, reason: str) -> dict[str, Any
         "schema_version": SCHEMA_VERSION,
         "report": REPORT_NAME,
         "system": system,
+        "scope": {
+            "model_version": COMPARABLE_MODEL_VERSION[system],
+            "pre_kickoff_only": True,
+            "description": "目前模型版本；全歷史只保留於 all_history_audit 作稽核。",
+        },
         "generated_at": now.isoformat(),
         "status": "unavailable",
         "status_reason": reason,
@@ -1305,7 +1337,7 @@ def unavailable_report(system: str, now: datetime, reason: str) -> dict[str, Any
 
 PUBLIC_TOP_LEVEL_KEYS = (
     "schema_version", "report", "system", "generated_at", "status", "status_reason",
-    "policy", "definitions", "completeness", "issues", "issue_counts",
+    "scope", "policy", "definitions", "completeness", "issues", "issue_counts",
     "metrics_policy", "baseline", "error_slices", "primary_diagnostic",
     "hil_v4_diagnostics",
 )
@@ -1343,6 +1375,7 @@ def audit_summary(report: dict[str, Any]) -> dict[str, Any]:
     return {
         "schema_version": report.get("schema_version"),
         "system": report.get("system"),
+        "scope": report.get("scope") or {},
         "generated_at": report.get("generated_at"),
         "status": report.get("status"),
         "status_reason": report.get("status_reason"),

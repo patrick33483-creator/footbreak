@@ -117,7 +117,9 @@ def normalize_history(history: dict[str, Any]) -> dict[str, Any]:
 
     rows.sort(key=sort_key, reverse=True)
     history["rows"] = rows
-    history["stats"] = calculate_stats(rows)
+    # Keep old model-era rows in the immutable history file, while publishing
+    # a current-era scorecard that is comparable to data-health's DB scope.
+    history["stats"] = calculate_stats(rows, comparable_era=PREDICTION_ERA)
     return history
 
 
@@ -125,15 +127,11 @@ def load_history(config: Settings) -> dict[str, Any]:
     value = read_json(_path(config), {"rows": [], "stats": {}})
     if not isinstance(value, dict):
         value = {"rows": [], "stats": {}}
-    # 2026-08-10 起重新建立乾淨市場學習樣本；舊 WDL-only 紀錄不混入。
-    if value.get("prediction_era") != PREDICTION_ERA:
-        value = {
-            "prediction_era": PREDICTION_ERA,
-            "schema_version": PREDICTION_SCHEMA_VERSION,
-            "started_at": iso_hkt(),
-            "rows": [],
-            "stats": {},
-        }
+    # Do not erase prior model eras.  They remain auditable in ``rows`` and
+    # ``all_history_audit``; only the displayed scorecard is scoped below.
+    value.setdefault("prediction_era", PREDICTION_ERA)
+    value.setdefault("schema_version", PREDICTION_SCHEMA_VERSION)
+    value.setdefault("started_at", iso_hkt())
     value["rows"] = value.get("rows") if isinstance(value.get("rows"), list) else []
     value["stats"] = value.get("stats") if isinstance(value.get("stats"), dict) else {}
     return normalize_history(value)
@@ -916,34 +914,16 @@ def _metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def _market_metrics(rows: list[dict[str, Any]], code: str | None = None) -> dict[str, Any]:
-    grades = [
-        grade
-        for row in rows
-        for grade in (row.get("market_grades") or [])
-        if grade.get("grade_status") == "GRADED"
-        and (code is None or grade.get("code") == code)
-    ]
-    decided = [grade for grade in grades if grade.get("hit") is not None]
-    return {
-        "graded": len(grades),
-        "decided": len(decided),
-        "hits": sum(grade.get("hit") is True for grade in decided),
-        "accuracy": (
-            round(sum(grade.get("hit") is True for grade in decided) / len(decided), 6)
-            if decided else None
-        ),
-        "brier": (
-            round(sum(float(grade["brier"]) for grade in grades) / len(grades), 6)
-            if grades else None
-        ),
-        "log_loss": (
-            round(sum(float(grade["log_loss"]) for grade in grades) / len(grades), 6)
-            if grades else None
-        ),
-    }
+    from analysis.market_statistics import market_metrics
+    return market_metrics(rows, code)
 
 
-def calculate_stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
+def calculate_stats(
+    rows: list[dict[str, Any]], comparable_era: str | None = None,
+) -> dict[str, Any]:
+    all_rows = list(rows)
+    if comparable_era is not None:
+        rows = [row for row in all_rows if row.get("prediction_era") == comparable_era]
     overall = _metrics(rows)
     stage_rows = {
         stage: [row for row in rows if row.get("stage") == stage]
@@ -968,7 +948,7 @@ def calculate_stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
         if old is None or rank > old_rank:
             latest_by_match[match_id] = row
     latest = _metrics(list(latest_by_match.values()))
-    return {
+    stats = {
         "matches": len({str(row.get("match_id")) for row in rows if row.get("match_id")}),
         "predictions": len(rows),
         "pending": sum(row.get("result_status") == "待賽果" for row in rows),
@@ -988,6 +968,21 @@ def calculate_stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "learning_status": "collecting_market_level_shadow_samples",
         "minimum_sample_per_bucket": 30,
     }
+    stats["wdl_graded"] = stats["graded"]
+    stats["wdl_hits"] = stats["hits"]
+    stats["wdl_accuracy"] = stats["accuracy"]
+    if comparable_era is not None:
+        # ``calculate_stats`` is deliberately called recursively only for this
+        # audit projection, not from the normal all-history test/API path.
+        stats["scope"] = {
+            "model_version": comparable_era,
+            "schema_version": PREDICTION_SCHEMA_VERSION,
+            "rows": len(rows),
+            "all_history_rows": len(all_rows),
+            "description": "目前模型版本；全歷史保留於 all_history_audit。",
+        }
+        stats["all_history_audit"] = calculate_stats(all_rows)
+    return stats
 
 
 def update_history(config: Settings, ledger: dict[str, Any] | None = None) -> dict[str, Any]:

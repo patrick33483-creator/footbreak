@@ -151,10 +151,10 @@ class ThreeStageConsensusTests(unittest.TestCase):
         self.assertEqual(ranking["candidate_count"], 3)
         self.assertEqual(
             [(item["market"], item["condition_key"]) for item in ranking["top"]],
-            [("HIL", "under"), ("HDC", "scratch_home"), ("CHL", "under")],
+            [("CHL", "under"), ("HIL", "under"), ("HDC", "scratch_home")],
         )
         self.assertTrue(ranking["top"][0]["sample_qualified"])
-        self.assertFalse(ranking["top"][1]["sample_qualified"])
+        self.assertTrue(ranking["top"][1]["sample_qualified"])
         self.assertFalse(ranking["top"][2]["sample_qualified"])
 
     def test_ranking_exposes_low_odds_bias_and_excluded_accuracy(self) -> None:
@@ -165,6 +165,7 @@ class ThreeStageConsensusTests(unittest.TestCase):
             ("kept-win", 1.70, True),
             ("kept-loss", 2.00, False),
             ("missing-win", None, True),
+            ("missing-nan", float("nan"), False),
         )
         for match, odds, hit in fixtures:
             rows.extend(
@@ -179,9 +180,9 @@ class ThreeStageConsensusTests(unittest.TestCase):
         self.assertEqual(under["hits"], 1)
         self.assertEqual(under["accuracy"], 0.5)
         self.assertEqual(audit["threshold"], 1.70)
-        self.assertEqual(audit["decided"], 5)
+        self.assertEqual(audit["decided"], 6)
         self.assertEqual(audit["priced_decided"], 4)
-        self.assertEqual(audit["missing_odds"], 1)
+        self.assertEqual(audit["missing_odds"], 2)
         self.assertEqual(audit["average_odds"], 1.722)
         self.assertEqual(audit["low_odds"]["decided"], 2)
         self.assertEqual(audit["low_odds"]["hits"], 1)

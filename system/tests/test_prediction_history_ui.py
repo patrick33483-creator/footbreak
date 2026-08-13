@@ -43,6 +43,17 @@ class PredictionHistoryUiTests(unittest.TestCase):
             self.assertIn("min-width: 44px", css)
             self.assertIn("min-height: 44px", css)
 
+    def test_both_dashboards_name_the_wdl_topline_and_selected_odds_scope(self) -> None:
+        for dashboard in ("hkjc-dashboard", "crown/dashboard"):
+            app = (ROOT / dashboard / "app.js").read_text(encoding="utf-8")
+            self.assertIn("1X2 已評分", app)
+            self.assertIn("1X2 命中", app)
+            self.assertIn("1X2 命中率", app)
+            self.assertIn("wdl_graded", app)
+            self.assertIn("wdl_hits", app)
+            self.assertIn("wdl_accuracy", app)
+            self.assertIn("主統計：選邊賠率 ≥1.70", app)
+
     def test_both_dashboards_render_three_stage_consensus_without_mobile_overflow(self) -> None:
         for dashboard in ("hkjc-dashboard", "crown/dashboard"):
             root = ROOT / dashboard

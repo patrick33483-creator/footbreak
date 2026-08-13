@@ -1,6 +1,7 @@
 """Shared one-fixture statistics for predictions stable across all three stages."""
 from __future__ import annotations
 
+import math
 from typing import Any
 
 
@@ -16,9 +17,10 @@ def _line(grade: dict[str, Any]) -> float | None:
     if raw is None:
         raw = grade.get("condition")
     try:
-        return float(raw)
+        value = float(raw)
     except (TypeError, ValueError):
         return None
+    return value if math.isfinite(value) else None
 
 
 def _metrics(
@@ -51,7 +53,7 @@ def _samples_by_odds(
             odds = float(sample[stage].get("odds"))
         except (KeyError, TypeError, ValueError):
             continue
-        if odds <= 1.0:
+        if not math.isfinite(odds) or odds <= 1.0:
             continue
         if band == "low" and odds < LOW_ODDS_THRESHOLD:
             selected.append(sample)
@@ -76,7 +78,7 @@ def _odds_bias(
             odds = float(grade.get("odds"))
         except (TypeError, ValueError):
             continue
-        if odds > 1.0:
+        if math.isfinite(odds) and odds > 1.0:
             priced.append((grade, odds))
     low = [item for item in priced if item[1] < LOW_ODDS_THRESHOLD]
     eligible = [item for item in priced if item[1] >= LOW_ODDS_THRESHOLD]
@@ -243,7 +245,7 @@ def calculate_three_stage_consensus(
                 "decided": item["decided"],
                 "hits": item["hits"],
                 "accuracy": item["accuracy"],
-                "sample_qualified": item["decided"] > RANKING_MIN_DECIDED,
+                "sample_qualified": item["decided"] >= RANKING_MIN_DECIDED,
                 "odds_bias": item["odds_bias"],
             })
     ranking_candidates.sort(key=lambda item: (

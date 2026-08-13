@@ -1030,16 +1030,20 @@ function historyStageMarketMatrix(stats) {
     const x = (matrix[stage] || {})[code] || {};
     const graded = Number(x.graded || 0);
     const decided = Number(x.decided || 0);
-    const pushes = Math.max(0, graded - decided);
+    const pushes = Number(x.pushes || 0);
+    const groups = x.odds_groups || {};
+    const low = groups.below_1_70 || {};
+    const missing = groups.missing || {};
     return x.accuracy == null
-      ? `<span class="stage-market-empty">待累積</span><small>已評分 ${graded}${pushes ? ` · 走水 ${pushes}` : ''}</small>`
-      : `<strong>${pc(x.accuracy, 1)}</strong>
+      ? `<span class="stage-market-empty">≥1.70 待累積</span><small>已評分 ${graded}${pushes ? ` · 走水 ${pushes}` : ''}</small>`
+      : `<strong>≥1.70 ${pc(x.accuracy, 1)}</strong>
          <small>命中 ${x.hits}/${decided}</small>
-         <small>已評分 ${graded}${pushes ? ` · 走水 ${pushes}` : ''}</small>`;
+         <small>已評分 ${graded}${pushes ? ` · 走水 ${pushes}` : ''}</small>
+         <small>&lt;1.70 ${low.hits || 0}/${low.decided || 0} · 缺賠率 ${missing.graded || 0}</small>`;
   };
   return `<div class="stage-market-block">
-    <div class="stage-market-title">分階段市場命中率 <span>每格獨立計算</span></div>
-    <table class="stage-market-table" aria-label="首預、T-30及T-5各市場命中率">
+    <div class="stage-market-title">分階段市場命中率 <span>主統計：選邊賠率 ≥1.70；低賠／缺賠率獨立稽核</span></div>
+    <table class="stage-market-table" aria-label="首預、T-30及T-5各市場命中率（選邊賠率大於等於1.70）">
       <thead><tr><th>階段</th>${codes.map((code) => `<th>${HIST_MARKET_LABEL[code]}</th>`).join('')}</tr></thead>
       <tbody>${stages.map((stage) => `<tr><th>${stage}</th>${codes.map((code) => `<td>${cell(stage, code)}</td>`).join('')}</tr>`).join('')}</tbody>
     </table>
@@ -1159,14 +1163,14 @@ function renderFc() {
   const gradedRows = rows.filter((r) => r.result_status === '已核對');
   const excludedRows = rows.filter((r) => r.result_status === '不計');
   const pendingRows = rows.filter((r) => r.result_status === '待賽果');
-  const accuracy = s.accuracy == null ? '待賽果' : pc(s.accuracy, 1);
+  const accuracy = s.wdl_accuracy == null ? '待賽果' : pc(s.wdl_accuracy, 1);
   const K = [
     ['記錄賽事', s.matches || 0, ''],
     ['階段預測', s.predictions || 0, 'amber'],
-    ['已核對', s.graded || 0, ''],
+    ['1X2 已評分', s.wdl_graded || 0, ''],
     ['待賽果', s.pending || 0, ''],
-    ['命中', s.hits || 0, 'good'],
-    ['命中率', accuracy, s.accuracy == null ? '' : s.accuracy >= .5 ? 'good' : 'bad'],
+    ['1X2 命中', s.wdl_hits || 0, 'good'],
+    ['1X2 命中率', accuracy, s.wdl_accuracy == null ? '' : s.wdl_accuracy >= .5 ? 'good' : 'bad'],
   ];
   const stageSummary = ['首預', 'T-30', 'T-5'].map((stage) => {
     const x = (s.by_stage || {})[stage] || {};
@@ -1176,12 +1180,15 @@ function renderFc() {
   }).join('');
   const marketSummary = ['HDC', 'HIL', 'CHL'].map((code) => {
     const x = (s.by_market || {})[code] || {};
-    const pushes = Math.max(0, Number(x.graded || 0) - Number(x.decided || 0));
+    const pushes = Number(x.pushes || 0);
+    const groups = x.odds_groups || {};
+    const low = groups.below_1_70 || {};
+    const missing = groups.missing || {};
     return `<span class="hist-stage"><b>${HIST_MARKET_LABEL[code]}</b> ${
       x.accuracy == null
-        ? `待累積 (已評分 ${x.graded || 0})`
-        : `${pc(x.accuracy, 1)} (命中 ${x.hits}/${x.decided} · 已評分 ${x.graded || 0}${pushes ? ` · 走水 ${pushes}` : ''})`
-    }</span>`;
+        ? `≥1.70 待累積 (已評分 ${x.graded || 0})`
+        : `≥1.70 ${pc(x.accuracy, 1)} (命中 ${x.hits}/${x.decided} · 已評分 ${x.graded || 0}${pushes ? ` · 走水 ${pushes}` : ''})`
+    }<small>＜1.70 ${low.hits || 0}/${low.decided || 0} · 缺賠率 ${missing.graded || 0}</small></span>`;
   }).join('');
   const historyRows = (items) => items.map((r) => `<tr>
     <td data-label="開賽" class="mono nowrap">${r.kickoff ? `${hkDay(r.kickoff)} ${hkClock(r.kickoff)}` : '—'}</td>

@@ -260,6 +260,10 @@ def data_health_summary(report: dict[str, Any]) -> dict[str, Any]:
     return {
         "schema_version": report.get("schema_version"),
         "system": report.get("system"),
+        "scope": {
+            key: (report.get("scope") or {}).get(key)
+            for key in ("model_version", "pre_kickoff_only")
+        },
         "generated_at": report.get("generated_at"),
         "status": report.get("status"),
         "status_reason": report.get("status_reason"),

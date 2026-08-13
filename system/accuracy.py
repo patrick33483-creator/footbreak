@@ -459,31 +459,8 @@ def _agg(rows):
 
 
 def _market_agg(rows, code=None):
-    grades = [
-        grade
-        for row in rows
-        for grade in (row.get("market_grades") or [])
-        if grade.get("grade_status") == "GRADED"
-        and (code is None or grade.get("code") == code)
-    ]
-    decided = [grade for grade in grades if grade.get("hit") is not None]
-    return {
-        "graded": len(grades),
-        "decided": len(decided),
-        "hits": sum(grade.get("hit") is True for grade in decided),
-        "accuracy": (
-            round(sum(grade.get("hit") is True for grade in decided) / len(decided), 6)
-            if decided else None
-        ),
-        "brier": (
-            round(sum(float(grade["brier"]) for grade in grades) / len(grades), 6)
-            if grades else None
-        ),
-        "log_loss": (
-            round(sum(float(grade["log_loss"]) for grade in grades) / len(grades), 6)
-            if grades else None
-        ),
-    }
+    from analysis.market_statistics import market_metrics
+    return market_metrics(rows, code)
 
 
 def calibration(rows, nbins=5):

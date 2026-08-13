@@ -15,6 +15,7 @@ sys.path.insert(0, HERE)
 import model as M
 import predict as P
 import staking as K
+from record_picks import PREDICTION_ERA, PREDICTION_SCHEMA_VERSION
 
 OUT = os.path.join(os.path.dirname(HERE), "hkjc-dashboard", "data.json")
 HKT = dt.timezone(dt.timedelta(hours=8))
@@ -377,6 +378,24 @@ def build_prediction_history(watch, bets, accuracy):
 
     rows.sort(key=lambda r: (str(r.get("kickoff") or ""),
                              str(r.get("predicted_at") or "")), reverse=True)
+    # The visible scorecard must be comparable to the immutable learning DB:
+    # current model era only.  ``rows`` remains the full audit history.
+    comparable_rows = [
+        row for row in rows if row.get("prediction_era") == PREDICTION_ERA
+    ]
+    stats = _prediction_history_stats(comparable_rows)
+    stats["all_history_audit"] = _prediction_history_stats(rows)
+    stats["scope"] = {
+        "model_version": PREDICTION_ERA,
+        "schema_version": PREDICTION_SCHEMA_VERSION,
+        "rows": len(comparable_rows),
+        "all_history_rows": len(rows),
+        "description": "目前模型版本；全歷史保留於 all_history_audit。",
+    }
+    return {"rows": rows, "stats": stats}
+
+
+def _prediction_history_stats(rows):
     graded_rows = [r for r in rows if r.get("result_status") == "已核對"]
     pending_rows = [r for r in rows if r.get("result_status") == "待賽果"]
     excluded_rows = [r for r in rows if r.get("result_status") == "不計"]
@@ -395,29 +414,11 @@ def build_prediction_history(watch, bets, accuracy):
             "accuracy": (stage_hits / len(stage_graded)) if stage_graded else None,
         }
 
-    def market_metrics(market_rows, code):
-        grades = [
-            grade for row in market_rows for grade in (row.get("market_grades") or [])
-            if grade.get("code") == code and grade.get("grade_status") == "GRADED"
-        ]
-        decided = [grade for grade in grades if grade.get("hit") is not None]
-        return {
-            "graded": len(grades),
-            "decided": len(decided),
-            "hits": sum(grade.get("hit") is True for grade in decided),
-            "accuracy": (
-                sum(grade.get("hit") is True for grade in decided) / len(decided)
-                if decided else None
-            ),
-            "brier": (
-                sum(float(grade["brier"]) for grade in grades if grade.get("brier") is not None)
-                / len([grade for grade in grades if grade.get("brier") is not None])
-                if any(grade.get("brier") is not None for grade in grades) else None
-            ),
-        }
+    from analysis.market_statistics import MARKETS, market_metrics
+
     by_market = {
         code: market_metrics(rows, code)
-        for code in ("HDC", "HIL", "CHL")
+        for code in MARKETS
     }
     by_stage_market = {
         stage: {
@@ -425,7 +426,7 @@ def build_prediction_history(watch, bets, accuracy):
                 [row for row in rows if row.get("stage") == stage],
                 code,
             )
-            for code in ("HDC", "HIL", "CHL")
+            for code in MARKETS
         }
         for stage in HISTORY_STAGES
     }
@@ -433,21 +434,25 @@ def build_prediction_history(watch, bets, accuracy):
     from analysis.three_stage_consensus import calculate_three_stage_consensus
 
     return {
-        "rows": rows,
-        "stats": {
-            "matches": len({r.get("match_id") for r in rows}),
-            "predictions": len(rows),
-            "graded": len(graded_rows),
-            "pending": len(pending_rows),
-            "excluded": len(excluded_rows),
-            "hits": hits,
-            "accuracy": (hits / len(wdl_graded_rows)) if wdl_graded_rows else None,
-            "by_stage": by_stage,
-            "by_market": by_market,
-            "by_stage_market": by_stage_market,
-            "three_stage_consensus": calculate_three_stage_consensus(rows),
-            "learning_status": "collecting_market_level_shadow_samples",
-        },
+        "matches": len({r.get("match_id") for r in rows}),
+        "predictions": len(rows),
+        "graded": len(graded_rows),
+        "pending": len(pending_rows),
+        "excluded": len(excluded_rows),
+        # Explicitly WDL/1X2-only; market hit rates live in by_market.
+        "wdl_graded": len(wdl_graded_rows),
+        "wdl_hits": hits,
+        "wdl_accuracy": (hits / len(wdl_graded_rows)) if wdl_graded_rows else None,
+        # Legacy aliases are retained for API readers, but the dashboard uses
+        # the explicit WDL names to avoid suggesting a cross-market total.
+        "hits": hits,
+        "accuracy": (hits / len(wdl_graded_rows)) if wdl_graded_rows else None,
+        "by_stage": by_stage,
+        "by_market": by_market,
+        "by_stage_market": by_stage_market,
+        "market_overall": market_metrics(rows),
+        "three_stage_consensus": calculate_three_stage_consensus(rows),
+        "learning_status": "collecting_market_level_shadow_samples",
     }
 
 

@@ -22,6 +22,7 @@ def market_prediction(code="HDC", condition="-0.5", side="H"):
         "condition": condition,
         "side": side,
         "probability": 0.61,
+        "odds": 1.90,
         "label": "測試市場方向",
     }
 

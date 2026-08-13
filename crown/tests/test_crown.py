@@ -1205,7 +1205,11 @@ class CrownSafetyTests(unittest.TestCase):
             )
             payload = build(config)
             self.assertEqual(payload["prediction_history"]["rows"][0]["match_id"], "old")
-            self.assertEqual(payload["prediction_history"]["stats"]["predictions"], 1)
+            # A persisted row without an immutable model-version tag remains
+            # auditable, but cannot be attributed to the current scorecard.
+            stats = payload["prediction_history"]["stats"]
+            self.assertEqual(stats["predictions"], 0)
+            self.assertEqual(stats["all_history_audit"]["predictions"], 1)
 
     def test_prediction_history_removes_non_finite_market_lines(self) -> None:
         from crown.prediction_history import normalize_history
@@ -1240,7 +1244,7 @@ class CrownSafetyTests(unittest.TestCase):
             encoding="utf-8",
         )
         self.assertIn("Number.isFinite(Number(rawLine))", app)
-        self.assertIn("20260813-data-health-shadow-condition-consensus-ranking", index)
+        self.assertIn("20260813-data-health-shadow-condition-consensus-ranking-odds-tier-v2", index)
 
     def test_crown_history_orders_fixture_groups_and_stages(self) -> None:
         node = shutil.which("node")
@@ -1350,7 +1354,11 @@ class CrownSafetyTests(unittest.TestCase):
             self.assertEqual(history["stats"]["graded"], 1)
             self.assertIsNotNone(history["stats"]["brier"])
             self.assertEqual(row["market_grades"][0]["settlement"], "Won")
-            self.assertEqual(history["stats"]["by_market"]["HDC"]["hits"], 1)
+            market = history["stats"]["by_market"]["HDC"]
+            # This legacy fixture deliberately has no selected odds: it must
+            # remain visible in the missing-price audit, never the ≥1.70 rate.
+            self.assertEqual(market["hits"], 0)
+            self.assertEqual(market["odds_groups"]["missing"]["hits"], 1)
 
     def test_prediction_history_market_accuracy_is_split_by_stage(self) -> None:
         stages = ("首預", "T-30", "T-5")
@@ -2158,8 +2166,8 @@ class CrownSafetyTests(unittest.TestCase):
         self.assertIn("overflow-wrap: anywhere", styles)
         self.assertIn("font: 600 12px/1.6 var(--sans)", styles)
         index = (root / "index.html").read_text(encoding="utf-8")
-        self.assertIn("styles.css?v=20260813-data-health-shadow-condition-consensus-ranking", index)
-        self.assertIn("app.js?v=20260813-data-health-shadow-condition-consensus-ranking", index)
+        self.assertIn("styles.css?v=20260813-data-health-shadow-condition-consensus-ranking-odds-tier-v2", index)
+        self.assertIn("app.js?v=20260813-data-health-shadow-condition-consensus-ranking-odds-tier-v2", index)
         self.assertIn("const HISTORY_STAGE_RANK = { '首預': 1, 'T-30': 2, 'T-5': 3 };", app)
         self.assertIn("row.kickoff_hkt || row.kickoff", app)
         self.assertIn('id="scrollTop"', index)

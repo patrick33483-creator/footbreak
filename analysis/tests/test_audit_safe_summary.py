@@ -288,6 +288,10 @@ class AuditMetricUnitTests(unittest.TestCase):
             "schema_version": 1,
             "system": "crown",
             "status": "watch",
+            "scope": {
+                "model_version": "2026-08-12-hkjc-corner-forecast-v4",
+                "pre_kickoff_only": True,
+            },
             "policy": {"minimum_unique_fixtures": 30},
             "completeness": {"overall": {"unique_fixtures": 120, "graded_rows": 600}},
             "metrics_policy": {
@@ -327,6 +331,11 @@ class AuditMetricUnitTests(unittest.TestCase):
             },
         }
         summary = module.data_health_summary(report)
+        self.assertEqual(
+            summary["scope"]["model_version"],
+            "2026-08-12-hkjc-corner-forecast-v4",
+        )
+        self.assertTrue(summary["scope"]["pre_kickoff_only"])
         self.assertFalse(summary["metrics_policy"]["metrics_are_one_per_fixture"])
         self.assertEqual(summary["baseline"]["metric_unit"], "graded_prediction_rows")
         self.assertTrue(summary["baseline"]["correlated_stage_rows"])
