@@ -1246,6 +1246,21 @@ class CrownSafetyTests(unittest.TestCase):
         self.assertIn("Number.isFinite(Number(rawLine))", app)
         self.assertIn("20260813-data-health-shadow-condition-consensus-ranking-odds-tier-v2", index)
 
+    def test_crown_fixture_list_uses_stage_aware_pending_status(self) -> None:
+        root = Path(__file__).parents[1] / "dashboard"
+        app = (root / "app.js").read_text(encoding="utf-8")
+        index = (root / "index.html").read_text(encoding="utf-8")
+
+        self.assertIn("function nextStageText(m, mins)", app)
+        self.assertIn("if (t5) return '○ T-5 完成 · 唔買';", app)
+        self.assertIn("if (t30) return '○ T-30 完成 · 等 T-5';", app)
+        self.assertIn("if (mins > 40) return '○ 等 T-30';", app)
+        self.assertIn("if (mins >= 20) return '○ 正等 T-30 處理';", app)
+        self.assertIn("return '○ 錯過 T-30 · 等 T-5';", app)
+        self.assertIn("nextStageText(m, mm)", app)
+        self.assertNotIn("? '○ 唔買' : '○ 等 T-5'", app)
+        self.assertIn("app.js?v=20260813-stage-aware-status-v1", index)
+
     def test_crown_history_orders_fixture_groups_and_stages(self) -> None:
         node = shutil.which("node")
         if not node:
@@ -2167,7 +2182,7 @@ class CrownSafetyTests(unittest.TestCase):
         self.assertIn("font: 600 12px/1.6 var(--sans)", styles)
         index = (root / "index.html").read_text(encoding="utf-8")
         self.assertIn("styles.css?v=20260813-data-health-shadow-condition-consensus-ranking-odds-tier-v2", index)
-        self.assertIn("app.js?v=20260813-data-health-shadow-condition-consensus-ranking-odds-tier-v2", index)
+        self.assertIn("app.js?v=20260813-stage-aware-status-v1", index)
         self.assertIn("const HISTORY_STAGE_RANK = { '首預': 1, 'T-30': 2, 'T-5': 3 };", app)
         self.assertIn("row.kickoff_hkt || row.kickoff", app)
         self.assertIn('id="scrollTop"', index)

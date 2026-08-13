@@ -305,6 +305,17 @@ function filtered() {
   });
 }
 
+function nextStageText(m, mins) {
+  const stages = m.stages || [];
+  const t30 = stages.some((x) => x.stage === 'T-30');
+  const t5 = stages.some((x) => x.stage === 'T-5');
+  if (t5) return '○ T-5 完成 · 唔買';
+  if (t30) return '○ T-30 完成 · 等 T-5';
+  if (mins > 40) return '○ 等 T-30';
+  if (mins >= 20) return '○ 正等 T-30 處理';
+  return '○ 錯過 T-30 · 等 T-5';
+}
+
 function renderList() {
   const rows = filtered();
   $('#railCount').textContent = `顯示 ${rows.length} / ${LIST.length} 場`;
@@ -325,7 +336,7 @@ function renderList() {
         <div class="fx-foot">${dots(m)}
           ${m.pick
             ? `<span class="fx-pick">▶ ${esc(m.pick.label)} <b>@${f2(m.pick.odds)}</b> · ${money(m.pick.stake)}</span>`
-            : `<span class="fx-pick wait">${(m.stages || []).some((x) => x.stage === 'T-5') ? '○ 唔買' : '○ 等 T-5'}</span>`}
+            : `<span class="fx-pick wait">${nextStageText(m, mm)}</span>`}
         </div>
       </div></li>`;
   }).join('') || '<li class="empty">冇符合條件嘅賽事</li>';
