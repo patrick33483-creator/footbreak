@@ -1,0 +1,202 @@
+name: 回補已核對馬會賠率（2026-08-11）
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: 'Type APPLY_VERIFIED_HKJC_ODDS_20260811 to run the idempotent private-overlay recovery.'
+        required: true
+        default: AUDIT
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  recover:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: 驗證明確確認
+        run: |
+          test "${{ inputs.confirmation }}" = "APPLY_VERIFIED_HKJC_ODDS_20260811"
+      - name: 設定 SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - name: 精確定位並追加私有賠率證據
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "sudo env PYTHONPATH=/opt/footbreak ODDS_RECOVERY_SIDECAR=/var/lib/footbreak/private/odds-recovery-overlay.json /opt/footbreak/.venv/bin/python3 -s" <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+
+          from analysis.odds_recovery import (
+              _entry,
+              _kickoff_for_target,
+              _load_rows,
+              _quote,
+              _stage_cutoff,
+              apply,
+              prediction_targets,
+          )
+
+          HISTORY = Path("/var/www/footbreak/data.json")
+          SIDECAR = Path("/var/lib/footbreak/private/odds-recovery-overlay.json")
+          HOME_HASH = "80bcf489eec66a713a12872aef3a206f846c2f56f0076d31a082bd0c9fabaa1d"
+          AWAY_HASH = "7a04484e483c127bf1608d09e67d243b1491c69de3ef7db18518b79a6ad52b4b"
+          SOURCE_HASH = "346d566ee94f5ff84b6771bc45a42f0273e826cd8a60020407f1e55243792ada"
+
+          def text_hash(value):
+              return hashlib.sha256(str(value or "").strip().encode("utf-8")).hexdigest()
+
+          def first(row, names):
+              for name in names:
+                  value = row.get(name)
+                  if value not in (None, ""):
+                      return value
+              return None
+
+          rows = _load_rows(HISTORY)
+          fixture_rows = []
+          for row in rows:
+              home = first(row, ("home", "home_team", "home_name", "team_home"))
+              away = first(row, ("away", "away_team", "away_name", "team_away"))
+              kickoff = first(row, ("kickoff_hkt", "kickoff", "start_time", "match_time"))
+              if (
+                  text_hash(home) == HOME_HASH
+                  and text_hash(away) == AWAY_HASH
+                  and str(kickoff or "").startswith("2026-08-11T00:30")
+              ):
+                  fixture_rows.append(row)
+
+          if not fixture_rows:
+              raise SystemExit("exact_fixture_not_found")
+
+          targets, _ = prediction_targets(fixture_rows, "footbreak")
+          wanted = [
+              target
+              for target in targets
+              if target["stage"] in {"首預", "T-30"}
+              and target["market_code"] == "HIL"
+              and target["line"] == "2.5"
+              and target["side"] == "L"
+          ]
+          by_stage = {}
+          for target in wanted:
+              if target["stage"] in by_stage:
+                  raise SystemExit("ambiguous_stage_target")
+              by_stage[target["stage"]] = target
+          if set(by_stage) != {"首預", "T-30"}:
+              raise SystemExit("required_stage_target_missing")
+          if len({target["fixture_identity"] for target in by_stage.values()}) != 1:
+              raise SystemExit("cross_fixture_target_mismatch")
+
+          entries = []
+          for stage in ("首預", "T-30"):
+              target = by_stage[stage]
+              cutoff, kickoff_grounded, selection_method = _stage_cutoff(target)
+              if not kickoff_grounded or _kickoff_for_target(target) is None:
+                  raise SystemExit("kickoff_not_grounded")
+              quote = _quote(
+                  target["fixture_identity"],
+                  "HIL",
+                  "2.5",
+                  "L",
+                  "1.55",
+                  cutoff,
+                  "user_verified_hkjc_screenshot",
+                  SOURCE_HASH[:16],
+                  stage,
+              )
+              if quote is None:
+                  raise SystemExit("invalid_verified_quote")
+              quote.update({
+                  "evidence_quality": "A",
+                  "evidence_target_timestamp": cutoff,
+                  "freshness_ceiling_seconds": None if stage == "首預" else 3600,
+                  "selection_method": selection_method,
+                  "selection_age_seconds": 0.0,
+              })
+              entries.append(_entry(target, quote))
+
+          result = apply(SIDECAR, entries)
+          print(json.dumps({
+              "schema_version": 1,
+              "status": "applied",
+              "matched_stage_count": len(entries),
+              "added": result["added"],
+              "already_present": result["already_present"],
+              "raw_history_mutated": False,
+          }, sort_keys=True))
+          PY
+      - name: 重生公開投影及完整性驗證
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'set -e
+              export PYTHONPATH=/opt/footbreak
+              export ODDS_RECOVERY_SIDECAR=/var/lib/footbreak/private/odds-recovery-overlay.json
+              PYTHON=/opt/footbreak/.venv/bin/python3
+              sudo env PYTHONPATH="$PYTHONPATH" ODDS_RECOVERY_SIDECAR="$ODDS_RECOVERY_SIDECAR" "$PYTHON" /opt/footbreak/deploy/regenerate-odds-recovery-dashboard.py --data /var/www/footbreak/data.json >/dev/null
+              sudo env PYTHONPATH="$PYTHONPATH" ODDS_RECOVERY_SIDECAR="$ODDS_RECOVERY_SIDECAR" "$PYTHON" -m crown.dashboard_data --out /var/www/crown/data.json >/dev/null
+              sudo env PYTHONPATH="$PYTHONPATH" ODDS_RECOVERY_SIDECAR="$ODDS_RECOVERY_SIDECAR" "$PYTHON" -m analysis.data_health --learning-db /var/lib/footbreak/learning/predictions.sqlite --out /var/lib/footbreak/data-health/latest.json --public-footbreak /var/www/footbreak/data-health.json --public-crown /var/www/crown/data-health.json --lock /var/lock/footbreak-data-health.lock >/dev/null
+              sudo env PYTHONPATH="$PYTHONPATH" ODDS_RECOVERY_SIDECAR="$ODDS_RECOVERY_SIDECAR" "$PYTHON" /opt/footbreak/deploy/verify-result-integrity.py >/dev/null
+              sudo env PYTHONPATH="$PYTHONPATH" "$PYTHON" /opt/footbreak/deploy/audit-result-state.py >/dev/null'
+      - name: 核對公開投影只顯示低賠分組
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "sudo /opt/footbreak/.venv/bin/python3 -s" <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+
+          HOME_HASH = "80bcf489eec66a713a12872aef3a206f846c2f56f0076d31a082bd0c9fabaa1d"
+          AWAY_HASH = "7a04484e483c127bf1608d09e67d243b1491c69de3ef7db18518b79a6ad52b4b"
+
+          def text_hash(value):
+              return hashlib.sha256(str(value or "").strip().encode("utf-8")).hexdigest()
+
+          payload = json.loads(Path("/var/www/footbreak/data.json").read_text(encoding="utf-8"))
+          rows = (payload.get("prediction_history") or {}).get("rows") or []
+          found = set()
+          for row in rows:
+              home = row.get("home") or row.get("home_team") or row.get("home_name")
+              away = row.get("away") or row.get("away_team") or row.get("away_name")
+              kickoff = row.get("kickoff_hkt") or row.get("kickoff") or row.get("start_time")
+              if (
+                  text_hash(home) != HOME_HASH
+                  or text_hash(away) != AWAY_HASH
+                  or not str(kickoff or "").startswith("2026-08-11T00:30")
+                  or row.get("stage") not in {"首預", "T-30"}
+              ):
+                  continue
+              markets = [
+                  item for item in (row.get("market_predictions") or [])
+                  if item.get("code") == "HIL"
+                  and str(item.get("line") or item.get("condition")) in {"2.5", "2.50"}
+                  and item.get("side") == "L"
+              ]
+              if len(markets) != 1 or float(markets[0].get("odds")) != 1.55:
+                  raise SystemExit("public_projection_quote_mismatch")
+              found.add(row["stage"])
+          if found != {"首預", "T-30"}:
+              raise SystemExit("public_projection_stage_missing")
+          print('{"status":"verified","stages":2,"odds_bucket":"below_1_70"}')
+          PY
