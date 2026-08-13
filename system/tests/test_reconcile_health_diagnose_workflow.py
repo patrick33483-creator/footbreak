@@ -31,6 +31,21 @@ class ReconcileHealthDiagnoseWorkflowTests(unittest.TestCase):
         self.assertIn("journalctl -u footbreak-result-reconcile.service", text)
         self.assertIn("raw_journal_lines_printed=0 raw_journal_lines_uploaded=0", text)
         self.assertIn("No environment, credential, team identifier, state file, or provider response", text)
+        self.assertIn(
+            "integrity_crown_public_row_count=$(count_journal_matches "
+            "'Crown public/projected prediction row count mismatch')",
+            text,
+        )
+        self.assertIn(
+            "integrity_crown_public_stats=$(count_journal_matches "
+            "'Crown public prediction stats do not match the recovery overlay projection')",
+            text,
+        )
+        self.assertIn(
+            "integrity_history_duplicate_keys=$(count_journal_matches "
+            "'duplicate match/stage rows')",
+            text,
+        )
         self.assertNotIn("journalctl -u footbreak-result-reconcile.service --no-pager", text)
         self.assertNotIn('echo "$journal"', text)
         self.assertNotIn("cat /etc/footbreak", text)
