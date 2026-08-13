@@ -9,11 +9,11 @@ on:
         default: AUDIT
         type: string
       provider_mode:
-        description: 'LOCAL keeps the read-only audit offline. TITAN_AUDIT warms a private cache on the runner and audits on the server; TITAN_APPLY also requires the exact apply confirmation.'
+        description: 'LOCAL is offline. TITAN_* uses Crown HDC/HIL. PUBLIC_CROSSWALK_* builds strict ZGZCW/Tipsme event-ID crosswalks on the runner; every apply still needs the exact confirmation.'
         required: true
         default: LOCAL
         type: choice
-        options: [LOCAL, TITAN_AUDIT, TITAN_APPLY]
+        options: [LOCAL, TITAN_AUDIT, TITAN_APPLY, PUBLIC_CROSSWALK_AUDIT, PUBLIC_CROSSWALK_APPLY]
 
 permissions:
   contents: read
@@ -54,11 +54,16 @@ jobs:
           name: historical-odds-recovery-audit
           path: historical-odds-recovery-audit.json
           retention-days: 7
-      - name: GitHub 預熱私有 Titan 快取並安全交接
-        if: ${{ inputs.provider_mode == 'TITAN_AUDIT' || inputs.provider_mode == 'TITAN_APPLY' }}
+      - name: GitHub 建立私有公共供應商 crosswalk 快取並安全交接
+        if: ${{ inputs.provider_mode == 'TITAN_AUDIT' || inputs.provider_mode == 'TITAN_APPLY' || inputs.provider_mode == 'PUBLIC_CROSSWALK_AUDIT' || inputs.provider_mode == 'PUBLIC_CROSSWALK_APPLY' }}
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          ZGZCW_EVENT_URL_TEMPLATE: ${{ vars.ZGZCW_EVENT_URL_TEMPLATE }}
+          ZGZCW_HISTORY_URL_TEMPLATE: ${{ vars.ZGZCW_HISTORY_URL_TEMPLATE }}
+          ZGZCW_BOOKMAKER_ID: ${{ vars.ZGZCW_BOOKMAKER_ID }}
+          TIPSME_EVENT_URL_TEMPLATE: ${{ vars.TIPSME_EVENT_URL_TEMPLATE }}
+          TIPSME_HISTORY_URL_TEMPLATE: ${{ vars.TIPSME_HISTORY_URL_TEMPLATE }}
         run: |
           set -euo pipefail
           runner_tmp="$(mktemp -d)"
@@ -77,9 +82,9 @@ jobs:
           }
           trap cleanup EXIT
 
-          # Export only the fields needed to construct strict Crown/Titan targets.
-          # The compact file stays in private mktemp directories and is never logged
-          # or uploaded; Footbreak is not copied because Titan recovery is Crown-only.
+          # Export only compact, unresolved targets with the strict fixture
+          # fields required for a public event-ID crosswalk. The files stay in
+          # private mktemp directories and are never logged or uploaded.
           remote_input_dir="$(ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=20 "$target" 'umask 077; mktemp -d /tmp/footbreak-odds-recovery-input.XXXXXX')"
           ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=20 "$target" "sudo env PYTHONPATH=/opt/footbreak /opt/footbreak/.venv/bin/python3 - $(printf '%q' "$remote_input_dir")" <<'PY'
           import json
@@ -87,41 +92,23 @@ jobs:
           import sys
           from pathlib import Path
 
-          from analysis.odds_recovery import _load_rows, prediction_targets
+          from analysis.odds_recovery import _load_rows, compact_provider_target_rows
 
           destination = Path(sys.argv[1])
           owner = destination.stat()
-          kept_row_fields = (
-              "match_id", "fixture_id", "hkjc_match_id", "titan_match_id",
-              "stage", "predicted_at", "ts", "kickoff_hkt", "kickoff",
-              "start_time", "match_time",
-          )
-
-          compact = []
-          # Emit one synthetic row for each currently missing exact target, not
-          # a history row.  Retain only its stable identity, timing context,
-          # and the unresolved market/line/side needed by the runner audit.
-          targets, _ = prediction_targets(
-              _load_rows(Path("/var/lib/footbreak/crown/prediction_history.json")),
-              "crown",
-          )
-          for target in targets:
-              if target["market_code"] not in {"HDC", "HIL"}:
-                  continue
-              row = target["row"]
-              item = {key: row[key] for key in kept_row_fields if key in row}
-              item["market_predictions"] = [{
-                  "code": target["market_code"], "line": target["line"],
-                  "side": target["side"], "odds": None,
-              }]
-              compact.append(item)
-          output = destination / "crown-titan-targets.json"
-          output.write_text(json.dumps(compact, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
-          os.chown(output, owner.st_uid, owner.st_gid)
-          os.chmod(output, 0o600)
+          sources = {
+              "footbreak": Path("/var/www/footbreak/data.json"),
+              "crown": Path("/var/lib/footbreak/crown/prediction_history.json"),
+          }
+          for system, source in sources.items():
+              compact = compact_provider_target_rows(_load_rows(source), system)
+              output = destination / f"{system}-provider-targets.json"
+              output.write_text(json.dumps(compact, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+              os.chown(output, owner.st_uid, owner.st_gid)
+              os.chmod(output, 0o600)
           PY
-          scp -q "$target:$remote_input_dir/crown-titan-targets.json" "$runner_tmp/crown-titan-targets.json"
-          printf '[]' > "$runner_tmp/footbreak-targets.json"
+          scp -q "$target:$remote_input_dir/footbreak-provider-targets.json" "$runner_tmp/footbreak-targets.json"
+          scp -q "$target:$remote_input_dir/crown-provider-targets.json" "$runner_tmp/crown-titan-targets.json"
           chmod 600 "$runner_tmp/footbreak-targets.json" "$runner_tmp/crown-titan-targets.json"
           install -d -m 700 "$runner_tmp/empty-evidence" "$runner_tmp/provider-cache"
 
@@ -130,6 +117,14 @@ jobs:
           python3 analysis/odds_recovery.py \
             --provider-audit \
             --provider titan \
+            --provider zgzcw \
+            --provider tipsme \
+            --zgzcw-event-url-template "$ZGZCW_EVENT_URL_TEMPLATE" \
+            --zgzcw-url-template "$ZGZCW_HISTORY_URL_TEMPLATE" \
+            --zgzcw-bookmaker-id "$ZGZCW_BOOKMAKER_ID" \
+            --tipsme-event-url-template "$TIPSME_EVENT_URL_TEMPLATE" \
+            --tipsme-url-template "$TIPSME_HISTORY_URL_TEMPLATE" \
+            --crosswalk-kickoff-tolerance-seconds 60 \
             --provider-rate 1 \
             --provider-timeout 8 \
             --provider-retries 0 \
@@ -263,16 +258,29 @@ jobs:
           # It is the only place provider apply may append the private sidecar.
           mode=--provider-audit
           confirmation=AUDIT
-          # An unconfirmed TITAN_APPLY is deliberately audit-only: it must
+          # An unconfirmed provider APPLY mode is deliberately audit-only: it must
           # neither append the overlay nor trigger public projection rebuilds.
-          if [ "${{ inputs.provider_mode }}" = "TITAN_APPLY" ] && [ "${{ inputs.apply_confirmation }}" = "APPLY_HISTORICAL_ODDS_RECOVERY" ]; then
+          if { [ "${{ inputs.provider_mode }}" = "TITAN_APPLY" ] || [ "${{ inputs.provider_mode }}" = "PUBLIC_CROSSWALK_APPLY" ]; } && [ "${{ inputs.apply_confirmation }}" = "APPLY_HISTORICAL_ODDS_RECOVERY" ]; then
             mode=--provider-apply
             confirmation=APPLY_HISTORICAL_ODDS_RECOVERY
           fi
+          zgzcw_event_template="$(printf '%q' "$ZGZCW_EVENT_URL_TEMPLATE")"
+          zgzcw_history_template="$(printf '%q' "$ZGZCW_HISTORY_URL_TEMPLATE")"
+          zgzcw_bookmaker_id="$(printf '%q' "$ZGZCW_BOOKMAKER_ID")"
+          tipsme_event_template="$(printf '%q' "$TIPSME_EVENT_URL_TEMPLATE")"
+          tipsme_history_template="$(printf '%q' "$TIPSME_HISTORY_URL_TEMPLATE")"
           ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=20 "$target" "sudo /opt/footbreak/.venv/bin/python3 /opt/footbreak/analysis/odds_recovery.py \
             $mode \
             --apply-confirmation $confirmation \
             --provider titan \
+            --provider zgzcw \
+            --provider tipsme \
+            --zgzcw-event-url-template $zgzcw_event_template \
+            --zgzcw-url-template $zgzcw_history_template \
+            --zgzcw-bookmaker-id $zgzcw_bookmaker_id \
+            --tipsme-event-url-template $tipsme_event_template \
+            --tipsme-url-template $tipsme_history_template \
+            --crosswalk-kickoff-tolerance-seconds 60 \
             --provider-rate 1 \
             --provider-timeout 8 \
             --provider-retries 0 \
@@ -282,6 +290,7 @@ jobs:
             --freshness-t30-seconds 3600 \
             --freshness-t5-seconds 900 \
             --provider-cache /var/lib/footbreak/private/odds-recovery-provider-cache \
+            --provider-cache-only \
             --footbreak-history /var/www/footbreak/data.json \
             --crown-history /var/lib/footbreak/crown/prediction_history.json \
             --sidecar /var/lib/footbreak/private/odds-recovery-overlay.json \
@@ -293,7 +302,7 @@ jobs:
             --allow crown=/var/lib/footbreak/crown/ledger.json \
             --allow crown=/var/lib/footbreak/crown/source_snapshots" > historical-odds-recovery-provider.json
       - name: 保存供應商輔助摘要（僅聚合 JSON）
-        if: ${{ inputs.provider_mode == 'TITAN_AUDIT' || inputs.provider_mode == 'TITAN_APPLY' }}
+        if: ${{ inputs.provider_mode == 'TITAN_AUDIT' || inputs.provider_mode == 'TITAN_APPLY' || inputs.provider_mode == 'PUBLIC_CROSSWALK_AUDIT' || inputs.provider_mode == 'PUBLIC_CROSSWALK_APPLY' }}
         uses: actions/upload-artifact@v4
         with:
           name: historical-odds-recovery-provider
@@ -321,7 +330,7 @@ jobs:
             --allow crown=/var/lib/footbreak/crown/ledger.json \
             --allow crown=/var/lib/footbreak/crown/source_snapshots' > historical-odds-recovery-apply.json
       - name: 套用後只重生公開投影及驗證
-        if: ${{ inputs.apply_confirmation == 'APPLY_HISTORICAL_ODDS_RECOVERY' && (inputs.provider_mode == 'LOCAL' || inputs.provider_mode == 'TITAN_APPLY') }}
+        if: ${{ inputs.apply_confirmation == 'APPLY_HISTORICAL_ODDS_RECOVERY' && (inputs.provider_mode == 'LOCAL' || inputs.provider_mode == 'TITAN_APPLY' || inputs.provider_mode == 'PUBLIC_CROSSWALK_APPLY') }}
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
@@ -397,7 +406,7 @@ jobs:
           path: historical-odds-recovery-apply.json
           retention-days: 7
       - name: 保存重生後驗證稽核（僅聚合 JSON）
-        if: ${{ inputs.apply_confirmation == 'APPLY_HISTORICAL_ODDS_RECOVERY' && (inputs.provider_mode == 'LOCAL' || inputs.provider_mode == 'TITAN_APPLY') }}
+        if: ${{ inputs.apply_confirmation == 'APPLY_HISTORICAL_ODDS_RECOVERY' && (inputs.provider_mode == 'LOCAL' || inputs.provider_mode == 'TITAN_APPLY' || inputs.provider_mode == 'PUBLIC_CROSSWALK_APPLY') }}
         uses: actions/upload-artifact@v4
         with:
           name: historical-odds-recovery-regeneration-audit

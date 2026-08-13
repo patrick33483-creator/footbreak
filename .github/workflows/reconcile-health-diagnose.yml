@@ -1,0 +1,104 @@
+name: 診斷賽果整合健康
+
+on:
+  workflow_dispatch:
+    inputs:
+      lookback_minutes:
+        description: Journal lookback window (minutes)
+        required: true
+        default: "90"
+        type: choice
+        options: ["30", "90", "180"]
+      journal_lines:
+        description: Maximum recent journal entries to aggregate
+        required: true
+        default: "250"
+        type: choice
+        options: ["100", "250", "500"]
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    name: Read-only reconciliation diagnosis
+    runs-on: ubuntu-24.04
+    steps:
+      - name: 設定 SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: 只讀取得已遮蔽整合狀態
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          LOOKBACK_MINUTES: ${{ inputs.lookback_minutes }}
+          JOURNAL_LINES: ${{ inputs.journal_lines }}
+        run: |
+          {
+            printf 'LOOKBACK_MINUTES=%q\n' "$LOOKBACK_MINUTES"
+            printf 'JOURNAL_LINES=%q\n' "$JOURNAL_LINES"
+            cat <<'REMOTE'
+          set -euo pipefail
+
+          case "$LOOKBACK_MINUTES" in 30|90|180) ;; *)
+            echo "invalid lookback_minutes" >&2
+            exit 2
+            ;;
+          esac
+          case "$JOURNAL_LINES" in 100|250|500) ;; *)
+            echo "invalid journal_lines" >&2
+            exit 2
+            ;;
+          esac
+
+          count_journal_matches() {
+            local phrase="$1"
+            grep -Fic "$phrase" <<<"$journal" || true
+          }
+
+          echo "=== read-only redacted reconciliation diagnostic ==="
+          echo "collected_at_utc=$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+          echo "lookback_minutes=$LOOKBACK_MINUTES journal_line_limit=$JOURNAL_LINES"
+          echo "No environment, credential, team identifier, state file, or provider response is read or printed."
+
+          echo "=== systemd service (allowlisted fields) ==="
+          systemctl show footbreak-result-reconcile.service --no-pager \
+            -p Id -p LoadState -p ActiveState -p SubState -p Result \
+            -p ExecMainCode -p ExecMainStatus -p ExecMainStartTimestamp \
+            -p ExecMainExitTimestamp -p NRestarts 2>/dev/null || true
+          echo "=== systemd timer (allowlisted fields) ==="
+          systemctl show footbreak-result-reconcile.timer --no-pager \
+            -p Id -p LoadState -p UnitFileState -p ActiveState -p SubState \
+            -p Result -p LastTriggerUSec -p NextElapseUSecRealtime 2>/dev/null || true
+
+          # The journal is retained only in-process.  The workflow emits
+          # aggregate counts for fixed reconciliation phases, never raw lines,
+          # exception messages, provider payloads, fixture/team IDs, or tokens.
+          journal="$(journalctl -u footbreak-result-reconcile.service \
+            --since "-${LOOKBACK_MINUTES} minutes" --no-pager --output=cat \
+            -n "$JOURNAL_LINES" 2>&1 || true)"
+          journal_entries="$(sed '/^[[:space:]]*$/d' <<<"$journal" | wc -l | tr -d ' ')"
+          journal_error_keywords="$(grep -Eic '(^|[^[:alpha:]])(error|failed|failure|traceback|exception)([^[:alpha:]]|$)' <<<"$journal" || true)"
+
+          echo "=== recent journal (aggregate/redacted) ==="
+          echo "raw_journal_lines_printed=0 raw_journal_lines_uploaded=0"
+          echo "journal_entries_observed=$journal_entries"
+          echo "journal_error_keyword_lines=$journal_error_keywords"
+          echo "phase_footbreak_settlement_failures=$(count_journal_matches 'Footbreak reconciliation failed')"
+          echo "phase_crown_settlement_failures=$(count_journal_matches 'Crown reconciliation failed')"
+          echo "phase_learning_store_failures=$(count_journal_matches 'learning-store reconciliation failed')"
+          echo "phase_integrity_audit_failures=$(count_journal_matches 'Prediction-history integrity audit failed')"
+          echo "phase_data_health_generation_failures=$(count_journal_matches '資料健康報告生成失敗')"
+          echo "phase_data_health_audit_failures=$(count_journal_matches '資料健康本地稽核失敗')"
+          echo "phase_crown_disabled_skips=$(count_journal_matches 'Crown reconciliation skipped')"
+          REMOTE
+          } | ssh -o BatchMode=yes -o ConnectTimeout=20 \
+                -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
+                "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s'

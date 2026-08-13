@@ -8,6 +8,31 @@ APP_DIR="/opt/footbreak"
 WEB_ROOT="/var/www/footbreak"
 BRANCH="${1:-main}"
 
+crown_is_enabled_in_config() {
+  # Read only the validation-gate assignment; never source an environment file
+  # in this privileged deploy hook and never print its contents.
+  local file line value=""
+  for file in /etc/footbreak.env /etc/footbreak-crown.env; do
+    [ -r "$file" ] || continue
+    line="$(grep -E '^[[:space:]]*(export[[:space:]]+)?CROWN_ENABLED[[:space:]]*=' "$file" | tail -n 1 || true)"
+    [ -n "$line" ] || continue
+    value="${line#*=}"
+    value="${value#"${value%%[![:space:]]*}"}"
+    value="${value%"${value##*[![:space:]]}"}"
+    if [ "${value#\'}" != "$value" ] && [ "${value%\'}" != "$value" ]; then
+      value="${value#\'}"
+      value="${value%\'}"
+    elif [ "${value#\"}" != "$value" ] && [ "${value%\"}" != "$value" ]; then
+      value="${value#\"}"
+      value="${value%\"}"
+    fi
+  done
+  case "$value" in
+    1|true|TRUE|yes|YES|on|ON) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 sync_crown_web_root() {
   # Only the static nginx tree is made readable.  Never recurse into
   # /var/lib/footbreak/crown, which is private runtime state.
@@ -54,19 +79,30 @@ systemctl daemon-reload
 # Crown is a fixed 12:00-to-11:59 board.  The :05/:35 pass refreshes fixture
 # discovery and Crown quotes only; the two-minute tick retains Footbreak's
 # original T-30/T-5 windows and is the only path that can create a T-5 bet.
-for timer in crown-sweep.timer crown-tick.timer crown-settle.timer; do
-  systemctl enable "$timer"
-  systemctl restart "$timer"
-  if ! systemctl is-active --quiet "$timer"; then
-    systemctl reset-failed "$timer" 2>/dev/null || true
-    systemctl start "$timer"
-  fi
-  systemctl is-active --quiet "$timer" || {
-    systemctl show "$timer" -p LoadState -p ActiveState -p SubState -p Result
-    echo "ERROR: $timer did not become active after restart" >&2
-    exit 1
-  }
-done
+# The default validation gate is disabled.  A disabled Crown runner exits
+# non-zero intentionally and performs no provider request, so keep its timers
+# stopped until an operator explicitly enables it.
+if crown_is_enabled_in_config; then
+  echo "▸ Crown validation gate enabled; starting Crown timers"
+  for timer in crown-sweep.timer crown-tick.timer crown-settle.timer; do
+    systemctl enable "$timer"
+    systemctl restart "$timer"
+    if ! systemctl is-active --quiet "$timer"; then
+      systemctl reset-failed "$timer" 2>/dev/null || true
+      systemctl start "$timer"
+    fi
+    systemctl is-active --quiet "$timer" || {
+      systemctl show "$timer" -p LoadState -p ActiveState -p SubState -p Result
+      echo "ERROR: $timer did not become active after restart" >&2
+      exit 1
+    }
+  done
+else
+  echo "▸ Crown validation gate disabled; stopping Crown timers"
+  systemctl disable --now crown-sweep.timer crown-tick.timer crown-settle.timer 2>/dev/null || true
+  systemctl stop crown-sweep.service crown-tick.service crown-settle.service 2>/dev/null || true
+  systemctl reset-failed crown-sweep.service crown-tick.service crown-settle.service 2>/dev/null || true
+fi
 # Settlement is deliberately separate from the latency-sensitive tick.  T-30
 # and T-5 now share one ordered queue, so the old second timer is retired
 # completely.  Merely disabling it proved insufficient on an upgraded host:

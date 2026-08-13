@@ -46,6 +46,19 @@ def completed_stages(
 def stage_for(minutes_to_kickoff: float, sweep: bool, done: set[str]) -> str | None:
     if sweep:
         return "首預" if "首預" not in done else None
+    # A known card can reach a timed window when a prior board sweep failed,
+    # was delayed, or discovered it just after that sweep started.  Do not let
+    # a later T-30/T-5 snapshot become the first persisted decision: it makes
+    # the three-stage history incomplete and the dashboard misleadingly says
+    # it is merely waiting for T-30.  The tick has enough local identity to
+    # recover 首預 without another fixture-list request; the next tick can
+    # process the still-due timed stage.
+    if (
+        0 < minutes_to_kickoff <= 40
+        and "首預" not in done
+        and "T-5" not in done
+    ):
+        return "首預"
     if 0 < minutes_to_kickoff <= 10 and "T-5" not in done:
         return "T-5"
     if 20 <= minutes_to_kickoff <= 40 and "T-30" not in done:
@@ -212,6 +225,10 @@ def sync_prediction(ledger: dict[str, Any], prediction: dict[str, Any], config: 
         "pinnapi_event_id": prediction.get("pinnapi_event_id"), "hkjc_match_id": prediction.get("hkjc_match_id"), "stages": [],
         "matching_version": prediction.get("matching_version"),
         "prediction_era": PREDICTION_ERA,
+        # This is a local state-observation timestamp, not a provider field.
+        # Preserve the first value so a later T-30/T-5 pass cannot obscure
+        # when this fixture first entered the Crown state.
+        "discovered_at": prediction.get("discovered_at") or iso_hkt(),
     })
     watch.update({key: prediction.get(key) for key in (
         "league", "home", "away", "kickoff_hkt", "titan_match_id",
@@ -219,6 +236,8 @@ def sync_prediction(ledger: dict[str, Any], prediction: dict[str, Any], config: 
     )})
     watch["prediction_era"] = PREDICTION_ERA
     watch["kickoff"] = prediction.get("kickoff_hkt")
+    if not watch.get("discovered_at"):
+        watch["discovered_at"] = prediction.get("discovered_at") or iso_hkt()
     stage_rows = watch["stages"]
     existing = next((row for row in stage_rows if row.get("stage") == stage), None)
     snapshot = _snapshot(prediction, stage)

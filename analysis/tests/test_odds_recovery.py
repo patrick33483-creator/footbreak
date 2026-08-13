@@ -11,6 +11,8 @@ from analysis.odds_recovery import (
     provider_entries, _entry, _validate_entry, artifact_inventory,
     sidecar_comparison, _sha,
     parse_zgzcw_history_ticks, zgzcw_candidate, zgzcw_crosswalk,
+    normalized_fixture_text, strict_fixture_identity, parse_provider_event_index,
+    exact_event_crosswalk, compact_provider_target_rows,
 )
 from crown.prediction_history import calculate_stats
 SYSTEM_DIR = Path(__file__).resolve().parents[2] / "system"
@@ -439,7 +441,8 @@ class ProviderRecoveryTests(unittest.TestCase):
             "stage": stage, "market_code": market, "side": side, "line": line,
             "predicted_at": predicted_at,
             "row": {"match_id": "titan-77", "titan_match_id": "titan-77",
-                    "kickoff": self.KICKOFF},
+                    "kickoff": self.KICKOFF, "home": "Alpha United",
+                    "away": "Beta City", "league": "Premier Division"},
         }
 
     def test_titan_opening_locf_line_and_post_kickoff_exclusion(self):
@@ -633,16 +636,23 @@ class ProviderRecoveryTests(unittest.TestCase):
 
     def test_tipsme_requires_exact_crosswalk_and_timestamped_tick(self):
         target = self.target()
-        target["row"] = {"hkjc_match_id": "HK-1", "tipsme_match_id": "TM-1"}
+        target["row"] = {
+            "hkjc_match_id": "HK-1", "tipsme_match_id": "TM-1",
+            "kickoff": "2026-08-10T10:00:00+08:00", "home": "Alpha United",
+            "away": "Beta City", "league": "Premier Division",
+        }
         self.assertIsNone(tipsme_crosswalk(target))
         target["row"]["tipsme_hkjc_match_id"] = "HK-1"
         target["row"]["tipsme_provider_id_evidence"] = True
-        self.assertEqual(tipsme_crosswalk(target), "TM-1")
+        self.assertEqual(tipsme_crosswalk(target)["provider_match_id"], "TM-1")
         # A visible current price without a timestamp is never historical evidence.
         sparse = '{"market":"hdp","line":"-0.5","home":0.70,"away":0.90,"current":true}'
         self.assertEqual(parse_tipsme_chart_ticks(sparse, "HDC"), [])
         target["row"]["kickoff"] = "2026-08-10T10:00:00+08:00"
-        quote, reason = tipsme_candidate(target, sparse, "https://example.test/tipsme")
+        quote, reason = tipsme_candidate(
+            target, sparse, "https://example.test/tipsme",
+            crosswalk=tipsme_crosswalk(target),
+        )
         self.assertIsNone(quote)
         self.assertEqual(reason, "no_qualifying_prior_quote")
 
@@ -651,8 +661,11 @@ class ProviderRecoveryTests(unittest.TestCase):
         target["row"]["zgzcw_crosswalk"] = {
             "provider_id_evidence": True, "zgzcw_match_id": "ZG-7",
             "bookmaker_id": "CROWN", "source_anchor_id": "titan-77",
+            "kickoff": self.KICKOFF, "home": "Alpha United",
+            "away": "Beta City", "league": "Premier Division",
         }
-        self.assertEqual(zgzcw_crosswalk(target), ("ZG-7", "CROWN"))
+        self.assertEqual(zgzcw_crosswalk(target)["provider_match_id"], "ZG-7")
+        self.assertEqual(zgzcw_crosswalk(target)["bookmaker_id"], "CROWN")
         source = json.dumps([
             {"market": "overunder", "bookmaker_id": "OTHER", "line": "2.5", "home": "9.0", "under": "9.0",
              "odds_format": "decimal", "timestamp": "2026-01-01T00:03:00+08:00"},
@@ -663,7 +676,10 @@ class ProviderRecoveryTests(unittest.TestCase):
         ])
         ticks = parse_zgzcw_history_ticks(source, "HIL", "CROWN")
         self.assertEqual(len(ticks), 4)  # H/L sides for the exact and wrong lines.
-        candidate, reason = zgzcw_candidate(target, source, "https://example.test/zgzcw", "CROWN")
+        candidate, reason = zgzcw_candidate(
+            target, source, "https://example.test/zgzcw", "CROWN",
+            crosswalk=zgzcw_crosswalk(target),
+        )
         self.assertIsNone(reason)
         self.assertEqual(candidate["odds"], "1.82")
         self.assertEqual(candidate["provider_evidence"]["company_id"], "CROWN")
@@ -676,9 +692,13 @@ class ProviderRecoveryTests(unittest.TestCase):
         target = self.target(stage="T-5", market="CHL", side="H", line="9.5")
         target["row"] = {
             "hkjc_match_id": "HK-CORNER",
+            "home": "Alpha United", "away": "Beta City",
+            "league": "Premier Division",
             "tipsme_crosswalk": {
                 "hkjc_match_id": "HK-CORNER", "tipsme_match_id": "TM-CORNER",
                 "provider_id_evidence": True,
+                "kickoff": self.KICKOFF, "home": "Alpha United",
+                "away": "Beta City", "league": "Premier Division",
             },
             "kickoff": self.KICKOFF,
         }
@@ -702,6 +722,142 @@ class ProviderRecoveryTests(unittest.TestCase):
         self.assertEqual(entries[0]["market_code"], "CHL")
         self.assertEqual(entries[0]["evidence_quality"], "B")
         self.assertEqual(audit["pages_fetched"], 1)
+
+    def test_structured_event_crosswalk_requires_one_exact_fixture_identity(self):
+        target = self.target()
+        source = json.dumps([
+            {
+                "id": 701, "kickoff": "2026-01-01T00:10:30+08:00",
+                "home": "Alpha-United", "away": "Beta City",
+                "league": "Premier Division",
+            },
+        ])
+        events = parse_provider_event_index(source, "zgzcw")
+        crosswalk, reason = exact_event_crosswalk(
+            target, events, "zgzcw", "https://example.test/events",
+            kickoff_tolerance_seconds=60,
+        )
+        self.assertIsNone(reason)
+        self.assertEqual(crosswalk["provider_match_id"], "701")
+        self.assertEqual(crosswalk["kickoff_delta_seconds"], 30.0)
+        self.assertTrue(crosswalk["league_compared"])
+        self.assertEqual(normalized_fixture_text("Álpha—United"), "alpha united")
+        self.assertEqual(strict_fixture_identity(target)["home"], "alpha united")
+
+        mismatch = [{**events[0], "league": "other league"}]
+        self.assertEqual(
+            exact_event_crosswalk(target, mismatch, "zgzcw", "https://example.test/events")[1],
+            "no_exact_provider_fixture_identity",
+        )
+        ambiguous = [events[0], {**events[0], "event_id": "702"}]
+        self.assertEqual(
+            exact_event_crosswalk(target, ambiguous, "zgzcw", "https://example.test/events")[1],
+            "ambiguous_provider_fixture_identity",
+        )
+        self.assertEqual(
+            exact_event_crosswalk(
+                target, [{**events[0], "kickoff": events[0]["kickoff"] + timedelta(seconds=61)}],
+                "zgzcw", "https://example.test/events", kickoff_tolerance_seconds=60,
+            )[1],
+            "no_exact_provider_fixture_identity",
+        )
+
+    def test_provider_builds_structured_tipsme_crosswalk_then_uses_timestamped_quote(self):
+        target = self.target(stage="T-5", market="CHL", side="H", line="9.5")
+        target.update({
+            "system": "footbreak",
+            "fixture_identity": "persisted:hk-88",
+            "snapshot_identity": "footbreak|persisted:hk-88|T-5|2025-12-31T16:05:00+00:00",
+        })
+        target["row"].update({"match_id": "hk-88", "hkjc_match_id": "hk-88"})
+        event_payload = json.dumps([{
+            "event_id": "TM-88", "kickoff": self.KICKOFF,
+            "home": "Alpha United", "away": "Beta City",
+            "league": "Premier Division",
+        }])
+        quote_payload = json.dumps({
+            "market": "corner", "line": "9.5", "home": "0.88", "under": "0.92",
+            "odds_format": "hong_kong", "timestamp": "2026-01-01T00:03:00+08:00",
+        })
+
+        class Response:
+            status = 200
+            def __init__(self, body): self.body = body
+            def read(self, *_): return self.body.encode()
+            def __enter__(self): return self
+            def __exit__(self, *_): return False
+
+        def urlopen(request, timeout):
+            url = request.full_url
+            self.assertEqual(timeout, 0.5)
+            return Response(event_payload if "/events/" in url else quote_payload)
+
+        with tempfile.TemporaryDirectory() as directory, patch("urllib.request.urlopen", side_effect=urlopen) as opener:
+            entries, audit = provider_entries(
+                [target], providers={"tipsme"}, cache_dir=Path(directory), rate_per_second=100,
+                retries=0, timeout_seconds=0.5,
+                tipsme_event_url_template="https://example.test/events/{KICKOFF_DATE}",
+                tipsme_url_template="https://example.test/quotes/{MATCH_ID}/{market}",
+            )
+        self.assertEqual(opener.call_count, 2)
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["selected_odds"], "1.88")
+        self.assertEqual(entries[0]["provider_evidence"]["crosswalk"]["method"], "structured_event_index_exact_fixture_identity")
+        self.assertEqual(audit["crosswalks_verified"], {"tipsme_structured_exact": 1})
+        self.assertNotIn("TM-88", json.dumps(audit))
+
+    def test_tipsme_never_uses_quote_after_actual_prediction_time(self):
+        target = self.target(stage="T-30", market="HDC", side="H", line="-0.5")
+        target["predicted_at"] = datetime(2025, 12, 31, 15, 32, tzinfo=timezone.utc)
+        crosswalk, reason = exact_event_crosswalk(
+            target, parse_provider_event_index(json.dumps([{
+                "id": "TM-77", "kickoff": self.KICKOFF,
+                "home": "Alpha United", "away": "Beta City", "league": "Premier Division",
+            }]), "tipsme"), "tipsme", "https://example.test/events",
+        )
+        self.assertIsNone(reason)
+        source = json.dumps([
+            {"market": "hdp", "line": "-0.5", "home": "0.70", "away": "0.90",
+             "odds_format": "hong_kong", "timestamp": "2025-12-31T23:20:00+08:00"},
+            {"market": "hdp", "line": "-0.5", "home": "0.80", "away": "0.80",
+             "odds_format": "hong_kong", "timestamp": "2025-12-31T23:35:00+08:00"},
+        ])
+        quote, reason = tipsme_candidate(
+            target, source, "https://example.test/quotes", crosswalk=crosswalk,
+        )
+        self.assertIsNone(reason)
+        self.assertEqual(quote["odds"], "1.7")
+        self.assertLessEqual(quote["observed_at"], target["predicted_at"])
+
+    def test_cache_only_mode_never_contacts_provider(self):
+        target = self.target()
+        with tempfile.TemporaryDirectory() as directory, patch(
+            "urllib.request.urlopen", side_effect=AssertionError("production must not call provider")
+        ):
+            entries, audit = provider_entries(
+                [target], providers={"zgzcw"}, cache_dir=Path(directory), rate_per_second=100,
+                retries=0, cache_only=True,
+                zgzcw_event_url_template="https://example.test/events/{KICKOFF_DATE}",
+                zgzcw_url_template="https://example.test/quotes/{MATCH_ID}/{market}/{BOOKMAKER_ID}",
+                zgzcw_bookmaker_id="CROWN",
+            )
+        self.assertEqual(entries, [])
+        self.assertTrue(audit["cache_only"])
+        self.assertEqual(audit["private_cache_miss"], 1)
+
+    def test_compact_target_export_excludes_history_payload(self):
+        history = [{
+            "match_id": "hk-1", "stage": "T-5", "predicted_at": TS,
+            "kickoff": "2026-08-10T10:05:00+08:00", "home": "H", "away": "A",
+            "league": "L", "secret_model_payload": {"do_not_export": True},
+            "market_predictions": [{"code": "HDC", "line": "-0.5", "side": "H", "odds": None}],
+        }]
+        compact = compact_provider_target_rows(history, "footbreak")
+        self.assertEqual(len(compact), 1)
+        self.assertNotIn("secret_model_payload", compact[0])
+        self.assertEqual(compact[0]["market_predictions"], [
+            {"code": "HDC", "line": "-0.5", "side": "H", "odds": None}
+        ])
 
     def test_provider_page_budget_is_enforced(self):
         class Response:

@@ -4,12 +4,26 @@ set -euo pipefail
 APP_DIR="${APP_DIR:-/opt/footbreak}"
 FOOTBREAK_DATA="${FOOTBREAK_DATA:-/var/www/footbreak/data.json}"
 CROWN_DATA="${CROWN_DATA:-/var/www/crown/data.json}"
+FOOTBREAK_ENV_FILE="${FOOTBREAK_ENV_FILE:-/etc/footbreak.env}"
+CROWN_ENV_FILE="${CROWN_ENV_FILE:-/etc/footbreak-crown.env}"
+
+set -a
+[ ! -f "$FOOTBREAK_ENV_FILE" ] || . "$FOOTBREAK_ENV_FILE"
+[ ! -f "$CROWN_ENV_FILE" ] || . "$CROWN_ENV_FILE"
+set +a
+
+crown_is_enabled() {
+  case "${CROWN_ENABLED:-0}" in
+    1|true|TRUE|yes|YES|on|ON) return 0 ;;
+    *) return 1 ;;
+  esac
+}
 
 echo "=== production health $(TZ=Asia/Hong_Kong date '+%F %T %Z') ==="
 
 for unit in \
   footbreak-tick.timer footbreak-sweep.timer footbreak-settle.timer footbreak-backtest.timer \
-  footbreak-result-reconcile.timer crown-tick.timer crown-sweep.timer crown-settle.timer; do
+  footbreak-result-reconcile.timer; do
   systemctl is-enabled --quiet "$unit" || {
     state="$(systemctl is-enabled "$unit" 2>&1 || true)"
     echo "FAIL timer $unit enabled_state=$state" >&2
@@ -22,6 +36,24 @@ for unit in \
   }
   echo "OK timer $unit"
 done
+
+if crown_is_enabled; then
+  for unit in crown-tick.timer crown-sweep.timer crown-settle.timer; do
+    systemctl is-enabled --quiet "$unit" || {
+      state="$(systemctl is-enabled "$unit" 2>&1 || true)"
+      echo "FAIL timer $unit enabled_state=$state" >&2
+      exit 1
+    }
+    systemctl is-active --quiet "$unit" || {
+      systemctl show "$unit" -p LoadState -p ActiveState -p SubState -p Result
+      echo "FAIL timer $unit is not active" >&2
+      exit 1
+    }
+    echo "OK timer $unit"
+  done
+else
+  echo "OK Crown validation gate disabled; Crown timers are not required"
+fi
 
 if systemctl is-active --quiet footbreak-t30.timer ||
    systemctl is-enabled --quiet footbreak-t30.timer; then
@@ -136,7 +168,15 @@ for name in ("/var/www/footbreak/challenger-status.json", "/var/www/crown/challe
     print(f"OK isolated challenger status {path}")
 PY
 
-for service in footbreak-tick.service footbreak-settle.service footbreak-result-reconcile.service crown-tick.service crown-sweep.service crown-settle.service; do
+services=(
+  footbreak-tick.service
+  footbreak-settle.service
+  footbreak-result-reconcile.service
+)
+if crown_is_enabled; then
+  services+=(crown-tick.service crown-sweep.service crown-settle.service)
+fi
+for service in "${services[@]}"; do
   result="$(systemctl show "$service" -p Result --value)"
   status="$(systemctl show "$service" -p ExecMainStatus --value)"
   timer="${service%.service}.timer"
@@ -195,10 +235,6 @@ for service in footbreak-tick.service footbreak-settle.service footbreak-result-
   fi
 done
 
-set -a
-[ ! -f /etc/footbreak.env ] || . /etc/footbreak.env
-[ ! -f /etc/footbreak-crown.env ] || . /etc/footbreak-crown.env
-set +a
 for name in TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID PINNAPI_API_KEY; do
   [ -n "${!name:-}" ] || {
     echo "FAIL missing $name" >&2
@@ -206,11 +242,15 @@ for name in TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID PINNAPI_API_KEY; do
   }
   echo "OK credential $name configured"
 done
-[ "${CROWN_TELEGRAM_ENABLED:-0}" = 1 ] || {
-  echo "FAIL Crown Telegram disabled" >&2
-  exit 1
-}
-echo "OK Crown Telegram enabled"
+if crown_is_enabled; then
+  [ "${CROWN_TELEGRAM_ENABLED:-0}" = 1 ] || {
+    echo "FAIL Crown Telegram disabled" >&2
+    exit 1
+  }
+  echo "OK Crown Telegram enabled"
+else
+  echo "OK Crown Telegram not required while Crown is disabled"
+fi
 
 "$APP_DIR/.venv/bin/python3" - "$FOOTBREAK_DATA" "$CROWN_DATA" <<'PY'
 import json

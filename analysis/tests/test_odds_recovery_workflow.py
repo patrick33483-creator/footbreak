@@ -26,22 +26,24 @@ class HistoricalOddsRecoveryWorkflowTests(unittest.TestCase):
         self.assertIn("jobs", parsed)
         self.assertIn("recover", parsed["jobs"])
 
-    def test_titan_apply_needs_exact_confirmation_before_write_or_regeneration(self) -> None:
+    def test_provider_apply_needs_exact_confirmation_before_write_or_regeneration(self) -> None:
         workflow = workflow_text()
 
         self.assertIn(
-            '[ "${{ inputs.provider_mode }}" = "TITAN_APPLY" ] && '
+            '{ [ "${{ inputs.provider_mode }}" = "TITAN_APPLY" ] || '
+            '[ "${{ inputs.provider_mode }}" = "PUBLIC_CROSSWALK_APPLY" ]; } && '
             '[ "${{ inputs.apply_confirmation }}" = '
             '"APPLY_HISTORICAL_ODDS_RECOVERY" ]',
             workflow,
         )
         confirmed_provider_apply = (
             "inputs.apply_confirmation == 'APPLY_HISTORICAL_ODDS_RECOVERY' && "
-            "(inputs.provider_mode == 'LOCAL' || inputs.provider_mode == 'TITAN_APPLY')"
+            "(inputs.provider_mode == 'LOCAL' || inputs.provider_mode == 'TITAN_APPLY' || "
+            "inputs.provider_mode == 'PUBLIC_CROSSWALK_APPLY')"
         )
         self.assertEqual(workflow.count(confirmed_provider_apply), 2)
         self.assertIn(
-            "unconfirmed TITAN_APPLY is deliberately audit-only",
+            "unconfirmed provider APPLY mode is deliberately audit-only",
             workflow,
         )
         self.assertIn("confirmation=APPLY_HISTORICAL_ODDS_RECOVERY", workflow)
@@ -57,7 +59,7 @@ class HistoricalOddsRecoveryWorkflowTests(unittest.TestCase):
 
     def test_runner_warms_only_a_private_cache_before_server_authoritative_apply(self) -> None:
         workflow = workflow_text()
-        start = workflow.index("GitHub 預熱私有 Titan 快取並安全交接")
+        start = workflow.index("GitHub 建立私有公共供應商 crosswalk 快取並安全交接")
         runner_command = workflow.index("python3 analysis/odds_recovery.py", start)
         package = workflow.index("cache_archive=", runner_command)
         install = workflow.index("Validate every archive member", package)
@@ -71,27 +73,30 @@ class HistoricalOddsRecoveryWorkflowTests(unittest.TestCase):
         self.assertLess(install, server_audit)
         self.assertIn("--provider-audit", runner_slice)
         self.assertNotIn("--provider-apply", runner_slice)
+        self.assertIn("--provider zgzcw", runner_slice)
+        self.assertIn("--provider tipsme", runner_slice)
         self.assertIn("runner-never-written-sidecar.json", runner_slice)
         self.assertIn("--provider-cache \"$runner_tmp/provider-cache\"", runner_slice)
         self.assertIn("--footbreak-history /var/www/footbreak/data.json", server_slice)
         self.assertIn("--crown-history /var/lib/footbreak/crown/prediction_history.json", server_slice)
         self.assertIn("--sidecar /var/lib/footbreak/private/odds-recovery-overlay.json", server_slice)
         self.assertIn("--provider-cache /var/lib/footbreak/private/odds-recovery-provider-cache", server_slice)
+        self.assertIn("--provider-cache-only", server_slice)
         self.assertIn("$mode", server_slice)
         self.assertIn("--apply-confirmation $confirmation", server_slice)
 
     def test_compact_private_target_export_is_the_only_history_copy_to_runner(self) -> None:
         workflow = workflow_text()
-        start = workflow.index("GitHub 預熱私有 Titan 快取並安全交接")
+        start = workflow.index("GitHub 建立私有公共供應商 crosswalk 快取並安全交接")
         end = workflow.index("保存供應商輔助摘要", start)
         handoff = workflow[start:end]
 
-        self.assertIn("Export only the fields needed to construct strict Crown/Titan targets", handoff)
-        self.assertIn("crown-titan-targets.json", handoff)
-        self.assertIn("prediction_targets(", handoff)
-        self.assertIn("a history row.  Retain only its stable identity", handoff)
-        self.assertIn('scp -q "$target:$remote_input_dir/crown-titan-targets.json"', handoff)
-        self.assertIn("printf '[]' > \"$runner_tmp/footbreak-targets.json\"", handoff)
+        self.assertIn("Export only compact, unresolved targets with the strict fixture", handoff)
+        self.assertIn("compact_provider_target_rows", handoff)
+        self.assertIn("crown-provider-targets.json", handoff)
+        self.assertIn("footbreak-provider-targets.json", handoff)
+        self.assertIn('scp -q "$target:$remote_input_dir/crown-provider-targets.json"', handoff)
+        self.assertIn('scp -q "$target:$remote_input_dir/footbreak-provider-targets.json"', handoff)
         self.assertNotIn('scp -q "$target:/var/www/footbreak/data.json"', handoff)
         self.assertNotIn('scp -q "$target:/var/lib/footbreak/crown/prediction_history.json"', handoff)
         self.assertIn("never logged", handoff)
@@ -99,7 +104,7 @@ class HistoricalOddsRecoveryWorkflowTests(unittest.TestCase):
 
     def test_private_temps_cleanup_permissions_and_safe_extraction_are_required(self) -> None:
         workflow = workflow_text()
-        start = workflow.index("GitHub 預熱私有 Titan 快取並安全交接")
+        start = workflow.index("GitHub 建立私有公共供應商 crosswalk 快取並安全交接")
         end = workflow.index("保存供應商輔助摘要", start)
         handoff = workflow[start:end]
 
@@ -141,6 +146,18 @@ class HistoricalOddsRecoveryWorkflowTests(unittest.TestCase):
         self.assertIn("--exact-window-seconds 60", workflow)
         self.assertIn("--freshness-t30-seconds 3600", workflow)
         self.assertIn("--freshness-t5-seconds 900", workflow)
+        self.assertIn("--crosswalk-kickoff-tolerance-seconds 60", workflow)
+
+    def test_public_crosswalk_mode_uses_configured_templates_on_runner_only(self) -> None:
+        workflow = workflow_text()
+        self.assertIn("PUBLIC_CROSSWALK_AUDIT", workflow)
+        self.assertIn("PUBLIC_CROSSWALK_APPLY", workflow)
+        self.assertIn("vars.ZGZCW_EVENT_URL_TEMPLATE", workflow)
+        self.assertIn("vars.ZGZCW_HISTORY_URL_TEMPLATE", workflow)
+        self.assertIn("vars.TIPSME_EVENT_URL_TEMPLATE", workflow)
+        self.assertIn("vars.TIPSME_HISTORY_URL_TEMPLATE", workflow)
+        server = workflow[workflow.index("The server re-reads its current complete histories"):]
+        self.assertIn("--provider-cache-only", server)
 
     def test_regeneration_verifier_reads_the_same_private_overlay(self) -> None:
         workflow = workflow_text()

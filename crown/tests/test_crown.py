@@ -886,10 +886,15 @@ class CrownSafetyTests(unittest.TestCase):
     def test_stage_windows_and_simulated_ledger_are_idempotent(self) -> None:
         self.assertEqual(stage_for(120, True, set()), "首預")
         self.assertIsNone(stage_for(120, True, {"首預"}))
-        self.assertEqual(stage_for(30, False, set()), "T-30")
-        self.assertIsNone(stage_for(30, False, {"T-30"}))
-        self.assertEqual(stage_for(5, False, set()), "T-5")
-        self.assertEqual(stage_for(0.1, False, set()), "T-5")
+        # A timed worker must recover a missing first look before it can
+        # write a T-30/T-5-only fixture history.
+        self.assertEqual(stage_for(30, False, set()), "首預")
+        self.assertEqual(stage_for(30, False, {"首預"}), "T-30")
+        self.assertEqual(stage_for(30, False, {"T-30"}), "首預")
+        self.assertIsNone(stage_for(120, False, set()))
+        self.assertEqual(stage_for(5, False, set()), "首預")
+        self.assertEqual(stage_for(5, False, {"首預"}), "T-5")
+        self.assertEqual(stage_for(0.1, False, {"首預"}), "T-5")
         self.assertIsNone(stage_for(0, False, set()))
         self.assertIsNone(stage_for(-0.1, False, set()))
         with tempfile.TemporaryDirectory() as directory:
@@ -908,6 +913,24 @@ class CrownSafetyTests(unittest.TestCase):
             self.assertEqual(len(ledger["bets"]), 1)
             self.assertTrue(ledger["bets"][0]["simulation_only"])
             self.assertFalse(ledger["bets"][0]["real_betting_enabled"])
+
+    def test_first_discovery_timestamp_is_preserved_across_later_stages(self) -> None:
+        config = settings()
+        ledger = {"bankroll": 50000, "bets": [], "watch": {}, "log": [], "stats": {}}
+        first = {
+            "match_id": "discovery", "league": "L", "home": "A", "away": "B",
+            "kickoff_hkt": "2026-08-09T14:00:00+08:00", "stage": "首預",
+            "status": "PREDICTION_READY", "discovered_at": "2026-08-09T12:00:00+08:00",
+        }
+        sync_prediction(ledger, first, config)
+        later = first | {
+            "stage": "T-30", "discovered_at": "2026-08-09T13:30:00+08:00",
+        }
+        sync_prediction(ledger, later, config)
+        self.assertEqual(
+            ledger["watch"]["discovery"]["discovered_at"],
+            "2026-08-09T12:00:00+08:00",
+        )
 
     def test_data_missing_stage_remains_due_for_recovery_without_replaying_success(self) -> None:
         missing = {

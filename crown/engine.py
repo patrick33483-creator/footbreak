@@ -552,6 +552,10 @@ def _prediction(titan: dict[str, Any], bridge: BridgeMatch, h_match: dict[str, A
         "schema_version": "crown-prediction-v2", "matching_version": MATCHING_VERSION,
         "generated_at": iso_hkt(), "match_id": event.id,
         "league": event.league, "home": event.home, "away": event.away, "kickoff_hkt": iso_hkt(event.kickoff),
+        # Local observation time for the first persisted card.  It lets a
+        # read-only diagnostic distinguish a missing first look from a fixture
+        # that was not yet discovered; it is never sourced from a provider.
+        "discovered_at": iso_hkt(),
         "mins_to_ko": minutes, "stage": stage, "titan_match_id": event.id,
         "pinnapi_event_id": bridge.event.id if bridge.event else None,
         "hkjc_match_id": str((h_match or {}).get("id") or (h_match or {}).get("frontEndId") or "") or None,

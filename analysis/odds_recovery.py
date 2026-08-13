@@ -19,6 +19,7 @@ import re
 import socket
 import threading
 import time
+import unicodedata
 import urllib.parse
 import urllib.error
 import urllib.request
@@ -30,11 +31,13 @@ from pathlib import Path
 from typing import Any, Iterable
 
 SCHEMA_VERSION = 1
-PARSER_VERSION = "odds-recovery-provider-v2"
+PARSER_VERSION = "odds-recovery-provider-v3"
 MARKETS = {"HDC", "HIL", "CHL"}
 PRIMARY_EVIDENCE_QUALITIES = {"A", "B"}
 AUDIT_ONLY_EVIDENCE_QUALITY = "C"
 DEFAULT_EXACT_WINDOW_SECONDS = 60.0
+DEFAULT_CROSSWALK_KICKOFF_TOLERANCE_SECONDS = 60.0
+MAX_CROSSWALK_KICKOFF_TOLERANCE_SECONDS = 300.0
 DEFAULT_FRESHNESS_SECONDS = {"T-30": 3600.0, "T-5": 900.0}
 DEFAULT_PROVIDER_MAX_PAGES = 250
 DEFAULT_PROVIDER_MAX_RESPONSE_BYTES = 4 * 1024 * 1024
@@ -209,6 +212,89 @@ def prediction_targets(rows: Iterable[dict[str, Any]], system: str) -> tuple[lis
                             "stage": str(row.get("stage") or ""), "market_code": code, "line": line,
                             "side": side, "predicted_at": predicted_at, "row": row})
     return targets, reasons
+
+
+def normalized_fixture_text(value: Any) -> str | None:
+    """Normalize display text without applying aliases or fuzzy matching.
+
+    This is deliberately a representation normalization only: it handles
+    Unicode width/case/diacritics and separators, but never maps nicknames,
+    abbreviations, cities, or translated club names.  Such mappings would be
+    an unreviewed identity guess and are prohibited for provider crosswalks.
+    """
+    if not isinstance(value, str) or not value.strip():
+        return None
+    normalized = unicodedata.normalize("NFKD", value).casefold()
+    normalized = "".join(
+        char for char in normalized if unicodedata.category(char) != "Mn"
+    )
+    normalized = re.sub(r"[\W_]+", " ", normalized, flags=re.UNICODE)
+    normalized = " ".join(normalized.split())
+    return normalized or None
+
+
+def _first_text(row: dict[str, Any], fields: tuple[str, ...]) -> str | None:
+    for field in fields:
+        value = row.get(field)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def strict_fixture_identity(target: dict[str, Any]) -> dict[str, Any] | None:
+    """Return the minimum provider crosswalk identity or fail closed.
+
+    A persisted Footbreak/Crown ID identifies the local record, not a public
+    provider event.  Cross-provider matching therefore additionally requires
+    a timestamped kickoff and home/away teams.  League is compared whenever
+    both the target and provider event publish one.
+    """
+    row = target.get("row")
+    if not isinstance(row, dict):
+        return None
+    kickoff = _kickoff_for_target(target)
+    home = _first_text(row, ("home", "home_team", "home_name", "team_home"))
+    away = _first_text(row, ("away", "away_team", "away_name", "team_away"))
+    normalized_home = normalized_fixture_text(home)
+    normalized_away = normalized_fixture_text(away)
+    if kickoff is None or normalized_home is None or normalized_away is None:
+        return None
+    league = _first_text(row, ("league", "league_name", "competition"))
+    return {
+        "kickoff": kickoff,
+        "home": normalized_home,
+        "away": normalized_away,
+        "league": normalized_fixture_text(league),
+    }
+
+
+def compact_provider_target_rows(
+    rows: Iterable[dict[str, Any]], system: str,
+) -> list[dict[str, Any]]:
+    """Export only unresolved targets and strict identity context to a runner.
+
+    The caller writes this compact representation to a private temporary file.
+    It contains no historical market payload, result, stake, model, or
+    notification fields, and it cannot be used to mutate a source history.
+    """
+    compact: list[dict[str, Any]] = []
+    kept_row_fields = (
+        "match_id", "fixture_id", "hkjc_match_id", "titan_match_id",
+        "pinnapi_event_id", "stage", "predicted_at", "ts", "kickoff_hkt",
+        "kickoff", "start_time", "match_time", "home", "home_team",
+        "home_name", "team_home", "away", "away_team", "away_name",
+        "team_away", "league", "league_name", "competition",
+    )
+    targets, _ = prediction_targets(rows, system)
+    for target in targets:
+        row = target["row"]
+        item = {field: row[field] for field in kept_row_fields if field in row}
+        item["market_predictions"] = [{
+            "code": target["market_code"], "line": target["line"],
+            "side": target["side"], "odds": None,
+        }]
+        compact.append(item)
+    return compact
 
 
 def _quote(fixture: str, code: str, line: Any, side: str, odds: Any, observed_at: Any,
@@ -623,13 +709,21 @@ def _entry(target: dict[str, Any], quote: dict[str, Any]) -> dict[str, Any]:
 def _validate_provider_evidence(value: Any, entry: dict[str, Any]) -> None:
     """Provider evidence is compact, non-display metadata kept in the private sidecar."""
     required = {"provider", "source_url_hash", "company_id", "native_odds_format", "native_price", "normalized_decimal", "quote_timestamp", "target_timestamp", "age_seconds", "parser_version"}
-    if not isinstance(value, dict) or set(value) != required:
+    requires_crosswalk = (
+        isinstance(value, dict)
+        and value.get("provider") in {"zgzcw_history", "tipsme_hkjc"}
+        and value.get("parser_version") == PARSER_VERSION
+    )
+    expected = required | ({"crosswalk"} if requires_crosswalk else set())
+    if not isinstance(value, dict) or set(value) != expected:
         raise ValueError("malformed_provider_evidence")
     if value["provider"] not in {"titan_crown", "zgzcw_history", "tipsme_hkjc"}:
         raise ValueError("malformed_provider_evidence")
     if not all(isinstance(value[key], str) and value[key] for key in ("source_url_hash", "company_id", "native_odds_format", "native_price", "normalized_decimal", "quote_timestamp", "target_timestamp", "parser_version")):
         raise ValueError("malformed_provider_evidence")
-    if value["parser_version"] not in {"odds-recovery-provider-v1", PARSER_VERSION} or value["normalized_decimal"] != entry["selected_odds"]:
+    if value["parser_version"] not in {
+        "odds-recovery-provider-v1", "odds-recovery-provider-v2", PARSER_VERSION,
+    } or value["normalized_decimal"] != entry["selected_odds"]:
         raise ValueError("malformed_provider_evidence")
     parse_time(value["quote_timestamp"]); parse_time(value["target_timestamp"])
     try:
@@ -646,6 +740,32 @@ def _validate_provider_evidence(value: Any, entry: dict[str, Any]) -> None:
     age = value["age_seconds"]
     if isinstance(age, bool) or not isinstance(age, (float, int)) or age < 0 or not math.isfinite(age):
         raise ValueError("malformed_provider_evidence")
+    if requires_crosswalk:
+        crosswalk = value["crosswalk"]
+        required_crosswalk = {
+            "provider", "source_url_hash", "event_id_hash",
+            "kickoff_delta_seconds", "kickoff_tolerance_seconds",
+            "league_compared", "method",
+        }
+        if not isinstance(crosswalk, dict) or set(crosswalk) != required_crosswalk:
+            raise ValueError("malformed_provider_evidence")
+        if crosswalk["provider"] not in {"zgzcw", "tipsme"}:
+            raise ValueError("malformed_provider_evidence")
+        if not isinstance(crosswalk["source_url_hash"], str) or not re.fullmatch(r"[0-9a-f]{64}", crosswalk["source_url_hash"]):
+            raise ValueError("malformed_provider_evidence")
+        if not isinstance(crosswalk["event_id_hash"], str) or not re.fullmatch(r"[0-9a-f]{64}", crosswalk["event_id_hash"]):
+            raise ValueError("malformed_provider_evidence")
+        delta = crosswalk["kickoff_delta_seconds"]
+        tolerance = crosswalk["kickoff_tolerance_seconds"]
+        if (isinstance(delta, bool) or not isinstance(delta, (int, float)) or not math.isfinite(delta) or delta < 0
+                or isinstance(tolerance, bool) or not isinstance(tolerance, (int, float)) or not math.isfinite(tolerance)
+                or not 0 <= tolerance <= MAX_CROSSWALK_KICKOFF_TOLERANCE_SECONDS or delta > tolerance):
+            raise ValueError("malformed_provider_evidence")
+        if not isinstance(crosswalk["league_compared"], bool) or crosswalk["method"] not in {
+            "structured_event_index_exact_fixture_identity",
+            "recorded_exact_fixture_identity",
+        }:
+            raise ValueError("malformed_provider_evidence")
 
 
 def _kickoff_for_target(target: dict[str, Any]) -> datetime | None:
@@ -705,7 +825,8 @@ class ProviderFetcher:
     def __init__(self, cache: PrivateResponseCache, rate_per_second: float = 1.0,
                  retries: int = 2, timeout_seconds: float = 25.0, workers: int = 1,
                  max_pages: int = DEFAULT_PROVIDER_MAX_PAGES,
-                 max_response_bytes: int = DEFAULT_PROVIDER_MAX_RESPONSE_BYTES):
+                 max_response_bytes: int = DEFAULT_PROVIDER_MAX_RESPONSE_BYTES,
+                 cache_only: bool = False):
         self.cache = cache
         self.rate_per_second = max(0.1, rate_per_second)
         self.retries = max(0, retries)
@@ -713,6 +834,7 @@ class ProviderFetcher:
         self.workers = max(1, min(32, int(workers)))
         self.max_pages = max(1, int(max_pages))
         self.max_response_bytes = max(1024, int(max_response_bytes))
+        self.cache_only = bool(cache_only)
         self._state_lock = threading.RLock()
         self._start_lock = threading.Lock()
         self._next_start = 0.0
@@ -747,6 +869,10 @@ class ProviderFetcher:
             with self._state_lock:
                 self.cache_hits += 1
             return self._complete(url, result)
+        if self.cache_only:
+            # Production is allowed to consume an already-reviewed private
+            # runner cache, but must never make a public-provider request.
+            return self._complete(url, (None, False, "private_cache_miss"))
         result = self._fetch_uncached(url)
         return self._complete(url, result)
 
@@ -965,6 +1091,7 @@ def _provider_quote(
     exact_window_seconds: float = DEFAULT_EXACT_WINDOW_SECONDS,
     freshness_seconds: dict[str, float] | None = None,
     selection_method: str = "locf_cutoff",
+    crosswalk: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     try:
         native = _decimal(tick["price"])
@@ -974,6 +1101,7 @@ def _provider_quote(
             "native_odds_format": native_odds_format, "native_price": str(native), "normalized_decimal": str(decimal.normalize()),
             "quote_timestamp": tick["observed_at"].isoformat(), "target_timestamp": target_time.isoformat(),
             "age_seconds": round((target_time - tick["observed_at"]).total_seconds(), 6), "parser_version": PARSER_VERSION,
+            **({"crosswalk": crosswalk} if crosswalk is not None else {}),
         })
         if candidate is None:
             return None
@@ -1026,18 +1154,162 @@ def titan_candidate(
     ), None
 
 
-def tipsme_crosswalk(target: dict[str, Any]) -> str | None:
+def _provider_event_id(node: dict[str, Any], provider: str) -> str | None:
+    fields = (
+        ("zgzcw_match_id", "match_id", "event_id", "id")
+        if provider == "zgzcw" else
+        ("tipsme_match_id", "match_id", "event_id", "id")
+    )
+    for field in fields:
+        value = node.get(field)
+        if isinstance(value, bool) or value is None:
+            continue
+        if isinstance(value, (str, int)) and str(value).strip():
+            return str(value).strip()
+    return None
+
+
+def parse_provider_event_index(source: str, provider: str) -> list[dict[str, Any]]:
+    """Read self-describing structured event records from a public index page.
+
+    No DOM position, page-title text, current price, or free-text team search
+    is used.  An event must carry its own provider ID, kickoff, and both teams;
+    malformed/incomplete nodes are simply unavailable for a crosswalk.
+    """
+    if provider not in {"zgzcw", "tipsme"}:
+        return []
+    decoder = json.JSONDecoder()
+    blobs: list[Any] = []
+    for match in re.finditer(r"[\[{]", source):
+        try:
+            value, _ = decoder.raw_decode(source[match.start():])
+            blobs.append(value)
+        except json.JSONDecodeError:
+            continue
+    events: list[dict[str, Any]] = []
+    for node in _walk_json(blobs):
+        event_id = _provider_event_id(node, provider)
+        home = _first_text(node, ("home", "home_team", "homeName", "team_home"))
+        away = _first_text(node, ("away", "away_team", "awayName", "team_away"))
+        kickoff = _tipsme_time(
+            node.get("kickoff", node.get("start_time", node.get("startTime",
+            node.get("match_time", node.get("time"))))))
+        if not event_id or home is None or away is None or kickoff is None:
+            continue
+        normalized_home = normalized_fixture_text(home)
+        normalized_away = normalized_fixture_text(away)
+        if normalized_home is None or normalized_away is None:
+            continue
+        events.append({
+            "event_id": event_id, "kickoff": kickoff, "home": normalized_home,
+            "away": normalized_away, "league": normalized_fixture_text(
+                _first_text(node, ("league", "league_name", "competition", "leagueName"))
+            ),
+        })
+    # Duplicated serialized data is common in hydration scripts.  A repeated
+    # identical record does not create ambiguity; differing records do.
+    unique = {
+        (row["event_id"], row["kickoff"].isoformat(), row["home"], row["away"], row["league"]): row
+        for row in events
+    }
+    return sorted(unique.values(), key=lambda row: (
+        row["event_id"], row["kickoff"].isoformat(), row["home"], row["away"],
+    ))
+
+
+def exact_event_crosswalk(
+    target: dict[str, Any], events: Iterable[dict[str, Any]], provider: str,
+    source_url: str, *, kickoff_tolerance_seconds: float = DEFAULT_CROSSWALK_KICKOFF_TOLERANCE_SECONDS,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Return one exact public event mapping, never a best/closest match."""
+    identity = strict_fixture_identity(target)
+    if identity is None:
+        return None, "strict_fixture_identity_unavailable"
+    if provider not in {"zgzcw", "tipsme"}:
+        return None, "crosswalk_provider_unsupported"
+    matches: list[dict[str, Any]] = []
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        if event.get("home") != identity["home"] or event.get("away") != identity["away"]:
+            continue
+        event_kickoff = event.get("kickoff")
+        if not isinstance(event_kickoff, datetime):
+            continue
+        delta = abs((event_kickoff - identity["kickoff"]).total_seconds())
+        if delta > kickoff_tolerance_seconds:
+            continue
+        # League is a required equality check only when both sources provide
+        # one.  Missing league never grants a fuzzy equivalence.
+        if identity["league"] and event.get("league") and event["league"] != identity["league"]:
+            continue
+        event_id = event.get("event_id")
+        if not isinstance(event_id, str) or not event_id.strip():
+            continue
+        matches.append({**event, "kickoff_delta_seconds": round(delta, 6)})
+    unique_ids = {row["event_id"] for row in matches}
+    if not matches:
+        return None, "no_exact_provider_fixture_identity"
+    if len(unique_ids) != 1:
+        return None, "ambiguous_provider_fixture_identity"
+    chosen = matches[0]
+    return {
+        "provider": provider,
+        "provider_match_id": chosen["event_id"],
+        "source_url_hash": _url_hash(source_url),
+        "event_id_hash": _sha(chosen["event_id"]),
+        "kickoff_delta_seconds": chosen["kickoff_delta_seconds"],
+        "kickoff_tolerance_seconds": kickoff_tolerance_seconds,
+        "league_compared": bool(identity["league"] and chosen.get("league")),
+        "method": "structured_event_index_exact_fixture_identity",
+    }, None
+
+
+def _bridge_crosswalk(
+    target: dict[str, Any], provider: str, bridge: dict[str, Any],
+    *,
+    kickoff_tolerance_seconds: float = DEFAULT_CROSSWALK_KICKOFF_TOLERANCE_SECONDS,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Validate a previously recorded provider ID using its fixture evidence."""
+    if bridge.get("provider_id_evidence") is not True:
+        return None, "provider_id_evidence_unavailable"
+    event_id = _provider_event_id(bridge, provider)
+    kickoff = _tipsme_time(bridge.get("kickoff", bridge.get("start_time", bridge.get("match_time"))))
+    home = normalized_fixture_text(_first_text(bridge, ("home", "home_team", "home_name")))
+    away = normalized_fixture_text(_first_text(bridge, ("away", "away_team", "away_name")))
+    if not event_id or kickoff is None or home is None or away is None:
+        return None, "crosswalk_fixture_evidence_unavailable"
+    event = {
+        "event_id": event_id, "kickoff": kickoff, "home": home, "away": away,
+        "league": normalized_fixture_text(_first_text(bridge, ("league", "league_name", "competition"))),
+    }
+    crosswalk, reason = exact_event_crosswalk(
+        target, [event], provider, "recorded-private-crosswalk",
+        kickoff_tolerance_seconds=kickoff_tolerance_seconds,
+    )
+    if crosswalk:
+        crosswalk["method"] = "recorded_exact_fixture_identity"
+    return crosswalk, reason
+
+
+def tipsme_crosswalk(target: dict[str, Any]) -> dict[str, Any] | None:
     row = target.get("row") or {}
     hkjc = str(row.get("hkjc_match_id") or "").strip()
     direct = str(row.get("tipsme_match_id") or "").strip()
     bridge = row.get("tipsme_crosswalk")
-    # A coincidental pair of IDs is not a crosswalk.  Retain it only when the
-    # persisted record explicitly says the provider IDs were verified.
-    if direct and str(row.get("tipsme_hkjc_match_id") or "").strip() == hkjc and hkjc and row.get("tipsme_provider_id_evidence") is True:
-        return direct
+    # A coincidental pair of IDs is not a crosswalk.  Older direct fields are
+    # accepted only after they include the same strict fixture proof required
+    # of a page-built crosswalk.
+    if direct and str(row.get("tipsme_hkjc_match_id") or "").strip() == hkjc and hkjc:
+        direct_bridge = {
+            **row, "tipsme_match_id": direct,
+            "provider_id_evidence": row.get("tipsme_provider_id_evidence"),
+        }
+        verified, _ = _bridge_crosswalk(target, "tipsme", direct_bridge)
+        return verified
     if isinstance(bridge, dict) and hkjc and str(bridge.get("hkjc_match_id") or "").strip() == hkjc:
-        value = str(bridge.get("tipsme_match_id") or "").strip()
-        if value and bridge.get("provider_id_evidence") is True: return value
+        verified, _ = _bridge_crosswalk(target, "tipsme", bridge)
+        return verified
     return None
 
 def _walk_json(value: Any) -> Iterable[dict[str, Any]]:
@@ -1089,21 +1361,29 @@ def tipsme_candidate(
     source: str,
     url: str,
     *,
+    crosswalk: dict[str, Any] | None = None,
     exact_window_seconds: float = DEFAULT_EXACT_WINDOW_SECONDS,
     freshness_seconds: dict[str, float] | None = None,
 ) -> tuple[dict[str, Any] | None, str | None]:
     kickoff = _kickoff_for_target(target)
     if not kickoff: return None, "kickoff_context_unavailable"
+    if crosswalk is None:
+        return None, "exact_fixture_crosswalk_unavailable"
     ticks = [tick for tick in parse_tipsme_chart_ticks(source, target["market_code"]) if tick["line"] == target["line"] and tick["side"] == target["side"]]
     if target["stage"] == "首預":
         # A chart's earliest verified pre-kickoff tick is the only defensible
         # opening reconstruction; a presentational "opening" label is not
         # required and must not be guessed when absent.
-        eligible = [tick for tick in ticks if tick["observed_at"] <= kickoff]; at = kickoff
+        at = min(kickoff, target["predicted_at"])
+        eligible = [tick for tick in ticks if tick["observed_at"] <= at]
         selected = min(eligible, key=lambda row: row["observed_at"]) if eligible else None
     elif target["stage"] in {"T-30", "T-5"}:
-        at = kickoff - timedelta(minutes=30 if target["stage"] == "T-30" else 5)
-        eligible = [tick for tick in ticks if tick["observed_at"] <= at]; selected = max(eligible, key=lambda row: row["observed_at"]) if eligible else None
+        at = min(
+            kickoff - timedelta(minutes=30 if target["stage"] == "T-30" else 5),
+            target["predicted_at"],
+        )
+        eligible = [tick for tick in ticks if tick["observed_at"] <= at]
+        selected = max(eligible, key=lambda row: row["observed_at"]) if eligible else None
     else: return None, "unsupported_stage"
     if not selected: return None, "no_qualifying_prior_quote"
     # Corners are permitted only through this exact crosswalk plus an explicit
@@ -1114,14 +1394,15 @@ def tipsme_candidate(
         native_odds_format=selected["native_odds_format"],
         exact_window_seconds=exact_window_seconds, freshness_seconds=freshness_seconds,
         selection_method="opening_earliest_pre_kickoff" if target["stage"] == "首預" else "locf_cutoff",
+        crosswalk={key: value for key, value in crosswalk.items() if key not in {"bookmaker_id", "provider_match_id"}},
     ), None
 
 
-def zgzcw_crosswalk(target: dict[str, Any]) -> tuple[str, str] | None:
-    """Require an explicit, provider-ID-backed source crosswalk for ZGZCW."""
+def zgzcw_crosswalk(target: dict[str, Any]) -> dict[str, Any] | None:
+    """Return only a fixture-proven source/bookmaker mapping for ZGZCW."""
     row = target.get("row") or {}
     bridge = row.get("zgzcw_crosswalk")
-    if not isinstance(bridge, dict) or bridge.get("provider_id_evidence") is not True:
+    if not isinstance(bridge, dict):
         return None
     source_id = str(bridge.get("zgzcw_match_id") or row.get("zgzcw_match_id") or "").strip()
     bookmaker_id = str(bridge.get("bookmaker_id") or row.get("zgzcw_bookmaker_id") or "").strip()
@@ -1130,7 +1411,12 @@ def zgzcw_crosswalk(target: dict[str, Any]) -> tuple[str, str] | None:
     anchor = _titan_id_for_target(target) or str(row.get("hkjc_match_id") or "").strip()
     if not anchor or str(bridge.get("source_anchor_id") or "").strip() != anchor:
         return None
-    return source_id, bookmaker_id
+    verified, _ = _bridge_crosswalk(
+        target, "zgzcw", {**bridge, "zgzcw_match_id": source_id},
+    )
+    if verified is None:
+        return None
+    return {**verified, "bookmaker_id": bookmaker_id}
 
 
 def parse_zgzcw_history_ticks(source: str, market: str, bookmaker_id: str) -> list[dict[str, Any]]:
@@ -1197,12 +1483,15 @@ def zgzcw_candidate(
     url: str,
     bookmaker_id: str,
     *,
+    crosswalk: dict[str, Any] | None = None,
     exact_window_seconds: float = DEFAULT_EXACT_WINDOW_SECONDS,
     freshness_seconds: dict[str, float] | None = None,
 ) -> tuple[dict[str, Any] | None, str | None]:
     kickoff = _kickoff_for_target(target)
     if kickoff is None:
         return None, "kickoff_context_unavailable"
+    if crosswalk is None:
+        return None, "exact_fixture_crosswalk_unavailable"
     if target["market_code"] not in {"HDC", "HIL"}:
         return None, "provider_market_unsupported"
     ticks = [
@@ -1228,13 +1517,46 @@ def zgzcw_candidate(
         native_odds_format=selected["native_odds_format"],
         exact_window_seconds=exact_window_seconds, freshness_seconds=freshness_seconds,
         selection_method="opening_earliest_pre_kickoff" if target["stage"] == "首預" else "locf_cutoff",
+        crosswalk={key: value for key, value in crosswalk.items() if key not in {"bookmaker_id", "provider_match_id"}},
     ), None
+
+
+def _event_index_url(template: str, target: dict[str, Any]) -> str | None:
+    identity = strict_fixture_identity(target)
+    if identity is None:
+        return None
+    date = identity["kickoff"].astimezone(timezone(timedelta(hours=8))).date().isoformat()
+    try:
+        url = template.format(KICKOFF_DATE=date, kickoff_date=date, DATE=date, date=date)
+    except (KeyError, ValueError):
+        return None
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme != "https" or not parsed.netloc or url == template:
+        return None
+    return url
+
+
+def _quote_url(template: str, match_id: str, market: str, bookmaker_id: str = "") -> str | None:
+    try:
+        url = template.format(
+            MATCH_ID=match_id, match_id=match_id, BOOKMAKER_ID=bookmaker_id,
+            bookmaker_id=bookmaker_id, market=market,
+        )
+    except (KeyError, ValueError):
+        return None
+    parsed = urllib.parse.urlparse(url)
+    return url if parsed.scheme == "https" and parsed.netloc else None
 
 
 def provider_entries(targets: list[dict[str, Any]], *, providers: set[str], cache_dir: Path,
                      rate_per_second: float, retries: int, timeout_seconds: float = 25.0,
                      workers: int = 1, tipsme_url_template: str | None = None,
                      zgzcw_url_template: str | None = None,
+                     tipsme_event_url_template: str | None = None,
+                     zgzcw_event_url_template: str | None = None,
+                     zgzcw_bookmaker_id: str | None = None,
+                     kickoff_tolerance_seconds: float = DEFAULT_CROSSWALK_KICKOFF_TOLERANCE_SECONDS,
+                     cache_only: bool = False,
                      exact_window_seconds: float = DEFAULT_EXACT_WINDOW_SECONDS,
                      freshness_seconds: dict[str, float] | None = None,
                      max_pages: int = DEFAULT_PROVIDER_MAX_PAGES) -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -1247,8 +1569,10 @@ def provider_entries(targets: list[dict[str, Any]], *, providers: set[str], cach
     fetcher = ProviderFetcher(
         PrivateResponseCache(cache_dir), rate_per_second, retries,
         timeout_seconds=timeout_seconds, workers=workers, max_pages=max_pages,
+        cache_only=cache_only,
     )
     entries: list[dict[str, Any]] = []; recovered = Counter(); failures = Counter(); attempted = set()
+    crosswalks = Counter()
     plans: list[dict[str, Any]] = []
     for target in targets:
         plan: dict[str, Any] = {"target": target, "candidate": None, "reason": None}
@@ -1274,23 +1598,91 @@ def provider_entries(targets: list[dict[str, Any]], *, providers: set[str], cach
                 freshness_seconds=freshness_seconds,
             )
 
+    # Resolve provider IDs first.  A recorded bridge still has to prove the
+    # same kickoff/team/league identity; otherwise an HTTPS date-index page is
+    # parsed and must yield exactly one structured provider event.
+    for provider, event_template in (("zgzcw", zgzcw_event_url_template), ("tipsme", tipsme_event_url_template)):
+        for plan in plans:
+            if plan["candidate"] is not None or provider not in providers:
+                continue
+            target = plan["target"]
+            eligible = (
+                target["market_code"] in {"HDC", "HIL"} if provider == "zgzcw"
+                else target["system"] == "footbreak" or (
+                    target["system"] == "crown" and target["market_code"] == "CHL"
+                )
+            )
+            if not eligible:
+                continue
+            direct = zgzcw_crosswalk(target) if provider == "zgzcw" else tipsme_crosswalk(target)
+            if direct is not None:
+                if provider == "zgzcw":
+                    plan["zgzcw_crosswalk"] = direct
+                    plan["zgzcw_bookmaker_id"] = str(direct["bookmaker_id"])
+                else:
+                    plan["tipsme_crosswalk"] = direct
+                crosswalks[f"{provider}_recorded_exact"] += 1
+                continue
+            event_url = _event_index_url(event_template, target) if event_template else None
+            if event_url is None:
+                plan["reason"] = (
+                    "strict_fixture_identity_unavailable"
+                    if strict_fixture_identity(target) is None
+                    else f"{provider}_event_index_unconfigured"
+                )
+                continue
+            plan[f"{provider}_event_url"] = event_url
+
+        event_pages = fetcher.get_many(
+            plan[f"{provider}_event_url"] for plan in plans
+            if f"{provider}_event_url" in plan
+        )
+        for plan in plans:
+            if plan["candidate"] is not None or f"{provider}_event_url" not in plan:
+                continue
+            url = plan[f"{provider}_event_url"]
+            source, _cached, err = event_pages[url]
+            if err:
+                plan["reason"] = "private_cache_miss" if err == "private_cache_miss" else "http_failure"
+                continue
+            crosswalk, reason = exact_event_crosswalk(
+                plan["target"], parse_provider_event_index(source or "", provider), provider, url,
+                kickoff_tolerance_seconds=kickoff_tolerance_seconds,
+            )
+            if crosswalk is None:
+                plan["reason"] = reason
+                continue
+            if provider == "zgzcw":
+                bookmaker = str(zgzcw_bookmaker_id or "").strip()
+                if not bookmaker:
+                    plan["reason"] = "zgzcw_bookmaker_unconfigured"
+                    continue
+                plan["zgzcw_crosswalk"] = {**crosswalk, "bookmaker_id": bookmaker}
+                plan["zgzcw_bookmaker_id"] = bookmaker
+            else:
+                plan["tipsme_crosswalk"] = crosswalk
+            crosswalks[f"{provider}_structured_exact"] += 1
+
     for plan in plans:
         if plan["candidate"] is not None or "zgzcw" not in providers:
             continue
         target = plan["target"]
-        crosswalk = zgzcw_crosswalk(target)
+        crosswalk = plan.get("zgzcw_crosswalk")
+        if target["market_code"] not in {"HDC", "HIL"}:
+            continue
         if not crosswalk:
-            plan["reason"] = "zgzcw_exact_id_crosswalk_unavailable"
-        elif not zgzcw_url_template:
+            continue
+        if not zgzcw_url_template:
             plan["reason"] = "zgzcw_public_url_unconfigured"
         else:
-            match_id, bookmaker_id = crosswalk
+            match_id = crosswalk["provider_match_id"]
+            bookmaker_id = plan["zgzcw_bookmaker_id"]
+            url = _quote_url(zgzcw_url_template, match_id, {"HDC": "hdp", "HIL": "hilo"}[target["market_code"]], bookmaker_id)
+            if url is None:
+                plan["reason"] = "zgzcw_public_url_unconfigured"
+                continue
             attempted.add(("zgzcw", match_id, bookmaker_id))
-            plan["zgzcw_bookmaker_id"] = bookmaker_id
-            plan["zgzcw_url"] = zgzcw_url_template.format(
-                MATCH_ID=match_id, match_id=match_id, BOOKMAKER_ID=bookmaker_id, bookmaker_id=bookmaker_id,
-                market={"HDC": "hdp", "HIL": "hilo", "CHL": "corner"}[target["market_code"]],
-            )
+            plan["zgzcw_url"] = url
 
     zgzcw_pages = fetcher.get_many(plan["zgzcw_url"] for plan in plans if "zgzcw_url" in plan)
     for plan in plans:
@@ -1301,28 +1693,34 @@ def provider_entries(targets: list[dict[str, Any]], *, providers: set[str], cach
             continue
         source, _cached, err = zgzcw_pages[url]
         if err:
-            plan["reason"] = "http_failure"
+            plan["reason"] = "private_cache_miss" if err == "private_cache_miss" else "http_failure"
         elif source is not None:
             plan["candidate"], plan["reason"] = zgzcw_candidate(
                 plan["target"], source, url, plan["zgzcw_bookmaker_id"],
                 exact_window_seconds=exact_window_seconds, freshness_seconds=freshness_seconds,
+                crosswalk=plan["zgzcw_crosswalk"],
             )
 
     for plan in plans:
         if plan["candidate"] is not None or "tipsme" not in providers:
             continue
         target = plan["target"]
-        crosswalk = tipsme_crosswalk(target)
-        if not crosswalk:
-            plan["reason"] = "exact_id_crosswalk_unavailable"
-        elif not tipsme_url_template:
+        crosswalk = plan.get("tipsme_crosswalk")
+        eligible = target["system"] == "footbreak" or (
+            target["system"] == "crown" and target["market_code"] == "CHL"
+        )
+        if not eligible or not crosswalk:
+            continue
+        if not tipsme_url_template:
             plan["reason"] = "tipsme_public_url_unconfigured"
         else:
-            attempted.add(("tipsme", crosswalk))
-            plan["tipsme_url"] = tipsme_url_template.format(
-                MATCH_ID=crosswalk, match_id=crosswalk,
-                market={"HDC": "hdp", "HIL": "hilo", "CHL": "corner"}[target["market_code"]],
-            )
+            match_id = crosswalk["provider_match_id"]
+            url = _quote_url(tipsme_url_template, match_id, {"HDC": "hdp", "HIL": "hilo", "CHL": "corner"}[target["market_code"]])
+            if url is None:
+                plan["reason"] = "tipsme_public_url_unconfigured"
+                continue
+            attempted.add(("tipsme", match_id))
+            plan["tipsme_url"] = url
 
     tipsme_pages = fetcher.get_many(plan["tipsme_url"] for plan in plans if "tipsme_url" in plan)
     for plan in plans:
@@ -1333,11 +1731,12 @@ def provider_entries(targets: list[dict[str, Any]], *, providers: set[str], cach
             continue
         source, _cached, err = tipsme_pages[url]
         if err:
-            plan["reason"] = "http_failure"
+            plan["reason"] = "private_cache_miss" if err == "private_cache_miss" else "http_failure"
         elif source is not None:
             plan["candidate"], plan["reason"] = tipsme_candidate(
                 plan["target"], source, url, exact_window_seconds=exact_window_seconds,
                 freshness_seconds=freshness_seconds,
+                crosswalk=plan["tipsme_crosswalk"],
             )
 
     for plan in plans:
@@ -1357,12 +1756,25 @@ def provider_entries(targets: list[dict[str, Any]], *, providers: set[str], cach
         "cache_hits": fetcher.cache_hits,
         "http_failures": fetcher.http_failures,
         "timeout_failures": fetcher.timeout_failures,
+        "cache_only": cache_only,
         "request_budget": max_pages,
+        "crosswalks_verified": dict(sorted(crosswalks.items())),
         "targets_recovered_by_stage_market_source": dict(sorted(recovered.items())),
         "stale_age_bands": dict(sorted(bands.items())),
-        "parser_failures": dict(sorted((key, value) for key, value in failures.items() if key not in {"http_failure", "exact_id_crosswalk_unavailable", "zgzcw_exact_id_crosswalk_unavailable"})),
+        "parser_failures": dict(sorted((key, value) for key, value in failures.items() if key not in {
+            "http_failure", "private_cache_miss", "exact_id_crosswalk_unavailable",
+            "zgzcw_exact_id_crosswalk_unavailable", "no_exact_provider_fixture_identity",
+            "ambiguous_provider_fixture_identity", "strict_fixture_identity_unavailable",
+        })),
         "no_qualifying_prior_quote": failures.get("no_qualifying_prior_quote", 0),
-        "exact_id_crosswalk_unavailable": failures.get("exact_id_crosswalk_unavailable", 0),
+        "exact_id_crosswalk_unavailable": (
+            failures.get("exact_id_crosswalk_unavailable", 0)
+            + failures.get("zgzcw_exact_id_crosswalk_unavailable", 0)
+        ),
+        "strict_fixture_identity_unavailable": failures.get("strict_fixture_identity_unavailable", 0),
+        "no_exact_provider_fixture_identity": failures.get("no_exact_provider_fixture_identity", 0),
+        "ambiguous_provider_fixture_identity": failures.get("ambiguous_provider_fixture_identity", 0),
+        "private_cache_miss": failures.get("private_cache_miss", 0),
     }
 
 def report(
@@ -1591,17 +2003,24 @@ def main() -> None:
     parser.add_argument("--provider-timeout", type=float, default=25.0, help="per-request timeout seconds (default 25)")
     parser.add_argument("--provider-workers", type=int, default=1, help="concurrent provider page workers, capped at 32 (default 1)")
     parser.add_argument("--provider-max-pages", type=int, default=DEFAULT_PROVIDER_MAX_PAGES, help="total unique provider-page budget (default 250)")
+    parser.add_argument("--provider-cache-only", action="store_true", help="read private runner cache only; never contact a provider")
     parser.add_argument("--exact-window-seconds", type=float, default=DEFAULT_EXACT_WINDOW_SECONDS, help="A-grade cutoff window for T-30/T-5")
     parser.add_argument("--freshness-t30-seconds", type=float, default=DEFAULT_FRESHNESS_SECONDS["T-30"], help="B-grade LOCF ceiling for T-30")
     parser.add_argument("--freshness-t5-seconds", type=float, default=DEFAULT_FRESHNESS_SECONDS["T-5"], help="B-grade LOCF ceiling for T-5")
-    parser.add_argument("--tipsme-url-template", help="verified public Tipsme URL template; uses {MATCH_ID} and {market}")
-    parser.add_argument("--zgzcw-url-template", help="verified public ZGZCW timestamp-history template; uses {MATCH_ID}, {BOOKMAKER_ID}, and {market}")
+    parser.add_argument("--crosswalk-kickoff-tolerance-seconds", type=float, default=DEFAULT_CROSSWALK_KICKOFF_TOLERANCE_SECONDS, help="exact public fixture crosswalk kickoff tolerance, 0-300 seconds")
+    parser.add_argument("--tipsme-event-url-template", help="verified HTTPS Tipsme event-index URL template; requires {KICKOFF_DATE}")
+    parser.add_argument("--zgzcw-event-url-template", help="verified HTTPS ZGZCW event-index URL template; requires {KICKOFF_DATE}")
+    parser.add_argument("--tipsme-url-template", help="verified HTTPS Tipsme timestamp-history URL template; uses {MATCH_ID} and {market}")
+    parser.add_argument("--zgzcw-url-template", help="verified HTTPS ZGZCW timestamp-history URL template; uses {MATCH_ID}, {BOOKMAKER_ID}, and {market}")
+    parser.add_argument("--zgzcw-bookmaker-id", help="exact ZGZCW bookmaker ID for a page-built crosswalk")
     args = parser.parse_args()
     if args.provider and not (args.provider_audit or args.provider_apply): parser.error("--provider requires --provider-audit or --provider-apply")
     if (args.provider_audit or args.provider_apply) and not args.provider: parser.error("provider mode requires at least one --provider")
     if (args.provider_audit or args.provider_apply) and not args.provider_cache: parser.error("provider mode requires --provider-cache private directory")
     if args.exact_window_seconds < 0 or args.freshness_t30_seconds < 0 or args.freshness_t5_seconds < 0 or args.provider_max_pages < 1:
         parser.error("freshness, exact-window, and provider page budgets must be non-negative (pages >= 1)")
+    if not 0 <= args.crosswalk_kickoff_tolerance_seconds <= MAX_CROSSWALK_KICKOFF_TOLERANCE_SECONDS:
+        parser.error("crosswalk kickoff tolerance must be between 0 and 300 seconds")
     if (args.apply or args.provider_apply) and args.apply_confirmation != "APPLY_HISTORICAL_ODDS_RECOVERY":
         parser.error("--apply and --provider-apply require --apply-confirmation APPLY_HISTORICAL_ODDS_RECOVERY")
     paths = {system: [] for system in ("footbreak", "crown")}
@@ -1618,6 +2037,11 @@ def main() -> None:
             "rate_per_second": args.provider_rate, "retries": args.provider_retries,
             "timeout_seconds": args.provider_timeout, "workers": args.provider_workers,
             "tipsme_url_template": args.tipsme_url_template, "zgzcw_url_template": args.zgzcw_url_template,
+            "tipsme_event_url_template": args.tipsme_event_url_template,
+            "zgzcw_event_url_template": args.zgzcw_event_url_template,
+            "zgzcw_bookmaker_id": args.zgzcw_bookmaker_id,
+            "kickoff_tolerance_seconds": args.crosswalk_kickoff_tolerance_seconds,
+            "cache_only": args.provider_cache_only,
             "max_pages": args.provider_max_pages,
         }
     freshness = {"T-30": args.freshness_t30_seconds, "T-5": args.freshness_t5_seconds}

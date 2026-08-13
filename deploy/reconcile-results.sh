@@ -6,7 +6,33 @@
 set -u
 
 APP_DIR="${APP_DIR:-/opt/footbreak}"
+FOOTBREAK_ENV_FILE="${FOOTBREAK_ENV_FILE:-/etc/footbreak.env}"
+CROWN_ENV_FILE="${CROWN_ENV_FILE:-/etc/footbreak-crown.env}"
 failed=0
+
+load_runtime_environment() {
+  # Keep the runner's established environment-file precedence.  Nothing from
+  # either root-only file is printed.
+  if [ -f "$FOOTBREAK_ENV_FILE" ]; then
+    set -a
+    . "$FOOTBREAK_ENV_FILE"
+    set +a
+  fi
+  if [ -f "$CROWN_ENV_FILE" ]; then
+    set -a
+    . "$CROWN_ENV_FILE"
+    set +a
+  fi
+}
+
+crown_is_enabled() {
+  case "${CROWN_ENABLED:-0}" in
+    1|true|TRUE|yes|YES|on|ON) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+load_runtime_environment
 
 run_reconciler() {
   local name="$1"
@@ -27,7 +53,14 @@ run_reconciler() {
 }
 
 run_reconciler "Footbreak" "$APP_DIR/deploy/run.sh" settle
-run_reconciler "Crown" "$APP_DIR/deploy/crown-run.sh" settle
+if crown_is_enabled; then
+  run_reconciler "Crown" "$APP_DIR/deploy/crown-run.sh" settle
+else
+  # Crown's explicit validation gate intentionally makes crown.run return a
+  # non-zero result without touching a provider.  Do not turn that safe,
+  # operator-selected disabled state into a Footbreak reconciliation failure.
+  echo "Crown reconciliation skipped: CROWN_ENABLED is not enabled"
+fi
 
 # The two settlement runners above actively retry unresolved outcomes through
 # their existing strict HKJC/Titan/exact-fixture paths.  Once they finish, make
