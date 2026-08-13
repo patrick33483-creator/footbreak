@@ -16,10 +16,13 @@ import tempfile
 import base64
 import html
 import re
+import socket
+import threading
 import time
 import urllib.error
 import urllib.request
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -477,54 +480,131 @@ class PrivateResponseCache:
     """Private, reusable raw response cache.  It stores no public audit data."""
     def __init__(self, root: Path):
         self.root = root
+        self._lock = threading.RLock()
         self.root.mkdir(mode=0o700, parents=True, exist_ok=True)
         os.chmod(self.root, 0o700)
 
     def get(self, url: str) -> tuple[bytes, dict[str, Any]] | None:
-        key = _url_hash(url); raw = self.root / f"{key}.raw"; meta = self.root / f"{key}.json"
-        try:
-            info = json.loads(meta.read_text(encoding="utf-8"))
-            body = raw.read_bytes()
-        except (OSError, json.JSONDecodeError):
-            return None
-        if not isinstance(info, dict) or info.get("url_hash") != key or info.get("http_status") != 200:
-            return None
-        return body, info
+        with self._lock:
+            key = _url_hash(url); raw = self.root / f"{key}.raw"; meta = self.root / f"{key}.json"
+            try:
+                info = json.loads(meta.read_text(encoding="utf-8"))
+                body = raw.read_bytes()
+            except (OSError, json.JSONDecodeError):
+                return None
+            if not isinstance(info, dict) or info.get("url_hash") != key or info.get("http_status") != 200:
+                return None
+            return body, info
 
     def put(self, url: str, body: bytes, status: int) -> None:
-        key = _url_hash(url); raw = self.root / f"{key}.raw"; meta = self.root / f"{key}.json"
-        raw.write_bytes(body); os.chmod(raw, 0o600)
-        meta.write_text(json.dumps({"url_hash": key, "http_status": status, "fetched_at": datetime.now(timezone.utc).isoformat()}, separators=(",", ":")), encoding="utf-8")
-        os.chmod(meta, 0o600)
+        with self._lock:
+            key = _url_hash(url); raw = self.root / f"{key}.raw"; meta = self.root / f"{key}.json"
+            raw.write_bytes(body); os.chmod(raw, 0o600)
+            meta.write_text(json.dumps({"url_hash": key, "http_status": status, "fetched_at": datetime.now(timezone.utc).isoformat()}, separators=(",", ":")), encoding="utf-8")
+            os.chmod(meta, 0o600)
 
 
 class ProviderFetcher:
-    def __init__(self, cache: PrivateResponseCache, rate_per_second: float = 1.0, retries: int = 2):
-        self.cache, self.rate_per_second, self.retries = cache, max(0.1, rate_per_second), max(0, retries)
-        self._last = 0.0; self.pages_fetched = 0; self.cache_hits = 0; self.http_failures = 0
+    """Fetch each URL at most once while bounding starts and simultaneous I/O."""
+    def __init__(self, cache: PrivateResponseCache, rate_per_second: float = 1.0,
+                 retries: int = 2, timeout_seconds: float = 25.0, workers: int = 1):
+        self.cache = cache
+        self.rate_per_second = max(0.1, rate_per_second)
+        self.retries = max(0, retries)
+        self.timeout_seconds = max(0.1, timeout_seconds)
+        self.workers = max(1, min(32, int(workers)))
+        self._state_lock = threading.RLock()
+        self._start_lock = threading.Lock()
+        self._next_start = 0.0
+        self._results: dict[str, tuple[str | None, bool, str | None]] = {}
+        self._inflight: dict[str, threading.Event] = {}
+        self.pages_fetched = 0
+        self.cache_hits = 0
+        self.http_failures = 0
+        self.timeout_failures = 0
 
     def get(self, url: str) -> tuple[str | None, bool, str | None]:
+        """Return a cached or single-flight fetch result for one URL."""
+        with self._state_lock:
+            known = self._results.get(url)
+            if known is not None:
+                return known
+            event = self._inflight.get(url)
+            owner = event is None
+            if owner:
+                event = threading.Event()
+                self._inflight[url] = event
+        if not owner:
+            assert event is not None
+            event.wait()
+            with self._state_lock:
+                return self._results[url]
+
         cached = self.cache.get(url)
         if cached:
-            self.cache_hits += 1
-            return cached[0].decode("gb18030", errors="replace"), True, None
+            result = (cached[0].decode("gb18030", errors="replace"), True, None)
+            with self._state_lock:
+                self.cache_hits += 1
+            return self._complete(url, result)
+        result = self._fetch_uncached(url)
+        return self._complete(url, result)
+
+    def get_many(self, urls: Iterable[str]) -> dict[str, tuple[str | None, bool, str | None]]:
+        """Fetch a deterministic unique URL set with controlled concurrency."""
+        unique = sorted(set(urls))
+        with ThreadPoolExecutor(max_workers=self.workers, thread_name_prefix="provider-fetch") as pool:
+            futures = {url: pool.submit(self.get, url) for url in unique}
+            return {url: futures[url].result() for url in unique}
+
+    def _complete(self, url: str, result: tuple[str | None, bool, str | None]) -> tuple[str | None, bool, str | None]:
+        with self._state_lock:
+            self._results[url] = result
+            event = self._inflight.pop(url)
+            event.set()
+        return result
+
+    def _wait_for_start(self) -> None:
+        """Serialize request starts; ongoing requests may still overlap."""
+        with self._start_lock:
+            pause = self._next_start - time.monotonic()
+            if pause > 0:
+                time.sleep(pause)
+            self._next_start = time.monotonic() + (1.0 / self.rate_per_second)
+
+    @staticmethod
+    def _is_timeout(exc: BaseException) -> bool:
+        if isinstance(exc, (TimeoutError, socket.timeout)):
+            return True
+        if not isinstance(exc, urllib.error.URLError):
+            return False
+        reason = str(exc.reason).lower()
+        return isinstance(exc.reason, (TimeoutError, socket.timeout)) or "timeout" in reason or "timed out" in reason
+
+    def _fetch_uncached(self, url: str) -> tuple[str | None, bool, str | None]:
+        last_error = "unknown"
+        timed_out = False
         for attempt in range(self.retries + 1):
-            pause = (1.0 / self.rate_per_second) - (time.monotonic() - self._last)
-            if pause > 0: time.sleep(pause)
-            self._last = time.monotonic()
-            request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0", "Accept": "text/html,*/*;q=0.8"})
+            self._wait_for_start()
             try:
-                with urllib.request.urlopen(request, timeout=25) as response:
+                request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0", "Accept": "text/html,*/*;q=0.8"})
+                with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
                     body = response.read(); status = int(getattr(response, "status", 200) or 200)
-                if status != 200: raise OSError(f"http_{status}")
-                self.cache.put(url, body, status); self.pages_fetched += 1
+                if status != 200:
+                    raise OSError(f"http_{status}")
+                self.cache.put(url, body, status)
+                with self._state_lock:
+                    self.pages_fetched += 1
                 return body.decode("gb18030", errors="replace"), False, None
-            except (OSError, urllib.error.URLError, urllib.error.HTTPError) as exc:
-                if attempt >= self.retries:
-                    self.http_failures += 1
-                    return None, False, type(exc).__name__
-                time.sleep(min(3.0, 0.5 * (2 ** attempt)))
-        return None, False, "unknown"
+            except (OSError, urllib.error.URLError, urllib.error.HTTPError, TimeoutError, socket.timeout, ValueError) as exc:
+                last_error = type(exc).__name__
+                timed_out = timed_out or self._is_timeout(exc)
+                if attempt < self.retries:
+                    time.sleep(min(3.0, 0.5 * (2 ** attempt)))
+        with self._state_lock:
+            self.http_failures += 1
+            if timed_out:
+                self.timeout_failures += 1
+        return None, False, last_error
 
 
 _TAG = re.compile(r"<[^>]+>")
@@ -686,35 +766,91 @@ def tipsme_candidate(target: dict[str, Any], source: str, url: str) -> tuple[dic
     return _provider_quote(target, selected, at, provider="tipsme_hkjc", source_url=url, company_id="hkjc"), None
 
 
-def provider_entries(targets: list[dict[str, Any]], *, providers: set[str], cache_dir: Path, rate_per_second: float, retries: int, tipsme_url_template: str | None = None) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    fetcher = ProviderFetcher(PrivateResponseCache(cache_dir), rate_per_second, retries)
+def provider_entries(targets: list[dict[str, Any]], *, providers: set[str], cache_dir: Path,
+                     rate_per_second: float, retries: int, timeout_seconds: float = 25.0,
+                     workers: int = 1, tipsme_url_template: str | None = None) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Resolve pages in batches, but evaluate each target in original order.
+
+    Titan is always evaluated before Tipsme as before.  Tipsme pages are
+    requested only for targets that Titan did not recover, so page batching
+    cannot broaden recovery eligibility or change provider precedence.
+    """
+    fetcher = ProviderFetcher(
+        PrivateResponseCache(cache_dir), rate_per_second, retries,
+        timeout_seconds=timeout_seconds, workers=workers,
+    )
     entries: list[dict[str, Any]] = []; recovered = Counter(); failures = Counter(); attempted = set()
+    plans: list[dict[str, Any]] = []
     for target in targets:
-        candidate = None; reason = None
+        plan: dict[str, Any] = {"target": target, "candidate": None, "reason": None}
         if "titan" in providers:
             titan_id = _titan_id_for_target(target)
             if titan_id and target["market_code"] in {"HDC", "HIL"}:
-                attempted.add(("titan", titan_id)); page = "handicap.aspx" if target["market_code"] == "HDC" else "overunder.aspx"
-                url = f"https://vip.titan007.com/changeDetail/{page}?id={titan_id}&companyID=3&l=0"
-                source, _cached, err = fetcher.get(url)
-                if err: reason = "http_failure"
-                elif source is not None: candidate, reason = titan_candidate(target, source, url)
-        if candidate is None and "tipsme" in providers:
-            crosswalk = tipsme_crosswalk(target)
-            if not crosswalk: reason = "exact_id_crosswalk_unavailable"
-            elif not tipsme_url_template: reason = "tipsme_public_url_unconfigured"
-            else:
-                attempted.add(("tipsme", crosswalk)); url = tipsme_url_template.format(MATCH_ID=crosswalk, match_id=crosswalk, market={"HDC":"hdp", "HIL":"hilo", "CHL":"corner"}[target["market_code"]])
-                source, _cached, err = fetcher.get(url)
-                if err: reason = "http_failure"
-                elif source is not None: candidate, reason = tipsme_candidate(target, source, url)
+                attempted.add(("titan", titan_id))
+                page = "handicap.aspx" if target["market_code"] == "HDC" else "overunder.aspx"
+                plan["titan_url"] = f"https://vip.titan007.com/changeDetail/{page}?id={titan_id}&companyID=3&l=0"
+        plans.append(plan)
+
+    titan_pages = fetcher.get_many(plan["titan_url"] for plan in plans if "titan_url" in plan)
+    for plan in plans:
+        url = plan.get("titan_url")
+        if not url:
+            continue
+        source, _cached, err = titan_pages[url]
+        if err:
+            plan["reason"] = "http_failure"
+        elif source is not None:
+            plan["candidate"], plan["reason"] = titan_candidate(plan["target"], source, url)
+
+    for plan in plans:
+        if plan["candidate"] is not None or "tipsme" not in providers:
+            continue
+        target = plan["target"]
+        crosswalk = tipsme_crosswalk(target)
+        if not crosswalk:
+            plan["reason"] = "exact_id_crosswalk_unavailable"
+        elif not tipsme_url_template:
+            plan["reason"] = "tipsme_public_url_unconfigured"
+        else:
+            attempted.add(("tipsme", crosswalk))
+            plan["tipsme_url"] = tipsme_url_template.format(
+                MATCH_ID=crosswalk, match_id=crosswalk,
+                market={"HDC": "hdp", "HIL": "hilo", "CHL": "corner"}[target["market_code"]],
+            )
+
+    tipsme_pages = fetcher.get_many(plan["tipsme_url"] for plan in plans if "tipsme_url" in plan)
+    for plan in plans:
+        if plan["candidate"] is not None:
+            continue
+        url = plan.get("tipsme_url")
+        if not url:
+            continue
+        source, _cached, err = tipsme_pages[url]
+        if err:
+            plan["reason"] = "http_failure"
+        elif source is not None:
+            plan["candidate"], plan["reason"] = tipsme_candidate(plan["target"], source, url)
+
+    for plan in plans:
+        target = plan["target"]; candidate = plan["candidate"]; reason = plan["reason"]
         if candidate:
             entries.append(_entry(target, candidate)); recovered[f"{target['stage']}|{target['market_code']}|{candidate['source_kind']}"] += 1
         elif reason:
             failures[reason] += 1
     ages = [entry["evidence_age_seconds"] for entry in entries]
     bands = Counter("under_5m" if age < 300 else "5m_to_30m" if age < 1800 else "30m_to_6h" if age < 21600 else "over_6h" for age in ages)
-    return entries, {"fixtures_attempted": len(attempted), "pages_fetched": fetcher.pages_fetched, "cache_hits": fetcher.cache_hits, "targets_recovered_by_stage_market_source": dict(sorted(recovered.items())), "stale_age_bands": dict(sorted(bands.items())), "parser_failures": dict(sorted((key, value) for key, value in failures.items() if key not in {"http_failure", "exact_id_crosswalk_unavailable"})), "http_failures": fetcher.http_failures, "no_qualifying_prior_quote": failures.get("no_qualifying_prior_quote", 0), "exact_id_crosswalk_unavailable": failures.get("exact_id_crosswalk_unavailable", 0)}
+    return entries, {
+        "fixtures_attempted": len(attempted),
+        "pages_fetched": fetcher.pages_fetched,
+        "cache_hits": fetcher.cache_hits,
+        "http_failures": fetcher.http_failures,
+        "timeout_failures": fetcher.timeout_failures,
+        "targets_recovered_by_stage_market_source": dict(sorted(recovered.items())),
+        "stale_age_bands": dict(sorted(bands.items())),
+        "parser_failures": dict(sorted((key, value) for key, value in failures.items() if key not in {"http_failure", "exact_id_crosswalk_unavailable"})),
+        "no_qualifying_prior_quote": failures.get("no_qualifying_prior_quote", 0),
+        "exact_id_crosswalk_unavailable": failures.get("exact_id_crosswalk_unavailable", 0),
+    }
 
 def report(rows_by_system: dict[str, list[dict[str, Any]]], paths_by_system: dict[str, list[Path]], *, provider_options: dict[str, Any] | None = None) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     all_entries: list[dict[str, Any]] = []
@@ -840,6 +976,8 @@ def main() -> None:
     parser.add_argument("--provider-cache", type=Path, help="private 0700/0600 raw-response cache directory")
     parser.add_argument("--provider-rate", type=float, default=1.0, help="maximum provider requests per second (default 1)")
     parser.add_argument("--provider-retries", type=int, default=2)
+    parser.add_argument("--provider-timeout", type=float, default=25.0, help="per-request timeout seconds (default 25)")
+    parser.add_argument("--provider-workers", type=int, default=1, help="concurrent provider page workers, capped at 32 (default 1)")
     parser.add_argument("--tipsme-url-template", help="verified public Tipsme URL template; uses {MATCH_ID} and {market}")
     args = parser.parse_args()
     if args.provider and not (args.provider_audit or args.provider_apply): parser.error("--provider requires --provider-audit or --provider-apply")
@@ -856,7 +994,12 @@ def main() -> None:
         root = Path.cwd(); paths = {s: [root / p for p in values] for s, values in DEFAULT_ALLOWLIST.items()}
     provider_options = None
     if args.provider_audit or args.provider_apply:
-        provider_options = {"providers": set(args.provider), "cache_dir": args.provider_cache, "rate_per_second": args.provider_rate, "retries": args.provider_retries, "tipsme_url_template": args.tipsme_url_template}
+        provider_options = {
+            "providers": set(args.provider), "cache_dir": args.provider_cache,
+            "rate_per_second": args.provider_rate, "retries": args.provider_retries,
+            "timeout_seconds": args.provider_timeout, "workers": args.provider_workers,
+            "tipsme_url_template": args.tipsme_url_template,
+        }
     result, entries = report({"footbreak": _load_rows(args.footbreak_history), "crown": _load_rows(args.crown_history)}, paths, provider_options=provider_options)
     if args.apply or args.provider_apply:
         result["mode"] = "provider_apply" if args.provider_apply else "apply"; result["apply"] = apply(args.sidecar, entries)

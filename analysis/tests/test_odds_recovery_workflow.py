@@ -49,6 +49,15 @@ class HistoricalOddsRecoveryWorkflowTests(unittest.TestCase):
             workflow,
         )
 
+    def test_titan_audit_uses_bounded_concurrent_provider_settings(self) -> None:
+        workflow = (
+            ROOT / ".github" / "workflows" / "historical-odds-recovery.yml"
+        ).read_text(encoding="utf-8")
+        self.assertIn("--provider-rate 1", workflow)
+        self.assertIn("--provider-timeout 8", workflow)
+        self.assertIn("--provider-retries 0", workflow)
+        self.assertIn("--provider-workers 8", workflow)
+
     def test_cli_provider_apply_fails_before_provider_access_without_confirmation(self) -> None:
         args = [
             "odds_recovery.py",

@@ -71,7 +71,9 @@ jobs:
             --apply-confirmation '${{ inputs.apply_confirmation }}' \
             --provider titan \
             --provider-rate 1 \
-            --provider-retries 2 \
+            --provider-timeout 8 \
+            --provider-retries 0 \
+            --provider-workers 8 \
             --provider-cache /var/lib/footbreak/private/odds-recovery-provider-cache \
             --footbreak-history /var/www/footbreak/data.json \
             --crown-history /var/lib/footbreak/crown/prediction_history.json \

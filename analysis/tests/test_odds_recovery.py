@@ -1,5 +1,5 @@
 from __future__ import annotations
-import copy, importlib.util, json, os, stat, sys, tempfile, unittest
+import copy, importlib.util, json, os, socket, stat, sys, tempfile, threading, time, unittest
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 from pathlib import Path
@@ -8,6 +8,7 @@ from analysis.odds_recovery import (
     prediction_targets, report, snapshot_identity, PrivateResponseCache,
     ProviderFetcher, parse_titan_change_rows, titan_candidate,
     parse_tipsme_chart_ticks, tipsme_candidate, tipsme_crosswalk,
+    provider_entries,
 )
 from crown.prediction_history import calculate_stats
 SYSTEM_DIR = Path(__file__).resolve().parents[2] / "system"
@@ -379,6 +380,88 @@ class ProviderRecoveryTests(unittest.TestCase):
             self.assertEqual(stat.S_IMODE(Path(directory).stat().st_mode), 0o700)
             self.assertTrue(all(stat.S_IMODE(path.stat().st_mode) == 0o600
                                 for path in Path(directory).iterdir()))
+
+    def test_fetcher_rate_limits_starts_and_bounds_concurrency(self):
+        active = 0; maximum_active = 0; starts: list[float] = []; lock = threading.Lock()
+
+        class Response:
+            status = 200
+            def read(self): return b"<html>ok</html>"
+            def __enter__(self): return self
+            def __exit__(self, *_): return False
+
+        def urlopen(_request, timeout):
+            nonlocal active, maximum_active
+            self.assertEqual(timeout, 0.5)
+            with lock:
+                starts.append(time.monotonic())
+                active += 1; maximum_active = max(maximum_active, active)
+            time.sleep(0.12)
+            with lock:
+                active -= 1
+            return Response()
+
+        with tempfile.TemporaryDirectory() as directory:
+            fetcher = ProviderFetcher(
+                PrivateResponseCache(Path(directory)), rate_per_second=20,
+                retries=0, timeout_seconds=0.5, workers=2,
+            )
+            with patch("urllib.request.urlopen", side_effect=urlopen):
+                pages = fetcher.get_many(f"https://example.test/{number}" for number in range(3))
+        self.assertEqual(list(pages), [f"https://example.test/{number}" for number in range(3)])
+        self.assertTrue(all(value[0] == "<html>ok</html>" for value in pages.values()))
+        self.assertEqual(maximum_active, 2)
+        self.assertGreater(maximum_active, 1)
+        self.assertEqual(len(starts), 3)
+        self.assertTrue(all(later - earlier >= 0.04 for earlier, later in zip(starts, starts[1:])))
+
+    def test_fetcher_deduplicates_urls_and_accounts_terminal_timeouts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fetcher = ProviderFetcher(
+                PrivateResponseCache(Path(directory)), rate_per_second=100,
+                retries=0, timeout_seconds=0.25, workers=8,
+            )
+            with patch("urllib.request.urlopen", side_effect=socket.timeout("bounded")) as opener:
+                pages = fetcher.get_many(["https://example.test/same", "https://example.test/same"])
+                # The in-run terminal result is also reused by later callers.
+                repeat = fetcher.get("https://example.test/same")
+        self.assertEqual(list(pages), ["https://example.test/same"])
+        self.assertEqual(pages["https://example.test/same"], (None, False, "TimeoutError"))
+        self.assertEqual(repeat, (None, False, "TimeoutError"))
+        self.assertEqual(opener.call_count, 1)
+        self.assertEqual(fetcher.http_failures, 1)
+        self.assertEqual(fetcher.timeout_failures, 1)
+        self.assertEqual(opener.call_args.kwargs["timeout"], 0.25)
+
+    def test_provider_entries_deduplicate_pages_and_keep_target_order(self):
+        html = """
+        <tr data-company-id="3"><td>0.70</td><td>0.5</td><td>0.90</td><td>12-31 23:30</td><td>即</td></tr>
+        <tr data-company-id="3"><td>0.80</td><td>0.5</td><td>0.80</td><td>01-01 00:03</td><td>即</td></tr>
+        """
+
+        class Response:
+            status = 200
+            def read(self): return html.encode("gb18030")
+            def __enter__(self): return self
+            def __exit__(self, *_): return False
+
+        first = self.target(stage="T-5")
+        second = self.target(stage="T-30")
+        with tempfile.TemporaryDirectory() as directory:
+            with patch("urllib.request.urlopen", return_value=Response()) as opener:
+                entries, audit = provider_entries(
+                    [first, second], providers={"titan"}, cache_dir=Path(directory),
+                    rate_per_second=100, retries=0, timeout_seconds=0.5, workers=8,
+                )
+        self.assertEqual(opener.call_count, 1)
+        self.assertEqual([entry["snapshot_identity"] for entry in entries], [
+            first["snapshot_identity"], second["snapshot_identity"],
+        ])
+        self.assertEqual([entry["selected_odds"] for entry in entries], ["1.8", "1.7"])
+        self.assertEqual(audit["pages_fetched"], 1)
+        self.assertEqual(audit["http_failures"], 0)
+        self.assertEqual(audit["timeout_failures"], 0)
+        self.assertNotIn(html, json.dumps(audit))
 
     def test_tipsme_requires_exact_crosswalk_and_timestamped_tick(self):
         target = self.target()
