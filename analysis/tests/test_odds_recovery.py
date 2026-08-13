@@ -9,6 +9,7 @@ from analysis.odds_recovery import (
     ProviderFetcher, parse_titan_change_rows, titan_candidate,
     parse_tipsme_chart_ticks, tipsme_candidate, tipsme_crosswalk,
     provider_entries, _entry, _validate_entry, artifact_inventory,
+    sidecar_comparison, _sha,
     parse_zgzcw_history_ticks, zgzcw_candidate, zgzcw_crosswalk,
 )
 from crown.prediction_history import calculate_stats
@@ -153,6 +154,34 @@ class OddsRecoveryTests(unittest.TestCase):
         self.assertEqual(raw, before)
         self.assertEqual(projected[0]["market_predictions"][0]["odds"], 1.7)
         self.assertEqual(projected[0]["market_predictions"][0]["recovery_provenance"], "historical_exact_prior")
+
+    def test_sidecar_comparison_separates_metadata_and_quote_conflicts(self):
+        target = prediction_targets([row()], "footbreak")[0][0]
+        original = _entry(target, quote())
+        metadata_changed = {**original, "evidence_source_hash": "new-source-hash"}
+        metadata_changed["entry_hash"] = _sha({
+            key: value for key, value in metadata_changed.items() if key != "entry_hash"
+        })
+        same_price_later = _entry(
+            target, quote(observed="2026-08-10T09:59:30+08:00")
+        )
+        different_price = _entry(target, quote(odds="1.8"))
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "overlay.json"
+            apply(path, [original])
+            comparison = sidecar_comparison(
+                path, [original, metadata_changed, same_price_later, different_price]
+            )
+        self.assertEqual(comparison, {
+            "candidate_total": 4,
+            "different_price_conflict": 1,
+            "exact_hash_match": 1,
+            "existing_entry_total": 1,
+            "same_price_different_observation": 1,
+            "same_quote_metadata_changed": 1,
+        })
+        self.assertNotIn("event-1", json.dumps(comparison))
+        self.assertNotIn("1.7", json.dumps(comparison))
 
     def test_malformed_existing_sidecar_fails_closed(self):
         with tempfile.TemporaryDirectory() as directory:

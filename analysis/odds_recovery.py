@@ -1488,6 +1488,43 @@ def apply(path: Path, entries: list[dict[str, Any]]) -> dict[str, int]:
     return {"added": added, "already_present": already}
 
 
+def sidecar_comparison(path: Path, entries: list[dict[str, Any]]) -> dict[str, int]:
+    """Return aggregate-only candidate/sidecar conflict diagnostics.
+
+    This deliberately exposes no fixture IDs, source URLs, prices, or hashes.
+    It lets an operator distinguish harmless metadata evolution from a genuine
+    quote conflict before deciding whether any existing immutable entry needs
+    manual review.
+    """
+    for entry in entries:
+        _validate_entry(entry)
+    current = _sidecar(path)
+    existing = {
+        (e.get("system"), e.get("snapshot_identity"), e.get("market_code"), e.get("line"), e.get("side")): e
+        for e in current["entries"] if isinstance(e, dict)
+    }
+    counts: Counter = Counter()
+    for entry in entries:
+        key = tuple(entry[k] for k in ("system", "snapshot_identity", "market_code", "line", "side"))
+        old = existing.get(key)
+        if old is None:
+            counts["new_key"] += 1
+        elif old.get("entry_hash") == entry.get("entry_hash"):
+            counts["exact_hash_match"] += 1
+        elif (
+            old.get("selected_odds") == entry.get("selected_odds")
+            and old.get("observed_at") == entry.get("observed_at")
+        ):
+            counts["same_quote_metadata_changed"] += 1
+        elif old.get("selected_odds") == entry.get("selected_odds"):
+            counts["same_price_different_observation"] += 1
+        else:
+            counts["different_price_conflict"] += 1
+    counts["candidate_total"] = len(entries)
+    counts["existing_entry_total"] = len(existing)
+    return dict(sorted(counts.items()))
+
+
 def overlay_rows(rows: list[dict[str, Any]], system: str, sidecar_path: str | Path | None = None) -> list[dict[str, Any]]:
     """Return a decorated copy; callers never mutate their raw payload."""
     path = Path(sidecar_path or os.environ.get("ODDS_RECOVERY_SIDECAR", "")) if (sidecar_path or os.environ.get("ODDS_RECOVERY_SIDECAR")) else None
@@ -1580,6 +1617,7 @@ def main() -> None:
         paths, provider_options=provider_options, exact_window_seconds=args.exact_window_seconds,
         freshness_seconds=freshness,
     )
+    result["sidecar_comparison"] = sidecar_comparison(args.sidecar, entries)
     if args.apply or args.provider_apply:
         result["mode"] = "provider_apply" if args.provider_apply else "apply"; result["apply"] = apply(args.sidecar, entries)
     elif args.provider_audit:
