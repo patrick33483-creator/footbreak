@@ -429,6 +429,7 @@ def _grade_index(rows: Sequence[sqlite3.Row]) -> dict[tuple[str, str, str, str],
 def build_market_rows(
     snapshots: Sequence[sqlite3.Row],
     grades: Sequence[sqlite3.Row],
+    system: str | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, int]]:
     """Flatten immutable pre-kickoff snapshots into one row per market pick.
 
@@ -440,6 +441,19 @@ def build_market_rows(
     rows: list[dict[str, Any]] = []
     for snapshot in snapshots:
         payload, malformed = _payload(snapshot["payload_json"])
+        # The overlay is projected onto this in-memory read-only diagnostic
+        # view.  SQLite prediction_snapshots and their JSON payload remain
+        # immutable and are never opened for writing here.
+        if system and payload:
+            from analysis.odds_recovery import overlay_rows
+            projected = overlay_rows([{
+                "fixture_id": snapshot["fixture_id"],
+                "stage": snapshot["stage"],
+                "predicted_at": snapshot["generated_at"],
+                "learning_snapshot_id": snapshot["snapshot_id"],
+                "market_predictions": payload.get("market_predictions") or [],
+            }], system)
+            payload = {**payload, "market_predictions": projected[0]["market_predictions"]}
         fixture_id = str(snapshot["fixture_id"])
         stage = str(snapshot["stage"] or "")
         if malformed:
@@ -1103,7 +1117,7 @@ def build_system_report(
     quarantined_rows, quarantined_fixtures = source.quarantined_counts(system)
     duplicate_stage_keys = source.stage_attempt_counts(system)
 
-    rows, structural = build_market_rows(snapshots, grades)
+    rows, structural = build_market_rows(snapshots, grades, system)
     structural = dict(structural)
     structural["duplicate_stage_keys"] = len(duplicate_stage_keys)
 

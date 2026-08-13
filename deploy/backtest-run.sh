@@ -7,6 +7,7 @@ CHALLENGER_DIR="/var/lib/footbreak/challenger"
 DATA_HEALTH_DIR="/var/lib/footbreak/data-health"
 SHADOW_CONDITIONS_DIR="/var/lib/footbreak/shadow-conditions"
 LEARNING_DB="/var/lib/footbreak/learning/predictions.sqlite"
+ODDS_RECOVERY_SIDECAR="${ODDS_RECOVERY_SIDECAR:-/var/lib/footbreak/private/odds-recovery-overlay.json}"
 
 if [ -f /etc/footbreak.env ]; then
   set -a
@@ -86,7 +87,7 @@ fi
 
 # 資料健康報告(唯讀診斷)。每日至少重寫一次;15 分鐘結算週期亦會平價重生。
 # 佢絕對唔可以阻塞回測、結算、通知或任何既有工作,所以失敗只會記 log。
-if ! "$APP_DIR/.venv/bin/python3" -m analysis.data_health \
+if ! ODDS_RECOVERY_SIDECAR="$ODDS_RECOVERY_SIDECAR" "$APP_DIR/.venv/bin/python3" -m analysis.data_health \
   --learning-db "$LEARNING_DB" \
   --out "$DATA_HEALTH_DIR/latest.json" \
   --public-footbreak /var/www/footbreak/data-health.json \

@@ -27,7 +27,10 @@ export TZ="Asia/Hong_Kong"
 export PYTHONPATH="$APP_DIR${PYTHONPATH:+:$PYTHONPATH}"
 export LEARNING_DB_PATH="${LEARNING_DB_PATH:-/var/lib/footbreak/learning/predictions.sqlite}"
 export FOOTBREAK_PREDICTION_ARCHIVE_PATH="${FOOTBREAK_PREDICTION_ARCHIVE_PATH:-/var/lib/footbreak/prediction_history_archive.json}"
-install -d -m 0700 "$(dirname "$LEARNING_DB_PATH")" "$(dirname "$FOOTBREAK_PREDICTION_ARCHIVE_PATH")"
+# Read-only reporting projection only.  The recovery workflow is the sole
+# writer and uses an explicit --apply confirmation.
+export ODDS_RECOVERY_SIDECAR="${ODDS_RECOVERY_SIDECAR:-/var/lib/footbreak/private/odds-recovery-overlay.json}"
+install -d -m 0700 "$(dirname "$LEARNING_DB_PATH")" "$(dirname "$FOOTBREAK_PREDICTION_ARCHIVE_PATH")" "$(dirname "$ODDS_RECOVERY_SIDECAR")"
 
 # venv 有就用,冇就用系統 python3
 if [ -x "$APP_DIR/.venv/bin/python3" ]; then

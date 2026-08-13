@@ -22,6 +22,19 @@ DATA_HEALTH_REPORTS = {
     "crown": Path("/var/www/crown/data-health.json"),
 }
 PINNAPI_SOURCE_HEALTH_REPORT = Path("/var/www/footbreak/pinnapi-source-health.json")
+ODDS_RECOVERY_EVIDENCE = {
+    "footbreak": [
+        Path("/opt/footbreak/system/snapshots"),
+        Path("/opt/footbreak/system/hk_snapshots.json"),
+        Path("/var/lib/footbreak/prediction_history_archive.json"),
+        Path("/opt/footbreak/system/sim_ledger.json"),
+    ],
+    "crown": [
+        Path("/var/lib/footbreak/crown/prediction_history.json"),
+        Path("/var/lib/footbreak/crown/ledger.json"),
+        Path("/var/lib/footbreak/crown/source_snapshots"),
+    ],
+}
 HKT = timezone(timedelta(hours=8))
 sys.path.insert(0, "/opt/footbreak")
 
@@ -246,6 +259,24 @@ def data_health_state() -> dict[str, Any]:
         "stage_rows_are_reference_only": True,
         "systems": systems,
     }
+
+
+def odds_recovery_state(footbreak: dict[str, Any], crown: dict[str, Any]) -> dict[str, Any]:
+    """Read-only compact recovery inventory; never exposes production paths."""
+    try:
+        from analysis.odds_recovery import report
+        payload, _ = report(
+            {
+                "footbreak": rows(footbreak.get("prediction_history") or {}),
+                "crown": rows(crown),
+            },
+            ODDS_RECOVERY_EVIDENCE,
+        )
+        return payload
+    except Exception as exc:
+        # Audit must remain available if an old deployment lacks the optional
+        # recovery module or a historical evidence file is malformed.
+        return {"available": False, "reason": type(exc).__name__}
 
 
 def data_health_summary(report: dict[str, Any]) -> dict[str, Any]:
@@ -736,6 +767,7 @@ def main() -> None:
         "server_timer": timer_state(),
         "challenger": challenger_state(),
         "data_health": data_health_state(),
+        "historical_odds_recovery": odds_recovery_state(footbreak, crown),
         "pinnapi_source_health": pinnapi_source_health_state(),
         "crown": {
             "stats": crown.get("stats"),

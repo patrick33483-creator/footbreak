@@ -16,11 +16,13 @@ if [ -f /etc/footbreak.env ]; then set -a; . /etc/footbreak.env; set +a; fi
 if [ -f /etc/footbreak-crown.env ]; then set -a; . /etc/footbreak-crown.env; set +a; fi
 export CROWN_APP_DIR CROWN_STATE_DIR CROWN_WEB_ROOT TZ=Asia/Hong_Kong
 export LEARNING_DB_PATH="${LEARNING_DB_PATH:-/var/lib/footbreak/learning/predictions.sqlite}"
+export ODDS_RECOVERY_SIDECAR="${ODDS_RECOVERY_SIDECAR:-/var/lib/footbreak/private/odds-recovery-overlay.json}"
 
 PYTHON="$APP_DIR/.venv/bin/python3"
 [ -x "$PYTHON" ] || PYTHON=python3
 install -d -m 0700 "$CROWN_STATE_DIR"
 install -d -m 0700 "$(dirname "$LEARNING_DB_PATH")"
+install -d -m 0700 "$(dirname "$ODDS_RECOVERY_SIDECAR")"
 # The runner may atomically replace data.json.  Keep only the static web tree
 # readable by nginx; private state remains in CROWN_STATE_DIR.
 install -d -m 0755 "$(dirname "$CROWN_WEB_ROOT")" "$CROWN_WEB_ROOT"

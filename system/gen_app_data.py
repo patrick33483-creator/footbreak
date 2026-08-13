@@ -383,6 +383,14 @@ def build_prediction_history(watch, bets, accuracy):
     comparable_rows = [
         row for row in rows if row.get("prediction_era") == PREDICTION_ERA
     ]
+    # Historical recovery is a private, read-only overlay.  It decorates this
+    # generated payload only; the archive/watch and their raw snapshots remain
+    # byte-for-byte unchanged.
+    from analysis.odds_recovery import overlay_rows
+    rows = overlay_rows(rows, "footbreak")
+    comparable_rows = [
+        row for row in rows if row.get("prediction_era") == PREDICTION_ERA
+    ]
     stats = _prediction_history_stats(comparable_rows)
     stats["all_history_audit"] = _prediction_history_stats(rows)
     stats["scope"] = {

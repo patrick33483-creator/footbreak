@@ -62,11 +62,12 @@ fi
 # 每日 12:20 嘅 backtest 排程另外保證至少一日一次重寫。
 DATA_HEALTH_DIR="${DATA_HEALTH_DIR:-/var/lib/footbreak/data-health}"
 SHADOW_CONDITIONS_DIR="${SHADOW_CONDITIONS_DIR:-/var/lib/footbreak/shadow-conditions}"
+ODDS_RECOVERY_SIDECAR="${ODDS_RECOVERY_SIDECAR:-/var/lib/footbreak/private/odds-recovery-overlay.json}"
 health_generation_failed=0
 if [ -s "$LEARNING_DB" ]; then
   install -d -o root -g root -m 0700 "$DATA_HEALTH_DIR" 2>/dev/null || true
   echo "=== $(TZ=Asia/Hong_Kong date '+%F %T') 資料健康報告重生 ==="
-  if PYTHONPATH="$APP_DIR" "$APP_DIR/.venv/bin/python3" -m analysis.data_health \
+  if PYTHONPATH="$APP_DIR" ODDS_RECOVERY_SIDECAR="$ODDS_RECOVERY_SIDECAR" "$APP_DIR/.venv/bin/python3" -m analysis.data_health \
     --learning-db "$LEARNING_DB" \
     --out "$DATA_HEALTH_DIR/latest.json" \
     --public-footbreak /var/www/footbreak/data-health.json \

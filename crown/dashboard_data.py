@@ -11,6 +11,7 @@ from .config import Settings, settings
 from .ledger import recompute_stats
 from .period import in_current_period
 from .prediction_history import normalize_history
+from .ledger import PREDICTION_ERA
 from .state import load_ledger, load_predictions, paths
 
 
@@ -31,6 +32,16 @@ def build(config: Settings) -> dict[str, Any]:
     prediction_history.setdefault("rows", [])
     prediction_history.setdefault("stats", {})
     normalize_history(prediction_history)
+    # The private recovery overlay is applied only to this dashboard copy.
+    # It never modifies the persisted prediction history or source ledger.
+    from analysis.odds_recovery import overlay_rows
+    from .prediction_history import calculate_stats
+    prediction_history["rows"] = overlay_rows(
+        prediction_history["rows"], "crown",
+    )
+    prediction_history["stats"] = calculate_stats(
+        prediction_history["rows"], comparable_era=PREDICTION_ERA,
+    )
     # A newly seeded ledger has no calculated stats yet; emit the complete
     # dashboard contract even before the first remote Crown pass.
     recompute_stats(ledger, config)

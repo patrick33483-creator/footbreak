@@ -1,0 +1,97 @@
+name: 歷史賠率復原（稽核／明確套用）
+
+on:
+  workflow_dispatch:
+    inputs:
+      apply_confirmation:
+        description: 'Leave AUDIT for read-only inventory. Type APPLY_HISTORICAL_ODDS_RECOVERY to append the private overlay.'
+        required: true
+        default: AUDIT
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  recover:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: 設定 SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - name: 只讀盤點歷史賠率證據
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh "$DEPLOY_USER@$DEPLOY_HOST" 'sudo /opt/footbreak/.venv/bin/python3 /opt/footbreak/analysis/odds_recovery.py \
+            --footbreak-history /var/www/footbreak/data.json \
+            --crown-history /var/lib/footbreak/crown/prediction_history.json \
+            --sidecar /var/lib/footbreak/private/odds-recovery-overlay.json \
+            --allow footbreak=/opt/footbreak/system/snapshots \
+            --allow footbreak=/opt/footbreak/system/hk_snapshots.json \
+            --allow footbreak=/var/lib/footbreak/prediction_history_archive.json \
+            --allow footbreak=/opt/footbreak/system/sim_ledger.json \
+            --allow crown=/var/lib/footbreak/crown/prediction_history.json \
+            --allow crown=/var/lib/footbreak/crown/ledger.json \
+            --allow crown=/var/lib/footbreak/crown/source_snapshots' > historical-odds-recovery-audit.json
+      - name: 保存只讀稽核結果
+        uses: actions/upload-artifact@v4
+        with:
+          name: historical-odds-recovery-audit
+          path: historical-odds-recovery-audit.json
+          retention-days: 7
+      - name: 明確確認後才寫入私有 sidecar
+        if: ${{ inputs.apply_confirmation == 'APPLY_HISTORICAL_ODDS_RECOVERY' }}
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh "$DEPLOY_USER@$DEPLOY_HOST" 'sudo /opt/footbreak/.venv/bin/python3 /opt/footbreak/analysis/odds_recovery.py \
+            --apply \
+            --footbreak-history /var/www/footbreak/data.json \
+            --crown-history /var/lib/footbreak/crown/prediction_history.json \
+            --sidecar /var/lib/footbreak/private/odds-recovery-overlay.json \
+            --allow footbreak=/opt/footbreak/system/snapshots \
+            --allow footbreak=/opt/footbreak/system/hk_snapshots.json \
+            --allow footbreak=/var/lib/footbreak/prediction_history_archive.json \
+            --allow footbreak=/opt/footbreak/system/sim_ledger.json \
+            --allow crown=/var/lib/footbreak/crown/prediction_history.json \
+            --allow crown=/var/lib/footbreak/crown/ledger.json \
+            --allow crown=/var/lib/footbreak/crown/source_snapshots' > historical-odds-recovery-apply.json
+      - name: 套用後只重生公開投影及驗證
+        if: ${{ inputs.apply_confirmation == 'APPLY_HISTORICAL_ODDS_RECOVERY' }}
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh "$DEPLOY_USER@$DEPLOY_HOST" 'set -e
+            export PYTHONPATH=/opt/footbreak
+            export ODDS_RECOVERY_SIDECAR=/var/lib/footbreak/private/odds-recovery-overlay.json
+            PYTHON=/opt/footbreak/.venv/bin/python3
+            sudo env PYTHONPATH="$PYTHONPATH" ODDS_RECOVERY_SIDECAR="$ODDS_RECOVERY_SIDECAR" "$PYTHON" /opt/footbreak/deploy/regenerate-odds-recovery-dashboard.py --data /var/www/footbreak/data.json
+            sudo env PYTHONPATH="$PYTHONPATH" ODDS_RECOVERY_SIDECAR="$ODDS_RECOVERY_SIDECAR" "$PYTHON" -m crown.dashboard_data --out /var/www/crown/data.json
+            sudo env PYTHONPATH="$PYTHONPATH" ODDS_RECOVERY_SIDECAR="$ODDS_RECOVERY_SIDECAR" "$PYTHON" -m analysis.data_health --learning-db /var/lib/footbreak/learning/predictions.sqlite --out /var/lib/footbreak/data-health/latest.json --public-footbreak /var/www/footbreak/data-health.json --public-crown /var/www/crown/data-health.json --lock /var/lock/footbreak-data-health.lock
+            sudo env PYTHONPATH="$PYTHONPATH" "$PYTHON" /opt/footbreak/deploy/verify-result-integrity.py
+            sudo env PYTHONPATH="$PYTHONPATH" "$PYTHON" /opt/footbreak/deploy/audit-result-state.py' > historical-odds-recovery-regeneration-audit.txt
+      - name: 保存套用摘要（不含原始資料）
+        if: ${{ inputs.apply_confirmation == 'APPLY_HISTORICAL_ODDS_RECOVERY' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: historical-odds-recovery-apply
+          path: historical-odds-recovery-apply.json
+          retention-days: 7
+      - name: 保存重生後驗證稽核
+        if: ${{ inputs.apply_confirmation == 'APPLY_HISTORICAL_ODDS_RECOVERY' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: historical-odds-recovery-regeneration-audit
+          path: historical-odds-recovery-regeneration-audit.txt
+          retention-days: 7
