@@ -28,7 +28,15 @@ class ReconciliationEnablementTests(unittest.TestCase):
             encoding="utf-8",
         )
         (self.directory / ".venv" / "bin" / "python3").write_text(
-            "#!/usr/bin/env bash\nexit 0\n", encoding="utf-8"
+            "#!/usr/bin/env bash\n"
+            "if [[ \"${1:-}\" == */verify-result-integrity.py ]] && "
+            "[[ -n \"${INTEGRITY_FAIL_ONCE_FILE:-}\" ]] && "
+            "[[ ! -e \"$INTEGRITY_FAIL_ONCE_FILE\" ]]; then\n"
+            "  touch \"$INTEGRITY_FAIL_ONCE_FILE\"\n"
+            "  exit 1\n"
+            "fi\n"
+            "exit 0\n",
+            encoding="utf-8",
         )
         for executable in (
             self.directory / "deploy" / "run.sh",
@@ -41,7 +49,11 @@ class ReconciliationEnablementTests(unittest.TestCase):
         self.footbreak_env.write_text("", encoding="utf-8")
 
     def run_reconciler(
-        self, crown_enabled: str, *, extra_footbreak_env: str = ""
+        self,
+        crown_enabled: str,
+        *,
+        extra_footbreak_env: str = "",
+        integrity_fail_once: bool = False,
     ) -> subprocess.CompletedProcess[str]:
         self.crown_env.write_text(
             f"CROWN_ENABLED={crown_enabled}\n", encoding="utf-8"
@@ -56,6 +68,10 @@ class ReconciliationEnablementTests(unittest.TestCase):
             "CROWN_CALLED": str(called),
             "LEARNING_DB": str(self.directory / "absent.sqlite"),
         }
+        if integrity_fail_once:
+            environment["INTEGRITY_FAIL_ONCE_FILE"] = str(
+                self.directory / "integrity-failed-once"
+            )
         result = subprocess.run(
             ["bash", str(RECONCILE)],
             cwd=self.directory,
@@ -83,6 +99,12 @@ class ReconciliationEnablementTests(unittest.TestCase):
         result = self.run_reconciler("0", extra_footbreak_env="failed=1\n")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse(result.crown_called)
+
+    def test_transient_integrity_read_race_is_retried_and_recovers(self) -> None:
+        result = self.run_reconciler("0", integrity_fail_once=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("transient failure; retrying attempt=2/3", result.stderr)
+        self.assertIn("Prediction-history integrity audit OK", result.stdout)
 
     def test_deploy_and_health_follow_the_same_validation_gate(self) -> None:
         update = (ROOT / "deploy" / "update.sh").read_text(encoding="utf-8")

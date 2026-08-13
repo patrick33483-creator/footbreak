@@ -83,8 +83,18 @@ if [ -s "$LEARNING_DB" ]; then
 fi
 
 echo "=== $(TZ=Asia/Hong_Kong date '+%F %T') prediction-history integrity audit ==="
-"$APP_DIR/.venv/bin/python3" "$APP_DIR/deploy/verify-result-integrity.py"
-integrity_rc=$?
+integrity_rc=1
+for integrity_attempt in 1 2 3; do
+  "$APP_DIR/.venv/bin/python3" "$APP_DIR/deploy/verify-result-integrity.py"
+  integrity_rc=$?
+  if [ "$integrity_rc" -eq 0 ]; then
+    break
+  fi
+  if [ "$integrity_attempt" -lt 3 ]; then
+    echo "Prediction-history integrity audit transient failure; retrying attempt=$((integrity_attempt + 1))/3" >&2
+    sleep 2
+  fi
+done
 if [ "$integrity_rc" -ne 0 ]; then
   echo "Prediction-history integrity audit failed rc=$integrity_rc" >&2
   reconciliation_failed=1
