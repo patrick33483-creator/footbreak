@@ -758,11 +758,12 @@ def titan_candidate(target: dict[str, Any], source: str, url: str) -> tuple[dict
     exact = [dict(tick, price=tick.get(target["side"])) for tick in ticks if tick["line"] == target["line"] and target["side"] in tick]
     if not exact: return None, "no_exact_fixture_market_line_side_evidence"
     if target["stage"] == "首預":
-        eligible = [tick for tick in exact if tick["observed_at"] <= kickoff]
-        target_time = kickoff
+        target_time = min(kickoff, target["predicted_at"])
+        eligible = [tick for tick in exact if tick["observed_at"] <= target_time]
         selected = min(eligible, key=lambda row: row["observed_at"]) if eligible else None
     elif target["stage"] in {"T-30", "T-5"}:
-        target_time = kickoff - timedelta(minutes=30 if target["stage"] == "T-30" else 5)
+        nominal_time = kickoff - timedelta(minutes=30 if target["stage"] == "T-30" else 5)
+        target_time = min(nominal_time, target["predicted_at"])
         eligible = [tick for tick in exact if tick["observed_at"] <= target_time]
         selected = max(eligible, key=lambda row: row["observed_at"]) if eligible else None
     else: return None, "unsupported_stage"

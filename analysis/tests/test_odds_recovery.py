@@ -8,7 +8,7 @@ from analysis.odds_recovery import (
     prediction_targets, report, snapshot_identity, PrivateResponseCache,
     ProviderFetcher, parse_titan_change_rows, titan_candidate,
     parse_tipsme_chart_ticks, tipsme_candidate, tipsme_crosswalk,
-    provider_entries,
+    provider_entries, _entry, _validate_entry,
 )
 from crown.prediction_history import calculate_stats
 SYSTEM_DIR = Path(__file__).resolve().parents[2] / "system"
@@ -313,11 +313,16 @@ class ProviderRecoveryTests(unittest.TestCase):
     KICKOFF = "2026-01-01T00:10:00+08:00"
 
     def target(self, stage="T-30", market="HDC", side="H", line="-0.5"):
+        predicted_at = {
+            "首預": datetime(2025, 12, 31, 15, 30, tzinfo=timezone.utc),
+            "T-30": datetime(2025, 12, 31, 15, 40, tzinfo=timezone.utc),
+            "T-5": datetime(2025, 12, 31, 16, 5, tzinfo=timezone.utc),
+        }[stage]
         return {
             "system": "crown", "fixture_identity": "persisted:titan-77",
-            "snapshot_identity": f"crown|persisted:titan-77|{stage}|2025-12-31T15:00:00+00:00",
+            "snapshot_identity": f"crown|persisted:titan-77|{stage}|{predicted_at.isoformat()}",
             "stage": stage, "market_code": market, "side": side, "line": line,
-            "predicted_at": datetime(2025, 12, 31, 15, tzinfo=timezone.utc),
+            "predicted_at": predicted_at,
             "row": {"match_id": "titan-77", "titan_match_id": "titan-77",
                     "kickoff": self.KICKOFF},
         }
@@ -345,6 +350,21 @@ class ProviderRecoveryTests(unittest.TestCase):
         self.assertEqual(opening["odds"], "1.7")
         self.assertEqual(opening["provider_evidence"]["company_id"], "3")
         self.assertEqual(opening["provider_evidence"]["native_odds_format"], "hong_kong")
+
+    def test_titan_never_uses_quote_after_actual_prediction_time(self):
+        source = """
+        <tr data-company-id="3"><td>0.70</td><td>0.5</td><td>0.90</td><td>12-31 23:20</td><td>即</td></tr>
+        <tr data-company-id="3"><td>0.80</td><td>0.5</td><td>0.80</td><td>12-31 23:35</td><td>即</td></tr>
+        """
+        target = self.target()
+        target["predicted_at"] = datetime(2025, 12, 31, 15, 32, tzinfo=timezone.utc)
+        quote, reason = titan_candidate(target, source, "https://example.test/titan")
+        self.assertIsNone(reason)
+        self.assertEqual(quote["odds"], "1.7")
+        self.assertLessEqual(quote["observed_at"], target["predicted_at"])
+        entry = _entry(target, quote)
+        self.assertGreaterEqual(entry["evidence_age_seconds"], 0)
+        _validate_entry(entry)
 
     def test_titan_t5_uses_last_prior_irregular_tick_and_year_rollover(self):
         html = """
