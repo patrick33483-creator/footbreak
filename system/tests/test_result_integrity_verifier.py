@@ -1,6 +1,13 @@
 import importlib.util
+import json
+import os
+import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
+
+from crown.ledger import PREDICTION_ERA
+from crown.prediction_history import calculate_stats
 
 
 MODULE_PATH = Path(__file__).parents[2] / "deploy" / "verify-result-integrity.py"
@@ -11,6 +18,93 @@ SPEC.loader.exec_module(verify)
 
 
 class ResultIntegrityVerifierTests(unittest.TestCase):
+    def test_crown_publication_accepts_recovery_overlay_without_mutating_raw(self):
+        raw_row = {
+            "match_id": "3031468",
+            "kickoff": "2026-08-12T20:00:00+08:00",
+            "predicted_at": "2026-08-12T19:55:00+08:00",
+            "stage": "T-5",
+            "prediction_era": PREDICTION_ERA,
+            "market_predictions": [
+                {"code": "HIL", "line": 2.5, "side": "L"},
+            ],
+            "market_grades": [
+                {
+                    "code": "HIL",
+                    "line": 2.5,
+                    "side": "L",
+                    "grade_status": "GRADED",
+                    "hit": True,
+                },
+            ],
+        }
+        raw = {
+            "rows": [raw_row],
+            "stats": calculate_stats([raw_row], comparable_era=PREDICTION_ERA),
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            sidecar = Path(directory) / "odds.json"
+            from analysis.odds_recovery import (
+                SCHEMA_VERSION,
+                _sha,
+                overlay_rows,
+                snapshot_identity,
+            )
+
+            entry = {
+                "system": "crown",
+                "snapshot_identity": snapshot_identity(raw_row, "crown"),
+                "market_code": "HIL",
+                "line": "2.5",
+                "side": "L",
+                "selected_odds": "1.88",
+                "observed_at": "2026-08-12T11:54:00+00:00",
+                "evidence_source_kind": "provider",
+                "evidence_source_hash": "test-evidence",
+                "evidence_age_seconds": 60.0,
+            }
+            entry["entry_hash"] = _sha(entry)
+            sidecar.write_text(
+                json.dumps(
+                    {
+                        "schema_version": SCHEMA_VERSION,
+                        "entries": [entry],
+                        "audit": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with patch.dict(
+                os.environ,
+                {"ODDS_RECOVERY_SIDECAR": str(sidecar)},
+                clear=False,
+            ):
+                projected_rows = overlay_rows(raw["rows"], "crown")
+                public = {
+                    "prediction_history": {
+                        "rows": projected_rows,
+                        "stats": calculate_stats(
+                            projected_rows,
+                            comparable_era=PREDICTION_ERA,
+                        ),
+                    }
+                }
+                verify.assert_crown_publication_matches(raw, public)
+
+                self.assertNotIn("odds", raw_row["market_predictions"][0])
+                self.assertEqual(
+                    public["prediction_history"]["rows"][0][
+                        "market_predictions"
+                    ][0]["odds"],
+                    1.88,
+                )
+
+                public["prediction_history"]["rows"][0][
+                    "market_predictions"
+                ][0]["odds"] = 1.89
+                with self.assertRaises(AssertionError):
+                    verify.assert_crown_publication_matches(raw, public)
+
     def test_accepts_push_and_checks_exact_stage_cell(self):
         rows = [
             {

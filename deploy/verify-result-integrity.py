@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import math
+import copy
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -284,16 +285,30 @@ def assert_crown_publication_matches(
     crown_history: dict[str, Any],
     crown_public: dict[str, Any],
 ) -> None:
+    from analysis.odds_recovery import overlay_rows
+    from crown.ledger import PREDICTION_ERA
+    from crown.prediction_history import calculate_stats, normalize_history
+
     public_history = crown_public.get("prediction_history") or {}
-    raw_rows = rows(crown_history)
+    projected_history = copy.deepcopy(crown_history)
+    normalize_history(projected_history)
+    raw_rows = rows(projected_history)
+    projected_rows = overlay_rows(raw_rows, "crown")
+    projected_stats = calculate_stats(
+        projected_rows,
+        comparable_era=PREDICTION_ERA,
+    )
     public_rows = rows(public_history)
     assert len(public_rows) == len(raw_rows), (
         "Crown public/raw prediction row count mismatch",
         len(public_rows),
         len(raw_rows),
     )
-    assert public_history.get("stats") == crown_history.get("stats"), (
-        "Crown public/raw prediction stats mismatch"
+    assert public_rows == projected_rows, (
+        "Crown public prediction rows do not match the recovery overlay projection"
+    )
+    assert public_history.get("stats") == projected_stats, (
+        "Crown public prediction stats do not match the recovery overlay projection"
     )
     raw_keys = [
         (str(row.get("match_id") or ""), str(row.get("stage") or ""))
@@ -304,7 +319,10 @@ def assert_crown_publication_matches(
         for row in public_rows
     ]
     assert public_keys == raw_keys, "Crown public/raw prediction row order mismatch"
-    print(f"Crown publication sync check OK rows={len(raw_rows)}")
+    print(
+        "Crown publication recovery-projection sync check OK "
+        f"rows={len(raw_rows)}"
+    )
 
 
 def main() -> None:
