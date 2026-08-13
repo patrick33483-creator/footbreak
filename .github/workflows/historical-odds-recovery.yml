@@ -37,7 +37,7 @@ jobs:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
         run: |
-          ssh "$DEPLOY_USER@$DEPLOY_HOST" 'sudo /opt/footbreak/.venv/bin/python3 /opt/footbreak/analysis/odds_recovery.py \
+          ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=20 "$DEPLOY_USER@$DEPLOY_HOST" 'sudo /opt/footbreak/.venv/bin/python3 /opt/footbreak/analysis/odds_recovery.py \
             --footbreak-history /var/www/footbreak/data.json \
             --crown-history /var/lib/footbreak/crown/prediction_history.json \
             --sidecar /var/lib/footbreak/private/odds-recovery-overlay.json \
@@ -66,7 +66,7 @@ jobs:
           if [ "${{ inputs.provider_mode }}" = "TITAN_APPLY" ] && [ "${{ inputs.apply_confirmation }}" = "APPLY_HISTORICAL_ODDS_RECOVERY" ]; then
             mode=--provider-apply
           fi
-          ssh "$DEPLOY_USER@$DEPLOY_HOST" "sudo /opt/footbreak/.venv/bin/python3 /opt/footbreak/analysis/odds_recovery.py \
+          ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=20 "$DEPLOY_USER@$DEPLOY_HOST" "sudo /opt/footbreak/.venv/bin/python3 /opt/footbreak/analysis/odds_recovery.py \
             $mode \
             --apply-confirmation '${{ inputs.apply_confirmation }}' \
             --provider titan \
@@ -96,7 +96,7 @@ jobs:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
         run: |
-          ssh "$DEPLOY_USER@$DEPLOY_HOST" 'sudo /opt/footbreak/.venv/bin/python3 /opt/footbreak/analysis/odds_recovery.py \
+          ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=20 "$DEPLOY_USER@$DEPLOY_HOST" 'sudo /opt/footbreak/.venv/bin/python3 /opt/footbreak/analysis/odds_recovery.py \
             --apply \
             --apply-confirmation APPLY_HISTORICAL_ODDS_RECOVERY \
             --footbreak-history /var/www/footbreak/data.json \
@@ -115,7 +115,7 @@ jobs:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
         run: |
-          ssh "$DEPLOY_USER@$DEPLOY_HOST" 'set -e
+          ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=20 "$DEPLOY_USER@$DEPLOY_HOST" 'set -e
             export PYTHONPATH=/opt/footbreak
             export ODDS_RECOVERY_SIDECAR=/var/lib/footbreak/private/odds-recovery-overlay.json
             PYTHON=/opt/footbreak/.venv/bin/python3
