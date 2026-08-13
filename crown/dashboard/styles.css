@@ -470,6 +470,32 @@ table.t tr.hi td { background: oklch(78% 0.145 74 / .07); }
   line-height: 1.55;
 }
 .shadow-note strong { color: var(--amber); white-space: nowrap; }
+.handicap-world-note { border-color: color-mix(in oklch, var(--good) 42%, var(--line)); }
+.world-policy { overflow: hidden; }
+.world-policy-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--s3); }
+.world-policy-grid article { min-width: 0; padding: var(--s4); border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--panel-2); }
+.world-policy-grid b { color: var(--amber); }
+.world-policy-grid p, .world-policy-grid small { display: block; margin: var(--s2) 0 0; color: var(--ink-3); font-size: var(--text-xs); line-height: 1.6; }
+.world-policy-grid code { display: block; margin-top: var(--s3); padding: var(--s2); overflow-wrap: anywhere; border-radius: 4px; background: var(--bg-2); color: var(--good); font: 500 .6875rem/1.5 var(--mono); }
+.world-results { display: grid; gap: var(--s2); }
+.world-result-counts { display: flex; flex-wrap: wrap; gap: var(--s2); }
+.world-result-counts span { padding: var(--s2) var(--s3); border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--bg-2); font: 500 var(--text-sm)/1 var(--mono); color: var(--ink-2); }
+.world-result-counts b { color: var(--amber); }
+.world-strategy-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--s3); }
+.world-strategy-card { display: grid; gap: var(--s3); min-width: 0; padding: var(--s4); border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--panel-2); }
+.world-strategy-card > div:first-child { display: grid; gap: var(--s1); }
+.world-strategy-card > div:first-child b { color: var(--amber); }
+.world-strategy-card > div:first-child span { color: var(--ink-3); font-size: var(--text-xs); }
+.world-strategy-metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--s2); }
+.world-strategy-metrics span { display: grid; gap: 2px; color: var(--ink-3); font-size: var(--text-xs); }
+.world-strategy-metrics strong { color: var(--ink); font: 500 var(--text-sm)/1.25 var(--mono); }
+.world-strategy-results { display: flex; flex-wrap: wrap; gap: var(--s1); color: var(--ink-2); font: 500 var(--text-xs)/1 var(--mono); }
+.world-strategy-results span { padding: var(--s1) var(--s2); border-radius: 4px; background: var(--bg-2); }
+.world-strategy-results b { color: var(--amber); }
+.world-audit ul { display: grid; gap: var(--s2); margin: 0; padding-left: 1.25rem; color: var(--ink-3); font-size: var(--text-xs); line-height: 1.55; }
+.world-audit li b { color: var(--ink); }
+.world-bets td { vertical-align: top; }
+.world-bets .cell-sub > div { margin-top: 3px; }
 .compare-card { overflow: hidden; }
 .compare-grid {
   display: grid;
@@ -717,6 +743,10 @@ table.t.bets td.good { color: var(--good); } table.t.bets td.amber { color: var(
 @media (max-width: 620px) {
   .shadow-note { grid-template-columns: 1fr; gap: var(--s1); }
   .compare-grid { grid-template-columns: 1fr; }
+  .world-policy-grid { grid-template-columns: 1fr; }
+  .world-strategy-grid { grid-template-columns: 1fr; }
+  .world-result-counts span { flex: 1 0 28%; text-align: center; }
+  .world-bets td[data-label] { min-width: 132px; }
 }
 
 /* ═══ 更新按鈕 / toast ═══ */

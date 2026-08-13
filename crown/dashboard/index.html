@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="styles.css?v=20260814-data-health-shadow-condition-chinese-valid-odds-only-v1">
+<link rel="stylesheet" href="styles.css?v=20260814-handicap-world-v1">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%230d1117'/%3E%3Cpath d='M6 24V8l10 8 10-8v16' stroke='%23e8a33d' stroke-width='2.5' fill='none' stroke-linejoin='round'/%3E%3C/svg%3E">
 </head>
 <body>
@@ -27,6 +27,7 @@
     <button class="navbtn" data-view="history">預測紀錄</button>
     <button class="navbtn" data-view="ledger">模擬倉</button>
     <button class="navbtn" data-view="shadow">影子倉</button>
+    <button class="navbtn" data-view="handicapWorld">讓球世界</button>
     <button class="navbtn" data-view="chal">挑戰模型</button>
     <button class="navbtn" data-view="health">資料健康</button>
     <button class="navbtn" data-view="condition">條件影子報告</button>
@@ -74,6 +75,9 @@
 <!-- ═══ confidence-only 影子倉 ═══ -->
 <main class="page" id="viewShadow" hidden></main>
 
+<!-- ═══ 皇冠 HDC 三段一致策略模擬 ═══ -->
+<main class="page" id="viewHandicapWorld" hidden></main>
+
 <!-- ═══ 全量預測紀錄 ═══ -->
 <main class="page" id="viewHistory" hidden></main>
 
@@ -95,7 +99,7 @@
   </button>
 </div>
 
-<script src="app.js?v=20260814-data-health-shadow-condition-chinese-valid-odds-only-v1"></script>
+<script src="app.js?v=20260814-handicap-world-v1"></script>
 <script data-pplx-inline-edit>
 (function () {
   if (window === window.top) return;

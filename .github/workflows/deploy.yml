@@ -24,7 +24,7 @@ jobs:
       - name: 檢查 shell 腳本
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
-          bash -n system/run_all.sh deploy/run.sh deploy/crown-run.sh deploy/reconcile-results.sh deploy/backtest-run.sh deploy/health-check.sh deploy/footbreak-tick-preempt.sh deploy/footbreak-refresh-current-odds.sh deploy/setup.sh deploy/update.sh
+          bash -n system/run_all.sh deploy/run.sh deploy/crown-run.sh deploy/reconcile-results.sh deploy/backtest-run.sh deploy/health-check.sh deploy/enable-crown.sh deploy/footbreak-tick-preempt.sh deploy/footbreak-refresh-current-odds.sh deploy/setup.sh deploy/update.sh
           shellcheck -S error deploy/*.sh system/run_all.sh || true
           echo "Shell 語法 OK"
 

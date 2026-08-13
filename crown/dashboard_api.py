@@ -16,7 +16,8 @@ from .config import Settings, settings
 from .dashboard_data import write_dashboard_data
 from .engine import run
 from .prediction_history import update_history
-from .state import load_ledger
+from .settle import settle_due
+from .state import load_ledger, state_lock
 
 
 MAX_BODY_BYTES = 4096
@@ -61,6 +62,28 @@ def perform_settlement(config: Settings) -> dict[str, Any]:
     return response
 
 
+def perform_handicap_world_settlement(config: Settings) -> dict[str, Any]:
+    """Settle only the isolated record-only Handicap World portfolio."""
+    with state_lock(config):
+        result = settle_due(config, handicap_world_only=True)
+    write_dashboard_data(config)
+    data = read_published_data(config)
+    return {
+        "ok": True,
+        "settled_count": 0,
+        "pending_count": 0,
+        "shadow_settled_count": 0,
+        "shadow_pending_count": 0,
+        "handicap_world_settled_count": int(result.get("handicap_world_settled") or 0),
+        "handicap_world_voided_count": int(result.get("handicap_world_voided") or 0),
+        "handicap_world_pending_count": int(result.get("handicap_world_pending") or 0),
+        "persisted": True,
+        "project_submitted": True,
+        "data": data,
+        "portfolio": "handicap_world",
+    }
+
+
 class CrownDashboardHandler(BaseHTTPRequestHandler):
     server_version = "CrownDashboardAPI/1"
 
@@ -100,7 +123,8 @@ class CrownDashboardHandler(BaseHTTPRequestHandler):
         if self.path.split("?", 1)[0] != "/api/settle":
             self._json(HTTPStatus.NOT_FOUND, {"ok": False, "error": "not_found"})
             return
-        if self.headers.get("X-Crown-Action") != "settle-simulation":
+        action = self.headers.get("X-Crown-Action")
+        if action not in {"settle-simulation", "settle-handicap-world"}:
             self._json(HTTPStatus.FORBIDDEN, {"ok": False, "error": "action_not_allowed"})
             return
         try:
@@ -115,11 +139,21 @@ class CrownDashboardHandler(BaseHTTPRequestHandler):
         except (json.JSONDecodeError, UnicodeDecodeError):
             self._json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": "invalid_json"})
             return
-        if payload != {"confirm": "simulation-only"}:
+        expected_payload = (
+            {"confirm": "handicap-world-only"}
+            if action == "settle-handicap-world"
+            else {"confirm": "simulation-only"}
+        )
+        if payload != expected_payload:
             self._json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": "confirmation_required"})
             return
         try:
-            self._json(HTTPStatus.OK, perform_settlement(self.config))
+            operation = (
+                perform_handicap_world_settlement
+                if action == "settle-handicap-world"
+                else perform_settlement
+            )
+            self._json(HTTPStatus.OK, operation(self.config))
         except Exception as exc:
             # Return only a stable error class.  Upstream responses and
             # credentials must never reach the browser or logs.

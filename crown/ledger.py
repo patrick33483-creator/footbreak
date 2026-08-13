@@ -9,6 +9,13 @@ from analysis.learning_store import LearningStore
 
 from .common import iso_hkt
 from .config import Settings
+from .handicap_world import (
+    FIXED_STAKE as HANDICAP_WORLD_FIXED_STAKE,
+    PORTFOLIO as HANDICAP_WORLD_PORTFOLIO,
+    STARTING_BANKROLL as HANDICAP_WORLD_STARTING_BANKROLL,
+    ensure_state as ensure_handicap_world,
+    record_new_t5 as record_handicap_world_t5,
+)
 
 STAGES = {"首預": 1, "T-30": 2, "T-5": 3}
 PREDICTION_ERA = "2026-08-12-hkjc-corner-forecast-v4"
@@ -102,6 +109,11 @@ def _market_predictions(candidates: list[dict[str, Any]]) -> list[dict[str, Any]
             # exactly; a missing observed timestamp remains explicit.
             "observed_at": observed_at,
             "probability": best.get("prob"),
+            # A probability is usable by a strategy only when its immutable
+            # source is retained.  In particular, Crown's own no-vig market
+            # probability must never be reused as Kelly p against its price.
+            "probability_source": best.get("reference"),
+            "probability_observed_at": best.get("probability_observed_at"),
             # Keep the historical learning-source field backward compatible;
             # quote_source is the provider evidence for the selected price.
             "source": best.get("reference") or "pinnapi_exact_line",
@@ -256,6 +268,10 @@ def sync_prediction(ledger: dict[str, Any], prediction: dict[str, Any], config: 
         stage_rows.sort(key=lambda row: STAGES[row["stage"]])
     else:
         existing.update(snapshot)
+    # Let the separate portfolio observe only a newly persisted T-5 snapshot.
+    # A retried/replayed T-5 cannot add another source signal or child leg.
+    if stage == "T-5" and existing is None:
+        record_handicap_world_t5(ledger, watch)
     if stage == "T-5" and prediction.get("shadow_pick"):
         shadow_bets = ledger["shadow_bets"]
         # Shadow decisions are also one-per-fixture and idempotent. They are
@@ -358,6 +374,16 @@ def _portfolio_stats(bets: list[dict[str, Any]], bankroll: float) -> dict[str, A
             "pnl": round(bet_pnl, 2),
             "equity": round(running_equity, 2),
         })
+    peak = bankroll
+    max_drawdown = 0.0
+    max_drawdown_pct = 0.0
+    for point in curve:
+        equity = float(point["equity"])
+        peak = max(peak, equity)
+        drawdown = max(0.0, peak - equity)
+        max_drawdown = max(max_drawdown, drawdown)
+        if peak > 0:
+            max_drawdown_pct = max(max_drawdown_pct, drawdown / peak)
 
     return {
         "n_pending": len(pending), "n_voided": sum(bet.get("status") == "VOIDED" for bet in bets), "n_settled": len(settled),
@@ -366,7 +392,8 @@ def _portfolio_stats(bets: list[dict[str, Any]], bankroll: float) -> dict[str, A
         "pnl": pnl, "turnover": turnover, "roi": round(pnl / turnover, 4) if turnover else None,
         "n_decided": len(decided), "hits": hits, "hit_rate": round(hits / len(decided), 4) if decided else None,
         "equity": round(bankroll + pnl, 2), "by_market": by_market, "curve": curve,
-        "res_counts": res_counts,
+        "res_counts": res_counts, "max_drawdown": round(max_drawdown, 2),
+        "max_drawdown_pct": round(max_drawdown_pct, 6),
     }
 
 
@@ -411,6 +438,33 @@ def _same_period_comparison(
     }
 
 
+def recompute_handicap_world_stats(ledger: dict[str, Any]) -> dict[str, Any]:
+    """Refresh only the isolated Handicap World aggregate."""
+    handicap_world = ensure_handicap_world(ledger)
+    bets = handicap_world["bets"]
+    by_strategy = {
+        strategy: _portfolio_stats(
+            [bet for bet in bets if bet.get("strategy") == strategy],
+            HANDICAP_WORLD_STARTING_BANKROLL,
+        )
+        for strategy in ("conservative_kelly", "fixed_stake")
+    }
+    handicap_world["stats"] = {
+        **_portfolio_stats(bets, HANDICAP_WORLD_STARTING_BANKROLL),
+        "starting_bankroll": HANDICAP_WORLD_STARTING_BANKROLL,
+        "fixed_stake": HANDICAP_WORLD_FIXED_STAKE,
+        "portfolio": HANDICAP_WORLD_PORTFOLIO,
+        "simulation_only": True,
+        "signals": len(handicap_world["signals"]),
+        "by_strategy": by_strategy,
+        "kelly_skipped": sum(
+            signal.get("kelly", {}).get("status") == "SKIPPED"
+            for signal in handicap_world["signals"]
+        ),
+    }
+    return handicap_world["stats"]
+
+
 def recompute_stats(ledger: dict[str, Any], config: Settings) -> dict[str, Any]:
     bets = ledger.setdefault("bets", [])
     shadow_bets = ledger.setdefault("shadow_bets", [])
@@ -445,6 +499,7 @@ def recompute_stats(ledger: dict[str, Any], config: Settings) -> dict[str, Any]:
         "excluded_from_official": True,
         "comparison": _same_period_comparison(bets, shadow_bets, config.bankroll),
     }
+    recompute_handicap_world_stats(ledger)
     return stats
 
 

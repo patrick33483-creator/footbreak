@@ -135,7 +135,7 @@ function applyData(raw) {
     });
   }
   DATA = raw;
-  LED = raw.ledger || { bets: [], shadow_bets: [], stats: {}, shadow_stats: {}, log: [] };
+  LED = raw.ledger || { bets: [], shadow_bets: [], handicap_world: {}, stats: {}, shadow_stats: {}, log: [] };
   LIST = displayableMatches(raw.matches).slice()
     .sort((a, b) => kt(a.kickoff_hkt) - kt(b.kickoff_hkt));
   $('#genAt').textContent = hkStamp(raw.generated_at) + ' HKT';
@@ -215,6 +215,7 @@ function render() {
   $('#viewPred').hidden = VIEW !== 'pred';
   $('#viewLedger').hidden = VIEW !== 'ledger';
   $('#viewShadow').hidden = VIEW !== 'shadow';
+  $('#viewHandicapWorld').hidden = VIEW !== 'handicapWorld';
   $('#viewChal').hidden = VIEW !== 'chal';
   $('#viewHealth').hidden = VIEW !== 'health';
   $('#viewCondition').hidden = VIEW !== 'condition';
@@ -233,6 +234,8 @@ function render() {
     renderHistory();
   } else if (VIEW === 'shadow') {
     renderShadow();
+  } else if (VIEW === 'handicapWorld') {
+    renderHandicapWorld();
   } else if (VIEW === 'chal') {
     renderChallenger();
     if (CHAL.state === 'idle') void loadChallenger({});
@@ -1140,6 +1143,168 @@ function renderShadow() {
   V.innerHTML = h;
   bindSettlementButton('settleShadowNow', renderShadow);
   bindBetRows('#viewShadow');
+}
+
+function handicapWorldResultCounts(s) {
+  const counts = s.res_counts || {};
+  return [
+    ['W', counts.Won || 0],
+    ['HW', counts['Half Won'] || 0],
+    ['P', counts.Refunded || 0],
+    ['HL', counts['Half Lost'] || 0],
+    ['L', counts.Lost || 0],
+  ].map(([label, value]) => `<span><b>${label}</b> ${value}</span>`).join('');
+}
+
+function handicapWorldBetRow(b) {
+  const terms = b.terms || {};
+  const strategy = b.strategy === 'conservative_kelly' ? '保守凱利' : '固定注碼';
+  const probability = b.model_prob == null
+    ? `<span class="dim">—</span>`
+    : `${pc(b.model_prob, 2)}<div class="cell-sub">${esc(b.probability_source || '')}</div>`;
+  const stakePolicy = b.strategy === 'conservative_kelly'
+    ? `<div>${esc(terms.formula || '')}</div><div class="cell-sub">入場權益 ${money(terms.kelly_equity_at_entry)} · full ${pc(terms.kelly_full, 3)} · 採用 ${pc(terms.kelly_used, 3)}</div>`
+    : `<div>固定 HK$1,000</div><div class="cell-sub">起始本金 2%，非滾存餘額</div>`;
+  return `<tr class="brow ${String(b.status || '').toLowerCase()}">
+    <td data-label="策略"><b>${strategy}</b></td>
+    <td data-label="開賽" class="mono nowrap">${hkDay(b.kickoff)} ${hkClock(b.kickoff)}</td>
+    <td data-label="賽事">${esc(b.home)} <span class="dim">v</span> ${esc(b.away)}
+      <div class="cell-sub">${esc(b.league || '')}</div></td>
+    <td data-label="選擇"><b>${esc(b.selected_team || '')} ${f2(b.selected_line)}</b>
+      <div class="cell-sub">皇冠 HDC · T-5 ${f2(b.odds)}</div></td>
+    <td data-label="注碼" class="stk">${money(b.stake)}<div class="cell-sub">${stakePolicy}</div></td>
+    <td data-label="p / 來源">${probability}</td>
+    <td data-label="狀態"><span class="stpill ${String(b.status || '').toLowerCase()}">${ST_LBL[b.status] || b.status || '—'}</span></td>
+    <td data-label="結算">${b.result ? `<span class="respill ${RES_CLS[b.result] || ''}">${RES_LBL[b.result] || b.result}</span>` : '<span class="dim">—</span>'}
+      <div class="cell-sub">${scoreCell(b)}</div></td>
+    <td data-label="盈虧" class="${(b.pnl || 0) > 0 ? 'ev-p' : (b.pnl || 0) < 0 ? 'ev-n' : 'dim'}">${b.pnl == null ? '—' : money(b.pnl)}</td>
+  </tr>`;
+}
+
+function handicapWorldStrategyComparison(s) {
+  const strategies = [
+    ['conservative_kelly', '保守凱利', '只限獨立、賽前 T-5 參考 p'],
+    ['fixed_stake', '固定注碼', '每筆 HK$1,000（起始本金 2%）'],
+  ];
+  const rows = strategies.map(([key, label, note]) => {
+    const row = (s.by_strategy || {})[key] || {};
+    const results = handicapWorldResultCounts(row);
+    return `<article class="world-strategy-card">
+      <div><b>${label}</b><span>${note}</span></div>
+      <div class="world-strategy-metrics">
+        <span>結餘 <strong>${money(row.equity == null ? 50000 : row.equity)}</strong></span>
+        <span>P&L <strong class="${(row.pnl || 0) >= 0 ? 'good' : 'bad'}">${row.n_settled ? money(row.pnl) : '—'}</strong></span>
+        <span>ROI <strong>${row.roi == null ? '—' : pc(row.roi, 2)}</strong></span>
+        <span>結算／待決 <strong>${row.n_settled || 0} / ${row.n_pending || 0}</strong></span>
+        <span>最大回撤 <strong>${row.max_drawdown == null ? '—' : `${money(row.max_drawdown)} (${pc(row.max_drawdown_pct, 2)})`}</strong></span>
+      </div>
+      <div class="world-strategy-results">${results}</div>
+    </article>`;
+  }).join('');
+  return `<section class="card world-strategy-comparison">
+    <h2 class="card-h">策略比較 <span class="sub">兩個 HK$50,000 虛擬本金獨立計算；不互相借用盈虧</span></h2>
+    <div class="world-strategy-grid">${rows}</div>
+  </section>`;
+}
+
+function renderHandicapWorld() {
+  const world = LED.handicap_world || {};
+  const s = world.stats || {};
+  const bets = world.bets || [];
+  const signals = world.signals || [];
+  const audits = world.audit || [];
+  const starting = Number(world.starting_bankroll || s.starting_bankroll || 50000);
+  const fixedStake = Number(world.fixed_stake || s.fixed_stake || 1000);
+  const kelly = world.kelly_policy || {};
+  const skipped = signals.filter((signal) => (signal.kelly || {}).status === 'SKIPPED');
+  const V = $('#viewHandicapWorld');
+  const K = [
+    ['每策略起始本金', money(starting), ''],
+    ['共用來源訊號', signals.length, ''],
+    ['策略腿', bets.length, ''],
+    ['合併已結算 / 待決', `${s.n_settled || 0} / ${s.n_pending || 0}`, ''],
+    ['Kelly 跳過', skipped.length, skipped.length ? 'amber' : ''],
+    ['固定每注', money(fixedStake), ''],
+  ];
+  let h = `<div class="ledger-head handicap-world">
+    <div class="ledger-title-row">
+      <h1 class="pg-h">讓球世界 <span class="sub">皇冠 HDC 三段完全一致 · 完全隔離的模擬策略組合</span></h1>
+      <button class="settle-btn" id="settleHandicapWorldNow" type="button" ${SETTLING || !API_BASE ? 'disabled' : ''}>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5M6.1 9a7 7 0 0 1 11.2-2.3L20 9M4 15l2.7 2.3A7 7 0 0 0 17.9 15"/></svg>
+        <span>${SETTLING ? '結算中…' : '立即結算'}</span>
+      </button>
+    </div>
+    <p class="settle-status ${SETTLE_BAD ? 'bad' : SETTLE_MESSAGE ? 'good' : ''}" aria-live="polite">${esc(SETTLE_MESSAGE || '只會結算已完場、已核對賽果的讓球世界模擬注。')}</p>
+    <div class="shadow-note handicap-world-note" role="note">
+      <strong>模擬專區</strong>
+      <span>不影響正式倉、影子倉、預測、學習、Telegram 或任何真實投注。只接受皇冠 HDC：首預、T-30、T-5 各恰好一筆、同一實際選隊／方向及完全相同數值讓球線，且選邊 T-5 賠率 ≥1.70；任何缺失、重複、身份／盤口不符、非賽前或無效賠率都不建立訊號。</span>
+    </div>
+    <div class="kpis wide">${K.map(([l, v, c]) => `<div class="kpi"><span class="kpi-lbl">${l}</span><span class="kpi-val ${c}">${v}</span></div>`).join('')}</div>
+  </div>`;
+  h += `<section class="card world-policy">
+    <h2 class="card-h">兩條策略腿 <span class="sub">同一 T-5 訊號、同一選邊賠率、獨立結算與本金</span></h2>
+    <div class="world-policy-grid">
+      <article><b>保守凱利</b><p>只用已持久化、賽前 T-5 的獨立參考 p；不會使用皇冠自身去水機率作同一皇冠價格的 p。</p><code>${esc(kelly.formula || 'max(0,(p*odds-1)/(odds-1))/3')}</code><small>採用 ${pc(kelly.fraction == null ? 1 / 3 : kelly.fraction, 2)} full Kelly；每注上限 ${pc(kelly.cap_pct_of_current_equity == null ? .04 : kelly.cap_pct_of_current_equity, 0)} 當前模擬權益；負值一律 $0。</small></article>
+      <article><b>固定注碼</b><p>每筆 HK$${fixedStake.toLocaleString('en-US')}，即 HK$50,000 起始本金的 2%。</p><code>stake = HK$${fixedStake.toLocaleString('en-US')}</code><small>永不改為滾存餘額的 2%；即使 Kelly 沒有合格 p，固定腿仍會保留同一訊號。</small></article>
+    </div>
+  </section>`;
+  h += `<section class="card world-results"><h2 class="card-h">結算分布 <span class="sub">亞洲盤四分一結果以既有 canonical settlement 結算</span></h2><div class="world-result-counts">${handicapWorldResultCounts(s)}</div></section>`;
+  h += handicapWorldStrategyComparison(s);
+  if (skipped.length) {
+    h += `<section class="card world-audit"><h2 class="card-h">Kelly 跳過紀錄 <span class="sub">固定策略已照常保留</span></h2><ul>${skipped.map((signal) => `<li><b>${esc(signal.home)} v ${esc(signal.away)}</b> · ${esc((signal.kelly || {}).reason || 'independent_t5_probability_unavailable')}</li>`).join('')}</ul></section>`;
+  }
+  if (!bets.length) {
+    h += `<div class="card"><div class="empty2">暫時未有合資格訊號。系統不會回補歷史，只會在新持久化的賽前 T-5 建立策略腿。</div></div>`;
+  } else {
+    h += `<section class="card"><h2 class="card-h">策略注單 <span class="sub">${bets.length} 腿 · ${signals.length} 個共用來源訊號</span></h2>
+      <div class="tbl-wrap"><table class="t bets world-bets"><tr><th>策略</th><th>開賽</th><th>賽事</th><th>選擇</th><th>注碼／政策</th><th>p / 來源</th><th>狀態</th><th>結算</th><th>盈虧</th></tr>
+      ${bets.map(handicapWorldBetRow).join('')}</table></div></section>`;
+  }
+  if (audits.length) {
+    const recent = audits.slice(-12).reverse();
+    h += `<section class="card world-audit"><h2 class="card-h">資格審計 <span class="sub">最近 ${recent.length} 筆</span></h2><ul>${recent.map((row) => `<li><b>${esc(row.status || '')}</b> · ${esc(row.home)} v ${esc(row.away)} · ${esc(row.reason || '')}</li>`).join('')}</ul></section>`;
+  }
+  V.innerHTML = h;
+  bindHandicapWorldSettlementButton();
+}
+
+function bindHandicapWorldSettlementButton() {
+  const b = document.getElementById('settleHandicapWorldNow');
+  if (!b) return;
+  b.onclick = async () => {
+    if (SETTLING || !API_BASE) return;
+    if (!window.confirm('只會核對讓球世界已完場模擬注；不會結算或改動正式倉、影子倉、預測或學習。確認？')) return;
+    SETTLING = true;
+    SETTLE_BAD = false;
+    SETTLE_MESSAGE = '正在核對讓球世界賽果…';
+    renderHandicapWorld();
+    try {
+      const r = await fetch(`${API_BASE}/settle`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Crown-Action': 'settle-handicap-world',
+        },
+        body: JSON.stringify({ confirm: 'handicap-world-only' }),
+      });
+      const result = await r.json().catch(() => ({}));
+      if (!r.ok || !result.ok) throw new Error(result.error || `HTTP ${r.status}`);
+      applyData(result.data);
+      const settled = result.handicap_world_settled_count || 0;
+      const voided = result.handicap_world_voided_count || 0;
+      const pending = result.handicap_world_pending_count || 0;
+      SETTLE_BAD = !result.persisted;
+      SETTLE_MESSAGE = settled || voided
+        ? `讓球世界已更新：新結算 ${settled} 腿、撤回 ${voided} 腿、待決 ${pending} 腿。`
+        : `讓球世界檢查完成：暫無新結算；待決 ${pending} 腿。`;
+    } catch (e) {
+      SETTLE_BAD = true;
+      SETTLE_MESSAGE = `讓球世界結算失敗：${e.message}`;
+    } finally {
+      SETTLING = false;
+      renderHandicapWorld();
+    }
+  };
 }
 
 function comparisonValue(value, formatter, cls = '') {

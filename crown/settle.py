@@ -14,8 +14,9 @@ from .common import (
     write_json_atomic,
 )
 from .config import Settings
+from .handicap_world import PORTFOLIO as HANDICAP_WORLD_PORTFOLIO, ensure_state as ensure_handicap_world
 from .hkjc import fetch_official_match_statuses, fetch_official_results
-from .ledger import recompute_stats
+from .ledger import recompute_handicap_world_stats, recompute_stats
 from .lines import pnl, settle_handicap, settle_total
 from .matching import Event, canonical_league_key, canonical_team_key, match_event
 from .pinnapi import PinnapiClient
@@ -64,7 +65,11 @@ def _settle(bet: dict[str, Any], score: dict[str, Any], source: str) -> bool:
     bet.update({"status": "SETTLED", "result": result, "pnl": pnl(result, float(bet["stake"]), float(bet["odds"])),
                 "score": result_score, "settled_at": iso_hkt(),
                 "settlement_source": source})
-    action = "影子結算" if bet.get("portfolio") == "shadow" else "模擬結算"
+    action = (
+        "讓球世界結算" if bet.get("portfolio") == HANDICAP_WORLD_PORTFOLIO
+        else "影子結算" if bet.get("portfolio") == "shadow"
+        else "模擬結算"
+    )
     bet.setdefault("history", []).append({"ts": iso_hkt(), "stage": "結算", "action": action,
                                            "result": result, "source": source})
     return True
@@ -220,26 +225,38 @@ def _verified_titan_detail_score(
     return {"home_score": home_score, "away_score": away_score}
 
 
-def settle_due(config: Settings) -> dict[str, Any]:
+def settle_due(config: Settings, *, handicap_world_only: bool = False) -> dict[str, Any]:
+    """Settle due simulation rows, optionally the isolated Handicap World only."""
     ledger = load_ledger(config)
     now = datetime.now(HKT)
     official_bets = ledger.setdefault("bets", [])
     shadow_bets = ledger.setdefault("shadow_bets", [])
-    official_due = [
+    handicap_world = ensure_handicap_world(ledger)
+    world_bets = handicap_world["bets"]
+    official_due = [] if handicap_world_only else [
         bet for bet in official_bets
         if bet.get("status") == "PENDING"
         and parse_time(bet.get("kickoff"))
         and (now - parse_time(bet["kickoff"])).total_seconds() >= SETTLE_AFTER_SECONDS
     ]
-    shadow_due = [
+    shadow_due = [] if handicap_world_only else [
         bet for bet in shadow_bets
         if bet.get("status") == "PENDING"
         and parse_time(bet.get("kickoff"))
         and (now - parse_time(bet["kickoff"])).total_seconds() >= SETTLE_AFTER_SECONDS
     ]
-    due = official_due + shadow_due
+    world_due = [
+        bet for bet in world_bets
+        if bet.get("status") == "PENDING"
+        and parse_time(bet.get("kickoff"))
+        and (now - parse_time(bet["kickoff"])).total_seconds() >= SETTLE_AFTER_SECONDS
+    ]
+    due = official_due + shadow_due + world_due
     if not due:
-        recompute_stats(ledger, config)
+        if handicap_world_only:
+            recompute_handicap_world_stats(ledger)
+        else:
+            recompute_stats(ledger, config)
         return {
             "ok": True,
             "settled": 0,
@@ -248,6 +265,9 @@ def settle_due(config: Settings) -> dict[str, Any]:
             "shadow_settled": 0,
             "shadow_voided": 0,
             "shadow_pending": sum(b.get("status") == "PENDING" for b in shadow_bets),
+            "handicap_world_settled": 0,
+            "handicap_world_voided": 0,
+            "handicap_world_pending": sum(b.get("status") == "PENDING" for b in world_bets),
         }
     cache: dict[str, Any] = {}
     standard_due = [bet for bet in due if bet.get("code") != "CHL"]
@@ -306,10 +326,15 @@ def settle_due(config: Settings) -> dict[str, Any]:
         "voided": 0,
         "shadow_settled": 0,
         "shadow_voided": 0,
+        "handicap_world_settled": 0,
+        "handicap_world_voided": 0,
     }
 
     def count(outcome: str, bet: dict[str, Any]) -> None:
-        prefix = "shadow_" if bet.get("portfolio") == "shadow" else ""
+        prefix = (
+            "handicap_world_" if bet.get("portfolio") == HANDICAP_WORLD_PORTFOLIO
+            else "shadow_" if bet.get("portfolio") == "shadow" else ""
+        )
         counters[f"{prefix}{outcome}"] += 1
 
     for bet in due:
@@ -377,7 +402,10 @@ def settle_due(config: Settings) -> dict[str, Any]:
             ):
                 count("settled", bet)
                 continue
-    recompute_stats(ledger, config)
+    if handicap_world_only:
+        recompute_handicap_world_stats(ledger)
+    else:
+        recompute_stats(ledger, config)
     save_ledger(config, ledger)
     return {
         "ok": True,
@@ -387,4 +415,7 @@ def settle_due(config: Settings) -> dict[str, Any]:
         "shadow_settled": counters["shadow_settled"],
         "shadow_voided": counters["shadow_voided"],
         "shadow_pending": sum(b.get("status") == "PENDING" for b in shadow_bets),
+        "handicap_world_settled": counters["handicap_world_settled"],
+        "handicap_world_voided": counters["handicap_world_voided"],
+        "handicap_world_pending": sum(b.get("status") == "PENDING" for b in world_bets),
     }

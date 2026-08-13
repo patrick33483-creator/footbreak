@@ -294,6 +294,24 @@ def _candidates(crown_prices: list[dict[str, Any]], pinnapi_prices: list[dict[st
             reasons.append(f"no_exact_pinnapi_{market}_{line:g}")
             continue
         match_keys = ("H", "A") if market == "HDC" else ("H", "L")
+        # The independent probability is made from both exact reference
+        # selections.  Retain the newer source timestamp: this is the point
+        # at which the complete probability was knowable, not the Crown
+        # quote timestamp used as the bet price.
+        reference_rows = [
+            next((
+                price for price in pinnapi_prices
+                if _line_key(price["market"], price.get("line")) == _line_key(market, line)
+                and price["selection"] == key
+            ), None)
+            for key in match_keys
+        ]
+        try:
+            reference_observed_at = max(float(row["source_at"]) for row in reference_rows if row is not None)
+            if len(reference_rows) != len(match_keys) or not math.isfinite(reference_observed_at):
+                reference_observed_at = None
+        except (KeyError, TypeError, ValueError):
+            reference_observed_at = None
         implied = {key: 1 / float(reference[key]) for key in match_keys}
         den = sum(implied.values())
         probability = implied[side] / den
@@ -308,6 +326,9 @@ def _candidates(crown_prices: list[dict[str, Any]], pinnapi_prices: list[dict[st
             "label": f"{market} {side} {line:g}", "odds": round(odds, 3), "prob": round(probability, 5),
             "ev": round(ev, 5), "kelly_raw": round(kelly, 5), "kelly_used": round(kelly / 3, 5),
             "conviction": round(conviction, 1), "reference": "pinnapi_exact_full_match",
+            "provider": "Crown", "source": "titan007-crown-id-3", "bookmaker": "Crown",
+            "observed_at": crown.get("source_at"),
+            "probability_observed_at": reference_observed_at,
         })
     return sorted(candidates, key=lambda row: (row["ev"], row["conviction"]), reverse=True), sorted(set(reasons))
 

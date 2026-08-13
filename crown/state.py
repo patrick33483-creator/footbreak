@@ -34,7 +34,7 @@ def paths(config: Settings) -> dict[str, Path]:
 def default_ledger(bankroll: float) -> dict[str, Any]:
     return {
         "bankroll": bankroll, "bets": [], "shadow_bets": [], "watch": {},
-        "log": [], "stats": {}, "shadow_stats": {},
+        "log": [], "stats": {}, "shadow_stats": {}, "handicap_world": {},
     }
 
 
@@ -47,6 +47,7 @@ def load_ledger(config: Settings) -> dict[str, Any]:
     data.setdefault("log", [])
     data.setdefault("stats", {})
     data.setdefault("shadow_stats", {})
+    data.setdefault("handicap_world", {})
     return data
 
 
