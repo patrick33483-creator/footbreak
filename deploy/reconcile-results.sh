@@ -8,7 +8,6 @@ set -u
 APP_DIR="${APP_DIR:-/opt/footbreak}"
 FOOTBREAK_ENV_FILE="${FOOTBREAK_ENV_FILE:-/etc/footbreak.env}"
 CROWN_ENV_FILE="${CROWN_ENV_FILE:-/etc/footbreak-crown.env}"
-failed=0
 
 load_runtime_environment() {
   # Keep the runner's established environment-file precedence.  Nothing from
@@ -33,6 +32,10 @@ crown_is_enabled() {
 }
 
 load_runtime_environment
+# Initialise internal state only after sourcing operator configuration. A
+# generic variable such as "failed" may legitimately exist in an environment
+# file and must never decide this service's final exit status.
+reconciliation_failed=0
 
 run_reconciler() {
   local name="$1"
@@ -49,7 +52,7 @@ run_reconciler() {
     return
   fi
   echo "$name reconciliation failed rc=$rc" >&2
-  failed=1
+  reconciliation_failed=1
 }
 
 run_reconciler "Footbreak" "$APP_DIR/deploy/run.sh" settle
@@ -75,7 +78,7 @@ if [ -s "$LEARNING_DB" ]; then
     echo "learning-store reconciliation OK"
   else
     echo "learning-store reconciliation failed; raw immutable rows remain intact" >&2
-    failed=1
+    reconciliation_failed=1
   fi
 fi
 
@@ -84,7 +87,7 @@ echo "=== $(TZ=Asia/Hong_Kong date '+%F %T') prediction-history integrity audit 
 integrity_rc=$?
 if [ "$integrity_rc" -ne 0 ]; then
   echo "Prediction-history integrity audit failed rc=$integrity_rc" >&2
-  failed=1
+  reconciliation_failed=1
 else
   echo "Prediction-history integrity audit OK"
 fi
@@ -164,7 +167,7 @@ if PYTHONPATH="$APP_DIR" "$APP_DIR/.venv/bin/python3" -m analysis.health_alert \
   echo "資料健康告警檢查 OK"
 else
   echo "資料健康本地稽核失敗；保留所有預測與結算資料，下個週期會重試" >&2
-  failed=1
+  reconciliation_failed=1
 fi
 
-exit "$failed"
+exit "$reconciliation_failed"

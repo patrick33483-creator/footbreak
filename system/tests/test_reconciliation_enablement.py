@@ -40,10 +40,13 @@ class ReconciliationEnablementTests(unittest.TestCase):
         self.crown_env = self.directory / "crown.env"
         self.footbreak_env.write_text("", encoding="utf-8")
 
-    def run_reconciler(self, crown_enabled: str) -> subprocess.CompletedProcess[str]:
+    def run_reconciler(
+        self, crown_enabled: str, *, extra_footbreak_env: str = ""
+    ) -> subprocess.CompletedProcess[str]:
         self.crown_env.write_text(
             f"CROWN_ENABLED={crown_enabled}\n", encoding="utf-8"
         )
+        self.footbreak_env.write_text(extra_footbreak_env, encoding="utf-8")
         called = self.directory / "crown-called"
         environment = {
             **os.environ,
@@ -75,6 +78,11 @@ class ReconciliationEnablementTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertTrue(result.crown_called)
         self.assertIn("Crown reconciliation failed rc=3", result.stderr)
+
+    def test_environment_failed_variable_cannot_override_internal_exit_state(self) -> None:
+        result = self.run_reconciler("0", extra_footbreak_env="failed=1\n")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(result.crown_called)
 
     def test_deploy_and_health_follow_the_same_validation_gate(self) -> None:
         update = (ROOT / "deploy" / "update.sh").read_text(encoding="utf-8")
