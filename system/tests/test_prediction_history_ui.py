@@ -113,6 +113,23 @@ class PredictionHistoryUiTests(unittest.TestCase):
                 r"\.consensus-ranking-grid \{ grid-template-columns: 1fr; \}",
             )
 
+    def test_crown_dashboard_renders_stage_completeness_monitor(self) -> None:
+        root = ROOT / "crown" / "dashboard"
+        app = (root / "app.js").read_text(encoding="utf-8")
+        css = (root / "styles.css").read_text(encoding="utf-8")
+
+        self.assertIn("function historyStageCompletenessCard(raw)", app)
+        self.assertIn("DATA.stage_completeness", app)
+        self.assertIn("階段完整率監察", app)
+        self.assertIn("未到期唔扣完整率", app)
+        self.assertIn("DATA_MISSING 會當未完成", app)
+        self.assertIn('data-stage-completeness="${stage}"', app)
+        self.assertIn(".stage-completeness-grid", css)
+        self.assertIn("grid-template-columns: repeat(3, minmax(0, 1fr))", css)
+        self.assertIn(".stage-completeness-health.bad", css)
+        self.assertIn(".stage-completeness-item.bad .stage-completeness-rate", css)
+        self.assertIn(".stage-completeness-grid { grid-template-columns: 1fr; }", css)
+
 
 if __name__ == "__main__":
     unittest.main()

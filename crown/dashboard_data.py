@@ -3,16 +3,112 @@ from __future__ import annotations
 
 import argparse
 import os
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from .common import iso_hkt, parse_time, read_json, write_json_atomic
+from .common import HKT, iso_hkt, parse_time, read_json, write_json_atomic
 from .config import Settings, settings
 from .ledger import recompute_stats
 from .period import in_current_period
 from .prediction_history import normalize_history, project_watch_rows
 from .ledger import PREDICTION_ERA
 from .state import load_ledger, load_predictions, paths
+
+
+def stage_completeness(
+    matches: list[dict[str, Any]],
+    ledger: dict[str, Any],
+    *,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Summarise stage coverage once per Crown fixture.
+
+    T-30 and T-5 become overdue only after their write windows have closed.
+    This prevents a fixture that has not reached a stage deadline from
+    depressing the completeness rate.  DATA_MISSING attempts remain incomplete
+    because the scheduler deliberately keeps those stages eligible for retry.
+    """
+    checked_at = now or datetime.now(HKT)
+    if checked_at.tzinfo is None:
+        checked_at = checked_at.replace(tzinfo=HKT)
+    else:
+        checked_at = checked_at.astimezone(HKT)
+
+    watches = ledger.get("watch") if isinstance(ledger.get("watch"), dict) else {}
+    unique_matches: dict[str, dict[str, Any]] = {}
+    for index, match in enumerate(matches):
+        if not isinstance(match, dict):
+            continue
+        match_id = str(match.get("match_id") or "").strip()
+        key = match_id or "|".join(
+            str(match.get(field) or "").strip()
+            for field in ("kickoff_hkt", "home", "away", "league")
+        )
+        if not key:
+            key = f"unidentified:{index}"
+        unique_matches.setdefault(key, match)
+
+    stages = {
+        stage: {
+            "recorded": 0,
+            "due": 0,
+            "missing_due": 0,
+            "not_due": 0,
+            "completeness": None,
+        }
+        for stage in ("首預", "T-30", "T-5")
+    }
+    incomplete_fixtures: set[str] = set()
+    for fixture_key, match in unique_matches.items():
+        match_id = str(match.get("match_id") or "").strip()
+        watch = watches.get(match_id) if match_id else None
+        watch = watch if isinstance(watch, dict) else {}
+        valid_stages = {
+            str(row.get("stage"))
+            for row in (watch.get("stages") or [])
+            if (
+                isinstance(row, dict)
+                and row.get("stage") in stages
+                and row.get("status") != "DATA_MISSING"
+            )
+        }
+        kickoff = parse_time(match.get("kickoff_hkt") or match.get("kickoff"))
+        minutes_to_kickoff = (
+            (kickoff - checked_at).total_seconds() / 60
+            if kickoff is not None else None
+        )
+        due = {
+            "首預": True,
+            # The T-30 write window is 40 to 20 minutes before kickoff.
+            "T-30": minutes_to_kickoff is None or minutes_to_kickoff < 20,
+            # The T-5 write window remains open until kickoff.
+            "T-5": minutes_to_kickoff is None or minutes_to_kickoff <= 0,
+        }
+        for stage, metric in stages.items():
+            if stage in valid_stages:
+                metric["recorded"] += 1
+                metric["due"] += 1
+            elif due[stage]:
+                metric["due"] += 1
+                metric["missing_due"] += 1
+                incomplete_fixtures.add(fixture_key)
+            else:
+                metric["not_due"] += 1
+
+    for metric in stages.values():
+        metric["completeness"] = (
+            metric["recorded"] / metric["due"]
+            if metric["due"] else None
+        )
+    return {
+        "sample_basis": "unique_crown_fixtures_in_current_period",
+        "checked_at": checked_at.isoformat(),
+        "fixtures_total": len(unique_matches),
+        "fixtures_with_overdue_stage": len(incomplete_fixtures),
+        "healthy": not incomplete_fixtures,
+        "stages": stages,
+    }
 
 
 def build(config: Settings) -> dict[str, Any]:
@@ -69,6 +165,7 @@ def build(config: Settings) -> dict[str, Any]:
                           "minimum_ev": config.min_edge, "minimum_odds": 1.01},
         "matches": matches, "ledger": ledger,
         "prediction_history": prediction_history,
+        "stage_completeness": stage_completeness(matches, ledger),
     }
 
 

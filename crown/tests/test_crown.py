@@ -1286,6 +1286,65 @@ class CrownSafetyTests(unittest.TestCase):
             )
             self.assertEqual(payload["prediction_history"]["stats"]["predictions"], 1)
 
+    def test_dashboard_stage_completeness_counts_unique_fixtures_and_due_stages(self) -> None:
+        from crown.common import HKT
+        from crown.dashboard_data import stage_completeness
+
+        now = datetime(2026, 8, 13, 22, 0, tzinfo=HKT)
+        matches = [
+            {"match_id": "future", "kickoff_hkt": "2026-08-13T23:00:00+08:00"},
+            {"match_id": "t30-due", "kickoff_hkt": "2026-08-13T22:15:00+08:00"},
+            {"match_id": "started", "kickoff_hkt": "2026-08-13T21:55:00+08:00"},
+            # A duplicate market row must not inflate the fixture denominator.
+            {"match_id": "started", "kickoff_hkt": "2026-08-13T21:55:00+08:00"},
+        ]
+        ledger = {"watch": {
+            "future": {"stages": [{"stage": "首預", "status": "OK"}]},
+            "t30-due": {"stages": [
+                {"stage": "首預", "status": "OK"},
+                {"stage": "T-30", "status": "DATA_MISSING"},
+            ]},
+            "started": {"stages": [
+                {"stage": "首預", "status": "OK"},
+                {"stage": "T-30", "status": "OK"},
+                {"stage": "T-5", "status": "OK"},
+            ]},
+        }}
+
+        summary = stage_completeness(matches, ledger, now=now)
+
+        self.assertEqual(summary["fixtures_total"], 3)
+        self.assertEqual(summary["fixtures_with_overdue_stage"], 1)
+        self.assertFalse(summary["healthy"])
+        self.assertEqual(
+            summary["stages"]["首預"],
+            {"recorded": 3, "due": 3, "missing_due": 0, "not_due": 0, "completeness": 1.0},
+        )
+        self.assertEqual(
+            summary["stages"]["T-30"],
+            {"recorded": 1, "due": 2, "missing_due": 1, "not_due": 1, "completeness": 0.5},
+        )
+        self.assertEqual(
+            summary["stages"]["T-5"],
+            {"recorded": 1, "due": 1, "missing_due": 0, "not_due": 2, "completeness": 1.0},
+        )
+
+    def test_dashboard_stage_completeness_fails_visible_for_missing_first_look(self) -> None:
+        from crown.common import HKT
+        from crown.dashboard_data import stage_completeness
+
+        summary = stage_completeness(
+            [{"match_id": "future", "kickoff_hkt": "2026-08-14T01:00:00+08:00"}],
+            {"watch": {}},
+            now=datetime(2026, 8, 13, 22, 0, tzinfo=HKT),
+        )
+
+        self.assertEqual(summary["stages"]["首預"]["missing_due"], 1)
+        self.assertEqual(summary["stages"]["T-30"]["not_due"], 1)
+        self.assertEqual(summary["stages"]["T-5"]["not_due"], 1)
+        self.assertEqual(summary["fixtures_with_overdue_stage"], 1)
+        self.assertFalse(summary["healthy"])
+
     def test_dashboard_history_row_wins_over_duplicate_ledger_projection(self) -> None:
         from crown.prediction_history import project_watch_rows
 

@@ -1475,6 +1475,49 @@ function orderHistoryRows(rows) {
       .map((item) => item.row));
 }
 
+function historyStageCompletenessCard(raw) {
+  const summary = raw && typeof raw === 'object' ? raw : {};
+  const stages = summary.stages && typeof summary.stages === 'object' ? summary.stages : {};
+  const fixtureTotal = Number(summary.fixtures_total || 0);
+  const overdueFixtures = Number(summary.fixtures_with_overdue_stage || 0);
+  const cards = ['首預', 'T-30', 'T-5'].map((stage) => {
+    const item = stages[stage] && typeof stages[stage] === 'object' ? stages[stage] : {};
+    const recorded = Number(item.recorded || 0);
+    const due = Number(item.due || 0);
+    const missing = Number(item.missing_due || 0);
+    const notDue = Number(item.not_due || 0);
+    const rate = Number(item.completeness);
+    const hasRate = item.completeness != null && Number.isFinite(rate);
+    const state = missing > 0 ? 'bad' : hasRate ? 'good' : 'wait';
+    const value = hasRate ? pc(rate, 1) : '未到期';
+    return `<article class="stage-completeness-item ${state}" data-stage-completeness="${stage}">
+      <div class="stage-completeness-head">
+        <h3>${stage}</h3>
+        <span class="stage-completeness-status">${missing > 0 ? `缺 ${missing}` : hasRate ? '完整' : '等待'}</span>
+      </div>
+      <strong class="stage-completeness-rate">${value}</strong>
+      <div class="stage-completeness-meta">
+        <span>已記錄 <b>${recorded}</b></span>
+        <span>應完成 <b>${due}</b></span>
+        <span>未到期 <b>${notDue}</b></span>
+      </div>
+    </article>`;
+  }).join('');
+  const healthClass = overdueFixtures > 0 ? 'bad' : 'good';
+  const healthText = overdueFixtures > 0 ? `${overdueFixtures} 場有逾期缺失` : '冇逾期缺失';
+  return `<section class="card stage-completeness" aria-labelledby="stageCompletenessTitle">
+    <div class="stage-completeness-title">
+      <div>
+        <h2 id="stageCompletenessTitle">階段完整率監察</h2>
+        <p>${fixtureTotal} 場獨立皇冠賽事 · 未到期唔扣完整率</p>
+      </div>
+      <span class="stage-completeness-health ${healthClass}">${healthText}</span>
+    </div>
+    <div class="stage-completeness-grid">${cards}</div>
+    <p class="stage-completeness-note">首預對已進入賽程嘅場次即時檢查；T-30 喺寫入窗口結束後、T-5 喺開賽後仍未記錄先列作逾期。DATA_MISSING 會當未完成並等待重試。</p>
+  </section>`;
+}
+
 function renderHistory() {
   const V = $('#viewHistory');
   const payload = DATA.prediction_history || { rows: [], stats: {} };
@@ -1550,6 +1593,7 @@ function renderHistory() {
     <div class="kpis wide">${K.map(([l, v, c]) =>
       `<div class="kpi"><span class="kpi-lbl">${l}</span><span class="kpi-val ${c}">${v}</span></div>`).join('')}</div>
   </div>
+  ${historyStageCompletenessCard(DATA.stage_completeness)}
   <div class="card history-note">
     <div class="history-summary-label">合併總覽</div>
     <div class="history-stage-summary">${stageSummary}</div>
