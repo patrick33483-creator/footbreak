@@ -147,6 +147,13 @@ class HistoricalOddsRecoveryWorkflowTests(unittest.TestCase):
         )
         self.assertIn(expected, workflow)
 
+    def test_regeneration_uploads_aggregate_odds_statistics(self) -> None:
+        workflow = workflow_text()
+        self.assertIn("historical-odds-recovery-statistics.json", workflow)
+        self.assertIn('"odds_availability": availability', workflow)
+        self.assertIn('"stats": history.get("stats") or {}', workflow)
+        self.assertNotIn('"rows": rows(history)', workflow)
+
     def test_cli_provider_apply_fails_before_provider_access_without_confirmation(self) -> None:
         args = [
             "odds_recovery.py",

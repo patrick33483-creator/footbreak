@@ -328,6 +328,59 @@ jobs:
             sudo env PYTHONPATH="$PYTHONPATH" ODDS_RECOVERY_SIDECAR="$ODDS_RECOVERY_SIDECAR" "$PYTHON" /opt/footbreak/deploy/verify-result-integrity.py >/dev/null
             sudo env PYTHONPATH="$PYTHONPATH" "$PYTHON" /opt/footbreak/deploy/audit-result-state.py >/dev/null'
           printf '%s\n' '{"schema_version":1,"mode":"regeneration_audit","status":"completed"}' > historical-odds-recovery-regeneration-audit.json
+          ssh "$DEPLOY_USER@$DEPLOY_HOST" "sudo /opt/footbreak/.venv/bin/python3 -s" \
+            > historical-odds-recovery-statistics.json <<'PY'
+          import json
+          import math
+          from collections import Counter
+          from pathlib import Path
+
+          def rows(history):
+              if isinstance(history, list):
+                  return history
+              if not isinstance(history, dict):
+                  return []
+              value = history.get("rows")
+              return value if isinstance(value, list) else []
+
+          def bucket(value):
+              try:
+                  number = float(value)
+              except (TypeError, ValueError):
+                  return "missing"
+              if not math.isfinite(number) or number <= 0:
+                  return "missing"
+              return "at_or_above_1_70" if number >= 1.70 else "below_1_70"
+
+          def summarize(path):
+              payload = json.loads(Path(path).read_text(encoding="utf-8"))
+              history = payload.get("prediction_history") or {}
+              counts = Counter()
+              for row in rows(history):
+                  stage = str(row.get("stage") or "unknown")
+                  for market in row.get("market_predictions") or []:
+                      if not isinstance(market, dict):
+                          continue
+                      code = str(market.get("code") or "unknown")
+                      counts[(stage, code, bucket(market.get("odds")))] += 1
+              availability = {}
+              for (stage, code, odds_bucket), count in sorted(counts.items()):
+                  availability.setdefault(stage, {}).setdefault(code, {})[odds_bucket] = count
+              return {
+                  "row_count": len(rows(history)),
+                  "odds_availability": availability,
+                  "stats": history.get("stats") or {},
+              }
+
+          print(json.dumps({
+              "schema_version": 1,
+              "mode": "post_regeneration_odds_statistics",
+              "systems": {
+                  "footbreak": summarize("/var/www/footbreak/data.json"),
+                  "crown": summarize("/var/www/crown/data.json"),
+              },
+          }, ensure_ascii=False, sort_keys=True))
+          PY
       - name: 保存套用摘要（僅聚合 JSON）
         if: ${{ inputs.apply_confirmation == 'APPLY_HISTORICAL_ODDS_RECOVERY' && inputs.provider_mode == 'LOCAL' }}
         uses: actions/upload-artifact@v4
@@ -340,5 +393,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: historical-odds-recovery-regeneration-audit
-          path: historical-odds-recovery-regeneration-audit.json
+          path: |
+            historical-odds-recovery-regeneration-audit.json
+            historical-odds-recovery-statistics.json
           retention-days: 7
