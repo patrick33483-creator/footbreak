@@ -102,6 +102,7 @@ jobs:
           echo "integrity_category_footbreak_market_stats=$(count_journal_matches 'integrity_check=footbreak_market_stats')"
           echo "integrity_category_crown_market_stats=$(count_journal_matches 'integrity_check=crown_market_stats')"
           echo "integrity_category_crown_publication_projection=$(count_journal_matches 'integrity_check=crown_publication_projection')"
+          echo "integrity_known_crown_incident_missing=$(count_journal_matches 'Crown incident 3031468 / 中央骏马 v 南市台钢 is missing')"
           echo "integrity_missing_odds_groups=$(count_journal_matches 'missing odds_groups')"
           echo "integrity_missing_odds_group=$(count_journal_matches 'missing odds group')"
           echo "integrity_odds_group_total_mismatch=$(count_journal_matches 'odds group total mismatch')"

@@ -60,6 +60,11 @@ class ReconcileHealthDiagnoseWorkflowTests(unittest.TestCase):
                 f"'integrity_check={category}')",
                 text,
             )
+        self.assertIn(
+            "integrity_known_crown_incident_missing=$(count_journal_matches "
+            "'Crown incident 3031468 / 中央骏马 v 南市台钢 is missing')",
+            text,
+        )
         self.assertIn("current_integrity_category=${verifier_category:-none}", text)
         self.assertIn("grep -Eo 'integrity_check=[a-z_]+'", text)
         self.assertNotIn('echo "$verifier_output"', text)
