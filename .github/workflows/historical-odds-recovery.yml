@@ -325,7 +325,7 @@ jobs:
             sudo env PYTHONPATH="$PYTHONPATH" ODDS_RECOVERY_SIDECAR="$ODDS_RECOVERY_SIDECAR" "$PYTHON" /opt/footbreak/deploy/regenerate-odds-recovery-dashboard.py --data /var/www/footbreak/data.json >/dev/null
             sudo env PYTHONPATH="$PYTHONPATH" ODDS_RECOVERY_SIDECAR="$ODDS_RECOVERY_SIDECAR" "$PYTHON" -m crown.dashboard_data --out /var/www/crown/data.json >/dev/null
             sudo env PYTHONPATH="$PYTHONPATH" ODDS_RECOVERY_SIDECAR="$ODDS_RECOVERY_SIDECAR" "$PYTHON" -m analysis.data_health --learning-db /var/lib/footbreak/learning/predictions.sqlite --out /var/lib/footbreak/data-health/latest.json --public-footbreak /var/www/footbreak/data-health.json --public-crown /var/www/crown/data-health.json --lock /var/lock/footbreak-data-health.lock >/dev/null
-            sudo env PYTHONPATH="$PYTHONPATH" "$PYTHON" /opt/footbreak/deploy/verify-result-integrity.py >/dev/null
+            sudo env PYTHONPATH="$PYTHONPATH" ODDS_RECOVERY_SIDECAR="$ODDS_RECOVERY_SIDECAR" "$PYTHON" /opt/footbreak/deploy/verify-result-integrity.py >/dev/null
             sudo env PYTHONPATH="$PYTHONPATH" "$PYTHON" /opt/footbreak/deploy/audit-result-state.py >/dev/null'
           printf '%s\n' '{"schema_version":1,"mode":"regeneration_audit","status":"completed"}' > historical-odds-recovery-regeneration-audit.json
       - name: 保存套用摘要（僅聚合 JSON）

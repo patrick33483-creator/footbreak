@@ -138,6 +138,15 @@ class HistoricalOddsRecoveryWorkflowTests(unittest.TestCase):
         self.assertIn("--provider-retries 0", workflow)
         self.assertIn("--provider-workers 8", workflow)
 
+    def test_regeneration_verifier_reads_the_same_private_overlay(self) -> None:
+        workflow = workflow_text()
+        expected = (
+            'sudo env PYTHONPATH="$PYTHONPATH" '
+            'ODDS_RECOVERY_SIDECAR="$ODDS_RECOVERY_SIDECAR" '
+            '"$PYTHON" /opt/footbreak/deploy/verify-result-integrity.py'
+        )
+        self.assertIn(expected, workflow)
+
     def test_cli_provider_apply_fails_before_provider_access_without_confirmation(self) -> None:
         args = [
             "odds_recovery.py",
