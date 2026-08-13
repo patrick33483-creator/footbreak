@@ -580,13 +580,39 @@ class ProviderFetcher:
         reason = str(exc.reason).lower()
         return isinstance(exc.reason, (TimeoutError, socket.timeout)) or "timeout" in reason or "timed out" in reason
 
+    @staticmethod
+    def _request_headers(url: str) -> dict[str, str]:
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/139.0.0.0 Safari/537.36"
+            ),
+            "Accept": (
+                "text/html,application/xhtml+xml,application/xml;q=0.9,"
+                "image/avif,image/webp,*/*;q=0.8"
+            ),
+            "Accept-Language": "zh-HK,zh;q=0.9,en;q=0.8",
+            "Cache-Control": "no-cache",
+            "Pragma": "no-cache",
+            "Upgrade-Insecure-Requests": "1",
+        }
+        parsed = urllib.parse.urlparse(url)
+        if parsed.hostname == "vip.titan007.com":
+            query = urllib.parse.parse_qs(parsed.query)
+            fixture_id = (query.get("id") or [""])[0]
+            if fixture_id:
+                parent = "OverDown_n.aspx" if parsed.path.lower().endswith("/overunder.aspx") else "AsianOdds_n.aspx"
+                headers["Referer"] = f"https://vip.titan007.com/{parent}?id={fixture_id}&l=0"
+        return headers
+
     def _fetch_uncached(self, url: str) -> tuple[str | None, bool, str | None]:
         last_error = "unknown"
         timed_out = False
         for attempt in range(self.retries + 1):
             self._wait_for_start()
             try:
-                request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0", "Accept": "text/html,*/*;q=0.8"})
+                request = urllib.request.Request(url, headers=self._request_headers(url))
                 with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
                     body = response.read(); status = int(getattr(response, "status", 200) or 200)
                 if status != 200:

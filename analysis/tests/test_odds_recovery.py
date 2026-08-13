@@ -415,6 +415,25 @@ class ProviderRecoveryTests(unittest.TestCase):
         self.assertEqual(len(starts), 3)
         self.assertTrue(all(later - earlier >= 0.04 for earlier, later in zip(starts, starts[1:])))
 
+    def test_fetcher_uses_browser_headers_and_titan_market_referer(self):
+        handicap = ProviderFetcher._request_headers(
+            "https://vip.titan007.com/changeDetail/handicap.aspx?id=3031468&companyID=3&l=0"
+        )
+        totals = ProviderFetcher._request_headers(
+            "https://vip.titan007.com/changeDetail/overunder.aspx?id=3031468&companyID=3&l=0"
+        )
+        self.assertIn("Chrome/139.0.0.0", handicap["User-Agent"])
+        self.assertIn("application/xhtml+xml", handicap["Accept"])
+        self.assertEqual(handicap["Accept-Language"], "zh-HK,zh;q=0.9,en;q=0.8")
+        self.assertEqual(
+            handicap["Referer"],
+            "https://vip.titan007.com/AsianOdds_n.aspx?id=3031468&l=0",
+        )
+        self.assertEqual(
+            totals["Referer"],
+            "https://vip.titan007.com/OverDown_n.aspx?id=3031468&l=0",
+        )
+
     def test_fetcher_deduplicates_urls_and_accounts_terminal_timeouts(self):
         with tempfile.TemporaryDirectory() as directory:
             fetcher = ProviderFetcher(
