@@ -91,11 +91,22 @@ def parse_time(value: Any) -> datetime:
     except ValueError:
         # Older Footbreak records use the documented HKT no-offset format.
         try:
-            parsed = datetime.strptime(text, "%Y-%m-%d %H:%M")
+            parsed = datetime.strptime(text, "%Y-%m-%d %H:%M").replace(
+                tzinfo=timezone(timedelta(hours=8))
+            )
         except ValueError:
             raise ValueError("malformed_timestamp") from None
     if parsed.tzinfo is None:
-        raise ValueError("naive_timestamp")
+        # ``datetime.fromisoformat`` also accepts the legacy space-separated
+        # form, so attach HKT here only when the text exactly matches that
+        # documented representation.  Other naive timestamps still fail.
+        try:
+            legacy = datetime.strptime(text, "%Y-%m-%d %H:%M")
+        except ValueError:
+            raise ValueError("naive_timestamp") from None
+        if legacy.strftime("%Y-%m-%d %H:%M") != text:
+            raise ValueError("naive_timestamp")
+        parsed = legacy.replace(tzinfo=timezone(timedelta(hours=8)))
     return parsed.astimezone(timezone.utc)
 
 

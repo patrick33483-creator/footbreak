@@ -36,6 +36,14 @@ def quote(fixture="persisted:event-1", line="-0.5", side="H", odds="1.70", obser
     return result
 
 class OddsRecoveryTests(unittest.TestCase):
+    def test_legacy_footbreak_timestamp_is_interpreted_as_hkt(self):
+        from analysis.odds_recovery import parse_time
+
+        self.assertEqual(
+            parse_time("2026-08-11 00:30").isoformat(),
+            "2026-08-10T16:30:00+00:00",
+        )
+
     def test_line_canonicalization_and_exact_boundary(self):
         self.assertEqual(canonical_line("-0.50"), "-0.5")
         self.assertEqual(canonical_line(DecimalLike()), "1.7")
