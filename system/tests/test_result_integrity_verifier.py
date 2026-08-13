@@ -90,7 +90,10 @@ class ResultIntegrityVerifierTests(unittest.TestCase):
             )
             with patch.dict(
                 os.environ,
-                {"ODDS_RECOVERY_SIDECAR": str(sidecar)},
+                {
+                    "ODDS_RECOVERY_ENABLED": "1",
+                    "ODDS_RECOVERY_SIDECAR": str(sidecar),
+                },
                 clear=False,
             ):
                 projected_rows = overlay_rows(raw["rows"], "crown")
