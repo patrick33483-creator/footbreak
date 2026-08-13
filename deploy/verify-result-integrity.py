@@ -100,6 +100,15 @@ def assert_market_stats_consistent(
     history_rows: list[dict[str, Any]],
     stats: dict[str, Any],
 ) -> None:
+    scope = stats.get("scope") or {}
+    model_version = str(scope.get("model_version") or "").strip()
+    if model_version:
+        history_rows = [
+            row for row in history_rows
+            if str(row.get("prediction_era") or row.get("model_version") or "")
+            == model_version
+        ]
+
     def audit_cell(cell: dict[str, Any], context: tuple[str, ...]) -> dict[str, Any]:
         all_odds = cell.get("all_odds")
         if not isinstance(all_odds, dict):
@@ -287,22 +296,29 @@ def assert_crown_publication_matches(
 ) -> None:
     from analysis.odds_recovery import overlay_rows
     from crown.ledger import PREDICTION_ERA
-    from crown.prediction_history import calculate_stats, normalize_history
+    from crown.prediction_history import (
+        calculate_stats,
+        normalize_history,
+        project_watch_rows,
+    )
 
     public_history = crown_public.get("prediction_history") or {}
     projected_history = copy.deepcopy(crown_history)
     normalize_history(projected_history)
     raw_rows = rows(projected_history)
-    projected_rows = overlay_rows(raw_rows, "crown")
+    public_ledger = crown_public.get("ledger") or {}
+    projected_rows = overlay_rows(
+        project_watch_rows(raw_rows, public_ledger), "crown",
+    )
     projected_stats = calculate_stats(
         projected_rows,
         comparable_era=PREDICTION_ERA,
     )
     public_rows = rows(public_history)
-    assert len(public_rows) == len(raw_rows), (
-        "Crown public/raw prediction row count mismatch",
+    assert len(public_rows) == len(projected_rows), (
+        "Crown public/projected prediction row count mismatch",
         len(public_rows),
-        len(raw_rows),
+        len(projected_rows),
     )
     assert public_rows == projected_rows, (
         "Crown public prediction rows do not match the recovery overlay projection"
@@ -310,18 +326,20 @@ def assert_crown_publication_matches(
     assert public_history.get("stats") == projected_stats, (
         "Crown public prediction stats do not match the recovery overlay projection"
     )
-    raw_keys = [
+    projected_keys = [
         (str(row.get("match_id") or ""), str(row.get("stage") or ""))
-        for row in raw_rows
+        for row in projected_rows
     ]
     public_keys = [
         (str(row.get("match_id") or ""), str(row.get("stage") or ""))
         for row in public_rows
     ]
-    assert public_keys == raw_keys, "Crown public/raw prediction row order mismatch"
+    assert public_keys == projected_keys, (
+        "Crown public/projected prediction row order mismatch"
+    )
     print(
         "Crown publication recovery-projection sync check OK "
-        f"rows={len(raw_rows)}"
+        f"rows={len(projected_rows)}"
     )
 
 

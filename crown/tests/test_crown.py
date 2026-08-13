@@ -1234,6 +1234,87 @@ class CrownSafetyTests(unittest.TestCase):
             self.assertEqual(stats["predictions"], 0)
             self.assertEqual(stats["all_history_audit"]["predictions"], 1)
 
+    def test_dashboard_projects_persisted_ledger_stage_missing_from_history(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = replace(
+                settings(),
+                state_dir=root / "private-state",
+                web_root=root / "web",
+            )
+            config.state_dir.mkdir(parents=True)
+            (config.state_dir / "prediction_history.json").write_text(
+                '{"rows":[],"stats":{}}',
+                encoding="utf-8",
+            )
+            from crown.state import load_ledger, save_ledger
+            ledger = load_ledger(config)
+            ledger["watch"] = {
+                "future": {
+                    "match_id": "future",
+                    "league": "League",
+                    "home": "Home",
+                    "away": "Away",
+                    "kickoff": "2026-08-14T01:00:00+08:00",
+                    "stages": [{
+                        "match_id": "future",
+                        "stage": "首預",
+                        "ts": "2026-08-13T18:00:00+08:00",
+                        "forecast": "主勝",
+                        "outcome": {"home": .55, "draw": .25, "away": .20},
+                        "market_predictions": [{
+                            "code": "HDC",
+                            "condition": -.5,
+                            "line": -.5,
+                            "side": "H",
+                            "label": "Home -0.5",
+                            "probability": .58,
+                        }],
+                    }],
+                },
+            }
+            save_ledger(config, ledger)
+
+            payload = build(config)
+            rows = payload["prediction_history"]["rows"]
+            self.assertEqual([(row["match_id"], row["stage"]) for row in rows], [
+                ("future", "首預"),
+            ])
+            self.assertEqual(
+                rows[0]["display_projection"],
+                "persisted_ledger_pending_history_sync",
+            )
+            self.assertEqual(payload["prediction_history"]["stats"]["predictions"], 1)
+
+    def test_dashboard_history_row_wins_over_duplicate_ledger_projection(self) -> None:
+        from crown.prediction_history import project_watch_rows
+
+        history_row = {
+            "match_id": "same",
+            "stage": "首預",
+            "kickoff": "2026-08-14T01:00:00+08:00",
+            "predicted_at": "2026-08-13T18:00:00+08:00",
+            "result_status": "已核對",
+            "market_predictions": [{
+                "code": "HDC", "line": -.5, "side": "H",
+            }],
+        }
+        ledger = {"watch": {"same": {
+            "match_id": "same",
+            "kickoff": "2026-08-14T01:00:00+08:00",
+            "stages": [{
+                "match_id": "same",
+                "stage": "首預",
+                "market_predictions": [{
+                    "code": "HDC", "line": -.5, "side": "H",
+                }],
+            }],
+        }}}
+        rows = project_watch_rows([history_row], ledger)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["result_status"], "已核對")
+        self.assertNotIn("display_projection", rows[0])
+
     def test_prediction_history_removes_non_finite_market_lines(self) -> None:
         from crown.prediction_history import normalize_history
 

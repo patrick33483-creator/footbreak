@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import math
 import os
+import copy
 from collections import Counter
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -177,6 +178,45 @@ def _history_row(watch: dict[str, Any], stage: dict[str, Any]) -> dict[str, Any]
         "result_status": "待賽果",
         "verified_at": None,
     }
+
+
+def project_watch_rows(
+    history_rows: list[dict[str, Any]],
+    ledger: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Project persisted ledger stages into a dashboard-only history copy.
+
+    ``prediction_history.json`` remains the settlement and statistics source of
+    truth.  This fallback closes the short interval where a stage has already
+    been committed to the ledger but the separate history synchronizer did not
+    finish.  Existing history rows always win, so verified results and grades
+    can never be replaced by a pending ledger projection.
+    """
+    projected = copy.deepcopy(history_rows)
+    existing = {
+        (
+            str(row.get("match_id") or ""),
+            str(row.get("stage") or ""),
+        )
+        for row in projected
+        if isinstance(row, dict)
+    }
+    for watch in (ledger.get("watch") or {}).values():
+        if not isinstance(watch, dict):
+            continue
+        for stage in watch.get("stages") or []:
+            if not isinstance(stage, dict) or stage.get("stage") not in STAGES:
+                continue
+            row = _history_row(watch, stage)
+            key = (str(row.get("match_id") or ""), str(row.get("stage") or ""))
+            if not all(key) or key in existing or not _has_scoreable_market_prediction(row):
+                continue
+            row["display_projection"] = "persisted_ledger_pending_history_sync"
+            projected.append(row)
+            existing.add(key)
+    holder = {"rows": projected, "stats": {}}
+    normalize_history(holder)
+    return holder["rows"]
 
 
 def archive_watch(config: Settings, ledger: dict[str, Any]) -> dict[str, Any]:

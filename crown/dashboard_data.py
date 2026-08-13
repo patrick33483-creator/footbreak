@@ -10,7 +10,7 @@ from .common import iso_hkt, parse_time, read_json, write_json_atomic
 from .config import Settings, settings
 from .ledger import recompute_stats
 from .period import in_current_period
-from .prediction_history import normalize_history
+from .prediction_history import normalize_history, project_watch_rows
 from .ledger import PREDICTION_ERA
 from .state import load_ledger, load_predictions, paths
 
@@ -37,7 +37,7 @@ def build(config: Settings) -> dict[str, Any]:
     from analysis.odds_recovery import overlay_rows
     from .prediction_history import calculate_stats
     prediction_history["rows"] = overlay_rows(
-        prediction_history["rows"], "crown",
+        project_watch_rows(prediction_history["rows"], ledger), "crown",
     )
     prediction_history["stats"] = calculate_stats(
         prediction_history["rows"], comparable_era=PREDICTION_ERA,

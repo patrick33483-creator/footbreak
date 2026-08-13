@@ -105,6 +105,57 @@ class ResultIntegrityVerifierTests(unittest.TestCase):
                 with self.assertRaises(AssertionError):
                     verify.assert_crown_publication_matches(raw, public)
 
+    def test_crown_publication_accepts_persisted_ledger_display_projection(self):
+        raw = {"rows": [], "stats": {}}
+        ledger = {"watch": {"future": {
+            "match_id": "future",
+            "league": "League",
+            "home": "Home",
+            "away": "Away",
+            "kickoff": "2026-08-14T01:00:00+08:00",
+            "stages": [{
+                "match_id": "future",
+                "stage": "首預",
+                "ts": "2026-08-13T18:00:00+08:00",
+                "market_predictions": [{
+                    "code": "HDC", "line": -0.5, "side": "H",
+                }],
+            }],
+        }}}
+        from crown.prediction_history import project_watch_rows
+
+        projected = project_watch_rows([], ledger)
+        public = {
+            "ledger": ledger,
+            "prediction_history": {
+                "rows": projected,
+                "stats": calculate_stats(
+                    projected, comparable_era=PREDICTION_ERA,
+                ),
+            },
+        }
+        verify.assert_crown_publication_matches(raw, public)
+
+    def test_market_stats_respects_reported_model_version_scope(self):
+        current = {
+            "match_id": "current",
+            "stage": "T-5",
+            "prediction_era": PREDICTION_ERA,
+            "market_grades": [{
+                "code": "HDC", "grade_status": "GRADED", "hit": True,
+            }],
+        }
+        legacy = {
+            "match_id": "legacy",
+            "stage": "T-5",
+            "prediction_era": "legacy",
+            "market_grades": [{
+                "code": "HDC", "grade_status": "GRADED", "hit": False,
+            }],
+        }
+        stats = calculate_stats([current, legacy], comparable_era=PREDICTION_ERA)
+        verify.assert_market_stats_consistent("test", [current, legacy], stats)
+
     def test_accepts_push_and_checks_exact_stage_cell(self):
         rows = [
             {
