@@ -319,7 +319,9 @@ class OddsRecoveryTests(unittest.TestCase):
             }
             source_before = copy.deepcopy(source_snapshot)
             old = os.environ.get("ODDS_RECOVERY_SIDECAR")
+            old_enabled = os.environ.get("ODDS_RECOVERY_ENABLED")
             os.environ["ODDS_RECOVERY_SIDECAR"] = str(path)
+            os.environ["ODDS_RECOVERY_ENABLED"] = "1"
             try:
                 health_rows, _ = build_market_rows([source_snapshot], [], "footbreak")
             finally:
@@ -327,6 +329,10 @@ class OddsRecoveryTests(unittest.TestCase):
                     os.environ.pop("ODDS_RECOVERY_SIDECAR", None)
                 else:
                     os.environ["ODDS_RECOVERY_SIDECAR"] = old
+                if old_enabled is None:
+                    os.environ.pop("ODDS_RECOVERY_ENABLED", None)
+                else:
+                    os.environ["ODDS_RECOVERY_ENABLED"] = old_enabled
         self.assertEqual(learning, before)
         self.assertEqual(source_snapshot, source_before)
         item = projected[0]["market_predictions"][0]
@@ -381,7 +387,9 @@ class OddsRecoveryTests(unittest.TestCase):
             sidecar_before = path.read_bytes()
             data_path.write_text(json.dumps(original))
             previous = os.environ.get("ODDS_RECOVERY_SIDECAR")
+            previous_enabled = os.environ.get("ODDS_RECOVERY_ENABLED")
             os.environ["ODDS_RECOVERY_SIDECAR"] = str(path)
+            os.environ["ODDS_RECOVERY_ENABLED"] = "1"
             try:
                 self.assertEqual(module.regenerate(data_path)["prediction_history_rows"], 1)
             finally:
@@ -389,6 +397,10 @@ class OddsRecoveryTests(unittest.TestCase):
                     os.environ.pop("ODDS_RECOVERY_SIDECAR", None)
                 else:
                     os.environ["ODDS_RECOVERY_SIDECAR"] = previous
+                if previous_enabled is None:
+                    os.environ.pop("ODDS_RECOVERY_ENABLED", None)
+                else:
+                    os.environ["ODDS_RECOVERY_ENABLED"] = previous_enabled
             regenerated = json.loads(data_path.read_text())
             self.assertEqual(path.read_bytes(), sidecar_before)
         self.assertEqual(original["prediction_history"]["rows"][0]["market_predictions"][0]["odds"], None)
@@ -406,7 +418,9 @@ class OddsRecoveryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "overlay.json"; apply(path, [entry, crown_entry])
             old = os.environ.get("ODDS_RECOVERY_SIDECAR")
+            old_enabled = os.environ.get("ODDS_RECOVERY_ENABLED")
             os.environ["ODDS_RECOVERY_SIDECAR"] = str(path)
+            os.environ["ODDS_RECOVERY_ENABLED"] = "1"
             try:
                 watch = {"event-1": {"match_id": "event-1", "home": "H", "away": "A",
                     "league": "L", "kickoff": "2026-08-10T11:00:00+08:00", "stages": [{
@@ -432,6 +446,36 @@ class OddsRecoveryTests(unittest.TestCase):
             finally:
                 if old is None: os.environ.pop("ODDS_RECOVERY_SIDECAR", None)
                 else: os.environ["ODDS_RECOVERY_SIDECAR"] = old
+                if old_enabled is None: os.environ.pop("ODDS_RECOVERY_ENABLED", None)
+                else: os.environ["ODDS_RECOVERY_ENABLED"] = old_enabled
+
+    def test_environment_overlay_is_disabled_without_explicit_opt_in(self):
+        target = prediction_targets([row()], "footbreak")[0][0]
+        from analysis.odds_recovery import _entry
+        entry = _entry(target, quote(odds="1.70"))
+        raw = [row()]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "overlay.json"
+            apply(path, [entry])
+            old_path = os.environ.get("ODDS_RECOVERY_SIDECAR")
+            old_enabled = os.environ.get("ODDS_RECOVERY_ENABLED")
+            os.environ["ODDS_RECOVERY_SIDECAR"] = str(path)
+            os.environ.pop("ODDS_RECOVERY_ENABLED", None)
+            try:
+                disabled = overlay_rows(raw, "footbreak")
+                os.environ["ODDS_RECOVERY_ENABLED"] = "1"
+                enabled = overlay_rows(raw, "footbreak")
+            finally:
+                if old_path is None:
+                    os.environ.pop("ODDS_RECOVERY_SIDECAR", None)
+                else:
+                    os.environ["ODDS_RECOVERY_SIDECAR"] = old_path
+                if old_enabled is None:
+                    os.environ.pop("ODDS_RECOVERY_ENABLED", None)
+                else:
+                    os.environ["ODDS_RECOVERY_ENABLED"] = old_enabled
+        self.assertIsNone(disabled[0]["market_predictions"][0]["odds"])
+        self.assertEqual(enabled[0]["market_predictions"][0]["odds"], 1.7)
 
 
 class ProviderRecoveryTests(unittest.TestCase):

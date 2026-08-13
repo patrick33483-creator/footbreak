@@ -1959,7 +1959,16 @@ def sidecar_comparison(path: Path, entries: list[dict[str, Any]]) -> dict[str, i
 
 def overlay_rows(rows: list[dict[str, Any]], system: str, sidecar_path: str | Path | None = None) -> list[dict[str, Any]]:
     """Return a decorated copy; callers never mutate their raw payload."""
-    path = Path(sidecar_path or os.environ.get("ODDS_RECOVERY_SIDECAR", "")) if (sidecar_path or os.environ.get("ODDS_RECOVERY_SIDECAR")) else None
+    if sidecar_path is not None:
+        path = Path(sidecar_path)
+    elif (
+        os.environ.get("ODDS_RECOVERY_ENABLED", "").strip().lower()
+        in {"1", "true", "yes", "on"}
+        and os.environ.get("ODDS_RECOVERY_SIDECAR")
+    ):
+        path = Path(os.environ["ODDS_RECOVERY_SIDECAR"])
+    else:
+        path = None
     if not path or not path.exists(): return copy.deepcopy(rows)
     try: data = _sidecar(path)
     except (ValueError, OSError, json.JSONDecodeError): return copy.deepcopy(rows)
