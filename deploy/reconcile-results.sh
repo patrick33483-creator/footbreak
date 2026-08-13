@@ -85,7 +85,8 @@ fi
 echo "=== $(TZ=Asia/Hong_Kong date '+%F %T') prediction-history integrity audit ==="
 integrity_rc=1
 for integrity_attempt in 1 2 3; do
-  "$APP_DIR/.venv/bin/python3" "$APP_DIR/deploy/verify-result-integrity.py"
+  PYTHONPATH="$APP_DIR" "$APP_DIR/.venv/bin/python3" \
+    "$APP_DIR/deploy/verify-result-integrity.py"
   integrity_rc=$?
   if [ "$integrity_rc" -eq 0 ]; then
     break

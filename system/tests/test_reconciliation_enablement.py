@@ -30,6 +30,11 @@ class ReconciliationEnablementTests(unittest.TestCase):
         (self.directory / ".venv" / "bin" / "python3").write_text(
             "#!/usr/bin/env bash\n"
             "if [[ \"${1:-}\" == */verify-result-integrity.py ]] && "
+            "[[ \"${PYTHONPATH:-}\" != \"${APP_DIR:-}\" ]]; then\n"
+            "  echo 'integrity verifier missing APP_DIR on PYTHONPATH' >&2\n"
+            "  exit 42\n"
+            "fi\n"
+            "if [[ \"${1:-}\" == */verify-result-integrity.py ]] && "
             "[[ -n \"${INTEGRITY_FAIL_ONCE_FILE:-}\" ]] && "
             "[[ ! -e \"$INTEGRITY_FAIL_ONCE_FILE\" ]]; then\n"
             "  touch \"$INTEGRITY_FAIL_ONCE_FILE\"\n"
@@ -105,6 +110,11 @@ class ReconciliationEnablementTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("transient failure; retrying attempt=2/3", result.stderr)
         self.assertIn("Prediction-history integrity audit OK", result.stdout)
+
+    def test_integrity_verifier_is_independent_of_service_working_directory(self) -> None:
+        result = self.run_reconciler("0")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("missing APP_DIR on PYTHONPATH", result.stderr)
 
     def test_deploy_and_health_follow_the_same_validation_gate(self) -> None:
         update = (ROOT / "deploy" / "update.sh").read_text(encoding="utf-8")
