@@ -1467,7 +1467,16 @@ def apply(path: Path, entries: list[dict[str, Any]]) -> dict[str, int]:
         key = tuple(entry[k] for k in ("system", "snapshot_identity", "market_code", "line", "side"))
         old = existing.get(key)
         if old:
-            if old.get("entry_hash") != entry.get("entry_hash"):
+            # Parser/schema metadata may become richer while the immutable
+            # quote itself remains byte-for-byte equivalent. Treat an exact
+            # price + observation-time match as idempotently present; never
+            # replace the original evidence entry or relax a real quote
+            # conflict.
+            same_quote = (
+                old.get("selected_odds") == entry.get("selected_odds")
+                and old.get("observed_at") == entry.get("observed_at")
+            )
+            if old.get("entry_hash") != entry.get("entry_hash") and not same_quote:
                 raise ValueError("conflicting_recovery_evidence")
             already += 1; continue
         current["entries"].append(entry); existing[key] = entry; added += 1

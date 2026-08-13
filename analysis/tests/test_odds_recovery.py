@@ -147,6 +147,14 @@ class OddsRecoveryTests(unittest.TestCase):
             backups = list(path.parent.glob("overlay.json.backup-*"))
             self.assertEqual(len(backups), 1)
             self.assertEqual(stat.S_IMODE(backups[0].stat().st_mode), 0o600)
+            metadata_changed = {**entry, "evidence_source_hash": "new-source-hash"}
+            metadata_changed["entry_hash"] = _sha({
+                key: value for key, value in metadata_changed.items() if key != "entry_hash"
+            })
+            self.assertEqual(
+                apply(path, [metadata_changed]),
+                {"added": 0, "already_present": 1},
+            )
             bad = _entry(target, quote(odds="1.8"))
             with self.assertRaisesRegex(ValueError, "conflicting"):
                 apply(path, [bad])
