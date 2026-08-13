@@ -13,13 +13,20 @@ import json
 import math
 import os
 import tempfile
+import base64
+import html
+import re
+import time
+import urllib.error
+import urllib.request
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Iterable
 
 SCHEMA_VERSION = 1
+PARSER_VERSION = "odds-recovery-provider-v1"
 MARKETS = {"HDC", "HIL", "CHL"}
 DEFAULT_ALLOWLIST = {
     "footbreak": (
@@ -57,6 +64,10 @@ def canonical_line(value: Any) -> str:
 
 
 def parse_time(value: Any) -> datetime:
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            raise ValueError("naive_timestamp")
+        return value.astimezone(timezone.utc)
     if not isinstance(value, str) or not value.strip():
         raise ValueError("missing_timestamp")
     text = value.strip().replace("Z", "+00:00")
@@ -189,12 +200,13 @@ def prediction_targets(rows: Iterable[dict[str, Any]], system: str) -> tuple[lis
 
 
 def _quote(fixture: str, code: str, line: Any, side: str, odds: Any, observed_at: Any,
-           source_kind: str, source_ref: str, stage: str | None = None) -> dict[str, Any] | None:
+           source_kind: str, source_ref: str, stage: str | None = None,
+           provider_evidence: dict[str, Any] | None = None) -> dict[str, Any] | None:
     try:
         return {"fixture_identity": fixture, "market_code": code, "line": canonical_line(line),
                 "side": str(side), "odds": str(_decimal(odds, odds=True)),
                 "observed_at": parse_time(observed_at), "source_kind": source_kind,
-                "source_ref": source_ref, "stage": stage}
+                "source_ref": source_ref, "stage": stage, "provider_evidence": provider_evidence}
     except ValueError:
         return None
 
@@ -353,11 +365,12 @@ _ENTRY_BODY_FIELDS = (
     "selected_odds", "observed_at", "evidence_source_kind",
     "evidence_source_hash", "evidence_age_seconds",
 )
+_ENTRY_OPTIONAL_FIELDS = {"provider_evidence"}
 
 
 def _validate_entry(entry: Any) -> dict[str, Any]:
     """Fail closed unless an entry is a canonical, self-authenticating quote."""
-    if not isinstance(entry, dict) or set(entry) != {*_ENTRY_BODY_FIELDS, "entry_hash"}:
+    if not isinstance(entry, dict) or set(entry) not in ({*_ENTRY_BODY_FIELDS, "entry_hash"}, {*_ENTRY_BODY_FIELDS, "entry_hash", *_ENTRY_OPTIONAL_FIELDS}):
         raise ValueError("malformed_sidecar_entry")
     if any(not isinstance(entry.get(key), str) or not entry.get(key) for key in (
         "system", "snapshot_identity", "market_code", "line", "side",
@@ -378,7 +391,11 @@ def _validate_entry(entry: Any) -> dict[str, Any]:
     age = entry["evidence_age_seconds"]
     if isinstance(age, bool) or not isinstance(age, (int, float)) or not math.isfinite(age) or age < 0:
         raise ValueError("malformed_sidecar_entry")
+    if "provider_evidence" in entry:
+        _validate_provider_evidence(entry["provider_evidence"], entry)
     body = {key: entry[key] for key in _ENTRY_BODY_FIELDS}
+    if "provider_evidence" in entry:
+        body["provider_evidence"] = entry["provider_evidence"]
     if entry["entry_hash"] != _sha(body):
         raise ValueError("sidecar_entry_hash_mismatch")
     return entry
@@ -402,10 +419,304 @@ def _entry(target: dict[str, Any], quote: dict[str, Any]) -> dict[str, Any]:
             "selected_odds": quote["odds"], "observed_at": quote["observed_at"].isoformat(),
             "evidence_source_kind": quote["source_kind"], "evidence_source_hash": quote["source_ref"],
             "evidence_age_seconds": round((target["predicted_at"] - quote["observed_at"]).total_seconds(), 6)}
+    if quote.get("provider_evidence") is not None:
+        body["provider_evidence"] = quote["provider_evidence"]
     return {**body, "entry_hash": _sha(body)}
 
 
-def report(rows_by_system: dict[str, list[dict[str, Any]]], paths_by_system: dict[str, list[Path]]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+
+
+def _validate_provider_evidence(value: Any, entry: dict[str, Any]) -> None:
+    """Provider evidence is compact, non-display metadata kept in the private sidecar."""
+    required = {"provider", "source_url_hash", "company_id", "native_odds_format", "native_price", "normalized_decimal", "quote_timestamp", "target_timestamp", "age_seconds", "parser_version"}
+    if not isinstance(value, dict) or set(value) != required:
+        raise ValueError("malformed_provider_evidence")
+    if value["provider"] not in {"titan_crown", "tipsme_hkjc"}:
+        raise ValueError("malformed_provider_evidence")
+    if not all(isinstance(value[key], str) and value[key] for key in ("source_url_hash", "company_id", "native_odds_format", "native_price", "normalized_decimal", "quote_timestamp", "target_timestamp", "parser_version")):
+        raise ValueError("malformed_provider_evidence")
+    if value["parser_version"] != PARSER_VERSION or value["normalized_decimal"] != entry["selected_odds"]:
+        raise ValueError("malformed_provider_evidence")
+    parse_time(value["quote_timestamp"]); parse_time(value["target_timestamp"])
+    try:
+        native = _decimal(value["native_price"])
+    except ValueError:
+        raise ValueError("malformed_provider_evidence") from None
+    if value["native_odds_format"] == "hong_kong" and _decimal(value["normalized_decimal"], odds=True) != native + Decimal("1"):
+        raise ValueError("malformed_provider_evidence")
+    age = value["age_seconds"]
+    if isinstance(age, bool) or not isinstance(age, (float, int)) or age < 0 or not math.isfinite(age):
+        raise ValueError("malformed_provider_evidence")
+
+
+def _kickoff_for_target(target: dict[str, Any]) -> datetime | None:
+    row = target.get("row") or {}
+    for key in ("kickoff_hkt", "kickoff", "start_time", "match_time"):
+        try:
+            return parse_time(row.get(key))
+        except ValueError:
+            pass
+    return None
+
+
+def _titan_id_for_target(target: dict[str, Any]) -> str | None:
+    # Crown's persisted match_id is its stable Titan identity.  Do not use any
+    # inferred name/time relationship to manufacture an ID.
+    if target.get("system") != "crown":
+        return None
+    row = target.get("row") or {}
+    value = row.get("titan_match_id") or row.get("match_id")
+    return str(value).strip() if value is not None and str(value).strip() else None
+
+
+def _url_hash(url: str) -> str:
+    return hashlib.sha256(url.encode("utf-8")).hexdigest()
+
+
+class PrivateResponseCache:
+    """Private, reusable raw response cache.  It stores no public audit data."""
+    def __init__(self, root: Path):
+        self.root = root
+        self.root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.chmod(self.root, 0o700)
+
+    def get(self, url: str) -> tuple[bytes, dict[str, Any]] | None:
+        key = _url_hash(url); raw = self.root / f"{key}.raw"; meta = self.root / f"{key}.json"
+        try:
+            info = json.loads(meta.read_text(encoding="utf-8"))
+            body = raw.read_bytes()
+        except (OSError, json.JSONDecodeError):
+            return None
+        if not isinstance(info, dict) or info.get("url_hash") != key or info.get("http_status") != 200:
+            return None
+        return body, info
+
+    def put(self, url: str, body: bytes, status: int) -> None:
+        key = _url_hash(url); raw = self.root / f"{key}.raw"; meta = self.root / f"{key}.json"
+        raw.write_bytes(body); os.chmod(raw, 0o600)
+        meta.write_text(json.dumps({"url_hash": key, "http_status": status, "fetched_at": datetime.now(timezone.utc).isoformat()}, separators=(",", ":")), encoding="utf-8")
+        os.chmod(meta, 0o600)
+
+
+class ProviderFetcher:
+    def __init__(self, cache: PrivateResponseCache, rate_per_second: float = 1.0, retries: int = 2):
+        self.cache, self.rate_per_second, self.retries = cache, max(0.1, rate_per_second), max(0, retries)
+        self._last = 0.0; self.pages_fetched = 0; self.cache_hits = 0; self.http_failures = 0
+
+    def get(self, url: str) -> tuple[str | None, bool, str | None]:
+        cached = self.cache.get(url)
+        if cached:
+            self.cache_hits += 1
+            return cached[0].decode("gb18030", errors="replace"), True, None
+        for attempt in range(self.retries + 1):
+            pause = (1.0 / self.rate_per_second) - (time.monotonic() - self._last)
+            if pause > 0: time.sleep(pause)
+            self._last = time.monotonic()
+            request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0", "Accept": "text/html,*/*;q=0.8"})
+            try:
+                with urllib.request.urlopen(request, timeout=25) as response:
+                    body = response.read(); status = int(getattr(response, "status", 200) or 200)
+                if status != 200: raise OSError(f"http_{status}")
+                self.cache.put(url, body, status); self.pages_fetched += 1
+                return body.decode("gb18030", errors="replace"), False, None
+            except (OSError, urllib.error.URLError, urllib.error.HTTPError) as exc:
+                if attempt >= self.retries:
+                    self.http_failures += 1
+                    return None, False, type(exc).__name__
+                time.sleep(min(3.0, 0.5 * (2 ** attempt)))
+        return None, False, "unknown"
+
+
+_TAG = re.compile(r"<[^>]+>")
+_TIME = re.compile(r"(?<!\d)(\d{1,2})-(\d{1,2})\s+(\d{1,2}):(\d{2})(?!\d)")
+_NUMBER = re.compile(r"(?<![\d.])([+-]?\d+(?:\.\d+)?)(?![\d.])")
+
+def _clean_html(value: str) -> str:
+    return html.unescape(_TAG.sub(" ", value)).replace("\xa0", " ").strip()
+
+def _infer_titan_year(month: int, day: int, hour: int, minute: int, kickoff: datetime) -> datetime | None:
+    local = kickoff.astimezone(timezone(timedelta(hours=8)))
+    candidates = []
+    for year in (local.year - 1, local.year, local.year + 1):
+        try: candidates.append(datetime(year, month, day, hour, minute, tzinfo=local.tzinfo))
+        except ValueError: continue
+    if not candidates: return None
+    # Around New Year, nearest calendar instance is the only defensible choice.
+    chosen = min(candidates, key=lambda item: abs((item - local).total_seconds()))
+    return chosen.astimezone(timezone.utc)
+
+def _numeric_cell(value: str) -> Decimal | None:
+    found = _NUMBER.fullmatch(value.strip())
+    if not found: return None
+    try: return _decimal(found.group(1))
+    except ValueError: return None
+
+def _titan_line(raw: str, market: str) -> str | None:
+    value = _numeric_cell(raw)
+    if value is None: return None
+    if market == "HDC" and not raw.strip().startswith(("-", "+")):
+        value = -value
+    if market == "HIL": value = abs(value)
+    try: return canonical_line(value)
+    except ValueError: return None
+
+def parse_titan_change_rows(source: str, market: str, kickoff: datetime, company_id: str = "3") -> list[dict[str, Any]]:
+    """Parse only company-ID 3, pre-match (即) movement ticks from Titan HTML."""
+    if market not in {"HDC", "HIL"}: return []
+    rows = []
+    for raw_row in re.findall(r"<tr\b([^>]*)>([\s\S]*?)</tr>", source, re.I):
+        attrs, body = raw_row
+        id_match = re.search(r"(?:data-(?:company-)?id|companyID)\s*=\s*['\"]?(\d+)", attrs, re.I)
+        if id_match and id_match.group(1) != company_id: continue
+        cells = [_clean_html(cell) for cell in re.findall(r"<t[dh][^>]*>([\s\S]*?)</t[dh]>", body, re.I)]
+        whole = " ".join(cells)
+        tm = _TIME.search(whole)
+        if not tm or "即" not in cells: continue
+        observed = _infer_titan_year(*map(int, tm.groups()), kickoff)
+        if not observed: continue
+        before_time = cells[:next((i for i, text in enumerate(cells) if _TIME.search(text)), len(cells))]
+        numeric = [(i, _numeric_cell(text)) for i, text in enumerate(before_time)]
+        numeric = [(i, value) for i, value in numeric if value is not None]
+        if len(numeric) < 3: continue
+        # Price / line / price is the verified movement-row ordering; take its
+        # last triple before timestamp so sequence/table index cells cannot win.
+        home, line_raw, away = numeric[-3:]
+        line = _titan_line(before_time[line_raw[0]], market)
+        if not line or home[1] <= 0 or away[1] <= 0: continue
+        rows.append({"line": line, "H": home[1], "A" if market == "HDC" else "L": away[1], "observed_at": observed, "status": "即", "company_id": company_id})
+    return sorted(rows, key=lambda row: row["observed_at"])
+
+
+def _provider_quote(target: dict[str, Any], tick: dict[str, Any], target_time: datetime, *, provider: str, source_url: str, company_id: str) -> dict[str, Any] | None:
+    try:
+        native = _decimal(tick["price"])
+        decimal = native + Decimal("1")
+        return _quote(target["fixture_identity"], target["market_code"], target["line"], target["side"], decimal, tick["observed_at"], f"provider_{provider}", _url_hash(source_url), target["stage"], {
+            "provider": provider, "source_url_hash": _url_hash(source_url), "company_id": company_id,
+            "native_odds_format": "hong_kong", "native_price": str(native), "normalized_decimal": str(decimal.normalize()),
+            "quote_timestamp": tick["observed_at"].isoformat(), "target_timestamp": target_time.isoformat(),
+            "age_seconds": round((target_time - tick["observed_at"]).total_seconds(), 6), "parser_version": PARSER_VERSION,
+        })
+    except (KeyError, ValueError): return None
+
+
+def titan_candidate(target: dict[str, Any], source: str, url: str) -> tuple[dict[str, Any] | None, str | None]:
+    kickoff = _kickoff_for_target(target)
+    if not kickoff: return None, "kickoff_context_unavailable"
+    if target["market_code"] not in {"HDC", "HIL"}: return None, "provider_market_unsupported"
+    ticks = parse_titan_change_rows(source, target["market_code"], kickoff)
+    exact = [dict(tick, price=tick.get(target["side"])) for tick in ticks if tick["line"] == target["line"] and target["side"] in tick]
+    if not exact: return None, "no_exact_fixture_market_line_side_evidence"
+    if target["stage"] == "首預":
+        eligible = [tick for tick in exact if tick["observed_at"] <= kickoff]
+        target_time = kickoff
+        selected = min(eligible, key=lambda row: row["observed_at"]) if eligible else None
+    elif target["stage"] in {"T-30", "T-5"}:
+        target_time = kickoff - timedelta(minutes=30 if target["stage"] == "T-30" else 5)
+        eligible = [tick for tick in exact if tick["observed_at"] <= target_time]
+        selected = max(eligible, key=lambda row: row["observed_at"]) if eligible else None
+    else: return None, "unsupported_stage"
+    if not selected: return None, "no_qualifying_prior_quote"
+    return _provider_quote(target, selected, target_time, provider="titan_crown", source_url=url, company_id="3"), None
+
+
+def tipsme_crosswalk(target: dict[str, Any]) -> str | None:
+    row = target.get("row") or {}
+    hkjc = str(row.get("hkjc_match_id") or "").strip()
+    direct = str(row.get("tipsme_match_id") or "").strip()
+    bridge = row.get("tipsme_crosswalk")
+    if direct and str(row.get("tipsme_hkjc_match_id") or "").strip() == hkjc and hkjc:
+        return direct
+    if isinstance(bridge, dict) and hkjc and str(bridge.get("hkjc_match_id") or "").strip() == hkjc:
+        value = str(bridge.get("tipsme_match_id") or "").strip()
+        if value and bridge.get("provider_id_evidence") is True: return value
+    return None
+
+def _walk_json(value: Any) -> Iterable[dict[str, Any]]:
+    if isinstance(value, dict):
+        yield value
+        for child in value.values(): yield from _walk_json(child)
+    elif isinstance(value, list):
+        for child in value: yield from _walk_json(child)
+
+def _tipsme_time(value: Any) -> datetime | None:
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        try: return datetime.fromtimestamp(float(value) / (1000 if float(value) > 10_000_000_000 else 1), tz=timezone.utc)
+        except (ValueError, OSError): return None
+    try: return parse_time(value)
+    except ValueError: return None
+
+def parse_tipsme_chart_ticks(source: str, market: str) -> list[dict[str, Any]]:
+    """Extract only explicit timestamped embedded chart points; never page current price."""
+    decoder = json.JSONDecoder(); blobs = []
+    for match in re.finditer(r"[\[{]", source):
+        try:
+            value, _ = decoder.raw_decode(source[match.start():]); blobs.append(value)
+        except json.JSONDecodeError: continue
+    mapping = {"HDC": "hdp", "HIL": "hilo", "CHL": "corner"}
+    out = []
+    for node in _walk_json(blobs):
+        tag = str(node.get("market") or node.get("marketType") or node.get("type") or "").lower()
+        if tag and mapping[market] not in tag: continue
+        observed = _tipsme_time(node.get("timestamp", node.get("time", node.get("x"))))
+        line = node.get("line", node.get("handicap", node.get("condition")))
+        if not observed or line is None: continue
+        names = (("H", "home", "homeOdds"), ("A" if market == "HDC" else "L", "away" if market == "HDC" else "under", "awayOdds" if market == "HDC" else "underOdds"))
+        for side, first, second in names:
+            price = node.get(first, node.get(second))
+            try:
+                price = _decimal(price)
+                normalized_line = canonical_line(line)
+            except ValueError: continue
+            out.append({"line": normalized_line, "side": side, "price": price, "observed_at": observed, "opening": bool(node.get("opening") or node.get("isOpening") or node.get("initial") or node.get("label") == "初")})
+    return out
+
+def tipsme_candidate(target: dict[str, Any], source: str, url: str) -> tuple[dict[str, Any] | None, str | None]:
+    kickoff = _kickoff_for_target(target)
+    if not kickoff: return None, "kickoff_context_unavailable"
+    ticks = [tick for tick in parse_tipsme_chart_ticks(source, target["market_code"]) if tick["line"] == target["line"] and tick["side"] == target["side"]]
+    if target["stage"] == "首預":
+        eligible = [tick for tick in ticks if tick["opening"] and tick["observed_at"] <= kickoff]; at = kickoff
+        selected = min(eligible, key=lambda row: row["observed_at"]) if eligible else None
+    elif target["stage"] in {"T-30", "T-5"}:
+        at = kickoff - timedelta(minutes=30 if target["stage"] == "T-30" else 5)
+        eligible = [tick for tick in ticks if tick["observed_at"] <= at]; selected = max(eligible, key=lambda row: row["observed_at"]) if eligible else None
+    else: return None, "unsupported_stage"
+    if not selected: return None, "no_qualifying_prior_quote"
+    return _provider_quote(target, selected, at, provider="tipsme_hkjc", source_url=url, company_id="hkjc"), None
+
+
+def provider_entries(targets: list[dict[str, Any]], *, providers: set[str], cache_dir: Path, rate_per_second: float, retries: int, tipsme_url_template: str | None = None) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    fetcher = ProviderFetcher(PrivateResponseCache(cache_dir), rate_per_second, retries)
+    entries: list[dict[str, Any]] = []; recovered = Counter(); failures = Counter(); attempted = set()
+    for target in targets:
+        candidate = None; reason = None
+        if "titan" in providers:
+            titan_id = _titan_id_for_target(target)
+            if titan_id and target["market_code"] in {"HDC", "HIL"}:
+                attempted.add(("titan", titan_id)); page = "handicap.aspx" if target["market_code"] == "HDC" else "overunder.aspx"
+                url = f"https://vip.titan007.com/changeDetail/{page}?id={titan_id}&companyID=3&l=0"
+                source, _cached, err = fetcher.get(url)
+                if err: reason = "http_failure"
+                elif source is not None: candidate, reason = titan_candidate(target, source, url)
+        if candidate is None and "tipsme" in providers:
+            crosswalk = tipsme_crosswalk(target)
+            if not crosswalk: reason = "exact_id_crosswalk_unavailable"
+            elif not tipsme_url_template: reason = "tipsme_public_url_unconfigured"
+            else:
+                attempted.add(("tipsme", crosswalk)); url = tipsme_url_template.format(MATCH_ID=crosswalk, match_id=crosswalk, market={"HDC":"hdp", "HIL":"hilo", "CHL":"corner"}[target["market_code"]])
+                source, _cached, err = fetcher.get(url)
+                if err: reason = "http_failure"
+                elif source is not None: candidate, reason = tipsme_candidate(target, source, url)
+        if candidate:
+            entries.append(_entry(target, candidate)); recovered[f"{target['stage']}|{target['market_code']}|{candidate['source_kind']}"] += 1
+        elif reason:
+            failures[reason] += 1
+    ages = [entry["evidence_age_seconds"] for entry in entries]
+    bands = Counter("under_5m" if age < 300 else "5m_to_30m" if age < 1800 else "30m_to_6h" if age < 21600 else "over_6h" for age in ages)
+    return entries, {"fixtures_attempted": len(attempted), "pages_fetched": fetcher.pages_fetched, "cache_hits": fetcher.cache_hits, "targets_recovered_by_stage_market_source": dict(sorted(recovered.items())), "stale_age_bands": dict(sorted(bands.items())), "parser_failures": dict(sorted((key, value) for key, value in failures.items() if key not in {"http_failure", "exact_id_crosswalk_unavailable"})), "http_failures": fetcher.http_failures, "no_qualifying_prior_quote": failures.get("no_qualifying_prior_quote", 0), "exact_id_crosswalk_unavailable": failures.get("exact_id_crosswalk_unavailable", 0)}
+
+def report(rows_by_system: dict[str, list[dict[str, Any]]], paths_by_system: dict[str, list[Path]], *, provider_options: dict[str, Any] | None = None) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     all_entries: list[dict[str, Any]] = []
     systems: dict[str, Any] = {}
     for system, rows in rows_by_system.items():
@@ -428,7 +739,21 @@ def report(rows_by_system: dict[str, list[dict[str, Any]]], paths_by_system: dic
                            "evidence_age_seconds": {"count": len(ages), "min": min(ages) if ages else None,
                                "max": max(ages) if ages else None, "median": sorted(ages)[len(ages)//2] if ages else None},
                            "evidence_files": len(provenance), "provenance": provenance}
-    return {"schema_version": SCHEMA_VERSION, "mode": "dry_run", "systems": systems}, all_entries
+    output = {"schema_version": SCHEMA_VERSION, "mode": "dry_run", "systems": systems}
+    if provider_options:
+        unresolved_targets = []
+        indexed = {(entry["system"], entry["snapshot_identity"], entry["market_code"], entry["line"], entry["side"]) for entry in all_entries}
+        for system, rows in rows_by_system.items():
+            for target in prediction_targets(rows, system)[0]:
+                key = (system, target["snapshot_identity"], target["market_code"], target["line"], target["side"])
+                if key not in indexed: unresolved_targets.append(target)
+        supplied, provider_audit = provider_entries(unresolved_targets, **provider_options)
+        all_entries.extend(supplied); output["provider_assisted"] = provider_audit
+        for entry in supplied:
+            system = entry["system"]; systems[system]["recovered_candidate_count"] += 1
+            marker = f"{entry.get("stage", "provider")}|{entry["market_code"]}|{entry["evidence_source_kind"]}"
+            systems[system]["recovered_by_stage_market_source"][marker] = systems[system]["recovered_by_stage_market_source"].get(marker, 0) + 1
+    return output, all_entries
 
 
 def apply(path: Path, entries: list[dict[str, Any]]) -> dict[str, int]:
@@ -497,13 +822,31 @@ def _load_rows(path: Path) -> list[dict[str, Any]]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Strict historical odds recovery; dry-run by default")
+    parser = argparse.ArgumentParser(description="Strict historical odds recovery; local dry-run by default")
     parser.add_argument("--footbreak-history", type=Path, required=True)
     parser.add_argument("--crown-history", type=Path, required=True)
     parser.add_argument("--allow", action="append", default=[], help="system=relative-or-absolute-path (repeatable)")
     parser.add_argument("--sidecar", type=Path, required=True)
-    parser.add_argument("--apply", action="store_true", help="explicitly append candidates to private sidecar")
+    parser.add_argument("--apply", action="store_true", help="append local-only candidates to private sidecar")
+    parser.add_argument(
+        "--apply-confirmation",
+        default="",
+        help="required exact phrase before any sidecar write",
+    )
+    provider_mode = parser.add_mutually_exclusive_group()
+    provider_mode.add_argument("--provider-audit", action="store_true", help="explicitly enable network provider audit; no sidecar write")
+    provider_mode.add_argument("--provider-apply", action="store_true", help="explicitly enable network provider audit and append candidates")
+    parser.add_argument("--provider", action="append", choices=("titan", "tipsme"), default=[], help="network provider to use (repeatable)")
+    parser.add_argument("--provider-cache", type=Path, help="private 0700/0600 raw-response cache directory")
+    parser.add_argument("--provider-rate", type=float, default=1.0, help="maximum provider requests per second (default 1)")
+    parser.add_argument("--provider-retries", type=int, default=2)
+    parser.add_argument("--tipsme-url-template", help="verified public Tipsme URL template; uses {MATCH_ID} and {market}")
     args = parser.parse_args()
+    if args.provider and not (args.provider_audit or args.provider_apply): parser.error("--provider requires --provider-audit or --provider-apply")
+    if (args.provider_audit or args.provider_apply) and not args.provider: parser.error("provider mode requires at least one --provider")
+    if (args.provider_audit or args.provider_apply) and not args.provider_cache: parser.error("provider mode requires --provider-cache private directory")
+    if (args.apply or args.provider_apply) and args.apply_confirmation != "APPLY_HISTORICAL_ODDS_RECOVERY":
+        parser.error("--apply and --provider-apply require --apply-confirmation APPLY_HISTORICAL_ODDS_RECOVERY")
     paths = {system: [] for system in ("footbreak", "crown")}
     for raw in args.allow:
         system, sep, value = raw.partition("=")
@@ -511,9 +854,14 @@ def main() -> None:
         paths[system].append(Path(value))
     if not args.allow:
         root = Path.cwd(); paths = {s: [root / p for p in values] for s, values in DEFAULT_ALLOWLIST.items()}
-    result, entries = report({"footbreak": _load_rows(args.footbreak_history), "crown": _load_rows(args.crown_history)}, paths)
-    if args.apply:
-        result["mode"] = "apply"; result["apply"] = apply(args.sidecar, entries)
+    provider_options = None
+    if args.provider_audit or args.provider_apply:
+        provider_options = {"providers": set(args.provider), "cache_dir": args.provider_cache, "rate_per_second": args.provider_rate, "retries": args.provider_retries, "tipsme_url_template": args.tipsme_url_template}
+    result, entries = report({"footbreak": _load_rows(args.footbreak_history), "crown": _load_rows(args.crown_history)}, paths, provider_options=provider_options)
+    if args.apply or args.provider_apply:
+        result["mode"] = "provider_apply" if args.provider_apply else "apply"; result["apply"] = apply(args.sidecar, entries)
+    elif args.provider_audit:
+        result["mode"] = "provider_audit"
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))
 
 if __name__ == "__main__": main()

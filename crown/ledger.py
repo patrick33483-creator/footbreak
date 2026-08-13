@@ -62,6 +62,13 @@ def _market_predictions(candidates: list[dict[str, Any]]) -> list[dict[str, Any]
     output = []
     for code, rows in grouped.items():
         best = max(rows, key=lambda row: float(row.get("prob") or 0))
+        odds = best.get("odds")
+        try:
+            odds_valid = float(odds) > 1.0
+        except (TypeError, ValueError):
+            odds_valid = False
+        observed_at = best.get("observed_at") or best.get("source_at")
+        quote_complete = odds_valid and observed_at is not None
         output.append({
             "code": code,
             "market": best.get("market"),
@@ -69,15 +76,49 @@ def _market_predictions(candidates: list[dict[str, Any]]) -> list[dict[str, Any]
             "line": best.get("line"),
             "side": best.get("side"),
             "label": best.get("label"),
-            "odds": best.get("odds"),
+            "odds": odds if quote_complete else None,
+            "odds_status": "available" if quote_complete else "missing",
+            "odds_reason": (
+                None if quote_complete
+                else (
+                    "selected_quote_timestamp_unavailable"
+                    if odds_valid else "selected_quote_unavailable"
+                )
+            ),
+            # Crown price rows carry source_at as epoch seconds.  Preserve it
+            # exactly; a missing observed timestamp remains explicit.
+            "observed_at": observed_at,
             "probability": best.get("prob"),
+            # Keep the historical learning-source field backward compatible;
+            # quote_source is the provider evidence for the selected price.
             "source": best.get("reference") or "pinnapi_exact_line",
+            "quote_source": best.get("source") or best.get("reference") or "pinnapi_exact_line",
             "provider": best.get("provider") or "Crown",
         })
     return sorted(output, key=lambda row: row["code"])
 
 
+def _selected_odds_journal(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [{
+        "code": row.get("code"), "line": row.get("line", row.get("condition")),
+        "side": row.get("side"), "odds": row.get("odds"),
+        "odds_status": row.get("odds_status"), "reason": row.get("odds_reason"),
+        "source": row.get("quote_source") or row.get("source"),
+        "provider": row.get("provider"),
+        "observed_at": row.get("observed_at"),
+    } for row in rows]
+
+
 def _snapshot(prediction: dict[str, Any], stage: str) -> dict[str, Any]:
+    market_predictions = _market_predictions(
+        prediction.get("forecast_candidates") or prediction.get("candidates") or []
+    )
+    odds_journal = _selected_odds_journal(market_predictions)
+    unavailable_quotes = [
+        row for row in odds_journal
+        if row.get("odds_status") != "available"
+    ]
+    all_selected_quotes_available = bool(odds_journal) and not unavailable_quotes
     snapshot = {key: prediction.get(key) for key in (
         "match_id", "league", "home", "away", "kickoff_hkt", "mins_to_ko", "status", "verdict",
         "conviction", "no_bet_reason", "pick", "shadow_pick", "shadow_status",
@@ -94,8 +135,17 @@ def _snapshot(prediction: dict[str, Any], stage: str) -> dict[str, Any]:
         "schema_version": PREDICTION_SCHEMA_VERSION,
         "stage": stage,
         "ts": iso_hkt(),
-        "market_predictions": _market_predictions(
-            prediction.get("forecast_candidates") or prediction.get("candidates") or []
+        "market_predictions": market_predictions,
+        "selected_odds_journal": odds_journal,
+        # A partial journal must not make the complete stage appear priced.
+        # Each market still retains its own explicit missing reason below.
+        "odds_status": "available" if all_selected_quotes_available else "missing",
+        "odds_reason": (
+            None if all_selected_quotes_available
+            else (
+                "one_or_more_selected_quotes_unavailable"
+                if odds_journal else "no_selected_market_quote"
+            )
         ),
     }
     # Persist only compact, verifiable provider provenance for the immutable

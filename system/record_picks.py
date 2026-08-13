@@ -85,7 +85,7 @@ def _slim_adjs(adjs):
     return out
 
 
-def _market_predictions(candidates):
+def _market_predictions(candidates, observed_at=None):
     """每個市場保留一個與賠率/EV無關的正式方向。
 
     主線優先；同一條主線兩邊之中，揀模型條件勝率較高的一邊。完整盤口
@@ -106,6 +106,13 @@ def _market_predictions(candidates):
             push = float(row.get("push") or 0)
             return probability / max(1e-9, 1.0 - push)
         best = max(pool, key=lambda row: (decided_probability(row), float(row.get("prob") or 0)))
+        odds = best.get("odds")
+        try:
+            odds_valid = float(odds) > 1.0
+        except (TypeError, ValueError):
+            odds_valid = False
+        quote_observed_at = best.get("observed_at") or best.get("source_at") or observed_at
+        quote_complete = odds_valid and quote_observed_at is not None
         output.append({
             "code": code,
             "market": best.get("market"),
@@ -117,14 +124,54 @@ def _market_predictions(candidates):
             "line": best.get("line", best.get("condition")),
             "side": best.get("side"),
             "label": best.get("label"),
-            "odds": best.get("odds"),
+            "odds": odds if quote_complete else None,
+            # A stage row with no price must be visibly incomplete.  This is
+            # intentionally data only: it does not change a decision, EV,
+            # Kelly, stake, notification, or settlement path.
+            "odds_status": "available" if quote_complete else "missing",
+            "odds_reason": (
+                None if quote_complete
+                else (
+                    "selected_quote_timestamp_unavailable"
+                    if odds_valid else "selected_quote_unavailable"
+                )
+            ),
+            # HKJC does not expose a tick timestamp per line.  The run
+            # captures `selected_odds_observed_at` immediately after reading
+            # the board, so keep it explicitly labelled as a board-observation
+            # time rather than misrepresenting it as a provider quote tick.
+            "observed_at": quote_observed_at,
+            "observed_board_at": observed_at,
+            "provider": best.get("provider") or "HKJC",
             "probability": round(decided_probability(best), 6),
             "win_probability": best.get("prob"),
             "push_probability": best.get("push"),
             "is_main": bool(best.get("is_main")),
-            "source": "footbreak_model_current_main_line",
+            "source": best.get("source") or "hkjc_public_board",
         })
     return sorted(output, key=lambda row: row["code"])
+
+
+def _odds_journal(r, market_predictions):
+    """Compact selected-quote evidence retained in each immutable stage payload.
+
+    The prediction engine does not expose a trustworthy historical tick time
+    for every HKJC line.  When that is unavailable the journal says so rather
+    than pretending that the prediction generation time was a quote time.
+    """
+    journal = []
+    for item in market_predictions:
+        journal.append({
+            "code": item.get("code"), "line": item.get("line", item.get("condition")),
+            "side": item.get("side"), "odds": item.get("odds"),
+            "odds_status": item.get("odds_status"),
+            "reason": item.get("odds_reason"),
+            "source": item.get("source"),
+            "provider": item.get("provider"),
+            "observed_at": item.get("observed_at"),
+            "observed_board_at": item.get("observed_board_at"),
+        })
+    return journal
 
 
 def _shadow_pick(result):
@@ -223,6 +270,9 @@ def _snap(r, now):
         verdict = "偏向"          # 有正值方向,但信念未夠
     else:
         verdict = "無傾向"
+    market_predictions = _market_predictions(cands, r.get("selected_odds_observed_at"))
+    odds_journal = _odds_journal(r, market_predictions)
+    missing_odds = [item for item in odds_journal if item["odds_status"] != "available"]
     return {
         "prediction_era": PREDICTION_ERA,
         "schema_version": PREDICTION_SCHEMA_VERSION,
@@ -272,7 +322,19 @@ def _snap(r, now):
         "adjustments": _slim_adjs(r.get("adjustments")),
         "mults": r.get("mults"),
         "outcome": r.get("outcome"),
-        "market_predictions": _market_predictions(cands),
+        "market_predictions": market_predictions,
+        # These top-level fields make no-price stage snapshots visible even
+        # when no market direction was selectable at all.
+        "odds_status": (
+            "available" if odds_journal and not missing_odds
+            else "missing"
+        ),
+        "odds_reason": (
+            None if odds_journal and not missing_odds
+            else ("no_selected_market_quote" if not odds_journal
+                  else "one_or_more_selected_quotes_unavailable")
+        ),
+        "selected_odds_journal": odds_journal,
         # 資訊齊唔齊
         "info": {
             "weather": bool(wx),

@@ -1086,6 +1086,22 @@ table.t.history-table td {
   display: inline;
   margin-left: 4px;
 }
+.history-market-meta {
+  display: inline-flex !important;
+  max-width: 100%;
+  flex-wrap: wrap;
+  gap: 2px 6px;
+  overflow-wrap: anywhere;
+}
+.history-market-odds {
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.history-market-odds.missing {
+  color: var(--amber);
+  white-space: normal;
+}
 .market-hit {
   display: inline-flex; gap: 4px; align-items: center;
   justify-self: end;
@@ -1120,12 +1136,32 @@ table.t.history-table td {
 .market-total.all-hit { color: var(--good); border-color: var(--good); }
 .market-total.some-hit { color: var(--amber); border-color: var(--amber); }
 .market-total.none-hit { color: var(--bad); border-color: var(--bad); }
+.current-odds-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--s2);
+}
+.current-odds-row {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 2px var(--s2);
+  padding: var(--s2);
+  border: 1px solid var(--line-soft);
+  border-radius: 5px;
+  font: 500 var(--text-xs)/1.45 var(--sans);
+  overflow-wrap: anywhere;
+}
+.current-odds-row b { color: var(--ink); }
+.current-odds-row small { grid-column: 1 / -1; color: var(--ink-4); }
+.current-odds-row .missing, .current-odds-row.missing { color: var(--amber); }
+.current-odds-note { margin: var(--s2) 0 0; color: var(--ink-4); font-size: var(--text-xs); }
 .hist-reason {
   max-width: 300px; white-space: normal;
   overflow-wrap: anywhere; line-height: 1.45;
 }
 
 @media (max-width: 620px) {
+  .current-odds-list { grid-template-columns: minmax(0, 1fr); }
   .stage-market-table th,
   .stage-market-table td { padding: var(--s2) var(--s1); }
   .stage-market-title { align-items: flex-start; flex-direction: column; gap: 0; }
@@ -1192,8 +1228,11 @@ table.t.history-table td {
   }
   .history-result-cell .cell-sub { font-size: 0.75rem; }
   .history-market-row {
-    grid-template-columns: minmax(0, 1fr) max-content;
-    gap: var(--s2);
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--s1);
+  }
+  .history-market-outcome {
+    align-items: flex-start;
   }
   .history-empty-row { display: block !important; }
   .history-empty-row .empty2::before { display: none; }

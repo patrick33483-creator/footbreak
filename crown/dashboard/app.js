@@ -344,6 +344,7 @@ function renderDetail(id) {
   let h = head(m, mm, st);
   h += oddsCompareCard(m);
   h += verdictCard(m);
+  h += currentOddsCard(m);
   h += driftCard(m);
   h += runsCard(m);
   h += `<div class="grid g2">${stagesCard(m)}${adjCard(m)}</div>`;
@@ -469,6 +470,41 @@ function verdictCard(m) {
     <p class="vd-note">${p.confidence_only
       ? `PinnAPI 無安全唯一同場時，不虛構 EV 或凱利值；只按即時完整皇冠盤及信念門檻建立 2% 本金模擬注。`
       : `注碼 = min(全凱利 × ${fracTxt()}${mktTxt(m)} × min(1, 信念/75), 單場上限 ${pc(DATA.ledger.stats.single_cap_pct, 0)}) × 本金 ${money(DATA.ledger.bankroll)},再受單日 100% / 在場 35% 組合上限約束。`}</p>
+  </div>`;
+}
+
+function currentOddsCard(m) {
+  const rows = m.current_selected_odds_journal || [];
+  if (!rows.length && !m.current_odds_status) return '';
+  const side = (row) => row.code === 'HDC'
+    ? ({ H: '主', A: '客' }[row.side] || row.side || '—')
+    : ({ H: '大', L: '細' }[row.side] || row.side || '—');
+  const reason = {
+    current_exact_quote_unavailable: '目前未有相同盤口選邊賠率',
+    one_or_more_current_selected_quotes_unavailable: '部分已選現價不可用',
+    no_current_selected_quote: '未有已選市場現價',
+  };
+  const seen = m.current_odds_refreshed_at
+    ? ` · 觀察 ${esc(hkStamp(m.current_odds_refreshed_at))}`
+    : '';
+  const items = rows.map((row) => {
+    const odds = Number(row.odds);
+    const price = Number.isFinite(odds) && odds > 1
+      ? `賠率 ${odds.toFixed(2)}`
+      : `賠率缺失 · ${esc(reason[row.reason] || row.reason || '未有已保存現價')}`;
+    return `<div class="current-odds-row"><b>${esc(row.code || '—')}</b>
+      <span>${esc(row.line ?? '—')} · ${esc(side(row))}</span>
+      <span class="${Number.isFinite(odds) && odds > 1 ? '' : 'missing'}">${price}</span>
+      <small>${esc(row.source || '—')} · ${esc(row.observed_board_at || row.observed_at || '時間未提供')}</small>
+    </div>`;
+  }).join('');
+  const empty = m.current_odds_status === 'missing' && !rows.length
+    ? `<div class="current-odds-row missing">賠率缺失 · ${esc(reason[m.current_odds_reason] || m.current_odds_reason || '未有已選市場現價')}</div>`
+    : '';
+  return `<div class="card current-odds">
+    <h2 class="card-h">目前已選賠率 <span class="sub">只供未開賽卡片參考；不會改寫首預／T-30／T-5 歷史</span></h2>
+    <div class="current-odds-list">${items || empty}</div>
+    <p class="current-odds-note">來源 ${esc(m.current_odds_refresh_source || 'titan007-crown-id-3')}${seen}</p>
   </div>`;
 }
 
@@ -1204,6 +1240,22 @@ function historyPredictionLabel(r, p) {
   if (p.code === 'CHL') return `${p.side === 'H' ? '大' : '細'} ${historyQuarterLine(line, false)} 角球`;
   return p.label || `${p.condition} ${p.side}`;
 }
+function historyOdds(p) {
+  const odds = Number(p.odds);
+  if (Number.isFinite(odds) && odds > 1) {
+    return `<span class="history-market-odds">賠率 ${odds.toFixed(2)}</span>`;
+  }
+  const reasons = {
+    selected_quote_unavailable: '未有可用選邊賠率',
+    no_selected_market_quote: '未有已選市場賠率',
+    one_or_more_selected_quotes_unavailable: '部分已選賠率不可用',
+    current_exact_quote_unavailable: '目前未有相同盤口賠率',
+  };
+  const raw = p.odds_reason || p.reason || '未有已保存賠率';
+  const reason = reasons[raw] || String(raw);
+  return `<span class="history-market-odds missing">賠率缺失 · ${esc(reason)}</span>`;
+}
+
 function historyCornerResult(r, p) {
   if (p.code !== 'CHL') return '';
   const raw = (r.result_detail || {}).corners_total ?? r.corners_total ?? r.corners;
@@ -1232,7 +1284,7 @@ function historyMarkets(r) {
     return `<div class="history-market-row">
       <span class="history-market-pick"><b>${HIST_MARKET_LABEL[p.code] || esc(p.code)}</b>
         ${esc(historyPredictionLabel(r, p))}
-        <span class="cell-sub">${pc(p.probability, 1)}</span>
+        <span class="cell-sub history-market-meta">${pc(p.probability, 1)} ${historyOdds(p)}</span>
       </span>
       ${result}
     </div>`;

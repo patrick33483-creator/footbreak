@@ -23,7 +23,7 @@ def _ensure_dashboard_path(path) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("mode", choices=("tick", "sweep", "settle", "health"))
+    parser.add_argument("mode", choices=("tick", "sweep", "settle", "refresh", "health"))
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
     config = settings()
@@ -46,6 +46,13 @@ def main() -> int:
     if not result.get("ok"):
         print(result)
         return 3
+    # `refresh` changes only current, not-yet-kicked-off dashboard quote
+    # fields.  It must never replay a stage, touch history, or contact
+    # Telegram.
+    if args.mode == "refresh":
+        write_dashboard_data(config)
+        print(result)
+        return 0
     ledger = load_ledger(config)
     history_warning = None
     try:

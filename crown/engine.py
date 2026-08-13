@@ -221,6 +221,9 @@ def _crown_market_forecasts(
             "side": side,
             "label": f"皇冠{market_label} {side_label} {display_line}",
             "odds": round(float(rows[side]["odds"]), 3),
+            # Keep the exact observed source time with the selected quote.
+            # It is carried into the immutable stage journal by ledger.py.
+            "observed_at": rows[side].get("source_at"),
             "prob": round(probability, 5),
             "conviction": round(probability * 100, 1),
             "provider": "Crown",
@@ -832,6 +835,57 @@ def _refresh_crown_quote(
             stale_markets.append(market)
     book_odds["crown"] = merged_prices
     refreshed["book_odds"] = book_odds
+    # A refresh is not a stage replay.  Keep a separate, visibly current
+    # selected-quote journal for the dashboard rather than mutating the
+    # immutable stage's market_predictions/learning payload.
+    current_selected = []
+    observed_board_at = refreshed["crown_quote_attempted_at"]
+    selected_views = (
+        refreshed.get("forecast_candidates")
+        or refreshed.get("market_predictions")
+        or []
+    )
+    for selected in selected_views:
+        if not isinstance(selected, dict):
+            continue
+        code, side = selected.get("code"), selected.get("side")
+        try:
+            line = float(selected.get("line", selected.get("condition")))
+        except (TypeError, ValueError):
+            continue
+        quote = next((
+            row for row in merged_prices
+            if row.get("market") == code
+            and row.get("selection") == side
+            and _line_key(str(code), row.get("line")) == _line_key(str(code), line)
+        ), None)
+        odds = quote.get("odds") if quote else None
+        try:
+            valid = float(odds) > 1
+        except (TypeError, ValueError):
+            valid = False
+        current_selected.append({
+            "code": code, "line": selected.get("line", selected.get("condition")),
+            "side": side, "odds": odds if valid else None,
+            "odds_status": "available" if valid else "missing",
+            "reason": None if valid else "current_exact_quote_unavailable",
+            "source": "titan007-crown-id-3", "provider": "Crown",
+            # Titan may expose a provider price timestamp.  Separately retain
+            # the exact board observation time of this refresh; neither value
+            # is inferred from an older prediction-stage generation time.
+            "observed_at": quote.get("source_at") if quote else observed_board_at,
+            "observed_board_at": observed_board_at,
+        })
+    refreshed["current_selected_odds_journal"] = current_selected
+    refreshed["current_odds_status"] = "available" if current_selected and all(
+        item["odds_status"] == "available" for item in current_selected
+    ) else "missing"
+    refreshed["current_odds_reason"] = (
+        None if refreshed["current_odds_status"] == "available"
+        else "no_current_selected_quote"
+    )
+    refreshed["current_odds_refreshed_at"] = observed_board_at
+    refreshed["current_odds_refresh_source"] = "titan007-crown-id-3"
     refreshed["crown_quote_stale_markets"] = stale_markets
     if not stale_markets:
         refreshed["crown_quote_refreshed_at"] = iso_hkt()
@@ -854,12 +908,49 @@ def _skip_new_confirmed_empty_crown(
     )
 
 
+def refresh_current_quotes(config: Settings) -> dict[str, Any]:
+    """Refresh dashboard-only quote fields for known, not-yet-started cards.
+
+    This command deliberately does not enter the matching, forecasting,
+    ledger, learning, settlement, bet, or notification paths.  In particular,
+    it cannot retrofit a current price into a completed historical stage.
+    """
+    now = datetime.now(HKT)
+    current = load_predictions(config)
+    titan = TitanClient(config)
+    updates: list[dict[str, Any]] = []
+    for card in current:
+        kickoff = parse_time(card.get("kickoff_hkt") or card.get("kickoff"))
+        match_id = str(card.get("titan_match_id") or card.get("match_id") or "")
+        if not match_id or kickoff is None or kickoff <= now:
+            continue
+        row = {
+            "id": match_id, "league": card.get("league") or "",
+            "home": card.get("home") or "", "away": card.get("away") or "",
+            "kickoff": kickoff,
+        }
+        try:
+            snapshot = titan.crown_price_snapshot(match_id)
+        except Exception:
+            snapshot = {"prices": [], "asian_ok": False, "total_ok": False}
+        updates.append(_refresh_crown_quote(card, row, titan, snapshot))
+    with state_lock(config):
+        retained = merge_predictions(config, updates, now=now)
+    return {
+        "ok": True, "mode": "refresh", "predictions": len(updates),
+        "retained_predictions": len(retained), "simulations_created": 0,
+        "fresh_t5_predictions": [], "safe_quote_refresh_only": True,
+    }
+
+
 def run(mode: str, config: Settings) -> dict[str, Any]:
     """Run a remote pass only when the explicit validation gate and PinnAPI key exist."""
-    if mode not in {"tick", "sweep", "settle"}:
-        raise ValueError("mode must be tick, sweep, or settle")
+    if mode not in {"tick", "sweep", "settle", "refresh"}:
+        raise ValueError("mode must be tick, sweep, settle, or refresh")
     if not config.enabled:
         return {"ok": False, "reason": "CROWN_ENABLED=0; no network call was made"}
+    if mode == "refresh":
+        return refresh_current_quotes(config)
     if not config.pinnapi_configured:
         return {"ok": False, "reason": "PinnAPI credentials are not configured; no network call was made"}
     if mode == "settle":

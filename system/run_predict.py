@@ -237,6 +237,9 @@ def analyse_match(m, fx, wx_city_override=None, news=None, prev_snap=None,
     home_ch = m["homeTeam"]["name_ch"]
     away_ch = m["awayTeam"]["name_ch"]
     hk = H.flatten_odds(m)
+    # The HKJC board does not give a per-line update timestamp.  This is the
+    # exact time this selected board was observed, not its opening updateAt.
+    selected_odds_observed_at = dt.datetime.now(HKT).isoformat(timespec="seconds")
     hname = ((fx or {}).get("home_team_display")
              or m.get("homeTeam", {}).get("name_en") or home_ch)
     aname = ((fx or {}).get("away_team_display")
@@ -400,6 +403,7 @@ def analyse_match(m, fx, wx_city_override=None, news=None, prev_snap=None,
         "source_status": source_status,
         "pinnapi_fixture_identity": pinnapi_identity,
         "hk_pool_opened": (m.get("foPools") or [{}])[0].get("updateAt"),
+        "selected_odds_observed_at": selected_odds_observed_at,
         "hk_moved_since_last": moved, "hk_max_move_pct": max_move,
         "hk_n_lines_moved": n_moved, "hk_fingerprint": fp,
         "open": ({k: round(v, 4) for k, v in op.items()} if op else None),

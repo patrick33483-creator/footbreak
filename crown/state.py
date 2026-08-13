@@ -100,6 +100,8 @@ def merge_predictions(
                     "generated_at", "source_snapshot_at",
                     "crown_quote_attempted_at", "crown_quote_refreshed_at",
                     "crown_quote_stale_markets", "book_odds",
+                    "current_selected_odds_journal", "current_odds_status",
+                    "current_odds_reason",
                 }
                 refreshed = dict(previous)
                 refreshed.update({

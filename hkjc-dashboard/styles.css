@@ -1187,6 +1187,22 @@ table.calib tr:last-child td { border-bottom: 0; }
   display: inline;
   margin-left: 4px;
 }
+.history-market-meta {
+  display: inline-flex !important;
+  max-width: 100%;
+  flex-wrap: wrap;
+  gap: 2px 6px;
+  overflow-wrap: anywhere;
+}
+.history-market-odds {
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.history-market-odds.missing {
+  color: var(--amber);
+  white-space: normal;
+}
 .market-hit {
   display: inline-flex; gap: 4px; align-items: center;
   margin: 0; padding: 1px 7px;
@@ -1221,6 +1237,33 @@ table.calib tr:last-child td { border-bottom: 0; }
 .market-total.all-hit { color: var(--good); border-color: var(--good); }
 .market-total.some-hit { color: var(--amber); border-color: var(--amber); }
 .market-total.none-hit { color: var(--bad); border-color: var(--bad); }
+.current-odds-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--s2);
+}
+.current-odds-row {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 2px var(--s2);
+  padding: var(--s2);
+  border: 1px solid var(--line-soft);
+  border-radius: 5px;
+  font: 500 var(--text-xs)/1.45 var(--sans);
+  overflow-wrap: anywhere;
+}
+.current-odds-row b { color: var(--ink); }
+.current-odds-row small { grid-column: 1 / -1; color: var(--ink-4); }
+.current-odds-row .missing, .current-odds-row.missing { color: var(--amber); }
+.current-odds-note { margin: var(--s2) 0 0; color: var(--ink-4); font-size: var(--text-xs); }
+@media (max-width: 620px) {
+  .history-market-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--s1);
+  }
+  .history-market-outcome { align-items: flex-start; }
+  .current-odds-list { grid-template-columns: minmax(0, 1fr); }
+}
 
 /* ─── 挑戰模型 · 隔離影子研究 ──────────────────────── */
 .chal-note b { color: var(--amber); }

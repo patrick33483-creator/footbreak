@@ -1,9 +1,13 @@
 from __future__ import annotations
 import copy, importlib.util, json, os, stat, sys, tempfile, unittest
+from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
 from pathlib import Path
 from analysis.odds_recovery import (
     apply, canonical_line, choose_quote, evidence_from_paths, overlay_rows,
-    prediction_targets, report, snapshot_identity,
+    prediction_targets, report, snapshot_identity, PrivateResponseCache,
+    ProviderFetcher, parse_titan_change_rows, titan_candidate,
+    parse_tipsme_chart_ticks, tipsme_candidate, tipsme_crosswalk,
 )
 from crown.prediction_history import calculate_stats
 SYSTEM_DIR = Path(__file__).resolve().parents[2] / "system"
@@ -302,6 +306,93 @@ class OddsRecoveryTests(unittest.TestCase):
             finally:
                 if old is None: os.environ.pop("ODDS_RECOVERY_SIDECAR", None)
                 else: os.environ["ODDS_RECOVERY_SIDECAR"] = old
+
+
+class ProviderRecoveryTests(unittest.TestCase):
+    KICKOFF = "2026-01-01T00:10:00+08:00"
+
+    def target(self, stage="T-30", market="HDC", side="H", line="-0.5"):
+        return {
+            "system": "crown", "fixture_identity": "persisted:titan-77",
+            "snapshot_identity": f"crown|persisted:titan-77|{stage}|2025-12-31T15:00:00+00:00",
+            "stage": stage, "market_code": market, "side": side, "line": line,
+            "predicted_at": datetime(2025, 12, 31, 15, tzinfo=timezone.utc),
+            "row": {"match_id": "titan-77", "titan_match_id": "titan-77",
+                    "kickoff": self.KICKOFF},
+        }
+
+    def test_titan_opening_locf_line_and_post_kickoff_exclusion(self):
+        # The name is deliberately masked: only exact company ID 3 qualifies.
+        html = """
+        <tr data-company-id="19"><td>1.90</td><td>0.5</td><td>0.20</td><td>12-31 23:30</td><td>即</td></tr>
+        <tr data-company-id="3"><td>0.70</td><td>0.5</td><td>0.90</td><td>12-31 23:20</td><td>即</td><td>***</td></tr>
+        <tr data-company-id="3"><td>0.80</td><td>0.5</td><td>0.80</td><td>12-31 23:35</td><td>即</td></tr>
+        <tr data-company-id="3"><td>0.20</td><td>0.25</td><td>1.90</td><td>12-31 23:36</td><td>即</td></tr>
+        <tr data-company-id="3"><td>1.20</td><td>0.5</td><td>0.50</td><td>01-01 00:11</td><td>滚</td></tr>
+        <tr data-company-id="3"><td>1.20</td><td>0.5</td><td>0.50</td><td>01-01 00:12</td><td>封</td></tr>
+        """
+        kickoff = datetime.fromisoformat(self.KICKOFF)
+        ticks = parse_titan_change_rows(html, "HDC", kickoff)
+        self.assertEqual([row["line"] for row in ticks], ["-0.5", "-0.5", "-0.25"])
+        # T-30 target is 23:40, so LOCF is 23:35, not the later/in-play price.
+        quote, reason = titan_candidate(self.target(), html, "https://example.test/titan")
+        self.assertIsNone(reason)
+        self.assertEqual(quote["odds"], "1.8")
+        # HK 0.70 normalizes to decimal 1.70 and remains at the high-tier boundary.
+        opening, reason = titan_candidate(self.target(stage="首預"), html, "https://example.test/titan")
+        self.assertIsNone(reason)
+        self.assertEqual(opening["odds"], "1.7")
+        self.assertEqual(opening["provider_evidence"]["company_id"], "3")
+        self.assertEqual(opening["provider_evidence"]["native_odds_format"], "hong_kong")
+
+    def test_titan_t5_uses_last_prior_irregular_tick_and_year_rollover(self):
+        html = """
+        <tr companyID="3"><td>0.71</td><td>2.5</td><td>0.92</td><td>12-31 23:57</td><td>即</td></tr>
+        <tr companyID="3"><td>0.73</td><td>2.5</td><td>0.89</td><td>01-01 00:03</td><td>即</td></tr>
+        """
+        target = self.target(stage="T-5", market="HIL", side="H", line="2.5")
+        quote, reason = titan_candidate(target, html, "https://example.test/titan-hil")
+        self.assertIsNone(reason)
+        self.assertEqual(quote["odds"], "1.73")
+        self.assertEqual(quote["provider_evidence"]["age_seconds"], 120.0)
+
+    def test_titan_rejects_wrong_bookmaker_and_no_prior_quote(self):
+        wrong = '<tr data-company-id="8"><td>0.7</td><td>0.5</td><td>0.9</td><td>12-31 23:30</td><td>即</td></tr>'
+        quote, reason = titan_candidate(self.target(), wrong, "https://example.test/titan")
+        self.assertIsNone(quote)
+        self.assertEqual(reason, "no_exact_fixture_market_line_side_evidence")
+        after = '<tr data-company-id="3"><td>0.7</td><td>0.5</td><td>0.9</td><td>12-31 23:50</td><td>即</td></tr>'
+        quote, reason = titan_candidate(self.target(), after, "https://example.test/titan")
+        self.assertIsNone(quote)
+        self.assertEqual(reason, "no_qualifying_prior_quote")
+
+    def test_private_cache_reuses_raw_response_without_network(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cache = PrivateResponseCache(Path(directory))
+            url = "https://example.test/page"
+            cache.put(url, b"<html>cached</html>", 200)
+            with patch("urllib.request.urlopen", side_effect=AssertionError("network should not run")):
+                body, cached, error = ProviderFetcher(cache).get(url)
+            self.assertEqual(body, "<html>cached</html>")
+            self.assertTrue(cached)
+            self.assertIsNone(error)
+            self.assertEqual(stat.S_IMODE(Path(directory).stat().st_mode), 0o700)
+            self.assertTrue(all(stat.S_IMODE(path.stat().st_mode) == 0o600
+                                for path in Path(directory).iterdir()))
+
+    def test_tipsme_requires_exact_crosswalk_and_timestamped_tick(self):
+        target = self.target()
+        target["row"] = {"hkjc_match_id": "HK-1", "tipsme_match_id": "TM-1"}
+        self.assertIsNone(tipsme_crosswalk(target))
+        target["row"]["tipsme_hkjc_match_id"] = "HK-1"
+        self.assertEqual(tipsme_crosswalk(target), "TM-1")
+        # A visible current price without a timestamp is never historical evidence.
+        sparse = '{"market":"hdp","line":"-0.5","home":0.70,"away":0.90,"current":true}'
+        self.assertEqual(parse_tipsme_chart_ticks(sparse, "HDC"), [])
+        target["row"]["kickoff"] = "2026-08-10T10:00:00+08:00"
+        quote, reason = tipsme_candidate(target, sparse, "https://example.test/tipsme")
+        self.assertIsNone(quote)
+        self.assertEqual(reason, "no_qualifying_prior_quote")
 
 class DecimalLike:
     def __str__(self): return "1.700"

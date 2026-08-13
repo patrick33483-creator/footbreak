@@ -24,6 +24,31 @@ class PredictionHistoryUiTests(unittest.TestCase):
         self.assertIn("const historyTime = (row)", app)
         self.assertIn("b[0] - a[0] || b[1] - a[1]", app)
 
+    def test_both_dashboards_show_saved_or_missing_odds_without_mobile_overflow(self) -> None:
+        for dashboard in ("hkjc-dashboard", "crown/dashboard"):
+            root = ROOT / dashboard
+            app = (root / "app.js").read_text(encoding="utf-8")
+            css = (root / "styles.css").read_text(encoding="utf-8")
+
+            self.assertIn("function historyOdds(p)", app)
+            self.assertIn("賠率 ${odds.toFixed(2)}", app)
+            self.assertIn("賠率缺失 · ${esc(reason)}", app)
+            self.assertIn("selected_quote_unavailable", app)
+            self.assertIn("history-market-meta", app)
+            self.assertIn("${historyOdds(p)}", app)
+            self.assertIn(".history-market-odds.missing", css)
+            self.assertIn("overflow-wrap: anywhere", css)
+            self.assertIn("flex-wrap: wrap", css)
+            # The compact screen layout has one responsive column, so a long
+            # missing-price reason cannot force the history table sideways.
+            self.assertIn("@media (max-width: 620px)", css)
+            self.assertIn("grid-template-columns: minmax(0, 1fr);", css)
+            self.assertIn("function currentOddsCard(m)", app)
+            self.assertIn("目前已選賠率", app)
+            self.assertIn("current_selected_odds_journal", app)
+            self.assertIn("observed_board_at", app)
+            self.assertIn(".current-odds-list", css)
+
     def test_both_dashboards_include_top_and_bottom_shortcuts(self) -> None:
         for dashboard in ("hkjc-dashboard", "crown/dashboard"):
             root = ROOT / dashboard

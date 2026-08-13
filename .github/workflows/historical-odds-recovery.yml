@@ -8,6 +8,12 @@ on:
         required: true
         default: AUDIT
         type: string
+      provider_mode:
+        description: 'LOCAL keeps the read-only audit offline. TITAN_AUDIT enables bounded server-side Titan recovery; TITAN_APPLY also requires the exact apply confirmation.'
+        required: true
+        default: LOCAL
+        type: choice
+        options: [LOCAL, TITAN_AUDIT, TITAN_APPLY]
 
 permissions:
   contents: read
@@ -48,14 +54,51 @@ jobs:
           name: historical-odds-recovery-audit
           path: historical-odds-recovery-audit.json
           retention-days: 7
+      - name: 明確啟用 Titan 供應商輔助稽核（只在伺服器）
+        if: ${{ inputs.provider_mode == 'TITAN_AUDIT' || inputs.provider_mode == 'TITAN_APPLY' }}
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          mode=--provider-audit
+          # An unconfirmed TITAN_APPLY is deliberately audit-only: it must
+          # neither append the overlay nor trigger public projection rebuilds.
+          if [ "${{ inputs.provider_mode }}" = "TITAN_APPLY" ] && [ "${{ inputs.apply_confirmation }}" = "APPLY_HISTORICAL_ODDS_RECOVERY" ]; then
+            mode=--provider-apply
+          fi
+          ssh "$DEPLOY_USER@$DEPLOY_HOST" "sudo /opt/footbreak/.venv/bin/python3 /opt/footbreak/analysis/odds_recovery.py \
+            $mode \
+            --apply-confirmation '${{ inputs.apply_confirmation }}' \
+            --provider titan \
+            --provider-rate 1 \
+            --provider-retries 2 \
+            --provider-cache /var/lib/footbreak/private/odds-recovery-provider-cache \
+            --footbreak-history /var/www/footbreak/data.json \
+            --crown-history /var/lib/footbreak/crown/prediction_history.json \
+            --sidecar /var/lib/footbreak/private/odds-recovery-overlay.json \
+            --allow footbreak=/opt/footbreak/system/snapshots \
+            --allow footbreak=/opt/footbreak/system/hk_snapshots.json \
+            --allow footbreak=/var/lib/footbreak/prediction_history_archive.json \
+            --allow footbreak=/opt/footbreak/system/sim_ledger.json \
+            --allow crown=/var/lib/footbreak/crown/prediction_history.json \
+            --allow crown=/var/lib/footbreak/crown/ledger.json \
+            --allow crown=/var/lib/footbreak/crown/source_snapshots" > historical-odds-recovery-provider.json
+      - name: 保存供應商輔助摘要（不含原始資料）
+        if: ${{ inputs.provider_mode == 'TITAN_AUDIT' || inputs.provider_mode == 'TITAN_APPLY' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: historical-odds-recovery-provider
+          path: historical-odds-recovery-provider.json
+          retention-days: 7
       - name: 明確確認後才寫入私有 sidecar
-        if: ${{ inputs.apply_confirmation == 'APPLY_HISTORICAL_ODDS_RECOVERY' }}
+        if: ${{ inputs.apply_confirmation == 'APPLY_HISTORICAL_ODDS_RECOVERY' && inputs.provider_mode == 'LOCAL' }}
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
         run: |
           ssh "$DEPLOY_USER@$DEPLOY_HOST" 'sudo /opt/footbreak/.venv/bin/python3 /opt/footbreak/analysis/odds_recovery.py \
             --apply \
+            --apply-confirmation APPLY_HISTORICAL_ODDS_RECOVERY \
             --footbreak-history /var/www/footbreak/data.json \
             --crown-history /var/lib/footbreak/crown/prediction_history.json \
             --sidecar /var/lib/footbreak/private/odds-recovery-overlay.json \
@@ -67,7 +110,7 @@ jobs:
             --allow crown=/var/lib/footbreak/crown/ledger.json \
             --allow crown=/var/lib/footbreak/crown/source_snapshots' > historical-odds-recovery-apply.json
       - name: 套用後只重生公開投影及驗證
-        if: ${{ inputs.apply_confirmation == 'APPLY_HISTORICAL_ODDS_RECOVERY' }}
+        if: ${{ inputs.apply_confirmation == 'APPLY_HISTORICAL_ODDS_RECOVERY' && (inputs.provider_mode == 'LOCAL' || inputs.provider_mode == 'TITAN_APPLY') }}
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
@@ -82,14 +125,14 @@ jobs:
             sudo env PYTHONPATH="$PYTHONPATH" "$PYTHON" /opt/footbreak/deploy/verify-result-integrity.py
             sudo env PYTHONPATH="$PYTHONPATH" "$PYTHON" /opt/footbreak/deploy/audit-result-state.py' > historical-odds-recovery-regeneration-audit.txt
       - name: 保存套用摘要（不含原始資料）
-        if: ${{ inputs.apply_confirmation == 'APPLY_HISTORICAL_ODDS_RECOVERY' }}
+        if: ${{ inputs.apply_confirmation == 'APPLY_HISTORICAL_ODDS_RECOVERY' && inputs.provider_mode == 'LOCAL' }}
         uses: actions/upload-artifact@v4
         with:
           name: historical-odds-recovery-apply
           path: historical-odds-recovery-apply.json
           retention-days: 7
       - name: 保存重生後驗證稽核
-        if: ${{ inputs.apply_confirmation == 'APPLY_HISTORICAL_ODDS_RECOVERY' }}
+        if: ${{ inputs.apply_confirmation == 'APPLY_HISTORICAL_ODDS_RECOVERY' && (inputs.provider_mode == 'LOCAL' || inputs.provider_mode == 'TITAN_APPLY') }}
         uses: actions/upload-artifact@v4
         with:
           name: historical-odds-recovery-regeneration-audit

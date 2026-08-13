@@ -24,7 +24,7 @@ jobs:
       - name: 檢查 shell 腳本
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
-          bash -n system/run_all.sh deploy/run.sh deploy/crown-run.sh deploy/reconcile-results.sh deploy/backtest-run.sh deploy/health-check.sh deploy/footbreak-tick-preempt.sh deploy/setup.sh deploy/update.sh
+          bash -n system/run_all.sh deploy/run.sh deploy/crown-run.sh deploy/reconcile-results.sh deploy/backtest-run.sh deploy/health-check.sh deploy/footbreak-tick-preempt.sh deploy/footbreak-refresh-current-odds.sh deploy/setup.sh deploy/update.sh
           shellcheck -S error deploy/*.sh system/run_all.sh || true
           echo "Shell 語法 OK"
 
@@ -95,3 +95,24 @@ jobs:
             echo "::error file=.github/workflows/deploy.yml,line=70::$health_error"
             exit "$health_rc"
           fi
+
+      - name: 部署後只刷新未開賽 Crown 現價（不重跑階段）
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          # refresh is explicitly dashboard-quote-only: no ledger/history
+          # mutation, settlement, simulation, or Telegram notification.
+          ssh "$DEPLOY_USER@$DEPLOY_HOST" \
+            'sudo /opt/footbreak/deploy/crown-run.sh refresh'
+
+      - name: 部署後只刷新未開賽 Footbreak 現價（不重跑階段）
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          # This command updates a separate current-quote journal for future
+          # cards only. It does not run prediction, ledger, settlement, bet,
+          # learning, or notification paths and fails closed on board errors.
+          ssh "$DEPLOY_USER@$DEPLOY_HOST" \
+            'sudo /opt/footbreak/deploy/footbreak-refresh-current-odds.sh'
