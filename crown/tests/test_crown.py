@@ -1362,6 +1362,7 @@ class CrownSafetyTests(unittest.TestCase):
                     "code": "HDC",
                     "side": "H",
                     "line": -0.5,
+                    "odds": 1.9,
                     "grade_status": "GRADED",
                     "settlement": "Won" if hit else "Lost",
                     "hit": hit,

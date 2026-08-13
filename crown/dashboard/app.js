@@ -1283,6 +1283,18 @@ function historyConsensusCards(stats) {
   const ranking = report.ranking || {};
   const rankCards = (ranking.top || []).map((item, index) => {
     const qualified = item.sample_qualified === true;
+    const audit = item.odds_bias || {};
+    const low = audit.low_odds || {};
+    const kept = audit.at_or_above_threshold || {};
+    const oddsLine = audit.priced_decided
+      ? `<div class="consensus-odds-audit">
+          <span class="eligible">≥1.70 主統計 ${kept.hits || 0}/${kept.decided || 0} (${kept.accuracy == null ? '—' : pc(kept.accuracy, 1)})</span>
+          <span>平均 ${f2(kept.average_odds)}</span>
+          <span class="low">&lt;1.70 獨立 ${low.hits || 0}/${low.decided || 0} (${low.accuracy == null ? '—' : pc(low.accuracy, 1)})</span>
+          <span>佔有賠率 ${pc(low.share, 1)} · 平均 ${f2(low.average_odds)}</span>
+          ${audit.missing_odds ? `<span>缺賠率 ${audit.missing_odds}</span>` : ''}
+        </div>`
+      : '<div class="consensus-odds-audit unavailable">賠率資料不足，未能檢查熱門盤偏差</div>';
     return `<article class="consensus-rank-card">
       <div class="consensus-rank-head">
         <span class="consensus-rank-number">#${index + 1}</span>
@@ -1290,7 +1302,8 @@ function historyConsensusCards(stats) {
       </div>
       <b>${esc(item.market_label || item.market)} · ${esc(item.condition_label || '')}</b>
       <div class="consensus-rank-rate">${pc(item.accuracy, 1)}</div>
-      <small>命中 ${item.hits || 0}/${item.decided || 0} · 收錄 ${item.fixtures || 0} 場</small>
+      <small>≥1.70 命中 ${item.hits || 0}/${item.decided || 0} · 合資格 ${item.fixtures || 0} 場</small>
+      ${oddsLine}
     </article>`;
   }).join('');
   const codes = ['HDC', 'HIL', 'CHL'];
@@ -1300,17 +1313,24 @@ function historyConsensusCards(stats) {
     const primary = stable.primary || {};
     const exactGroup = market.same_direction_and_line || {};
     const exact = exactGroup.primary || {};
+    const stableOdds = stable.odds_segments || {};
+    const stableLow = stableOdds.low_odds || {};
+    const exactOdds = exactGroup.odds_segments || {};
+    const exactLow = exactOdds.low_odds || {};
     const breakdown = exactGroup.breakdown || [];
     const enough = Number(primary.decided || 0) >= 30;
     const split = breakdown.map((item) => {
       const decided = Number(item.decided || 0);
-      const fixtures = Number(item.fixtures || 0);
+      const low = (item.odds_bias || {}).low_odds || {};
       const result = item.accuracy == null
         ? '待累積'
         : `${pc(item.accuracy, 1)} (${item.hits || 0}/${decided})`;
+      const lowResult = low.accuracy == null
+        ? '待累積'
+        : `${pc(low.accuracy, 1)} (${low.hits || 0}/${low.decided || 0})`;
       return `<div class="consensus-split-row">
         <b>${esc(item.label || item.key || '未分類')}</b>
-        <span>${fixtures} 場 · ${result}</span>
+        <span>≥1.70 ${result}<br>&lt;1.70 ${lowResult}</span>
       </div>`;
     }).join('');
     return `<article class="consensus-card">
@@ -1321,10 +1341,15 @@ function historyConsensusCards(stats) {
       <div class="consensus-rate ${primary.accuracy == null ? 'empty' : ''}">${
         primary.accuracy == null ? '待累積' : pc(primary.accuracy, 1)
       }</div>
-      <div class="consensus-meta">命中 ${primary.hits || 0}/${primary.decided || 0} · 方向一致 ${stable.fixtures || 0} 場</div>
-      <div class="consensus-detail">盤口曾變 ${stable.line_changed_fixtures || 0} 場</div>
-      <div class="consensus-exact">方向＋盤口完全一致 ${
+      <div class="consensus-meta">≥1.70 命中 ${primary.hits || 0}/${primary.decided || 0} · 合資格 ${primary.fixtures || 0} 場</div>
+      <div class="consensus-detail">&lt;1.70 獨立 ${
+        stableLow.accuracy == null ? '待累積' : `${pc(stableLow.accuracy, 1)} (${stableLow.hits || 0}/${stableLow.decided || 0})`
+      } · 盤口曾變 ${stable.line_changed_fixtures || 0} 場</div>
+      <div class="consensus-exact">方向＋盤口完全一致 ≥1.70 ${
         exact.accuracy == null ? '待累積' : `${pc(exact.accuracy, 1)} (${exact.hits || 0}/${exact.decided || 0})`
+      }</div>
+      <div class="consensus-detail">方向＋盤口完全一致 &lt;1.70 ${
+        exactLow.accuracy == null ? '待累積' : `${pc(exactLow.accuracy, 1)} (${exactLow.hits || 0}/${exactLow.decided || 0})`
       }</div>
       <div class="consensus-split" aria-label="${HIST_MARKET_LABEL[code]}方向及盤口完全一致拆分">
         <div class="consensus-split-title">完全一致拆分</div>
@@ -1334,13 +1359,13 @@ function historyConsensusCards(stats) {
   };
   return `<section class="consensus-block" aria-label="首預、T-30及T-5方向一致命中率">
     <div class="consensus-ranking-block" aria-label="最高命中條件自動排名">
-      <div class="stage-market-title">最高命中條件自動排名 <span>已決定樣本多於 ${ranking.minimum_decided || 30} 場優先，再按命中率排序</span></div>
+      <div class="stage-market-title">最高命中條件自動排名 <span>只計 T-5 賠率 ≥1.70；樣本多於 ${ranking.minimum_decided || 30} 場優先</span></div>
       <div class="consensus-ranking-grid">${rankCards || '<div class="consensus-ranking-empty">暫時未有已結算條件可排名</div>'}</div>
-      <p class="consensus-ranking-note">只統計首預、T-30、T-5 方向及盤口完全一致、並以 T-5 結算的場次。命中率排名唔等於 +EV，仍要配合實際賠率、ROI 同 CLV 驗證。</p>
+      <p class="consensus-ranking-note">主排名已抽走 T-5 賠率低於 1.70 及缺賠率場次；低賠結果獨立列出，不會推高主統計。命中率排名唔等於 +EV，仍要配合 ROI 同 CLV 驗證。</p>
     </div>
     <div class="stage-market-title">三階段一致命中率 <span>首預、T-30、T-5 同方向 · 每場只計一次，以 T-5 盤口結算</span></div>
     <div class="consensus-grid">${codes.map(card).join('')}</div>
-    <p class="consensus-note">走水及未能評分紀錄不計入命中率分母；少於 30 個已決定樣本只作觀察。</p>
+    <p class="consensus-note">主統計只計 T-5 賠率 ≥1.70；低於 1.70 獨立顯示，缺賠率、走水及未能評分紀錄不計入分母。</p>
   </section>`;
 }
 

@@ -8,6 +8,7 @@ STAGES = ("首預", "T-30", "T-5")
 MARKETS = ("HDC", "HIL", "CHL")
 MARKET_LABELS = {"HDC": "讓球", "HIL": "入球大細", "CHL": "角球大細"}
 RANKING_MIN_DECIDED = 30
+LOW_ODDS_THRESHOLD = 1.70
 
 
 def _line(grade: dict[str, Any]) -> float | None:
@@ -36,6 +37,78 @@ def _metrics(
         "decided": len(grades),
         "hits": hits,
         "accuracy": round(hits / len(grades), 6) if grades else None,
+    }
+
+
+def _samples_by_odds(
+    samples: list[dict[str, dict[str, Any]]],
+    band: str,
+    stage: str = "T-5",
+) -> list[dict[str, dict[str, Any]]]:
+    selected = []
+    for sample in samples:
+        try:
+            odds = float(sample[stage].get("odds"))
+        except (KeyError, TypeError, ValueError):
+            continue
+        if odds <= 1.0:
+            continue
+        if band == "low" and odds < LOW_ODDS_THRESHOLD:
+            selected.append(sample)
+        elif band == "eligible" and odds >= LOW_ODDS_THRESHOLD:
+            selected.append(sample)
+    return selected
+
+
+def _odds_bias(
+    samples: list[dict[str, dict[str, Any]]],
+    stage: str = "T-5",
+) -> dict[str, Any]:
+    grades = [
+        sample[stage]
+        for sample in samples
+        if sample[stage].get("grade_status") == "GRADED"
+        and sample[stage].get("hit") is not None
+    ]
+    priced = []
+    for grade in grades:
+        try:
+            odds = float(grade.get("odds"))
+        except (TypeError, ValueError):
+            continue
+        if odds > 1.0:
+            priced.append((grade, odds))
+    low = [item for item in priced if item[1] < LOW_ODDS_THRESHOLD]
+    eligible = [item for item in priced if item[1] >= LOW_ODDS_THRESHOLD]
+
+    def cohort(items: list[tuple[dict[str, Any], float]]) -> dict[str, Any]:
+        hits = sum(grade.get("hit") is True for grade, _ in items)
+        return {
+            "decided": len(items),
+            "hits": hits,
+            "accuracy": round(hits / len(items), 6) if items else None,
+            "average_odds": (
+                round(sum(odds for _, odds in items) / len(items), 3)
+                if items else None
+            ),
+        }
+
+    low_metrics = cohort(low)
+    eligible_metrics = cohort(eligible)
+    return {
+        "threshold": LOW_ODDS_THRESHOLD,
+        "decided": len(grades),
+        "priced_decided": len(priced),
+        "missing_odds": len(grades) - len(priced),
+        "average_odds": (
+            round(sum(odds for _, odds in priced) / len(priced), 3)
+            if priced else None
+        ),
+        "low_odds": {
+            **low_metrics,
+            "share": round(len(low) / len(priced), 6) if priced else None,
+        },
+        "at_or_above_threshold": eligible_metrics,
     }
 
 
@@ -75,7 +148,14 @@ def _breakdown(
     output = []
     for key, label in definitions:
         subset = [sample for sample in samples if category(sample) == key]
-        output.append({"key": key, "label": label, **_metrics(subset, "T-5")})
+        eligible = _samples_by_odds(subset, "eligible")
+        output.append({
+            "key": key,
+            "label": label,
+            **_metrics(eligible, "T-5"),
+            "all_fixtures": len(subset),
+            "odds_bias": _odds_bias(subset),
+        })
     return output
 
 
@@ -125,14 +205,22 @@ def calculate_three_stage_consensus(
                 "line_changed_fixtures": (
                     len(same_direction) - len(same_direction_and_line)
                 ),
-                "primary": _metrics(same_direction, "T-5"),
+                "primary": _metrics(
+                    _samples_by_odds(same_direction, "eligible"),
+                    "T-5",
+                ),
+                "odds_segments": _odds_bias(same_direction),
                 "stage_diagnostics": {
                     stage: _metrics(same_direction, stage) for stage in STAGES
                 },
             },
             "same_direction_and_line": {
                 "fixtures": len(same_direction_and_line),
-                "primary": _metrics(same_direction_and_line, "T-5"),
+                "primary": _metrics(
+                    _samples_by_odds(same_direction_and_line, "eligible"),
+                    "T-5",
+                ),
+                "odds_segments": _odds_bias(same_direction_and_line),
                 "breakdown": _breakdown(same_direction_and_line, code),
                 "stage_diagnostics": {
                     stage: _metrics(same_direction_and_line, stage)
@@ -151,10 +239,12 @@ def calculate_three_stage_consensus(
                 "condition_key": item["key"],
                 "condition_label": item["label"],
                 "fixtures": item["fixtures"],
+                "all_fixtures": item["all_fixtures"],
                 "decided": item["decided"],
                 "hits": item["hits"],
                 "accuracy": item["accuracy"],
                 "sample_qualified": item["decided"] > RANKING_MIN_DECIDED,
+                "odds_bias": item["odds_bias"],
             })
     ranking_candidates.sort(key=lambda item: (
         -int(item["sample_qualified"]),
@@ -167,9 +257,13 @@ def calculate_three_stage_consensus(
     return {
         "definition": "same selection side at 首預, T-30 and T-5",
         "primary_unit": "one unique fixture per market, graded at T-5 line",
+        "primary_odds_scope": "T-5 selected odds >= 1.70",
+        "low_odds_scope": "T-5 selected odds < 1.70, reported separately",
+        "missing_odds_excluded": True,
         "pushes_excluded": True,
         "ranking": {
             "scope": "same direction and exact line at all three stages",
+            "odds_scope": "T-5 selected odds >= 1.70 only",
             "minimum_decided": RANKING_MIN_DECIDED,
             "priority": "qualified sample first, then accuracy, then decided sample",
             "top": ranking_candidates[:3],

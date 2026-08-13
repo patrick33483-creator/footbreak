@@ -6,7 +6,7 @@ from analysis.three_stage_consensus import STAGES, calculate_three_stage_consens
 
 
 def row(match: str, stage: str, code: str, side: str, line: float,
-        hit: bool | None, status: str = "GRADED") -> dict:
+        hit: bool | None, status: str = "GRADED", odds: float | None = 1.9) -> dict:
     return {
         "match_id": match,
         "stage": stage,
@@ -16,6 +16,7 @@ def row(match: str, stage: str, code: str, side: str, line: float,
             "line": line,
             "grade_status": status,
             "hit": hit,
+            "odds": odds,
         }],
     }
 
@@ -155,6 +156,69 @@ class ThreeStageConsensusTests(unittest.TestCase):
         self.assertTrue(ranking["top"][0]["sample_qualified"])
         self.assertFalse(ranking["top"][1]["sample_qualified"])
         self.assertFalse(ranking["top"][2]["sample_qualified"])
+
+    def test_ranking_exposes_low_odds_bias_and_excluded_accuracy(self) -> None:
+        rows = []
+        fixtures = (
+            ("low-win", 1.50, True),
+            ("low-loss", 1.69, False),
+            ("kept-win", 1.70, True),
+            ("kept-loss", 2.00, False),
+            ("missing-win", None, True),
+        )
+        for match, odds, hit in fixtures:
+            rows.extend(
+                row(match, stage, "HIL", "L", 2.5, hit, odds=odds)
+                for stage in STAGES
+            )
+
+        under = calculate_three_stage_consensus(rows)["ranking"]["top"][0]
+        audit = under["odds_bias"]
+
+        self.assertEqual(under["decided"], 2)
+        self.assertEqual(under["hits"], 1)
+        self.assertEqual(under["accuracy"], 0.5)
+        self.assertEqual(audit["threshold"], 1.70)
+        self.assertEqual(audit["decided"], 5)
+        self.assertEqual(audit["priced_decided"], 4)
+        self.assertEqual(audit["missing_odds"], 1)
+        self.assertEqual(audit["average_odds"], 1.722)
+        self.assertEqual(audit["low_odds"]["decided"], 2)
+        self.assertEqual(audit["low_odds"]["hits"], 1)
+        self.assertEqual(audit["low_odds"]["accuracy"], 0.5)
+        self.assertEqual(audit["low_odds"]["average_odds"], 1.595)
+        self.assertEqual(audit["low_odds"]["share"], 0.5)
+        self.assertEqual(audit["at_or_above_threshold"]["decided"], 2)
+        self.assertEqual(audit["at_or_above_threshold"]["hits"], 1)
+        self.assertEqual(audit["at_or_above_threshold"]["accuracy"], 0.5)
+        self.assertEqual(audit["at_or_above_threshold"]["average_odds"], 1.85)
+
+    def test_low_or_missing_odds_never_enter_main_statistics_or_ranking(self) -> None:
+        rows = []
+        for match, odds, hit in (
+            ("low-win", 1.50, True),
+            ("low-loss", 1.69, False),
+            ("missing-win", None, True),
+        ):
+            rows.extend(
+                row(match, stage, "CHL", "L", 9.5, hit, odds=odds)
+                for stage in STAGES
+            )
+
+        report = calculate_three_stage_consensus(rows)
+        market = report["markets"]["CHL"]
+        under = {
+            item["key"]: item
+            for item in market["same_direction_and_line"]["breakdown"]
+        }["under"]
+
+        self.assertEqual(market["same_direction"]["primary"]["decided"], 0)
+        self.assertIsNone(market["same_direction"]["primary"]["accuracy"])
+        self.assertEqual(under["decided"], 0)
+        self.assertEqual(under["all_fixtures"], 3)
+        self.assertEqual(under["odds_bias"]["low_odds"]["decided"], 2)
+        self.assertEqual(under["odds_bias"]["missing_odds"], 1)
+        self.assertEqual(report["ranking"]["candidate_count"], 0)
 
 
 if __name__ == "__main__":

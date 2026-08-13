@@ -1510,6 +1510,21 @@ table.calib tr:last-child td { border-bottom: 0; }
   overflow-wrap: anywhere;
 }
 .consensus-ranking-note { margin: var(--s2) 0 0; }
+.consensus-odds-audit {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255,255,255,.08);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+  font-variant-numeric: tabular-nums lining-nums;
+}
+.consensus-odds-audit .eligible { color: var(--ink); font-weight: 700; }
+.consensus-odds-audit .low { color: var(--warn); font-weight: 700; }
+.consensus-odds-audit.unavailable { color: var(--warn); }
 .consensus-ranking-empty {
   grid-column: 1 / -1;
   padding: var(--s3);
