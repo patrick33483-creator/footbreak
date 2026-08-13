@@ -67,6 +67,9 @@ jobs:
                       return value
               return None
 
+          def is_target_kickoff(value):
+              return str(value or "").strip().replace(" ", "T").startswith("2026-08-11T00:30")
+
           rows = _load_rows(HISTORY)
           fixture_rows = []
           for row in rows:
@@ -76,7 +79,7 @@ jobs:
               if (
                   text_hash(home) == HOME_HASH
                   and text_hash(away) == AWAY_HASH
-                  and str(kickoff or "").startswith("2026-08-11T00:30")
+                  and is_target_kickoff(kickoff)
               ):
                   fixture_rows.append(row)
 
@@ -173,6 +176,9 @@ jobs:
           def text_hash(value):
               return hashlib.sha256(str(value or "").strip().encode("utf-8")).hexdigest()
 
+          def is_target_kickoff(value):
+              return str(value or "").strip().replace(" ", "T").startswith("2026-08-11T00:30")
+
           payload = json.loads(Path("/var/www/footbreak/data.json").read_text(encoding="utf-8"))
           rows = (payload.get("prediction_history") or {}).get("rows") or []
           found = set()
@@ -183,7 +189,7 @@ jobs:
               if (
                   text_hash(home) != HOME_HASH
                   or text_hash(away) != AWAY_HASH
-                  or not str(kickoff or "").startswith("2026-08-11T00:30")
+                  or not is_target_kickoff(kickoff)
                   or row.get("stage") not in {"首預", "T-30"}
               ):
                   continue
