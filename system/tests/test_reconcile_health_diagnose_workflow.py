@@ -46,6 +46,20 @@ class ReconcileHealthDiagnoseWorkflowTests(unittest.TestCase):
             "'duplicate match/stage rows')",
             text,
         )
+        for category in (
+            "footbreak_history_shape",
+            "crown_history_shape",
+            "footbreak_finite_values",
+            "crown_finite_values",
+            "footbreak_market_stats",
+            "crown_market_stats",
+            "crown_publication_projection",
+        ):
+            self.assertIn(
+                f"integrity_category_{category}=$(count_journal_matches "
+                f"'integrity_check={category}')",
+                text,
+            )
         self.assertIn("current_integrity_category=${verifier_category:-none}", text)
         self.assertIn("grep -Eo 'integrity_check=[a-z_]+'", text)
         self.assertNotIn('echo "$verifier_output"', text)
