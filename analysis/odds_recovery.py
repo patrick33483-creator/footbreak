@@ -905,7 +905,10 @@ def provider_entries(targets: list[dict[str, Any]], *, providers: set[str], cach
     for plan in plans:
         target = plan["target"]; candidate = plan["candidate"]; reason = plan["reason"]
         if candidate:
-            entries.append(_entry(target, candidate)); recovered[f"{target['stage']}|{target['market_code']}|{candidate['source_kind']}"] += 1
+            entry = _entry(target, candidate)
+            _validate_entry(entry)
+            entries.append(entry)
+            recovered[f"{target['stage']}|{target['market_code']}|{candidate['source_kind']}"] += 1
         elif reason:
             failures[reason] += 1
     ages = [entry["evidence_age_seconds"] for entry in entries]
