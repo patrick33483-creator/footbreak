@@ -439,7 +439,10 @@ def _prediction_history_stats(rows):
         for stage in HISTORY_STAGES
     }
 
-    from analysis.three_stage_consensus import calculate_three_stage_consensus
+    from analysis.three_stage_consensus import (
+        calculate_three_stage_consensus,
+        calculate_three_stage_transitions,
+    )
 
     return {
         "matches": len({r.get("match_id") for r in rows}),
@@ -460,6 +463,7 @@ def _prediction_history_stats(rows):
         "by_stage_market": by_stage_market,
         "market_overall": market_metrics(rows),
         "three_stage_consensus": calculate_three_stage_consensus(rows),
+        "three_stage_transitions": calculate_three_stage_transitions(rows),
         "learning_status": "collecting_market_level_shadow_samples",
     }
 

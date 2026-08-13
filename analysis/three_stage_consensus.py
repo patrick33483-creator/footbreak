@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+import json
 from typing import Any
 
 
@@ -10,6 +11,24 @@ MARKETS = ("HDC", "HIL", "CHL")
 MARKET_LABELS = {"HDC": "讓球", "HIL": "入球大細", "CHL": "角球大細"}
 RANKING_MIN_DECIDED = 30
 LOW_ODDS_THRESHOLD = 1.70
+
+TRANSITION_CONDITIONS = (
+    (
+        "same_direction_line_moved",
+        "同向改盤",
+        "三段同一選擇，但數字盤口曾改動",
+    ),
+    (
+        "first_missing_then_stable",
+        "首預缺向後定",
+        "首預冇有效方向；T-30 有方向，並維持到 T-5",
+    ),
+    (
+        "flip_then_stable",
+        "T-30 反向後定",
+        "首預有方向；T-30 反向，並維持到 T-5",
+    ),
+)
 
 
 def _line(grade: dict[str, Any]) -> float | None:
@@ -21,6 +40,105 @@ def _line(grade: dict[str, Any]) -> float | None:
     except (TypeError, ValueError):
         return None
     return value if math.isfinite(value) else None
+
+
+def _valid_odds(value: Any) -> float | None:
+    try:
+        odds = float(value)
+    except (TypeError, ValueError):
+        return None
+    return odds if math.isfinite(odds) and odds > 1.0 else None
+
+
+def _canonical_team(value: Any) -> str | None:
+    text = "".join(str(value or "").split()).casefold()
+    return text or None
+
+
+def _direction_identity(grade: dict[str, Any], code: str) -> str | None:
+    """Return a selection identity suitable for cross-stage comparisons.
+
+    HDC is intentionally identified by the actual selected team.  A home/away
+    token alone is not sufficient because source feeds can reverse team order
+    between snapshots.  HIL and CHL have the two stable semantic choices,
+    over and under.
+    """
+    side = str(grade.get("side") or "")
+    if _line(grade) is None:
+        return None
+    if code == "HDC":
+        if side not in {"H", "A"}:
+            return None
+        team = None
+        for key in ("selected_team", "selection_team", "team"):
+            team = _canonical_team(grade.get(key))
+            if team:
+                break
+        if not team:
+            team = _canonical_team(
+                grade.get("_fixture_home") if side == "H" else grade.get("_fixture_away")
+            )
+        return f"team:{team}" if team else None
+    if code in {"HIL", "CHL"} and side in {"H", "L"}:
+        return "over" if side == "H" else "under"
+    return None
+
+
+def _selection_line(grade: dict[str, Any], code: str) -> float | None:
+    """Return the numeric line from the selected side's perspective."""
+    line = _line(grade)
+    if line is None:
+        return None
+    if code == "HDC" and str(grade.get("side") or "") == "A":
+        return -line
+    return line
+
+
+def _deterministic_grade(
+    rows: list[tuple[dict[str, Any], dict[str, Any]]],
+) -> dict[str, Any]:
+    """Choose one duplicate stage row without relying on source input order."""
+    def rank(item: tuple[dict[str, Any], dict[str, Any]]) -> tuple[str, str]:
+        row, grade = item
+        payload = {
+            "row": row,
+            "grade": grade,
+        }
+        return (
+            str(row.get("predicted_at") or row.get("ts") or ""),
+            json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str),
+        )
+
+    row, grade = max(rows, key=rank)
+    selected = dict(grade)
+    selected["_fixture_home"] = row.get("home")
+    selected["_fixture_away"] = row.get("away")
+    return selected
+
+
+def _group_market_stages(rows: list[dict[str, Any]]) -> dict[
+    tuple[str, str], dict[str, dict[str, Any]]
+]:
+    """Build one deterministic grade for each fixture, market and stage."""
+    candidates: dict[
+        tuple[str, str, str], list[tuple[dict[str, Any], dict[str, Any]]]
+    ] = {}
+    for row in rows:
+        match_id = str(row.get("match_id") or "")
+        stage = str(row.get("stage") or "")
+        if not match_id or stage not in STAGES:
+            continue
+        for grade in row.get("market_grades") or []:
+            if not isinstance(grade, dict):
+                continue
+            code = str(grade.get("code") or "")
+            if code in MARKETS:
+                candidates.setdefault((match_id, code, stage), []).append((row, grade))
+
+    grouped: dict[tuple[str, str], dict[str, dict[str, Any]]] = {}
+    for (match_id, code, stage), duplicates in candidates.items():
+        grouped.setdefault((match_id, code), {})[stage] = _deterministic_grade(duplicates)
+    return grouped
 
 
 def _metrics(
@@ -172,6 +290,170 @@ def _breakdown(
     return output
 
 
+def _transition_metrics(samples: list[dict[str, dict[str, Any]]]) -> dict[str, Any]:
+    """Metrics for valid-priced, T-5-settled transition samples.
+
+    ``fixtures`` retains graded pushes for auditability, while ``decided`` is
+    deliberately limited to won/lost outcomes.  Callers pre-filter invalid
+    prices, so no missing or invalid odds can enter this public aggregate.
+    """
+    t5 = [sample["T-5"] for sample in samples]
+    decided = [grade for grade in t5 if grade.get("hit") is not None]
+    hits = sum(grade.get("hit") is True for grade in decided)
+    return {
+        "fixtures": len(t5),
+        "settled": len(t5),
+        "pushes": len(t5) - len(decided),
+        "decided": len(decided),
+        "hits": hits,
+        "accuracy": round(hits / len(decided), 6) if decided else None,
+    }
+
+
+def _transition_tiers(
+    samples: list[dict[str, dict[str, Any]]],
+) -> dict[str, dict[str, Any]]:
+    return {
+        "at_or_above_1_70": _transition_metrics([
+            sample for sample in samples
+            if (_valid_odds(sample["T-5"].get("odds")) or 0) >= LOW_ODDS_THRESHOLD
+        ]),
+        "below_1_70": _transition_metrics([
+            sample for sample in samples
+            if (
+                (odds := _valid_odds(sample["T-5"].get("odds"))) is not None
+                and odds < LOW_ODDS_THRESHOLD
+            )
+        ]),
+    }
+
+
+def _transition_category(
+    sample: dict[str, dict[str, Any]],
+    code: str,
+) -> str | None:
+    grade = sample["T-5"]
+    side = str(grade.get("side") or "")
+    if code == "HDC":
+        line = _line(grade)
+        if line is None or side not in {"H", "A"}:
+            return None
+        if abs(line) < 1e-9:
+            return "scratch_home" if side == "H" else "scratch_away"
+        if side == "H":
+            return "home_giving" if line < 0 else "home_receiving"
+        return "away_giving" if line > 0 else "away_receiving"
+    return {"H": "over", "L": "under"}.get(side)
+
+
+def _transition_breakdown(
+    samples: list[dict[str, dict[str, Any]]],
+    code: str,
+) -> list[dict[str, Any]]:
+    definitions = (
+        (
+            ("home_giving", "主讓"),
+            ("home_receiving", "主受讓"),
+            ("scratch_home", "平手盤（主）"),
+            ("scratch_away", "平手盤（客）"),
+            ("away_giving", "客讓"),
+            ("away_receiving", "客受讓"),
+        )
+        if code == "HDC"
+        else (("over", "大" if code == "HIL" else "角球大"),
+              ("under", "細" if code == "HIL" else "角球細"))
+    )
+    return [
+        {
+            "key": key,
+            "label": label,
+            "tiers": _transition_tiers([
+                sample for sample in samples
+                if _transition_category(sample, code) == key
+            ]),
+        }
+        for key, label in definitions
+    ]
+
+
+def _eligible_transition_sample(stage_grades: dict[str, dict[str, Any]]) -> bool:
+    """A public transition requires a valid T-5 price and settled result."""
+    t5 = stage_grades.get("T-5")
+    return bool(
+        t5
+        and t5.get("grade_status") == "GRADED"
+        and _valid_odds(t5.get("odds")) is not None
+    )
+
+
+def _transition_matches(
+    stage_grades: dict[str, dict[str, Any]],
+    code: str,
+) -> set[str]:
+    """Return the transition condition keys met by one fixture/market."""
+    first = stage_grades.get("首預")
+    t30 = stage_grades.get("T-30")
+    t5 = stage_grades.get("T-5")
+    first_direction = _direction_identity(first, code) if first else None
+    t30_direction = _direction_identity(t30, code) if t30 else None
+    t5_direction = _direction_identity(t5, code) if t5 else None
+    matched: set[str] = set()
+
+    if first_direction and t30_direction and t5_direction:
+        if first_direction == t30_direction == t5_direction:
+            lines = [
+                _selection_line(first, code),
+                _selection_line(t30, code),
+                _selection_line(t5, code),
+            ]
+            if len(set(lines)) > 1:
+                matched.add("same_direction_line_moved")
+        if t30_direction != first_direction and t5_direction == t30_direction:
+            matched.add("flip_then_stable")
+    if not first_direction and t30_direction and t5_direction == t30_direction:
+        matched.add("first_missing_then_stable")
+    return matched
+
+
+def calculate_three_stage_transitions(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Aggregate the three auditable three-stage transition conditions.
+
+    This report is intentionally separate from exact-consensus reporting.
+    One deterministic fixture+market grade is retained per stage; public
+    counts then accept only valid selected T-5 decimal odds and a settled T-5
+    market result.  A push is retained in its odds tier but never in a hit-rate
+    denominator.
+    """
+    grouped = _group_market_stages(rows)
+    by_condition: dict[str, dict[str, Any]] = {}
+    for condition_key, label, definition in TRANSITION_CONDITIONS:
+        market_data: dict[str, Any] = {}
+        for code in MARKETS:
+            samples = [
+                stages
+                for (_, grouped_code), stages in grouped.items()
+                if grouped_code == code
+                and _eligible_transition_sample(stages)
+                and condition_key in _transition_matches(stages, code)
+            ]
+            market_data[code] = {
+                "aggregate": {"tiers": _transition_tiers(samples)},
+                "breakdown": _transition_breakdown(samples, code),
+            }
+        by_condition[condition_key] = {
+            "label": label,
+            "definition": definition,
+            "markets": market_data,
+        }
+    return {
+        "primary_unit": "one deterministic fixture per market, settled and graded at T-5",
+        "t5_selected_odds": "valid decimal selected odds only; >= 1.70 and < 1.70 are separate",
+        "missing_or_invalid_odds_excluded": True,
+        "pushes_excluded_from_decided": True,
+        "conditions": by_condition,
+    }
+
+
 def calculate_three_stage_consensus(
     rows: list[dict[str, Any]],
 ) -> dict[str, Any]:
@@ -183,19 +465,7 @@ def calculate_three_stage_consensus(
     grades are retained in the fixture count but excluded from the accuracy
     denominator.
     """
-    grouped: dict[tuple[str, str], dict[str, dict[str, Any]]] = {}
-    for row in rows:
-        match_id = str(row.get("match_id") or "")
-        stage = str(row.get("stage") or "")
-        if not match_id or stage not in STAGES:
-            continue
-        for grade in row.get("market_grades") or []:
-            if not isinstance(grade, dict):
-                continue
-            code = str(grade.get("code") or "")
-            if code not in MARKETS:
-                continue
-            grouped.setdefault((match_id, code), {})[stage] = grade
+    grouped = _group_market_stages(rows)
 
     markets: dict[str, Any] = {}
     for code in MARKETS:

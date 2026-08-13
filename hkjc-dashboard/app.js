@@ -1181,6 +1181,52 @@ function historyConsensusCards(stats) {
       </div>
     </article>`;
   };
+  const transitionReport = stats.three_stage_transitions || {};
+  const transitionConditions = transitionReport.conditions || {};
+  const transitionTier = (tier) => {
+    const item = tier || {};
+    const decided = Number(item.decided || 0);
+    const pushes = Number(item.pushes || 0);
+    const result = item.accuracy == null
+      ? '待累積'
+      : `${pc(item.accuracy, 1)} (${item.hits || 0}/${decided})`;
+    return `${result}${pushes ? ` · 走水 ${pushes}` : ''}`;
+  };
+  const transitionSections = [
+    ['same_direction_line_moved', '同向改盤'],
+    ['first_missing_then_stable', '首預缺向後定'],
+    ['flip_then_stable', 'T-30 反向後定'],
+  ].map(([key, fallback]) => {
+    const condition = transitionConditions[key] || {};
+    const transitionCards = codes.map((code) => {
+      const market = (condition.markets || {})[code] || {};
+      const tiers = ((market.aggregate || {}).tiers) || {};
+      const split = (market.breakdown || []).map((item) => {
+        const itemTiers = item.tiers || {};
+        return `<div class="consensus-split-row">
+          <b>${esc(item.label || item.key || '未分類')}</b>
+          <span>≥1.70 ${transitionTier(itemTiers.at_or_above_1_70)}<br>&lt;1.70 ${transitionTier(itemTiers.below_1_70)}</span>
+        </div>`;
+      }).join('');
+      return `<article class="consensus-card transition-card">
+        <div class="consensus-card-head"><b>${HIST_MARKET_LABEL[code]}</b></div>
+        <div class="transition-aggregate">
+          <span>整體 ≥1.70 ${transitionTier(tiers.at_or_above_1_70)}</span>
+          <span>整體 &lt;1.70 ${transitionTier(tiers.below_1_70)}</span>
+        </div>
+        <div class="consensus-split" aria-label="${HIST_MARKET_LABEL[code]}${esc(condition.label || fallback)}拆分">
+          <div class="consensus-split-title">分類拆分</div>${split}
+        </div>
+      </article>`;
+    }).join('');
+    return `<section class="transition-condition" aria-label="${esc(condition.label || fallback)}">
+      <div class="transition-condition-head">
+        <b>${esc(condition.label || fallback)}</b>
+        <span>${esc(condition.definition || '')}</span>
+      </div>
+      <div class="consensus-grid transition-grid">${transitionCards}</div>
+    </section>`;
+  }).join('');
   return `<section class="consensus-block" aria-label="首預、T-30及T-5方向一致命中率">
     <div class="consensus-ranking-block" aria-label="最高命中條件自動排名">
       <div class="stage-market-title">最高命中條件自動排名 <span>只計 T-5 賠率 ≥1.70；樣本多於 ${ranking.minimum_decided || 30} 場優先</span></div>
@@ -1190,6 +1236,11 @@ function historyConsensusCards(stats) {
     <div class="stage-market-title">三階段一致命中率 <span>首預、T-30、T-5 同方向 · 每場只計一次，以 T-5 盤口結算</span></div>
     <div class="consensus-grid">${codes.map(card).join('')}</div>
     <p class="consensus-note">主統計只計 T-5 賠率 ≥1.70；低於 1.70 獨立顯示，走水及未能評分紀錄不計入分母。</p>
+    <div class="transition-block" aria-label="三階段轉向統計">
+      <div class="stage-market-title">三階段轉向統計 <span>每場每市場只計一次；只計已結算、有有效 T-5 賠率嘅紀錄</span></div>
+      ${transitionSections}
+      <p class="consensus-note">分類顯示 ≥1.70 及 &lt;1.70；T-5 走水會保留作審計，但唔會計入命中率分母。</p>
+    </div>
   </section>`;
 }
 

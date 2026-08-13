@@ -1817,9 +1817,51 @@ table.t.history-table td {
   overflow-wrap: anywhere;
 }
 .consensus-note { margin: var(--s2) 0 0; }
+.transition-block {
+  margin-top: var(--s5);
+  min-width: 0;
+  padding-top: var(--s4);
+  border-top: 1px solid var(--line-soft);
+}
+.transition-condition {
+  min-width: 0;
+  margin-top: var(--s3);
+  padding: var(--s3);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--bg-2) 82%, var(--panel));
+}
+.transition-condition-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--s2);
+  min-width: 0;
+  margin-bottom: var(--s2);
+}
+.transition-condition-head b { color: var(--amber); font-size: var(--text-sm); }
+.transition-condition-head span,
+.transition-aggregate {
+  min-width: 0;
+  color: var(--ink-3);
+  font-size: var(--text-xs);
+  overflow-wrap: anywhere;
+}
+.transition-aggregate {
+  display: grid;
+  gap: 3px;
+  margin-top: var(--s2);
+  padding-block: var(--s2);
+  border-top: 1px dashed var(--line-soft);
+  border-bottom: 1px dashed var(--line-soft);
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+.transition-card { gap: var(--s2); }
 @media (max-width: 620px) {
   .consensus-grid,
   .consensus-ranking-grid { grid-template-columns: 1fr; }
+  .transition-condition { padding: var(--s2); }
   .consensus-split-row { grid-template-columns: minmax(82px, auto) minmax(0, 1fr); }
 }
 

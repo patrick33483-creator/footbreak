@@ -29,7 +29,10 @@ from .ledger import PREDICTION_ERA, PREDICTION_SCHEMA_VERSION, STAGES
 from .lines import settle_handicap, settle_total
 from .matching import Event, canonical_league_key, canonical_team_key, match_event
 from .titan import TitanClient
-from analysis.three_stage_consensus import calculate_three_stage_consensus
+from analysis.three_stage_consensus import (
+    calculate_three_stage_consensus,
+    calculate_three_stage_transitions,
+)
 
 
 def _path(config: Settings):
@@ -996,6 +999,7 @@ def calculate_stats(
         "by_stage": by_stage,
         "by_stage_market": by_stage_market,
         "three_stage_consensus": calculate_three_stage_consensus(rows),
+        "three_stage_transitions": calculate_three_stage_transitions(rows),
         "by_market": {
             code: _market_metrics(rows, code)
             for code in ("HDC", "HIL", "CHL")
