@@ -43,15 +43,40 @@ def _ledger(side="L", odds=1.91, line="10.5", code="CHL",
     }
 
 
+def _accuracy_history(side, odds, hits, decided):
+    return {
+        "matches": [
+            {
+                "match_id": f"graded-{index}",
+                "stages": [{
+                    "stage": "T-5",
+                    "market_grades": [{
+                        "grade_status": "GRADED", "code": "CHL",
+                        "side": side, "odds": odds, "hit": index < hits,
+                    }],
+                }],
+            }
+            for index in range(decided)
+        ],
+    }
+
+
 class FootbreakT5SignalNotificationTests(unittest.TestCase):
     def test_corner_over_and_under_notify_once_with_actual_odds(self) -> None:
-        for side, odds, label, tier in (
-            ("H", 1.91, "角球大", "≥1.70"),
-            ("L", 1.65, "角球細", "<1.70"),
+        for side, odds, label, tier, hits, decided, rate in (
+            ("H", 1.91, "角球大", "≥1.70", 10, 12, "83.3%"),
+            ("L", 1.65, "角球細", "<1.70", 5, 7, "71.4%"),
         ):
             with self.subTest(side=side), tempfile.TemporaryDirectory() as directory:
                 state = str(Path(directory) / "notify_state.json")
-                with patch.object(notify, "STATE", state), patch.object(notify, "send") as sender:
+                history = Path(directory) / "accuracy_history.json"
+                history.write_text(
+                    json.dumps(_accuracy_history(side, odds, hits, decided)),
+                    encoding="utf-8",
+                )
+                with patch.object(notify, "STATE", state), \
+                     patch.object(notify, "ACCURACY_HISTORY", str(history)), \
+                     patch.object(notify, "send") as sender:
                     ledger = _ledger(side=side, odds=odds)
                     self.assertEqual(
                         notify.notify_fresh_t5_signals(ledger, ["footbreak-safe-1"]), 1
@@ -64,6 +89,47 @@ class FootbreakT5SignalNotificationTests(unittest.TestCase):
                 self.assertIn(label, message)
                 self.assertIn(f"{odds:.3f}", message)
                 self.assertIn(tier, message)
+                self.assertIn(rate, message)
+                self.assertIn(f"（{hits}/{decided}）", message)
+
+    def test_history_breakdown_excludes_wrong_side_tier_push_and_non_t5(self) -> None:
+        history = _accuracy_history("H", 1.91, 1, 1)
+        history["matches"].extend([
+            {"stages": [{"stage": "T-5", "market_grades": [{
+                "grade_status": "GRADED", "code": "CHL", "side": "L",
+                "odds": 1.91, "hit": False,
+            }]}]},
+            {"stages": [{"stage": "T-5", "market_grades": [{
+                "grade_status": "GRADED", "code": "CHL", "side": "H",
+                "odds": 1.69, "hit": False,
+            }]}]},
+            {"stages": [{"stage": "T-5", "market_grades": [{
+                "grade_status": "GRADED", "code": "CHL", "side": "H",
+                "odds": 1.91, "hit": None,
+            }]}]},
+            {"stages": [{"stage": "T-30", "market_grades": [{
+                "grade_status": "GRADED", "code": "CHL", "side": "H",
+                "odds": 1.91, "hit": False,
+            }]}]},
+        ])
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "accuracy_history.json"
+            path.write_text(json.dumps(history), encoding="utf-8")
+            with patch.object(notify, "ACCURACY_HISTORY", str(path)):
+                self.assertEqual(
+                    notify._chl_t5_history("H", 1.91),
+                    {"hits": 1, "decided": 1},
+                )
+
+    def test_missing_history_shows_waiting_without_suppressing_signal(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(notify, "STATE", str(Path(directory) / "state.json")), \
+                 patch.object(notify, "ACCURACY_HISTORY", str(Path(directory) / "missing.json")), \
+                 patch.object(notify, "send") as sender:
+                self.assertEqual(
+                    notify.notify_fresh_t5_signals(_ledger(), ["footbreak-safe-1"]), 1
+                )
+            self.assertIn("待累積（0/0）", sender.call_args.args[0])
 
     def test_hil_under_signal_remains_retired(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

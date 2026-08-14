@@ -34,6 +34,7 @@ except Exception:
 HERE = os.path.dirname(os.path.abspath(__file__))
 LEDGER = os.path.join(HERE, "sim_ledger.json")
 STATE = os.path.join(HERE, "notify_state.json")
+ACCURACY_HISTORY = os.path.join(HERE, "accuracy_history.json")
 
 HKT = dt.timezone(dt.timedelta(hours=8))
 
@@ -98,6 +99,42 @@ def _exact_numeric_line(value):
     if not parts or any(not math.isfinite(part) for part in parts):
         return None
     return text
+
+
+def _chl_t5_history(side, selected_odds):
+    """Return the matching T-5 CHL side/odds-tier hit-rate, fail closed."""
+    selected_odds = _finite_positive(selected_odds)
+    if side not in {"H", "L"} or selected_odds is None or selected_odds <= 1.0:
+        return None
+    selected_high = selected_odds >= 1.70
+    try:
+        with open(ACCURACY_HISTORY, encoding="utf-8") as handle:
+            matches = json.load(handle).get("matches") or []
+    except (OSError, ValueError, TypeError, AttributeError):
+        return None
+
+    hits = decided = 0
+    for match in matches:
+        if not isinstance(match, dict):
+            continue
+        for stage in match.get("stages") or []:
+            if not isinstance(stage, dict) or stage.get("stage") != "T-5":
+                continue
+            for grade in stage.get("market_grades") or []:
+                if not (
+                    isinstance(grade, dict)
+                    and grade.get("grade_status") == "GRADED"
+                    and grade.get("code") == "CHL"
+                    and str(grade.get("side") or grade.get("selection") or "").upper() == side
+                    and grade.get("hit") is not None
+                ):
+                    continue
+                odds = _finite_positive(grade.get("odds"))
+                if odds is None or odds <= 1.0 or (odds >= 1.70) != selected_high:
+                    continue
+                decided += 1
+                hits += grade.get("hit") is True
+    return {"hits": hits, "decided": decided}
 
 
 def _fresh_t5_stage(ledger, item):
@@ -172,6 +209,15 @@ def _footbreak_chl_event(ledger, item):
     league = str(watch.get("league") or "").strip()
     selection = "角球大" if side == "H" else "角球細"
     odds_tier = "≥1.70" if odds >= 1.70 else "<1.70"
+    history = _chl_t5_history(side, odds)
+    if history and history["decided"]:
+        history_text = (
+            f"{selection} {odds_tier}："
+            f"{100.0 * history['hits'] / history['decided']:.1f}%"
+            f"（{history['hits']}/{history['decided']}）"
+        )
+    else:
+        history_text = f"{selection} {odds_tier}：待累積（0/0）"
     text = "\n".join([
         "足破 T-5 角球預測",
         f"開賽：{kickoff.strftime('%d/%m %H:%M')} HKT" + (f" · {esc(league)}" if league else ""),
@@ -180,6 +226,7 @@ def _footbreak_chl_event(ledger, item):
         f"選擇：{selection}",
         f"盤口：{esc(line)}",
         f"當刻賠率：{odds:.3f}（{odds_tier}）",
+        f"歷史命中率：{history_text}",
         f"賠率觀測：{observed_at.astimezone(HKT).strftime('%d/%m %H:%M:%S')} HKT",
         "觸發：新保存的 T-5 有完整角球方向、盤口及當刻賠率。",
         "只作預測通知，是否投注由你決定。",
