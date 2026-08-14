@@ -76,8 +76,8 @@ echo "▸ 更新 systemd 單元"
 install -m 0644 "$APP_DIR"/deploy/systemd/*.service /etc/systemd/system/
 install -m 0644 "$APP_DIR"/deploy/systemd/*.timer   /etc/systemd/system/
 systemctl daemon-reload
-# Crown is a fixed 12:00-to-11:59 board.  The :05/:35 pass refreshes fixture
-# discovery and Crown quotes only; the two-minute tick retains Footbreak's
+# Crown is a fixed 12:00-to-11:59 board.  The :05/:20/:35/:50 pass refreshes
+# fixture discovery and Crown quotes; the per-minute tick retains Footbreak's
 # original T-30/T-5 windows and is the only path that can create a T-5 bet.
 # The default validation gate is disabled.  A disabled Crown runner exits
 # non-zero intentionally and performs no provider request, so keep its timers

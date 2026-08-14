@@ -634,7 +634,16 @@ def _prediction(titan: dict[str, Any], bridge: BridgeMatch, h_match: dict[str, A
         return base
     now = time.time()
     forecasts, forecast_reasons = _crown_market_forecasts(
-        crown, config, now, require_fresh=not used_cached_crown
+        crown,
+        config,
+        now,
+        # A sweep snapshot was fetched during this same bounded board pass.
+        # Large fixture batches can take more than the normal live-freshness
+        # window to reach _prediction(), but the retained source_at remains
+        # the real pre-kickoff observation time.  Do not discard that valid
+        # 首預 evidence merely because it waited in the local work queue.
+        # Tick-mode direct reads still enforce the normal freshness gate.
+        require_fresh=not (used_cached_crown or crown_snapshot is not None),
     )
     all_forecasts = forecasts + corner_forecasts
     base["forecast_candidates"] = all_forecasts

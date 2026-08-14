@@ -1,5 +1,5 @@
 [Unit]
-Description=足破 · 皇冠 30-minute fixture and odds refresh
+Description=足破 · 皇冠 15-minute fixture discovery and first-look recovery
 After=network-online.target
 Wants=network-online.target
 
@@ -7,6 +7,7 @@ Wants=network-online.target
 Type=oneshot
 WorkingDirectory=/opt/footbreak
 ExecStart=/opt/footbreak/deploy/crown-run.sh sweep
+ExecStartPost=/opt/footbreak/.venv/bin/python3 /opt/footbreak/deploy/check-crown-first-look.py --state-dir /var/lib/footbreak/crown
 TimeoutStartSec=3600
 Nice=10
 

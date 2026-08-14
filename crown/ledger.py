@@ -35,7 +35,23 @@ def completed_stages(
         # A provider/mapping outage is not a completed prediction.  Keep the
         # stage eligible for a later recovery pass; sync_prediction updates
         # the same stage row idempotently and still cannot duplicate a bet.
-        if row.get("stage") and row.get("status") != "DATA_MISSING"
+        if (
+            row.get("stage")
+            and row.get("status") != "DATA_MISSING"
+            # Schema-v2 rows explicitly record selected-odds availability.
+            # A fixture-level baseline forecast with no priced market is only
+            # an attempt, not a completed 首預/T-30/T-5 market prediction.
+            # Keep legacy rows (which have no odds_status field) compatible,
+            # but retry current rows until an auditable pre-kickoff market
+            # quote is persisted.
+            and (
+                row.get("odds_status") is None
+                or (
+                    row.get("odds_status") == "available"
+                    and bool(row.get("market_predictions"))
+                )
+            )
+        )
     }
     if (
         (

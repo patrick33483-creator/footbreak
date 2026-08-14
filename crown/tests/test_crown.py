@@ -654,6 +654,77 @@ class CrownSafetyTests(unittest.TestCase):
         self.assertIsNone(prediction["shadow_pick"])
         pinnapi_client.lines.assert_not_called()
 
+    def test_same_sweep_snapshot_survives_local_queue_freshness_delay(self) -> None:
+        config = replace(settings(), source_max_age_seconds=90)
+        kickoff = self.now + timedelta(hours=3)
+        titan = {
+            "id": "sweep-delayed",
+            "league": "L",
+            "home": "A",
+            "away": "B",
+            "kickoff": kickoff,
+        }
+        bridge = BridgeMatch(
+            Match(None, False, 0.0, "no_candidate_in_kickoff_window"),
+            Match(None, False, 0.0, "no_candidate_in_kickoff_window"),
+            "none",
+            "direct_same_script:no_candidate_in_kickoff_window",
+        )
+        crown = [
+            {
+                "market": "HDC", "line": -0.25, "selection": "H",
+                "odds": 1.80, "source_at": 800,
+            },
+            {
+                "market": "HDC", "line": -0.25, "selection": "A",
+                "odds": 2.05, "source_at": 800,
+            },
+            {
+                "market": "HIL", "line": 2.5, "selection": "H",
+                "odds": 1.90, "source_at": 800,
+            },
+            {
+                "market": "HIL", "line": 2.5, "selection": "L",
+                "odds": 2.00, "source_at": 800,
+            },
+        ]
+        with patch("crown.engine.datetime") as mocked_datetime, patch(
+            "crown.engine.time.time", return_value=1001
+        ):
+            mocked_datetime.now.return_value = self.now
+            prediction = _prediction(
+                titan,
+                bridge,
+                None,
+                "首預",
+                config,
+                Mock(),
+                Mock(),
+                crown_snapshot={"prices": crown},
+            )
+        self.assertEqual(
+            {row["code"] for row in prediction["forecast_candidates"]},
+            {"HDC", "HIL"},
+        )
+        ledger = {
+            "bankroll": 50000,
+            "bets": [],
+            "watch": {},
+            "log": [],
+            "stats": {},
+        }
+        sync_prediction(ledger, prediction, config)
+        saved = ledger["watch"]["sweep-delayed"]["stages"][0]
+        self.assertEqual(saved["odds_status"], "available")
+        self.assertEqual(len(saved["market_predictions"]), 2)
+        self.assertEqual(
+            completed_stages(
+                ledger["watch"]["sweep-delayed"],
+                prediction["matching_version"],
+            ),
+            {"首預"},
+        )
+
     def test_missing_pinnapi_mapping_creates_isolated_confidence_shadow_bet(self) -> None:
         config = replace(settings(), source_max_age_seconds=90, bankroll=50000)
         kickoff = self.now + timedelta(minutes=5)
@@ -951,6 +1022,34 @@ class CrownSafetyTests(unittest.TestCase):
         }
         self.assertEqual(completed_stages(recovered, "same"), {"首預"})
         self.assertIsNone(stage_for(120, True, completed_stages(recovered, "same")))
+
+    def test_unpriced_current_stage_remains_due_until_market_quote_is_saved(self) -> None:
+        unpriced = {
+            "matching_version": "same",
+            "stages": [{
+                "stage": "首預",
+                "status": "PREDICTION_READY",
+                "odds_status": "missing",
+                "market_predictions": [],
+            }],
+        }
+        self.assertEqual(completed_stages(unpriced, "same"), set())
+        self.assertEqual(
+            stage_for(120, True, completed_stages(unpriced, "same")),
+            "首預",
+        )
+        priced = {
+            "matching_version": "same",
+            "stages": [{
+                "stage": "首預",
+                "status": "PREDICTION_READY",
+                "odds_status": "available",
+                "market_predictions": [{
+                    "code": "HDC", "line": -0.5, "side": "H", "odds": 1.8,
+                }],
+            }],
+        }
+        self.assertEqual(completed_stages(priced, "same"), {"首預"})
 
     def test_prediction_era_refreshes_only_first_look(self) -> None:
         first_only = {
