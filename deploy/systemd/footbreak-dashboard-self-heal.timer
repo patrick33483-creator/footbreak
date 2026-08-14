@@ -1,0 +1,12 @@
+[Unit]
+Description=Check and repair Footbreak dashboards every 30 minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=30min
+AccuracySec=1min
+Persistent=true
+Unit=footbreak-dashboard-self-heal.service
+
+[Install]
+WantedBy=timers.target

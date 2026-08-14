@@ -1,0 +1,14 @@
+[Unit]
+Description=Footbreak and Crown dashboard local health check and bounded repair
+After=network-online.target nginx.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/footbreak/deploy/dashboard-self-heal.sh
+User=root
+Group=root
+Nice=10
+
+[Install]
+WantedBy=multi-user.target

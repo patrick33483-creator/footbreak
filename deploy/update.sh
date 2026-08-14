@@ -119,7 +119,7 @@ if systemctl is-active --quiet footbreak-t30.timer ||
 fi
 systemctl enable --now \
   footbreak-tick.timer footbreak-sweep.timer footbreak-settle.timer \
-  footbreak-result-reconcile.timer
+  footbreak-result-reconcile.timer footbreak-dashboard-self-heal.timer
 # An already-active timer keeps its previous next-elapse calculation after a
 # unit-file update on some systemd versions. Restart it explicitly so a
 # 30-minute installation becomes the new 15-minute schedule immediately.
@@ -128,6 +128,13 @@ systemctl is-active --quiet footbreak-result-reconcile.timer || {
   systemctl show footbreak-result-reconcile.timer \
     -p LoadState -p ActiveState -p SubState -p Result
   echo "ERROR: footbreak-result-reconcile.timer did not restart" >&2
+  exit 1
+}
+systemctl restart footbreak-dashboard-self-heal.timer
+systemctl is-active --quiet footbreak-dashboard-self-heal.timer || {
+  systemctl show footbreak-dashboard-self-heal.timer \
+    -p LoadState -p ActiveState -p SubState -p Result
+  echo "ERROR: footbreak-dashboard-self-heal.timer did not restart" >&2
   exit 1
 }
 systemctl enable crown-dashboard-api.service footbreak-dashboard-api.service
