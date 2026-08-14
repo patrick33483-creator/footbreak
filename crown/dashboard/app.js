@@ -1540,15 +1540,30 @@ function historyStageMarketMatrix(stats) {
     const pushes = Number(x.pushes || 0);
     const groups = x.odds_groups || {};
     const low = groups.below_1_70 || {};
-    return x.accuracy == null
+    const direction = (label, selected) => {
+      const high = selected || {};
+      const selectedLow = (high.odds_groups || {}).below_1_70 || {};
+      const highText = high.decided
+        ? `${pc(high.accuracy, 1)} (${high.hits || 0}/${high.decided || 0})`
+        : `待累積 (0/0)`;
+      return `<span class="stage-market-direction"><b>${label}</b> ≥1.70 ${highText} · &lt;1.70 ${selectedLow.hits || 0}/${selectedLow.decided || 0}</span>`;
+    };
+    const cornerBreakdown = code === 'CHL'
+      ? `<div class="stage-market-directions">
+          ${direction('角球大', (x.by_selection || {}).H)}
+          ${direction('角球細', (x.by_selection || {}).L)}
+        </div>`
+      : '';
+    const summary = x.accuracy == null
       ? `<span class="stage-market-empty">≥1.70 待累積</span><small>已評分 ${graded}${pushes ? ` · 走水 ${pushes}` : ''}</small>`
       : `<strong>≥1.70 ${pc(x.accuracy, 1)}</strong>
          <small>命中 ${x.hits}/${decided}</small>
          <small>已評分 ${graded}${pushes ? ` · 走水 ${pushes}` : ''}</small>
          <small>&lt;1.70 ${low.hits || 0}/${low.decided || 0}</small>`;
+    return summary + cornerBreakdown;
   };
   return `<div class="stage-market-block">
-    <div class="stage-market-title">分階段市場命中率 <span>只計有有效賠率紀錄；主統計為選邊賠率 ≥1.70</span></div>
+    <div class="stage-market-title">分階段市場命中率 <span>只計有有效賠率紀錄；主統計為選邊賠率 ≥1.70；角球另拆大／細</span></div>
     <table class="stage-market-table" aria-label="首預、T-30及T-5各市場命中率（選邊賠率大於等於1.70）">
       <thead><tr><th>階段</th>${codes.map((code) => `<th>${HIST_MARKET_LABEL[code]}</th>`).join('')}</tr></thead>
       <tbody>${stages.map((stage) => `<tr><th>${stage}</th>${codes.map((code) => `<td>${cell(stage, code)}</td>`).join('')}</tr>`).join('')}</tbody>

@@ -604,6 +604,21 @@ table.t.bets td.good { color: var(--good); } table.t.bets td.amber { color: var(
   line-height: 1.35;
 }
 .stage-market-empty { color: var(--ink-3); font-size: var(--text-xs); }
+.stage-market-directions {
+  display: grid;
+  gap: 4px;
+  margin-top: var(--s2);
+  padding-top: var(--s2);
+  border-top: 1px solid var(--line);
+}
+.stage-market-direction {
+  display: block;
+  color: var(--ink-2);
+  font-size: 10px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.stage-market-direction b { color: var(--ink); }
 .history-table { min-width: 920px; }
 .history-table tr { content-visibility: auto; contain-intrinsic-size: 0 58px; }
 .history-table td { vertical-align: top; }

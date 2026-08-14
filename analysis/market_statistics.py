@@ -66,24 +66,9 @@ def _aggregate(grades: Iterable[dict[str, Any]]) -> dict[str, Any]:
     return result
 
 
-def market_metrics(rows: Iterable[dict[str, Any]], code: str | None = None) -> dict[str, Any]:
-    """Aggregate scored market grades with explicit selected-odds cohorts.
-
-    Top-level metrics are the primary ``>=1.70`` scope. ``all_odds`` contains
-    every valid priced row; its two ``odds_groups`` are mutually exclusive and
-    sum exactly to it. Missing-price rows are reported only by
-    ``excluded_missing_odds``. A graded push stays in its odds group but is excluded
-    from every decided denominator.  Pending/ungraded rows are absent from all
-    market statistics rather than being counted as losses.
-    """
-    grades = [
-        grade
-        for row in rows
-        for grade in (row.get("market_grades") or [])
-        if isinstance(grade, dict)
-        and grade.get("grade_status") == "GRADED"
-        and (code is None or grade.get("code") == code)
-    ]
+def _scoped_metrics(grades: Iterable[dict[str, Any]]) -> dict[str, Any]:
+    """Build the shared odds-tier contract for an already selected cohort."""
+    grades = list(grades)
     cohorts = {
         bucket: [grade for grade in grades if odds_bucket(grade.get("odds")) == bucket]
         for bucket in ("at_or_above_1_70", "below_1_70", "missing")
@@ -103,3 +88,38 @@ def market_metrics(rows: Iterable[dict[str, Any]], code: str | None = None) -> d
         "odds_groups": groups,
         "excluded_missing_odds": len(cohorts["missing"]),
     }
+
+
+def market_metrics(rows: Iterable[dict[str, Any]], code: str | None = None) -> dict[str, Any]:
+    """Aggregate scored market grades with explicit selected-odds cohorts.
+
+    Top-level metrics are the primary ``>=1.70`` scope. ``all_odds`` contains
+    every valid priced row; its two ``odds_groups`` are mutually exclusive and
+    sum exactly to it. Missing-price rows are reported only by
+    ``excluded_missing_odds``. A graded push stays in its odds group but is excluded
+    from every decided denominator. Pending/ungraded rows are absent from all
+    market statistics rather than being counted as losses.
+
+    CHL additionally exposes the exact selected direction under
+    ``by_selection`` so dashboards can show 角球大 and 角球細 separately without
+    changing the existing aggregate contract.
+    """
+    grades = [
+        grade
+        for row in rows
+        for grade in (row.get("market_grades") or [])
+        if isinstance(grade, dict)
+        and grade.get("grade_status") == "GRADED"
+        and (code is None or grade.get("code") == code)
+    ]
+    result = _scoped_metrics(grades)
+    if code == "CHL":
+        result["by_selection"] = {
+            side: _scoped_metrics(
+                grade
+                for grade in grades
+                if str(grade.get("side") or grade.get("selection") or "").upper() == side
+            )
+            for side in ("H", "L")
+        }
+    return result

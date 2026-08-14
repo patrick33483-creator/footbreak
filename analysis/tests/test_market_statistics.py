@@ -30,6 +30,43 @@ def grade(odds, hit, status="GRADED"):
 
 
 class MarketStatisticsTests(unittest.TestCase):
+    def test_corner_metrics_split_over_and_under_with_independent_odds_tiers(self):
+        def corner(side, odds, hit):
+            return {
+                "code": "CHL",
+                "side": side,
+                "odds": odds,
+                "grade_status": "GRADED",
+                "hit": hit,
+            }
+
+        metrics = market_metrics([
+            {"market_grades": [corner("H", 1.80, True)]},
+            {"market_grades": [corner("H", 1.75, False)]},
+            {"market_grades": [corner("H", 1.60, True)]},
+            {"market_grades": [corner("L", 1.90, True)]},
+            {"market_grades": [corner("L", 1.65, False)]},
+        ], "CHL")
+
+        over = metrics["by_selection"]["H"]
+        under = metrics["by_selection"]["L"]
+        self.assertEqual((over["hits"], over["decided"]), (1, 2))
+        self.assertEqual(
+            (
+                over["odds_groups"]["below_1_70"]["hits"],
+                over["odds_groups"]["below_1_70"]["decided"],
+            ),
+            (1, 1),
+        )
+        self.assertEqual((under["hits"], under["decided"]), (1, 1))
+        self.assertEqual(
+            (
+                under["odds_groups"]["below_1_70"]["hits"],
+                under["odds_groups"]["below_1_70"]["decided"],
+            ),
+            (0, 1),
+        )
+
     def test_odds_boundary_missing_push_and_pending_are_exclusive(self):
         rows = [
             {"market_grades": [grade(1.70, True)]},
