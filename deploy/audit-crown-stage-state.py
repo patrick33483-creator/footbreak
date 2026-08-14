@@ -26,6 +26,7 @@ ALLOWED_WINDOWS = {6, 12, 24}
 ALLOWED_GRACE_MINUTES = {15, 30, 60}
 ALLOWED_LIMITS = {25, 50, 100}
 STAGE_FIELDS = ("stage", "status", "ts", "no_bet_reason")
+MARKET_CODES = {"HDC", "HIL", "CHL"}
 
 
 def _load(path: Path, default: Any) -> tuple[Any, str | None]:
@@ -61,6 +62,14 @@ def _reason(value: Any) -> str | None:
 
 def _safe_timestamp(value: Any) -> str | None:
     parsed = parse_time(value)
+    if parsed is None:
+        try:
+            raw = float(value)
+            if raw > 10_000_000_000:
+                raw /= 1000
+            parsed = datetime.fromtimestamp(raw, HKT)
+        except (TypeError, ValueError, OverflowError, OSError):
+            parsed = None
     return parsed.astimezone(HKT).isoformat() if parsed is not None else None
 
 
@@ -86,9 +95,39 @@ def _stage_rows(watch: dict[str, Any]) -> list[dict[str, Any]]:
         row = {key: _text(source.get(key)) for key in STAGE_FIELDS}
         row["ts"] = _safe_timestamp(source.get("ts"))
         row["no_bet_reason"] = _reason(source.get("no_bet_reason"))
+        row["markets"] = _market_rows(source)
         rows.append(row)
     order = {"首預": 1, "T-30": 2, "T-5": 3}
     return sorted(rows, key=lambda row: order[row["stage"]])
+
+
+def _market_rows(stage: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return only the compact selected-market evidence needed for diagnosis."""
+    rows = []
+    for source in stage.get("market_predictions") or []:
+        if not isinstance(source, dict):
+            continue
+        code = _text(source.get("code"), 8)
+        side = _text(source.get("side"), 4)
+        if code not in MARKET_CODES:
+            continue
+        try:
+            home_line = float(source.get("line"))
+            odds = float(source.get("odds"))
+        except (TypeError, ValueError):
+            continue
+        if not (home_line == home_line and odds > 1.0):
+            continue
+        selected_line = -home_line if code == "HDC" and side == "A" else home_line
+        rows.append({
+            "code": code,
+            "side": side,
+            "home_line": home_line,
+            "selected_line": selected_line,
+            "odds": odds,
+            "observed_at": _safe_timestamp(source.get("observed_at")),
+        })
+    return sorted(rows, key=lambda row: row["code"])
 
 
 def _merged_fixtures(

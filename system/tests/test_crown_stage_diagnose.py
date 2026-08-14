@@ -40,7 +40,13 @@ class CrownStageReportTests(unittest.TestCase):
                         "discovered_at": "2026-08-13T20:00:00+08:00",
                         "stages": [{"stage": "T-30", "status": "DATA_MISSING",
                                     "ts": "2026-08-13T21:30:00+08:00",
-                                    "no_bet_reason": '{"token":"must-not-appear"}'}],
+                                    "no_bet_reason": '{"token":"must-not-appear"}',
+                                    "market_predictions": [
+                                        {"code": "HDC", "side": "A", "line": -0.5,
+                                         "odds": 1.88, "observed_at": 1786622400},
+                                        {"code": "PRIVATE", "side": "H", "line": 1,
+                                         "odds": 9.99, "secret": "must-not-appear"},
+                                    ]}],
                         "token": "must-not-appear",
                     },
                 },
@@ -72,6 +78,15 @@ class CrownStageReportTests(unittest.TestCase):
         self.assertEqual(fixture["first_look"]["reason"], "fixture_known_pre_kickoff_first_look_missing")
         self.assertEqual(fixture["scheduler"]["next_due_stage"], "首預")
         self.assertEqual(fixture["completed_stages"], [])
+        markets = fixture["stage_status"][0]["markets"]
+        self.assertEqual(markets, [{
+            "code": "HDC",
+            "side": "A",
+            "home_line": -0.5,
+            "selected_line": 0.5,
+            "odds": 1.88,
+            "observed_at": "2026-08-13T20:00:00+08:00",
+        }])
 
     def test_manual_workflow_is_read_only_and_validates_bounded_inputs(self) -> None:
         text = WORKFLOW.read_text(encoding="utf-8")
