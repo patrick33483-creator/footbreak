@@ -1,7 +1,8 @@
 """足破 · Telegram 通知系統
 
-只有真正建立雷達模擬注單(T-5 落注)才發通知。預測訊號、模型候選、
-健康異常、排程、掃描完成及結算通知全部停用。
+只發兩類足破通知：真正建立的雷達模擬注單，以及新保存、具完整當刻
+賠率證據的 T-5 角球預測。其他預測訊號、模型候選、健康異常、排程、
+掃描完成及結算通知全部停用。
 
   1. 冪等 —— 已通知過嘅注單記喺 notify_state.json,重複執行唔會再發。
      絕對唔會改 sim_ledger.json。
@@ -60,12 +61,13 @@ def load_state():
             s.setdefault("sweeps", [])
             s.setdefault("watch", [])
             s.setdefault("reviews", [])
+            s.setdefault("signals", [])
             return s
         except Exception:
             pass
     return {
         "bets": [], "settled": [], "queue": [], "sweeps": [], "watch": [],
-        "reviews": [],
+        "reviews": [], "signals": [],
     }
 
 
@@ -129,47 +131,81 @@ def _fresh_t5_stage(ledger, item):
     return mid, watch, stage, kickoff
 
 
-def _footbreak_hil_under_event(ledger, item):
+def _footbreak_chl_event(ledger, item):
     resolved = _fresh_t5_stage(ledger, item)
     if resolved is None:
         return None
     mid, watch, stage, kickoff = resolved
     rows = [row for row in (stage.get("market_predictions") or [])
-            if isinstance(row, dict) and row.get("code") == "HIL"]
+            if isinstance(row, dict) and row.get("code") == "CHL"]
     # A snapshot must contain one unambiguous selected direction.  In
     # particular, never fall back to the opposite side's price.
     if len(rows) != 1:
         return None
     selected = rows[0]
-    if selected.get("side") != "L":
+    side = selected.get("side")
+    if side not in {"H", "L"}:
         return None
     line = _exact_numeric_line(selected.get("line", selected.get("condition")))
     odds = _finite_positive(selected.get("odds"))
-    if line is None or odds is None or odds < 1.70:
+    if (
+        line is None
+        or odds is None
+        or odds <= 1.0
+        or selected.get("odds_status") not in {None, "available"}
+    ):
+        return None
+    observed_text = str(selected.get("observed_at") or "").strip()
+    try:
+        observed_at = dt.datetime.fromisoformat(observed_text)
+    except ValueError:
+        return None
+    if observed_at.tzinfo is None:
+        observed_at = observed_at.replace(tzinfo=HKT)
+    if observed_at >= kickoff:
         return None
     identity = "|".join((
         mid, kickoff.isoformat(), str(watch.get("home") or ""),
         str(watch.get("away") or ""),
     ))
-    key = f"footbreak|{identity}|T-5|HIL|under-v1|{line}"
+    key = f"footbreak|{identity}|T-5|CHL|corner-v1|{side}|{line}"
     league = str(watch.get("league") or "").strip()
+    selection = "角球大" if side == "H" else "角球細"
+    odds_tier = "≥1.70" if odds >= 1.70 else "<1.70"
     text = "\n".join([
-        "足破 T-5 訊號",
+        "足破 T-5 角球預測",
         f"開賽：{kickoff.strftime('%d/%m %H:%M')} HKT" + (f" · {esc(league)}" if league else ""),
         f"對賽：{esc(watch.get('home') or '')} vs {esc(watch.get('away') or '')}",
-        "市場：入球大細",
-        "選擇：入球細",
+        "市場：角球大細",
+        f"選擇：{selection}",
         f"盤口：{esc(line)}",
-        f"選項實際賠率：{odds:.3f}",
-        "觸發：T-5 最終選擇入球細。",
-        "只作通知，絕不實際投注。",
+        f"當刻賠率：{odds:.3f}（{odds_tier}）",
+        f"賠率觀測：{observed_at.astimezone(HKT).strftime('%d/%m %H:%M:%S')} HKT",
+        "觸發：新保存的 T-5 有完整角球方向、盤口及當刻賠率。",
+        "只作預測通知，是否投注由你決定。",
     ])
     return key, text
 
 
 def notify_fresh_t5_signals(ledger, fresh_t5):
-    """Retired compatibility entry point; T-5 HIL-under alerts stay silent."""
-    return 0
+    """Notify only newly persisted T-5 corner predictions, idempotently."""
+    state = load_state()
+    sent_keys = set(state.get("signals") or [])
+    sent = 0
+    for item in dict.fromkeys(str(value) for value in (fresh_t5 or []) if value):
+        event = _footbreak_chl_event(ledger, item)
+        if event is None:
+            continue
+        key, text = event
+        if key in sent_keys:
+            continue
+        send(text)
+        sent_keys.add(key)
+        state["signals"] = list((state.get("signals") or []) + [key])[-1600:]
+        state["last_sent"] = dt.datetime.now(HKT).isoformat(timespec="seconds")
+        save_state(state)
+        sent += 1
+    return sent
 
 
 def load_ledger():
@@ -709,9 +745,9 @@ def main(argv):
         print("模型候選 Telegram 通知已停用；只保留雷達模擬注")
         return 0
 
-    # User preference: Footbreak Telegram is only for new radar simulation bets.
-    # Keep the old formatters for historical compatibility, but never send
-    # watch/schedule/sweep/settlement messages.
+    # User preference: the command-line notifier is only for new radar
+    # simulation bets. Fresh T-5 corner alerts are emitted transactionally by
+    # record_picks.py after the immutable stage has been saved.
     if mode_watch or mode_sched or mode_sweep or mode_settled:
         print("此通知類型已停用；Telegram 只發新注單")
         return 0

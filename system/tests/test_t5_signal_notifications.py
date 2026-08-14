@@ -18,9 +18,11 @@ import record_picks
 
 
 KICKOFF = "2099-08-12T20:00:00+08:00"
+OBSERVED = "2099-08-12T19:55:00+08:00"
 
 
-def _ledger(side="L", odds=1.91, line="2.5"):
+def _ledger(side="L", odds=1.91, line="10.5", code="CHL",
+            observed_at=OBSERVED):
     return {
         "watch": {
             "footbreak-safe-1": {
@@ -29,8 +31,10 @@ def _ledger(side="L", odds=1.91, line="2.5"):
                 "stages": [{
                     "stage": "T-5", "home": "主隊", "away": "客隊",
                     "market_predictions": [{
-                        "code": "HIL", "side": side, "line": line,
+                        "code": code, "side": side, "line": line,
                         "condition": line, "odds": odds,
+                        "odds_status": "available" if odds is not None else "missing",
+                        "observed_at": observed_at,
                     }],
                 }],
             }
@@ -40,27 +44,49 @@ def _ledger(side="L", odds=1.91, line="2.5"):
 
 
 class FootbreakT5SignalNotificationTests(unittest.TestCase):
-    def test_hil_under_signal_is_retired(self) -> None:
+    def test_corner_over_and_under_notify_once_with_actual_odds(self) -> None:
+        for side, odds, label, tier in (
+            ("H", 1.91, "角球大", "≥1.70"),
+            ("L", 1.65, "角球細", "<1.70"),
+        ):
+            with self.subTest(side=side), tempfile.TemporaryDirectory() as directory:
+                state = str(Path(directory) / "notify_state.json")
+                with patch.object(notify, "STATE", state), patch.object(notify, "send") as sender:
+                    ledger = _ledger(side=side, odds=odds)
+                    self.assertEqual(
+                        notify.notify_fresh_t5_signals(ledger, ["footbreak-safe-1"]), 1
+                    )
+                    self.assertEqual(
+                        notify.notify_fresh_t5_signals(ledger, ["footbreak-safe-1"]), 0
+                    )
+                sender.assert_called_once()
+                message = sender.call_args.args[0]
+                self.assertIn(label, message)
+                self.assertIn(f"{odds:.3f}", message)
+                self.assertIn(tier, message)
+
+    def test_hil_under_signal_remains_retired(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             state = str(Path(directory) / "notify_state.json")
             with patch.object(notify, "STATE", state), patch.object(notify, "send") as sender:
                 self.assertEqual(
-                    notify.notify_fresh_t5_signals(_ledger(), ["footbreak-safe-1"]), 0
-                )
-                self.assertEqual(
-                    notify.notify_fresh_t5_signals(_ledger(), ["footbreak-safe-1"]), 0
+                    notify.notify_fresh_t5_signals(
+                        _ledger(code="HIL", line="2.5"), ["footbreak-safe-1"]
+                    ), 0
                 )
             sender.assert_not_called()
 
-    def test_rejects_non_under_missing_or_wrong_side_odds_and_non_t5(self) -> None:
+    def test_rejects_missing_or_wrong_side_odds_timestamp_and_non_t5(self) -> None:
         cases = [
-            _ledger(side="H", odds=1.91),
             _ledger(side="L", odds=None),
-            _ledger(side="L", odds=1.699),
+            _ledger(side="X", odds=1.91),
+            _ledger(side="L", odds=1.91, observed_at=None),
+            _ledger(side="L", odds=1.91, observed_at=KICKOFF),
         ]
         wrong_side = _ledger(side="L", odds=None)
         wrong_side["watch"]["footbreak-safe-1"]["stages"][0]["market_predictions"].append({
-            "code": "HIL", "side": "H", "line": "2.5", "odds": 1.77,
+            "code": "CHL", "side": "H", "line": "10.5", "odds": 1.77,
+            "odds_status": "available", "observed_at": OBSERVED,
         })
         cases.append(wrong_side)
         non_t5 = _ledger()
@@ -75,7 +101,7 @@ class FootbreakT5SignalNotificationTests(unittest.TestCase):
                     )
                 sender.assert_not_called()
 
-    def test_exact_1_70_boundary_stays_silent(self) -> None:
+    def test_exact_1_70_boundary_notifies(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             state = str(Path(directory) / "notify_state.json")
             with patch.object(notify, "STATE", state), patch.object(notify, "send") as sender:
@@ -83,9 +109,9 @@ class FootbreakT5SignalNotificationTests(unittest.TestCase):
                     notify.notify_fresh_t5_signals(
                         _ledger(side="L", odds=1.70), ["footbreak-safe-1"]
                     ),
-                    0,
+                    1,
                 )
-            sender.assert_not_called()
+            sender.assert_called_once()
 
     def test_recovers_upcoming_signal_and_transport_failure_keeps_ledger(self) -> None:
         ledger = _ledger()
@@ -99,9 +125,8 @@ class FootbreakT5SignalNotificationTests(unittest.TestCase):
             before = copy.deepcopy(ledger)
             with patch.object(notify, "STATE", str(state_path)), \
                  patch.object(notify, "send", side_effect=RuntimeError("transport down")):
-                self.assertEqual(
-                    notify.notify_fresh_t5_signals(ledger, ["footbreak-safe-1"]), 0
-                )
+                with self.assertRaisesRegex(RuntimeError, "transport down"):
+                    notify.notify_fresh_t5_signals(ledger, ["footbreak-safe-1"])
             self.assertEqual(ledger, before)
             self.assertFalse(state_path.exists())
             with patch.object(notify, "STATE", str(state_path)), \
