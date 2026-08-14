@@ -72,3 +72,33 @@ jobs:
             -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
             "$DEPLOY_USER@$DEPLOY_HOST" "$remote_command" \
             < deploy/audit-crown-stage-state.py
+
+      - name: 只讀取得皇冠 T-5 淺盤角色統計
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            'sudo /opt/footbreak/.venv/bin/python3 - --footbreak /var/www/footbreak/data.json --crown /var/www/crown/data.json' \
+            < analysis/condition_mining_report.py |
+          python3 -c '
+          import json, sys
+          report = json.load(sys.stdin)
+          rows = [
+              row for row in report["systems"]["crown"]["top_conditions"]
+              if row["market"] == "HDC"
+              and row["decision_stage"] == "T-5"
+              and row["family"] == "role_line_bucket"
+              and "淺盤≤0.5" in row["condition"]
+          ]
+          print(json.dumps({
+              "report": "crown_t5_shallow_role_split_v1",
+              "read_only": True,
+              "aggregate_only": True,
+              "holdout_cutoff": report["systems"]["crown"]["holdout_cutoff"],
+              "rows": rows,
+          }, ensure_ascii=False, separators=(",", ":")))
+          '
