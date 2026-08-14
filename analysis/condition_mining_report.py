@@ -438,7 +438,11 @@ def mine(system: str, payload: dict[str, Any]) -> dict[str, Any]:
         stage = terminal["stage"]
         tier = terminal["odds_tier"]
         market = sample["market"]
-        baseline_samples[(market, stage, tier)].append(sample)
+        # The single-stage sample is the canonical fixture-market-stage unit
+        # for baselines and coverage.  Longer paths share the same terminal
+        # grade and must not multiply that observation.
+        if len(sample["stages"]) == 1:
+            baseline_samples[(market, stage, tier)].append(sample)
         for family, label in _candidate_definitions(sample):
             candidate_samples[(market, stage, tier, family + "|" + label)].append(sample)
 
