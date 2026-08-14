@@ -38,12 +38,22 @@ const STAGE_DESC = {
 const VD_CLS = { '落注': 'v-go', '傾向': 'v-lean', '偏向': 'v-soft', '已預測': 'v-lean', '觀望': 'v-wait', '無傾向': 'v-none' };
 const MKT = { HDC: '讓球', HIL: '入球大細', CHL: '角球大細', HAD: '主客和' };
 
+function selectedMarketLine(prediction) {
+  const code = String(prediction?.code || prediction?.market || '').toUpperCase();
+  const side = String(prediction?.side || '').toUpperCase();
+  const rawLine = prediction?.line ?? prediction?.condition;
+  if (rawLine == null || String(rawLine).trim() === '') return null;
+  const line = Number(rawLine);
+  if (!Number.isFinite(line)) return null;
+  return code === 'HDC' && side === 'A' ? -line : line;
+}
+
 function chinesePredictionLabel(prediction) {
   if (!prediction) return '無方向';
   const code = String(prediction.code || prediction.market || '').toUpperCase();
   const side = String(prediction.side || '').toUpperCase();
   const rawLine = prediction.line ?? prediction.condition;
-  const line = Number(rawLine);
+  const line = selectedMarketLine(prediction);
   const lineText = Number.isFinite(line) ? historyQuarterLine(line, code === 'HDC') : String(rawLine || '').trim();
   if (code === 'HDC') return `讓球 ${side === 'H' ? '主隊' : side === 'A' ? '客隊' : '選擇'}${lineText ? ` ${lineText}` : ''}`;
   if (code === 'HIL') return `入球${side === 'H' ? '大' : side === 'L' ? '細' : '方向'}${lineText ? ` ${lineText}` : ''}`;
@@ -424,7 +434,13 @@ function sourceFor(p) {
 function bookCond(p) {
   // 從 label 抽出已翻成選邊視角嘅盤口,抽唔到就退回原始 condition
   const m = String(p.label || '').match(/[（(]\s*(?:馬會|皇冠)盤\s*([^）)]*)[）)]/);
-  return m ? m[1].trim() : (p.condition || '—');
+  if (m) return m[1].trim();
+  const line = selectedMarketLine(p);
+  if (Number.isFinite(line)) {
+    const team = p.side === 'A' ? '客隊' : p.side === 'H' ? '主隊' : '選擇';
+    return `${team} ${historyQuarterLine(line, true)}`;
+  }
+  return p.condition || '—';
 }
 
 function shortPick(p) {
@@ -438,7 +454,13 @@ function oddsLines(lines, code) {
   return lines.map((line) => {
     const prices = Object.entries(line.odds || {}).map(([side, price]) =>
       `<span>${names[side] || esc(side)} <b class="num">${f2(price)}</b></span>`).join('');
-    return `<div class="odds-line"><strong>${esc(line.condition || '—')}</strong>${prices}</div>`;
+    const raw = line.condition == null || String(line.condition).trim() === ''
+      ? NaN
+      : Number(line.condition);
+    const condition = code === 'HDC' && Number.isFinite(raw)
+      ? `主隊 ${historyQuarterLine(raw, true)}`
+      : (line.condition || '—');
+    return `<div class="odds-line"><strong>${esc(condition)}</strong>${prices}</div>`;
   }).join('');
 }
 
@@ -526,11 +548,18 @@ function currentOddsCard(m) {
   const items = rows.map((row) => {
     const odds = Number(row.odds);
     const observedAt = row.observed_board_at || row.observed_at;
+    const selectedLine = selectedMarketLine(row);
+    const lineText = Number.isFinite(selectedLine)
+      ? historyQuarterLine(selectedLine, row.code === 'HDC')
+      : (row.line ?? '—');
+    const selectionText = row.code === 'HDC'
+      ? `${side(row)}隊 ${lineText}`
+      : `${side(row)} ${lineText}`;
     const price = Number.isFinite(odds) && odds > 1
       ? `賠率 ${odds.toFixed(2)}`
       : `賠率缺失 · ${esc(reason[row.reason] || row.reason || '未有已保存現價')}`;
     return `<div class="current-odds-row"><b>${esc(MKT[row.code] || row.code || '—')}</b>
-      <span>${esc(row.line ?? '—')} · ${esc(side(row))}</span>
+      <span>${esc(selectionText)}</span>
       <span class="${Number.isFinite(odds) && odds > 1 ? '' : 'missing'}">${price}</span>
       <small>資料來源：${esc(oddsSourceLabel(row.source))} · 記錄時間：${observedAt ? esc(hkStamp(observedAt)) : '未提供'}</small>
     </div>`;
@@ -1455,7 +1484,7 @@ function historyQuarterLine(raw, signed = true) {
   }).join('/');
 }
 function historyPredictionLabel(r, p) {
-  const line = Number(p.line ?? p.condition);
+  const line = selectedMarketLine(p);
   if (!Number.isFinite(line)) {
     if (p.code === 'HDC') {
       const team = p.side === 'A' ? r.away : r.home;
@@ -1465,8 +1494,7 @@ function historyPredictionLabel(r, p) {
   }
   if (p.code === 'HDC') {
     const team = p.side === 'A' ? r.away : r.home;
-    const selectedLine = p.side === 'A' ? -line : line;
-    return `${team} ${historyQuarterLine(selectedLine, true)}`;
+    return `${team} ${historyQuarterLine(line, true)}`;
   }
   if (p.code === 'HIL') return `${p.side === 'H' ? '大' : '細'} ${historyQuarterLine(line, false)} 球`;
   if (p.code === 'CHL') return `${p.side === 'H' ? '大' : '細'} ${historyQuarterLine(line, false)} 角球`;
