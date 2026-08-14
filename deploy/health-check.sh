@@ -147,6 +147,18 @@ PY
 echo "OK Crown dashboard API /api/data"
 echo "OK Footbreak dashboard API /api/data"
 
+for dashboard in footbreak:8081 crown:8082; do
+  name="${dashboard%%:*}"
+  port="${dashboard##*:}"
+  status="$(curl --silent --show-error --output /dev/null \
+    --write-out '%{http_code}' --max-time 5 "http://127.0.0.1:${port}/" || true)"
+  if [ "$status" != 401 ]; then
+    echo "FAIL nginx $name entrypoint returned HTTP ${status:-unreachable}, expected 401" >&2
+    exit 1
+  fi
+  echo "OK nginx $name entrypoint HTTP 401 auth challenge"
+done
+
 python3 - <<'PY'
 import json
 from pathlib import Path

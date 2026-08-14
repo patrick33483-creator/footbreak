@@ -188,6 +188,10 @@ done
 echo "▸ 更新儀表板靜態檔"
 # --exclude data.json:web root 嗰份係跑出嚟嘅實時資料,唔可以用 repo 嗰份覆蓋
 rsync -a --exclude 'data.json' "$APP_DIR/hkjc-dashboard/" "$WEB_ROOT/"
+install -d -o root -g www-data -m 0755 /var/www "$WEB_ROOT"
+chown -R root:www-data "$WEB_ROOT"
+find "$WEB_ROOT" -type d -exec chmod 0755 {} +
+find "$WEB_ROOT" -type f -exec chmod 0644 {} +
 install -d -o root -g root -m 0700 /var/lib/footbreak/crown /var/lib/footbreak/learning
 # Runtime dashboard data is deliberately excluded: a deploy never replaces
 # Crown's ledger/state-derived data with the recovered archive snapshot.
@@ -217,8 +221,39 @@ fi
 echo "▸ 重載 nginx"
 install -m 0644 "$APP_DIR/deploy/nginx-footbreak.conf" /etc/nginx/sites-available/footbreak
 install -m 0644 "$APP_DIR/deploy/nginx-crown.conf" /etc/nginx/sites-available/crown
+
+# nginx workers run as www-data. A password rotation or restored file can
+# leave either Basic Auth file unreadable, which nginx reports as a plain 500
+# even while the private dashboard API sockets remain healthy.
+for auth_file in /etc/nginx/.htpasswd-footbreak /etc/nginx/.htpasswd-crown; do
+  if [ ! -f "$auth_file" ] || [ ! -s "$auth_file" ]; then
+    echo "ERROR: required nginx password file is missing or empty: $auth_file" >&2
+    exit 1
+  fi
+  chown root:www-data "$auth_file"
+  chmod 0640 "$auth_file"
+  if ! sudo -u www-data test -r "$auth_file"; then
+    echo "ERROR: nginx worker cannot read password file: $auth_file" >&2
+    exit 1
+  fi
+done
+
 nginx -t
 systemctl reload nginx || systemctl restart nginx
+
+# An unauthenticated request must stop at Basic Auth with 401. This checks the
+# actual nginx/static/auth path users hit, not only the 8765/8766 API sockets.
+for dashboard in footbreak:8081 crown:8082; do
+  name="${dashboard%%:*}"
+  port="${dashboard##*:}"
+  status="$(curl --silent --show-error --output /dev/null \
+    --write-out '%{http_code}' --max-time 5 "http://127.0.0.1:${port}/" || true)"
+  if [ "$status" != 401 ]; then
+    echo "ERROR: nginx $name entrypoint returned HTTP ${status:-unreachable}, expected 401" >&2
+    exit 1
+  fi
+  echo "  nginx $name entrypoint OK (HTTP 401 auth challenge)"
+done
 
 # Timer restarts and a pending persistent settlement may run during deployment.
 # The APIs were already restarted and HTTP-checked above.  Do not restart them
