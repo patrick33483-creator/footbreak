@@ -56,6 +56,12 @@ class ConditionMiningReportTests(unittest.TestCase):
         }
         self.assertIn(("HIL", "T-5", "≥1.70"), coverage_keys)
         self.assertIn(("HIL", "T-5", "<1.70"), coverage_keys)
+        t5_high = next(
+            item for item in coverage
+            if (item["market"], item["decision_stage"], item["odds_tier"])
+            == ("HIL", "T-5", "≥1.70")
+        )
+        self.assertEqual(t5_high["total"]["decided"], 70)
         self.assertTrue(report["read_only"])
         self.assertTrue(report["aggregate_only"])
 
