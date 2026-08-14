@@ -26,6 +26,13 @@ jobs:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
         run: |
+          # A damaged global Bash startup-file mode can block stdin-driven SSH
+          # maintenance before the repair body starts. A direct command still
+          # executes, so restore the standard root-owned readable mode first.
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            'sudo chown root:root /etc/bash.bashrc && sudo chmod 0644 /etc/bash.bashrc'
+
           ssh -o BatchMode=yes -o ConnectTimeout=20 \
             "$DEPLOY_USER@$DEPLOY_HOST" 'sudo /bin/sh -s' <<'REMOTE'
           set -eu
