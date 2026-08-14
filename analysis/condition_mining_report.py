@@ -505,6 +505,20 @@ def mine(system: str, payload: dict[str, Any]) -> dict[str, Any]:
         )
 
     ranked = sorted(candidates, key=rank, reverse=True)
+    coverage = []
+    for (market, stage, tier), cohort in sorted(baseline_samples.items()):
+        coverage.append({
+            "market": market,
+            "decision_stage": stage,
+            "odds_tier": tier,
+            "total": _metrics(cohort),
+            "train": _metrics(
+                sample for sample in cohort if sample["fixture"] in train_ids
+            ),
+            "holdout": _metrics(
+                sample for sample in cohort if sample["fixture"] in holdout_ids
+            ),
+        })
     return {
         "system": system,
         "source_rows": len(rows),
@@ -517,6 +531,7 @@ def mine(system: str, payload: dict[str, Any]) -> dict[str, Any]:
         "fdr_qualified_candidates": sum(
             item["q_value"] is not None and item["q_value"] <= 0.05 for item in candidates
         ),
+        "coverage_by_market_stage_tier": coverage,
         # Keep a bounded but broad aggregate result so uncommon trajectory
         # families (for example A→B→A) are not crowded out by simpler parent
         # conditions.  No fixture-level rows are emitted.
