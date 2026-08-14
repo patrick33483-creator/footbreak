@@ -437,6 +437,9 @@ def mine(system: str, payload: dict[str, Any]) -> dict[str, Any]:
 
     candidate_samples: dict[tuple[str, str, str, str], list[dict[str, Any]]] = defaultdict(list)
     baseline_samples: dict[tuple[str, str, str], list[dict[str, Any]]] = defaultdict(list)
+    role_line_bucket_samples: dict[
+        tuple[str, str, str, str, str], list[dict[str, Any]]
+    ] = defaultdict(list)
     for sample in samples:
         terminal = sample["terminal"]
         stage = terminal["stage"]
@@ -447,6 +450,12 @@ def mine(system: str, payload: dict[str, Any]) -> dict[str, Any]:
         # grade and must not multiply that observation.
         if len(sample["stages"]) == 1:
             baseline_samples[(market, stage, tier)].append(sample)
+            role = terminal["role"]
+            line_bucket = terminal["line_bucket"]
+            if role and line_bucket:
+                role_line_bucket_samples[
+                    (market, stage, tier, role, line_bucket)
+                ].append(sample)
         for family, label in _candidate_definitions(sample):
             candidate_samples[(market, stage, tier, family + "|" + label)].append(sample)
 
@@ -527,6 +536,24 @@ def mine(system: str, payload: dict[str, Any]) -> dict[str, Any]:
                 sample for sample in cohort if sample["fixture"] in holdout_ids
             ),
         })
+    role_line_bucket_coverage = []
+    for (market, stage, tier, role, line_bucket), cohort in sorted(
+        role_line_bucket_samples.items()
+    ):
+        role_line_bucket_coverage.append({
+            "market": market,
+            "decision_stage": stage,
+            "odds_tier": tier,
+            "role": role,
+            "line_bucket": line_bucket,
+            "total": _metrics(cohort),
+            "train": _metrics(
+                sample for sample in cohort if sample["fixture"] in train_ids
+            ),
+            "holdout": _metrics(
+                sample for sample in cohort if sample["fixture"] in holdout_ids
+            ),
+        })
     return {
         "system": system,
         "source_rows": len(rows),
@@ -540,6 +567,7 @@ def mine(system: str, payload: dict[str, Any]) -> dict[str, Any]:
             item["q_value"] is not None and item["q_value"] <= 0.05 for item in candidates
         ),
         "coverage_by_market_stage_tier": coverage,
+        "coverage_by_role_line_bucket": role_line_bucket_coverage,
         # Keep a bounded but broad aggregate result so uncommon trajectory
         # families (for example A→B→A) are not crowded out by simpler parent
         # conditions.  No fixture-level rows are emitted.

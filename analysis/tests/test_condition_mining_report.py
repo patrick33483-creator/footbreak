@@ -34,6 +34,16 @@ class ConditionMiningReportTests(unittest.TestCase):
             row["condition"]: row for row in report["top_conditions"]
         }
         self.assertIn("T-5｜淺盤≤0.5｜主讓", conditions)
+        coverage = report["coverage_by_role_line_bucket"]
+        segment = next(
+            row for row in coverage
+            if row["market"] == "HDC"
+            and row["decision_stage"] == "T-5"
+            and row["odds_tier"] == "≥1.70"
+            and row["role"] == "主讓"
+            and row["line_bucket"] == "淺盤≤0.5"
+        )
+        self.assertEqual(segment["total"]["decided"], 40)
 
     def test_finds_supported_a_b_a_and_keeps_odds_tiers_separate(self) -> None:
         rows = []

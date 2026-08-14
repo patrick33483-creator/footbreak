@@ -88,11 +88,10 @@ jobs:
           import json, sys
           report = json.load(sys.stdin)
           rows = [
-              row for row in report["systems"]["crown"]["top_conditions"]
+              row for row in report["systems"]["crown"]["coverage_by_role_line_bucket"]
               if row["market"] == "HDC"
               and row["decision_stage"] == "T-5"
-              and row["family"] == "role_line_bucket"
-              and "淺盤≤0.5" in row["condition"]
+              and row["line_bucket"] == "淺盤≤0.5"
           ]
           print(json.dumps({
               "report": "crown_t5_shallow_role_split_v1",
