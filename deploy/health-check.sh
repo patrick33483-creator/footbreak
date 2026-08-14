@@ -127,13 +127,15 @@ if [ "$api_ready" != 1 ]; then
 fi
 echo "OK Crown dashboard API /api/health"
 echo "OK Footbreak dashboard API /api/health"
-python3 - <<'PY'
+dashboard_data_ready=0
+for _ in $(seq 1 10); do
+  if python3 - <<'PY'
 import json
 from urllib.request import urlopen
 
-with urlopen("http://127.0.0.1:8765/api/data", timeout=3) as response:
+with urlopen("http://127.0.0.1:8765/api/data", timeout=5) as response:
     crown = json.load(response)
-with urlopen("http://127.0.0.1:8766/api/data", timeout=3) as response:
+with urlopen("http://127.0.0.1:8766/api/data", timeout=5) as response:
     footbreak = json.load(response)
 assert crown.get("schema_version") == "crown-dashboard-v2"
 assert "prediction_history" in footbreak
@@ -144,6 +146,18 @@ assert "by_stage_market" in (
     (footbreak.get("prediction_history") or {}).get("stats") or {}
 )
 PY
+  then
+    dashboard_data_ready=1
+    break
+  fi
+  sleep 2
+done
+if [ "$dashboard_data_ready" != 1 ]; then
+  systemctl status crown-dashboard-api.service footbreak-dashboard-api.service \
+    --no-pager -l || true
+  echo "FAIL dashboard API /api/data did not become ready after retries" >&2
+  exit 1
+fi
 echo "OK Crown dashboard API /api/data"
 echo "OK Footbreak dashboard API /api/data"
 

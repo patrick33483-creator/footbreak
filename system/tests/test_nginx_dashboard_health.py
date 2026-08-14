@@ -30,6 +30,13 @@ class NginxDashboardHealthTests(unittest.TestCase):
             self.assertIn("--write-out '%{http_code}'", script)
             self.assertIn('[ "$status" != 401 ]', script)
 
+    def test_dashboard_data_health_check_retries_transient_timeouts(self):
+        health = (ROOT / "deploy" / "health-check.sh").read_text(encoding="utf-8")
+
+        self.assertIn("dashboard_data_ready=0", health)
+        self.assertIn("for _ in $(seq 1 10)", health)
+        self.assertIn("dashboard API /api/data did not become ready after retries", health)
+
 
 if __name__ == "__main__":
     unittest.main()
