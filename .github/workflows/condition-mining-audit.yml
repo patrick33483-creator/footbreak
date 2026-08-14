@@ -1,0 +1,57 @@
+name: 足破及皇冠最高命中條件只讀分析
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: 設定 SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: 只讀分析 production 已結算歷史
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            'sudo /opt/footbreak/.venv/bin/python3 - --footbreak /var/www/footbreak/data.json --crown /var/www/crown/data.json' \
+            < analysis/condition_mining_report.py > condition-mining.json
+          python3 - <<'PY'
+          import json
+          report = json.load(open("condition-mining.json", encoding="utf-8"))
+          assert report["read_only"] is True
+          assert report["aggregate_only"] is True
+          for name, system in report["systems"].items():
+              print(name, {
+                  "source_rows": system["source_rows"],
+                  "fixture_market_panels": system["fixture_market_panels"],
+                  "candidates": system["candidate_count_after_total_support"],
+                  "sample_qualified": system["sample_qualified_candidates"],
+                  "robust": system["robust_candidates"],
+                  "fdr_qualified": system["fdr_qualified_candidates"],
+              })
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: condition-mining-aggregate
+          path: condition-mining.json
+          if-no-files-found: error
+          retention-days: 7
