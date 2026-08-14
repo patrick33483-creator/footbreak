@@ -1,0 +1,66 @@
+name: 緊急修復 Dashboard 網站
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  repair:
+    name: Repair nginx and dashboard services
+    runs-on: ubuntu-24.04
+    steps:
+      - name: 設定 SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: 即時修復並驗證
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          set -euo pipefail
+
+          for auth_file in /etc/nginx/.htpasswd-footbreak /etc/nginx/.htpasswd-crown; do
+            [ -f "$auth_file" ] && [ -s "$auth_file" ]
+            chown root:www-data "$auth_file"
+            chmod 0640 "$auth_file"
+            sudo -u www-data test -r "$auth_file"
+          done
+
+          for root in /var/www/footbreak /var/www/crown; do
+            [ -d "$root" ]
+            chown -R root:www-data "$root"
+            find "$root" -type d -exec chmod 0755 {} +
+            find "$root" -type f -exec chmod 0644 {} +
+          done
+
+          for service in footbreak-dashboard-api.service crown-dashboard-api.service; do
+            systemctl is-active --quiet "$service" || systemctl restart "$service"
+          done
+
+          nginx -t
+          systemctl reload nginx || systemctl restart nginx
+
+          for dashboard in footbreak:8081 crown:8082; do
+            name="${dashboard%%:*}"
+            port="${dashboard##*:}"
+            status="$(curl --silent --show-error --output /dev/null \
+              --write-out '%{http_code}' --max-time 5 \
+              "http://127.0.0.1:${port}/" || true)"
+            if [ "$status" != 401 ]; then
+              echo "$name entrypoint failed with HTTP ${status:-unreachable}" >&2
+              exit 1
+            fi
+            echo "$name entrypoint healthy"
+          done
+          REMOTE
