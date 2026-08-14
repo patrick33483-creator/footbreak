@@ -17,6 +17,7 @@ class NginxDashboardHealthTests(unittest.TestCase):
         self.assertIn('chown root:www-data "$auth_file"', script)
         self.assertIn('chmod 0640 "$auth_file"', script)
         self.assertIn('runuser -u www-data -- test -r "$auth_file"', script)
+        self.assertIn("chmod 0755 /etc /etc/nginx", script)
         self.assertIn('install -o root -g www-data -m 0640 "$crown_auth"', script)
         self.assertIn('install -o root -g www-data -m 0640 "$footbreak_auth"', script)
         self.assertIn('chown -R root:www-data "$WEB_ROOT"', script)

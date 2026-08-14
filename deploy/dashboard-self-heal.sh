@@ -48,6 +48,8 @@ repair_auth_file() {
 repair_auth_pair() {
   local footbreak=/etc/nginx/.htpasswd-footbreak
   local crown=/etc/nginx/.htpasswd-crown
+  chown root:root /etc /etc/nginx
+  chmod 0755 /etc /etc/nginx
   if { [ ! -s "$footbreak" ] || [ ! -f "$footbreak" ]; } &&
      { [ ! -s "$crown" ] || [ ! -f "$crown" ]; }; then
     return 1

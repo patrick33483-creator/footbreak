@@ -31,12 +31,14 @@ jobs:
           # executes, so restore the standard root-owned readable mode first.
           ssh -o BatchMode=yes -o ConnectTimeout=20 \
             "$DEPLOY_USER@$DEPLOY_HOST" \
-            'sudo chown root:root /etc/bash.bashrc && sudo chmod 0644 /etc/bash.bashrc'
+            'sudo chown root:root /etc /etc/nginx /etc/bash.bashrc && sudo chmod 0755 /etc /etc/nginx && sudo chmod 0644 /etc/bash.bashrc'
 
           ssh -o BatchMode=yes -o ConnectTimeout=20 \
             "$DEPLOY_USER@$DEPLOY_HOST" 'sudo /bin/sh -s' <<'REMOTE'
           set -eu
 
+          chown root:root /etc /etc/nginx
+          chmod 0755 /etc /etc/nginx
           footbreak_auth=/etc/nginx/.htpasswd-footbreak
           crown_auth=/etc/nginx/.htpasswd-crown
           if { [ ! -s "$footbreak_auth" ] || [ ! -f "$footbreak_auth" ]; } &&

@@ -232,6 +232,14 @@ install -m 0644 "$APP_DIR/deploy/nginx-crown.conf" /etc/nginx/sites-available/cr
 # nginx workers run as www-data. A password rotation or restored file can
 # leave either Basic Auth file unreadable, which nginx reports as a plain 500
 # even while the private dashboard API sockets remain healthy.
+# Parent-directory traversal is equally required. Restore only the standard
+# owner/mode metadata; never alter any file contents here.
+chown root:root /etc /etc/nginx
+chmod 0755 /etc /etc/nginx
+if [ -f /etc/bash.bashrc ]; then
+  chown root:root /etc/bash.bashrc
+  chmod 0644 /etc/bash.bashrc
+fi
 footbreak_auth=/etc/nginx/.htpasswd-footbreak
 crown_auth=/etc/nginx/.htpasswd-crown
 if { [ ! -s "$footbreak_auth" ] || [ ! -f "$footbreak_auth" ]; } &&
