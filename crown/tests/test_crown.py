@@ -545,11 +545,17 @@ class CrownSafetyTests(unittest.TestCase):
         }
         self.assertEqual(sync_prediction(ledger, prediction, config), [])
         snapshot = ledger["watch"]["corner-unmapped"]["stages"][0]
-        stored = next(
-            row for row in snapshot["market_predictions"]
-            if row["code"] == "CHL"
+        # The fixture-level corner forecast remains available to the stage,
+        # but it must not become a scoreable market-history row without a
+        # pre-kickoff observation timestamp for its selected HKJC price.
+        self.assertEqual(
+            [row["code"] for row in snapshot["market_predictions"]],
+            ["HDC"],
         )
-        self.assertEqual(stored["source"], "hkjc_full_market_no_vig")
+        self.assertEqual(
+            snapshot["market_prediction_rejections"][0]["reason"],
+            "selected_quote_not_observed_pre_kickoff",
+        )
         self.assertEqual(ledger["bets"], [])
         self.assertEqual(ledger["shadow_bets"], [])
 

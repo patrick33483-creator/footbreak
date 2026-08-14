@@ -38,6 +38,7 @@ ODDS_RECOVERY_EVIDENCE = {
 HKT = timezone(timedelta(hours=8))
 sys.path.insert(0, "/opt/footbreak")
 
+from crown.common import SETTLE_AFTER_SECONDS, parse_time  # noqa: E402
 from crown.ledger import PREDICTION_ERA, completed_stages  # noqa: E402
 from crown.matching import MATCHING_VERSION  # noqa: E402
 from analysis.three_stage_consensus import (  # noqa: E402
@@ -520,6 +521,72 @@ def pinnapi_journal_supplemental_state() -> dict[str, Any]:
     }
 
 
+def handicap_world_settlement_state(
+    ledger: dict[str, Any],
+    *,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Return only aggregate Handicap World settlement visibility.
+
+    This intentionally excludes fixture/team/provider identifiers, bet rows,
+    and timestamps.  Pending reasons are a closed machine-readable vocabulary
+    from Crown settlement rather than copied ledger text.
+    """
+    world = ledger.get("handicap_world")
+    if not isinstance(world, dict):
+        return {"available": False, "reason": "portfolio_missing"}
+    signals = world.get("signals") if isinstance(world.get("signals"), list) else []
+    bets = world.get("bets") if isinstance(world.get("bets"), list) else []
+    observed_now = now or datetime.now(HKT)
+    pending_reasons = {
+        "pinnapi_live_cache_fresh",
+        "pinnapi_live_cache_stale_fallback_unresolved",
+        "verified_result_unavailable",
+    }
+    strategies: dict[str, dict[str, int]] = {}
+    for strategy in ("fixed_stake", "conservative_kelly"):
+        legs = [
+            bet for bet in bets
+            if isinstance(bet, dict) and bet.get("strategy") == strategy
+        ]
+        pending = [bet for bet in legs if bet.get("status") == "PENDING"]
+        due = [
+            bet for bet in pending
+            if (kickoff := parse_time(bet.get("kickoff"))) is not None
+            and (observed_now - kickoff).total_seconds() >= SETTLE_AFTER_SECONDS
+        ]
+        strategies[strategy] = {
+            "bets": len(legs),
+            "pending": len(pending),
+            "due": len(due),
+            "settled": sum(bet.get("status") == "SETTLED" for bet in legs),
+            "with_last_attempt": sum(bool(bet.get("last_settlement_attempt_at")) for bet in legs),
+        }
+    pending_reason_counts = {
+        reason: sum(
+            isinstance(bet, dict)
+            and bet.get("status") == "PENDING"
+            and bet.get("settlement_pending_reason") == reason
+            for bet in bets
+        )
+        for reason in sorted(pending_reasons)
+    }
+    return {
+        "available": True,
+        "read_only": True,
+        "row_free": True,
+        "signals": sum(isinstance(signal, dict) for signal in signals),
+        "strategies": strategies,
+        "diagnostics": {
+            "bets_with_last_attempt": sum(
+                isinstance(bet, dict) and bool(bet.get("last_settlement_attempt_at"))
+                for bet in bets
+            ),
+            "pending_reason_counts": pending_reason_counts,
+        },
+    }
+
+
 def crown_corner_state(
     payload: dict[str, Any],
     ledger: dict[str, Any],
@@ -776,6 +843,9 @@ def main() -> None:
             "condition_analysis": prediction_condition_analysis(crown_rows),
             "corner_prediction_audit": crown_corner_state(
                 crown_dashboard,
+                crown_ledger,
+            ),
+            "handicap_world_settlement": handicap_world_settlement_state(
                 crown_ledger,
             ),
             "relevant_rows": [compact(row) for row in crown_rows if relevant(row)],

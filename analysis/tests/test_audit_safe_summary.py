@@ -11,6 +11,7 @@ import json
 import sys
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
@@ -212,6 +213,55 @@ class AuditDataHealthSummaryTests(unittest.TestCase):
         self.assertEqual(summary["pinnapi_error_mentions_observed"], 1)
         self.assertTrue(summary["raw_journal_lines_excluded"])
         self.assertNotIn("SECRET", json.dumps(summary))
+
+    def test_handicap_world_settlement_summary_is_row_free_and_due_aware(self) -> None:
+        ledger = {
+            "handicap_world": {
+                "signals": [{"signal_id": "SECRET_SIGNAL"}, {"signal_id": "OTHER"}],
+                "bets": [
+                    {
+                        "bet_id": "SECRET_FIXED", "strategy": "fixed_stake",
+                        "status": "PENDING", "kickoff": "2026-08-01T12:00:00+08:00",
+                        "last_settlement_attempt_at": "2026-08-01T15:00:00+08:00",
+                        "settlement_pending_reason": "pinnapi_live_cache_fresh",
+                        "home": "SECRET HOME", "pinnapi_event_id": "PRIVATE_PROVIDER_ID",
+                    },
+                    {
+                        "bet_id": "SECRET_KELLY", "strategy": "conservative_kelly",
+                        "status": "SETTLED", "kickoff": "2026-08-01T12:00:00+08:00",
+                    },
+                    {
+                        "bet_id": "UNKNOWN_STRATEGY", "strategy": "other",
+                        "status": "PENDING", "settlement_pending_reason": "LEAK_ME",
+                    },
+                ],
+            },
+        }
+        summary = self.audit.handicap_world_settlement_state(
+            ledger,
+            now=datetime.fromisoformat("2026-08-01T14:00:00+08:00"),
+        )
+        self.assertTrue(summary["available"])
+        self.assertTrue(summary["row_free"])
+        self.assertEqual(summary["signals"], 2)
+        self.assertEqual(
+            summary["strategies"]["fixed_stake"],
+            {"bets": 1, "pending": 1, "due": 1, "settled": 0, "with_last_attempt": 1},
+        )
+        self.assertEqual(summary["strategies"]["conservative_kelly"]["settled"], 1)
+        self.assertEqual(
+            summary["diagnostics"]["pending_reason_counts"]["pinnapi_live_cache_fresh"],
+            1,
+        )
+        text = json.dumps(summary)
+        for private in ("SECRET", "PRIVATE_PROVIDER_ID", "LEAK_ME", "UNKNOWN_STRATEGY"):
+            self.assertNotIn(private, text)
+
+    def test_handicap_world_settlement_summary_handles_missing_portfolio(self) -> None:
+        self.assertEqual(
+            self.audit.handicap_world_settlement_state({}),
+            {"available": False, "reason": "portfolio_missing"},
+        )
 
 
 class AuditCrownChlWhitelistTests(unittest.TestCase):

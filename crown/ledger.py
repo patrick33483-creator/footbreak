@@ -1,13 +1,14 @@
 """Idempotent Crown watch ledger.  It can create simulations, never real bets."""
 from __future__ import annotations
 
+import math
 import os
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from analysis.learning_store import LearningStore
 
-from .common import iso_hkt
+from .common import HKT, iso_hkt, parse_time
 from .config import Settings
 from .handicap_world import (
     FIXED_STAKE as HANDICAP_WORLD_FIXED_STAKE,
@@ -73,13 +74,46 @@ def stage_for(minutes_to_kickoff: float, sweep: bool, done: set[str]) -> str | N
     return None
 
 
-def _market_predictions(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _observed_before_kickoff(value: Any, kickoff: Any) -> bool:
+    """Accept only a finite quote observation that predates this fixture."""
+    kickoff_at = parse_time(str(kickoff or ""))
+    if kickoff_at is None:
+        return False
+    try:
+        observed_number = float(value)
+    except (TypeError, ValueError):
+        observed_at = parse_time(str(value or ""))
+    else:
+        if not math.isfinite(observed_number) or observed_number <= 0:
+            return False
+        # Provider rows normally use epoch seconds; tolerate milliseconds only
+        # for an otherwise valid immutable observation.
+        if observed_number >= 10_000_000_000:
+            observed_number /= 1000
+        try:
+            observed_at = datetime.fromtimestamp(observed_number, HKT)
+        except (OverflowError, OSError, ValueError):
+            return False
+    return observed_at is not None and observed_at < kickoff_at
+
+
+def _market_predictions(
+    candidates: list[dict[str, Any]],
+    kickoff: Any,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Persist only auditable pre-kickoff selected market observations.
+
+    Fixture-level forecasts remain available in the stage metadata.  A
+    scoreable market row, however, must never be created without an exact
+    line/side, decimal odds, and an observation that predates kickoff.
+    """
     grouped: dict[str, list[dict[str, Any]]] = {}
     for candidate in candidates or []:
         code = str(candidate.get("code") or "")
         if code in {"HDC", "HIL", "CHL"}:
             grouped.setdefault(code, []).append(candidate)
-    output = []
+    output: list[dict[str, Any]] = []
+    rejected: list[dict[str, Any]] = []
     for code, rows in grouped.items():
         best = max(rows, key=lambda row: float(row.get("prob") or 0))
         odds = best.get("odds")
@@ -88,7 +122,32 @@ def _market_predictions(candidates: list[dict[str, Any]]) -> list[dict[str, Any]
         except (TypeError, ValueError):
             odds_valid = False
         observed_at = best.get("observed_at") or best.get("source_at")
-        quote_complete = odds_valid and observed_at is not None
+        raw_line = best.get("line")
+        try:
+            line_valid = math.isfinite(float(raw_line))
+        except (TypeError, ValueError):
+            line_valid = False
+        side_valid = best.get("side") in {
+            "HDC": {"H", "A"},
+            "HIL": {"H", "L"},
+            "CHL": {"H", "L"},
+        }[code]
+        timestamp_valid = _observed_before_kickoff(observed_at, kickoff)
+        if not (odds_valid and line_valid and side_valid and timestamp_valid):
+            reason = (
+                "selected_quote_unavailable"
+                if not odds_valid
+                else "selected_line_or_side_unavailable"
+                if not (line_valid and side_valid)
+                else "selected_quote_not_observed_pre_kickoff"
+            )
+            rejected.append({
+                "code": code,
+                "line": raw_line,
+                "side": best.get("side"),
+                "reason": reason,
+            })
+            continue
         output.append({
             "code": code,
             "market": best.get("market"),
@@ -96,15 +155,9 @@ def _market_predictions(candidates: list[dict[str, Any]]) -> list[dict[str, Any]
             "line": best.get("line"),
             "side": best.get("side"),
             "label": best.get("label"),
-            "odds": odds if quote_complete else None,
-            "odds_status": "available" if quote_complete else "missing",
-            "odds_reason": (
-                None if quote_complete
-                else (
-                    "selected_quote_timestamp_unavailable"
-                    if odds_valid else "selected_quote_unavailable"
-                )
-            ),
+            "odds": odds,
+            "odds_status": "available",
+            "odds_reason": None,
             # Crown price rows carry source_at as epoch seconds.  Preserve it
             # exactly; a missing observed timestamp remains explicit.
             "observed_at": observed_at,
@@ -120,7 +173,7 @@ def _market_predictions(candidates: list[dict[str, Any]]) -> list[dict[str, Any]
             "quote_source": best.get("source") or best.get("reference") or "pinnapi_exact_line",
             "provider": best.get("provider") or "Crown",
         })
-    return sorted(output, key=lambda row: row["code"])
+    return sorted(output, key=lambda row: row["code"]), rejected
 
 
 def _selected_odds_journal(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -135,8 +188,9 @@ def _selected_odds_journal(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _snapshot(prediction: dict[str, Any], stage: str) -> dict[str, Any]:
-    market_predictions = _market_predictions(
-        prediction.get("forecast_candidates") or prediction.get("candidates") or []
+    market_predictions, market_prediction_rejections = _market_predictions(
+        prediction.get("forecast_candidates") or prediction.get("candidates") or [],
+        prediction.get("kickoff_hkt"),
     )
     odds_journal = _selected_odds_journal(market_predictions)
     unavailable_quotes = [
@@ -161,6 +215,10 @@ def _snapshot(prediction: dict[str, Any], stage: str) -> dict[str, Any]:
         "stage": stage,
         "ts": iso_hkt(),
         "market_predictions": market_predictions,
+        # This is non-market metadata, so a missing quote remains auditable
+        # without becoming a scoreable history row.  Historic rows are not
+        # rewritten by this gate or by the recovery-overlay workflow.
+        "market_prediction_rejections": market_prediction_rejections,
         "selected_odds_journal": odds_journal,
         # A partial journal must not make the complete stage appear priced.
         # Each market still retains its own explicit missing reason below.

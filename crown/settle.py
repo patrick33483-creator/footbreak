@@ -24,6 +24,10 @@ from .state import load_ledger, paths, save_ledger
 from .titan import TitanClient
 
 
+LIVE_CACHE_STALE_SECONDS = 30 * 60
+LIVE_CACHE_FAILURES_BEFORE_FALLBACK = 2
+
+
 def _target(bet: dict[str, Any]) -> Event | None:
     kickoff = parse_time(bet.get("kickoff"))
     if not kickoff or not bet.get("home") or not bet.get("away"):
@@ -41,11 +45,59 @@ def _refresh_live(config: Settings, due: list[dict[str, Any]]) -> dict[str, Any]
         record = cache.get(event_id, {})
         score = snapshot.get(event_id)
         if score:
-            cache[event_id] = record | score | {"seen_live": True, "no_longer_live": False}
+            cache[event_id] = record | score | {
+                "seen_live": True,
+                "no_longer_live": False,
+                "last_live_seen_at": iso_hkt(),
+                "live_refresh_failures": 0,
+                "last_live_refresh_failure_at": None,
+            }
         elif record.get("seen_live"):
             cache[event_id] = record | {"no_longer_live": True, "ended_candidate_at": iso_hkt()}
     write_json_atomic(paths(config)["live"], cache)
     return cache
+
+
+def _live_blocks_fallback(live: dict[str, Any], now: datetime) -> bool:
+    """Keep fresh live observations authoritative, never indefinitely so."""
+    if not live.get("seen_live") or live.get("no_longer_live"):
+        return False
+    observed_at = parse_time(live.get("last_live_seen_at"))
+    if observed_at and (now - observed_at).total_seconds() >= LIVE_CACHE_STALE_SECONDS:
+        return False
+    try:
+        failures = int(live.get("live_refresh_failures") or 0)
+    except (TypeError, ValueError):
+        failures = 0
+    return failures < LIVE_CACHE_FAILURES_BEFORE_FALLBACK
+
+
+def _record_live_refresh_failure(
+    config: Settings,
+    cache: dict[str, Any],
+    due: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Persist a bounded failure condition for legacy and current live caches."""
+    failed_at = iso_hkt()
+    for event_id in {str(bet.get("pinnapi_event_id") or "") for bet in due} - {""}:
+        record = cache.get(event_id)
+        if not isinstance(record, dict) or not record.get("seen_live"):
+            continue
+        try:
+            failures = int(record.get("live_refresh_failures") or 0)
+        except (TypeError, ValueError):
+            failures = 0
+        cache[event_id] = record | {
+            "live_refresh_failures": failures + 1,
+            "last_live_refresh_failure_at": failed_at,
+        }
+    write_json_atomic(paths(config)["live"], cache)
+    return cache
+
+
+def _pending_diagnostic(bet: dict[str, Any], reason: str) -> None:
+    bet["last_settlement_attempt_at"] = iso_hkt()
+    bet["settlement_pending_reason"] = reason
 
 
 def _settle(bet: dict[str, Any], score: dict[str, Any], source: str) -> bool:
@@ -65,6 +117,7 @@ def _settle(bet: dict[str, Any], score: dict[str, Any], source: str) -> bool:
     bet.update({"status": "SETTLED", "result": result, "pnl": pnl(result, float(bet["stake"]), float(bet["odds"])),
                 "score": result_score, "settled_at": iso_hkt(),
                 "settlement_source": source})
+    bet.pop("settlement_pending_reason", None)
     action = (
         "讓球世界結算" if bet.get("portfolio") == HANDICAP_WORLD_PORTFOLIO
         else "影子結算" if bet.get("portfolio") == "shadow"
@@ -84,6 +137,7 @@ def _void(bet: dict[str, Any], status: str, source: str) -> None:
         "settled_at": iso_hkt(),
         "settlement_source": source,
     })
+    bet.pop("settlement_pending_reason", None)
     bet.setdefault("history", []).append({
         "ts": iso_hkt(),
         "stage": "結算",
@@ -274,15 +328,21 @@ def settle_due(config: Settings, *, handicap_world_only: bool = False) -> dict[s
     try:
         cache = _refresh_live(config, standard_due)
     except Exception:
-        # A live-score failure cannot cause fallback settlement for a known-live event.
+        # Preserve a bounded failure count.  Strict exact-ID official/Titan
+        # fallback remains unavailable until a live observation is stale or
+        # repeated live refresh failures make the cache non-authoritative.
         cache = read_json(paths(config)["live"], {})
+        cache = _record_live_refresh_failure(config, cache, standard_due)
     # CHL is never settled from PinnAPI live goal scores or Titan results.  It
     # always waits for HKJC's confirmed exact-ID full-match corners total.
     corner_due = [bet for bet in due if bet.get("code") == "CHL"]
     fallback = [
         bet for bet in due
         if bet.get("code") != "CHL"
-        and not (cache.get(str(bet.get("pinnapi_event_id"))) or {}).get("seen_live")
+        and not _live_blocks_fallback(
+            cache.get(str(bet.get("pinnapi_event_id")) or "", {}),
+            now,
+        )
     ]
     hkjc_results: dict[str, dict[str, Any]] = {}
     hkjc_statuses: dict[str, dict[str, Any]] = {}
@@ -311,7 +371,7 @@ def settle_due(config: Settings, *, handicap_world_only: bool = False) -> dict[s
         if bet.get("code") == "CHL":
             return not (official and official.get("corners_total") is not None)
         live = cache.get(str(bet.get("pinnapi_event_id") or ""), {})
-        return not live.get("seen_live") and official is None
+        return not _live_blocks_fallback(live, now) and official is None
 
     titan_client = TitanClient(config)
     titan_results: list[dict[str, Any]] = []
@@ -376,7 +436,10 @@ def settle_due(config: Settings, *, handicap_world_only: bool = False) -> dict[s
             continue
         event_id = str(bet.get("pinnapi_event_id") or "")
         live = cache.get(event_id, {})
-        if live.get("seen_live"):
+        if _live_blocks_fallback(live, now):
+            _pending_diagnostic(bet, "pinnapi_live_cache_fresh")
+            continue
+        if live.get("seen_live") and live.get("no_longer_live"):
             if live.get("no_longer_live") and _settle(bet, live, "pinnapi_live_observed_then_absent"):
                 count("settled", bet)
             continue
@@ -402,6 +465,12 @@ def settle_due(config: Settings, *, handicap_world_only: bool = False) -> dict[s
             ):
                 count("settled", bet)
                 continue
+        _pending_diagnostic(
+            bet,
+            "pinnapi_live_cache_stale_fallback_unresolved"
+            if live.get("seen_live")
+            else "verified_result_unavailable",
+        )
     if handicap_world_only:
         recompute_handicap_world_stats(ledger)
     else:

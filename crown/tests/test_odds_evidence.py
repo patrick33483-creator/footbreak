@@ -3,17 +3,23 @@ from __future__ import annotations
 
 import unittest
 from datetime import datetime, timedelta
+from dataclasses import replace
+from pathlib import Path
+import tempfile
 from unittest.mock import Mock, patch
 
 from crown.common import HKT
+from crown.config import settings
 from crown.engine import refresh_current_quotes
-from crown.ledger import _snapshot
+from crown.ledger import _snapshot, sync_prediction
+from crown.prediction_history import archive_watch
 
 
 class CrownOddsEvidenceTests(unittest.TestCase):
     def test_snapshot_has_compact_selected_quote_journal(self) -> None:
         prediction = {
             "stage": "T-30", "match_id": "t1",
+            "kickoff_hkt": "2026-09-01T12:00:00+08:00",
             "forecast_candidates": [{
                 "code": "HIL", "market": "入球大細", "condition": "2.5",
                 "line": 2.5, "side": "L", "label": "細", "odds": 1.70,
@@ -29,9 +35,10 @@ class CrownOddsEvidenceTests(unittest.TestCase):
         self.assertEqual(snapshot["selected_odds_journal"][0]["source"], "titan007-crown-id-3")
         self.assertEqual(snapshot["selected_odds_journal"][0]["observed_at"], 1_786_000_000)
 
-    def test_snapshot_is_missing_when_any_selected_market_quote_is_missing(self) -> None:
+    def test_snapshot_keeps_invalid_selected_quote_as_non_market_rejection(self) -> None:
         prediction = {
             "stage": "T-5", "match_id": "mixed",
+            "kickoff_hkt": "2026-09-01T12:00:00+08:00",
             "forecast_candidates": [
                 {
                     "code": "HDC", "market": "讓球", "condition": "-0.5",
@@ -46,29 +53,68 @@ class CrownOddsEvidenceTests(unittest.TestCase):
             ],
         }
         snapshot = _snapshot(prediction, "T-5")
-        self.assertEqual(snapshot["odds_status"], "missing")
+        self.assertEqual(snapshot["odds_status"], "available")
+        self.assertIsNone(snapshot["odds_reason"])
+        self.assertEqual([row["code"] for row in snapshot["market_predictions"]], ["HDC"])
         self.assertEqual(
-            snapshot["odds_reason"],
-            "one_or_more_selected_quotes_unavailable",
-        )
-        self.assertEqual(
-            [row["odds_status"] for row in snapshot["selected_odds_journal"]],
-            ["available", "missing"],
+            snapshot["market_prediction_rejections"],
+            [{"code": "HIL", "line": 2.5, "side": "L", "reason": "selected_quote_unavailable"}],
         )
 
-    def test_snapshot_marks_an_untimestamped_quote_incomplete(self) -> None:
+    def test_snapshot_rejects_quote_without_pre_kickoff_timestamp(self) -> None:
         snapshot = _snapshot({
             "match_id": "no-timestamp",
+            "kickoff_hkt": "2026-09-01T12:00:00+08:00",
             "forecast_candidates": [{
                 "code": "HDC", "condition": "-0.5", "line": -0.5,
                 "side": "H", "odds": 1.70, "prob": .55,
             }],
         }, "首預")
-        selected = snapshot["selected_odds_journal"][0]
-        self.assertEqual(selected["odds_status"], "missing")
+        self.assertEqual(snapshot["market_predictions"], [])
         self.assertEqual(
-            selected["reason"], "selected_quote_timestamp_unavailable"
+            snapshot["market_prediction_rejections"][0]["reason"],
+            "selected_quote_not_observed_pre_kickoff",
         )
+
+    def test_snapshot_rejects_post_kickoff_or_inexact_market_selection(self) -> None:
+        snapshot = _snapshot({
+            "match_id": "late",
+            "kickoff_hkt": "2026-09-01T12:00:00+08:00",
+            "forecast_candidates": [
+                {"code": "HDC", "line": -0.5, "side": "H", "odds": 1.8, "prob": .6,
+                 "observed_at": "2026-09-01T12:01:00+08:00"},
+                {"code": "HIL", "line": 2.5, "side": "A", "odds": 1.8, "prob": .5,
+                 "observed_at": "2026-09-01T11:00:00+08:00"},
+            ],
+        }, "首預")
+        self.assertEqual(snapshot["market_predictions"], [])
+        self.assertEqual(
+            [row["reason"] for row in snapshot["market_prediction_rejections"]],
+            ["selected_quote_not_observed_pre_kickoff", "selected_line_or_side_unavailable"],
+        )
+
+    def test_new_unpriced_stage_never_enters_market_history(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = replace(settings(), state_dir=Path(directory))
+            ledger = {"bets": [], "shadow_bets": [], "watch": {}, "stats": {}}
+            prediction = {
+                "match_id": "baseline-only",
+                "stage": "首預",
+                "league": "L",
+                "home": "Home",
+                "away": "Away",
+                "kickoff_hkt": "2026-09-01T12:00:00+08:00",
+                "forecast": "主勝",
+                "forecast_candidates": [{
+                    "code": "HDC", "line": -0.5, "side": "H", "odds": None, "prob": .6,
+                }],
+            }
+            sync_prediction(ledger, prediction, config)
+            stage = ledger["watch"]["baseline-only"]["stages"][0]
+            self.assertEqual(stage["market_predictions"], [])
+            self.assertEqual(stage["forecast"], "主勝")
+            history = archive_watch(config, ledger)
+            self.assertEqual(history["rows"], [])
 
     def test_refresh_only_touches_not_yet_started_dashboard_cards(self) -> None:
         now = datetime.now(HKT)
