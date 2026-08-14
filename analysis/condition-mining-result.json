@@ -36,6 +36,788 @@
   "systems": {
     "crown": {
       "candidate_count_after_total_support": 253,
+      "coverage_by_market_stage_tier": [
+        {
+          "decision_stage": "T-30",
+          "holdout": {
+            "accuracy": null,
+            "average_odds": null,
+            "decided": 0,
+            "hits": 0,
+            "pushes": 0,
+            "roi": null,
+            "settled": 0,
+            "wilson95": null
+          },
+          "market": "CHL",
+          "odds_tier": "<1.70",
+          "total": {
+            "accuracy": 0.777778,
+            "average_odds": 1.5433,
+            "decided": 18,
+            "hits": 14,
+            "pushes": 0,
+            "roi": 0.205556,
+            "settled": 18,
+            "wilson95": [
+              0.547854,
+              0.909991
+            ]
+          },
+          "train": {
+            "accuracy": 0.777778,
+            "average_odds": 1.5433,
+            "decided": 18,
+            "hits": 14,
+            "pushes": 0,
+            "roi": 0.205556,
+            "settled": 18,
+            "wilson95": [
+              0.547854,
+              0.909991
+            ]
+          }
+        },
+        {
+          "decision_stage": "T-30",
+          "holdout": {
+            "accuracy": null,
+            "average_odds": null,
+            "decided": 0,
+            "hits": 0,
+            "pushes": 0,
+            "roi": null,
+            "settled": 0,
+            "wilson95": null
+          },
+          "market": "CHL",
+          "odds_tier": "≥1.70",
+          "total": {
+            "accuracy": 0.333333,
+            "average_odds": 1.8267,
+            "decided": 6,
+            "hits": 2,
+            "pushes": 0,
+            "roi": -0.386667,
+            "settled": 6,
+            "wilson95": [
+              0.096771,
+              0.700007
+            ]
+          },
+          "train": {
+            "accuracy": 0.333333,
+            "average_odds": 1.8267,
+            "decided": 6,
+            "hits": 2,
+            "pushes": 0,
+            "roi": -0.386667,
+            "settled": 6,
+            "wilson95": [
+              0.096771,
+              0.700007
+            ]
+          }
+        },
+        {
+          "decision_stage": "T-5",
+          "holdout": {
+            "accuracy": null,
+            "average_odds": null,
+            "decided": 0,
+            "hits": 0,
+            "pushes": 0,
+            "roi": null,
+            "settled": 0,
+            "wilson95": null
+          },
+          "market": "CHL",
+          "odds_tier": "<1.70",
+          "total": {
+            "accuracy": 0.777778,
+            "average_odds": 1.5589,
+            "decided": 36,
+            "hits": 28,
+            "pushes": 0,
+            "roi": 0.221111,
+            "settled": 36,
+            "wilson95": [
+              0.619153,
+              0.882837
+            ]
+          },
+          "train": {
+            "accuracy": 0.777778,
+            "average_odds": 1.5589,
+            "decided": 36,
+            "hits": 28,
+            "pushes": 0,
+            "roi": 0.221111,
+            "settled": 36,
+            "wilson95": [
+              0.619153,
+              0.882837
+            ]
+          }
+        },
+        {
+          "decision_stage": "T-5",
+          "holdout": {
+            "accuracy": null,
+            "average_odds": null,
+            "decided": 0,
+            "hits": 0,
+            "pushes": 0,
+            "roi": null,
+            "settled": 0,
+            "wilson95": null
+          },
+          "market": "CHL",
+          "odds_tier": "≥1.70",
+          "total": {
+            "accuracy": 0.333333,
+            "average_odds": 1.8067,
+            "decided": 12,
+            "hits": 4,
+            "pushes": 0,
+            "roi": -0.386667,
+            "settled": 12,
+            "wilson95": [
+              0.13812,
+              0.609378
+            ]
+          },
+          "train": {
+            "accuracy": 0.333333,
+            "average_odds": 1.8067,
+            "decided": 12,
+            "hits": 4,
+            "pushes": 0,
+            "roi": -0.386667,
+            "settled": 12,
+            "wilson95": [
+              0.13812,
+              0.609378
+            ]
+          }
+        },
+        {
+          "decision_stage": "首預",
+          "holdout": {
+            "accuracy": 0.75,
+            "average_odds": 1.6325,
+            "decided": 4,
+            "hits": 3,
+            "pushes": 0,
+            "roi": 0.22,
+            "settled": 4,
+            "wilson95": [
+              0.300642,
+              0.954413
+            ]
+          },
+          "market": "CHL",
+          "odds_tier": "<1.70",
+          "total": {
+            "accuracy": 0.727273,
+            "average_odds": 1.5782,
+            "decided": 11,
+            "hits": 8,
+            "pushes": 0,
+            "roi": 0.151818,
+            "settled": 11,
+            "wilson95": [
+              0.434355,
+              0.902539
+            ]
+          },
+          "train": {
+            "accuracy": 0.714286,
+            "average_odds": 1.5471,
+            "decided": 7,
+            "hits": 5,
+            "pushes": 0,
+            "roi": 0.112857,
+            "settled": 7,
+            "wilson95": [
+              0.358934,
+              0.917781
+            ]
+          }
+        },
+        {
+          "decision_stage": "首預",
+          "holdout": {
+            "accuracy": 0.714286,
+            "average_odds": 1.7757,
+            "decided": 7,
+            "hits": 5,
+            "pushes": 0,
+            "roi": 0.261429,
+            "settled": 7,
+            "wilson95": [
+              0.358934,
+              0.917781
+            ]
+          },
+          "market": "CHL",
+          "odds_tier": "≥1.70",
+          "total": {
+            "accuracy": 0.666667,
+            "average_odds": 1.7833,
+            "decided": 12,
+            "hits": 8,
+            "pushes": 0,
+            "roi": 0.186667,
+            "settled": 12,
+            "wilson95": [
+              0.390622,
+              0.86188
+            ]
+          },
+          "train": {
+            "accuracy": 0.6,
+            "average_odds": 1.794,
+            "decided": 5,
+            "hits": 3,
+            "pushes": 0,
+            "roi": 0.082,
+            "settled": 5,
+            "wilson95": [
+              0.230724,
+              0.882379
+            ]
+          }
+        },
+        {
+          "decision_stage": "T-30",
+          "holdout": {
+            "accuracy": 0.461538,
+            "average_odds": 1.6541,
+            "decided": 13,
+            "hits": 6,
+            "pushes": 4,
+            "roi": -0.121176,
+            "settled": 17,
+            "wilson95": [
+              0.232061,
+              0.708562
+            ]
+          },
+          "market": "HDC",
+          "odds_tier": "<1.70",
+          "total": {
+            "accuracy": 0.489362,
+            "average_odds": 1.6359,
+            "decided": 47,
+            "hits": 23,
+            "pushes": 9,
+            "roi": -0.16125,
+            "settled": 56,
+            "wilson95": [
+              0.352756,
+              0.627575
+            ]
+          },
+          "train": {
+            "accuracy": 0.5,
+            "average_odds": 1.6279,
+            "decided": 34,
+            "hits": 17,
+            "pushes": 5,
+            "roi": -0.178718,
+            "settled": 39,
+            "wilson95": [
+              0.340693,
+              0.659307
+            ]
+          }
+        },
+        {
+          "decision_stage": "T-30",
+          "holdout": {
+            "accuracy": 0.453333,
+            "average_odds": 1.8334,
+            "decided": 150,
+            "hits": 68,
+            "pushes": 16,
+            "roi": -0.139578,
+            "settled": 166,
+            "wilson95": [
+              0.375825,
+              0.533172
+            ]
+          },
+          "market": "HDC",
+          "odds_tier": "≥1.70",
+          "total": {
+            "accuracy": 0.514463,
+            "average_odds": 1.831,
+            "decided": 484,
+            "hits": 249,
+            "pushes": 36,
+            "roi": -0.055087,
+            "settled": 520,
+            "wilson95": [
+              0.469998,
+              0.558699
+            ]
+          },
+          "train": {
+            "accuracy": 0.541916,
+            "average_odds": 1.8299,
+            "decided": 334,
+            "hits": 181,
+            "pushes": 20,
+            "roi": -0.015466,
+            "settled": 354,
+            "wilson95": [
+              0.488309,
+              0.594571
+            ]
+          }
+        },
+        {
+          "decision_stage": "T-5",
+          "holdout": {
+            "accuracy": 0.4,
+            "average_odds": 1.655,
+            "decided": 20,
+            "hits": 8,
+            "pushes": 4,
+            "roi": -0.195,
+            "settled": 24,
+            "wilson95": [
+              0.218807,
+              0.613418
+            ]
+          },
+          "market": "HDC",
+          "odds_tier": "<1.70",
+          "total": {
+            "accuracy": 0.510204,
+            "average_odds": 1.6347,
+            "decided": 98,
+            "hits": 50,
+            "pushes": 18,
+            "roi": -0.137586,
+            "settled": 116,
+            "wilson95": [
+              0.41273,
+              0.606908
+            ]
+          },
+          "train": {
+            "accuracy": 0.538462,
+            "average_odds": 1.6293,
+            "decided": 78,
+            "hits": 42,
+            "pushes": 14,
+            "roi": -0.122609,
+            "settled": 92,
+            "wilson95": [
+              0.428636,
+              0.644676
+            ]
+          }
+        },
+        {
+          "decision_stage": "T-5",
+          "holdout": {
+            "accuracy": 0.596273,
+            "average_odds": 1.8177,
+            "decided": 322,
+            "hits": 192,
+            "pushes": 32,
+            "roi": 0.070282,
+            "settled": 354,
+            "wilson95": [
+              0.541853,
+              0.648424
+            ]
+          },
+          "market": "HDC",
+          "odds_tier": "≥1.70",
+          "total": {
+            "accuracy": 0.570423,
+            "average_odds": 1.8184,
+            "decided": 994,
+            "hits": 567,
+            "pushes": 84,
+            "roi": 0.026243,
+            "settled": 1078,
+            "wilson95": [
+              0.539436,
+              0.600867
+            ]
+          },
+          "train": {
+            "accuracy": 0.558036,
+            "average_odds": 1.8187,
+            "decided": 672,
+            "hits": 375,
+            "pushes": 52,
+            "roi": 0.00471,
+            "settled": 724,
+            "wilson95": [
+              0.520263,
+              0.595149
+            ]
+          }
+        },
+        {
+          "decision_stage": "首預",
+          "holdout": {
+            "accuracy": 0.333333,
+            "average_odds": 1.6633,
+            "decided": 3,
+            "hits": 1,
+            "pushes": 0,
+            "roi": -0.45,
+            "settled": 3,
+            "wilson95": [
+              0.061492,
+              0.79234
+            ]
+          },
+          "market": "HDC",
+          "odds_tier": "<1.70",
+          "total": {
+            "accuracy": 0.428571,
+            "average_odds": 1.6425,
+            "decided": 7,
+            "hits": 3,
+            "pushes": 1,
+            "roi": -0.26125,
+            "settled": 8,
+            "wilson95": [
+              0.15822,
+              0.749542
+            ]
+          },
+          "train": {
+            "accuracy": 0.5,
+            "average_odds": 1.63,
+            "decided": 4,
+            "hits": 2,
+            "pushes": 1,
+            "roi": -0.148,
+            "settled": 5,
+            "wilson95": [
+              0.150039,
+              0.849961
+            ]
+          }
+        },
+        {
+          "decision_stage": "首預",
+          "holdout": {
+            "accuracy": 0.52439,
+            "average_odds": 1.8383,
+            "decided": 82,
+            "hits": 43,
+            "pushes": 6,
+            "roi": -0.02233,
+            "settled": 88,
+            "wilson95": [
+              0.417647,
+              0.62895
+            ]
+          },
+          "market": "HDC",
+          "odds_tier": "≥1.70",
+          "total": {
+            "accuracy": 0.511111,
+            "average_odds": 1.8334,
+            "decided": 225,
+            "hits": 115,
+            "pushes": 13,
+            "roi": -0.049769,
+            "settled": 238,
+            "wilson95": [
+              0.446159,
+              0.57569
+            ]
+          },
+          "train": {
+            "accuracy": 0.503497,
+            "average_odds": 1.8306,
+            "decided": 143,
+            "hits": 72,
+            "pushes": 7,
+            "roi": -0.065867,
+            "settled": 150,
+            "wilson95": [
+              0.422536,
+              0.584274
+            ]
+          }
+        },
+        {
+          "decision_stage": "T-30",
+          "holdout": {
+            "accuracy": 0.8,
+            "average_odds": 1.648,
+            "decided": 10,
+            "hits": 8,
+            "pushes": 0,
+            "roi": 0.31,
+            "settled": 10,
+            "wilson95": [
+              0.490162,
+              0.943318
+            ]
+          },
+          "market": "HIL",
+          "odds_tier": "<1.70",
+          "total": {
+            "accuracy": 0.777778,
+            "average_odds": 1.6397,
+            "decided": 27,
+            "hits": 21,
+            "pushes": 2,
+            "roi": 0.244828,
+            "settled": 29,
+            "wilson95": [
+              0.592431,
+              0.893928
+            ]
+          },
+          "train": {
+            "accuracy": 0.764706,
+            "average_odds": 1.6353,
+            "decided": 17,
+            "hits": 13,
+            "pushes": 2,
+            "roi": 0.210526,
+            "settled": 19,
+            "wilson95": [
+              0.527382,
+              0.90445
+            ]
+          }
+        },
+        {
+          "decision_stage": "T-30",
+          "holdout": {
+            "accuracy": 0.521212,
+            "average_odds": 1.8335,
+            "decided": 165,
+            "hits": 86,
+            "pushes": 8,
+            "roi": -0.03237,
+            "settled": 173,
+            "wilson95": [
+              0.445377,
+              0.596082
+            ]
+          },
+          "market": "HIL",
+          "odds_tier": "≥1.70",
+          "total": {
+            "accuracy": 0.528376,
+            "average_odds": 1.8223,
+            "decided": 511,
+            "hits": 270,
+            "pushes": 36,
+            "roi": -0.037441,
+            "settled": 547,
+            "wilson95": [
+              0.485043,
+              0.571285
+            ]
+          },
+          "train": {
+            "accuracy": 0.531792,
+            "average_odds": 1.8171,
+            "decided": 346,
+            "hits": 184,
+            "pushes": 28,
+            "roi": -0.039786,
+            "settled": 374,
+            "wilson95": [
+              0.479154,
+              0.583732
+            ]
+          }
+        },
+        {
+          "decision_stage": "T-5",
+          "holdout": {
+            "accuracy": 0.666667,
+            "average_odds": 1.65,
+            "decided": 6,
+            "hits": 4,
+            "pushes": 0,
+            "roi": 0.1,
+            "settled": 6,
+            "wilson95": [
+              0.299993,
+              0.903229
+            ]
+          },
+          "market": "HIL",
+          "odds_tier": "<1.70",
+          "total": {
+            "accuracy": 0.7,
+            "average_odds": 1.6382,
+            "decided": 40,
+            "hits": 28,
+            "pushes": 4,
+            "roi": 0.133409,
+            "settled": 44,
+            "wilson95": [
+              0.5457,
+              0.819252
+            ]
+          },
+          "train": {
+            "accuracy": 0.705882,
+            "average_odds": 1.6363,
+            "decided": 34,
+            "hits": 24,
+            "pushes": 4,
+            "roi": 0.138684,
+            "settled": 38,
+            "wilson95": [
+              0.538311,
+              0.831654
+            ]
+          }
+        },
+        {
+          "decision_stage": "T-5",
+          "holdout": {
+            "accuracy": 0.511364,
+            "average_odds": 1.8294,
+            "decided": 352,
+            "hits": 180,
+            "pushes": 20,
+            "roi": -0.05414,
+            "settled": 372,
+            "wilson95": [
+              0.459304,
+              0.563178
+            ]
+          },
+          "market": "HIL",
+          "odds_tier": "≥1.70",
+          "total": {
+            "accuracy": 0.546053,
+            "average_odds": 1.8217,
+            "decided": 1064,
+            "hits": 581,
+            "pushes": 86,
+            "roi": -0.011009,
+            "settled": 1150,
+            "wilson95": [
+              0.516025,
+              0.575749
+            ]
+          },
+          "train": {
+            "accuracy": 0.563202,
+            "average_odds": 1.818,
+            "decided": 712,
+            "hits": 401,
+            "pushes": 66,
+            "roi": 0.009614,
+            "settled": 778,
+            "wilson95": [
+              0.526528,
+              0.599199
+            ]
+          }
+        },
+        {
+          "decision_stage": "首預",
+          "holdout": {
+            "accuracy": 0.5,
+            "average_odds": 1.655,
+            "decided": 4,
+            "hits": 2,
+            "pushes": 0,
+            "roi": -0.175,
+            "settled": 4,
+            "wilson95": [
+              0.150039,
+              0.849961
+            ]
+          },
+          "market": "HIL",
+          "odds_tier": "<1.70",
+          "total": {
+            "accuracy": 0.5,
+            "average_odds": 1.6567,
+            "decided": 6,
+            "hits": 3,
+            "pushes": 0,
+            "roi": -0.2275,
+            "settled": 6,
+            "wilson95": [
+              0.187616,
+              0.812384
+            ]
+          },
+          "train": {
+            "accuracy": 0.5,
+            "average_odds": 1.66,
+            "decided": 2,
+            "hits": 1,
+            "pushes": 0,
+            "roi": -0.3325,
+            "settled": 2,
+            "wilson95": [
+              0.094531,
+              0.905469
+            ]
+          }
+        },
+        {
+          "decision_stage": "首預",
+          "holdout": {
+            "accuracy": 0.581395,
+            "average_odds": 1.8425,
+            "decided": 86,
+            "hits": 50,
+            "pushes": 1,
+            "roi": 0.073333,
+            "settled": 87,
+            "wilson95": [
+              0.475845,
+              0.679985
+            ]
+          },
+          "market": "HIL",
+          "odds_tier": "≥1.70",
+          "total": {
+            "accuracy": 0.597403,
+            "average_odds": 1.8325,
+            "decided": 231,
+            "hits": 138,
+            "pushes": 9,
+            "roi": 0.069771,
+            "settled": 240,
+            "wilson95": [
+              0.533066,
+              0.658553
+            ]
+          },
+          "train": {
+            "accuracy": 0.606897,
+            "average_odds": 1.8269,
+            "decided": 145,
+            "hits": 88,
+            "pushes": 8,
+            "roi": 0.067745,
+            "settled": 153,
+            "wilson95": [
+              0.52562,
+              0.682655
+            ]
+          }
+        }
+      ],
       "fdr_qualified_candidates": 0,
       "fixture_market_panels": 1051,
       "holdout_cutoff": "2026-08-14T01:00:00+08:00",
@@ -16241,6 +17023,618 @@
     },
     "footbreak": {
       "candidate_count_after_total_support": 70,
+      "coverage_by_market_stage_tier": [
+        {
+          "decision_stage": "T-30",
+          "holdout": {
+            "accuracy": 0.5,
+            "average_odds": 1.59,
+            "decided": 2,
+            "hits": 1,
+            "pushes": 0,
+            "roi": -0.21,
+            "settled": 2,
+            "wilson95": [
+              0.094531,
+              0.905469
+            ]
+          },
+          "market": "CHL",
+          "odds_tier": "<1.70",
+          "total": {
+            "accuracy": 0.727273,
+            "average_odds": 1.6091,
+            "decided": 11,
+            "hits": 8,
+            "pushes": 0,
+            "roi": 0.167273,
+            "settled": 11,
+            "wilson95": [
+              0.434355,
+              0.902539
+            ]
+          },
+          "train": {
+            "accuracy": 0.777778,
+            "average_odds": 1.6133,
+            "decided": 9,
+            "hits": 7,
+            "pushes": 0,
+            "roi": 0.251111,
+            "settled": 9,
+            "wilson95": [
+              0.452589,
+              0.936775
+            ]
+          }
+        },
+        {
+          "decision_stage": "T-30",
+          "holdout": {
+            "accuracy": 0.625,
+            "average_odds": 1.8025,
+            "decided": 8,
+            "hits": 5,
+            "pushes": 0,
+            "roi": 0.11125,
+            "settled": 8,
+            "wilson95": [
+              0.305742,
+              0.863156
+            ]
+          },
+          "market": "CHL",
+          "odds_tier": "≥1.70",
+          "total": {
+            "accuracy": 0.692308,
+            "average_odds": 1.8069,
+            "decided": 26,
+            "hits": 18,
+            "pushes": 0,
+            "roi": 0.249615,
+            "settled": 26,
+            "wilson95": [
+              0.500117,
+              0.834987
+            ]
+          },
+          "train": {
+            "accuracy": 0.722222,
+            "average_odds": 1.8089,
+            "decided": 18,
+            "hits": 13,
+            "pushes": 0,
+            "roi": 0.311111,
+            "settled": 18,
+            "wilson95": [
+              0.491273,
+              0.875002
+            ]
+          }
+        },
+        {
+          "decision_stage": "T-5",
+          "holdout": {
+            "accuracy": 0.5,
+            "average_odds": 1.59,
+            "decided": 4,
+            "hits": 2,
+            "pushes": 0,
+            "roi": -0.21,
+            "settled": 4,
+            "wilson95": [
+              0.150039,
+              0.849961
+            ]
+          },
+          "market": "CHL",
+          "odds_tier": "<1.70",
+          "total": {
+            "accuracy": 0.7,
+            "average_odds": 1.607,
+            "decided": 20,
+            "hits": 14,
+            "pushes": 0,
+            "roi": 0.121,
+            "settled": 20,
+            "wilson95": [
+              0.481027,
+              0.854523
+            ]
+          },
+          "train": {
+            "accuracy": 0.75,
+            "average_odds": 1.6113,
+            "decided": 16,
+            "hits": 12,
+            "pushes": 0,
+            "roi": 0.20375,
+            "settled": 16,
+            "wilson95": [
+              0.505017,
+              0.898179
+            ]
+          }
+        },
+        {
+          "decision_stage": "T-5",
+          "holdout": {
+            "accuracy": 0.875,
+            "average_odds": 1.8,
+            "decided": 16,
+            "hits": 14,
+            "pushes": 0,
+            "roi": 0.5725,
+            "settled": 16,
+            "wilson95": [
+              0.639772,
+              0.965023
+            ]
+          },
+          "market": "CHL",
+          "odds_tier": "≥1.70",
+          "total": {
+            "accuracy": 0.773585,
+            "average_odds": 1.8102,
+            "decided": 53,
+            "hits": 41,
+            "pushes": 0,
+            "roi": 0.406415,
+            "settled": 53,
+            "wilson95": [
+              0.644737,
+              0.865454
+            ]
+          },
+          "train": {
+            "accuracy": 0.72973,
+            "average_odds": 1.8146,
+            "decided": 37,
+            "hits": 27,
+            "pushes": 0,
+            "roi": 0.334595,
+            "settled": 37,
+            "wilson95": [
+              0.570218,
+              0.846025
+            ]
+          }
+        },
+        {
+          "decision_stage": "首預",
+          "holdout": {
+            "accuracy": 1.0,
+            "average_odds": 1.69,
+            "decided": 1,
+            "hits": 1,
+            "pushes": 0,
+            "roi": 0.69,
+            "settled": 1,
+            "wilson95": [
+              0.206549,
+              1.0
+            ]
+          },
+          "market": "CHL",
+          "odds_tier": "<1.70",
+          "total": {
+            "accuracy": 1.0,
+            "average_odds": 1.69,
+            "decided": 1,
+            "hits": 1,
+            "pushes": 0,
+            "roi": 0.69,
+            "settled": 1,
+            "wilson95": [
+              0.206549,
+              1.0
+            ]
+          },
+          "train": {
+            "accuracy": null,
+            "average_odds": null,
+            "decided": 0,
+            "hits": 0,
+            "pushes": 0,
+            "roi": null,
+            "settled": 0,
+            "wilson95": null
+          }
+        },
+        {
+          "decision_stage": "T-30",
+          "holdout": {
+            "accuracy": 0.333333,
+            "average_odds": 1.8533,
+            "decided": 3,
+            "hits": 1,
+            "pushes": 0,
+            "roi": -0.4,
+            "settled": 3,
+            "wilson95": [
+              0.061492,
+              0.79234
+            ]
+          },
+          "market": "HDC",
+          "odds_tier": "≥1.70",
+          "total": {
+            "accuracy": 0.666667,
+            "average_odds": 1.8332,
+            "decided": 15,
+            "hits": 10,
+            "pushes": 4,
+            "roi": 0.172632,
+            "settled": 19,
+            "wilson95": [
+              0.417135,
+              0.848237
+            ]
+          },
+          "train": {
+            "accuracy": 0.75,
+            "average_odds": 1.8294,
+            "decided": 12,
+            "hits": 9,
+            "pushes": 4,
+            "roi": 0.28,
+            "settled": 16,
+            "wilson95": [
+              0.467695,
+              0.911058
+            ]
+          }
+        },
+        {
+          "decision_stage": "T-5",
+          "holdout": {
+            "accuracy": null,
+            "average_odds": null,
+            "decided": 0,
+            "hits": 0,
+            "pushes": 0,
+            "roi": null,
+            "settled": 0,
+            "wilson95": null
+          },
+          "market": "HDC",
+          "odds_tier": "≥1.70",
+          "total": {
+            "accuracy": 0.636364,
+            "average_odds": 1.8067,
+            "decided": 22,
+            "hits": 14,
+            "pushes": 8,
+            "roi": 0.101333,
+            "settled": 30,
+            "wilson95": [
+              0.429517,
+              0.802668
+            ]
+          },
+          "train": {
+            "accuracy": 0.636364,
+            "average_odds": 1.8067,
+            "decided": 22,
+            "hits": 14,
+            "pushes": 8,
+            "roi": 0.101333,
+            "settled": 30,
+            "wilson95": [
+              0.429517,
+              0.802668
+            ]
+          }
+        },
+        {
+          "decision_stage": "首預",
+          "holdout": {
+            "accuracy": 0.25,
+            "average_odds": 1.8225,
+            "decided": 4,
+            "hits": 1,
+            "pushes": 0,
+            "roi": -0.5575,
+            "settled": 4,
+            "wilson95": [
+              0.045587,
+              0.699358
+            ]
+          },
+          "market": "HDC",
+          "odds_tier": "≥1.70",
+          "total": {
+            "accuracy": 0.5,
+            "average_odds": 1.8562,
+            "decided": 8,
+            "hits": 4,
+            "pushes": 0,
+            "roi": -0.055,
+            "settled": 8,
+            "wilson95": [
+              0.215216,
+              0.784784
+            ]
+          },
+          "train": {
+            "accuracy": 0.75,
+            "average_odds": 1.89,
+            "decided": 4,
+            "hits": 3,
+            "pushes": 0,
+            "roi": 0.4475,
+            "settled": 4,
+            "wilson95": [
+              0.300642,
+              0.954413
+            ]
+          }
+        },
+        {
+          "decision_stage": "T-30",
+          "holdout": {
+            "accuracy": 0.294118,
+            "average_odds": 1.6118,
+            "decided": 34,
+            "hits": 10,
+            "pushes": 0,
+            "roi": -0.531765,
+            "settled": 34,
+            "wilson95": [
+              0.168346,
+              0.461689
+            ]
+          },
+          "market": "HIL",
+          "odds_tier": "<1.70",
+          "total": {
+            "accuracy": 0.564516,
+            "average_odds": 1.595,
+            "decided": 124,
+            "hits": 70,
+            "pushes": 0,
+            "roi": -0.105,
+            "settled": 124,
+            "wilson95": [
+              0.476608,
+              0.648548
+            ]
+          },
+          "train": {
+            "accuracy": 0.666667,
+            "average_odds": 1.5887,
+            "decided": 90,
+            "hits": 60,
+            "pushes": 0,
+            "roi": 0.056222,
+            "settled": 90,
+            "wilson95": [
+              0.564223,
+              0.755465
+            ]
+          }
+        },
+        {
+          "decision_stage": "T-30",
+          "holdout": {
+            "accuracy": 0.6,
+            "average_odds": 1.7707,
+            "decided": 30,
+            "hits": 18,
+            "pushes": 0,
+            "roi": 0.062667,
+            "settled": 30,
+            "wilson95": [
+              0.423204,
+              0.754094
+            ]
+          },
+          "market": "HIL",
+          "odds_tier": "≥1.70",
+          "total": {
+            "accuracy": 0.538462,
+            "average_odds": 1.7851,
+            "decided": 78,
+            "hits": 42,
+            "pushes": 0,
+            "roi": -0.041026,
+            "settled": 78,
+            "wilson95": [
+              0.428636,
+              0.644676
+            ]
+          },
+          "train": {
+            "accuracy": 0.5,
+            "average_odds": 1.7942,
+            "decided": 48,
+            "hits": 24,
+            "pushes": 0,
+            "roi": -0.105833,
+            "settled": 48,
+            "wilson95": [
+              0.363893,
+              0.636107
+            ]
+          }
+        },
+        {
+          "decision_stage": "T-5",
+          "holdout": {
+            "accuracy": 0.368421,
+            "average_odds": 1.6105,
+            "decided": 76,
+            "hits": 28,
+            "pushes": 0,
+            "roi": -0.412105,
+            "settled": 76,
+            "wilson95": [
+              0.268754,
+              0.480749
+            ]
+          },
+          "market": "HIL",
+          "odds_tier": "<1.70",
+          "total": {
+            "accuracy": 0.601504,
+            "average_odds": 1.5923,
+            "decided": 266,
+            "hits": 160,
+            "pushes": 0,
+            "roi": -0.049173,
+            "settled": 266,
+            "wilson95": [
+              0.541626,
+              0.658492
+            ]
+          },
+          "train": {
+            "accuracy": 0.694737,
+            "average_odds": 1.5851,
+            "decided": 190,
+            "hits": 132,
+            "pushes": 0,
+            "roi": 0.096,
+            "settled": 190,
+            "wilson95": [
+              0.625933,
+              0.755822
+            ]
+          }
+        },
+        {
+          "decision_stage": "T-5",
+          "holdout": {
+            "accuracy": 0.615385,
+            "average_odds": 1.8015,
+            "decided": 52,
+            "hits": 32,
+            "pushes": 0,
+            "roi": 0.107692,
+            "settled": 52,
+            "wilson95": [
+              0.479599,
+              0.735295
+            ]
+          },
+          "market": "HIL",
+          "odds_tier": "≥1.70",
+          "total": {
+            "accuracy": 0.567568,
+            "average_odds": 1.7911,
+            "decided": 148,
+            "hits": 84,
+            "pushes": 0,
+            "roi": 0.013243,
+            "settled": 148,
+            "wilson95": [
+              0.487041,
+              0.644676
+            ]
+          },
+          "train": {
+            "accuracy": 0.541667,
+            "average_odds": 1.7854,
+            "decided": 96,
+            "hits": 52,
+            "pushes": 0,
+            "roi": -0.037917,
+            "settled": 96,
+            "wilson95": [
+              0.442316,
+              0.637812
+            ]
+          }
+        },
+        {
+          "decision_stage": "首預",
+          "holdout": {
+            "accuracy": 0.294118,
+            "average_odds": 1.6188,
+            "decided": 17,
+            "hits": 5,
+            "pushes": 0,
+            "roi": -0.524706,
+            "settled": 17,
+            "wilson95": [
+              0.1328,
+              0.531331
+            ]
+          },
+          "market": "HIL",
+          "odds_tier": "<1.70",
+          "total": {
+            "accuracy": 0.344828,
+            "average_odds": 1.6141,
+            "decided": 29,
+            "hits": 10,
+            "pushes": 0,
+            "roi": -0.443793,
+            "settled": 29,
+            "wilson95": [
+              0.199407,
+              0.526549
+            ]
+          },
+          "train": {
+            "accuracy": 0.416667,
+            "average_odds": 1.6075,
+            "decided": 12,
+            "hits": 5,
+            "pushes": 0,
+            "roi": -0.329167,
+            "settled": 12,
+            "wilson95": [
+              0.19326,
+              0.680489
+            ]
+          }
+        },
+        {
+          "decision_stage": "首預",
+          "holdout": {
+            "accuracy": 0.533333,
+            "average_odds": 1.7967,
+            "decided": 15,
+            "hits": 8,
+            "pushes": 0,
+            "roi": -0.039333,
+            "settled": 15,
+            "wilson95": [
+              0.30117,
+              0.751905
+            ]
+          },
+          "market": "HIL",
+          "odds_tier": "≥1.70",
+          "total": {
+            "accuracy": 0.461538,
+            "average_odds": 1.8127,
+            "decided": 26,
+            "hits": 12,
+            "pushes": 0,
+            "roi": -0.171154,
+            "settled": 26,
+            "wilson95": [
+              0.287559,
+              0.645421
+            ]
+          },
+          "train": {
+            "accuracy": 0.363636,
+            "average_odds": 1.8345,
+            "decided": 11,
+            "hits": 4,
+            "pushes": 0,
+            "roi": -0.350909,
+            "settled": 11,
+            "wilson95": [
+              0.151665,
+              0.646199
+            ]
+          }
+        }
+      ],
       "fdr_qualified_candidates": 0,
       "fixture_market_panels": 226,
       "holdout_cutoff": "2026-08-14T02:30:00",
