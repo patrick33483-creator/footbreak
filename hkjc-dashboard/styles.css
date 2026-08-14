@@ -1732,3 +1732,19 @@ table.calib tr:last-child td { border-bottom: 0; }
 .condition-counts span { min-width: 0; overflow-wrap: anywhere; padding: 3px 7px; border: 1px solid var(--line-soft); border-radius: 999px; }
 @media (max-width: 600px) { .condition-grid { grid-template-columns: 1fr 1fr; } .condition-counts { display: grid; grid-template-columns: 1fr; } }
 @media (max-width: 375px) { .condition-grid { grid-template-columns: 1fr; } .condition-card { overflow-x: hidden; } }
+
+/* Bounded granular condition observations: mobile-safe by construction. */
+.granular-block, .condition-match-card { min-width: 0; margin-top: var(--s4); }
+.granular-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--s2); }
+.granular-rank-card { min-width: 0; display: grid; gap: var(--s1); padding: var(--s3); border: 1px solid var(--line-soft); border-radius: var(--radius-sm); background: var(--bg-2); }
+.granular-rank-card b, .granular-rank-card small, .condition-match b, .condition-match span { min-width: 0; overflow-wrap: anywhere; }
+.granular-rank-head { display: flex; align-items: center; justify-content: space-between; gap: var(--s2); color: var(--ink-3); font-variant-numeric: tabular-nums; }
+.granular-badge { border: 1px solid var(--amber); border-radius: 999px; padding: 2px 7px; color: var(--amber); white-space: nowrap; }
+.granular-rate { color: var(--good); font-size: var(--text-lg); font-weight: 800; font-variant-numeric: tabular-nums; }
+.granular-rank-card small, .granular-note, .granular-empty { color: var(--ink-3); font-size: var(--text-xs); }
+.granular-note { margin: var(--s2) 0 0; }
+.granular-empty { padding: var(--s3); border: 1px dashed var(--line-soft); }
+.condition-match-list { display: grid; gap: var(--s2); }
+.condition-match { display: grid; gap: var(--s1); padding: var(--s2); border-left: 2px solid var(--amber); background: var(--bg-2); font-size: var(--text-sm); }
+.condition-match span { color: var(--ink-3); font-variant-numeric: tabular-nums; }
+@media (max-width: 620px) { .granular-grid { grid-template-columns: 1fr; } .granular-rank-card, .condition-match-card { overflow-x: hidden; } }

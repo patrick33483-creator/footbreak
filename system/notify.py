@@ -1,19 +1,8 @@
-"""足破 · Telegram 通知系統
+"""足破 · Telegram 通知系統。
 
-只發兩類足破通知：真正建立的雷達模擬注單，以及新保存、具完整當刻
-賠率證據的 T-5 角球預測。其他預測訊號、模型候選、健康異常、排程、
-掃描完成及結算通知全部停用。
-
-  1. 冪等 —— 已通知過嘅注單記喺 notify_state.json,重複執行唔會再發。
-     絕對唔會改 sim_ledger.json。
-  2. 自足 —— 訊息由帳本 + watch 快照直接組裝,唔靠模型在場,
-     所以排程只需要跑一句 `python3 notify.py`。
-用法:
-    python3 notify.py              # 發未通知過嘅新注單
-    python3 notify.py --dry        # 只印訊息,唔發
-    python3 notify.py --window 60  # 只考慮 60 分鐘內建立嘅注單(預設 45)
-
-舊有 --settled / --sched / --sweep / --watch 參數只會安全退出，不會發訊息。
+此模組只會在新保存的 T-30／T-5 階段，發送符合細緻歷史條件的數據
+提示。所有舊有模型候選、模擬注單、角球專用、健康、排程、掃描完成
+及結算通知均已停用；獨立 Odds Radar 通知流程不受此模組影響。
 """
 import datetime as dt
 import html
@@ -35,6 +24,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 LEDGER = os.path.join(HERE, "sim_ledger.json")
 STATE = os.path.join(HERE, "notify_state.json")
 ACCURACY_HISTORY = os.path.join(HERE, "accuracy_history.json")
+DASHBOARD_DATA = os.path.join(os.path.dirname(HERE), "hkjc-dashboard", "data.json")
 
 HKT = dt.timezone(dt.timedelta(hours=8))
 
@@ -63,12 +53,13 @@ def load_state():
             s.setdefault("watch", [])
             s.setdefault("reviews", [])
             s.setdefault("signals", [])
+            s.setdefault("granular_conditions", [])
             return s
         except Exception:
             pass
     return {
         "bets": [], "settled": [], "queue": [], "sweeps": [], "watch": [],
-        "reviews": [], "signals": [],
+        "reviews": [], "signals": [], "granular_conditions": [],
     }
 
 
@@ -235,20 +226,102 @@ def _footbreak_chl_event(ledger, item):
 
 
 def notify_fresh_t5_signals(ledger, fresh_t5):
-    """Notify only newly persisted T-5 corner predictions, idempotently."""
+    """Retired legacy entry point; granular notifications replace CHL-only alerts."""
+    return 0
+
+
+def _granular_history_rows():
+    """Read the generated immutable dashboard history; never rebuild history here."""
+    try:
+        with open(DASHBOARD_DATA, encoding="utf-8") as handle:
+            payload = json.load(handle)
+        rows = (payload.get("prediction_history") or {}).get("rows") or []
+        return [row for row in rows if isinstance(row, dict)]
+    except (OSError, ValueError, TypeError, AttributeError):
+        return []
+
+
+def _granular_bet(selected, watch):
+    code, side = selected.get("code"), selected.get("side")
+    line = _exact_numeric_line(selected.get("line", selected.get("condition"))) or "—"
+    odds = _finite_positive(selected.get("odds"))
+    if odds is None or odds <= 1:
+        return None
+    if code == "HDC":
+        team = watch.get("home") if side == "H" else watch.get("away")
+        try:
+            shown = float(line) * (-1 if side == "A" else 1)
+            line = f"{shown:g}"
+        except ValueError:
+            pass
+        return f"讓球 {team} {line} @{odds:.2f}"
+    if code == "HIL":
+        return f"入球 {'大' if side == 'H' else '細'} {line} @{odds:.2f}"
+    if code == "CHL":
+        return f"角球 {'大' if side == 'H' else '細'} {line} @{odds:.2f}"
+    return None
+
+
+def notify_fresh_granular_conditions(ledger, fresh_events):
+    """Send exactly one best historical-only condition notice per fresh market."""
+    from analysis.granular_conditions import _role, notification_opportunities
+    history = _granular_history_rows()
+    opportunities = notification_opportunities(
+        history, ledger.get("watch") or {}, fresh_events or [], system="footbreak"
+    )
     state = load_state()
-    sent_keys = set(state.get("signals") or [])
+    sent_keys = set(state.get("granular_conditions") or [])
     sent = 0
-    for item in dict.fromkeys(str(value) for value in (fresh_t5 or []) if value):
-        event = _footbreak_chl_event(ledger, item)
-        if event is None:
+    for item in opportunities:
+        watch, selected, stage = item["watch"], item["selected"], item["stage"]
+        bet = _granular_bet(selected, watch)
+        if not bet:
             continue
-        key, text = event
+        kickoff = None
+        try:
+            kickoff = dt.datetime.fromisoformat(str(watch.get("kickoff") or ""))
+            if kickoff.tzinfo is None:
+                kickoff = kickoff.replace(tzinfo=HKT)
+        except ValueError:
+            continue
+        if kickoff <= dt.datetime.now(HKT):
+            continue
+        key = f"footbreak|{item['fixture']}|{item['market']}|{stage}|granular-v1"
         if key in sent_keys:
             continue
+        primary, extra = item["matches"][0], item["matches"][1:4]
+        try:
+            raw_line = float(selected.get("line", selected.get("condition")))
+        except (TypeError, ValueError):
+            continue
+        role = _role(item["market"], selected.get("side"), raw_line)
+        summary = primary["total"]
+        more = [
+            "＋ %s：%.1f%%（%s/%s）" % (
+                esc(match["label"]),
+                100 * match["total"]["accuracy"],
+                match["total"]["hits"],
+                match["total"]["decided"],
+            )
+            for match in extra
+        ]
+        title = "預備提示" if stage == "T-30" else "數據提示"
+        text = "\n".join([
+            f"足破 {title}",
+            f"開賽：{kickoff.astimezone(HKT).strftime('%d/%m %H:%M')} HKT",
+            f"對賽：{esc(watch.get('home') or '')} vs {esc(watch.get('away') or '')}",
+            f"投注：{esc(bet)}",
+            f"選項：{esc(role or '—')} · 實際盤口 {esc(selected.get('line', selected.get('condition')))} · 實際賠率 {float(selected['odds']):.2f}",
+            f"主條件：{esc(primary['label'])}",
+            f"命中率：{100 * summary['accuracy']:.1f}%（{summary['hits']}/{summary['decided']}）· {esc(primary['odds_tier'])} · {esc(primary['badge'])}",
+            *more,
+            "只作數據提示，由你自行決定。",
+        ])
         send(text)
         sent_keys.add(key)
-        state["signals"] = list((state.get("signals") or []) + [key])[-1600:]
+        state["granular_conditions"] = (
+            list(state.get("granular_conditions") or []) + [key]
+        )[-1600:]
         state["last_sent"] = dt.datetime.now(HKT).isoformat(timespec="seconds")
         save_state(state)
         sent += 1
@@ -775,6 +848,11 @@ def stake_note_plain():
 
 
 def main(argv):
+    # All legacy bet, settlement, health, scheduler and simulation notices are
+    # intentionally disabled.  New granular notices are transactionally
+    # emitted by record_picks immediately after a fresh stage persistence.
+    print("舊有 Telegram 通知已停用；只保留新保存階段的細緻條件提示。")
+    return 0
     dry = "--dry" in argv
     mode_review = "--review" in argv
     mode_settled = "--settled" in argv

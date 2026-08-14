@@ -109,6 +109,7 @@ class PredictionHistoryUiTests(unittest.TestCase):
             self.assertIn("wdl_accuracy", app)
             self.assertIn("只計有有效賠率紀錄；主統計為選邊賠率 ≥1.70", app)
 
+    @unittest.skip("Replaced by granular condition ranking.")
     def test_both_dashboards_render_three_stage_consensus_without_mobile_overflow(self) -> None:
         for dashboard in ("hkjc-dashboard", "crown/dashboard"):
             root = ROOT / dashboard
@@ -157,6 +158,21 @@ class PredictionHistoryUiTests(unittest.TestCase):
                 r"\.consensus-grid,\s*"
                 r"\.consensus-ranking-grid \{ grid-template-columns: 1fr; \}",
             )
+
+    def test_both_dashboards_render_granular_conditions_without_mobile_overflow(self) -> None:
+        for dashboard in ("hkjc-dashboard", "crown/dashboard"):
+            root = ROOT / dashboard
+            app = (root / "app.js").read_text(encoding="utf-8")
+            css = (root / "styles.css").read_text(encoding="utf-8")
+            self.assertIn("stats.granular_conditions", app)
+            self.assertIn("細緻條件排名", app)
+            self.assertIn("命中率嚴格高於 60%", app)
+            self.assertIn("Wilson 95%", app)
+            self.assertIn("function conditionMatchesCard(m)", app)
+            self.assertIn("m.condition_matches", app)
+            self.assertIn(".granular-grid", css)
+            self.assertIn(".condition-match-card", css)
+            self.assertIn("@media (max-width: 620px) { .granular-grid { grid-template-columns: 1fr; }", css)
 
     def test_crown_dashboard_renders_stage_completeness_monitor(self) -> None:
         root = ROOT / "crown" / "dashboard"

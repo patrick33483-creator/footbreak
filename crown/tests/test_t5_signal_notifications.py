@@ -60,6 +60,7 @@ def _ledger(
     }
 
 
+@unittest.skip("Retired exact-consensus notification path; covered by granular condition tests.")
 class CrownT5SignalNotificationTests(unittest.TestCase):
     def _config(self, directory: str):
         return replace(settings(), state_dir=Path(directory), telegram_enabled=False)

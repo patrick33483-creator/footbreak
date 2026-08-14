@@ -378,7 +378,7 @@ def sync(preds_file="predictions.json"):
         preds = json.load(handle)
     now = dt.datetime.now(HKT).isoformat(timespec="seconds")
     changes, notes = [], []
-    fresh_t5_signal_ids = []
+    fresh_condition_signal_ids = []
 
     for r in preds:
         mid = str(r["match_id"])
@@ -442,8 +442,8 @@ def sync(preds_file="predictions.json"):
             lbl = snap["pick"]["label"] if snap["pick"] else "無明顯傾向"
             notes.append(f"📝 {r['home']} v {r['away']} — {stage} "
                          f"{snap['verdict']}:{lbl}(信念 {r['conviction']:.1f})")
-            if stage == BET_STAGE:
-                fresh_t5_signal_ids.append(mid)
+            if stage in {"T-30", BET_STAGE}:
+                fresh_condition_signal_ids.append({"match_id": mid, "stage": stage})
         w["stages"].sort(key=lambda x: STAGE_ORDER.get(x["stage"], 9))
 
         # ── 2. 只有 T-5 才可以落注 ───────────────────────────
@@ -587,14 +587,14 @@ def sync(preds_file="predictions.json"):
     recompute_shadow_stats(led)
     save(led)
     # Notification is strictly after the immutable live snapshot has been
-    # saved.  Every pass also retries an unacknowledged T-5 while its kickoff
-    # is still in the future.  A delivery failure remains non-fatal and cannot
-    # alter the saved prediction/ledger transaction.
+    # saved and only stages persisted by this pass are eligible. Independent
+    # T-30/T-5 dedupe prevents repeats; history is never backfilled. A delivery
+    # failure remains non-fatal and cannot alter the saved transaction.
     try:
         import notify
-        notify.notify_fresh_t5_signals(led, fresh_t5_signal_ids)
+        notify.notify_fresh_granular_conditions(led, fresh_condition_signal_ids)
     except Exception as exc:
-        notes.append(f"Telegram T-5 訊號發送失敗({type(exc).__name__})；已保存預測，唔影響注單。")
+        notes.append(f"Telegram 條件提示發送失敗({type(exc).__name__})；已保存預測，唔影響注單。")
     return changes, notes, led
 
 

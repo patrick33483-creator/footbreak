@@ -391,8 +391,8 @@ def build_prediction_history(watch, bets, accuracy):
     comparable_rows = [
         row for row in rows if row.get("prediction_era") == PREDICTION_ERA
     ]
-    stats = _prediction_history_stats(comparable_rows)
-    stats["all_history_audit"] = _prediction_history_stats(rows)
+    stats = _prediction_history_stats(comparable_rows, include_granular=True)
+    stats["all_history_audit"] = _prediction_history_stats(rows, include_granular=False)
     stats["scope"] = {
         "model_version": PREDICTION_ERA,
         "schema_version": PREDICTION_SCHEMA_VERSION,
@@ -403,7 +403,7 @@ def build_prediction_history(watch, bets, accuracy):
     return {"rows": rows, "stats": stats}
 
 
-def _prediction_history_stats(rows):
+def _prediction_history_stats(rows, *, include_granular=True):
     graded_rows = [r for r in rows if r.get("result_status") == "已核對"]
     pending_rows = [r for r in rows if r.get("result_status") == "待賽果"]
     excluded_rows = [r for r in rows if r.get("result_status") == "不計"]
@@ -443,8 +443,9 @@ def _prediction_history_stats(rows):
         calculate_three_stage_consensus,
         calculate_three_stage_transitions,
     )
+    from analysis.granular_conditions import mine
 
-    return {
+    output = {
         "matches": len({r.get("match_id") for r in rows}),
         "predictions": len(rows),
         "graded": len(graded_rows),
@@ -466,6 +467,10 @@ def _prediction_history_stats(rows):
         "three_stage_transitions": calculate_three_stage_transitions(rows),
         "learning_status": "collecting_market_level_shadow_samples",
     }
+    # Never calculate a second mixed-era report inside all_history_audit.
+    if include_granular:
+        output["granular_conditions"] = mine(rows, system="footbreak")
+    return output
 
 
 # --------------------------------------------------------- 讓球標籤正規化
@@ -680,6 +685,28 @@ def main():
     prediction_history = build_prediction_history(
         sync_prediction_archive(watch), bets, acc_history
     )
+    # Upcoming cards receive only matches evaluated at their currently
+    # persisted stage.  T-30 intentionally cannot observe a later T-5 row.
+    from analysis.granular_conditions import match_upcoming
+    watch_rows = [
+        {
+            "match_id": str(mid), "stage": stage.get("stage"),
+            "kickoff": item.get("kickoff"), "predicted_at": stage.get("ts"),
+            "market_predictions": stage.get("market_predictions") or [],
+        }
+        for mid, item in watch.items() if isinstance(item, dict)
+        for stage in (item.get("stages") or []) if isinstance(stage, dict)
+    ]
+    ranking = (prediction_history.get("stats") or {}).get("granular_conditions", {}).get("ranking") or []
+    matches_by_stage = {
+        stage: match_upcoming(watch_rows, ranking, system="footbreak", decision_stage=stage)
+        for stage in ("T-30", "T-5")
+    }
+    for item in preds:
+        stage = str(item.get("stage") or "")
+        item["condition_matches"] = (
+            matches_by_stage.get(stage, {}).get(str(item.get("match_id")), [])
+        )
 
     out = {
         "generated_at": dt.datetime.now(HKT).isoformat(timespec="seconds"),

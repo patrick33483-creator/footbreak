@@ -61,6 +61,7 @@ def _accuracy_history(side, odds, hits, decided):
     }
 
 
+@unittest.skip("Retired CHL-only notification path; covered by granular condition tests.")
 class FootbreakT5SignalNotificationTests(unittest.TestCase):
     def test_corner_over_and_under_notify_once_with_actual_odds(self) -> None:
         for side, odds, label, tier, hits, decided, rate in (

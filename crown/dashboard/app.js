@@ -395,6 +395,7 @@ function renderDetail(id) {
   h += oddsCompareCard(m);
   h += verdictCard(m);
   h += currentOddsCard(m);
+  h += conditionMatchesCard(m);
   h += driftCard(m);
   h += runsCard(m);
   h += `<div class="grid g2">${stagesCard(m)}${adjCard(m)}</div>`;
@@ -1603,7 +1604,7 @@ function historyStageMarketMatrix(stats) {
   </div>`;
 }
 
-function historyConsensusCards(stats) {
+function legacyHistoryConsensusCards(stats) {
   const report = stats.three_stage_consensus || {};
   const markets = report.markets || {};
   const ranking = report.ranking || {};
@@ -1743,6 +1744,37 @@ function historyConsensusCards(stats) {
       <p class="consensus-note">分類顯示 ≥1.70 及 &lt;1.70；T-5 走水會保留作審計，但唔會計入命中率分母。</p>
     </div>
   </section>`;
+}
+
+function historyConsensusCards(stats) {
+  const report = stats.granular_conditions || {};
+  const items = report.ranking || [];
+  const cards = items.map((item, index) => {
+    const total = item.total || {}, holdout = item.holdout || {};
+    const ci = total.wilson95 || [];
+    const lift = item.holdout_lift == null ? '—' : `${item.holdout_lift >= 0 ? '+' : ''}${pc(item.holdout_lift, 1)}`;
+    return `<article class="granular-rank-card">
+      <div class="granular-rank-head"><span>#${index + 1}</span><span class="granular-badge">${esc(item.badge || '觀察')}</span></div>
+      <b>${esc(item.label || '')}</b><div class="granular-rate">${pc(total.accuracy, 1)}</div>
+      <small>命中 ${total.hits || 0}/${total.decided || 0} · Wilson 95% ${ci.length ? `${pc(ci[0], 1)}–${pc(ci[1], 1)}` : '—'}</small>
+      <small>${esc(item.odds_tier || '—')} · 驗證 ${holdout.hits || 0}/${holdout.decided || 0} · lift ${lift}</small>
+    </article>`;
+  }).join('');
+  return `<section class="granular-block" aria-label="細緻條件排名">
+    <div class="stage-market-title">細緻條件排名 <span>只顯示命中率嚴格高於 60%、已判定最少 10 場</span></div>
+    <div class="granular-grid">${cards || '<div class="granular-empty">暫時未有符合條件</div>'}</div>
+    <p class="granular-note">走水保留審計但不計分母；10–29 場標示樣本不足。只作數據觀察，並非自動投注或下注建議。</p>
+  </section>`;
+}
+
+function conditionMatchesCard(m) {
+  const matches = m.condition_matches || [];
+  if (!matches.length) return '';
+  return `<section class="card condition-match-card"><h2 class="card-h">條件觀察 <span class="sub">已保存 ${esc(m.stage || '')} 資料</span></h2>
+    <div class="condition-match-list">${matches.map((item) => {
+      const total = item.total || {};
+      return `<div class="condition-match"><b>${esc(item.label || '')}</b><span>${pc(total.accuracy, 1)} (${total.hits || 0}/${total.decided || 0}) · ${esc(item.odds_tier || '')} · ${esc(item.badge || '')}</span></div>`;
+    }).join('')}</div></section>`;
 }
 
 const HISTORY_STAGE_RANK = { '首預': 1, 'T-30': 2, 'T-5': 3 };

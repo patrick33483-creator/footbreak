@@ -138,6 +138,32 @@ def build(config: Settings) -> dict[str, Any]:
     prediction_history["stats"] = calculate_stats(
         prediction_history["rows"], comparable_era=PREDICTION_ERA,
     )
+    # Card-level matches are derived from persisted immutable snapshots, not
+    # from a live quote refresh.  T-30 is limited inside ``match_upcoming`` to
+    # first/T-30 paths and therefore cannot borrow a future T-5 observation.
+    from analysis.granular_conditions import match_upcoming
+    current_rows = [
+        {
+            "match_id": str(match.get("match_id") or ""),
+            "stage": stage.get("stage"),
+            "kickoff": match.get("kickoff_hkt") or match.get("kickoff"),
+            "predicted_at": stage.get("ts") or stage.get("source_snapshot_at"),
+            "market_predictions": stage.get("market_predictions") or [],
+        }
+        for match in matches if isinstance(match, dict)
+        for stage in (match.get("stages") or []) if isinstance(stage, dict)
+    ]
+    ranking = (
+        prediction_history["stats"].get("granular_conditions", {}).get("ranking") or []
+    )
+    by_stage = {
+        stage: match_upcoming(current_rows, ranking, system="crown", decision_stage=stage)
+        for stage in ("T-30", "T-5")
+    }
+    for match in matches:
+        match["condition_matches"] = (
+            by_stage.get(str(match.get("stage") or ""), {}).get(str(match.get("match_id") or ""), [])
+        )
     # A newly seeded ledger has no calculated stats yet; emit the complete
     # dashboard contract even before the first remote Crown pass.
     recompute_stats(ledger, config)

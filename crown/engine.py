@@ -1185,7 +1185,7 @@ def run(mode: str, config: Settings) -> dict[str, Any]:
         # These are IDs only, collected after a T-5 snapshot has been newly
         # persisted.  The caller passes them to notifications; it never scans
         # old cards/history after a deploy.
-        fresh_t5_predictions: list[str] = []
+        fresh_condition_predictions: list[dict[str, str]] = []
         for prediction in stage_predictions:
             kickoff = datetime.fromisoformat(str(prediction["kickoff_hkt"]))
             if kickoff.tzinfo is None:
@@ -1196,8 +1196,8 @@ def run(mode: str, config: Settings) -> dict[str, Any]:
                 continue
             stage = str(prediction.get("stage") or "")
             match_id = str(prediction.get("match_id") or "")
-            prior_t5 = any(
-                row.get("stage") == "T-5"
+            prior_stage = any(
+                row.get("stage") == stage
                 for row in ((ledger.get("watch") or {}).get(match_id, {}).get("stages") or [])
                 if isinstance(row, dict)
             )
@@ -1205,11 +1205,11 @@ def run(mode: str, config: Settings) -> dict[str, Any]:
             prediction["stages"] = list(
                 ledger["watch"].get(str(prediction["match_id"]), {}).get("stages") or []
             )
-            if stage == "T-5" and not prior_t5 and any(
-                row.get("stage") == "T-5" for row in prediction["stages"]
+            if stage in {"T-30", "T-5"} and not prior_stage and any(
+                row.get("stage") == stage for row in prediction["stages"]
                 if isinstance(row, dict)
             ):
-                fresh_t5_predictions.append(match_id)
+                fresh_condition_predictions.append({"match_id": match_id, "stage": stage})
         recompute_stats(ledger, config)
         ledger["log"].append({"ts": iso_hkt(), "kind": mode, "n_changes": len(emitted),
                               "changes": emitted or ["今次無模擬注動作"], "simulation_only": True})
@@ -1219,4 +1219,7 @@ def run(mode: str, config: Settings) -> dict[str, Any]:
     return {"ok": True, "mode": mode, "predictions": len(predictions), "retained_predictions": len(retained),
             "simulations_created": len(emitted), "mapping": mapping,
             "pinnapi_fixtures": len(pinnapi_rows), "titan_fixtures": len(titan_rows), "hkjc_fixtures": len(h_events),
-            "fresh_t5_predictions": fresh_t5_predictions}
+            "fresh_condition_predictions": fresh_condition_predictions,
+            # Compatibility only; notification dispatch uses the explicit
+            # stage list above and never scans historical cards.
+            "fresh_t5_predictions": [item["match_id"] for item in fresh_condition_predictions if item["stage"] == "T-5"]}

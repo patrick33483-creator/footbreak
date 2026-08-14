@@ -1,4 +1,4 @@
-"""Idempotent Crown three-stage HDC Telegram signal notifications."""
+"""Idempotent Crown granular-condition Telegram notifications."""
 from __future__ import annotations
 
 import json
@@ -6,7 +6,7 @@ import math
 import urllib.request
 from typing import Any
 
-from .common import iso_hkt, now_hkt, parse_time, read_json, write_json_atomic
+from .common import HKT, iso_hkt, now_hkt, parse_time, read_json, write_json_atomic
 from .config import Settings
 from .state import paths, state_lock
 from analysis.three_stage_consensus import calculate_three_stage_consensus
@@ -316,9 +316,13 @@ def notify_new(
     config: Settings,
     fresh_t5_predictions: list[Any] | None = None,
 ) -> int:
-    # Sweep and tick intentionally fetch providers concurrently.  Serialize
-    # the notification read/send/commit so both processes cannot send the same
-    # bet after reading the same old notify state.
+    """Send only fresh persisted T-30/T-5 condition opportunities.
+
+    Despite the retained argument name for callers on an old deployment, the
+    accepted event is now ``{"match_id": ..., "stage": "T-30"|"T-5"}``.
+    There is deliberately no recovery scan/backfill over watch history.
+    """
+    from analysis.granular_conditions import _role, notification_opportunities
     with state_lock(config):
         state, sent = _load(config), 0
         history = read_json(config.state_dir / "prediction_history.json", {})
@@ -328,14 +332,44 @@ def notify_new(
             else history if isinstance(history, list) else []
         )
         history_rows = [row for row in history_rows if isinstance(row, dict)]
-        # Crown simulated-bet notifications are retired.  Keep the old state
-        # key readable so an existing server state remains schema-compatible.
         seen_signals = set(state["signals"])
-        for notification_id, message in _fresh_signal_events(
-            ledger, fresh_t5_predictions, history_rows
+        for item in notification_opportunities(
+            history_rows, ledger.get("watch") or {}, fresh_t5_predictions or [],
+            system="crown",
         ):
+            watch, selected, stage = item["watch"], item["selected"], item["stage"]
+            try:
+                kickoff = parse_time(watch.get("kickoff_hkt") or watch.get("kickoff"))
+                raw_line = float(selected.get("line", selected.get("condition")))
+                odds = _finite_positive(selected.get("odds"))
+            except (TypeError, ValueError):
+                continue
+            if kickoff is None or kickoff <= now_hkt() or odds is None or odds <= 1:
+                continue
+            notification_id = (
+                f"crown|{item['fixture']}|{item['market']}|{stage}|granular-v1"
+            )
             if notification_id in seen_signals:
                 continue
+            primary, extras = item["matches"][0], item["matches"][1:4]
+            total = primary["total"]
+            bet = _bet_label({**selected, **watch, "market": item["market"]})
+            role = _role(item["market"], selected.get("side"), raw_line)
+            title = "預備提示" if stage == "T-30" else "數據提示"
+            message = "\n".join([
+                f"皇冠 {title}",
+                f"開賽：{kickoff.astimezone(HKT).strftime('%d/%m %H:%M')} HKT",
+                f"對賽：{watch.get('home') or ''} vs {watch.get('away') or ''}",
+                f"投注：{bet} @{odds:.2f}",
+                f"選項：{role or '—'} · 實際盤口 {raw_line:g} · 實際賠率 {odds:.2f}",
+                f"主條件：{primary['label']}",
+                f"命中率：{total['accuracy'] * 100:.1f}%（{total['hits']}/{total['decided']}）· {primary['odds_tier']} · {primary['badge']}",
+                *[
+                    f"＋ {extra['label']}：{extra['total']['accuracy'] * 100:.1f}%（{extra['total']['hits']}/{extra['total']['decided']}）"
+                    for extra in extras
+                ],
+                "只作數據提示，由你自行決定。",
+            ])
             delivered = _send(config, message)
             if delivered is False:
                 continue

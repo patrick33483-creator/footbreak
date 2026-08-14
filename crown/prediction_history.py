@@ -33,6 +33,7 @@ from analysis.three_stage_consensus import (
     calculate_three_stage_consensus,
     calculate_three_stage_transitions,
 )
+from analysis.granular_conditions import mine as mine_granular_conditions
 
 
 def _path(config: Settings):
@@ -1026,6 +1027,10 @@ def calculate_stats(
             "description": "目前模型版本；全歷史保留於 all_history_audit。",
         }
         stats["all_history_audit"] = calculate_stats(all_rows)
+        # Compute this compact payload only for the public comparable era.
+        # The recursive all-history audit intentionally does not re-mine a
+        # second (and model-mixed) cohort.
+        stats["granular_conditions"] = mine_granular_conditions(rows, system="crown")
     return stats
 
 
