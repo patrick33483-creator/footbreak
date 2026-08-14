@@ -27,8 +27,8 @@ jobs:
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
         run: |
           ssh -o BatchMode=yes -o ConnectTimeout=20 \
-            "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
-          set -euo pipefail
+            "$DEPLOY_USER@$DEPLOY_HOST" 'sudo /bin/sh -s' <<'REMOTE'
+          set -eu
 
           footbreak_auth=/etc/nginx/.htpasswd-footbreak
           crown_auth=/etc/nginx/.htpasswd-crown
