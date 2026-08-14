@@ -4,19 +4,19 @@ on:
   workflow_dispatch:
     inputs:
       future_hours:
-        description: Future fixture window (hours)
+        description: Compatibility input; unused by aggregate analysis
         required: true
         default: "12"
         type: choice
         options: ["6", "12", "24"]
       current_grace_minutes:
-        description: Include fixtures started within this many minutes
+        description: Compatibility input; unused by aggregate analysis
         required: true
         default: "30"
         type: choice
         options: ["15", "30", "60"]
       fixture_limit:
-        description: Maximum redacted fixture rows
+        description: Compatibility input; unused by aggregate analysis
         required: true
         default: "50"
         type: choice
@@ -26,8 +26,8 @@ permissions:
   contents: read
 
 jobs:
-  diagnose:
-    name: Read-only Crown stage diagnosis
+  analyze:
+    name: Read-only settled condition mining
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
@@ -42,33 +42,36 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
 
-      - name: 只讀取得皇冠階段及計時器摘要
+      - name: 只讀分析 production 已結算歷史
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
-          FUTURE_HOURS: ${{ inputs.future_hours }}
-          CURRENT_GRACE_MINUTES: ${{ inputs.current_grace_minutes }}
-          FIXTURE_LIMIT: ${{ inputs.fixture_limit }}
         run: |
           set -euo pipefail
-          case "$FUTURE_HOURS" in 6|12|24) ;; *) exit 2;; esac
-          case "$CURRENT_GRACE_MINUTES" in 15|30|60) ;; *) exit 2;; esac
-          case "$FIXTURE_LIMIT" in 25|50|100) ;; *) exit 2;; esac
-
-          echo "=== read-only Crown scheduler status (allowlisted fields) ==="
           ssh -o BatchMode=yes -o ConnectTimeout=20 \
             -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
             "$DEPLOY_USER@$DEPLOY_HOST" \
-            'sudo systemctl show crown-tick.timer crown-sweep.timer crown-tick.service crown-sweep.service --no-pager -p Id -p LoadState -p UnitFileState -p ActiveState -p SubState -p Result -p ExecMainStatus -p LastTriggerUSec -p NextElapseUSecRealtime 2>/dev/null || true'
+            'sudo /opt/footbreak/.venv/bin/python3 - --footbreak /var/www/footbreak/data.json --crown /var/www/crown/data.json' \
+            < analysis/condition_mining_report.py > condition-mining.json
+          python3 - <<'PY'
+          import json
+          report = json.load(open("condition-mining.json", encoding="utf-8"))
+          assert report["read_only"] is True
+          assert report["aggregate_only"] is True
+          for name, system in report["systems"].items():
+              print(name, {
+                  "source_rows": system["source_rows"],
+                  "fixture_market_panels": system["fixture_market_panels"],
+                  "candidates": system["candidate_count_after_total_support"],
+                  "sample_qualified": system["sample_qualified_candidates"],
+                  "robust": system["robust_candidates"],
+                  "fdr_qualified": system["fdr_qualified_candidates"],
+              })
+          PY
 
-          # Inputs are choice-constrained above and shell-quoted here.  The
-          # streamed script reads only local Crown state; it does not source
-          # environment files or contact a provider.
-          printf -v remote_command \
-            'sudo env CROWN_STAGE_FUTURE_HOURS=%q CROWN_STAGE_CURRENT_GRACE_MINUTES=%q CROWN_STAGE_FIXTURE_LIMIT=%q PYTHONPATH=%q /opt/footbreak/.venv/bin/python3 -' \
-            "$FUTURE_HOURS" "$CURRENT_GRACE_MINUTES" "$FIXTURE_LIMIT" "/opt/footbreak"
-          echo "=== bounded redacted Crown fixture-stage report ==="
-          ssh -o BatchMode=yes -o ConnectTimeout=20 \
-            -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
-            "$DEPLOY_USER@$DEPLOY_HOST" "$remote_command" \
-            < deploy/audit-crown-stage-state.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: condition-mining-aggregate
+          path: condition-mining.json
+          if-no-files-found: error
+          retention-days: 7
