@@ -1413,7 +1413,7 @@ class CrownSafetyTests(unittest.TestCase):
             encoding="utf-8",
         )
         self.assertIn("Number.isFinite(Number(rawLine))", app)
-        self.assertIn("20260814-hdc-selected-perspective-v4", index)
+        self.assertIn("20260814-data-health-shadow-condition-transition-stats-hdc-perspective-v4", index)
 
     def test_crown_fixture_list_uses_stage_aware_pending_status(self) -> None:
         root = Path(__file__).parents[1] / "dashboard"
@@ -1428,7 +1428,7 @@ class CrownSafetyTests(unittest.TestCase):
         self.assertIn("return '○ 錯過 T-30 · 等 T-5';", app)
         self.assertIn("nextStageText(m, mm)", app)
         self.assertNotIn("? '○ 唔買' : '○ 等 T-5'", app)
-        self.assertIn("app.js?v=20260814-hdc-selected-perspective-v4", index)
+        self.assertIn("app.js?v=20260814-data-health-shadow-condition-transition-stats-hdc-perspective-v4", index)
 
     def test_crown_history_orders_fixture_groups_and_stages(self) -> None:
         node = shutil.which("node")
@@ -2358,8 +2358,8 @@ class CrownSafetyTests(unittest.TestCase):
         self.assertIn("overflow-wrap: anywhere", styles)
         self.assertIn("font: 600 12px/1.6 var(--sans)", styles)
         index = (root / "index.html").read_text(encoding="utf-8")
-        self.assertIn("styles.css?v=20260814-hdc-selected-perspective-v4", index)
-        self.assertIn("app.js?v=20260814-hdc-selected-perspective-v4", index)
+        self.assertIn("styles.css?v=20260814-data-health-shadow-condition-transition-stats-hdc-perspective-v4", index)
+        self.assertIn("app.js?v=20260814-data-health-shadow-condition-transition-stats-hdc-perspective-v4", index)
         self.assertIn("const HISTORY_STAGE_RANK = { '首預': 1, 'T-30': 2, 'T-5': 3 };", app)
         self.assertIn("row.kickoff_hkt || row.kickoff", app)
         self.assertIn('id="scrollTop"', index)
