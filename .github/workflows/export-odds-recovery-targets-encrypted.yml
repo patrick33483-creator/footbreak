@@ -1,0 +1,118 @@
+name: 一次性加密匯出缺賠率稽核目標
+
+on:
+  workflow_dispatch:
+    inputs:
+      rsa_public_key_b64:
+        description: Ephemeral RSA public key (base64 PEM)
+        required: true
+        type: string
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  export:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: 設定 SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: 匯出及加密最小化目標
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          RSA_PUBLIC_KEY_B64: ${{ inputs.rsa_public_key_b64 }}
+        run: |
+          set -euo pipefail
+          umask 077
+          work="$(mktemp -d)"
+          trap 'rm -rf -- "$work"' EXIT
+          target="$DEPLOY_USER@$DEPLOY_HOST"
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$target" 'sudo env PYTHONPATH=/opt/footbreak /opt/footbreak/.venv/bin/python3 -' \
+            > "$work/targets.json" <<'PY'
+          import json
+          from pathlib import Path
+
+          from analysis.odds_recovery import _load_rows, compact_provider_target_rows
+
+          sources = {
+              "footbreak": Path("/var/www/footbreak/data.json"),
+              "crown": Path("/var/lib/footbreak/crown/prediction_history.json"),
+          }
+          payload = {
+              "schema_version": 1,
+              "read_only": True,
+              "systems": {
+                  system: compact_provider_target_rows(_load_rows(path), system)
+                  for system, path in sources.items()
+              },
+          }
+          print(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+          PY
+
+          printf '%s' "$RSA_PUBLIC_KEY_B64" | base64 -d > "$work/public.pem"
+          openssl pkey -pubin -in "$work/public.pem" -noout
+          openssl rand -hex 32 > "$work/passphrase"
+          openssl enc -aes-256-cbc -salt -pbkdf2 -iter 200000 \
+            -pass file:"$work/passphrase" \
+            -in "$work/targets.json" -out "$work/targets.enc"
+          openssl pkeyutl -encrypt -pubin -inkey "$work/public.pem" \
+            -pkeyopt rsa_padding_mode:oaep -pkeyopt rsa_oaep_md:sha256 \
+            -in "$work/passphrase" -out "$work/passphrase.enc"
+
+          mkdir "$work/export"
+          install -m 600 "$work/targets.enc" "$work/passphrase.enc" "$work/export/"
+          python3 - "$work/targets.json" "$work/export/manifest.json" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          manifest = {
+              "schema_version": 1,
+              "encrypted": True,
+              "read_only": True,
+              "target_counts": {
+                  system: len(rows)
+                  for system, rows in payload.get("systems", {}).items()
+              },
+          }
+          Path(sys.argv[2]).write_text(
+              json.dumps(manifest, sort_keys=True, separators=(",", ":")),
+              encoding="utf-8",
+          )
+          PY
+          chmod 600 "$work/export/manifest.json"
+
+          cp -a "$work/export" /tmp/secure-odds-audit-export
+
+      - name: 發佈一次性密文分支
+        run: |
+          set -euo pipefail
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+          git switch --orphan secure-odds-audit-export
+          git rm -rf .
+          cp -a /tmp/secure-odds-audit-export/. .
+          git add manifest.json targets.enc passphrase.enc
+          git commit -m "Ephemeral encrypted odds audit export"
+          git push --force origin HEAD:refs/heads/secure-odds-audit-export
+
+      - name: 清理 runner 暫存
+        if: always()
+        run: rm -rf -- /tmp/secure-odds-audit-export ~/.ssh/id_ed25519
