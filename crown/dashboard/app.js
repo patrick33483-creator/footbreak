@@ -1148,12 +1148,35 @@ function renderShadow() {
 function handicapWorldResultCounts(s) {
   const counts = s.res_counts || {};
   return [
-    ['W', counts.Won || 0],
-    ['HW', counts['Half Won'] || 0],
-    ['P', counts.Refunded || 0],
-    ['HL', counts['Half Lost'] || 0],
-    ['L', counts.Lost || 0],
+    ['全贏', counts.Won || 0],
+    ['半贏', counts['Half Won'] || 0],
+    ['走盤', counts.Refunded || 0],
+    ['半輸', counts['Half Lost'] || 0],
+    ['全輸', counts.Lost || 0],
   ].map(([label, value]) => `<span><b>${label}</b> ${value}</span>`).join('');
+}
+
+const HANDICAP_WORLD_REASON_LABELS = {
+  independent_t5_probability_unavailable: 'T-5 未有可用的獨立勝率',
+  probability_source_not_independent: '勝率來自同一皇冠盤價，並非獨立資料',
+  independent_t5_probability_timestamp_unavailable: '獨立勝率缺少 T-5 觀察時間',
+  independent_probability_not_provably_prekickoff: '無法證明獨立勝率在開賽前取得',
+  nonpositive_kelly_or_zero_equity: '計算後沒有正期望值，凱利注碼為零',
+  both_strategies_created: '固定注碼及保守凱利均已建立',
+};
+
+const HANDICAP_WORLD_SOURCE_LABELS = {
+  pinnapi_exact_full_match: 'PinnAPI 獨立全場勝率',
+  crown_full_market_no_vig: '皇冠全市場去水勝率（不適用於凱利）',
+  pinnapi_exact_line: 'PinnAPI 精確盤口',
+};
+
+function handicapWorldReasonLabel(reason) {
+  return HANDICAP_WORLD_REASON_LABELS[reason] || reason || '未提供原因';
+}
+
+function handicapWorldSourceLabel(source) {
+  return HANDICAP_WORLD_SOURCE_LABELS[source] || source || '未有獨立來源';
 }
 
 function handicapWorldBetRow(b) {
@@ -1161,19 +1184,19 @@ function handicapWorldBetRow(b) {
   const strategy = b.strategy === 'conservative_kelly' ? '保守凱利' : '固定注碼';
   const probability = b.model_prob == null
     ? `<span class="dim">—</span>`
-    : `${pc(b.model_prob, 2)}<div class="cell-sub">${esc(b.probability_source || '')}</div>`;
+    : `${pc(b.model_prob, 2)}<div class="cell-sub">${esc(handicapWorldSourceLabel(b.probability_source))}</div>`;
   const stakePolicy = b.strategy === 'conservative_kelly'
-    ? `<div>${esc(terms.formula || '')}</div><div class="cell-sub">入場權益 ${money(terms.kelly_equity_at_entry)} · full ${pc(terms.kelly_full, 3)} · 採用 ${pc(terms.kelly_used, 3)}</div>`
+    ? `<div>三分一凱利，上限為當時本金 4%</div><div class="cell-sub">入場權益 ${money(terms.kelly_equity_at_entry)} · 完整凱利 ${pc(terms.kelly_full, 3)} · 實際採用 ${pc(terms.kelly_used, 3)}</div>`
     : `<div>固定 HK$1,000</div><div class="cell-sub">起始本金 2%，非滾存餘額</div>`;
   return `<tr class="brow ${String(b.status || '').toLowerCase()}">
     <td data-label="策略"><b>${strategy}</b></td>
     <td data-label="開賽" class="mono nowrap">${hkDay(b.kickoff)} ${hkClock(b.kickoff)}</td>
-    <td data-label="賽事">${esc(b.home)} <span class="dim">v</span> ${esc(b.away)}
+    <td data-label="賽事">${esc(b.home)} <span class="dim">對</span> ${esc(b.away)}
       <div class="cell-sub">${esc(b.league || '')}</div></td>
     <td data-label="選擇"><b>${esc(b.selected_team || '')} ${f2(b.selected_line)}</b>
-      <div class="cell-sub">皇冠 HDC · T-5 ${f2(b.odds)}</div></td>
+      <div class="cell-sub">皇冠讓球 · T-5 賠率 ${f2(b.odds)}</div></td>
     <td data-label="注碼" class="stk">${money(b.stake)}<div class="cell-sub">${stakePolicy}</div></td>
-    <td data-label="p / 來源">${probability}</td>
+    <td data-label="獨立勝率／來源">${probability}</td>
     <td data-label="狀態"><span class="stpill ${String(b.status || '').toLowerCase()}">${ST_LBL[b.status] || b.status || '—'}</span></td>
     <td data-label="結算">${b.result ? `<span class="respill ${RES_CLS[b.result] || ''}">${RES_LBL[b.result] || b.result}</span>` : '<span class="dim">—</span>'}
       <div class="cell-sub">${scoreCell(b)}</div></td>
@@ -1183,7 +1206,7 @@ function handicapWorldBetRow(b) {
 
 function handicapWorldStrategyComparison(s) {
   const strategies = [
-    ['conservative_kelly', '保守凱利', '只限獨立、賽前 T-5 參考 p'],
+    ['conservative_kelly', '保守凱利', '只限獨立、賽前 T-5 勝率'],
     ['fixed_stake', '固定注碼', '每筆 HK$1,000（起始本金 2%）'],
   ];
   const rows = strategies.map(([key, label, note]) => {
@@ -1193,8 +1216,8 @@ function handicapWorldStrategyComparison(s) {
       <div><b>${label}</b><span>${note}</span></div>
       <div class="world-strategy-metrics">
         <span>結餘 <strong>${money(row.equity == null ? 50000 : row.equity)}</strong></span>
-        <span>P&L <strong class="${(row.pnl || 0) >= 0 ? 'good' : 'bad'}">${row.n_settled ? money(row.pnl) : '—'}</strong></span>
-        <span>ROI <strong>${row.roi == null ? '—' : pc(row.roi, 2)}</strong></span>
+        <span>盈虧 <strong class="${(row.pnl || 0) >= 0 ? 'good' : 'bad'}">${row.n_settled ? money(row.pnl) : '—'}</strong></span>
+        <span>回報率 <strong>${row.roi == null ? '—' : pc(row.roi, 2)}</strong></span>
         <span>結算／待決 <strong>${row.n_settled || 0} / ${row.n_pending || 0}</strong></span>
         <span>最大回撤 <strong>${row.max_drawdown == null ? '—' : `${money(row.max_drawdown)} (${pc(row.max_drawdown_pct, 2)})`}</strong></span>
       </div>
@@ -1223,12 +1246,12 @@ function renderHandicapWorld() {
     ['共用來源訊號', signals.length, ''],
     ['策略腿', bets.length, ''],
     ['合併已結算 / 待決', `${s.n_settled || 0} / ${s.n_pending || 0}`, ''],
-    ['Kelly 跳過', skipped.length, skipped.length ? 'amber' : ''],
+    ['凱利未落注', skipped.length, skipped.length ? 'amber' : ''],
     ['固定每注', money(fixedStake), ''],
   ];
   let h = `<div class="ledger-head handicap-world">
     <div class="ledger-title-row">
-      <h1 class="pg-h">讓球世界 <span class="sub">皇冠 HDC 三段完全一致 · 完全隔離的模擬策略組合</span></h1>
+      <h1 class="pg-h">讓球世界 <span class="sub">皇冠讓球三階段完全一致 · 完全隔離的模擬策略組合</span></h1>
       <button class="settle-btn" id="settleHandicapWorldNow" type="button" ${SETTLING || !API_BASE ? 'disabled' : ''}>
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5M6.1 9a7 7 0 0 1 11.2-2.3L20 9M4 15l2.7 2.3A7 7 0 0 0 17.9 15"/></svg>
         <span>${SETTLING ? '結算中…' : '立即結算'}</span>
@@ -1237,32 +1260,32 @@ function renderHandicapWorld() {
     <p class="settle-status ${SETTLE_BAD ? 'bad' : SETTLE_MESSAGE ? 'good' : ''}" aria-live="polite">${esc(SETTLE_MESSAGE || '只會結算已完場、已核對賽果的讓球世界模擬注。')}</p>
     <div class="shadow-note handicap-world-note" role="note">
       <strong>模擬專區</strong>
-      <span>不影響正式倉、影子倉、預測、學習、Telegram 或任何真實投注。只接受皇冠 HDC：首預、T-30、T-5 各恰好一筆、同一實際選隊／方向及完全相同數值讓球線，且選邊 T-5 賠率 ≥1.70；任何缺失、重複、身份／盤口不符、非賽前或無效賠率都不建立訊號。</span>
+      <span>不影響正式倉、影子倉、預測、學習、Telegram 或任何真實投注。只接受皇冠讓球：首預、T-30、T-5 各恰好一筆、同一實際選隊／方向及完全相同數值讓球線，且選邊 T-5 賠率 ≥1.70；任何缺失、重複、身份／盤口不符、非賽前或無效賠率都不建立訊號。</span>
     </div>
     <div class="kpis wide">${K.map(([l, v, c]) => `<div class="kpi"><span class="kpi-lbl">${l}</span><span class="kpi-val ${c}">${v}</span></div>`).join('')}</div>
   </div>`;
   h += `<section class="card world-policy">
     <h2 class="card-h">兩條策略腿 <span class="sub">同一 T-5 訊號、同一選邊賠率、獨立結算與本金</span></h2>
     <div class="world-policy-grid">
-      <article><b>保守凱利</b><p>只用已持久化、賽前 T-5 的獨立參考 p；不會使用皇冠自身去水機率作同一皇冠價格的 p。</p><code>${esc(kelly.formula || 'max(0,(p*odds-1)/(odds-1))/3')}</code><small>採用 ${pc(kelly.fraction == null ? 1 / 3 : kelly.fraction, 2)} full Kelly；每注上限 ${pc(kelly.cap_pct_of_current_equity == null ? .04 : kelly.cap_pct_of_current_equity, 0)} 當前模擬權益；負值一律 $0。</small></article>
-      <article><b>固定注碼</b><p>每筆 HK$${fixedStake.toLocaleString('en-US')}，即 HK$50,000 起始本金的 2%。</p><code>stake = HK$${fixedStake.toLocaleString('en-US')}</code><small>永不改為滾存餘額的 2%；即使 Kelly 沒有合格 p，固定腿仍會保留同一訊號。</small></article>
+      <article><b>保守凱利</b><p>只用已持久化、賽前 T-5 的獨立勝率；不會將同一皇冠賠率去水後再當成勝率，避免循環高估。</p><code>凱利比例 = max(0, (勝率 × 賠率 − 1) ÷ (賠率 − 1)) ÷ 3</code><small>採用完整凱利的 ${pc(kelly.fraction == null ? 1 / 3 : kelly.fraction, 2)}；每注上限 ${pc(kelly.cap_pct_of_current_equity == null ? .04 : kelly.cap_pct_of_current_equity, 0)} 當前模擬權益；沒有正期望值時注碼為 $0。</small></article>
+      <article><b>固定注碼</b><p>每筆 HK$${fixedStake.toLocaleString('en-US')}，即 HK$50,000 起始本金的 2%。</p><code>每注 = HK$${fixedStake.toLocaleString('en-US')}</code><small>永不改為滾存餘額的 2%；即使凱利沒有合格獨立勝率，固定注碼仍會保留同一訊號。</small></article>
     </div>
   </section>`;
-  h += `<section class="card world-results"><h2 class="card-h">結算分布 <span class="sub">亞洲盤四分一結果以既有 canonical settlement 結算</span></h2><div class="world-result-counts">${handicapWorldResultCounts(s)}</div></section>`;
+  h += `<section class="card world-results"><h2 class="card-h">結算分布 <span class="sub">亞洲盤四分一結果按系統標準結算規則處理</span></h2><div class="world-result-counts">${handicapWorldResultCounts(s)}</div></section>`;
   h += handicapWorldStrategyComparison(s);
   if (skipped.length) {
-    h += `<section class="card world-audit"><h2 class="card-h">Kelly 跳過紀錄 <span class="sub">固定策略已照常保留</span></h2><ul>${skipped.map((signal) => `<li><b>${esc(signal.home)} v ${esc(signal.away)}</b> · ${esc((signal.kelly || {}).reason || 'independent_t5_probability_unavailable')}</li>`).join('')}</ul></section>`;
+    h += `<section class="card world-audit"><h2 class="card-h">凱利未落注紀錄 <span class="sub">固定注碼已照常保留</span></h2><ul>${skipped.map((signal) => `<li><b>${esc(signal.home)} 對 ${esc(signal.away)}</b> · ${esc(handicapWorldReasonLabel((signal.kelly || {}).reason))}</li>`).join('')}</ul></section>`;
   }
   if (!bets.length) {
     h += `<div class="card"><div class="empty2">暫時未有合資格訊號。系統不會回補歷史，只會在新持久化的賽前 T-5 建立策略腿。</div></div>`;
   } else {
     h += `<section class="card"><h2 class="card-h">策略注單 <span class="sub">${bets.length} 腿 · ${signals.length} 個共用來源訊號</span></h2>
-      <div class="tbl-wrap"><table class="t bets world-bets"><tr><th>策略</th><th>開賽</th><th>賽事</th><th>選擇</th><th>注碼／政策</th><th>p / 來源</th><th>狀態</th><th>結算</th><th>盈虧</th></tr>
+      <div class="tbl-wrap"><table class="t bets world-bets"><tr><th>策略</th><th>開賽</th><th>賽事</th><th>選擇</th><th>注碼／政策</th><th>獨立勝率／來源</th><th>狀態</th><th>結算</th><th>盈虧</th></tr>
       ${bets.map(handicapWorldBetRow).join('')}</table></div></section>`;
   }
   if (audits.length) {
     const recent = audits.slice(-12).reverse();
-    h += `<section class="card world-audit"><h2 class="card-h">資格審計 <span class="sub">最近 ${recent.length} 筆</span></h2><ul>${recent.map((row) => `<li><b>${esc(row.status || '')}</b> · ${esc(row.home)} v ${esc(row.away)} · ${esc(row.reason || '')}</li>`).join('')}</ul></section>`;
+    h += `<section class="card world-audit"><h2 class="card-h">資格審計 <span class="sub">最近 ${recent.length} 筆</span></h2><ul>${recent.map((row) => `<li><b>${row.status === 'ELIGIBLE' ? '符合資格' : esc(row.status || '')}</b> · ${esc(row.home)} 對 ${esc(row.away)} · ${esc(handicapWorldReasonLabel(row.reason))}</li>`).join('')}</ul></section>`;
   }
   V.innerHTML = h;
   bindHandicapWorldSettlementButton();
