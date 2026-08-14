@@ -318,7 +318,7 @@ class CrownSafetyTests(unittest.TestCase):
         self.assertEqual(len(candidates), 2)
         candidate = next(row for row in candidates if row["side"] == "H")
         self.assertEqual(candidate["market"], "HKJC角球大細")
-        self.assertEqual(candidate["label"], "HKJC角球大細 大 9.5")
+        self.assertEqual(candidate["label"], "角球大細 大 9.5")
         self.assertEqual(candidate["provider"], "HKJC")
         self.assertEqual(candidate["reference"], "pinnapi_corner_exact_full_match")
         self.assertNotIn("Crown", candidate["label"])
@@ -474,9 +474,9 @@ class CrownSafetyTests(unittest.TestCase):
         self.assertEqual({row["code"] for row in prediction["forecast_candidates"]}, {"HDC", "HIL"})
         self.assertEqual(prediction["candidates"], [])
         self.assertIsNone(prediction["pick"])
-        self.assertIsNone(prediction["shadow_pick"])
+        self.assertNotIn("shadow_pick", prediction)
         self.assertFalse(prediction["sharp_reference_available"])
-        self.assertIn("未過影子倉信念門檻", prediction["shadow_no_bet_reason"])
+        self.assertNotIn("shadow_no_bet_reason", prediction)
         self.assertEqual(prediction["edge_reference_status"], "unavailable")
         self.assertIn("不計算 EV", prediction["edge_reference_note"])
         pinnapi_client.lines.assert_not_called()
@@ -486,7 +486,7 @@ class CrownSafetyTests(unittest.TestCase):
         snapshot = ledger["watch"]["titan"]["stages"][0]
         self.assertEqual({row["code"] for row in snapshot["market_predictions"]}, {"HDC", "HIL"})
         self.assertEqual(ledger["bets"], [])
-        self.assertEqual(ledger["shadow_bets"], [])
+        self.assertNotIn("shadow_bets", ledger)
 
     def test_unmapped_pinnapi_keeps_hkjc_corner_forecast_without_creating_bet(self) -> None:
         config = replace(settings(), source_max_age_seconds=90)
@@ -648,10 +648,10 @@ class CrownSafetyTests(unittest.TestCase):
         self.assertEqual({row["code"] for row in prediction["forecast_candidates"]}, {"HDC", "HIL"})
         self.assertEqual(prediction["edge_reference_status"], "unavailable")
         self.assertIn("不計算 EV", prediction["edge_reference_note"])
-        self.assertIn("未過影子倉信念門檻", prediction["shadow_no_bet_reason"])
+        self.assertNotIn("shadow_no_bet_reason", prediction)
         self.assertEqual(prediction["candidates"], [])
         self.assertIsNone(prediction["pick"])
-        self.assertIsNone(prediction["shadow_pick"])
+        self.assertNotIn("shadow_pick", prediction)
         pinnapi_client.lines.assert_not_called()
 
     def test_same_sweep_snapshot_survives_local_queue_freshness_delay(self) -> None:
@@ -725,7 +725,7 @@ class CrownSafetyTests(unittest.TestCase):
             {"首預"},
         )
 
-    def test_missing_pinnapi_mapping_creates_isolated_confidence_shadow_bet(self) -> None:
+    def test_missing_pinnapi_mapping_creates_no_legacy_shadow_bet(self) -> None:
         config = replace(settings(), source_max_age_seconds=90, bankroll=50000)
         kickoff = self.now + timedelta(minutes=5)
         titan = {"id": "titan", "league": "L", "home": "Alpha", "away": "Beta", "kickoff": kickoff}
@@ -751,34 +751,27 @@ class CrownSafetyTests(unittest.TestCase):
         self.assertEqual(prediction["status"], "PREDICTION_READY")
         self.assertEqual(prediction["verdict"], "已預測")
         self.assertIsNone(prediction["pick"])
-        self.assertEqual(prediction["shadow_status"], "SHADOW_READY")
-        self.assertTrue(prediction["shadow_pick"]["confidence_only"])
-        self.assertTrue(prediction["shadow_pick"]["shadow_only"])
-        self.assertIsNone(prediction["shadow_pick"]["ev"])
-        self.assertEqual(prediction["shadow_pick"]["stake"], 1000)
+        self.assertNotIn("shadow_status", prediction)
+        self.assertNotIn("shadow_pick", prediction)
         pinnapi_client.lines.assert_not_called()
 
         ledger = {"bankroll": 50000, "bets": [], "watch": {}, "log": [], "stats": {}}
         created = sync_prediction(ledger, prediction, config)
         self.assertEqual(created, [])
         self.assertEqual(ledger["bets"], [])
-        self.assertEqual(len(ledger["shadow_bets"]), 1)
-        shadow = ledger["shadow_bets"][0]
-        self.assertEqual(shadow["portfolio"], "shadow")
-        self.assertTrue(shadow["confidence_only"])
-        self.assertIsNone(shadow["ev"])
-        self.assertEqual(shadow["stake"], 1000)
+        self.assertNotIn("shadow_bets", ledger)
         self.assertEqual(sync_prediction(ledger, prediction, config), [])
-        self.assertEqual(len(ledger["shadow_bets"]), 1)
+        self.assertNotIn("shadow_bets", ledger)
         official_stats = recompute_stats(ledger, config)
         self.assertEqual(official_stats["n_pending"], 0)
-        self.assertEqual(ledger["shadow_stats"]["n_pending"], 1)
+        self.assertNotIn("shadow_stats", ledger)
 
-    def test_shadow_results_never_change_official_stats_or_entry_learning(self) -> None:
+    def test_legacy_shadow_rows_are_excluded_from_active_portfolio_stats(self) -> None:
         config = replace(settings(), bankroll=50000, min_edge=0.02, confidence_floor=58)
         official = [{
-            "status": "SETTLED", "code": "HIL", "market": "HIL", "stake": 100,
+            "status": "SETTLED", "code": "HIL", "market": "入球大細", "stake": 100,
             "pnl": -100, "result": "Lost", "model_prob": 0.60,
+            "portfolio": "condition_simulation", "strategy": "granular-condition-v1",
         } for _ in range(29)]
         shadow = [{
             "status": "SETTLED", "code": "HIL", "market": "HIL", "stake": 1000,
@@ -792,13 +785,12 @@ class CrownSafetyTests(unittest.TestCase):
         stats = recompute_stats(ledger, config)
         self.assertEqual(stats["n_settled"], 29)
         self.assertEqual(stats["pnl"], -2900)
-        self.assertEqual(ledger["shadow_stats"]["n_settled"], 20)
-        self.assertEqual(ledger["shadow_stats"]["pnl"], 18000)
+        self.assertNotIn("comparison", ledger["shadow_stats"])
         policy = market_entry_thresholds(ledger, "HIL", config)
         self.assertEqual(policy["n_settled"], 29)
         self.assertEqual(policy["reason"], "insufficient_market_sample")
 
-    def test_shadow_comparison_uses_only_official_bets_from_first_shadow_bet(self) -> None:
+    def test_legacy_shadow_comparison_is_not_recomputed(self) -> None:
         config = settings()
         official = [
             {
@@ -823,12 +815,7 @@ class CrownSafetyTests(unittest.TestCase):
             "watch": {}, "log": [], "stats": {}, "shadow_stats": {},
         }
         recompute_stats(ledger, config)
-        comparison = ledger["shadow_stats"]["comparison"]
-        self.assertEqual(comparison["definition"], "from_first_shadow_bet")
-        self.assertEqual(comparison["official_total_bets"], 1)
-        self.assertEqual(comparison["shadow_total_bets"], 1)
-        self.assertEqual(comparison["official"]["pnl"], 900)
-        self.assertEqual(comparison["shadow"]["pnl"], 800)
+        self.assertNotIn("comparison", ledger["shadow_stats"])
 
     def test_market_entry_thresholds_wait_for_thirty_samples_then_tighten(self) -> None:
         config = replace(settings(), min_edge=0.02, confidence_floor=58)
@@ -985,11 +972,11 @@ class CrownSafetyTests(unittest.TestCase):
                 "market": "HDC", "code": "HDC", "condition": "-0.25", "side": "H", "label": "HDC H -0.25",
                 "odds": 2.0, "stake": 100, "prob": .55, "ev": .1,
             }}
-            self.assertEqual(len(sync_prediction(ledger, t5, config)), 1)
+            # Forecast/EV picks are no longer simulation entries.  A new T-5
+            # can enter only through historical granular conditions.
             self.assertEqual(sync_prediction(ledger, t5, config), [])
-            self.assertEqual(len(ledger["bets"]), 1)
-            self.assertTrue(ledger["bets"][0]["simulation_only"])
-            self.assertFalse(ledger["bets"][0]["real_betting_enabled"])
+            self.assertEqual(sync_prediction(ledger, t5, config), [])
+            self.assertEqual(ledger["bets"], [])
 
     def test_first_discovery_timestamp_is_preserved_across_later_stages(self) -> None:
         config = settings()
@@ -1073,7 +1060,7 @@ class CrownSafetyTests(unittest.TestCase):
             {"首預", "T-30"},
         )
 
-    def test_chl_simulation_stores_hkjc_provider_and_has_its_own_market_stats(self) -> None:
+    def test_chl_forecast_pick_cannot_create_a_legacy_simulation_bet(self) -> None:
         config = settings()
         ledger = {"bankroll": 50000, "bets": [], "watch": {}, "log": [], "stats": {}}
         prediction = {
@@ -1089,13 +1076,7 @@ class CrownSafetyTests(unittest.TestCase):
             },
         }
         sync_prediction(ledger, prediction, config)
-        bet = ledger["bets"][0]
-        self.assertEqual(bet["market"], "HKJC角球大細")
-        self.assertEqual(bet["provider"], "HKJC")
-        self.assertEqual(bet["source"], "hkjc_chl")
-        bet.update({"status": "SETTLED", "result": "Won", "pnl": 100})
-        stats = recompute_stats(ledger, config)
-        self.assertEqual(stats["by_market"]["HKJC角球大細"]["n"], 1)
+        self.assertEqual(ledger["bets"], [])
 
     def test_quote_refresh_preserves_prediction_stage_and_replaces_stale_price(self) -> None:
         previous = {
@@ -1512,7 +1493,7 @@ class CrownSafetyTests(unittest.TestCase):
             encoding="utf-8",
         )
         self.assertIn("Number.isFinite(Number(rawLine))", app)
-        self.assertIn("20260814-data-health-shadow-condition-granular-condition-signals-v1", index)
+        self.assertIn("20260814-condition-simulation-v1", index)
 
     def test_crown_fixture_list_uses_stage_aware_pending_status(self) -> None:
         root = Path(__file__).parents[1] / "dashboard"
@@ -1527,7 +1508,7 @@ class CrownSafetyTests(unittest.TestCase):
         self.assertIn("return '○ 錯過 T-30 · 等 T-5';", app)
         self.assertIn("nextStageText(m, mm)", app)
         self.assertNotIn("? '○ 唔買' : '○ 等 T-5'", app)
-        self.assertIn("app.js?v=20260814-data-health-shadow-condition-granular-condition-signals-v1", index)
+        self.assertIn("app.js?v=20260814-condition-simulation-v1", index)
 
     def test_crown_history_orders_fixture_groups_and_stages(self) -> None:
         node = shutil.which("node")
@@ -2093,10 +2074,13 @@ class CrownSafetyTests(unittest.TestCase):
             "stats": {"staking": {"label": "階段一 · 建立樣本", "slope": -2.8}},
             "bets": [
                 {"status": "SETTLED", "market": "讓球", "stake": 1000, "pnl": 900,
-                 "result": "Won", "home": "A", "away": "B", "settled_at": "2026-08-08T10:00:00Z"},
+                 "result": "Won", "home": "A", "away": "B", "settled_at": "2026-08-08T10:00:00Z",
+                 "portfolio": "condition_simulation", "strategy": "granular-condition-v1"},
                 {"status": "SETTLED", "market": "讓球", "stake": 500, "pnl": -500,
-                 "result": "Lost", "home": "C", "away": "D", "settled_at": "2026-08-08T11:00:00Z"},
-                {"status": "VOIDED", "market": "入球大小", "stake": 2000, "pnl": None},
+                 "result": "Lost", "home": "C", "away": "D", "settled_at": "2026-08-08T11:00:00Z",
+                 "portfolio": "condition_simulation", "strategy": "granular-condition-v1"},
+                {"status": "VOIDED", "market": "入球大細", "stake": 2000, "pnl": None,
+                 "portfolio": "condition_simulation", "strategy": "granular-condition-v1"},
             ],
         }
         stats = recompute_stats(ledger, settings())
@@ -2181,9 +2165,9 @@ class CrownSafetyTests(unittest.TestCase):
 
     def test_corner_notification_is_explicitly_hkjc_chinese_market_name(self) -> None:
         corner = {"market": "HKJC角球大細", "code": "CHL", "side": "H", "line": 9.5}
-        self.assertEqual(_bet_label(corner), "HKJC角球大細 · 大 9.5")
+        self.assertEqual(_bet_label(corner), "角球大細 · 大 9.5")
 
-    def test_shadow_bet_settles_separately_from_official_portfolio(self) -> None:
+    def test_legacy_shadow_bet_is_not_settled(self) -> None:
         config = settings()
         ledger = {
             "bankroll": 50000, "watch": {}, "log": [], "stats": {},
@@ -2212,15 +2196,12 @@ class CrownSafetyTests(unittest.TestCase):
              patch("crown.settle.save_ledger"):
             result = crown_settle.settle_due(config)
         self.assertEqual(result["settled"], 0)
-        self.assertEqual(result["shadow_settled"], 1)
         self.assertEqual(result["pending"], 0)
-        self.assertEqual(result["shadow_pending"], 0)
         self.assertEqual(ledger["stats"]["n_settled"], 0)
-        self.assertEqual(ledger["shadow_stats"]["n_settled"], 1)
-        self.assertEqual(ledger["shadow_bets"][0]["result"], "Won")
-        self.assertEqual(ledger["shadow_bets"][0]["pnl"], 1000)
+        self.assertNotIn("shadow_settled", result)
+        self.assertEqual(ledger["shadow_bets"][0]["status"], "PENDING")
 
-    def test_shadow_bet_recovers_exact_titan_detail_omitted_from_result_index(self) -> None:
+    def test_legacy_shadow_bet_does_not_use_titan_detail(self) -> None:
         config = settings()
         ledger = {
             "bankroll": 50000, "watch": {}, "log": [], "stats": {},
@@ -2249,15 +2230,11 @@ class CrownSafetyTests(unittest.TestCase):
              patch("crown.settle.TitanClient.result_detail", return_value=detail), \
              patch("crown.settle.save_ledger"):
             result = crown_settle.settle_due(config)
-        self.assertEqual(result["shadow_settled"], 1)
-        self.assertEqual(result["shadow_pending"], 0)
-        self.assertEqual(ledger["shadow_bets"][0]["result"], "Refunded")
-        self.assertEqual(
-            ledger["shadow_bets"][0]["settlement_source"],
-            "titan007_detail_exact_id_identity",
-        )
+        self.assertEqual(result["settled"], 0)
+        self.assertNotIn("shadow_settled", result)
+        self.assertEqual(ledger["shadow_bets"][0]["status"], "PENDING")
 
-    def test_shadow_detail_fallback_rejects_identity_mismatch(self) -> None:
+    def test_legacy_shadow_bet_remains_inactive_on_identity_mismatch(self) -> None:
         config = settings()
         ledger = {
             "bankroll": 50000, "watch": {}, "log": [], "stats": {},
@@ -2286,8 +2263,8 @@ class CrownSafetyTests(unittest.TestCase):
              patch("crown.settle.TitanClient.result_detail", return_value=wrong_detail), \
              patch("crown.settle.save_ledger"):
             result = crown_settle.settle_due(config)
-        self.assertEqual(result["shadow_settled"], 0)
-        self.assertEqual(result["shadow_pending"], 1)
+        self.assertEqual(result["settled"], 0)
+        self.assertNotIn("shadow_settled", result)
         self.assertEqual(ledger["shadow_bets"][0]["status"], "PENDING")
 
     def test_chl_settlement_uses_hkjc_exact_id_corners_even_when_live_cache_exists(self) -> None:
@@ -2298,8 +2275,9 @@ class CrownSafetyTests(unittest.TestCase):
                 "bet_id": "corner", "match_id": "titan-match", "hkjc_match_id": "hkjc-match",
                 "pinnapi_event_id": "pin-match", "league": "L", "home": "A", "away": "B",
                 "kickoff": "2020-01-01T12:00:00+08:00",
-                "market": "HKJC角球大細", "code": "CHL", "condition": "9.5", "side": "H",
-                "odds": 2.0, "stake": 100, "status": "PENDING",
+                "market": "角球大細", "code": "CHL", "condition": "9.5", "side": "H",
+                "odds": 2.0, "stake": 1000, "status": "PENDING",
+                "portfolio": "condition_simulation", "strategy": "granular-condition-v1",
             }],
         }
         official = {
@@ -2328,8 +2306,9 @@ class CrownSafetyTests(unittest.TestCase):
                 "bet_id": "corner", "match_id": "3019098", "titan_match_id": "3019098",
                 "hkjc_match_id": "50072724", "league": "德乙", "home": "纽伦堡",
                 "away": "德累斯顿", "kickoff": "2020-01-01T12:00:00+08:00",
-                "market": "HKJC角球大細", "code": "CHL", "condition": "10.5", "side": "H",
-                "odds": 2.0, "stake": 100, "status": "PENDING",
+                "market": "角球大細", "code": "CHL", "condition": "10.5", "side": "H",
+                "odds": 2.0, "stake": 1000, "status": "PENDING",
+                "portfolio": "condition_simulation", "strategy": "granular-condition-v1",
             }],
         }
         official = {
@@ -2366,7 +2345,8 @@ class CrownSafetyTests(unittest.TestCase):
                 "hkjc_match_id": "50072724", "league": "德乙", "home": "纽伦堡",
                 "away": "德累斯顿", "kickoff": "2020-01-01T12:00:00+08:00",
                 "code": "CHL", "condition": "10.5", "side": "H",
-                "odds": 2.0, "stake": 100, "status": "PENDING",
+                "odds": 2.0, "stake": 1000, "status": "PENDING",
+                "portfolio": "condition_simulation", "strategy": "granular-condition-v1",
             }],
         }
         official = {
@@ -2457,8 +2437,8 @@ class CrownSafetyTests(unittest.TestCase):
         self.assertIn("overflow-wrap: anywhere", styles)
         self.assertIn("font: 600 12px/1.6 var(--sans)", styles)
         index = (root / "index.html").read_text(encoding="utf-8")
-        self.assertIn("styles.css?v=20260814-data-health-shadow-condition-granular-condition-signals-v1", index)
-        self.assertIn("app.js?v=20260814-data-health-shadow-condition-granular-condition-signals-v1", index)
+        self.assertIn("styles.css?v=20260814-condition-simulation-v1", index)
+        self.assertIn("app.js?v=20260814-condition-simulation-v1", index)
         self.assertIn("const HISTORY_STAGE_RANK = { '首預': 1, 'T-30': 2, 'T-5': 3 };", app)
         self.assertIn("row.kickoff_hkt || row.kickoff", app)
         self.assertIn('id="scrollTop"', index)
@@ -2466,15 +2446,12 @@ class CrownSafetyTests(unittest.TestCase):
         self.assertIn("function updateScrollDock()", app)
         self.assertIn("function scrollToPageBottom()", app)
         self.assertIn("document.documentElement.scrollHeight", app)
-        self.assertIn('data-view="shadow">影子倉', index)
-        self.assertIn('id="viewShadow"', index)
-        self.assertIn("function renderShadow()", app)
+        self.assertNotIn('data-view="shadow">', index)
+        self.assertNotIn('id="viewShadow"', index)
+        self.assertNotIn("function renderShadow()", app)
         self.assertIn("盤口未提供", app)
         self.assertIn("!Number.isFinite(Number(x))", app)
-        self.assertIn("不計入正式模擬倉、動態門檻、自動學習、凱利階段或 Telegram 通知", app)
-        self.assertIn("同期表現對照", app)
-        self.assertIn("card-shadow-comparison", app)
-        self.assertIn("同期已結算樣本未各自達到 30 筆", app)
+        self.assertNotIn("card-shadow-comparison", app)
         self.assertIn("minimum-scale=1", index)
         self.assertIn("viewport-fit=cover", index)
         self.assertIn("min-width: 100%", styles)

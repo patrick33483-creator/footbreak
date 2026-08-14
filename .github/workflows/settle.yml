@@ -80,7 +80,7 @@ jobs:
               echo "::error file=.github/workflows/settle.yml,line=65::$crown_error"
               exit "$crown_rc"
             fi
-            python3 -c "import json; d=json.load(open(\"/var/www/crown/data.json\", encoding=\"utf-8\")); assert d.get(\"schema_version\") == \"crown-dashboard-v2\"; l=d.get(\"ledger\") or {}; print(\"Crown direct OK\", len(l.get(\"bets\") or []), len(l.get(\"shadow_bets\") or []), (d.get(\"prediction_history\") or {}).get(\"result_sync\"))"
+            python3 -c "import json; d=json.load(open(\"/var/www/crown/data.json\", encoding=\"utf-8\")); assert d.get(\"schema_version\") == \"crown-dashboard-v2\"; l=d.get(\"ledger\") or {}; print(\"Crown direct OK\", {\"condition_simulation_bets\": len(l.get(\"bets\") or []), \"strategy\": (l.get(\"stats\") or {}).get(\"strategy\"), \"result_sync\": (d.get(\"prediction_history\") or {}).get(\"result_sync\")})"
             echo "=== Prediction-history production assertions ==="
             sudo /opt/footbreak/.venv/bin/python3 \
               /opt/footbreak/deploy/verify-result-integrity.py

@@ -68,6 +68,18 @@ class GranularConditionNotificationTests(unittest.TestCase):
             self.assertIn("預備提示", sender.call_args_list[0].args[0])
             self.assertIn("數據提示", sender.call_args_list[1].args[0])
             self.assertIn("只作數據提示，由你自行決定。", sender.call_args_list[1].args[0])
+            for call in sender.call_args_list:
+                message = call.args[0]
+                self.assertIn("聯賽：測試", message)
+                self.assertIn("投注：讓球", message)
+                self.assertIn("選擇：主讓", message)
+                self.assertIn("盤口：-0.25", message)
+                self.assertIn("賠率：1.82", message)
+                self.assertIn("命中率：", message)
+                self.assertNotIn("HDC", message)
+                self.assertNotIn("HIL", message)
+                self.assertNotIn("CHL", message)
+                self.assertNotRegex(message, r"\b[ABC](?:→[ABC])+\b")
 
         with tempfile.TemporaryDirectory() as directory:
             data, state = Path(directory, "data.json"), Path(directory, "state.json")
@@ -82,6 +94,24 @@ class GranularConditionNotificationTests(unittest.TestCase):
             self.assertEqual(ledger, before)
             self.assertFalse(state.exists())
 
+    def test_missing_league_fails_closed(self):
+        ledger = _ledger()
+        ledger["watch"]["future"]["league"] = ""
+        payload = {"prediction_history": {"rows": _history("T-5")}}
+        with tempfile.TemporaryDirectory() as directory:
+            data, state = Path(directory, "data.json"), Path(directory, "state.json")
+            data.write_text(json.dumps(payload), encoding="utf-8")
+            with patch.object(notify, "DASHBOARD_DATA", str(data)), \
+                 patch.object(notify, "STATE", str(state)), \
+                 patch.object(notify, "send") as sender:
+                self.assertEqual(
+                    notify.notify_fresh_granular_conditions(
+                        ledger, [{"match_id": "future", "stage": "T-5"}]
+                    ),
+                    0,
+                )
+            sender.assert_not_called()
+
     def test_no_fresh_event_or_invalid_odds_never_sends(self):
         ledger = _ledger()
         ledger["watch"]["future"]["stages"][1]["market_predictions"][0]["odds"] = None
@@ -94,6 +124,17 @@ class GranularConditionNotificationTests(unittest.TestCase):
                 self.assertEqual(notify.notify_fresh_granular_conditions(
                     ledger, [{"match_id": "future", "stage": "T-30"}]), 0)
             sender.assert_not_called()
+
+
+    def test_public_condition_text_uses_chinese_market_and_observed_roles(self):
+        current = notify._public_condition_text("CHL｜方向 角球大→角球細→角球大")
+        self.assertEqual(current, "角球大細｜方向 角球大→角球細→角球大")
+        legacy = notify._public_condition_text("HDC｜方向 A→B→A")
+        self.assertIn("讓球", legacy)
+        self.assertNotRegex(legacy, r"\b[ABC](?:→[ABC])+\b")
+        for code in ("HDC", "HIL", "CHL"):
+            self.assertNotIn(code, notify._public_condition_text(f"{code}｜方向 A→B→A"))
+
 
     def test_legacy_notification_dispatch_is_disabled(self):
         source = (SYSTEM / "record_picks.py").read_text(encoding="utf-8")

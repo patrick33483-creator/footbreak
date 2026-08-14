@@ -30,7 +30,7 @@ class ShadowConditionDashboardUiTests(unittest.TestCase):
                 self.assertNotIn(other, app)
                 self.assertIn("只作報告 / 不自動套用", app)
                 self.assertIn("完全隔離", app)
-                self.assertIn("唔會改機率、推介、正式／confidence-only 影子倉、注碼、Telegram 或模型升級", app)
+                self.assertIn("唔會改機率、推介、模擬倉、注碼、Telegram 或模型升級", app)
 
     def test_reports_are_cache_busted_and_refreshed_independently(self) -> None:
         for dashboard in ("hkjc-dashboard", "crown/dashboard"):

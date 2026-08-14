@@ -145,7 +145,15 @@ def load_history(config: Settings) -> dict[str, Any]:
 def _history_row(watch: dict[str, Any], stage: dict[str, Any]) -> dict[str, Any]:
     match_id = str(stage.get("match_id") or watch.get("match_id") or "")
     stage_name = str(stage.get("stage") or "")
-    pick = stage.get("pick") if isinstance(stage.get("pick"), dict) else None
+    condition = stage.get("condition_simulation")
+    condition_audit = condition.get("audit") if isinstance(condition, dict) else []
+    created_condition = next(
+        (
+            item for item in condition_audit or []
+            if isinstance(item, dict) and item.get("status") == "CREATED"
+        ),
+        None,
+    )
     return {
         "_origin": "crown_ledger_v1",
         "prediction_era": PREDICTION_ERA,
@@ -173,9 +181,14 @@ def _history_row(watch: dict[str, Any], stage: dict[str, Any]) -> dict[str, Any]
         "market_predictions": stage.get("market_predictions") or [],
         "market_grades": [],
         "conviction": stage.get("conviction"),
-        "simulated_bet": bool(pick),
-        "bet_label": pick.get("label") if pick else None,
-        "no_bet_reason": stage.get("no_bet_reason"),
+        # A forecast-only EV/Kelly pick is not a simulated bet.  Only the
+        # T-5 fixed-stake condition evaluator can mark this history row as one.
+        "simulated_bet": bool(created_condition),
+        "simulation_strategy": "granular-condition-v1" if created_condition else None,
+        "bet_label": created_condition.get("selected_label") if created_condition else None,
+        "no_bet_reason": (
+            None if created_condition else stage.get("no_bet_reason")
+        ),
         "actual": None,
         "score": None,
         "correct": None,

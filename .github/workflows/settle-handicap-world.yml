@@ -1,71 +1,15 @@
-name: 只結算皇冠讓球世界
+name: 已停用：舊皇冠投資組合
 
 on:
   workflow_dispatch:
-
-concurrency:
-  group: production-maintenance
-  cancel-in-progress: false
 
 permissions:
   contents: read
 
 jobs:
-  settle:
+  retired:
     runs-on: ubuntu-24.04
     steps:
-      - name: 設定 SSH
-        env:
-          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
-          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+      - name: Confirm retirement
         run: |
-          install -m 700 -d ~/.ssh
-          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
-          chmod 600 ~/.ssh/id_ed25519
-          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
-
-      - name: 只結算讓球世界
-        env:
-          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
-          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
-        run: |
-          ssh -o BatchMode=yes -o ConnectTimeout=20 \
-            "$DEPLOY_USER@$DEPLOY_HOST" 'sudo /opt/footbreak/.venv/bin/python3 -' <<'PY'
-          import json
-          from urllib.error import HTTPError
-          from urllib.request import Request, urlopen
-
-          request = Request(
-              "http://127.0.0.1:8765/api/settle",
-              data=json.dumps({"confirm": "handicap-world-only"}).encode(),
-              headers={
-                  "Content-Type": "application/json",
-                  "X-Crown-Action": "settle-handicap-world",
-              },
-              method="POST",
-          )
-          try:
-              with urlopen(request, timeout=180) as response:
-                  payload = json.load(response)
-          except HTTPError as exc:
-              try:
-                  failure = json.load(exc)
-              except Exception:
-                  failure = {}
-              raise SystemExit(
-                  f"Handicap World settlement failed: "
-                  f"{failure.get('error') or ('HTTP_' + str(exc.code))}"
-              )
-
-          if payload.get("ok") is not True:
-              raise SystemExit(
-                  f"Handicap World settlement failed: "
-                  f"{payload.get('error') or 'unknown_error'}"
-              )
-          print(json.dumps({
-              "ok": True,
-              "handicap_world_settled_count": int(
-                  payload.get("handicap_world_settled_count") or 0
-              ),
-          }, sort_keys=True))
-          PY
+          echo "The retired Crown portfolio has no creation, state, or settlement action."

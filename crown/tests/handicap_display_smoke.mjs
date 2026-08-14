@@ -35,6 +35,6 @@ assert.equal(selectedMarketLine({ code: 'HDC', side: 'A', line: null }), null);
 assert.equal(chinesePredictionLabel({ code: 'HDC', side: 'H', line: -0.75 }), '讓球 主隊 -0.5/-1');
 assert.equal(chinesePredictionLabel({ code: 'HDC', side: 'A', line: -0.5 }), '讓球 客隊 +0.5');
 assert.equal(chinesePredictionLabel({ code: 'HDC', side: 'A', line: 1 }), '讓球 客隊 -1');
-assert.equal(chinesePredictionLabel({ code: 'HIL', side: 'H', line: 3.25 }), '入球大 3/3.5');
+assert.equal(chinesePredictionLabel({ code: 'HIL', side: 'H', line: 3.25 }), '入球大細 大 3/3.5');
 
 console.log('handicap display smoke passed');

@@ -17,6 +17,7 @@ from typing import Any, Iterable
 STAGES = ("首預", "T-30", "T-5")
 STAGE_ORDER = {name: index for index, name in enumerate(STAGES)}
 MARKETS = ("HDC", "HIL", "CHL")
+MARKET_LABELS = {"HDC": "讓球", "HIL": "入球大細", "CHL": "角球大細"}
 ODDS_SPLIT = 1.70
 MAX_PUBLIC = 72
 MAX_CARD_MATCHES = 4
@@ -241,10 +242,19 @@ def _descriptor(system: str, path: tuple[dict[str, Any], ...], level: int) -> tu
         ("system", system), ("market", terminal["market"]), ("path", stages),
         ("decision", terminal["stage"]), ("tier", terminal["odds_tier"]),
     ]
-    label = [f"{terminal['market']}｜{stages}", f"決策 {terminal['stage']}", terminal["odds_tier"]]
+    label = [
+        f"{MARKET_LABELS.get(terminal['market'], terminal['market'])}｜{stages}",
+        f"決策 {terminal['stage']}",
+        terminal["odds_tier"],
+    ]
     if level >= 1 and direction:
         fields.append(("direction", direction))
-        label.append(f"方向 {direction}")
+        # The key remains relative (portable across fixtures), but public
+        # labels must name the observed Chinese directions instead of A/B/C.
+        direction_label = "→".join(
+            str(item.get("role") or "") for item in path
+        )
+        label.append(f"方向 {direction_label}" if direction_label else "方向已記錄")
     if level >= 2:
         for key, name in (("role", "角色"), ("bucket", "線位")):
             value = terminal["role"] if key == "role" else terminal["line_bucket"]
@@ -340,8 +350,16 @@ def mine(rows: Iterable[dict[str, Any]], *, system: str) -> dict[str, Any]:
                 continue
             if len(path) == 1:
                 baselines[(terminal["market"], terminal["stage"], terminal["odds_tier"])].append((panel, path))
+            # A one-stage path has no odds trajectory, so descriptor levels 2
+            # and 3 intentionally describe the same condition.  Count that
+            # fixture once, not twice, or a nine-row cohort could falsely
+            # satisfy the minimum decided-sample rule.
+            path_keys: set[tuple[str, ...]] = set()
             for level in range(4):
                 key, label, specificity = _descriptor(system, path, level)
+                if key in path_keys:
+                    continue
+                path_keys.add(key)
                 cohorts[key].append((panel, path))
                 labels[key] = (label, specificity)
 
@@ -362,6 +380,7 @@ def mine(rows: Iterable[dict[str, Any]], *, system: str) -> dict[str, Any]:
         label, specificity = labels[key]
         candidates.append({
             "key": list(key), "label": label, "system": system, "market": terminal["market"],
+            "market_label": MARKET_LABELS.get(terminal["market"], terminal["market"]),
             "observed_path": "→".join(item["stage"] for item in samples[0][1]),
             "decision_stage": terminal["stage"], "odds_tier": terminal["odds_tier"],
             "total": total, "train": train, "holdout": holdout, "holdout_baseline": baseline,
@@ -373,14 +392,16 @@ def mine(rows: Iterable[dict[str, Any]], *, system: str) -> dict[str, Any]:
         candidate["badge"] = _badge(candidate["total"], candidate["train"], candidate["holdout"], candidate["holdout_lift"], candidate["q_value"])
 
     # Multiple keys within one market sometimes select an identical fixture
-    # cohort. Keep the richer readable description, but never let an HDC
-    # cohort suppress a distinct HIL/CHL condition just because the same
-    # fixtures happen to be present.
+    # cohort. Retain one condition at each specificity level: a more-specific
+    # role condition must not hide a general or direction-only condition that
+    # remains the only valid match for a later fixture.  The market remains in
+    # the signature so an HDC cohort never suppresses HIL/CHL.
     retained: dict[tuple[str, ...], dict[str, Any]] = {}
     for candidate in candidates:
         signature = (
             str(candidate.get("market") or ""),
             str(candidate.get("decision_stage") or ""),
+            int(candidate.get("specificity") or 0),
             *(sorted(
                 f"{sample[0]['fixture']}|{sample[0]['market']}"
                 for sample in cohorts[tuple(candidate["key"])]
@@ -429,7 +450,14 @@ def match_upcoming(
                 key, _label, _specificity = _descriptor(system, path, level)
                 candidate = allowed.get(key)
                 if candidate is not None:
-                    matches[panel["fixture"]].append(candidate)
+                    # Keep the exact selected direction/line that made this
+                    # *upcoming* path match.  The ranking remains historical
+                    # only; these fields simply let downstream execution
+                    # reject any contradictory opportunity defensively.
+                    matches[panel["fixture"]].append(candidate | {
+                        "selected_side": path[-1]["side"],
+                        "selected_line": path[-1]["selected_line"],
+                    })
     for fixture, values in matches.items():
         dedup = {tuple(item["key"]): item for item in values}
         matches[fixture] = sorted(

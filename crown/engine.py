@@ -235,48 +235,6 @@ def _crown_market_forecasts(
     return output, sorted(set(reasons))
 
 
-def _apply_confidence_only_pick(
-    base: dict[str, Any],
-    forecasts: list[dict[str, Any]],
-    stage: str,
-    config: Settings,
-) -> bool:
-    """Create an isolated confidence-only shadow pick without official EV."""
-    base["shadow_pick"] = None
-    base["shadow_status"] = "NOT_ELIGIBLE"
-    if stage != "T-5" or not forecasts:
-        base["shadow_no_bet_reason"] = "只會在 T-5 以完整皇冠雙邊盤建立影子注。"
-        return False
-    lead = max(forecasts, key=lambda row: float(row.get("conviction") or 0))
-    if float(lead.get("conviction") or 0) < config.confidence_floor:
-        base["shadow_no_bet_reason"] = (
-            f"未過影子倉信念門檻（信念 {lead.get('conviction')}/"
-            f"{config.confidence_floor}；不計 EV）"
-        )
-        return False
-    stake = round(config.bankroll * 0.02, 2)
-    if stake <= 0:
-        base["shadow_no_bet_reason"] = "影子倉虛擬本金或注碼無效。"
-        return False
-    pick = {
-        **lead,
-        "stake": stake,
-        "ev": None,
-        "fair": None,
-        "push": None,
-        "kelly_raw": None,
-        "kelly_used": None,
-        "confidence_only": True,
-        "shadow_only": True,
-        "forecast_only": False,
-        "reference": "crown_full_market_no_vig_confidence_shadow",
-    }
-    base["shadow_pick"] = pick
-    base["shadow_status"] = "SHADOW_READY"
-    base["shadow_no_bet_reason"] = None
-    return True
-
-
 def _candidates(crown_prices: list[dict[str, Any]], pinnapi_prices: list[dict[str, Any]], config: Settings,
                 now: float, inferred_timestamp: bool) -> tuple[list[dict[str, Any]], list[str]]:
     reasons: list[str] = []
@@ -400,7 +358,7 @@ def _hkjc_chl_forecasts(
         "condition": f"{line:g}",
         "line": line,
         "side": side,
-        "label": f"HKJC角球大細 {'大' if side == 'H' else '細'} {row.get('condition')}",
+        "label": f"角球大細 {'大' if side == 'H' else '細'} {row.get('condition')}",
         "odds": round(odds, 3),
         "prob": round(probability, 5),
         "conviction": round(probability * 100, 1),
@@ -476,7 +434,7 @@ def _hkjc_chl_candidates(
                 "condition": f"{line:g}",
                 "line": line,
                 "side": side,
-                "label": f"HKJC角球大細 {'大' if side == 'H' else '細'} {hkjc.get('condition')}",
+                "label": f"角球大細 {'大' if side == 'H' else '細'} {hkjc.get('condition')}",
                 "odds": round(odds, 3),
                 "prob": round(probability, 5),
                 "ev": round(ev, 5),
@@ -701,7 +659,6 @@ def _prediction(titan: dict[str, Any], bridge: BridgeMatch, h_match: dict[str, A
                 "PinnAPI EV 參考暫不可用。"
             )
             base["no_bet_reason"] = None
-        _apply_confidence_only_pick(base, forecasts, stage, config)
         return base
     try:
         pinnapi = pinnapi_client.lines(bridge.event.id)
@@ -719,7 +676,6 @@ def _prediction(titan: dict[str, Any], bridge: BridgeMatch, h_match: dict[str, A
                 f"PinnAPI 參考暫時不可用 ({type(exc).__name__})。"
             )
             base["no_bet_reason"] = None
-        _apply_confidence_only_pick(base, forecasts, stage, config)
         return base
     prices = pinnapi["prices"]
     base.update(_wdl_prediction(prices))
@@ -792,7 +748,6 @@ def _prediction(titan: dict[str, Any], bridge: BridgeMatch, h_match: dict[str, A
         base["no_bet_reason"] = prefix + "；".join(
             reasons + corner_reasons or ["Crown/PinnAPI 無可比較完整雙邊盤"]
         )
-        _apply_confidence_only_pick(base, forecasts, stage, config)
         return base
     eligible = [
         candidate for candidate in candidates
@@ -804,23 +759,11 @@ def _prediction(titan: dict[str, Any], bridge: BridgeMatch, h_match: dict[str, A
     base["lead_view"] = lead
     base["status"] = "REFERENCE_READY"
     base["verdict"] = "傾向" if stage != "T-5" else "觀望"
-    if stage == "T-5" and eligible:
-        stake = min(config.bankroll * 0.04, config.bankroll * lead["kelly_used"])
-        if stake > 0:
-            base["pick"] = lead | {"stake": round(stake, 2)}
-            base["verdict"] = "模擬注"
-            base["status"] = "SIMULATION_READY"
-            base["no_bet_reason"] = None
-            return base
+    base["pick"] = None
     if stage == "T-5":
-        policy = lead["entry_policy"]
-        base["no_bet_reason"] = (
-            f"未過 {lead['code']} 動態門檻（信念 {lead['conviction']}/"
-            f"{policy['confidence_floor']:g}，EV {lead['ev']:.2%}/"
-            f"{policy['min_edge']:.2%}；樣本 {policy.get('n_settled', 0)}）"
-        )
+        base["no_bet_reason"] = "此預測只供資訊；條件模擬倉只會以歷史已結算細緻條件判定。"
     else:
-        base["no_bet_reason"] = f"{stage} 僅記錄資訊，不建立模擬注。"
+        base["no_bet_reason"] = f"{stage} 僅記錄資訊；條件模擬倉只在新 T-5 判定。"
     return base
 
 

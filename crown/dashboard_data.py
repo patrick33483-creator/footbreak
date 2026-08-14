@@ -9,7 +9,7 @@ from typing import Any
 
 from .common import HKT, iso_hkt, parse_time, read_json, write_json_atomic
 from .config import Settings, settings
-from .ledger import recompute_stats
+from .ledger import condition_bets, recompute_stats
 from .period import in_current_period
 from .prediction_history import normalize_history, project_watch_rows
 from .ledger import PREDICTION_ERA
@@ -168,6 +168,17 @@ def build(config: Settings) -> dict[str, Any]:
     # dashboard contract even before the first remote Crown pass.
     recompute_stats(ledger, config)
     stats = ledger.get("stats") or {}
+    # Project a condition-portfolio-only ledger for the browser.  Retired
+    # portfolio keys may survive in old state until an explicit reset, but
+    # cannot become dashboard data again.
+    dashboard_ledger = dict(ledger)
+    active_condition_bets = condition_bets(ledger)
+    dashboard_ledger["bets"] = active_condition_bets
+    for key in (
+        "shadow_bets", "shadow_stats", "shadow_comparison",
+        "handicap_world", "handicap_world_audit", "handicap_world_stats",
+    ):
+        dashboard_ledger.pop(key, None)
     return {
         "schema_version": "crown-dashboard-v2", "generated_at": iso_hkt(), "title": "足破 · 皇冠賽事預測終端",
         "summary": {"crown_matches": len(matches), "hkjc_overlaps": sum(bool(row.get("hkjc_match_id")) for row in matches),
@@ -175,21 +186,21 @@ def build(config: Settings) -> dict[str, Any]:
                         row.get("status") in {"PREDICTION_READY", "REFERENCE_READY", "SIMULATION_READY"}
                         for row in matches
                     ),
-                    "actionable": sum(bool(row.get("pick")) for row in matches),
-                    "simulation_t5_picks": sum(bool(row.get("pick")) and row.get("stage") == "T-5" for row in matches),
-                    "shadow_t5_picks": len(ledger.get("shadow_bets") or []),
+                    "actionable": len(active_condition_bets),
+                    "simulation_t5_picks": sum(str(bet.get("stage") or "") == "T-5" for bet in active_condition_bets),
                     "signal_data_missing": sum(row.get("status") == "DATA_MISSING" for row in matches)},
         "market_policy": {"model_HDC": "Titan007 Crown company ID=3", "model_HIL": "Titan007 Crown company ID=3",
                           "model_CHL": "HKJC角球大細 vs PinnAPI CHL exact line; never Crown odds",
                           "sharp_reference": "PinnAPI Edge"},
-        "signal_policy": {"mode": "simulation_only", "execution_enabled": True, "execution_mode": "simulation",
-                          "real_betting_enabled": False, "baseline": "PinnAPI full-match exact-line no-vig",
-                          "shadow_mode": "T-5 confidence-only; fixed 2% virtual bankroll; excluded from official stats, learning and notifications",
-                          "markets": {"HDC": "Titan007 Crown ID=3", "HIL": "Titan007 Crown ID=3",
-                                      "CHL": "HKJC角球大細 after strict mapping and exact PinnAPI CHL line; never Crown odds"},
-                          "stages": ["首預", "T-30", "T-5"], "confidence_floor": config.confidence_floor,
-                          "minimum_ev": config.min_edge, "minimum_odds": 1.01},
-        "matches": matches, "ledger": ledger,
+        "signal_policy": {"mode": "simulation_only", "execution_enabled": True, "execution_mode": "condition_simulation",
+                          "real_betting_enabled": False,
+                          "strategy": "granular-condition-v1",
+                          "entry_rule": "newly persisted T-5 only; historical settled GRADED granular condition accuracy >60% and decided >=10",
+                          "fixed_stake": 1000, "starting_bankroll": 50000,
+                          "markets": {"HDC": "selected valid Crown/PinnAPI-backed snapshot", "HIL": "selected valid Crown/PinnAPI-backed snapshot",
+                                      "CHL": "selected valid HKJC/PinnAPI-backed snapshot"},
+                          "stages": ["首預", "T-30", "T-5"], "decision_stage": "T-5", "minimum_odds": 1.01},
+        "matches": matches, "ledger": dashboard_ledger,
         "prediction_history": prediction_history,
         "stage_completeness": stage_completeness(matches, ledger),
     }

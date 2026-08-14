@@ -73,9 +73,9 @@ class PredictionHistoryUiTests(unittest.TestCase):
         self.assertIn("function selectedMarketLine(prediction)", app)
         self.assertIn("code === 'HDC' && side === 'A' ? -line : line", app)
         self.assertIn("讓球 ${side === 'H' ? '主隊'", app)
-        self.assertIn("`主隊 ${historyQuarterLine(raw, true)}`", app)
-        self.assertIn("入球${side === 'H' ? '大'", app)
-        self.assertIn("角球${side === 'H' ? '大'", app)
+        self.assertIn("`讓球 ${side === 'H' ? '主隊'", app)
+        self.assertIn("`入球大細 ${side === 'H' ? '大'", app)
+        self.assertIn("`角球大細 ${side === 'H' ? '大'", app)
         self.assertIn("未有平博同方向盤口，未計預期價值", app)
         self.assertNotIn("未有 Pinnacle 同路盤，未計 EV", app)
 

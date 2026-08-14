@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 
 from analysis.granular_conditions import (
     _badge,
+    _descriptor,
     _role,
     canonical_panels,
     match_upcoming,
@@ -74,8 +75,33 @@ class GranularConditionsTests(unittest.TestCase):
         self.assertNotIn("bad-price", {panel["fixture"] for panel in panels})
         report = mine(rows, system="footbreak")
         labels = [item["label"] for item in report["ranking"]]
-        self.assertTrue(any("方向 A→B→A" in label for label in labels))
+        self.assertTrue(any("方向 主讓→客受讓→主讓" in label for label in labels))
+        self.assertFalse(any("HDC" in label or "A→B→A" in label for label in labels))
         self.assertTrue(any(item["total"]["pushes"] == 1 for item in report["ranking"]))
+
+    def test_public_descriptor_uses_observed_chinese_roles_for_total_and_corner_paths(self):
+        def item(market, stage, side, line):
+            return {
+                "market": market, "stage": stage, "side": side,
+                "selected_line": line, "role": _role(market, side, line),
+                "line_bucket": "測試", "odds_tier": "≥1.70",
+            }
+
+        cases = [
+            ("HIL", (("H", 2.5), ("L", 2.5), ("H", 2.5)), "入球大細", "方向 大→細→大"),
+            ("CHL", (("H", 9.5), ("L", 9.5), ("H", 9.5)), "角球大細", "方向 角球大→角球細→角球大"),
+        ]
+        for market, selections, market_label, expected_path in cases:
+            with self.subTest(market=market):
+                path = tuple(
+                    item(market, stage, side, line)
+                    for stage, (side, line) in zip(("首預", "T-30", "T-5"), selections)
+                )
+                _key, label, _specificity = _descriptor("crown", path, 1)
+                self.assertIn(market_label, label)
+                self.assertIn(expected_path, label)
+                self.assertNotRegex(label, r"\b[ABC](?:→[ABC])+\b")
+                self.assertNotIn(market, label)
 
     def test_odds_tiers_are_distinct_and_t30_never_uses_t5(self):
         settled = []

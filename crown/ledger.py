@@ -10,13 +10,7 @@ from analysis.learning_store import LearningStore
 
 from .common import HKT, iso_hkt, parse_time
 from .config import Settings
-from .handicap_world import (
-    FIXED_STAKE as HANDICAP_WORLD_FIXED_STAKE,
-    PORTFOLIO as HANDICAP_WORLD_PORTFOLIO,
-    STARTING_BANKROLL as HANDICAP_WORLD_STARTING_BANKROLL,
-    ensure_state as ensure_handicap_world,
-    record_new_t5 as record_handicap_world_t5,
-)
+from .condition_portfolio import FIXED_STAKE, STARTING_BANKROLL, STRATEGY, evaluate_new_t5
 
 STAGES = {"首預": 1, "T-30": 2, "T-5": 3}
 PREDICTION_ERA = "2026-08-12-hkjc-corner-forecast-v4"
@@ -216,8 +210,7 @@ def _snapshot(prediction: dict[str, Any], stage: str) -> dict[str, Any]:
     all_selected_quotes_available = bool(odds_journal) and not unavailable_quotes
     snapshot = {key: prediction.get(key) for key in (
         "match_id", "league", "home", "away", "kickoff_hkt", "mins_to_ko", "status", "verdict",
-        "conviction", "no_bet_reason", "pick", "shadow_pick", "shadow_status",
-        "shadow_no_bet_reason", "lead_view", "market_sources", "hkjc_match_id",
+        "conviction", "no_bet_reason", "pick", "lead_view", "market_sources", "hkjc_match_id",
         "titan_match_id", "pinnapi_event_id", "source_snapshot_at", "execution",
         "outcome", "forecast", "probability", "likely_score", "prediction_source",
         "probabilities", "baseline_low_confidence", "edge_reference_status", "edge_reference_note",
@@ -263,17 +256,22 @@ def _snapshot(prediction: dict[str, Any], stage: str) -> dict[str, Any]:
     return snapshot
 
 
-def _bet_id(prediction: dict[str, Any]) -> str:
-    pick = prediction["pick"]
-    return f"{prediction['match_id']}|{pick['code']}|{pick['condition']}|{pick['side']}"
+def _bet_id(match_id: str, market: str) -> str:
+    return f"{match_id}|{market}|T-5|{STRATEGY}"
 
 
-def _shadow_bet_id(prediction: dict[str, Any]) -> str:
-    pick = prediction["shadow_pick"]
-    return (
-        f"shadow|{prediction['match_id']}|{pick['code']}|"
-        f"{pick['condition']}|{pick['side']}"
-    )
+def condition_bets(ledger: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return only rows belonging to the active fixed-stake portfolio.
+
+    Old ledger rows remain readable until the explicit reset is performed, but
+    must not appear in the new portfolio's statistics or settlement queue.
+    """
+    return [
+        bet for bet in (ledger.get("bets") or [])
+        if isinstance(bet, dict)
+        and bet.get("portfolio") == "condition_simulation"
+        and bet.get("strategy") == STRATEGY
+    ]
 
 
 def _record_learning_snapshot(
@@ -297,28 +295,23 @@ def _record_learning_snapshot(
 
 
 def sync_prediction(ledger: dict[str, Any], prediction: dict[str, Any], config: Settings) -> list[str]:
-    """Repeated calls are a no-op for a created simulation and notification key."""
+    """Persist a stage and create only newly-observed eligible T-5 condition bets."""
     ledger.setdefault("bets", [])
-    ledger.setdefault("shadow_bets", [])
     ledger.setdefault("watch", {})
     stage = prediction.get("stage")
     if stage not in STAGES:
         return []
     match_id = str(prediction["match_id"])
     watch = ledger["watch"].setdefault(match_id, {
-        "match_id": match_id, "league": prediction.get("league"), "home": prediction.get("home"), "away": prediction.get("away"),
-        "kickoff": prediction.get("kickoff_hkt"), "titan_match_id": prediction.get("titan_match_id"),
-        "pinnapi_event_id": prediction.get("pinnapi_event_id"), "hkjc_match_id": prediction.get("hkjc_match_id"), "stages": [],
-        "matching_version": prediction.get("matching_version"),
-        "prediction_era": PREDICTION_ERA,
-        # This is a local state-observation timestamp, not a provider field.
-        # Preserve the first value so a later T-30/T-5 pass cannot obscure
-        # when this fixture first entered the Crown state.
+        "match_id": match_id, "league": prediction.get("league"), "home": prediction.get("home"),
+        "away": prediction.get("away"), "kickoff": prediction.get("kickoff_hkt"),
+        "titan_match_id": prediction.get("titan_match_id"), "pinnapi_event_id": prediction.get("pinnapi_event_id"),
+        "hkjc_match_id": prediction.get("hkjc_match_id"), "stages": [],
+        "matching_version": prediction.get("matching_version"), "prediction_era": PREDICTION_ERA,
         "discovered_at": prediction.get("discovered_at") or iso_hkt(),
     })
     watch.update({key: prediction.get(key) for key in (
-        "league", "home", "away", "kickoff_hkt", "titan_match_id",
-        "pinnapi_event_id", "hkjc_match_id", "matching_version",
+        "league", "home", "away", "kickoff_hkt", "titan_match_id", "pinnapi_event_id", "hkjc_match_id", "matching_version",
     )})
     watch["prediction_era"] = PREDICTION_ERA
     watch["kickoff"] = prediction.get("kickoff_hkt")
@@ -330,10 +323,8 @@ def sync_prediction(ledger: dict[str, Any], prediction: dict[str, Any], config: 
     learning = _record_learning_snapshot(prediction, snapshot)
     if learning:
         snapshot.update({
-            "learning_snapshot_id": learning["snapshot_id"],
-            "learning_attempt": learning["attempt"],
-            "learning_pre_kickoff": learning["pre_kickoff"],
-            "learning_payload_sha256": learning["payload_sha256"],
+            "learning_snapshot_id": learning["snapshot_id"], "learning_attempt": learning["attempt"],
+            "learning_pre_kickoff": learning["pre_kickoff"], "learning_payload_sha256": learning["payload_sha256"],
         })
         if not learning["pre_kickoff"]:
             return []
@@ -342,73 +333,21 @@ def sync_prediction(ledger: dict[str, Any], prediction: dict[str, Any], config: 
         stage_rows.sort(key=lambda row: STAGES[row["stage"]])
     else:
         existing.update(snapshot)
-    # Let the separate portfolio observe only a newly persisted T-5 snapshot.
-    # A retried/replayed T-5 cannot add another source signal or child leg.
-    if stage == "T-5" and existing is None:
-        record_handicap_world_t5(ledger, watch)
-    if stage == "T-5" and prediction.get("shadow_pick"):
-        shadow_bets = ledger["shadow_bets"]
-        # Shadow decisions are also one-per-fixture and idempotent. They are
-        # deliberately stored outside ledger["bets"], which remains the only
-        # official simulation, learning and notification portfolio.
-        if not any(str(bet.get("match_id")) == match_id for bet in shadow_bets):
-            shadow_id = _shadow_bet_id(prediction)
-            shadow_pick = prediction["shadow_pick"]
-            shadow_bets.append({
-                "bet_id": shadow_id, "match_id": match_id,
-                "league": prediction.get("league"), "home": prediction.get("home"),
-                "away": prediction.get("away"), "kickoff": prediction.get("kickoff_hkt"),
-                "titan_match_id": prediction.get("titan_match_id"),
-                "pinnapi_event_id": prediction.get("pinnapi_event_id"),
-                "hkjc_match_id": prediction.get("hkjc_match_id"),
-                "market": shadow_pick["market"], "code": shadow_pick["code"],
-                "condition": shadow_pick["condition"], "side": shadow_pick["side"],
-                "label": shadow_pick["label"], "line": shadow_pick.get("line"),
-                "odds": shadow_pick["odds"], "stake": shadow_pick["stake"],
-                "model_prob": shadow_pick["prob"], "ev": None,
-                "provider": shadow_pick.get("provider"), "source": shadow_pick.get("source"),
-                "bookmaker": shadow_pick.get("bookmaker"),
-                "reference": shadow_pick.get("reference"),
-                "reference_provider": shadow_pick.get("reference_provider"),
-                "confidence_only": True, "shadow_only": True, "portfolio": "shadow",
-                "conviction": shadow_pick.get("conviction"),
-                "first_stage": "T-5", "stage": "T-5", "status": "PENDING",
-                "simulation_only": True, "real_betting_enabled": False,
-                "created_at": iso_hkt(),
-                "history": [{
-                    "ts": iso_hkt(), "stage": "T-5",
-                    "action": "影子注建立", "bet_id": shadow_id,
-                    "reason": "confidence-only；固定 2% 虛擬本金；不計 EV",
-                }],
-            })
-    if stage != "T-5" or not prediction.get("pick"):
+    if stage != "T-5" or existing is not None:
         return []
-    # One final simulation decision per Crown prediction fixture.  A retry or
-    # a concurrent recalculation may move market/line, but must not append a
-    # second T-5 bet for the same match.
-    if any(str(bet.get("match_id")) == match_id for bet in ledger["bets"]):
-        return []
-    bid = _bet_id(prediction)
-    if any(str(bet.get("bet_id")) == bid for bet in ledger["bets"]):
-        return []
-    pick = prediction["pick"]
-    # No external order path exists: this is permanently a simulated row.
-    ledger["bets"].append({
-        "bet_id": bid, "match_id": match_id, "league": prediction.get("league"), "home": prediction.get("home"),
-        "away": prediction.get("away"), "kickoff": prediction.get("kickoff_hkt"), "titan_match_id": prediction.get("titan_match_id"),
-        "pinnapi_event_id": prediction.get("pinnapi_event_id"), "hkjc_match_id": prediction.get("hkjc_match_id"),
-        "market": pick["market"], "code": pick["code"], "condition": pick["condition"], "side": pick["side"],
-        "label": pick["label"], "line": pick.get("line"), "odds": pick["odds"], "stake": pick["stake"],
-        "model_prob": pick["prob"], "ev": pick.get("ev"), "provider": pick.get("provider"),
-        "source": pick.get("source"), "bookmaker": pick.get("bookmaker"),
-        "reference": pick.get("reference"), "reference_provider": pick.get("reference_provider"),
-        "confidence_only": bool(pick.get("confidence_only")),
-        "conviction": prediction.get("conviction"), "first_stage": "T-5", "stage": "T-5", "status": "PENDING",
-        "simulation_only": True, "real_betting_enabled": False, "created_at": iso_hkt(),
-        "history": [{"ts": iso_hkt(), "stage": "T-5", "action": "模擬注建立", "bet_id": bid}],
-    })
-    return [bid]
-
+    created, audit = evaluate_new_t5(ledger, watch, config)
+    snapshot["condition_simulation"] = {"strategy": STRATEGY, "stage": "T-5", "audit": audit}
+    audit_rows = ledger.setdefault("condition_simulation_audit", [])
+    audit_rows.extend([{"match_id": match_id, **item} for item in audit])
+    ledger["condition_simulation_audit"] = audit_rows[-1600:]
+    ledger["bets"].extend(created)
+    if created:
+        ledger.setdefault("log", []).extend([
+            {"ts": bet["created_at"], "action": "條件模擬注建立", "bet_id": bet["bet_id"],
+             "match_id": match_id, "market": bet["market_label"], "condition": bet["condition_label"]}
+            for bet in created
+        ])
+    return [str(bet["bet_id"]) for bet in created]
 
 def _portfolio_stats(bets: list[dict[str, Any]], bankroll: float) -> dict[str, Any]:
     settled = [bet for bet in bets if bet.get("status") == "SETTLED"]
@@ -471,111 +410,21 @@ def _portfolio_stats(bets: list[dict[str, Any]], bankroll: float) -> dict[str, A
     }
 
 
-def _bet_time(bet: dict[str, Any]) -> datetime | None:
-    value = bet.get("created_at") or bet.get("kickoff")
-    if not value:
-        return None
-    try:
-        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=timezone(timedelta(hours=8)))
-        return parsed.astimezone(timezone.utc)
-    except (TypeError, ValueError):
-        return None
-
-
-def _same_period_comparison(
-    official_bets: list[dict[str, Any]],
-    shadow_bets: list[dict[str, Any]],
-    bankroll: float,
-) -> dict[str, Any] | None:
-    dated_shadow = [(bet, _bet_time(bet)) for bet in shadow_bets]
-    starts = [ts for _, ts in dated_shadow if ts is not None]
-    if not starts:
-        return None
-    start = min(starts)
-    official_period = [
-        bet for bet in official_bets
-        if (ts := _bet_time(bet)) is not None and ts >= start
-    ]
-    shadow_period = [
-        bet for bet, ts in dated_shadow
-        if ts is not None and ts >= start
-    ]
-    return {
-        "period_start": start.isoformat(),
-        "definition": "from_first_shadow_bet",
-        "official_total_bets": len(official_period),
-        "shadow_total_bets": len(shadow_period),
-        "official": _portfolio_stats(official_period, bankroll),
-        "shadow": _portfolio_stats(shadow_period, bankroll),
-    }
-
-
-def recompute_handicap_world_stats(ledger: dict[str, Any]) -> dict[str, Any]:
-    """Refresh only the isolated Handicap World aggregate."""
-    handicap_world = ensure_handicap_world(ledger)
-    bets = handicap_world["bets"]
-    by_strategy = {
-        strategy: _portfolio_stats(
-            [bet for bet in bets if bet.get("strategy") == strategy],
-            HANDICAP_WORLD_STARTING_BANKROLL,
-        )
-        for strategy in ("conservative_kelly", "fixed_stake")
-    }
-    handicap_world["stats"] = {
-        **_portfolio_stats(bets, HANDICAP_WORLD_STARTING_BANKROLL),
-        "starting_bankroll": HANDICAP_WORLD_STARTING_BANKROLL,
-        "fixed_stake": HANDICAP_WORLD_FIXED_STAKE,
-        "portfolio": HANDICAP_WORLD_PORTFOLIO,
-        "simulation_only": True,
-        "signals": len(handicap_world["signals"]),
-        "by_strategy": by_strategy,
-        "kelly_skipped": sum(
-            signal.get("kelly", {}).get("status") == "SKIPPED"
-            for signal in handicap_world["signals"]
-        ),
-    }
-    return handicap_world["stats"]
-
-
 def recompute_stats(ledger: dict[str, Any], config: Settings) -> dict[str, Any]:
-    bets = ledger.setdefault("bets", [])
-    shadow_bets = ledger.setdefault("shadow_bets", [])
-    watch = ledger.setdefault("watch", {})
-    base = _portfolio_stats(bets, config.bankroll)
-    previous_staking = ((ledger.get("stats") or {}).get("staking") or {})
-    stats = {
-        **base,
-        "daily_cap": config.bankroll, "open_cap": round(config.bankroll * 0.35, 2), "single_cap_pct": 0.04,
-        "conf_floor": config.confidence_floor, "bet_stage": "T-5", "n_watch": len(watch),
-        "n_stage_preds": sum(len(item.get("stages") or []) for item in watch.values()),
-        "staking": {
-            "fraction": previous_staking.get("fraction", 1 / 3),
-            "cap": previous_staking.get("cap", 0.04),
-            "label": previous_staking.get("label", "階段一 · 建立樣本"),
-            "level": previous_staking.get("level", 1),
-            "n_settled": base["n_settled"],
-            "slope": previous_staking.get("slope"),
-            "buckets": previous_staking.get("buckets", []),
-            "perf": previous_staking.get("perf", {}),
-            "demoted": previous_staking.get("demoted", False),
-            "market_mult": previous_staking.get("market_mult", {"CHL": 0.5}),
-        },
-    }
-    ledger["stats"] = stats
-    ledger["shadow_stats"] = {
-        **_portfolio_stats(shadow_bets, config.bankroll),
-        "conf_floor": config.confidence_floor,
-        "bet_stage": "T-5",
-        "single_cap_pct": 0.02,
-        "mode": "confidence_only_shadow",
-        "excluded_from_official": True,
-        "comparison": _same_period_comparison(bets, shadow_bets, config.bankroll),
-    }
-    recompute_handicap_world_stats(ledger)
-    return stats
-
+    """Compute statistics for the sole fixed-stake condition portfolio."""
+    del config
+    ledger.setdefault("bets", [])
+    bets = condition_bets(ledger)
+    ledger["bankroll"] = STARTING_BANKROLL
+    base = _portfolio_stats(bets, STARTING_BANKROLL)
+    base.update({
+        "strategy": STRATEGY, "starting_bankroll": STARTING_BANKROLL,
+        "fixed_stake": FIXED_STAKE, "entry_rule": "T-5 only; historical GRADED condition accuracy >60%; decided >=10",
+    })
+    ledger["stats"] = base
+    # Retired keys are tolerated if read from old state but are never created,
+    # displayed, settled, or included in statistics.
+    return base
 
 def market_entry_thresholds(
     ledger: dict[str, Any],

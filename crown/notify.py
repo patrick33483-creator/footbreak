@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import urllib.request
 from typing import Any
 
@@ -13,6 +14,19 @@ from analysis.three_stage_consensus import calculate_three_stage_consensus
 
 
 ODDS_TIER_THRESHOLD = 1.70
+MARKET_LABELS = {"HDC": "讓球", "HIL": "入球大細", "CHL": "角球大細"}
+
+
+def _public_condition_text(value: Any) -> str:
+    """Keep internal codes and legacy abstract paths out of public copy."""
+    text = str(value or "")
+    for code, label in MARKET_LABELS.items():
+        text = re.sub(rf"\b{code}\b", label, text)
+    # New descriptors preserve observed Chinese roles (for example
+    # 主讓→客受讓→主讓).  An old A/B/C-only artifact has lost that semantic
+    # mapping, so never invent one: state the historical-label limitation
+    # without leaking unexplained tokens.
+    return re.sub(r"\b[ABC](?:→[ABC])+\b", "方向曾變化（舊紀錄未保留角色）", text)
 
 
 def _quarter_line(value: Any, signed: bool = True) -> str:
@@ -48,7 +62,7 @@ def _bet_label(bet: dict[str, Any]) -> str:
     if market == "HIL":
         return f"入球大細 · {'大' if side == 'H' else '細'} {_quarter_line(line, signed=False)}"
     if market == "HKJC角球大細" or bet.get("code") == "CHL":
-        return f"HKJC角球大細 · {'大' if side == 'H' else '細'} {_quarter_line(line, signed=False)}"
+        return f"角球大細 · {'大' if side == 'H' else '細'} {_quarter_line(line, signed=False)}"
     return str(bet.get("label") or f"{market} {side} {line}")
 
 
@@ -161,7 +175,7 @@ def _signal_message(
         f"{system} T-5 訊號",
         f"開賽：{kickoff.strftime('%d/%m %H:%M')} HKT" + (f" · {league}" if league else ""),
         f"對賽：{stage.get('home') or ''} vs {stage.get('away') or ''}",
-        f"市場：{market}",
+        f"市場：{MARKET_LABELS.get(market, market)}",
         f"選擇：{selection}",
         f"盤口：{line}",
         f"選項實際賠率：{odds:.3f}",
@@ -351,21 +365,29 @@ def notify_new(
             )
             if notification_id in seen_signals:
                 continue
+            league = str(watch.get("league") or "").strip()
+            if not league:
+                continue
             primary, extras = item["matches"][0], item["matches"][1:4]
             total = primary["total"]
-            bet = _bet_label({**selected, **watch, "market": item["market"]})
+            market_label = MARKET_LABELS.get(item["market"], "未分類市場")
             role = _role(item["market"], selected.get("side"), raw_line)
+            selected_line = -raw_line if item["market"] == "HDC" and selected.get("side") == "A" else raw_line
+            line_text = _quarter_line(selected_line, signed=item["market"] == "HDC")
             title = "預備提示" if stage == "T-30" else "數據提示"
             message = "\n".join([
                 f"皇冠 {title}",
                 f"開賽：{kickoff.astimezone(HKT).strftime('%d/%m %H:%M')} HKT",
+                f"聯賽：{league}",
                 f"對賽：{watch.get('home') or ''} vs {watch.get('away') or ''}",
-                f"投注：{bet} @{odds:.2f}",
-                f"選項：{role or '—'} · 實際盤口 {raw_line:g} · 實際賠率 {odds:.2f}",
-                f"主條件：{primary['label']}",
+                f"投注：{market_label}",
+                f"選擇：{role or '—'}",
+                f"盤口：{line_text}",
+                f"賠率：{odds:.2f}",
+                f"主條件：{_public_condition_text(primary['label'])}",
                 f"命中率：{total['accuracy'] * 100:.1f}%（{total['hits']}/{total['decided']}）· {primary['odds_tier']} · {primary['badge']}",
                 *[
-                    f"＋ {extra['label']}：{extra['total']['accuracy'] * 100:.1f}%（{extra['total']['hits']}/{extra['total']['decided']}）"
+                    f"＋ {_public_condition_text(extra['label'])}：{extra['total']['accuracy'] * 100:.1f}%（{extra['total']['hits']}/{extra['total']['decided']}）"
                     for extra in extras
                 ],
                 "只作數據提示，由你自行決定。",

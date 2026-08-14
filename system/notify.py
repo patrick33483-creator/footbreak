@@ -9,6 +9,7 @@ import html
 import json
 import math
 import os
+import re
 import subprocess
 import sys
 import urllib.error
@@ -34,10 +35,23 @@ SOURCE_ID = "telegram_bot_api__pipedream"
 TOOL = "telegram_bot_api-send-text-message-or-reply"
 
 DEFAULT_WINDOW_MIN = 45.0          # 只通知近期建立嘅注單,避免補發舊注
+MARKET_LABELS = {"HDC": "讓球", "HIL": "入球大細", "CHL": "角球大細"}
 
 SIDE_TXT = {"H": "主", "A": "客", "D": "和"}
 RESULT_TXT = {"Won": "贏 ✅", "Lost": "輸 ❌", "Refunded": "走水 ➖",
               "Half Won": "半贏 ✅", "Half Lost": "半輸 ❌"}
+
+
+def _public_condition_text(value):
+    """Keep internal codes and legacy abstract paths out of public copy."""
+    text = str(value or "")
+    for code, label in MARKET_LABELS.items():
+        text = re.sub(rf"\b{code}\b", label, text)
+    # New descriptors preserve observed Chinese roles (for example
+    # 主讓→客受讓→主讓).  An old A/B/C-only artifact has lost that semantic
+    # mapping, so never invent one: state the historical-label limitation
+    # without leaking unexplained tokens.
+    return re.sub(r"\b[ABC](?:→[ABC])+\b", "方向曾變化（舊紀錄未保留角色）", text)
 
 
 # ─────────────────────────── 狀態 ───────────────────────────
@@ -256,9 +270,9 @@ def _granular_bet(selected, watch):
             pass
         return f"讓球 {team} {line} @{odds:.2f}"
     if code == "HIL":
-        return f"入球 {'大' if side == 'H' else '細'} {line} @{odds:.2f}"
+        return f"入球大細 {'大' if side == 'H' else '細'} {line} @{odds:.2f}"
     if code == "CHL":
-        return f"角球 {'大' if side == 'H' else '細'} {line} @{odds:.2f}"
+        return f"角球大細 {'大' if side == 'H' else '細'} {line} @{odds:.2f}"
     return None
 
 
@@ -289,16 +303,22 @@ def notify_fresh_granular_conditions(ledger, fresh_events):
         key = f"footbreak|{item['fixture']}|{item['market']}|{stage}|granular-v1"
         if key in sent_keys:
             continue
+        league = str(watch.get("league") or "").strip()
+        if not league:
+            continue
         primary, extra = item["matches"][0], item["matches"][1:4]
         try:
             raw_line = float(selected.get("line", selected.get("condition")))
         except (TypeError, ValueError):
             continue
         role = _role(item["market"], selected.get("side"), raw_line)
+        market_label = MARKET_LABELS.get(item["market"], "未分類市場")
+        selected_line = -raw_line if item["market"] == "HDC" and selected.get("side") == "A" else raw_line
+        selected_line_text = f"{selected_line:g}"
         summary = primary["total"]
         more = [
             "＋ %s：%.1f%%（%s/%s）" % (
-                esc(match["label"]),
+                esc(_public_condition_text(match["label"])),
                 100 * match["total"]["accuracy"],
                 match["total"]["hits"],
                 match["total"]["decided"],
@@ -309,10 +329,13 @@ def notify_fresh_granular_conditions(ledger, fresh_events):
         text = "\n".join([
             f"足破 {title}",
             f"開賽：{kickoff.astimezone(HKT).strftime('%d/%m %H:%M')} HKT",
+            f"聯賽：{esc(league)}",
             f"對賽：{esc(watch.get('home') or '')} vs {esc(watch.get('away') or '')}",
-            f"投注：{esc(bet)}",
-            f"選項：{esc(role or '—')} · 實際盤口 {esc(selected.get('line', selected.get('condition')))} · 實際賠率 {float(selected['odds']):.2f}",
-            f"主條件：{esc(primary['label'])}",
+            f"投注：{esc(market_label)}",
+            f"選擇：{esc(role or '—')}",
+            f"盤口：{esc(selected_line_text)}",
+            f"賠率：{float(selected['odds']):.2f}",
+            f"主條件：{esc(_public_condition_text(primary['label']))}",
             f"命中率：{100 * summary['accuracy']:.1f}%（{summary['hits']}/{summary['decided']}）· {esc(primary['odds_tier'])} · {esc(primary['badge'])}",
             *more,
             "只作數據提示，由你自行決定。",

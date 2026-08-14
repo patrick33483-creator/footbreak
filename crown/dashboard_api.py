@@ -51,9 +51,6 @@ def perform_settlement(config: Settings) -> dict[str, Any]:
         "ok": True,
         "settled_count": int(result.get("settled") or 0),
         "pending_count": int(result.get("pending") or 0),
-        "shadow_settled_count": int(result.get("shadow_settled") or 0),
-        "shadow_pending_count": int(result.get("shadow_pending") or 0),
-        "shadow_voided_count": int(result.get("shadow_voided") or 0),
         "persisted": True,
         "project_submitted": True,
         "data": data,
@@ -61,27 +58,6 @@ def perform_settlement(config: Settings) -> dict[str, Any]:
     response["prediction_result_sync"] = history.get("result_sync") or {}
     return response
 
-
-def perform_handicap_world_settlement(config: Settings) -> dict[str, Any]:
-    """Settle only the isolated record-only Handicap World portfolio."""
-    with state_lock(config):
-        result = settle_due(config, handicap_world_only=True)
-    write_dashboard_data(config)
-    data = read_published_data(config)
-    return {
-        "ok": True,
-        "settled_count": 0,
-        "pending_count": 0,
-        "shadow_settled_count": 0,
-        "shadow_pending_count": 0,
-        "handicap_world_settled_count": int(result.get("handicap_world_settled") or 0),
-        "handicap_world_voided_count": int(result.get("handicap_world_voided") or 0),
-        "handicap_world_pending_count": int(result.get("handicap_world_pending") or 0),
-        "persisted": True,
-        "project_submitted": True,
-        "data": data,
-        "portfolio": "handicap_world",
-    }
 
 
 class CrownDashboardHandler(BaseHTTPRequestHandler):
@@ -124,7 +100,7 @@ class CrownDashboardHandler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.NOT_FOUND, {"ok": False, "error": "not_found"})
             return
         action = self.headers.get("X-Crown-Action")
-        if action not in {"settle-simulation", "settle-handicap-world"}:
+        if action != "settle-simulation":
             self._json(HTTPStatus.FORBIDDEN, {"ok": False, "error": "action_not_allowed"})
             return
         try:
@@ -139,21 +115,12 @@ class CrownDashboardHandler(BaseHTTPRequestHandler):
         except (json.JSONDecodeError, UnicodeDecodeError):
             self._json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": "invalid_json"})
             return
-        expected_payload = (
-            {"confirm": "handicap-world-only"}
-            if action == "settle-handicap-world"
-            else {"confirm": "simulation-only"}
-        )
+        expected_payload = {"confirm": "simulation-only"}
         if payload != expected_payload:
             self._json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": "confirmation_required"})
             return
         try:
-            operation = (
-                perform_handicap_world_settlement
-                if action == "settle-handicap-world"
-                else perform_settlement
-            )
-            self._json(HTTPStatus.OK, operation(self.config))
+            self._json(HTTPStatus.OK, perform_settlement(self.config))
         except Exception as exc:
             # Return only a stable error class.  Upstream responses and
             # credentials must never reach the browser or logs.

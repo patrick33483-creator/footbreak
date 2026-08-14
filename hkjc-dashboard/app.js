@@ -20,6 +20,21 @@ const STAGE_DESC = {
 };
 const VD_CLS = { '落注': 'v-go', '傾向': 'v-lean', '偏向': 'v-soft', '觀望': 'v-wait', '無傾向': 'v-none' };
 const MKT = { HDC: '讓球', HIL: '入球大細', CHL: '角球大細', HAD: '主客和' };
+const marketLabel = (value) => {
+  const raw = String(value ?? '').trim();
+  const code = raw.toUpperCase();
+  if (MKT[code]) return MKT[code];
+  if (raw === 'HKJC角球大細' || raw === '皇冠角球大細') return MKT.CHL;
+  if (raw === '皇冠讓球') return MKT.HDC;
+  return raw || '—';
+};
+// Accept old persisted labels without exposing canonical codes or abstract
+// direction-path tokens in the public dashboard.
+const publicText = (value) => String(value ?? '')
+  .replace(/\bHDC\b/g, '讓球')
+  .replace(/\bHIL\b/g, '入球大細')
+  .replace(/\bCHL\b/g, '角球大細')
+  .replace(/\b[ABC](?:→[ABC])+\b/g, '方向變化');
 const ODDS_SOURCE_LABEL = {
   'titan007-crown-id-3': '皇冠盤（Titan007）',
   'hkjc-current-board': '馬會即時盤',
@@ -794,7 +809,7 @@ function candCard(m) {
     <div class="tbl-wrap"><table class="t">
       <tr><th>市場</th><th>投注</th><th>馬會</th><th>公平價</th><th>勝率</th><th>走水</th><th>EV</th><th>凱利</th><th></th></tr>
       ${C.map((c) => `<tr class="${isPick(c) ? 'pickrow' : ''}">
-        <td class="lbl">${esc(c.market)}</td><td>${esc(c.label)}</td>
+        <td class="lbl">${esc(marketLabel(c.market || c.code))}</td><td>${esc(publicText(c.label))}</td>
         <td>${f2(c.odds)}</td><td class="dim">${f2(c.fair)}</td>
         <td>${pc(c.prob)}</td><td class="${c.push > 1e-6 ? 't-push' : 't-dim'}">${c.push > 1e-6 ? pc(c.push) : '—'}</td>
         <td class="${c.ev > 0 ? 'ev-p' : 'ev-n'}">${sg(c.ev * 100, 2)}%</td>
@@ -1055,7 +1070,7 @@ function historyMarkets(r) {
       ? `<span class="history-market-outcome">${badge}${actual}</span>`
       : badge;
     return `<div class="history-market-row">
-      <span class="history-market-pick"><b>${HIST_MARKET_LABEL[p.code] || esc(p.code)}</b>
+      <span class="history-market-pick"><b>${marketLabel(HIST_MARKET_LABEL[p.code] || p.code)}</b>
         ${esc(historyPredictionLabel(r, p))}
         <span class="cell-sub history-market-meta">${pc(p.probability, 1)} ${historyOdds(p)}</span>
       </span>
@@ -1140,7 +1155,7 @@ function legacyHistoryConsensusCards(stats) {
         <span class="consensus-rank-number">#${index + 1}</span>
         <span class="consensus-sample ${qualified ? 'enough' : ''}">${qualified ? '樣本達標' : '只作觀察'}</span>
       </div>
-      <b>${esc(item.market_label || item.market)} · ${esc(item.condition_label || '')}</b>
+      <b>${esc(marketLabel(item.market_label || item.market))} · ${esc(publicText(item.condition_label || ''))}</b>
       <div class="consensus-rank-rate">${pc(item.accuracy, 1)}</div>
       <small>≥1.70 命中 ${item.hits || 0}/${item.decided || 0} · 合資格 ${item.fixtures || 0} 場</small>
       ${oddsLine}
@@ -1169,7 +1184,7 @@ function legacyHistoryConsensusCards(stats) {
         ? '待累積'
         : `${pc(low.accuracy, 1)} (${low.hits || 0}/${low.decided || 0})`;
       return `<div class="consensus-split-row">
-        <b>${esc(item.label || item.key || '未分類')}</b>
+        <b>${esc(publicText(item.label || item.key || '未分類'))}</b>
         <span>≥1.70 ${result}<br>&lt;1.70 ${lowResult}</span>
       </div>`;
     }).join('');
@@ -1220,7 +1235,7 @@ function legacyHistoryConsensusCards(stats) {
       const split = (market.breakdown || []).map((item) => {
         const itemTiers = item.tiers || {};
         return `<div class="consensus-split-row">
-          <b>${esc(item.label || item.key || '未分類')}</b>
+          <b>${esc(publicText(item.label || item.key || '未分類'))}</b>
           <span>≥1.70 ${transitionTier(itemTiers.at_or_above_1_70)}<br>&lt;1.70 ${transitionTier(itemTiers.below_1_70)}</span>
         </div>`;
       }).join('');
@@ -1230,15 +1245,15 @@ function legacyHistoryConsensusCards(stats) {
           <span>整體 ≥1.70 ${transitionTier(tiers.at_or_above_1_70)}</span>
           <span>整體 &lt;1.70 ${transitionTier(tiers.below_1_70)}</span>
         </div>
-        <div class="consensus-split" aria-label="${HIST_MARKET_LABEL[code]}${esc(condition.label || fallback)}拆分">
+        <div class="consensus-split" aria-label="${HIST_MARKET_LABEL[code]}${esc(publicText(condition.label || fallback))}拆分">
           <div class="consensus-split-title">分類拆分</div>${split}
         </div>
       </article>`;
     }).join('');
-    return `<section class="transition-condition" aria-label="${esc(condition.label || fallback)}">
+    return `<section class="transition-condition" aria-label="${esc(publicText(condition.label || fallback))}">
       <div class="transition-condition-head">
-        <b>${esc(condition.label || fallback)}</b>
-        <span>${esc(condition.definition || '')}</span>
+        <b>${esc(publicText(condition.label || fallback))}</b>
+        <span>${esc(publicText(condition.definition || ''))}</span>
       </div>
       <div class="consensus-grid transition-grid">${transitionCards}</div>
     </section>`;
@@ -1269,7 +1284,7 @@ function historyConsensusCards(stats) {
     const lift = item.holdout_lift == null ? '—' : `${item.holdout_lift >= 0 ? '+' : ''}${pc(item.holdout_lift, 1)}`;
     return `<article class="granular-rank-card">
       <div class="granular-rank-head"><span>#${index + 1}</span><span class="granular-badge">${esc(item.badge || '觀察')}</span></div>
-      <b>${esc(item.label || '')}</b>
+      <b>${esc(publicText(item.label || ''))}</b>
       <div class="granular-rate">${pc(total.accuracy, 1)}</div>
       <small>命中 ${total.hits || 0}/${total.decided || 0} · Wilson 95% ${ci.length ? `${pc(ci[0], 1)}–${pc(ci[1], 1)}` : '—'}</small>
       <small>${esc(item.odds_tier || '—')} · 驗證 ${holdout.hits || 0}/${holdout.decided || 0} · lift ${lift}</small>
@@ -1288,7 +1303,7 @@ function conditionMatchesCard(m) {
   return `<section class="card condition-match-card"><h2 class="card-h">條件觀察 <span class="sub">已保存 ${esc(m.stage || '')} 資料</span></h2>
     <div class="condition-match-list">${matches.map((item) => {
       const total = item.total || {};
-      return `<div class="condition-match"><b>${esc(item.label || '')}</b><span>${pc(total.accuracy, 1)} (${total.hits || 0}/${total.decided || 0}) · ${esc(item.odds_tier || '')} · ${esc(item.badge || '')}</span></div>`;
+      return `<div class="condition-match"><b>${esc(publicText(item.label || ''))}</b><span>${pc(total.accuracy, 1)} (${total.hits || 0}/${total.decided || 0}) · ${esc(item.odds_tier || '')} · ${esc(item.badge || '')}</span></div>`;
     }).join('')}</div></section>`;
 }
 
@@ -1567,8 +1582,8 @@ function betRow(b, i, prefix = 'official') {
     <td class="exp">${H.length ? '▸' : ''}</td>
     <td class="mono nowrap">${hkDay(b.kickoff)} ${hkClock(b.kickoff)}</td>
     <td>${esc(b.home)} <span class="dim">v</span> ${esc(b.away)}<div class="cell-sub">${esc(b.league)}</div></td>
-    <td class="lbl">${esc(b.market)}</td>
-    <td><b>${esc(b.label.replace(b.market, '').trim())}</b></td>
+    <td class="lbl">${esc(marketLabel(b.market || b.code))}</td>
+    <td><b>${esc(publicText(b.label.replace(b.market, '').trim()))}</b></td>
     <td>${f2(b.odds)}</td>
     <td class="stk">${money(b.stake)}</td>
     <td>${pc(b.model_prob)}</td>
@@ -1591,13 +1606,13 @@ function betRow(b, i, prefix = 'official') {
             <span class="tl-ts mono">${hkStamp(x.ts)}</span></div>
           <div class="tl-d">
             ${x.from ? `<span class="tl-kv">由 <b>${esc(x.from)}</b> → <b>${esc(x.to)}</b></span>` : ''}
-            ${x.label && !x.from ? `<span class="tl-kv">${esc(x.label)}</span>` : ''}
+            ${x.label && !x.from ? `<span class="tl-kv">${esc(publicText(x.label))}</span>` : ''}
             ${x.odds ? `<span class="tl-kv">賠率 <b>${f2(x.odds)}</b></span>` : ''}
             ${x.add ? `<span class="tl-kv">加 <b>${money(x.add)}</b> → ${money(x.stake)}</span>`
                     : x.stake ? `<span class="tl-kv">注碼 <b>${money(x.stake)}</b></span>` : ''}
             ${x.ev != null ? `<span class="tl-kv">EV <b class="${x.ev > 0 ? 'ev-p' : 'ev-n'}">${sg(x.ev * 100, 2)}%</b></span>` : ''}
             ${x.conviction != null ? `<span class="tl-kv">信念 <b class="${convClass(x.conviction)}">${f2(x.conviction)}</b></span>` : ''}
-            ${x.reason ? `<span class="tl-kv">${esc(x.reason)}</span>` : ''}
+            ${x.reason ? `<span class="tl-kv">${esc(publicText(x.reason))}</span>` : ''}
             ${x.result ? `<span class="tl-kv">判定 <b class="${RES_CLS[x.result] || ''}">${RES_LBL[x.result] || x.result}</b></span>` : ''}
             ${x.pnl != null ? `<span class="tl-kv">盈虧 <b class="${x.pnl > 0 ? 'ev-p' : x.pnl < 0 ? 'ev-n' : 'dim'}">${money(x.pnl)}</b></span>` : ''}
             ${x.score ? `<span class="tl-kv">比分 <b class="mono">${esc(x.score.goals)}</b>${x.score.corners ? ` · 角球 <b class="mono">${esc(x.score.corners)}</b>(${x.score.corners_total})` : ''}</span>` : ''}
@@ -1824,7 +1839,7 @@ const HEALTH_ISSUE_LABEL = {
   invalid_stage_rows: '階段值不合法',
   malformed_market_prediction_rows: '格式錯誤的市場預測列',
   stage_rows_without_market_predictions: '冇市場預測的階段列',
-  unsupported_market_rows: '非 HDC／HIL／CHL 市場列',
+  unsupported_market_rows: '非讓球／入球大細／角球大細市場列',
   stale_unresolved_results: '過寬限期仍然冇賽果',
   stale_missing_corner_results: '超過重試期仍然缺角球賽果',
   missing_corner_results: '缺角球賽果(仍在重試期)',
@@ -2016,7 +2031,7 @@ function healthKpiRow(payload) {
     ${healthKpi('階段列(只作參考)', healthInt(overall.stage_rows), '首預／T-30／T-5')}
     ${healthKpi('市場預測列(只作參考)', healthInt(overall.prediction_rows), '每場每階段每方向')}
     ${healthKpi('賽果覆蓋率', healthPct(result.coverage), `過寬限期 ${healthInt(result.settle_due_fixtures)} 場`, resultTone)}
-    ${healthKpi('角球賽果覆蓋率', healthPct(corner.coverage), `CHL 場次 ${healthInt(corner.corner_prediction_fixtures)}`, cornerTone)}
+    ${healthKpi('角球賽果覆蓋率', healthPct(corner.coverage), `角球大細場次 ${healthInt(corner.corner_prediction_fixtures)}`, cornerTone)}
     ${healthKpi('已評估獨立賽事(樣本量)', healthInt(baseline.unique_fixtures),
       `整體命中率 ${healthPct(baseline.accuracy)} · 由 ${healthInt(baseline.graded_rows)} 條已結算預測列相加`)}
     ${healthKpi('資料問題', healthInt(counts.total), `嚴重 ${healthInt(counts.high)} · 注意 ${healthInt(counts.warn)}`,
@@ -2102,6 +2117,14 @@ function healthCell(label, value, extraClass) {
   return `<span class="health-cell ${extraClass || ''}" data-label="${esc(label)}">${value}</span>`;
 }
 
+function healthPublicText(value) {
+  return String(value ?? '')
+    .replace(/\bHDC\b/g, '讓球')
+    .replace(/\bHIL\b/g, '入球大細')
+    .replace(/\bCHL\b/g, '角球大細')
+    .replace(/\b[ABC](?:→[ABC])+\b/g, '方向變化');
+}
+
 function healthSliceRow(item) {
   const insufficient = item.sample_status !== 'sufficient';
   const ci = Array.isArray(item.accuracy_ci95)
@@ -2109,7 +2132,7 @@ function healthSliceRow(item) {
     : '—';
   return `<div class="health-row ${insufficient ? 'is-small' : ''}"
       data-testid="row-health-slice-${esc(item.dimension)}-${esc(item.key)}">
-    ${healthCell('切面', `<b>${esc(item.label || item.key)}</b>${insufficient
+    ${healthCell('切面', `<b>${esc(healthPublicText(item.label || item.key))}</b>${insufficient
       ? '<span class="health-flag" data-testid="flag-health-small-sample">樣本不足</span>' : ''}`, 'health-cell-key')}
     ${healthCell('獨立賽事(樣本量)', healthInt(item.unique_fixtures))}
     ${healthCell('預測列(指標單位)', `${healthInt(item.graded_rows == null ? item.rows : item.graded_rows)}${
@@ -2163,6 +2186,12 @@ function healthSlicesSection(payload) {
 }
 
 function healthIssuesSection(payload) {
+  // This renderer is also exercised as a standalone module in the dashboard
+  // smoke test, so keep the user-facing market mapping local rather than
+  // relying on the page-level helper.
+  const healthMarketLabel = (market) => ({
+    HDC: '讓球', HIL: '入球大細', CHL: '角球大細',
+  })[market] || market;
   const marketFilter = HEALTH_FILTER.market;
   const issues = (Array.isArray(payload.issues) ? payload.issues : []).filter((issue) => {
     if (marketFilter === 'all') return true;
@@ -2182,7 +2211,7 @@ function healthIssuesSection(payload) {
         `<span class="health-chip bad">${HEALTH_MISSING_LABEL[field]} ${healthInt(missing[field])}</span>`)
       .join('') || '<span class="health-chip good">冇缺失欄位</span>';
     return `<div class="card health-card" data-testid="card-health-market-${market}">
-      <h2 class="card-h">${MKT[market] || market} <span class="sub">${market}</span></h2>
+      <h2 class="card-h">${healthMarketLabel(market)}</h2>
       <div class="health-grid">
         <div><span class="health-grid-lbl">獨立賽事</span><b class="mono">${healthInt(item.unique_fixtures)}</b></div>
         <div><span class="health-grid-lbl">階段列(參考)</span><b class="mono">${healthInt(item.stage_rows)}</b></div>
@@ -2241,7 +2270,7 @@ function healthRecommendationsSection(payload) {
     </div>`).join('')
     : `<div class="card" data-testid="state-health-no-rec"><div class="empty2">
         <b>暫時冇合資格建議</b><span>樣本少於 ${HEALTH_MIN_FIXTURES} 場獨立賽事的切面唔會用嚟做任何建議。</span></div></div>`;
-  return `<h2 class="health-section-h">HIL v4 診斷建議 <span class="sub">只係診斷,唔係模型</span></h2>
+  return `<h2 class="health-section-h">入球大細 v4 診斷建議 <span class="sub">只係診斷,唔係模型</span></h2>
     <div class="card health-card health-rec-note" data-testid="note-health-hil-v4">
       <b>唔會自動套用、唔會重訓</b>
       <span>呢節只指出缺失特徵族同穩定表現最弱嘅切面,供人手判斷。
@@ -2252,7 +2281,7 @@ function healthRecommendationsSection(payload) {
       自動套用:<b class="bad-txt">否</b>。</span>
     </div>
     <div class="card health-card" data-testid="card-health-families">
-      <h2 class="card-h">HIL 特徵族覆蓋率 <span class="sub">低覆蓋 = 資料缺口,唔等於原因</span></h2>
+      <h2 class="card-h">入球大細特徵族覆蓋率 <span class="sub">低覆蓋 = 資料缺口,唔等於原因</span></h2>
       <div class="health-table">${familyRows || '<div class="empty2">冇特徵族資料。</div>'}</div>
     </div>
     ${cards}`;
@@ -2399,7 +2428,7 @@ function renderCondition() {
     const age = conditionAge(payload.generated_at), stale = age != null && age > CONDITION_STALE_HOURS;
     const qualified = numeric(progress.decided_unique_fixtures) || 0, required = numeric(progress.required_unique_decided_fixtures) || 100;
     const pct = Math.min(100, qualified * 100 / required);
-    V.innerHTML = head + `<div class="shadow-note condition-note" data-testid="note-condition-isolation"><strong>只作報告 / 不自動套用</strong><span>完全隔離：唔會改機率、推介、正式／confidence-only 影子倉、注碼、Telegram 或模型升級。</span></div>
+    V.innerHTML = head + `<div class="shadow-note condition-note" data-testid="note-condition-isolation"><strong>只作報告 / 不自動套用</strong><span>完全隔離：唔會改機率、推介、模擬倉、注碼、Telegram 或模型升級。</span></div>
       <section class="card condition-card" data-testid="card-shadow-condition-${CONDITION_SYSTEM}">
         <h2 class="card-h">${esc(report.condition || '')} <span class="chal-badge ${report.status === 'human_review_ready' ? 'go' : 'wait'}" data-testid="status-shadow-condition">${report.status === 'human_review_ready' ? '可供人手覆核' : '收集中／樣本不足'}</span></h2>
         <p class="condition-copy">${esc(report.qualification || '')}；每場只算一次，並且只取凍結截點後開賽的不可變賽前列。已合資格 ${numeric(progress.qualified_unique_fixtures) || 0} 場；進度只計已判定場。</p>
@@ -2559,7 +2588,7 @@ function challengerMarketCard(market, test) {
   const name = MKT[market] || market;
   if (!challengerIsPlainObject(test)) {
     return `<div class="card chal-card" data-testid="card-challenger-${market}">
-      <h2 class="card-h">${name} <span class="sub">${market}</span></h2>
+      <h2 class="card-h">${name}</h2>
       <div class="empty2">今次報告冇呢個市場嘅結果。</div></div>`;
   }
   const status = String(test.status || '');
@@ -2620,7 +2649,7 @@ function challengerMarketCard(market, test) {
     <span>影子研究,唔影響現行預測</span></div>`;
 
   return `<div class="card chal-card ${reviewing ? 'is-review' : ''}" data-testid="card-challenger-${market}">
-    <h2 class="card-h">${name} <span class="sub">${market}</span>
+    <h2 class="card-h">${name}
       <span class="chal-badge ${label.cls}" data-testid="status-challenger-${market}">${esc(label.text)}</span></h2>
     ${body}</div>`;
 }

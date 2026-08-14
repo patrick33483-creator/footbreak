@@ -128,7 +128,7 @@ class DataHealthDashboardUiTests(unittest.TestCase):
             with self.subTest(dashboard=dashboard):
                 self.assertIn("完整率問題", app)
                 self.assertIn("錯誤分層", app)
-                self.assertIn("HIL v4 診斷建議", app)
+                self.assertIn("入球大細 v4 診斷建議", app)
                 self.assertIn("card-health-families", app)
                 self.assertIn("Wilson 95%", app)
                 self.assertIn("const HEALTH_MIN_FIXTURES = 30;", app)
@@ -179,8 +179,11 @@ class DataHealthDashboardUiTests(unittest.TestCase):
                 versions = re.findall(r'(?:styles\.css|app\.js)\?v=([\w.-]+)', index)
                 self.assertEqual(len(versions), 2)
                 self.assertEqual(len(set(versions)), 1, versions)
-                self.assertIn("data-health", versions[0])
-                self.assertIn("shadow-condition", versions[0])
+                if dashboard == "hkjc-dashboard":
+                    self.assertIn("data-health", versions[0])
+                    self.assertIn("shadow-condition", versions[0])
+                else:
+                    self.assertIn("condition-simulation", versions[0])
 
     def test_node_syntax_and_render_smoke(self) -> None:
         node = shutil.which("node")
