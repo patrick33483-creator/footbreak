@@ -86,6 +86,38 @@ def _stage_rows(watch: dict[str, Any]) -> list[dict[str, Any]]:
         row = {key: _text(source.get(key)) for key in STAGE_FIELDS}
         row["ts"] = _safe_timestamp(source.get("ts"))
         row["no_bet_reason"] = _reason(source.get("no_bet_reason"))
+        markets = [
+            item for item in (source.get("market_predictions") or [])
+            if isinstance(item, dict)
+        ]
+        valid_priced = 0
+        for market in markets:
+            try:
+                odds = float(market.get("odds"))
+                line = float(
+                    market.get("line")
+                    if market.get("line") is not None
+                    else market.get("condition")
+                )
+            except (TypeError, ValueError):
+                continue
+            if (
+                odds > 1
+                and line == line
+                and market.get("code") in {"HDC", "HIL", "CHL"}
+                and market.get("side") in {"H", "A", "L"}
+            ):
+                valid_priced += 1
+        rejection_reasons: dict[str, int] = {}
+        for rejection in source.get("market_prediction_rejections") or []:
+            if not isinstance(rejection, dict):
+                continue
+            reason = _reason(rejection.get("reason")) or "unspecified"
+            rejection_reasons[reason] = rejection_reasons.get(reason, 0) + 1
+        row["market_prediction_count"] = len(markets)
+        row["valid_priced_market_count"] = valid_priced
+        row["odds_status"] = _text(source.get("odds_status"))
+        row["rejection_reason_counts"] = rejection_reasons
         rows.append(row)
     order = {"首預": 1, "T-30": 2, "T-5": 3}
     return sorted(rows, key=lambda row: order[row["stage"]])
@@ -112,6 +144,7 @@ def _report_fixture(
     match_id: str,
     card: dict[str, Any],
     watch: dict[str, Any],
+    history_keys: set[tuple[str, str]],
     now: datetime,
 ) -> dict[str, Any] | None:
     source = dict(watch)
@@ -162,6 +195,10 @@ def _report_fixture(
         },
         "completed_stages": [stage for stage in ("首預", "T-30", "T-5") if stage in done],
         "stage_status": stages,
+        "history_projection": {
+            stage: (match_id, stage) in history_keys
+            for stage in ("首預", "T-30", "T-5")
+        },
         "latest_status": _text(card.get("status")),
         "latest_reason": _reason(card.get("no_bet_reason")),
         "first_look": {
@@ -195,14 +232,27 @@ def build_report(
     now = (now or datetime.now(HKT)).astimezone(HKT)
     raw_predictions, prediction_error = _load(state_dir / "predictions.json", [])
     raw_ledger, ledger_error = _load(state_dir / "ledger.json", {})
+    raw_history, history_error = _load(
+        state_dir / "prediction_history.json", {"rows": []}
+    )
     predictions = raw_predictions if isinstance(raw_predictions, list) else []
     watches = (raw_ledger.get("watch") or {}) if isinstance(raw_ledger, dict) else {}
     watches = watches if isinstance(watches, dict) else {}
+    history_rows = (
+        raw_history.get("rows") or [] if isinstance(raw_history, dict) else []
+    )
+    history_keys = {
+        (str(row.get("match_id") or ""), str(row.get("stage") or ""))
+        for row in history_rows
+        if isinstance(row, dict)
+    }
     current_after = now - timedelta(minutes=current_grace_minutes)
     future_before = now + timedelta(hours=future_hours)
     fixtures = []
     for match_id, values in _merged_fixtures(predictions, watches).items():
-        row = _report_fixture(match_id, values["card"], values["watch"], now)
+        row = _report_fixture(
+            match_id, values["card"], values["watch"], history_keys, now
+        )
         if row is None:
             continue
         kickoff = parse_time(row["fixture"]["kickoff_hkt"])
@@ -224,6 +274,9 @@ def build_report(
         "state": {
             "predictions": "available" if prediction_error is None else prediction_error,
             "ledger": "available" if ledger_error is None else ledger_error,
+            "prediction_history": (
+                "available" if history_error is None else history_error
+            ),
             "fixtures_observed": len(fixtures),
             "fixtures_emitted": min(len(fixtures), limit),
         },
