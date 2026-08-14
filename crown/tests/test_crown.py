@@ -2380,6 +2380,7 @@ class CrownSafetyTests(unittest.TestCase):
         self.assertNotIn("const pendingRows =", app)
         self.assertNotIn("const excludedRows =", app)
         self.assertIn("X-Crown-Action", app)
+        self.assertIn("credentials: 'same-origin'", app)
         self.assertIn("賽果核對完成，已更新到最新資料", app)
         self.assertIn("const FINISHED_MATCH_GRACE_MINUTES = 150", app)
         self.assertIn("LIST = displayableMatches(LIST)", app)

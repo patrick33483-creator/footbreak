@@ -166,6 +166,7 @@ async function refresh(silent) {
     if (!silent && API_BASE) {
       const response = await fetch(`${API_BASE}/settle`, {
         method: 'POST',
+        credentials: 'same-origin',
         cache: 'no-store',
         headers: {
           'Content-Type': 'application/json',
@@ -1304,6 +1305,8 @@ function bindHandicapWorldSettlementButton() {
     try {
       const r = await fetch(`${API_BASE}/settle`, {
         method: 'POST',
+        credentials: 'same-origin',
+        cache: 'no-store',
         headers: {
           'Content-Type': 'application/json',
           'X-Crown-Action': 'settle-handicap-world',
@@ -1311,6 +1314,9 @@ function bindHandicapWorldSettlementButton() {
         body: JSON.stringify({ confirm: 'handicap-world-only' }),
       });
       const result = await r.json().catch(() => ({}));
+      if (r.status === 401) {
+        throw new Error('登入憑證已失效，請重新整理頁面並重新登入一次');
+      }
       if (!r.ok || !result.ok) throw new Error(result.error || `HTTP ${r.status}`);
       applyData(result.data);
       const settled = result.handicap_world_settled_count || 0;
@@ -1391,6 +1397,8 @@ function bindSettlementButton(buttonId, rerender) {
     try {
       const r = await fetch(`${API_BASE}/settle`, {
         method: 'POST',
+        credentials: 'same-origin',
+        cache: 'no-store',
         headers: {
           'Content-Type': 'application/json',
           'X-Crown-Action': 'settle-simulation',
@@ -1398,6 +1406,9 @@ function bindSettlementButton(buttonId, rerender) {
         body: JSON.stringify({ confirm: 'simulation-only' }),
       });
       const result = await r.json().catch(() => ({}));
+      if (r.status === 401) {
+        throw new Error('登入憑證已失效，請重新整理頁面並重新登入一次');
+      }
       if (!r.ok || !result.ok) throw new Error(result.error || `HTTP ${r.status}`);
       applyData(result.data);
       const settled = result.settled_count || 0;

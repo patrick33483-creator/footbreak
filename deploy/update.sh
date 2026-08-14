@@ -242,17 +242,27 @@ if [ -f /etc/bash.bashrc ]; then
 fi
 footbreak_auth=/etc/nginx/.htpasswd-footbreak
 crown_auth=/etc/nginx/.htpasswd-crown
-if { [ ! -s "$footbreak_auth" ] || [ ! -f "$footbreak_auth" ]; } &&
-   { [ ! -s "$crown_auth" ] || [ ! -f "$crown_auth" ]; }; then
-  echo "ERROR: both required nginx password files are missing or empty" >&2
-  exit 1
-fi
-if [ ! -s "$footbreak_auth" ] || [ ! -f "$footbreak_auth" ]; then
-  install -o root -g www-data -m 0640 "$crown_auth" "$footbreak_auth"
-fi
-if [ ! -s "$crown_auth" ] || [ ! -f "$crown_auth" ]; then
-  install -o root -g www-data -m 0640 "$footbreak_auth" "$crown_auth"
-fi
+repair_auth_identity() {
+  auth_file="$1"
+  expected_user="$2"
+  password_backup="$3"
+  if [ -s "$auth_file" ] && grep -q "^${expected_user}:" "$auth_file"; then
+    return 0
+  fi
+  if [ ! -s "$password_backup" ]; then
+    echo "ERROR: $expected_user dashboard auth is missing or has the wrong account, and its private password backup is unavailable" >&2
+    return 1
+  fi
+  IFS= read -r dashboard_password < "$password_backup"
+  if [ -z "$dashboard_password" ]; then
+    echo "ERROR: $expected_user dashboard password backup is empty" >&2
+    return 1
+  fi
+  htpasswd -bc "$auth_file" "$expected_user" "$dashboard_password" >/dev/null
+  unset dashboard_password
+}
+repair_auth_identity "$footbreak_auth" footbreak /root/footbreak-dashboard-password.txt
+repair_auth_identity "$crown_auth" crown /root/crown-dashboard-password.txt
 for auth_file in /etc/nginx/.htpasswd-footbreak /etc/nginx/.htpasswd-crown; do
   chown root:www-data "$auth_file"
   chmod 0640 "$auth_file"

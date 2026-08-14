@@ -74,6 +74,21 @@ systemctl is-active --quiet footbreak-dashboard-api.service || {
   exit 1
 }
 echo "OK service footbreak-dashboard-api.service active"
+for auth_spec in \
+  /etc/nginx/.htpasswd-footbreak:footbreak \
+  /etc/nginx/.htpasswd-crown:crown; do
+  auth_file="${auth_spec%%:*}"
+  expected_user="${auth_spec##*:}"
+  if [ ! -s "$auth_file" ] || ! grep -q "^${expected_user}:" "$auth_file"; then
+    echo "FAIL dashboard auth identity $expected_user is missing from $auth_file" >&2
+    exit 1
+  fi
+  runuser -u www-data -- test -r "$auth_file" || {
+    echo "FAIL nginx worker cannot read dashboard auth file: $auth_file" >&2
+    exit 1
+  }
+  echo "OK dashboard auth identity $expected_user"
+done
 for app_js in /var/www/footbreak/app.js /var/www/crown/app.js; do
   grep -q 'historyCornerResult' "$app_js" || {
     echo "FAIL stale dashboard asset: $app_js has no corner-result display" >&2

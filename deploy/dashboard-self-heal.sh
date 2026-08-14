@@ -48,18 +48,25 @@ repair_auth_file() {
 repair_auth_pair() {
   local footbreak=/etc/nginx/.htpasswd-footbreak
   local crown=/etc/nginx/.htpasswd-crown
+  local auth_file expected_user password_backup dashboard_password
   chown root:root /etc /etc/nginx
   chmod 0755 /etc /etc/nginx
-  if { [ ! -s "$footbreak" ] || [ ! -f "$footbreak" ]; } &&
-     { [ ! -s "$crown" ] || [ ! -f "$crown" ]; }; then
-    return 1
-  fi
-  if [ ! -s "$footbreak" ] || [ ! -f "$footbreak" ]; then
-    install -o root -g www-data -m 0640 "$crown" "$footbreak"
-  fi
-  if [ ! -s "$crown" ] || [ ! -f "$crown" ]; then
-    install -o root -g www-data -m 0640 "$footbreak" "$crown"
-  fi
+  for auth_file in "$footbreak" "$crown"; do
+    if [ "$auth_file" = "$footbreak" ]; then
+      expected_user=footbreak
+      password_backup=/root/footbreak-dashboard-password.txt
+    else
+      expected_user=crown
+      password_backup=/root/crown-dashboard-password.txt
+    fi
+    if [ ! -s "$auth_file" ] || ! grep -q "^${expected_user}:" "$auth_file"; then
+      [ -s "$password_backup" ] || return 1
+      IFS= read -r dashboard_password < "$password_backup"
+      [ -n "$dashboard_password" ] || return 1
+      htpasswd -bc "$auth_file" "$expected_user" "$dashboard_password" >/dev/null
+      unset dashboard_password
+    fi
+  done
   repair_auth_file "$footbreak"
   repair_auth_file "$crown"
 }

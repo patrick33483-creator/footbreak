@@ -307,6 +307,8 @@ class HandicapWorldTests(unittest.TestCase):
         self.assertIn("function bindHandicapWorldSettlementButton()", app)
         self.assertIn("settle-handicap-world", app)
         self.assertIn("handicap-world-only", app)
+        self.assertIn("credentials: 'same-origin'", app)
+        self.assertIn("登入憑證已失效，請重新整理頁面並重新登入一次", app)
         self.assertIn("獨立勝率", app)
         self.assertIn("凱利未落注紀錄", app)
         self.assertIn("計算後沒有正期望值，凱利注碼為零", app)

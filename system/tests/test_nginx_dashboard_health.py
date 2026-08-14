@@ -18,8 +18,24 @@ class NginxDashboardHealthTests(unittest.TestCase):
         self.assertIn('chmod 0640 "$auth_file"', script)
         self.assertIn('runuser -u www-data -- test -r "$auth_file"', script)
         self.assertIn("chmod 0755 /etc /etc/nginx", script)
-        self.assertIn('install -o root -g www-data -m 0640 "$crown_auth"', script)
-        self.assertIn('install -o root -g www-data -m 0640 "$footbreak_auth"', script)
+        self.assertIn(
+            'repair_auth_identity "$footbreak_auth" footbreak '
+            "/root/footbreak-dashboard-password.txt",
+            script,
+        )
+        self.assertIn(
+            'repair_auth_identity "$crown_auth" crown '
+            "/root/crown-dashboard-password.txt",
+            script,
+        )
+        self.assertNotIn(
+            'install -o root -g www-data -m 0640 "$crown_auth" "$footbreak_auth"',
+            script,
+        )
+        self.assertNotIn(
+            'install -o root -g www-data -m 0640 "$footbreak_auth" "$crown_auth"',
+            script,
+        )
         self.assertIn('chown -R root:www-data "$WEB_ROOT"', script)
         self.assertIn('find "$WEB_ROOT" -type d -exec chmod 0755 {} +', script)
         self.assertIn('find "$WEB_ROOT" -type f -exec chmod 0644 {} +', script)
@@ -32,6 +48,33 @@ class NginxDashboardHealthTests(unittest.TestCase):
             self.assertIn("for dashboard in footbreak:8081 crown:8082", script)
             self.assertIn("--write-out '%{http_code}'", script)
             self.assertIn('[ "$status" != 401 ]', script)
+
+    def test_all_auth_recovery_paths_preserve_dashboard_identity(self):
+        paths = (
+            ROOT / "deploy" / "update.sh",
+            ROOT / "deploy" / "dashboard-self-heal.sh",
+            ROOT / ".github" / "workflows" / "dashboard-emergency-repair.yml",
+        )
+        for path in paths:
+            script = path.read_text(encoding="utf-8")
+            self.assertIn("/root/footbreak-dashboard-password.txt", script)
+            self.assertIn("/root/crown-dashboard-password.txt", script)
+            self.assertIn("htpasswd -bc", script)
+            self.assertNotIn(
+                'install -o root -g www-data -m 0640 "$crown" "$footbreak"',
+                script,
+            )
+            self.assertNotIn(
+                'install -o root -g www-data -m 0640 "$footbreak" "$crown"',
+                script,
+            )
+
+    def test_health_check_requires_the_expected_auth_accounts(self):
+        health = (ROOT / "deploy" / "health-check.sh").read_text(encoding="utf-8")
+
+        self.assertIn("/etc/nginx/.htpasswd-footbreak:footbreak", health)
+        self.assertIn("/etc/nginx/.htpasswd-crown:crown", health)
+        self.assertIn('grep -q "^${expected_user}:" "$auth_file"', health)
 
     def test_dashboard_data_health_check_retries_transient_timeouts(self):
         health = (ROOT / "deploy" / "health-check.sh").read_text(encoding="utf-8")
