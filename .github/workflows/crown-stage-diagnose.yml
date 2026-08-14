@@ -23,7 +23,7 @@ on:
         options: ["25", "50", "100"]
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   analyze:
@@ -68,6 +68,16 @@ jobs:
                   "fdr_qualified": system["fdr_qualified_candidates"],
               })
           PY
+
+      - name: 保存純聚合結果到隔離分析分支
+        run: |
+          set -euo pipefail
+          install -m 600 condition-mining.json analysis/condition-mining-result.json
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add analysis/condition-mining-result.json
+          git diff --cached --quiet || git commit -m "Record aggregate condition mining result"
+          git push origin HEAD:analysis-condition-20260814
 
       - uses: actions/upload-artifact@v4
         with:
