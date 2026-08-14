@@ -42,7 +42,24 @@ repair_auth_file() {
   [ -f "$path" ] && [ -s "$path" ] || return 1
   chown root:www-data "$path"
   chmod 0640 "$path"
-  sudo -u www-data test -r "$path"
+  runuser -u www-data -- test -r "$path"
+}
+
+repair_auth_pair() {
+  local footbreak=/etc/nginx/.htpasswd-footbreak
+  local crown=/etc/nginx/.htpasswd-crown
+  if { [ ! -s "$footbreak" ] || [ ! -f "$footbreak" ]; } &&
+     { [ ! -s "$crown" ] || [ ! -f "$crown" ]; }; then
+    return 1
+  fi
+  if [ ! -s "$footbreak" ] || [ ! -f "$footbreak" ]; then
+    install -o root -g www-data -m 0640 "$crown" "$footbreak"
+  fi
+  if [ ! -s "$crown" ] || [ ! -f "$crown" ]; then
+    install -o root -g www-data -m 0640 "$footbreak" "$crown"
+  fi
+  repair_auth_file "$footbreak"
+  repair_auth_file "$crown"
 }
 
 failed=0
@@ -67,8 +84,7 @@ if [ "$footbreak_status" != 401 ] || [ "$crown_status" != 401 ]; then
   log "Nginx dashboard check failed; repairing local permissions and reloading"
   repair_static_tree /var/www/footbreak || failed=1
   repair_static_tree /var/www/crown || failed=1
-  repair_auth_file /etc/nginx/.htpasswd-footbreak || failed=1
-  repair_auth_file /etc/nginx/.htpasswd-crown || failed=1
+  repair_auth_pair || failed=1
   if nginx -t; then
     systemctl reload nginx || systemctl restart nginx
   else

@@ -232,14 +232,23 @@ install -m 0644 "$APP_DIR/deploy/nginx-crown.conf" /etc/nginx/sites-available/cr
 # nginx workers run as www-data. A password rotation or restored file can
 # leave either Basic Auth file unreadable, which nginx reports as a plain 500
 # even while the private dashboard API sockets remain healthy.
+footbreak_auth=/etc/nginx/.htpasswd-footbreak
+crown_auth=/etc/nginx/.htpasswd-crown
+if { [ ! -s "$footbreak_auth" ] || [ ! -f "$footbreak_auth" ]; } &&
+   { [ ! -s "$crown_auth" ] || [ ! -f "$crown_auth" ]; }; then
+  echo "ERROR: both required nginx password files are missing or empty" >&2
+  exit 1
+fi
+if [ ! -s "$footbreak_auth" ] || [ ! -f "$footbreak_auth" ]; then
+  install -o root -g www-data -m 0640 "$crown_auth" "$footbreak_auth"
+fi
+if [ ! -s "$crown_auth" ] || [ ! -f "$crown_auth" ]; then
+  install -o root -g www-data -m 0640 "$footbreak_auth" "$crown_auth"
+fi
 for auth_file in /etc/nginx/.htpasswd-footbreak /etc/nginx/.htpasswd-crown; do
-  if [ ! -f "$auth_file" ] || [ ! -s "$auth_file" ]; then
-    echo "ERROR: required nginx password file is missing or empty: $auth_file" >&2
-    exit 1
-  fi
   chown root:www-data "$auth_file"
   chmod 0640 "$auth_file"
-  if ! sudo -u www-data test -r "$auth_file"; then
+  if ! runuser -u www-data -- test -r "$auth_file"; then
     echo "ERROR: nginx worker cannot read password file: $auth_file" >&2
     exit 1
   fi

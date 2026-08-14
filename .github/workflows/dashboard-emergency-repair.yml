@@ -30,11 +30,24 @@ jobs:
             "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
           set -euo pipefail
 
+          footbreak_auth=/etc/nginx/.htpasswd-footbreak
+          crown_auth=/etc/nginx/.htpasswd-crown
+          if { [ ! -s "$footbreak_auth" ] || [ ! -f "$footbreak_auth" ]; } &&
+             { [ ! -s "$crown_auth" ] || [ ! -f "$crown_auth" ]; }; then
+            echo "Both dashboard password files are unavailable" >&2
+            exit 1
+          fi
+          if [ ! -s "$footbreak_auth" ] || [ ! -f "$footbreak_auth" ]; then
+            install -o root -g www-data -m 0640 "$crown_auth" "$footbreak_auth"
+          fi
+          if [ ! -s "$crown_auth" ] || [ ! -f "$crown_auth" ]; then
+            install -o root -g www-data -m 0640 "$footbreak_auth" "$crown_auth"
+          fi
+
           for auth_file in /etc/nginx/.htpasswd-footbreak /etc/nginx/.htpasswd-crown; do
-            [ -f "$auth_file" ] && [ -s "$auth_file" ]
             chown root:www-data "$auth_file"
             chmod 0640 "$auth_file"
-            sudo -u www-data test -r "$auth_file"
+            runuser -u www-data -- test -r "$auth_file"
           done
 
           for root in /var/www/footbreak /var/www/crown; do
