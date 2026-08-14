@@ -332,7 +332,11 @@ function renderKpis() {
 function filtered() {
   return LIST.filter((m) => {
     if (STAGE === 'pick') { if (!m.pick) return false; }
-    else if (STAGE === '首預') { if (!(m.stages || []).some((x) => x.stage === '首預')) return false; }
+    else if (['首預', 'T-30', 'T-5'].includes(STAGE)) {
+      // 階段按鈕代表「已完成並保存該階段」，唔係目前倒數時間窗。
+      // 否則賽事一開波，明明已有 T-30/T-5 都會由相應清單消失。
+      if (!(m.stages || []).some((x) => x.stage === STAGE)) return false;
+    }
     else if (STAGE !== 'all' && stageOf(minsLeft(m.kickoff_hkt)) !== STAGE) return false;
     if (!Q) return true;
     return [m.home, m.away, m.league, m.home_en, m.away_en]

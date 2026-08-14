@@ -9,6 +9,15 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class PredictionHistoryUiTests(unittest.TestCase):
+    def test_crown_stage_filters_use_persisted_completion_not_countdown_window(self) -> None:
+        app = (ROOT / "crown" / "dashboard" / "app.js").read_text(encoding="utf-8")
+        self.assertIn("['首預', 'T-30', 'T-5'].includes(STAGE)", app)
+        self.assertIn("(x) => x.stage === STAGE", app)
+        self.assertNotIn(
+            "else if (STAGE === '首預') { if (!(m.stages || []).some((x) => x.stage === '首預')) return false; }",
+            app,
+        )
+
     def test_each_market_result_is_rendered_beside_its_prediction(self) -> None:
         app = (ROOT / "hkjc-dashboard" / "app.js").read_text(encoding="utf-8")
         css = (ROOT / "hkjc-dashboard" / "styles.css").read_text(encoding="utf-8")
