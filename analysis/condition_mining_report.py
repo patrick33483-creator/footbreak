@@ -304,6 +304,10 @@ def _candidate_definitions(sample: dict[str, Any]) -> list[tuple[str, str]]:
         definitions.append(("role", f"{prefix}｜{role}"))
     if line_bucket:
         definitions.append(("line_bucket", f"{prefix}｜{line_bucket}"))
+    if role and line_bucket:
+        definitions.append(
+            ("role_line_bucket", f"{prefix}｜{line_bucket}｜{role}")
+        )
     if probability:
         definitions.append(("probability", f"{prefix}｜模型概率 {probability}"))
 

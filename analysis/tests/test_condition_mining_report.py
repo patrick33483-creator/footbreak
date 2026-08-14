@@ -7,6 +7,34 @@ from analysis.condition_mining_report import build_report
 
 
 class ConditionMiningReportTests(unittest.TestCase):
+    def test_single_stage_crosses_handicap_role_with_line_bucket(self) -> None:
+        start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        rows = []
+        for index in range(40):
+            kickoff = (start + timedelta(days=index)).isoformat()
+            hit = index % 3 != 0
+            rows.append({
+                "match_id": f"fixture-{index}",
+                "kickoff": kickoff,
+                "predicted_at": kickoff,
+                "stage": "T-5",
+                "market_grades": [{
+                    "code": "HDC",
+                    "side": "H",
+                    "line": -0.5,
+                    "odds": 1.8,
+                    "grade_status": "GRADED",
+                    "hit": hit,
+                    "settlement": "Won" if hit else "Lost",
+                }],
+            })
+        payload = {"prediction_history": {"rows": rows}}
+        report = build_report(payload, payload)["systems"]["crown"]
+        conditions = {
+            row["condition"]: row for row in report["top_conditions"]
+        }
+        self.assertIn("T-5｜淺盤≤0.5｜主讓", conditions)
+
     def test_finds_supported_a_b_a_and_keeps_odds_tiers_separate(self) -> None:
         rows = []
         start = datetime(2026, 1, 1, tzinfo=timezone.utc)
