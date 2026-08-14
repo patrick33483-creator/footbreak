@@ -520,7 +520,7 @@ def mine(system: str, payload: dict[str, Any]) -> dict[str, Any]:
         # Keep a bounded but broad aggregate result so uncommon trajectory
         # families (for example A→B→A) are not crowded out by simpler parent
         # conditions.  No fixture-level rows are emitted.
-        "top_conditions": ranked[:100],
+        "top_conditions": ranked,
     }
 
 
