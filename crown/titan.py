@@ -291,40 +291,64 @@ class TitanClient:
         self.config = config
 
     @staticmethod
-    def _read(url: str, encoding: str = "gb18030") -> str:
+    def _read(
+        url: str,
+        encoding: str = "gb18030",
+        *,
+        timeout: float = 25,
+        attempts: int = 2,
+    ) -> str:
+        """Read a Titan endpoint with caller-selectable bounded retries.
+
+        Existing page/discovery callers retain the established 25-second,
+        two-attempt policy.  The deadline-bound Crown bulk path supplies a
+        narrower policy so a static-host TLS failure cannot consume a tick.
+        """
+        attempts = max(1, int(attempts))
         last_error: OSError | None = None
-        for attempt in range(2):
+        for attempt in range(attempts):
             is_vip_odds = "vip.titan007.com/" in url
             is_live_static = "livestatic.titan007.com/" in url
+            headers = {
+                # Titan's VIP odds host returns HTTP 442 to generic bot user
+                # agents.  These are ordinary browser navigation headers; no
+                # cookie, login, or anti-bot bypass is used.
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/127.0.0.0 Safari/537.36"
+                ),
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "zh-HK,zh;q=0.9,en;q=0.8",
+                "Cache-Control": "no-cache",
+                **(
+                    {"Referer": "https://live.titan007.com/index2in1.aspx?id=3"}
+                    if is_live_static
+                    else {"Referer": "http://bf.titan007.com/football/"}
+                    if is_vip_odds
+                    else {}
+                ),
+            }
+            if is_live_static:
+                # The static XML host intermittently closes default compressed
+                # keep-alive requests during TLS negotiation.  Keep this to
+                # benign browser-compatible request semantics, scoped only to
+                # that host, so VIP/page requests retain their old behavior.
+                headers.update({
+                    "Accept": "*/*",
+                    "Accept-Encoding": "identity",
+                    "Connection": "close",
+                })
             request = urllib.request.Request(
                 url,
-                headers={
-                    # Titan's VIP odds host returns HTTP 442 to generic bot
-                    # user agents.  These are ordinary browser navigation
-                    # headers; no cookie, login, or anti-bot bypass is used.
-                    "User-Agent": (
-                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                        "AppleWebKit/537.36 (KHTML, like Gecko) "
-                        "Chrome/127.0.0.0 Safari/537.36"
-                    ),
-                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                    "Accept-Language": "zh-HK,zh;q=0.9,en;q=0.8",
-                    "Cache-Control": "no-cache",
-                    **(
-                        {"Referer": "https://live.titan007.com/index2in1.aspx?id=3"}
-                        if is_live_static
-                        else {"Referer": "http://bf.titan007.com/football/"}
-                        if is_vip_odds
-                        else {}
-                    ),
-                },
+                headers=headers,
             )
             try:
-                with urllib.request.urlopen(request, timeout=25) as response:
+                with urllib.request.urlopen(request, timeout=timeout) as response:
                     return response.read().decode(encoding, errors="replace")
             except OSError as exc:
                 last_error = exc
-                if attempt < 1:
+                if attempt < attempts - 1:
                     time.sleep(1.5 * (attempt + 1))
         assert last_error is not None
         raise last_error
@@ -373,7 +397,9 @@ class TitanClient:
             return {}
         source = self._read(
             "https://livestatic.titan007.com/vbsxml/"
-            f"goal{self.config.titan_company_id}.xml?r=007{int(time.time() * 1000)}"
+            f"goal{self.config.titan_company_id}.xml?r=007{int(time.time() * 1000)}",
+            timeout=8,
+            attempts=1,
         )
         return parse_crown_bulk_prices(source, observed_at=time.time())
 

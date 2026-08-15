@@ -15,7 +15,7 @@ from stat import S_IMODE
 from dataclasses import replace
 from datetime import datetime, timedelta
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 from crown.config import settings
 from crown.dashboard_data import build, write_dashboard_data
@@ -1004,6 +1004,44 @@ class CrownSafetyTests(unittest.TestCase):
             [("HIL", "H"), ("HIL", "L")],
         )
         self.assertEqual(parse_crown_bulk_prices("<c><match><m>bad"), {})
+
+    def test_live_static_read_uses_compatibility_headers(self) -> None:
+        from crown.titan import TitanClient
+
+        response = Mock()
+        response.read.return_value = b"ok"
+        opener = MagicMock()
+        opener.return_value.__enter__.return_value = response
+        with patch("crown.titan.urllib.request.urlopen", opener):
+            self.assertEqual(TitanClient._read(
+                "https://livestatic.titan007.com/vbsxml/goal3.xml",
+                encoding="utf-8",
+            ), "ok")
+        request = opener.call_args.args[0]
+        headers = {
+            key.lower(): value
+            for key, value in request.header_items()
+        }
+        self.assertIn("mozilla/", headers["user-agent"].lower())
+        self.assertEqual(headers["accept"], "*/*")
+        self.assertEqual(headers["accept-encoding"], "identity")
+        self.assertEqual(headers["connection"], "close")
+        self.assertEqual(
+            headers["referer"],
+            "https://live.titan007.com/index2in1.aspx?id=3",
+        )
+        self.assertEqual(opener.call_args.kwargs["timeout"], 25)
+
+    def test_bulk_crown_request_uses_single_eight_second_attempt(self) -> None:
+        from crown.titan import TitanClient
+
+        client = TitanClient(replace(settings(), titan_company_id="3"))
+        with patch.object(client, "_read", return_value="<c><match /></c>") as read:
+            self.assertEqual(client.crown_bulk_price_snapshots(), {})
+        read.assert_called_once()
+        self.assertEqual(read.call_args.kwargs["timeout"], 8)
+        self.assertEqual(read.call_args.kwargs["attempts"], 1)
+        self.assertIn("livestatic.titan007.com/vbsxml/goal3.xml", read.call_args.args[0])
 
     def test_t5_bulk_snapshot_skips_optional_pinnapi_and_preserves_provenance(self) -> None:
         kickoff = self.now + timedelta(minutes=5)
