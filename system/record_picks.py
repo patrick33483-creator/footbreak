@@ -302,7 +302,7 @@ def sync(preds_file="predictions.json"):
     with open(os.path.join(HERE, preds_file), encoding="utf-8") as handle:
         predictions = json.load(handle)
     now = dt.datetime.now(HKT).isoformat(timespec="seconds")
-    changes, notes, fresh_bet_ids, fresh_t30_events = [], [], [], []
+    changes, notes, fresh_t30_events = [], [], []
 
     for result in predictions:
         match_id = str(result["match_id"])
@@ -381,7 +381,6 @@ def sync(preds_file="predictions.json"):
         ledger["condition_simulation_audit"] = audit_rows[-AUDIT_LIMIT:]
         if created:
             ledger["bets"].extend(created)
-            fresh_bet_ids.extend(str(bet["bet_id"]) for bet in created)
             changes.extend(_condition_change(bet) for bet in created)
 
     recompute(ledger)
@@ -393,21 +392,25 @@ def sync(preds_file="predictions.json"):
     ledger["log"] = ledger["log"][-LOG_LIMIT:]
     save(ledger)
 
-    # Alerts are intentionally post-commit. T-30 remains a preparation notice;
-    # T-5 sends only an actual newly created condition bet, so the same T-5
-    # opportunity is never duplicated by the generic condition notifier.
+    # Alerts are intentionally post-commit. T-30 remains a preparation notice.
+    # For T-5, scan the complete still-upcoming unsent condition portfolio on
+    # every tick. This is a durable outbox: if Telegram failed after a bet was
+    # saved, the next idempotent tick retries it even though no new bet is
+    # created on that replay.
     if fresh_t30_events:
         try:
             import notify
             notify.notify_fresh_granular_conditions(ledger, fresh_t30_events)
         except Exception as exc:
             notes.append(f"T-30 條件提示發送失敗（{type(exc).__name__}）；已保存預測。")
-    if fresh_bet_ids:
-        try:
-            import notify
-            notify.notify_new_condition_bets(ledger, fresh_bet_ids)
-        except Exception as exc:
-            notes.append(f"條件模擬注通知發送失敗（{type(exc).__name__}）；已保存模擬注。")
+    try:
+        import notify
+        notify.notify_pending_condition_bets(ledger)
+    except Exception as exc:
+        notes.append(
+            f"條件模擬注通知發送失敗（{type(exc).__name__}）；"
+            "已保存模擬注，下一輪會自動重試。"
+        )
     return changes, notes, ledger
 
 

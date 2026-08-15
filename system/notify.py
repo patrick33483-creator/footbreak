@@ -408,14 +408,22 @@ def _condition_bet_message(bet):
     ])
 
 
-def notify_new_condition_bets(ledger, bet_ids):
-    """Notify only actual, newly committed Footbreak condition simulation bets.
+def notify_pending_condition_bets(ledger, bet_ids=None):
+    """Send committed condition bets that have not yet been acknowledged.
 
-    Missing league information fails closed so an alert can never be emitted
-    without the required public fixture context.
+    ``bet_ids`` narrows the first attempt to newly-created bets.  Passing
+    ``None`` scans every still-upcoming active condition bet, which forms a
+    durable retry outbox: persistence and Telegram transport are deliberately
+    separate, and a transient transport failure must not make the alert vanish
+    just because the T-5 snapshot is idempotent on the next tick.
+
+    Missing or malformed public fixture information continues to fail closed.
     """
-    requested = {str(value) for value in bet_ids or [] if value}
-    if not requested:
+    requested = (
+        {str(value) for value in bet_ids or [] if value}
+        if bet_ids is not None else None
+    )
+    if requested is not None and not requested:
         return 0
     state = load_state()
     sent_ids = set(map(str, state.get("condition_simulation_bets") or []))
@@ -425,7 +433,7 @@ def notify_new_condition_bets(ledger, bet_ids):
         if not isinstance(bet, dict):
             continue
         bid = str(bet.get("bet_id") or "")
-        if bid not in requested or bid in sent_ids:
+        if (requested is not None and bid not in requested) or bid in sent_ids:
             continue
         text = _condition_bet_message(bet)
         if text is None:
@@ -438,6 +446,11 @@ def notify_new_condition_bets(ledger, bet_ids):
         save_state(state)
         sent += 1
     return sent
+
+
+def notify_new_condition_bets(ledger, bet_ids):
+    """Compatibility wrapper for the immediate first post-commit attempt."""
+    return notify_pending_condition_bets(ledger, bet_ids)
 
 
 def load_ledger():

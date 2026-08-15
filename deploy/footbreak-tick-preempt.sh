@@ -37,7 +37,9 @@ for watch in (ledger.get("watch") or {}).values():
         if isinstance(stage, dict)
     }
     t30_due = 5.0 < minutes <= 30.5 and "T-30" not in stages
-    t5_due = 0.0 < minutes <= 5.5 and "T-5" not in stages
+    # T-5 名稱保留，但操作窗口由開賽前 10 分鐘開始。立即搶佔慢任務，
+    # 唔好等到只剩 5 分鐘先啟動，否則 Telegram 到達時已無落注時間。
+    t5_due = 0.0 < minutes <= 10.5 and "T-5" not in stages
     if t30_due or t5_due:
         raise SystemExit(0)
 raise SystemExit(1)

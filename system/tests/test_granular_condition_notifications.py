@@ -139,7 +139,7 @@ class GranularConditionNotificationTests(unittest.TestCase):
     def test_t30_preparation_and_true_new_t5_dispatch_are_separate(self):
         source = (SYSTEM / "record_picks.py").read_text(encoding="utf-8")
         notifier = (SYSTEM / "notify.py").read_text(encoding="utf-8")
-        self.assertIn("notify_new_condition_bets", source)
+        self.assertIn("notify_pending_condition_bets(ledger)", source)
         self.assertIn("notify_fresh_granular_conditions(ledger, fresh_t30_events)", source)
         self.assertIn('if stage == "T-30":', source)
         self.assertNotIn(
@@ -184,6 +184,40 @@ class GranularConditionNotificationTests(unittest.TestCase):
             with patch.object(notify, "STATE", str(Path(directory, "state.json"))), patch.object(notify, "send") as sender:
                 self.assertEqual(notify.notify_new_condition_bets({"bets": [bet]}, [bet["bet_id"]]), 0)
             sender.assert_not_called()
+
+    def test_unsent_committed_bet_retries_after_transport_recovers(self):
+        kickoff = (datetime.now(HKT) + timedelta(minutes=8)).isoformat()
+        bet = {
+            "bet_id": "retry|HDC|T-5|granular-condition-v1",
+            "portfolio": "footbreak_condition_simulation",
+            "strategy": "granular-condition-v1",
+            "league": "瑞典超級聯賽",
+            "home": "米贊比",
+            "away": "天狼星",
+            "kickoff": kickoff,
+            "market_label": "讓球",
+            "selected_role": "主讓",
+            "selected_line": -0.25,
+            "odds": 1.82,
+            "condition_accuracy": .7,
+            "condition_hits": 14,
+            "condition_decided": 20,
+        }
+        ledger = {"bets": [bet]}
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory, "state.json")
+            with patch.object(notify, "STATE", str(state)), \
+                 patch.object(notify, "send", side_effect=RuntimeError("temporary outage")):
+                with self.assertRaisesRegex(RuntimeError, "temporary outage"):
+                    notify.notify_pending_condition_bets(ledger)
+            self.assertFalse(state.exists())
+
+            with patch.object(notify, "STATE", str(state)), patch.object(notify, "send") as sender:
+                self.assertEqual(notify.notify_pending_condition_bets(ledger), 1)
+                self.assertEqual(notify.notify_pending_condition_bets(ledger), 0)
+            sender.assert_called_once()
+            saved = json.loads(state.read_text(encoding="utf-8"))
+            self.assertIn(bet["bet_id"], saved["condition_simulation_bets"])
 
 
 if __name__ == "__main__":

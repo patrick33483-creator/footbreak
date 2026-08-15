@@ -4,7 +4,8 @@
 #   ./run_all.sh tick    —— 一條到期隊列，T-5 優先，再做 T-30
 #   ./run_all.sh t30     —— 舊相容入口，只做 T-30
 #   ./run_all.sh settle  —— 淨係結算
-# 只有新注單通知由 notify.py 負責,冪等(notify_state.json),重跑唔會重複發
+# 條件注單通知由 record_picks.py 保存後處理；未確認送達的未開賽注單會重試，
+# 已確認送達的 bet_id 由 notify_state.json 去重。
 set -euo pipefail
 cd "$(dirname "$0")"
 MODE="${1:-tick}"
@@ -23,11 +24,6 @@ if [ "$MODE" != "settle" ]; then
   echo "--- 寫入模擬倉 ---"
   python3 record_picks.py
 
-  # Telegram 只通知真正建立的模擬注單。
-  if [ "$MODE" = "tick" ]; then
-    echo "--- Telegram 落注通知 ---"
-    python3 notify.py || echo "!! 通知失敗(唔影響落注記錄)"
-  fi
 fi
 
 # 臨場 tick 必須保持輕量；結算與準繩度由獨立 timer 處理，唔可以

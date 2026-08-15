@@ -42,7 +42,7 @@ class SchedulerPreemptionTests(unittest.TestCase):
 
         helper = (ROOT / "deploy/footbreak-tick-preempt.sh").read_text(encoding="utf-8")
         self.assertIn('t30_due = 5.0 < minutes <= 30.5 and "T-30" not in stages', helper)
-        self.assertIn('t5_due = 0.0 < minutes <= 5.5 and "T-5" not in stages', helper)
+        self.assertIn('t5_due = 0.0 < minutes <= 10.5 and "T-5" not in stages', helper)
         self.assertIn("/usr/bin/systemctl stop footbreak-sweep.service footbreak-settle.service", helper)
 
     def test_slow_jobs_yield_when_t5_priority_marker_exists(self):
