@@ -308,7 +308,7 @@ jobs:
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
         run: |
           set -euo pipefail
-          ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=20 "$DEPLOY_USER@$DEPLOY_HOST" 'sudo /opt/footbreak/.venv/bin/python3 /opt/footbreak/analysis/odds_recovery.py \
+          ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=20 "$DEPLOY_USER@$DEPLOY_HOST" 'sudo /opt/footbreak/.venv/bin/python3 -s -- \
             --provider-audit \
             --provider titan \
             --provider-rate 1 \
@@ -330,7 +330,8 @@ jobs:
             --allow footbreak=/opt/footbreak/system/sim_ledger.json \
             --allow crown=/var/lib/footbreak/crown/prediction_history.json \
             --allow crown=/var/lib/footbreak/crown/ledger.json \
-            --allow crown=/var/lib/footbreak/crown/source_snapshots' > historical-odds-recovery-provider.json
+            --allow crown=/var/lib/footbreak/crown/source_snapshots' \
+            < analysis/odds_recovery.py > historical-odds-recovery-provider.json
           printf '%s\n' '{}' > historical-odds-recovery-provider-warm.json
           python3 - <<'PY'
           import json
