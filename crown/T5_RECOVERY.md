@@ -18,12 +18,29 @@ For every carried-forward selected market it uses this evidence ladder:
 2. only if unavailable, the final valid quote before kickoff, labelled
    `closing_substitution`.
 
-If a native `T-5` stage already exists, the tool skips it. If no native T-5
-model stage exists, it copies only the latest valid pre-kickoff saved stage
-payload into `T-5（事後回補）`. This is a visible `POST-HOC / BACKFILLED` audit
-record, never a native T-5 prediction. It is excluded from Telegram,
-simulations, learning, settlement/grade processing, hit-rate/ranking/consensus
-statistics, and primary market statistics.
+If a native `T-5` stage already exists, the tool skips it and never overwrites
+that stage. Recovery has two separately counted, visible `POST-HOC /
+BACKFILLED` audit-only modes:
+
+1. **Saved T-5 model-payload recovery.** It uses only an explicit,
+   pre-kickoff `t5_model_payload` saved on the watch or a saved stage.
+2. **`last_pre_t5_prediction_carry_forward`.** Only when no valid saved T-5
+   payload is present, it carries the last valid native `T-30` direction,
+   market, numeric line, and side forward; if there is no valid T-30, it may
+   use the last valid native first-look (`首預`). It never calls that carried
+   prediction an actual T-5 prediction.
+
+For carry-forward, the candidate must still pair with an exact same-fixture,
+Crown company-ID-3 HDC/HIL quote with the same market, numeric line, and side.
+The quote is labelled as exact T-5, T-5 LOCF, or `closing_substitution`; the
+record prominently marks both the prediction-stage substitution and any
+closing-odds substitution. An opposite side, another line, another fixture,
+or a post-kickoff prediction/quote fails closed.
+
+Both modes are excluded from Telegram, simulations, learning,
+settlement/grade processing, hit-rate/ranking/consensus statistics, and
+primary market statistics. The aggregate audit reports saved-payload recovery,
+carry-forward recovery, and unresolved reasons separately.
 
 ## Local use
 

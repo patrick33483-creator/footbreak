@@ -31,6 +31,8 @@ CROWN_COMPANY_ID = "3"
 SUPPORTED_MARKETS = {"HDC": {"H", "A"}, "HIL": {"H", "L"}}
 T5_TARGET_OFFSET = timedelta(minutes=5)
 T5_EXACT_WINDOW = timedelta(seconds=60)
+NATIVE_PAYLOAD_RECOVERY = "native_payload_recovery"
+CARRY_FORWARD_RECOVERY = "last_pre_t5_prediction_carry_forward"
 
 
 def _strict_time(value: Any) -> datetime | None:
@@ -147,24 +149,99 @@ def _already_recovered(stages: list[dict[str, Any]]) -> bool:
     return any(str(stage.get("stage") or "") == RECOVERED_T5_STAGE for stage in stages)
 
 
-def _source_stage(stages: list[dict[str, Any]], kickoff: datetime) -> tuple[dict[str, Any] | None, str | None]:
-    valid: list[tuple[datetime, dict[str, Any]]] = []
-    saw_prior = False
+def _saved_t5_model_payload(
+    watch: dict[str, Any], stages: list[dict[str, Any]], kickoff: datetime,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Return only an explicitly saved, pre-kickoff T-5 model payload.
+
+    A payload is intentionally separate from a native ``T-5`` ledger stage:
+    the latter blocks recovery outright so an existing native decision is
+    never overwritten.  Historical state can retain the pre-write payload on
+    either the watch or a saved stage; both locations use the same strict
+    timestamp and Crown-selection gates.
+    """
+    payloads: list[dict[str, Any]] = []
+    direct = watch.get("t5_model_payload")
+    if isinstance(direct, dict):
+        payloads.append(direct)
     for stage in stages:
-        if not isinstance(stage, dict) or str(stage.get("stage") or "") in {"T-5", RECOVERED_T5_STAGE}:
+        payload = stage.get("t5_model_payload")
+        if isinstance(payload, dict):
+            payloads.append(payload)
+    valid: list[tuple[datetime, dict[str, Any]]] = []
+    saw_payload = False
+    for payload in payloads:
+        saw_payload = True
+        at = _stage_time(payload)
+        if at is None or at >= kickoff:
+            continue
+        if any(
+            _candidate_key(row) is not None and _is_crown_company_three(row)
+            for row in _candidate_rows(payload)
+        ):
+            source = copy.deepcopy(payload)
+            source["stage"] = "saved T-5 model payload"
+            valid.append((at, source))
+    if not valid:
+        return None, "no_valid_saved_t5_model_payload" if saw_payload else "no_saved_t5_model_payload"
+    return max(valid, key=lambda pair: pair[0])[1], None
+
+
+def _carry_forward_source_stage(
+    stages: list[dict[str, Any]], kickoff: datetime,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Prefer the last valid native T-30 prediction, then first-look.
+
+    This deliberately has no "latest arbitrary stage" fallback.  Carrying a
+    prediction forward is already a post-hoc substitution, so the recovery
+    policy is narrow, explicit, and stable: T-30 wins over 首預 even if the
+    older first-look happens to have been persisted later.
+    """
+    by_stage: dict[str, list[tuple[datetime, dict[str, Any]]]] = {"T-30": [], "首預": []}
+    for stage in stages:
+        if (
+            not isinstance(stage, dict)
+            or stage.get("post_hoc_backfill")
+            or str(stage.get("stage") or "") not in by_stage
+        ):
             continue
         at = _stage_time(stage)
         if at is None or at >= kickoff:
             continue
-        saw_prior = True
-        if any(_candidate_key(row) is not None and _is_crown_company_three(row) for row in _candidate_rows(stage)):
-            valid.append((at, stage))
-    if not valid:
-        return None, "no_valid_saved_model_payload" if saw_prior else "no_valid_pre_kickoff_saved_stage"
-    return max(valid, key=lambda pair: pair[0])[1], None
+        if any(
+            _candidate_key(row) is not None
+            for row in (stage.get("market_predictions") or [])
+            if isinstance(row, dict)
+        ):
+            by_stage[str(stage.get("stage"))].append((at, stage))
+    for stage_name in ("T-30", "首預"):
+        if by_stage[stage_name]:
+            return max(by_stage[stage_name], key=lambda pair: pair[0])[1], None
+    return None, "no_valid_last_pre_t5_prediction"
 
 
-def _quotes(stages: list[dict[str, Any]], kickoff: datetime) -> dict[tuple[str, str, str], list[tuple[datetime, float]]]:
+def _candidate_matches_identity(candidate: dict[str, Any], identity: dict[str, Any]) -> bool:
+    """Reject a populated candidate identity that is not this exact fixture."""
+    expected = {
+        "match_id": identity["match_id"],
+        "titan_match_id": identity["titan_match_id"],
+    }
+    for field, value in expected.items():
+        actual = candidate.get(field)
+        if actual is not None and str(actual).strip() and str(actual).strip() != value:
+            return False
+    candidate_kickoff = candidate.get("kickoff_hkt") or candidate.get("kickoff")
+    if candidate_kickoff is not None:
+        parsed = _strict_time(candidate_kickoff)
+        if parsed is None or parsed != identity["kickoff"]:
+            return False
+    return True
+
+
+def _quotes(
+    stages: list[dict[str, Any]], identity: dict[str, Any],
+) -> dict[tuple[str, str, str], list[tuple[datetime, float]]]:
+    kickoff = identity["kickoff"]
     output: dict[tuple[str, str, str], list[tuple[datetime, float]]] = defaultdict(list)
     for stage in stages:
         if not isinstance(stage, dict):
@@ -177,7 +254,7 @@ def _quotes(stages: list[dict[str, Any]], kickoff: datetime) -> dict[tuple[str, 
         for candidate in _candidate_rows(stage):
             key = _candidate_key(candidate)
             quote = _valid_quote(candidate, kickoff)
-            if key is not None and quote is not None:
+            if key is not None and quote is not None and _candidate_matches_identity(candidate, identity):
                 output[key].append(quote)
     return output
 
@@ -207,13 +284,25 @@ def _select_evidence(
 def _recovered_stage(
     watch: dict[str, Any], source: dict[str, Any], identity: dict[str, Any],
     quote_pool: dict[tuple[str, str, str], list[tuple[datetime, float]]], recovered_at: str,
+    recovery_kind: str, *, require_source_crown: bool,
 ) -> tuple[dict[str, Any] | None, Counter]:
     kickoff = identity["kickoff"]
     selected: dict[tuple[str, str, str], dict[str, Any]] = {}
     reasons: Counter = Counter()
-    for candidate in _candidate_rows(source):
+    source_candidates = (
+        source.get("market_predictions") or []
+        if recovery_kind == CARRY_FORWARD_RECOVERY
+        else _candidate_rows(source)
+    )
+    for candidate in source_candidates:
+        if not isinstance(candidate, dict):
+            continue
         key = _candidate_key(candidate)
-        if key is None or not _is_crown_company_three(candidate):
+        if (
+            key is None
+            or not _candidate_matches_identity(candidate, identity)
+            or (require_source_crown and not _is_crown_company_three(candidate))
+        ):
             continue
         # Preserve the latest exact selection for a code/line/side; the model
         # payload is copied rather than recomputed or made up.
@@ -233,6 +322,10 @@ def _recovered_stage(
             "provider": "Crown", "quote_source": "titan007-crown-id-3",
             "recovery_evidence_type": evidence["evidence_type"],
             "closing_odds_substitution": evidence["closing_odds_substitution"],
+            "prediction_stage_substitution": recovery_kind == CARRY_FORWARD_RECOVERY,
+            "prediction_stage_substitution_type": (
+                CARRY_FORWARD_RECOVERY if recovery_kind == CARRY_FORWARD_RECOVERY else None
+            ),
         })
         recovered_markets.append(market)
         evidence_types.append(evidence["evidence_type"])
@@ -258,16 +351,30 @@ def _recovered_stage(
         "execution": {"enabled": False, "mode": "recovered_audit_only", "real_betting_enabled": False},
         "post_hoc_backfill": True, "exclude_from_telegram": True,
         "exclude_from_simulation": True, "exclude_from_learning": True,
-        "exclude_from_primary_statistics": True,
+        "exclude_from_primary_statistics": True, "exclude_from_settlement": True,
         "recovery": {
-            "version": 1, "source_stage": source_name,
+            "version": 2, "recovery_kind": recovery_kind, "source_stage": source_name,
             "source_model_timestamp": source_at.isoformat() if source_at else None,
             "recovered_at": recovered_at, "provider_company_id": CROWN_COMPANY_ID,
             "evidence_types": sorted(set(evidence_types)),
             "closing_odds_substitution": "closing_substitution" in evidence_types,
-            "label": "POST-HOC / BACKFILLED — NOT A NATIVE T-5 PREDICTION",
+            "prediction_stage_substitution": recovery_kind == CARRY_FORWARD_RECOVERY,
+            "prediction_stage_substitution_type": (
+                CARRY_FORWARD_RECOVERY if recovery_kind == CARRY_FORWARD_RECOVERY else None
+            ),
+            "label": (
+                "POST-HOC / BACKFILLED — LAST PRE-T5 PREDICTION CARRY-FORWARD; "
+                "NOT AN ACTUAL T-5 PREDICTION"
+                if recovery_kind == CARRY_FORWARD_RECOVERY
+                else "POST-HOC / BACKFILLED — SAVED T-5 MODEL PAYLOAD; NOT A NATIVE T-5 PREDICTION"
+            ),
         },
-        "no_bet_reason": "事後回補紀錄；禁止 Telegram、模擬注、學習及主要命中率／排名統計。",
+        "no_bet_reason": (
+            "事後回補紀錄（承接最後 T-5 前預測，非真實 T-5）；禁止 Telegram、模擬注、"
+            "學習、結算及主要命中率／排名統計。"
+            if recovery_kind == CARRY_FORWARD_RECOVERY
+            else "事後回補紀錄；禁止 Telegram、模擬注、學習、結算及主要命中率／排名統計。"
+        ),
     }, reasons
 
 
@@ -275,22 +382,34 @@ def _aggregate(items: list[dict[str, Any]]) -> dict[str, Any]:
     counts: Counter = Counter()
     for item in items:
         kind = item["kind"]
-        if kind == "recovered":
+        if kind in {"native_payload_recovery", "carry_forward_recovery"}:
             stage = item["source_stage"]
             kickoff = item["kickoff_day"]
             for market, evidence in item["markets"]:
-                counts[("recovered", kickoff, stage, market, evidence)] += 1
+                counts[(kind, kickoff, stage, market, evidence)] += 1
         else:
             counts[(kind, item.get("kickoff_day", "unknown"), item.get("source_stage", "unknown"), "none", item["reason"])] += 1
-    rendered: dict[str, Any] = {"by_kickoff_stage_market_evidence": {}, "unresolved_reasons": {}}
+    rendered: dict[str, Any] = {
+        "by_kickoff_stage_market_evidence": {},
+        "native_payload_recovery": {"records": 0, "by_kickoff_stage_market_evidence": {}},
+        "carry_forward_recovery": {"records": 0, "by_kickoff_stage_market_evidence": {}},
+        "unresolved_reasons": {},
+    }
     for (kind, kickoff, stage, market, evidence), count in sorted(counts.items()):
-        if kind == "recovered":
+        if kind in {"native_payload_recovery", "carry_forward_recovery"}:
             rendered["by_kickoff_stage_market_evidence"].setdefault(kickoff, {}).setdefault(stage, {}).setdefault(market, {})[evidence] = count
+            rendered[kind]["by_kickoff_stage_market_evidence"].setdefault(kickoff, {}).setdefault(stage, {}).setdefault(market, {})[evidence] = count
         elif kind == "unresolved":
             rendered["unresolved_reasons"][evidence] = rendered["unresolved_reasons"].get(evidence, 0) + count
         else:
             rendered.setdefault("skipped", {})[evidence] = rendered.setdefault("skipped", {}).get(evidence, 0) + count
-    rendered["total_recovered_records"] = sum(1 for item in items if item["kind"] == "recovered")
+    rendered["native_payload_recovery"]["records"] = sum(1 for item in items if item["kind"] == "native_payload_recovery")
+    rendered["carry_forward_recovery"]["records"] = sum(1 for item in items if item["kind"] == "carry_forward_recovery")
+    rendered["total_native_payload_recovery_records"] = rendered["native_payload_recovery"]["records"]
+    rendered["total_carry_forward_recovery_records"] = rendered["carry_forward_recovery"]["records"]
+    rendered["total_recovered_records"] = (
+        rendered["total_native_payload_recovery_records"] + rendered["total_carry_forward_recovery_records"]
+    )
     rendered["total_unresolved_records"] = sum(1 for item in items if item["kind"] == "unresolved")
     rendered["total_skipped_records"] = sum(1 for item in items if item["kind"] == "skipped")
     return rendered
@@ -318,11 +437,25 @@ def build_plan(ledger: dict[str, Any], *, recovered_at: str | None = None) -> tu
         if _already_recovered(stages):
             audit_items.append({"kind": "skipped", "kickoff_day": kickoff_day, "source_stage": RECOVERED_T5_STAGE, "reason": "recovery_already_exists"})
             continue
-        source, reason = _source_stage(stages, identity["kickoff"])
+        source, payload_reason = _saved_t5_model_payload(watch, stages, identity["kickoff"])
+        recovery_kind = NATIVE_PAYLOAD_RECOVERY
+        audit_kind = "native_payload_recovery"
         if source is None:
-            audit_items.append({"kind": "unresolved", "kickoff_day": kickoff_day, "source_stage": "unknown", "reason": reason or "missing_source_stage"})
+            source, reason = _carry_forward_source_stage(stages, identity["kickoff"])
+            recovery_kind = CARRY_FORWARD_RECOVERY
+            audit_kind = "carry_forward_recovery"
+        else:
+            reason = None
+        if source is None:
+            audit_items.append({
+                "kind": "unresolved", "kickoff_day": kickoff_day, "source_stage": "unknown",
+                "reason": reason or payload_reason or "missing_recovery_source",
+            })
             continue
-        stage, rejected = _recovered_stage(watch, source, identity, _quotes(stages, identity["kickoff"]), recovered_at)
+        stage, rejected = _recovered_stage(
+            watch, source, identity, _quotes(stages, identity), recovered_at, recovery_kind,
+            require_source_crown=recovery_kind == NATIVE_PAYLOAD_RECOVERY,
+        )
         source_name = str(source.get("stage") or "unknown")
         if stage is None:
             for unresolved_reason, amount in rejected.items():
@@ -331,7 +464,7 @@ def build_plan(ledger: dict[str, Any], *, recovered_at: str | None = None) -> tu
             continue
         planned.append({"match_id": identity["match_id"], "stage": stage})
         audit_items.append({
-            "kind": "recovered", "kickoff_day": kickoff_day, "source_stage": source_name,
+            "kind": audit_kind, "kickoff_day": kickoff_day, "source_stage": source_name,
             "markets": [(str(row["code"]), str(row["recovery_evidence_type"])) for row in stage["market_predictions"]],
         })
         for unresolved_reason, amount in rejected.items():

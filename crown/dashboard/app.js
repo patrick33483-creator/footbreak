@@ -1215,7 +1215,9 @@ function historyRecoveryEvidence(p) {
       ? 'T-5 實際證據'
       : 'T-5 LOCF 證據';
   const observed = p.observed_at ? ` · 證據 ${hkStamp(p.observed_at)}` : '';
-  return `<span class="cell-sub recovery-evidence">POST-HOC／回補 · ${label}${observed}</span>`;
+  const carried = p.prediction_stage_substitution_type === 'last_pre_t5_prediction_carry_forward';
+  const prediction = carried ? '預測階段替代：承接最後 T-5 前方向（非真實 T-5）' : '已存 T-5 模型載荷';
+  return `<span class="cell-sub recovery-evidence">POST-HOC／回補 · ${prediction} · ${label}${observed}</span>`;
 }
 
 function historyCornerResult(r, p) {
@@ -1605,7 +1607,7 @@ function renderHistory() {
     <td data-label="賽事">${esc(r.home)} <span class="dim">v</span> ${esc(r.away)}
       <div class="cell-sub">${esc(r.league || '')}</div></td>
     <td data-label="階段"><span class="fx-tag ${TAG[r.stage] || 'tag-wait'}">${esc(r.stage || '—')}</span>
-      ${r.post_hoc_backfill ? `<div class="cell-sub recovery-audit-label">POST-HOC／BACKFILLED · 來源 ${esc((r.recovery || {}).source_stage || '已存階段')} · 非原生 T-5 · 不計主統計</div>` : ''}
+      ${r.post_hoc_backfill ? `<div class="cell-sub recovery-audit-label">POST-HOC／BACKFILLED · ${((r.recovery || {}).recovery_kind === 'last_pre_t5_prediction_carry_forward') ? '最後 T-5 前預測承接（非真實 T-5）' : '已存 T-5 模型載荷回補（非原生 T-5）'} · 來源 ${esc((r.recovery || {}).source_stage || '已存階段')} · ${((r.recovery || {}).closing_odds_substitution) ? '含收市賠率替代 · ' : ''}不計主統計／不結算</div>` : ''}
       <div class="cell-sub mono">${r.predicted_at ? hkStamp(r.predicted_at) : '—'}</div></td>
     <td data-label="1X2 輔助"><b class="forecast-pick">${esc(r.forecast || '冇主客和預測')}</b>
       <div class="cell-sub">${r.probability == null ? '正式結果見市場欄' : `最高機率 ${pc(r.probability, 1)}`}${r.likely_score ? ` · 最可能 ${esc(r.likely_score)}` : ''}</div></td>

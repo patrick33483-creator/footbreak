@@ -91,13 +91,24 @@ def _is_recovered_audit_row(row: dict[str, Any]) -> bool:
 def _recovery_audit_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
     """Return aggregate-only recovery counts without fixture/provider details."""
     by_kickoff: dict[str, dict[str, dict[str, dict[str, int]]]] = {}
+    by_recovery_kind: dict[str, dict[str, Any]] = {
+        "native_payload_recovery": {"records": 0, "by_kickoff_stage_market_evidence": {}},
+        "carry_forward_recovery": {"records": 0, "by_kickoff_stage_market_evidence": {}},
+    }
     total = 0
     for row in rows:
         if not isinstance(row, dict) or not _is_recovered_audit_row(row):
             continue
         kickoff = parse_time(row.get("kickoff"))
         day = kickoff.date().isoformat() if kickoff else "unknown"
-        source_stage = str((row.get("recovery") or {}).get("source_stage") or "unknown")
+        recovery = row.get("recovery") if isinstance(row.get("recovery"), dict) else {}
+        source_stage = str(recovery.get("source_stage") or "unknown")
+        kind = str(recovery.get("recovery_kind") or "native_payload_recovery")
+        if kind == "last_pre_t5_prediction_carry_forward":
+            kind = "carry_forward_recovery"
+        if kind not in by_recovery_kind:
+            kind = "native_payload_recovery"
+        by_recovery_kind[kind]["records"] += 1
         for market in row.get("market_predictions") or []:
             if not isinstance(market, dict):
                 continue
@@ -105,11 +116,18 @@ def _recovery_audit_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
             evidence = str(market.get("recovery_evidence_type") or "unknown")
             bucket = by_kickoff.setdefault(day, {}).setdefault(source_stage, {}).setdefault(code, {})
             bucket[evidence] = bucket.get(evidence, 0) + 1
+            kind_bucket = (
+                by_recovery_kind[kind]["by_kickoff_stage_market_evidence"]
+                .setdefault(day, {}).setdefault(source_stage, {}).setdefault(code, {})
+            )
+            kind_bucket[evidence] = kind_bucket.get(evidence, 0) + 1
             total += 1
     return {
         "records": sum(1 for row in rows if isinstance(row, dict) and _is_recovered_audit_row(row)),
         "markets": total,
         "by_kickoff_stage_market_evidence": by_kickoff,
+        "native_payload_recovery": by_recovery_kind["native_payload_recovery"],
+        "carry_forward_recovery": by_recovery_kind["carry_forward_recovery"],
         "policy": "post_hoc/backfilled audit only; excluded from primary statistics, learning, simulation, and Telegram",
     }
 
@@ -223,6 +241,7 @@ def _history_row(watch: dict[str, Any], stage: dict[str, Any]) -> dict[str, Any]
         "exclude_from_telegram": bool(stage.get("exclude_from_telegram")),
         "exclude_from_simulation": bool(stage.get("exclude_from_simulation")),
         "exclude_from_learning": bool(stage.get("exclude_from_learning")),
+        "exclude_from_settlement": bool(stage.get("exclude_from_settlement")),
         "exclude_from_primary_statistics": bool(stage.get("exclude_from_primary_statistics")),
         "recovery": copy.deepcopy(stage.get("recovery")) if isinstance(stage.get("recovery"), dict) else None,
         "market_grades": [],
