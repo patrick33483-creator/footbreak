@@ -4,12 +4,14 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   diagnose:
     runs-on: ubuntu-24.04
     steps:
+      - uses: actions/checkout@v5
+
       - name: 設定 SSH
         env:
           DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
@@ -25,9 +27,15 @@ jobs:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
         run: |
+          set -euo pipefail
+          install -d -m 700 diagnostic-output
+          exec 3>&1
+          exec > diagnostic-output/crown-tick-process-summary.txt 2>&1
           ssh -o BatchMode=yes -o ConnectTimeout=20 \
             "$DEPLOY_USER@$DEPLOY_HOST" '
               set -eu
+              echo "=== deployed revision ==="
+              sudo git -C /opt/footbreak rev-parse HEAD 2>/dev/null || true
               sudo systemctl show crown-tick.service --no-pager \
                 -p ActiveState -p SubState -p Result -p MainPID \
                 -p ExecMainStartTimestamp -p TimeoutStartUSec
@@ -41,3 +49,13 @@ jobs:
                   --ppid "$child" || true
               done
             '
+          cat diagnostic-output/crown-tick-process-summary.txt >&3
+
+      - name: 保存已遮罩 Process 摘要到臨時私人分支
+        run: |
+          set -euo pipefail
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+          git add diagnostic-output/crown-tick-process-summary.txt
+          git commit -m 'Store redacted Crown tick process diagnosis' || exit 0
+          git push origin "HEAD:${GITHUB_REF_NAME}"
