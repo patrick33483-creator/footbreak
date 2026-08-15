@@ -14,6 +14,8 @@ import os
 import subprocess
 import sys
 import tempfile
+
+from condition_portfolio import FIXED_STAKE, PORTFOLIO, STARTING_BANKROLL, STRATEGY
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -287,14 +289,10 @@ def settle_bet(bet, res):
 
 def backfill_fixture_ids(led):
     """舊注單冇 fixture_id — 用 predictions.json 嘅英文隊名 + 快取賽程補番。"""
-    # Shadow bets use the same verified result providers as official bets.
-    # Include both ledgers here so a missing HKJC result can still fall back
-    # through the exact OpticOdds fixture ID instead of leaving shadow rows
-    # permanently pending.
-    need = [
-        b for b in [*led.get("bets", []), *led.get("shadow_bets", [])]
-        if not b.get("fixture_id")
-    ]
+    # Retired and legacy rows are never backfilled or settled.  Only the
+    # condition portfolio remains operational until the guarded reset clears
+    # old state.
+    need = [b for b in condition_bets(led) if not b.get("fixture_id")]
     if not need:
         return 0
     preds = {}
@@ -342,6 +340,21 @@ def backfill_fixture_ids(led):
 
 # ------------------------------------------------------------ 主流程
 
+def parse_kickoff(value):
+    """Parse the persisted HKT/ISO kickoff formats without guessing a time."""
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        try:
+            parsed = datetime.strptime(text, "%Y-%m-%d %H:%M")
+        except ValueError:
+            return None
+    return parsed.replace(tzinfo=HKT) if parsed.tzinfo is None else parsed.astimezone(HKT)
+
+
 def run(force=False):
     if not os.path.exists(LEDGER):
         print("冇 sim_ledger.json")
@@ -350,19 +363,17 @@ def run(force=False):
         led = json.load(handle)
     led.setdefault("log", [])
     led.setdefault("bets", [])
-    led.setdefault("shadow_bets", [])
     nfill = backfill_fixture_ids(led)
     if nfill:
         print(f"補回 {nfill} 注嘅賽事編號")
 
     now = datetime.now(HKT)
     due = []
-    for bet in [*led["bets"], *led["shadow_bets"]]:
+    for bet in condition_bets(led):
         if bet.get("status") != "PENDING":
             continue
-        try:
-            kickoff = datetime.strptime(bet["kickoff"], "%Y-%m-%d %H:%M").replace(tzinfo=HKT)
-        except Exception:
+        kickoff = parse_kickoff(bet.get("kickoff"))
+        if kickoff is None:
             continue
         if force or (now - kickoff).total_seconds() / 60 >= SETTLE_AFTER_MIN:
             due.append((bet, kickoff))
@@ -387,12 +398,11 @@ def run(force=False):
             )
         except Exception:
             official_statuses = {}
-    for b in [*led["bets"], *led["shadow_bets"]]:
+    for b in condition_bets(led):
         if b.get("status") != "PENDING":
             continue
-        try:
-            ko = datetime.strptime(b["kickoff"], "%Y-%m-%d %H:%M").replace(tzinfo=HKT)
-        except Exception:
+        ko = parse_kickoff(b.get("kickoff"))
+        if ko is None:
             continue
         mins = (now - ko).total_seconds() / 60
         if not force and mins < SETTLE_AFTER_MIN:
@@ -421,8 +431,8 @@ def run(force=False):
                 "result": "Refunded",
                 "terminal_status": terminal,
             })
-            prefix = "影子結算 " if b.get("portfolio") == "shadow" else ""
-            changes.append(f"⚪ {prefix}{b['home']} v {b['away']} — 賽事不計 ({terminal})")
+            b["history"] = b["history"][-20:]
+            changes.append(f"⚪ {b['home']} v {b['away']} — 賽事不計 ({terminal})")
             continue
         corner_provider_error = None
         if res and b.get("code") == "CHL":
@@ -486,20 +496,23 @@ def run(force=False):
             "action": "結算", "result": label, "pnl": pnl,
             "score": b["score"],
         })
+        b["history"] = b["history"][-20:]
         ico = {"Won": "🟢", "Half Won": "🟡", "Refunded": "⚪",
                "Half Lost": "🟠", "Lost": "🔴"}.get(label, "•")
         cx = f" 角球 {b['score']['corners']}" if b["code"] == "CHL" and b["score"]["corners"] else ""
-        prefix = "影子結算 " if b.get("portfolio") == "shadow" else ""
-        changes.append(f"{ico} {prefix}{b['home']} v {b['away']} — {b['label']} → "
-                       f"{label} {pnl:+,.0f}(比分 {b['score']['goals']}{cx})")
+        changes.append(
+            f"{ico} {b['home']} v {b['away']} — {b['label']} → "
+            f"{label} {pnl:+,.0f}(比分 {b['score']['goals']}{cx})"
+        )
 
     stats = recompute(led)
     if changes or unresolved:
         led["log"].insert(0, {
             "ts": now.isoformat(timespec="seconds"),
             "kind": "結算",
-            "changes": changes + [f"⏳ {u}" for u in unresolved],
+            "changes": (changes + [f"⏳ {u}" for u in unresolved])[-100:],
         })
+        led["log"] = led["log"][-100:]
     write_json_atomic(LEDGER, led)
 
     for c in changes:
@@ -508,9 +521,13 @@ def run(force=False):
         print("⏳", u)
     if not changes and not unresolved:
         print("冇注單到結算時間")
+    hit_rate = stats.get("hit_rate")
+    roi = stats.get("roi")
+    hit_rate_text = "—" if hit_rate is None else f"{hit_rate * 100:.1f}%"
+    roi_text = "—" if roi is None else f"{roi * 100:+.2f}%"
     print(f"\n已結算 {stats['n_settled']} 注 · 命中 "
-          f"{stats['hit_rate']*100:.1f}% ({stats['hits']}/{stats['n_decided']}) · "
-          f"盈虧 {stats['pnl']:+,.0f} · ROI {stats['roi']*100:+.2f}% · "
+          f"{hit_rate_text} ({stats['hits']}/{stats['n_decided']}) · "
+          f"盈虧 {stats['pnl']:+,.0f} · ROI {roi_text} · "
           f"戶口 ${stats['equity']:,.0f}")
     if provider_errors:
         # A result-source outage is not a valid "no result yet" state.  Let
@@ -519,153 +536,65 @@ def run(force=False):
     return stats
 
 
+def condition_bets(ledger):
+    """Return only the fixed-stake Footbreak condition simulation rows."""
+    return [
+        bet for bet in (ledger.get("bets") or [])
+        if isinstance(bet, dict)
+        and bet.get("portfolio") == PORTFOLIO
+        and bet.get("strategy") == STRATEGY
+    ]
+
+
 def recompute(led):
-    """重算彙總統計,寫入 led['stats']。"""
-    led.setdefault("bets", [])
-    led.setdefault("shadow_bets", [])
-    done = [b for b in led["bets"] if b.get("status") == "SETTLED"]
-    pnl = sum(b.get("pnl") or 0 for b in done)
-    turnover = sum(b["stake"] for b in done)
-    decided = [b for b in done if b.get("result") != "Refunded"]
-    hits = sum(1 for b in decided if b.get("result") in ("Won", "Half Won"))
-    by_mkt = {}
-    for b in done:
-        m = by_mkt.setdefault(b["market"], {"n": 0, "stake": 0.0, "pnl": 0.0, "hit": 0, "dec": 0})
-        m["n"] += 1
-        m["stake"] += b["stake"]
-        m["pnl"] += b.get("pnl") or 0
-        if b.get("result") != "Refunded":
-            m["dec"] += 1
-            if b.get("result") in ("Won", "Half Won"):
-                m["hit"] += 1
-    for m in by_mkt.values():
-        m["roi"] = round(m["pnl"] / m["stake"], 4) if m["stake"] else 0.0
-        m["hit_rate"] = round(m["hit"] / m["dec"], 4) if m["dec"] else 0.0
-        m["pnl"] = round(m["pnl"], 2)
-    # 資金曲線(按結算時間)
-    curve, eq = [], led.get("bankroll", 50000)
-    for b in sorted(done, key=lambda x: x.get("settled_at") or ""):
-        eq += b.get("pnl") or 0
-        curve.append({"ts": b.get("settled_at"), "label": f"{b['home']} v {b['away']}",
-                      "pnl": round(b.get("pnl") or 0, 2), "equity": round(eq, 2)})
-    stats = {
-        "n_settled": len(done),
-        "n_decided": len(decided),
-        "hits": hits,
-        "hit_rate": round(hits / len(decided), 4) if decided else 0.0,
-        "pnl": round(pnl, 2),
-        "turnover": round(turnover, 2),
-        "roi": round(pnl / turnover, 4) if turnover else 0.0,
-        "equity": round(led.get("bankroll", 50000) + pnl, 2),
-        "by_market": by_mkt,
-        "curve": curve,
-    }
-    led["stats"] = stats
-    recompute_shadow_stats(led)
-    return stats
-
-
-def recompute_shadow_stats(led):
-    """Refresh only the isolated confidence-only portfolio totals."""
-    led.setdefault("bets", [])
-    led.setdefault("shadow_bets", [])
-    shadow = _portfolio_stats(led["shadow_bets"], led.get("bankroll", 50000))
-    shadow.update({
-        "conf_floor": P_CONF_FLOOR(),
-        "bet_stage": "T-5",
-        "single_cap_pct": 0.02,
-        "mode": "confidence_only_shadow",
-        "excluded_from_official": True,
-        "comparison": _same_period_comparison(
-            led["bets"], led["shadow_bets"], led.get("bankroll", 50000)
-        ),
-    })
-    led["shadow_stats"] = shadow
-    return shadow
-
-
-def P_CONF_FLOOR():
-    """Read the configured Footbreak floor without importing prediction code at import time."""
-    try:
-        import predict as P
-        return P.CONF_FLOOR
-    except Exception:
-        return 58.0
-
-
-def _portfolio_stats(bets, bankroll):
-    settled = [b for b in bets if b.get("status") == "SETTLED"]
-    pending = [b for b in bets if b.get("status") == "PENDING"]
-    pnl = round(sum(float(b.get("pnl") or 0) for b in settled), 2)
-    turnover = round(sum(float(b.get("stake") or 0) for b in settled), 2)
-    decided = [b for b in settled if b.get("result") != "Refunded"]
-    hits = sum(b.get("result") in ("Won", "Half Won") for b in decided)
+    """Recompute public totals from active condition bets only."""
+    active = condition_bets(led)
+    settled = [bet for bet in active if bet.get("status") == "SETTLED"]
+    pending = [bet for bet in active if bet.get("status") == "PENDING"]
+    voided = [bet for bet in active if bet.get("status") == "VOIDED"]
+    pnl = round(sum(float(bet.get("pnl") or 0) for bet in settled), 2)
+    turnover = round(sum(float(bet.get("stake") or 0) for bet in settled), 2)
+    decided = [bet for bet in settled if bet.get("result") != "Refunded"]
+    hits = sum(bet.get("result") in ("Won", "Half Won") for bet in decided)
     by_market = {}
-    for b in settled:
-        row = by_market.setdefault(b.get("market") or b.get("code") or "其他",
-                                   {"n": 0, "stake": 0.0, "pnl": 0.0, "hit": 0, "dec": 0})
+    for bet in settled:
+        market = bet.get("market_label") or bet.get("market") or "其他"
+        row = by_market.setdefault(market, {"n": 0, "stake": 0.0, "pnl": 0.0, "hit": 0, "dec": 0})
         row["n"] += 1
-        row["stake"] += float(b.get("stake") or 0)
-        row["pnl"] += float(b.get("pnl") or 0)
-        if b.get("result") != "Refunded":
+        row["stake"] += float(bet.get("stake") or 0)
+        row["pnl"] += float(bet.get("pnl") or 0)
+        if bet.get("result") != "Refunded":
             row["dec"] += 1
-            row["hit"] += int(b.get("result") in ("Won", "Half Won"))
+            row["hit"] += int(bet.get("result") in ("Won", "Half Won"))
     for row in by_market.values():
         row["stake"] = round(row["stake"], 2)
         row["pnl"] = round(row["pnl"], 2)
         row["roi"] = round(row["pnl"] / row["stake"], 4) if row["stake"] else None
         row["hit_rate"] = round(row["hit"] / row["dec"], 4) if row["dec"] else None
-    equity = float(bankroll) + pnl
-    curve, running = [], float(bankroll)
-    for b in sorted(settled, key=lambda b: str(b.get("settled_at") or b.get("created_at") or "")):
-        bet_pnl = float(b.get("pnl") or 0)
+    running, curve = STARTING_BANKROLL, []
+    for bet in sorted(settled, key=lambda b: str(b.get("settled_at") or b.get("created_at") or "")):
+        bet_pnl = float(bet.get("pnl") or 0)
         running += bet_pnl
-        curve.append({"ts": b.get("settled_at") or b.get("created_at"),
-                      "label": f"{b.get('home', '')} v {b.get('away', '')}".strip(),
+        curve.append({"ts": bet.get("settled_at") or bet.get("created_at"),
+                      "label": f"{bet.get('home', '')} v {bet.get('away', '')}".strip(),
                       "pnl": round(bet_pnl, 2), "equity": round(running, 2)})
-    return {
-        "n_pending": len(pending), "n_voided": sum(b.get("status") == "VOIDED" for b in bets),
-        "n_settled": len(settled), "n_decided": len(decided), "hits": hits,
+    stats = {
+        "portfolio": PORTFOLIO, "starting_bankroll": STARTING_BANKROLL,
+        "fixed_stake": FIXED_STAKE, "strategy": STRATEGY, "bet_stage": "T-5",
+        "n_pending": len(pending), "n_voided": len(voided), "n_settled": len(settled),
+        "n_decided": len(decided), "hits": hits,
         "hit_rate": round(hits / len(decided), 4) if decided else None,
         "pnl": pnl, "turnover": turnover,
         "roi": round(pnl / turnover, 4) if turnover else None,
         "open_stake": round(sum(float(b.get("stake") or 0) for b in pending), 2),
-        "open_pct": round(sum(float(b.get("stake") or 0) for b in pending) / bankroll, 4) if bankroll else 0,
-        "equity": round(equity, 2), "by_market": by_market, "curve": curve,
+        "open_pct": round(sum(float(b.get("stake") or 0) for b in pending) / STARTING_BANKROLL, 4),
+        "equity": round(STARTING_BANKROLL + pnl, 2), "by_market": by_market, "curve": curve,
         "res_counts": {name: sum(b.get("result") == name for b in settled)
                        for name in ("Won", "Half Won", "Refunded", "Half Lost", "Lost")},
     }
-
-
-def _bet_time(bet):
-    value = bet.get("created_at") or bet.get("kickoff")
-    if not value:
-        return None
-    try:
-        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=HKT)
-        return parsed.astimezone(timezone.utc)
-    except (TypeError, ValueError):
-        return None
-
-
-def _same_period_comparison(official, shadow, bankroll):
-    dated_shadow = [(bet, _bet_time(bet)) for bet in shadow]
-    starts = [timestamp for _, timestamp in dated_shadow if timestamp is not None]
-    if not starts:
-        return None
-    start = min(starts)
-    official_period = [bet for bet in official
-                       if (timestamp := _bet_time(bet)) is not None and timestamp >= start]
-    shadow_period = [bet for bet, timestamp in dated_shadow
-                     if timestamp is not None and timestamp >= start]
-    return {
-        "period_start": start.isoformat(), "definition": "from_first_shadow_bet",
-        "official_total_bets": len(official_period), "shadow_total_bets": len(shadow_period),
-        "official": _portfolio_stats(official_period, bankroll),
-        "shadow": _portfolio_stats(shadow_period, bankroll),
-    }
+    led["bankroll"] = STARTING_BANKROLL
+    led["stats"] = stats
+    return stats
 
 
 if __name__ == "__main__":

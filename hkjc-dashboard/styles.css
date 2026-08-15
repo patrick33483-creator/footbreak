@@ -1280,7 +1280,7 @@ table.calib tr:last-child td { border-bottom: 0; }
   .current-odds-list { grid-template-columns: minmax(0, 1fr); }
 }
 
-/* ─── 挑戰模型 · 隔離影子研究 ──────────────────────── */
+/* ─── 挑戰模型 · 隔離研究 ──────────────────────── */
 .chal-note b { color: var(--amber); }
 .chal-stamp {
   display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2) var(--s4);
@@ -1721,7 +1721,7 @@ table.calib tr:last-child td { border-bottom: 0; }
 }
 
 
-/* ─── 凍結後條件影子報告：只讀卡片，窄螢幕無橫向溢出 ─── */
+/* ─── 凍結後條件研究報告：只讀卡片，窄螢幕無橫向溢出 ─── */
 .condition-card, .condition-grid, .condition-kpi { min-width: 0; }
 .condition-copy { color: var(--ink-3); font-size: var(--text-sm); overflow-wrap: anywhere; }
 .condition-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--s2); margin-top: var(--s3); }
@@ -1748,3 +1748,14 @@ table.calib tr:last-child td { border-bottom: 0; }
 .condition-match { display: grid; gap: var(--s1); padding: var(--s2); border-left: 2px solid var(--amber); background: var(--bg-2); font-size: var(--text-sm); }
 .condition-match span { color: var(--ink-3); font-variant-numeric: tabular-nums; }
 @media (max-width: 620px) { .granular-grid { grid-template-columns: 1fr; } .granular-rank-card, .condition-match-card { overflow-x: hidden; } }
+
+/* 條件模擬倉：固定規則與三市場注單在窄螢幕保持可讀。 */
+.rule-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:var(--s3); }
+.rule-grid > div { display:grid; gap:4px; padding:var(--s3); border:1px solid var(--line-soft); border-radius:var(--radius-sm); background:var(--bg-2); color:var(--ink-3); font-size:var(--text-xs); line-height:1.6; }
+.rule-grid b { color:var(--ink); font-size:var(--text-sm); }
+.condition-bets th, .condition-bets td { white-space:nowrap; }
+@media (max-width: 620px) {
+  .rule-grid { grid-template-columns:1fr; }
+  .condition-bets th, .condition-bets td { white-space:normal; min-width:96px; }
+  .condition-bets th:nth-child(2), .condition-bets td:nth-child(2) { min-width:190px; }
+}

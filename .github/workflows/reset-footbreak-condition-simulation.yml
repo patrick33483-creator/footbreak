@@ -1,0 +1,87 @@
+name: 重置足破條件模擬倉（一次性）
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: 'Type RESET_FOOTBREAK_CONDITION_SIMULATION_50000 exactly. Run only after the condition-simulation deployment is live.'
+        required: true
+        type: string
+      post_deploy_confirmation:
+        description: 'After confirming the deployment is live, type FOOTBREAK_CONDITION_SIMULATION_DEPLOYED exactly.'
+        required: true
+        type: string
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  reset:
+    name: Guarded Footbreak condition simulation reset
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Verify exact confirmation before SSH
+        env:
+          CONFIRMATION: ${{ inputs.confirmation }}
+          POST_DEPLOY_CONFIRMATION: ${{ inputs.post_deploy_confirmation }}
+        run: |
+          [ "$CONFIRMATION" = "RESET_FOOTBREAK_CONDITION_SIMULATION_50000" ] || {
+            echo "Reset refused: exact confirmation is required." >&2
+            exit 1
+          }
+          [ "$POST_DEPLOY_CONFIRMATION" = "FOOTBREAK_CONDITION_SIMULATION_DEPLOYED" ] || {
+            echo "Reset refused: explicit post-deployment confirmation is required." >&2
+            exit 1
+          }
+
+      - name: 設定 SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: Reset only Footbreak simulation state and publish aggregate summary
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          CONFIRMATION: ${{ inputs.confirmation }}
+          POST_DEPLOY_CONFIRMATION: ${{ inputs.post_deploy_confirmation }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 "$DEPLOY_USER@$DEPLOY_HOST" \
+            "sudo CONFIRMATION='$CONFIRMATION' POST_DEPLOY_CONFIRMATION='$POST_DEPLOY_CONFIRMATION' /bin/sh -s" <<'REMOTE'
+          set -eu
+          cd /opt/footbreak
+          set -a
+          [ ! -f /etc/footbreak.env ] || . /etc/footbreak.env
+          [ ! -f /etc/footbreak-crown.env ] || . /etc/footbreak-crown.env
+          set +a
+          [ "${CONFIRMATION:-}" = "RESET_FOOTBREAK_CONDITION_SIMULATION_50000" ] || exit 64
+          [ "${POST_DEPLOY_CONFIRMATION:-}" = "FOOTBREAK_CONDITION_SIMULATION_DEPLOYED" ] || exit 64
+          systemctl stop footbreak-tick.timer footbreak-sweep.timer footbreak-settle.timer
+          restart_timers() {
+            systemctl start footbreak-tick.timer footbreak-sweep.timer footbreak-settle.timer
+          }
+          trap restart_timers EXIT
+          /opt/footbreak/.venv/bin/python3 /opt/footbreak/system/reset_condition_simulation.py \
+            --confirm "$CONFIRMATION" \
+            --post-deploy "$POST_DEPLOY_CONFIRMATION" > /tmp/footbreak-condition-reset.json
+          /opt/footbreak/.venv/bin/python3 - <<'PY'
+          import json
+          from pathlib import Path
+          data = json.loads(Path('/tmp/footbreak-condition-reset.json').read_text())
+          print(json.dumps({
+              'ok': data.get('ok') is True,
+              'bankroll': data.get('bankroll'),
+              'cleared_main_bets': data.get('cleared_main_bets'),
+              'retired_shadow_state_removed': data.get('retired_shadow_state_removed') is True,
+          }, sort_keys=True))
+          PY
+          REMOTE

@@ -1,11 +1,11 @@
-"""Footbreak confidence-only shadow portfolio regression tests."""
+"""Regression tests for the isolated Footbreak condition simulation portfolio."""
 from __future__ import annotations
 
 import json
 import sys
 import tempfile
 import unittest
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -14,158 +14,135 @@ ROOT = SYSTEM.parent
 if str(SYSTEM) not in sys.path:
     sys.path.insert(0, str(SYSTEM))
 
-import gen_app_data
+import condition_portfolio as cp
 import record_picks
 import settle
 
+HKT = timezone(timedelta(hours=8))
 
-def candidate(*, code="HIL", label="大 2.5", probability=.64, push=0.0,
-              main=True, odds=1.90):
+
+def historical_row(fixture, code, *, hit=True, side="H", line=None, kickoff=None):
+    kickoff = kickoff or datetime(2026, 1, 1, 20, tzinfo=HKT)
+    line = line if line is not None else (-0.25 if code == "HDC" else 2.5 if code == "HIL" else 9.5)
     return {
-        "market": "入球大小", "code": code, "condition": "2.5", "side": "H",
-        "label": label, "prob": probability, "push": push, "odds": odds,
-        "ev": -.08, "fair": 1.6, "kelly_used": .1, "is_main": main,
+        "match_id": fixture, "stage": "T-5", "kickoff": kickoff.isoformat(),
+        "predicted_at": (kickoff - timedelta(minutes=5)).isoformat(),
+        "market_grades": [{"code": code, "side": side, "line": line, "odds": 1.82,
+                           "grade_status": "GRADED", "hit": hit}],
     }
 
 
-class ShadowPortfolioTests(unittest.TestCase):
-    def test_t5_no_benchmark_creates_fixed_shadow_only_and_is_idempotent(self):
-        kickoff = datetime.now(record_picks.HKT) + timedelta(minutes=20)
-        result = {
-            "match_id": "shadow-fixture", "stage": "T-5",
-            "kickoff_hkt": kickoff.strftime("%Y-%m-%d %H:%M"),
-            "league": "測試聯賽", "home": "主隊", "away": "客隊",
-            "conviction": record_picks.P.CONF_FLOOR + 1,
-            "model_source": "hkjc_full_market",
-            "sharp_reference_available": False, "candidates": [
-                candidate(main=False, probability=.74, label="外圍"),
-                candidate(main=True, probability=.61, label="主線"),
-            ],
-            "pick": None, "no_bet_reason": "無獨立 PinnAPI 同場基準",
-            "can_bet": True, "weather": {}, "final": {}, "open": {}, "now": {},
-            "movement": {}, "adjustments": [], "mults": {}, "outcome": {},
-        }
+def watch(*, fixture="future", codes=("HDC",), odds=1.83):
+    kickoff = datetime(2099, 8, 1, 20, tzinfo=HKT)
+    rows = []
+    for code in codes:
+        rows.append({
+            "code": code, "side": "H", "line": -0.25 if code == "HDC" else 2.5 if code == "HIL" else 9.5,
+            "odds": odds, "observed_at": (kickoff - timedelta(minutes=6)).isoformat(),
+            "market": {"HDC": "讓球", "HIL": "入球大細", "CHL": "角球大細"}[code],
+        })
+    return {"match_id": fixture, "league": "測試聯賽", "home": "主隊", "away": "客隊",
+            "kickoff": kickoff.isoformat(), "stages": [{"stage": "T-5", "ts": (kickoff - timedelta(minutes=5)).isoformat(), "market_predictions": rows}]}
+
+
+class ConditionPortfolioTests(unittest.TestCase):
+    def test_thresholds_three_markets_conflicts_and_idempotency(self):
+        sixty = [historical_row(f"s{i}", "HDC", hit=i < 6, kickoff=datetime(2026, 1, 1, 20, tzinfo=HKT) + timedelta(days=i)) for i in range(10)]
+        created, audit = cp.evaluate_new_t5({"bets": []}, watch(), history_rows=sixty)
+        self.assertEqual(created, [])
+        self.assertEqual(audit[0]["reason"], "no_historical_condition_above_60pct_with_10_decided")
+        nine = [historical_row(f"n{i}", "HDC", kickoff=datetime(2026, 2, 1, 20, tzinfo=HKT) + timedelta(days=i)) for i in range(9)]
+        self.assertEqual(cp.evaluate_new_t5({"bets": []}, watch(), history_rows=nine)[0], [])
+
+        rows = []
+        for i in range(10):
+            when = datetime(2026, 3, 1, 20, tzinfo=HKT) + timedelta(days=i)
+            rows.extend(historical_row(f"all{i}", code, hit=i < 7, kickoff=when) for code in ("HDC", "HIL", "CHL"))
+        ledger = {"bets": []}
+        created, audit = cp.evaluate_new_t5(ledger, watch(codes=("HDC", "HIL", "CHL")), history_rows=rows)
+        self.assertEqual({bet["code"] for bet in created}, {"HDC", "HIL", "CHL"})
+        self.assertTrue(all(bet["stake"] == 1000 for bet in created))
+        self.assertTrue(all(bet["condition_accuracy"] > .60 and bet["condition_decided"] >= 10 for bet in created))
+        self.assertTrue(all("HDC" not in bet["label"] for bet in created))
+        ledger["bets"].extend(created)
+        self.assertEqual(cp.evaluate_new_t5(ledger, watch(codes=("HDC", "HIL", "CHL")), history_rows=rows)[0], [])
+
+        candidate = {"market": "HDC", "label": "讓球｜T-5", "total": {"accuracy": .7, "hits": 7, "decided": 10}, "specificity": 1}
+        with patch.object(cp, "mine", return_value={"ranking": [candidate]}), patch.object(cp, "match_upcoming", return_value={"future": [
+            candidate | {"selected_side": "H", "selected_line": -.25},
+            candidate | {"selected_side": "A", "selected_line": .25},
+        ]}):
+            created, audit = cp.evaluate_new_t5({"bets": []}, watch(), history_rows=[])
+        self.assertEqual(created, [])
+        self.assertEqual(audit[0]["reason"], "conflicting_condition_direction_or_line")
+
+    def test_invalid_quote_and_canonical_settlement(self):
+        rows = [historical_row(f"ok{i}", "HDC", kickoff=datetime(2026, 4, 1, 20, tzinfo=HKT) + timedelta(days=i)) for i in range(10)]
+        invalid = watch(odds=1.0)
+        self.assertEqual(cp.evaluate_new_t5({"bets": []}, invalid, history_rows=rows)[0], [])
+        post = watch()
+        post["stages"][0]["market_predictions"][0]["observed_at"] = "2099-08-01T20:00:00+08:00"
+        self.assertEqual(cp.evaluate_new_t5({"bets": []}, post, history_rows=rows)[0], [])
+        cases = [
+            ({"code": "HDC", "condition": -0.25, "side": "H"}, {"goals_home": 1, "goals_away": 0}),
+            ({"code": "HIL", "condition": 2.5, "side": "H"}, {"goals_total": 3}),
+            ({"code": "CHL", "condition": 9.5, "side": "L"}, {"corners_total": 9}),
+        ]
+        for fields, result in cases:
+            label, pnl = settle.settle_bet(fields | {"stake": 1000, "odds": 1.8}, result)
+            self.assertEqual(label, "Won")
+            self.assertGreater(pnl, 0)
+
+    def test_t30_and_replay_do_not_evaluate_and_stats_ignore_legacy(self):
+        kickoff = datetime.now(HKT) + timedelta(minutes=20)
+        t30 = {"match_id": "one", "stage": "T-30", "kickoff_hkt": kickoff.isoformat(), "league": "測試聯賽", "home": "主", "away": "客", "can_bet": False, "candidates": [], "weather": {}, "final": {}, "open": {}, "now": {}, "movement": {}, "adjustments": [], "mults": {}, "outcome": {}}
+        t5 = t30 | {"stage": "T-5"}
         with tempfile.TemporaryDirectory() as directory:
-            Path(directory, "predictions.json").write_text(
-                json.dumps([result], ensure_ascii=False), encoding="utf-8"
+            Path(directory, "predictions.json").write_text(json.dumps([t30, t5], ensure_ascii=False), encoding="utf-8")
+            with patch.object(record_picks, "HERE", directory), patch.object(record_picks, "LEDGER", str(Path(directory, "sim_ledger.json"))), patch.object(record_picks, "ACCURACY_HISTORY", str(Path(directory, "accuracy_history.json"))), patch.object(record_picks, "evaluate_new_t5", return_value=([], [])) as evaluate, patch.dict("os.environ", {}, clear=False):
+                record_picks.sync()
+                record_picks.sync()
+        self.assertEqual(evaluate.call_count, 1)
+        ledger = {"bets": [
+            {"portfolio": "legacy", "strategy": "old", "status": "SETTLED", "stake": 9000, "pnl": 9000},
+            {"portfolio": cp.PORTFOLIO, "strategy": cp.STRATEGY, "status": "SETTLED", "stake": 1000, "pnl": 500, "result": "Won"},
+        ]}
+        stats = settle.recompute(ledger)
+        self.assertEqual((stats["turnover"], stats["pnl"]), (1000.0, 500.0))
+
+    def test_missing_fixture_context_fails_closed_before_bet_creation(self):
+        rows = [
+            historical_row(
+                f"ctx{i}", "HDC",
+                kickoff=datetime(2026, 7, 1, 20, tzinfo=HKT) + timedelta(days=i),
             )
-            ledger_path = Path(directory, "sim_ledger.json")
-            with patch.object(record_picks, "HERE", directory), \
-                 patch.object(record_picks, "LEDGER", str(ledger_path)):
-                _, _, first = record_picks.sync()
-                _, _, second = record_picks.sync()
-        self.assertEqual(first["bets"], [])
-        self.assertEqual(len(second["shadow_bets"]), 1)
-        shadow = second["shadow_bets"][0]
-        self.assertEqual(shadow["label"], "入球大小 主線")
-        self.assertEqual(shadow["stake"], 1000.0)
-        self.assertIsNone(shadow["ev"])
-        self.assertIsNone(shadow["fair"])
-        self.assertIsNone(shadow["kelly"])
-        self.assertTrue(shadow["confidence_only"])
-        self.assertTrue(shadow["shadow_only"])
-        self.assertEqual(shadow["portfolio"], "shadow")
-        self.assertEqual(second["shadow_stats"]["n_pending"], 1)
-        self.assertEqual(second["shadow_stats"]["open_stake"], 1000.0)
-
-    def test_shadow_stats_and_same_period_comparison_leave_official_stats_alone(self):
-        ledger = {
-            "bankroll": 50000, "watch": {}, "log": [],
-            "bets": [
-                {"status": "SETTLED", "stake": 100, "pnl": 20, "result": "Won",
-                 "market": "讓球", "home": "甲", "away": "乙",
-                 "created_at": "2026-08-10T10:00:00+08:00"},
-                {"status": "SETTLED", "stake": 100, "pnl": -100, "result": "Lost",
-                 "market": "讓球", "home": "甲", "away": "乙",
-                 "created_at": "2026-08-11T10:00:00+08:00"},
-            ],
-            "shadow_bets": [
-                {"status": "PENDING", "stake": 1000, "market": "入球大小",
-                 "home": "甲", "away": "乙", "created_at": "2026-08-11T09:00:00+08:00"},
-                {"status": "SETTLED", "stake": 1000, "pnl": 900, "result": "Won",
-                 "market": "入球大小", "home": "甲", "away": "乙",
-                 "created_at": "2026-08-11T10:00:00+08:00"},
-            ],
-        }
-        official = settle.recompute(ledger)
-        self.assertEqual(official["pnl"], -80)
-        self.assertEqual(ledger["shadow_stats"]["pnl"], 900)
-        self.assertEqual(ledger["shadow_stats"]["n_pending"], 1)
-        self.assertEqual(ledger["shadow_stats"]["open_stake"], 1000)
-        comparison = ledger["shadow_stats"]["comparison"]
-        self.assertEqual(comparison["definition"], "from_first_shadow_bet")
-        self.assertEqual(comparison["official_total_bets"], 1)
-        self.assertEqual(comparison["shadow_total_bets"], 2)
-
-    def test_shadow_settlement_uses_same_official_result_flow(self):
-        old_kickoff = (datetime.now(record_picks.HKT) - timedelta(hours=4)).strftime("%Y-%m-%d %H:%M")
-        ledger = {
-            "bankroll": 50000, "bets": [], "watch": {}, "log": [], "stats": {},
-            "shadow_bets": [{
-                "bet_id": "shadow-1", "match_id": "5001", "home": "主隊", "away": "客隊",
-                "kickoff": old_kickoff, "market": "入球大小", "code": "HIL",
-                "condition": "2.5", "side": "H", "label": "入球大小 大 2.5",
-                "odds": 2.0, "stake": 1000, "status": "PENDING", "portfolio": "shadow",
-                "confidence_only": True, "shadow_only": True, "history": [],
-            }],
-        }
-        result = {
-            "goals_home": 2, "goals_away": 1, "goals_total": 3,
-            "corners_home": None, "corners_away": None, "corners_total": None,
-            "source": "hkjc_official_exact_id",
-        }
-        with tempfile.TemporaryDirectory() as directory:
-            ledger_path = Path(directory, "sim_ledger.json")
-            ledger_path.write_text(json.dumps(ledger), encoding="utf-8")
-            with patch.object(settle, "LEDGER", str(ledger_path)), \
-                 patch.object(settle, "fetch_hkjc_results", return_value={"5001": result}), \
-                 patch.object(settle, "fetch_hkjc_statuses", return_value={}):
-                settle.run(force=True)
-            saved = json.loads(ledger_path.read_text(encoding="utf-8"))
-        bet = saved["shadow_bets"][0]
-        self.assertEqual(bet["status"], "SETTLED")
-        self.assertEqual(bet["result"], "Won")
-        self.assertEqual(bet["pnl"], 1000)
-        self.assertEqual(saved["stats"]["n_settled"], 0)
-        self.assertEqual(saved["shadow_stats"]["n_settled"], 1)
-        self.assertIn("影子結算", saved["log"][0]["changes"][0])
-
-    def test_dashboard_payload_keeps_history_official_only_and_exposes_shadow(self):
-        watch = {
-            "m1": {"match_id": "m1", "home": "主", "away": "客", "league": "測試",
-                   "kickoff": "2026-08-10 20:00", "stages": [{
-                       "prediction_era": record_picks.PREDICTION_ERA, "stage": "T-5",
-                       "market_predictions": [{
-                           "code": "HIL", "condition": "2.5", "side": "H",
-                           "label": "大 2.5", "probability": .64,
-                       }], "conviction": 60,
-                   }]}
-        }
-        history = gen_app_data.build_prediction_history(
-            watch, [], None
+            for i in range(10)
+        ]
+        missing_league = watch()
+        missing_league["league"] = ""
+        created, audit = cp.evaluate_new_t5(
+            {"bets": []}, missing_league, history_rows=rows,
         )
-        self.assertFalse(history["rows"][0]["simulated_bet"])
+        self.assertEqual(created, [])
+        self.assertEqual(
+            audit[0]["reason"], "missing_fixture_context_for_public_condition_bet",
+        )
+
+
+class ConditionDashboardSourceTests(unittest.TestCase):
+    def test_only_condition_simulation_is_public(self):
+        index = (ROOT / "hkjc-dashboard" / "index.html").read_text(encoding="utf-8")
+        app = (ROOT / "hkjc-dashboard" / "app.js").read_text(encoding="utf-8")
         source = (SYSTEM / "gen_app_data.py").read_text(encoding="utf-8")
-        self.assertIn('"shadow_bets": sorted(shadow_bets', source)
-        self.assertIn('"shadow_stats": led.get("shadow_stats")', source)
-
-
-class ShadowDashboardSourceTests(unittest.TestCase):
-    def test_shadow_page_and_stage_filters_are_present_on_both_dashboards(self):
-        foot_index = (ROOT / "hkjc-dashboard" / "index.html").read_text(encoding="utf-8")
-        foot_app = (ROOT / "hkjc-dashboard" / "app.js").read_text(encoding="utf-8")
-        self.assertIn('data-view="shadow">影子倉', foot_index)
-        self.assertIn('id="viewShadow"', foot_index)
-        self.assertIn("function renderShadow()", foot_app)
-        self.assertIn("confidence-only，固定 2%", foot_app)
-        for dashboard in (ROOT / "hkjc-dashboard", ROOT / "crown/dashboard"):
-            app = (dashboard / "app.js").read_text(encoding="utf-8")
-            css = (dashboard / "styles.css").read_text(encoding="utf-8")
-            self.assertIn("let HISTORY_STAGE = 'all'", app)
-            self.assertIn("data-history-stage", app)
-            self.assertIn("HISTORY_STAGE === 'all'", app)
-            self.assertIn("history-stage-filter", css)
-            self.assertIn("min-height: 44px", css)
+        self.assertIn('data-view="ledger">模擬倉', index)
+        self.assertNotIn('data-view="shadow"', index)
+        self.assertNotIn('id="viewShadow"', index)
+        self.assertNotIn("renderShadow", app)
+        self.assertIn("footbreak_condition_simulation", app)
+        self.assertIn("只限新保存的 T-5 預測", app)
+        self.assertIn("每注", app)
+        self.assertNotIn('"shadow_bets"', source)
+        self.assertIn("_public_bet", source)
 
 
 if __name__ == "__main__":

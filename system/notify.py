@@ -1,8 +1,8 @@
 """足破 · Telegram 通知系統。
 
-此模組只會在新保存的 T-30／T-5 階段，發送符合細緻歷史條件的數據
-提示。所有舊有模型候選、模擬注單、角球專用、健康、排程、掃描完成
-及結算通知均已停用；獨立 Odds Radar 通知流程不受此模組影響。
+此模組只會在新建立的 Footbreak 條件模擬注後發送通知。舊有模型候選、
+階段提示、健康、排程、掃描完成及結算通知均已停用；獨立 Odds Radar
+通知流程不受此模組影響。
 """
 import datetime as dt
 import html
@@ -36,6 +36,9 @@ TOOL = "telegram_bot_api-send-text-message-or-reply"
 
 DEFAULT_WINDOW_MIN = 45.0          # 只通知近期建立嘅注單,避免補發舊注
 MARKET_LABELS = {"HDC": "讓球", "HIL": "入球大細", "CHL": "角球大細"}
+CONDITION_PORTFOLIO = "footbreak_condition_simulation"
+CONDITION_STRATEGY = "granular-condition-v1"
+STATE_LIMIT = 1600
 
 SIDE_TXT = {"H": "主", "A": "客", "D": "和"}
 RESULT_TXT = {"Won": "贏 ✅", "Lost": "輸 ❌", "Refunded": "走水 ➖",
@@ -68,12 +71,17 @@ def load_state():
             s.setdefault("reviews", [])
             s.setdefault("signals", [])
             s.setdefault("granular_conditions", [])
+            s.setdefault("condition_simulation_bets", [])
+            for key, value in list(s.items()):
+                if isinstance(value, list):
+                    s[key] = value[-STATE_LIMIT:]
             return s
         except Exception:
             pass
     return {
         "bets": [], "settled": [], "queue": [], "sweeps": [], "watch": [],
         "reviews": [], "signals": [], "granular_conditions": [],
+        "condition_simulation_bets": [],
     }
 
 
@@ -345,6 +353,87 @@ def notify_fresh_granular_conditions(ledger, fresh_events):
         state["granular_conditions"] = (
             list(state.get("granular_conditions") or []) + [key]
         )[-1600:]
+        state["last_sent"] = dt.datetime.now(HKT).isoformat(timespec="seconds")
+        save_state(state)
+        sent += 1
+    return sent
+
+
+def _future_kickoff(value):
+    try:
+        kickoff = dt.datetime.fromisoformat(str(value or "").replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if kickoff.tzinfo is None:
+        kickoff = kickoff.replace(tzinfo=HKT)
+    return kickoff if kickoff > dt.datetime.now(HKT) else None
+
+
+def _condition_bet_message(bet):
+    """Return one safe Traditional-Chinese condition-bet message or ``None``."""
+    if bet.get("portfolio") != CONDITION_PORTFOLIO or bet.get("strategy") != CONDITION_STRATEGY:
+        return None
+    league = str(bet.get("league") or "").strip()
+    home, away = str(bet.get("home") or "").strip(), str(bet.get("away") or "").strip()
+    kickoff = _future_kickoff(bet.get("kickoff"))
+    market = str(bet.get("market_label") or "").strip()
+    direction = str(bet.get("selected_role") or "").strip()
+    odds = _finite_positive(bet.get("odds"))
+    try:
+        line = float(bet.get("selected_line"))
+        accuracy = float(bet.get("condition_accuracy"))
+        hits = int(bet.get("condition_hits"))
+        decided = int(bet.get("condition_decided"))
+    except (TypeError, ValueError):
+        return None
+    if (
+        not league or not home or not away or kickoff is None or market not in set(MARKET_LABELS.values())
+        or not direction or odds is None or odds <= 1 or not math.isfinite(line)
+        or not math.isfinite(accuracy) or accuracy <= .60 or decided < 10 or hits < 0 or hits > decided
+    ):
+        return None
+    return "\n".join([
+        "<b>足破 · 模擬倉新注</b>",
+        f"聯賽：{esc(league)}",
+        f"主隊：{esc(home)}",
+        f"客隊：{esc(away)}",
+        f"開賽：{kickoff.astimezone(HKT).strftime('%d/%m %H:%M')} HKT",
+        f"市場：{esc(market)}",
+        f"方向：{esc(direction)}",
+        f"盤口：{line:g}",
+        f"賠率：{odds:.2f}",
+        f"歷史命中率：{accuracy * 100:.1f}%（{hits}/{decided}）",
+        "模擬注碼：HK$1,000",
+        "只作模擬記錄，不作真實投注。",
+    ])
+
+
+def notify_new_condition_bets(ledger, bet_ids):
+    """Notify only actual, newly committed Footbreak condition simulation bets.
+
+    Missing league information fails closed so an alert can never be emitted
+    without the required public fixture context.
+    """
+    requested = {str(value) for value in bet_ids or [] if value}
+    if not requested:
+        return 0
+    state = load_state()
+    sent_ids = set(map(str, state.get("condition_simulation_bets") or []))
+    sent_order = [str(value) for value in state.get("condition_simulation_bets") or []]
+    sent = 0
+    for bet in ledger.get("bets") or []:
+        if not isinstance(bet, dict):
+            continue
+        bid = str(bet.get("bet_id") or "")
+        if bid not in requested or bid in sent_ids:
+            continue
+        text = _condition_bet_message(bet)
+        if text is None:
+            continue
+        send(text)
+        sent_ids.add(bid)
+        sent_order.append(bid)
+        state["condition_simulation_bets"] = sent_order[-STATE_LIMIT:]
         state["last_sent"] = dt.datetime.now(HKT).isoformat(timespec="seconds")
         save_state(state)
         sent += 1

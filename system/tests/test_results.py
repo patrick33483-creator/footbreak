@@ -22,9 +22,16 @@ from datetime import datetime
 
 
 class ResultSourceTests(unittest.TestCase):
-    def test_fixture_backfill_covers_official_and_shadow_ledgers(self) -> None:
+    def test_fixture_backfill_only_touches_active_condition_portfolio(self) -> None:
         ledger = {
-            "bets": [{"match_id": "5001"}],
+            "bets": [
+                {
+                    "match_id": "5001",
+                    "portfolio": settle.PORTFOLIO,
+                    "strategy": settle.STRATEGY,
+                },
+                {"match_id": "5001", "portfolio": "legacy", "strategy": "old"},
+            ],
             "shadow_bets": [{"match_id": "5001", "portfolio": "shadow"}],
         }
         predictions = [{
@@ -36,11 +43,10 @@ class ResultSourceTests(unittest.TestCase):
             path = Path(directory, "predictions.json")
             path.write_text(json.dumps(predictions), encoding="utf-8")
             with patch.object(settle, "PREDS", str(path)):
-                self.assertEqual(settle.backfill_fixture_ids(ledger), 2)
+                self.assertEqual(settle.backfill_fixture_ids(ledger), 1)
         self.assertEqual(ledger["bets"][0]["fixture_id"], "fixture-5001")
-        self.assertEqual(
-            ledger["shadow_bets"][0]["fixture_id"], "fixture-5001"
-        )
+        self.assertNotIn("fixture_id", ledger["bets"][1])
+        self.assertNotIn("fixture_id", ledger["shadow_bets"][0])
 
     def test_hkjc_results_are_normalized_for_footbreak_settlement(self) -> None:
         official = {
@@ -88,6 +94,8 @@ class ResultSourceTests(unittest.TestCase):
                     "condition": "-0.5", "side": "H",
                     "label": "主 -0.5", "odds": 2.0,
                     "stake": 100, "status": "PENDING",
+                    "portfolio": settle.PORTFOLIO,
+                    "strategy": settle.STRATEGY,
                 }],
                 "watch": {}, "log": [], "stats": {},
             }), encoding="utf-8")
@@ -324,8 +332,8 @@ class ResultSourceTests(unittest.TestCase):
         index = Path(SYSTEM_DIR.parent, "hkjc-dashboard", "index.html").read_text(
             encoding="utf-8"
         )
-        self.assertIn("styles.css?v=20260814-data-health-shadow-condition-granular-condition-signals-v1", index)
-        self.assertIn("app.js?v=20260814-data-health-shadow-condition-granular-condition-signals-v1", index)
+        self.assertIn("styles.css?v=20260815-data-health-condition-research-footbreak-condition-simulation", index)
+        self.assertIn("app.js?v=20260815-data-health-condition-research-footbreak-condition-simulation", index)
         self.assertIn("setInterval(() => refresh(true), 60000)", app)
         self.assertIn('class="history-result-cell"', app)
 

@@ -136,12 +136,54 @@ class GranularConditionNotificationTests(unittest.TestCase):
             self.assertNotIn(code, notify._public_condition_text(f"{code}｜方向 A→B→A"))
 
 
-    def test_legacy_notification_dispatch_is_disabled(self):
+    def test_t30_preparation_and_true_new_t5_dispatch_are_separate(self):
         source = (SYSTEM / "record_picks.py").read_text(encoding="utf-8")
         notifier = (SYSTEM / "notify.py").read_text(encoding="utf-8")
-        self.assertIn("notify_fresh_granular_conditions", source)
+        self.assertIn("notify_new_condition_bets", source)
+        self.assertIn("notify_fresh_granular_conditions(ledger, fresh_t30_events)", source)
+        self.assertIn('if stage == "T-30":', source)
+        self.assertNotIn(
+            'fresh_t30_events.append({"match_id": match_id, "stage": "T-5"})',
+            source,
+        )
         self.assertNotIn("notify_fresh_t5_signals(led", source)
         self.assertIn("舊有 Telegram 通知已停用", notifier)
+
+    def test_new_condition_bet_alert_is_true_new_chinese_and_fails_closed(self):
+        kickoff = (datetime.now(HKT) + timedelta(hours=2)).isoformat()
+        bet = {
+            "bet_id": "fixture|HIL|T-5|granular-condition-v1",
+            "portfolio": "footbreak_condition_simulation",
+            "strategy": "granular-condition-v1",
+            "league": "測試聯賽",
+            "home": "主隊",
+            "away": "客隊",
+            "kickoff": kickoff,
+            "market_label": "入球大細",
+            "selected_role": "大",
+            "selected_line": 2.5,
+            "odds": 1.82,
+            "condition_accuracy": .7,
+            "condition_hits": 7,
+            "condition_decided": 10,
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory, "state.json")
+            with patch.object(notify, "STATE", str(state)), patch.object(notify, "send") as sender:
+                self.assertEqual(notify.notify_new_condition_bets({"bets": [bet]}, [bet["bet_id"]]), 1)
+                self.assertEqual(notify.notify_new_condition_bets({"bets": [bet]}, [bet["bet_id"]]), 0)
+            message = sender.call_args.args[0]
+        for field in ("聯賽：測試聯賽", "主隊：主隊", "客隊：客隊", "開賽：", "市場：入球大細",
+                      "方向：大", "盤口：2.5", "賠率：1.82", "歷史命中率：70.0%（7/10）"):
+            self.assertIn(field, message)
+        for code in ("HDC", "HIL", "CHL", " A", " B", " C"):
+            self.assertNotIn(code, message)
+
+        bet["league"] = ""
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(notify, "STATE", str(Path(directory, "state.json"))), patch.object(notify, "send") as sender:
+                self.assertEqual(notify.notify_new_condition_bets({"bets": [bet]}, [bet["bet_id"]]), 0)
+            sender.assert_not_called()
 
 
 if __name__ == "__main__":

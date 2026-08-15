@@ -14,10 +14,14 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import model as M
 import predict as P
-import staking as K
 from record_picks import PREDICTION_ERA, PREDICTION_SCHEMA_VERSION
+from condition_portfolio import FIXED_STAKE, PORTFOLIO, STARTING_BANKROLL, STRATEGY
 
-OUT = os.path.join(os.path.dirname(HERE), "hkjc-dashboard", "data.json")
+OUT = os.environ.get(
+    "FOOTBREAK_DASHBOARD_DATA",
+    os.path.join(os.path.dirname(HERE), "hkjc-dashboard", "data.json"),
+)
+LEDGER_PATH = os.environ.get("FOOTBREAK_LEDGER_PATH", os.path.join(HERE, "sim_ledger.json"))
 HKT = dt.timezone(dt.timedelta(hours=8))
 DONE_MIN = 130.0        # 開賽後幾分鐘當完場,同 settle.py 一致
 
@@ -465,7 +469,7 @@ def _prediction_history_stats(rows, *, include_granular=True):
         "market_overall": market_metrics(rows),
         "three_stage_consensus": calculate_three_stage_consensus(rows),
         "three_stage_transitions": calculate_three_stage_transitions(rows),
-        "learning_status": "collecting_market_level_shadow_samples",
+        "learning_status": "collecting_market_level_samples",
     }
     # Never calculate a second mixed-era report inside all_history_audit.
     if include_granular:
@@ -538,9 +542,35 @@ def fix_hdc(obj, home=None, away=None):
     return obj
 
 
+def _public_bet(bet):
+    """Project a condition bet for the dashboard without settlement internals."""
+    visible = {
+        "bet_id", "portfolio", "strategy", "match_id", "league", "home", "away",
+        "kickoff", "fixture_id", "league_id", "market_label", "selected_line",
+        "selected_role", "label", "odds", "stake", "stage", "first_stage", "status",
+        "simulation_only", "real_betting_enabled", "created_at", "condition_accuracy",
+        "condition_hits", "condition_decided", "condition_badge", "condition_odds_tier",
+        "result", "pnl", "settled_at", "score", "settlement_source", "void_reason",
+    }
+    return {key: value for key, value in bet.items() if key in visible}
+
+
+def _public_log_entries(rows):
+    """Never leak retained legacy/shadow state while reset is pending."""
+    output = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        text = json.dumps(row, ensure_ascii=False, sort_keys=True)
+        if "影子" in text or "shadow" in text.lower():
+            continue
+        output.append(row)
+    return output[-30:]
+
+
 def main():
     preds = json.load(open(os.path.join(HERE, "predictions.json"), encoding="utf-8"))
-    lp = os.path.join(HERE, "sim_ledger.json")
+    lp = LEDGER_PATH
     led = json.load(open(lp, encoding="utf-8")) if os.path.exists(lp) else {"bets": [], "log": []}
 
     for r in preds:
@@ -603,13 +633,19 @@ def main():
         except Exception:
             r["fc"] = None
 
-    bets = led.get("bets", [])
-    shadow_bets = led.get("shadow_bets", [])
-    pend = [b for b in bets if b["status"] == "PENDING"]
-    done = [b for b in bets if b["status"] == "SETTLED"]
-    bank = led.get("bankroll", P.BANKROLL)
+    # Public payloads must never display legacy main/shadow rows, including
+    # before the guarded reset. Only this isolated fixed-stake portfolio is
+    # observable by the dashboard.
+    bets = [
+        bet for bet in (led.get("bets") or [])
+        if isinstance(bet, dict)
+        and bet.get("portfolio") == PORTFOLIO
+        and bet.get("strategy") == STRATEGY
+    ]
+    pend = [bet for bet in bets if bet.get("status") == "PENDING"]
+    done = [bet for bet in bets if bet.get("status") == "SETTLED"]
+    bank = STARTING_BANKROLL
     S = led.get("stats") or {}
-    _STK = K.stage()
     _NTF = {"last_sent": None, "n_bets": 0, "n_settled": 0,
             "n_queue": 0, "n_sweeps": 0, "last_sweep": None}
     _nf = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -619,7 +655,7 @@ def main():
             with open(_nf, encoding="utf-8") as _f:
                 _ns = json.load(_f)
             _NTF = {"last_sent": _ns.get("last_sent"),
-                    "n_bets": len(_ns.get("bets") or []),
+                    "n_bets": len(_ns.get("condition_simulation_bets") or []),
                     "n_settled": len(_ns.get("settled") or []),
                     "n_queue": len(_ns.get("queue") or []),
                     "n_sweeps": len(_ns.get("sweeps") or []),
@@ -628,21 +664,23 @@ def main():
             pass
     ledger = {
         "bankroll": bank,
-        "bets": sorted(bets, key=lambda b: b["kickoff"]),
-        "shadow_bets": sorted(shadow_bets, key=lambda b: b.get("kickoff") or ""),
-        "log": led.get("log", [])[-30:],
+        "bets": [_public_bet(bet) for bet in sorted(bets, key=lambda b: b.get("kickoff") or "")],
+        "log": _public_log_entries(led.get("log", [])),
         "stats": {
-            "n_pending": len(pend),
-            "n_voided": sum(1 for b in bets if b["status"] == "VOIDED"),
-            "n_settled": len(done),
-            "open_stake": sum(b["stake"] for b in pend),
-            "open_pct": (sum(b["stake"] for b in pend) / bank) if bank else 0,
-            "pnl": sum(b.get("pnl") or 0 for b in done),
-            "turnover": sum(b["stake"] for b in done),
-            "roi": (sum(b.get("pnl") or 0 for b in done)
-                    / sum(b["stake"] for b in done)) if done else None,
-            "n_won": sum(1 for b in done if (b.get("pnl") or 0) > 0),
-            "n_lost": sum(1 for b in done if (b.get("pnl") or 0) < 0),
+            "portfolio": PORTFOLIO,
+            "strategy": STRATEGY,
+            "starting_bankroll": STARTING_BANKROLL,
+            "fixed_stake": FIXED_STAKE,
+            "n_pending": S.get("n_pending", len(pend)),
+            "n_voided": S.get("n_voided", sum(1 for bet in bets if bet.get("status") == "VOIDED")),
+            "n_settled": S.get("n_settled", len(done)),
+            "open_stake": S.get("open_stake", sum(float(bet.get("stake") or 0) for bet in pend)),
+            "open_pct": S.get("open_pct", (sum(float(bet.get("stake") or 0) for bet in pend) / bank) if bank else 0),
+            "pnl": S.get("pnl", sum(float(bet.get("pnl") or 0) for bet in done)),
+            "turnover": S.get("turnover", sum(float(bet.get("stake") or 0) for bet in done)),
+            "roi": S.get("roi"),
+            "n_won": sum(1 for bet in done if bet.get("result") in ("Won", "Half Won")),
+            "n_lost": sum(1 for bet in done if bet.get("result") in ("Lost", "Half Lost")),
             "n_decided": S.get("n_decided", 0),
             "hits": S.get("hits", 0),
             "hit_rate": S.get("hit_rate"),
@@ -652,17 +690,17 @@ def main():
             "res_counts": {k: sum(1 for b in done if b.get("result") == k)
                            for k in ("Won", "Half Won", "Refunded",
                                      "Half Lost", "Lost")},
-            "daily_cap": bank * 1.00,
-            "open_cap": bank * 1.00,
-            "single_cap_pct": _STK["cap"],
-            "conf_floor": P.CONF_FLOOR,
-            "staking": _STK,
             "notify": _NTF,
             "bet_stage": "T-5",
+            "rules": {
+                "stake": FIXED_STAKE,
+                "historical_hit_rate": ">60%",
+                "minimum_decided": 10,
+                "new_t5_only": True,
+            },
             "n_watch": len(watch),
             "n_stage_preds": sum(len(w.get("stages") or []) for w in watch.values()),
         },
-        "shadow_stats": led.get("shadow_stats") or {},
     }
 
     # 純預測準繩度記分板(accuracy.py 出,冇就當冇)
@@ -717,8 +755,16 @@ def main():
         "prediction_history": prediction_history,
     }
     os.makedirs(os.path.dirname(OUT), exist_ok=True)
-    json.dump(out, open(OUT, "w", encoding="utf-8"), ensure_ascii=False,
-              separators=(",", ":"))
+    fd, temporary = tempfile.mkstemp(prefix=".dashboard-data-", dir=os.path.dirname(OUT))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(out, handle, ensure_ascii=False, separators=(",", ":"))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, OUT)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
     kb = os.path.getsize(OUT) / 1024
     _an = f" · 準繩度 {acc['n_matches']} 場" if acc else ""
     print(f"{len(preds)} 場(隱藏已完結 {n_hidden} 場) · 純預測 {n_fc} 場{_an} · "

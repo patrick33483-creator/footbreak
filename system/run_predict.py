@@ -297,7 +297,7 @@ def analyse_match(m, fx, wx_city_override=None, news=None, prev_snap=None,
                 # A fallback quote is only a bounded diagnostic/forecast
                 # continuity aid.  It is never an independent current market
                 # benchmark and therefore can never enable EV, Kelly, an
-                # official/shadow portfolio entry, or notification.
+                # retired portfolio entry, or notification.
                 sharp_reference_available = provider_live and not fallback_used
                 # PinnAPI does not expose an Optic-style historical opening
                 # endpoint.  Preserve Footbreak's first observed valid quote.

@@ -89,7 +89,7 @@ function applyData(raw) {
     });
   }
   DATA = raw;
-  LED = raw.ledger || { bets: [], shadow_bets: [], stats: {}, shadow_stats: {}, log: [] };
+  LED = raw.ledger || { bets: [], stats: {}, log: [] };
   LIST = (raw.matches || []).slice()
     .sort((a, b) => kt(a.kickoff_hkt) - kt(b.kickoff_hkt));
   $('#genAt').textContent = hkStamp(raw.generated_at) + ' HKT';
@@ -176,7 +176,6 @@ function render() {
   $('#viewPred').hidden = VIEW !== 'pred';
   $('#viewFc').hidden = VIEW !== 'fc';
   $('#viewLedger').hidden = VIEW !== 'ledger';
-  $('#viewShadow').hidden = VIEW !== 'shadow';
   $('#viewChal').hidden = VIEW !== 'chal';
   $('#viewHealth').hidden = VIEW !== 'health';
   $('#viewCondition').hidden = VIEW !== 'condition';
@@ -190,8 +189,6 @@ function render() {
     if (SEL) renderDetail(SEL);
   } else if (VIEW === 'fc') {
     renderKpis(); renderFc();
-  } else if (VIEW === 'shadow') {
-    renderShadow();
   } else if (VIEW === 'chal') {
     renderChallenger();
     if (CHAL.state === 'idle') void loadChallenger({});
@@ -1506,190 +1503,64 @@ function stakeStageCard() {
 }
 
 function renderLedger() {
-  const s = LED.stats || {}, bets = LED.bets || [];
+  const s = LED.stats || {}, bets = (LED.bets || []).filter((bet) =>
+    bet && bet.portfolio === 'footbreak_condition_simulation' && bet.strategy === 'granular-condition-v1'
+  );
   const V = $('#viewLedger');
   const K = [
-    ['本金', money(LED.bankroll), ''],
-    ['在場注碼', money(s.open_stake), 'amber'],
-    ['佔本金', pc(s.open_pct, 1), (s.open_pct || 0) > 0.3 ? 'bad' : 'good'],
-    ['待決', s.n_pending, ''],
-    ['已撤回', s.n_voided, ''],
-    ['已結算', s.n_settled, ''],
+    ['起始本金', money(s.starting_bankroll ?? LED.bankroll), ''],
+    ['固定注碼', money(s.fixed_stake), ''],
+    ['待決', s.n_pending || 0, ''],
+    ['已結算', s.n_settled || 0, ''],
     ['累計盈虧', s.n_settled ? money(s.pnl) : '—', (s.pnl || 0) >= 0 ? 'good' : 'bad'],
     ['ROI', s.roi == null ? '—' : pc(s.roi, 2), (s.roi || 0) >= 0 ? 'good' : 'bad'],
     ['命中率', s.n_decided ? `${pc(s.hit_rate, 1)} (${s.hits}/${s.n_decided})` : '—',
       s.n_decided ? ((s.hit_rate || 0) >= 0.5 ? 'good' : 'bad') : ''],
-    ['戶口結餘', money(s.equity != null ? s.equity : LED.bankroll),
-      (s.pnl || 0) >= 0 ? 'good' : 'bad'],
+    ['模擬結餘', money(s.equity ?? LED.bankroll), (s.pnl || 0) >= 0 ? 'good' : 'bad'],
   ];
-
-  const capBar = (lbl, used, cap) => {
-    const t = cap ? Math.min(1, used / cap) : 0;
-    return `<div class="cap">
-      <div class="cap-h"><span>${lbl}</span><span class="mono">${money(used)} / ${money(cap)}</span></div>
-      <div class="cap-track"><div class="cap-fill ${t > .9 ? 'bad' : t > .7 ? 'warn' : ''}" style="width:${(t * 100).toFixed(1)}%"></div></div>
-    </div>`;
-  };
-
+  const rule = s.rules || {};
   let h = `<div class="ledger-head">
-    <h1 class="pg-h">模擬倉 <span class="sub">${stkLabel(s)} · 單場上限 ${pc(s.single_cap_pct, 0)} · 信念門檻 ${s.conf_floor}</span></h1>
+    <h1 class="pg-h">條件模擬倉 <span class="sub">只作模擬記錄，不作真實投注</span></h1>
     <div class="kpis wide">${K.map(([l, v, c]) =>
       `<div class="kpi"><span class="kpi-lbl">${l}</span><span class="kpi-val ${c}">${v}</span></div>`).join('')}</div>
   </div>`;
-
-  h += `<div class="grid g2">
-    <div class="card"><h2 class="card-h">組合上限使用率</h2>
-      ${capBar('在場總曝險(不設上限)', s.open_stake, s.open_cap)}
-      ${capBar('今日曝險(不設上限)', dayStake(bets), s.daily_cap)}
-      <p class="mx-note">凱利只在機率完全校準時才最優。本模型基礎層係盤口翻譯器,EV 系統性高估風險高,所以用分數凱利起步,再加單場同組合上限控制單日爆倉風險。</p>
+  h += `<div class="card"><h2 class="card-h">建立規則</h2>
+    <div class="rule-grid">
+      <div><b>建立時點</b><span>只限新保存的 T-5 預測；重跑、T-30 與歷史回填不會建立注單。</span></div>
+      <div><b>歷史條件</b><span>命中率嚴格高於 ${esc(rule.historical_hit_rate || '60%')}，且最少 ${esc(rule.minimum_decided || 10)} 個已結算有效樣本。</span></div>
+      <div><b>市場與防呆</b><span>讓球、入球大細、角球大細可各一注；同市場方向或盤口矛盾即跳過。</span></div>
+      <div><b>資料證據</b><span>必須有有效方向、有限盤口、賠率大於 1，以及可證明在開賽前觀測的賠率。</span></div>
     </div>
-    ${logCard()}
   </div>`;
-
-  h += stakeStageCard();
-  h += notifyCard();
-
+  if (s.n_settled) h += `<div class="grid g2">${equityCard(s)}${resultCard(s)}</div>${marketCard(s)}`;
   if (!bets.length) {
-    h += `<div class="card"><div class="empty2">仲未有任何推介記錄</div></div>`;
-    V.innerHTML = h; return;
+    h += `<div class="card"><div class="empty2">尚未有符合條件的模擬注單。系統會在新保存的 T-5 預測才作評估。</div></div>`;
+  } else {
+    h += `<div class="card"><h2 class="card-h">條件模擬注單 <span class="sub">${bets.length} 筆 · 每注 ${money(s.fixed_stake || 1000)}</span></h2>
+      <div class="tbl-wrap"><table class="t bets condition-bets"><thead><tr>
+        <th>開賽</th><th>聯賽 / 對賽</th><th>市場</th><th>方向</th><th>盤口</th><th>賠率</th><th>歷史命中率</th><th>注碼</th><th>狀態</th><th>結果</th><th>盈虧</th>
+      </tr></thead><tbody>${bets.map(conditionBetRow).join('')}</tbody></table></div></div>`;
   }
-
-  if (s.n_settled) h += `<div class="grid g2">${equityCard(s)}${resultCard(s)}</div>`;
-  if (s.n_settled) h += marketCard(s);
-
-  h += `<div class="card"><h2 class="card-h">注單 <span class="sub">${bets.length} 筆 · 撳一下睇三階段變化</span></h2>
-    <div class="tbl-wrap"><table class="t bets">
-      <tr><th></th><th>開賽</th><th>賽事</th><th>市場</th><th>投注</th><th>賠率</th><th>注碼</th>
-          <th>勝率</th><th>EV</th><th>信念</th><th>最新</th><th>狀態</th><th>結果</th><th>比分</th><th>盈虧</th></tr>
-      ${bets.map((b, i) => betRow(b, i)).join('')}
-    </table></div></div>`;
-
   V.innerHTML = h;
-  bindBetRows('#viewLedger');
 }
 
-function dayStake(bets) {
-  const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Hong_Kong' });
-  return bets.filter((b) => b.status === 'PENDING' && String(b.kickoff).slice(0, 10) === today)
-             .reduce((a, b) => a + b.stake, 0);
-}
-
-function betRow(b, i, prefix = 'official') {
-  const H = b.history || [];
-  const chg = H.filter((x) => x.action !== '維持').length;
-  const target = `${prefix}-hist-${i}`;
-  const main = `<tr class="brow ${b.status.toLowerCase()}" data-i="${i}" data-target="${target}">
-    <td class="exp">${H.length ? '▸' : ''}</td>
+function conditionBetRow(b) {
+  const result = b.result ? `<span class="respill ${RES_CLS[b.result] || ''}">${RES_LBL[b.result] || b.result}</span>` : '<span class="dim">—</span>';
+  const history = numeric(b.condition_accuracy) == null ? '—' : `${pc(b.condition_accuracy, 1)} (${b.condition_hits ?? 0}/${b.condition_decided ?? 0})`;
+  const status = `<span class="stpill ${String(b.status || '').toLowerCase()}">${ST_LBL[b.status] || b.status || '—'}</span>`;
+  const pnl = b.pnl == null ? '—' : money(b.pnl);
+  const tone = (b.pnl || 0) > 0 ? 'ev-p' : (b.pnl || 0) < 0 ? 'ev-n' : 'dim';
+  return `<tr class="brow ${String(b.status || '').toLowerCase()}">
     <td class="mono nowrap">${hkDay(b.kickoff)} ${hkClock(b.kickoff)}</td>
-    <td>${esc(b.home)} <span class="dim">v</span> ${esc(b.away)}<div class="cell-sub">${esc(b.league)}</div></td>
-    <td class="lbl">${esc(marketLabel(b.market || b.code))}</td>
-    <td><b>${esc(publicText(b.label.replace(b.market, '').trim()))}</b></td>
-    <td>${f2(b.odds)}</td>
-    <td class="stk">${money(b.stake)}</td>
-    <td>${pc(b.model_prob)}</td>
-    <td class="${b.ev == null ? 'dim' : b.ev > 0 ? 'ev-p' : 'ev-n'}">${b.ev == null ? '—' : sg(b.ev * 100, 2) + '%'}</td>
-    <td class="${convClass(b.conviction)}">${f2(b.conviction)}</td>
-    <td>${esc(b.stage)}${chg > 1 ? `<span class="minitag">${chg} 次變動</span>` : ''}</td>
-    <td><span class="stpill ${b.status.toLowerCase()}">${ST_LBL[b.status] || b.status}</span></td>
-    <td>${b.result ? `<span class="respill ${RES_CLS[b.result] || ''}">${RES_LBL[b.result] || b.result}</span>` : '<span class="dim">—</span>'}</td>
-    <td class="mono nowrap">${scoreCell(b)}</td>
-    <td class="${(b.pnl || 0) > 0 ? 'ev-p' : (b.pnl || 0) < 0 ? 'ev-n' : 'dim'}">${b.pnl == null ? '—' : money(b.pnl)}</td>
+    <td><b>${esc(b.league || '—')}</b><div class="cell-sub">主隊：${esc(b.home || '—')}／客隊：${esc(b.away || '—')}</div></td>
+    <td class="lbl">${esc(marketLabel(b.market_label))}</td>
+    <td><b>${esc(publicText(b.selected_role || '—'))}</b></td>
+    <td class="mono">${numeric(b.selected_line) == null ? '—' : numeric(b.selected_line).toString()}</td>
+    <td class="mono">${f2(b.odds)}</td>
+    <td class="mono">${history}</td>
+    <td class="stk">${money(b.stake)}</td><td>${status}</td><td>${result}</td>
+    <td class="${tone}">${pnl}</td>
   </tr>`;
-  const hist = `<tr class="hrowwrap"><td colspan="15" class="histcell">
-    <div class="hist-panel" id="${target}">
-      ${b.void_reason ? `<div class="void-note">撤回原因:${esc(b.void_reason)}</div>` : ''}
-      <ol class="tl">${H.map((x) => `<li class="tl-i ${x.action === '轉觀望' ? 'x' : x.action === '維持' ? 'keep' : ''}">
-        <span class="tl-dot">${ACT_ICO[x.action] || '·'}</span>
-        <div class="tl-b">
-          <div class="tl-h"><b>${esc(x.action)}</b>
-            <span class="fx-tag ${TAG[x.stage] || 'tag-wait'}">${esc(x.stage)}</span>
-            <span class="tl-ts mono">${hkStamp(x.ts)}</span></div>
-          <div class="tl-d">
-            ${x.from ? `<span class="tl-kv">由 <b>${esc(x.from)}</b> → <b>${esc(x.to)}</b></span>` : ''}
-            ${x.label && !x.from ? `<span class="tl-kv">${esc(publicText(x.label))}</span>` : ''}
-            ${x.odds ? `<span class="tl-kv">賠率 <b>${f2(x.odds)}</b></span>` : ''}
-            ${x.add ? `<span class="tl-kv">加 <b>${money(x.add)}</b> → ${money(x.stake)}</span>`
-                    : x.stake ? `<span class="tl-kv">注碼 <b>${money(x.stake)}</b></span>` : ''}
-            ${x.ev != null ? `<span class="tl-kv">EV <b class="${x.ev > 0 ? 'ev-p' : 'ev-n'}">${sg(x.ev * 100, 2)}%</b></span>` : ''}
-            ${x.conviction != null ? `<span class="tl-kv">信念 <b class="${convClass(x.conviction)}">${f2(x.conviction)}</b></span>` : ''}
-            ${x.reason ? `<span class="tl-kv">${esc(publicText(x.reason))}</span>` : ''}
-            ${x.result ? `<span class="tl-kv">判定 <b class="${RES_CLS[x.result] || ''}">${RES_LBL[x.result] || x.result}</b></span>` : ''}
-            ${x.pnl != null ? `<span class="tl-kv">盈虧 <b class="${x.pnl > 0 ? 'ev-p' : x.pnl < 0 ? 'ev-n' : 'dim'}">${money(x.pnl)}</b></span>` : ''}
-            ${x.score ? `<span class="tl-kv">比分 <b class="mono">${esc(x.score.goals)}</b>${x.score.corners ? ` · 角球 <b class="mono">${esc(x.score.corners)}</b>(${x.score.corners_total})` : ''}</span>` : ''}
-          </div>
-          ${x.final ? `<div class="tl-f mono">當時終值 · 總入球 ${f2(x.final.total)} · 主客差 ${sg(x.final.supremacy)} · 角球 ${f2(x.final.mu)}</div>` : ''}
-        </div></li>`).join('')}</ol>
-    </div></td></tr>`;
-  return main + hist;
-}
-
-function bindBetRows(container) {
-  $$(`${container} .bets tr.brow`).forEach((tr) => {
-    tr.onclick = () => {
-      const panel = document.getElementById(tr.dataset.target);
-      if (!panel) return;
-      panel.classList.toggle('open');
-      tr.classList.toggle('is-open');
-    };
-  });
-}
-
-function comparisonValue(value, formatter, cls = '') {
-  return `<span class="compare-value ${cls}">${value == null ? '—' : formatter(value)}</span>`;
-}
-
-function shadowComparisonCard(comparison) {
-  if (!comparison) return `<div class="card compare-card"><h2 class="card-h">同期表現對照</h2>
-    <div class="empty2">建立第一筆影子注後，系統會由同一時間點開始比較正式倉同影子倉。</div></div>`;
-  const official = comparison.official || {}, shadow = comparison.shadow || {};
-  const metrics = [
-    ['總注數', comparison.official_total_bets || 0, comparison.shadow_total_bets || 0, String],
-    ['已結算', official.n_settled || 0, shadow.n_settled || 0, String],
-    ['命中率', official.hit_rate, shadow.hit_rate, (x) => pc(x, 1)],
-    ['投注額', official.turnover, shadow.turnover, money],
-    ['盈虧', official.pnl, shadow.pnl, money],
-    ['ROI', official.roi, shadow.roi, (x) => pc(x, 2)],
-  ];
-  const side = (name, kind, data) => `<div class="compare-side ${kind}">
-    <div class="compare-side-head"><span>${name}</span><b>${data.n_settled || 0} 筆已結算</b></div>
-    <div class="compare-metrics">${metrics.map(([label, officialValue, shadowValue, formatter]) => {
-      const value = kind === 'official' ? officialValue : shadowValue;
-      const tone = ['盈虧', 'ROI'].includes(label) ? ((value || 0) >= 0 ? 'good' : 'bad') : '';
-      return `<div><span>${label}</span>${comparisonValue(value, formatter, tone)}</div>`;
-    }).join('')}</div></div>`;
-  return `<div class="card compare-card" data-testid="card-shadow-comparison">
-    <h2 class="card-h">同期表現對照 <span class="sub">由 ${hkStamp(comparison.period_start)} HKT 第一筆影子注開始</span></h2>
-    <div class="compare-grid">${side('正式模擬倉', 'official', official)}${side('confidence-only 影子倉', 'shadow', shadow)}</div>
-    <p class="compare-caution">兩邊統計完全分開；樣本未成熟時只作觀察，不會改動正式策略。</p></div>`;
-}
-
-function renderShadow() {
-  const s = LED.shadow_stats || {}, bets = LED.shadow_bets || [], V = $('#viewShadow');
-  const K = [
-    ['虛擬本金', money(LED.bankroll), ''], ['影子注碼', money(s.open_stake), 'amber'],
-    ['佔虛擬本金', pc(s.open_pct, 1), ''], ['待決', s.n_pending || 0, ''],
-    ['已撤回', s.n_voided || 0, ''], ['已結算', s.n_settled || 0, ''],
-    ['影子盈虧', s.n_settled ? money(s.pnl) : '—', (s.pnl || 0) >= 0 ? 'good' : 'bad'],
-    ['影子 ROI', s.roi == null ? '—' : pc(s.roi, 2), (s.roi || 0) >= 0 ? 'good' : 'bad'],
-    ['命中率', s.n_decided ? `${pc(s.hit_rate, 1)} (${s.hits}/${s.n_decided})` : '—', ''],
-    ['影子結餘', money(s.equity != null ? s.equity : LED.bankroll), (s.pnl || 0) >= 0 ? 'good' : 'bad'],
-  ];
-  let h = `<div class="ledger-head"><div class="ledger-title-row"><h1 class="pg-h">confidence-only 影子倉
-    <span class="sub">T-5 · 信念門檻 ${s.conf_floor || 58} · 固定 2% 虛擬本金</span></h1>
-    <button class="settle-btn" id="settleShadowNow" type="button">立即結算</button></div>
-    <div class="shadow-note" role="note"><strong>完全隔離</strong><span>T-5 confidence-only，固定 2%，無 PinnAPI 基準；不計入正式統計、學習或 Telegram。</span></div>
-    <div class="kpis wide">${K.map(([l, v, c]) => `<div class="kpi"><span class="kpi-lbl">${l}</span><span class="kpi-val ${c}">${v}</span></div>`).join('')}</div></div>`;
-  h += shadowComparisonCard(s.comparison);
-  if (!bets.length) h += `<div class="card"><div class="empty2">暫時未有影子注。系統只會記錄無獨立 PinnAPI 基準下的 T-5 高信念機會。</div></div>`;
-  else {
-    if (s.n_settled) h += `<div class="grid g2">${equityCard(s)}${resultCard(s)}</div>${marketCard(s)}`;
-    h += `<div class="card"><h2 class="card-h">影子注單 <span class="sub">${bets.length} 筆 · confidence-only</span></h2>
-      <div class="tbl-wrap"><table class="t bets"><tr><th></th><th>開賽</th><th>賽事</th><th>市場</th><th>投注</th><th>賠率</th><th>注碼</th><th>勝率</th><th>EV</th><th>信念</th><th>最新</th><th>狀態</th><th>結果</th><th>比分</th><th>盈虧</th></tr>
-      ${bets.map((b, i) => betRow(b, i, 'shadow')).join('')}</table></div></div>`;
-  }
-  V.innerHTML = h;
-  $('#settleShadowNow').onclick = () => refresh(false);
-  bindBetRows('#viewShadow');
 }
 
 function scoreCell(b) {
@@ -2376,7 +2247,7 @@ function healthBind() {
 
 /* ══════════════════════ 挑戰模型 · 隔離影子研究 ══════════════════════ */
 
-/* 純讀取 shadow-condition-report.json。此報告與既有挑戰模型、影子倉、
+/* 純讀取條件研究資料。此報告與既有挑戰模型、模擬倉、
  * 結算、注碼及通知完全分離；只呈現凍結後的前瞻條件診斷。 */
 const CONDITION_FILE = 'shadow-condition-report.json';
 const CONDITION_SYSTEM = 'footbreak';
@@ -2416,9 +2287,9 @@ function conditionKpi(label, value, sub) {
 }
 function renderCondition() {
   const V = $('#viewCondition'); if (!V) return;
-  const head = `<div class="ledger-head"><div><h1>條件影子報告</h1><p class="dim">只作報告 / 不自動套用</p></div><button class="settle-btn" id="conditionReload" type="button">重新讀取</button></div>`;
+  const head = `<div class="ledger-head"><div><h1>條件研究報告</h1><p class="dim">只作報告 / 不自動套用</p></div><button class="settle-btn" id="conditionReload" type="button">重新讀取</button></div>`;
   if (CONDITION.state === 'idle' || CONDITION.state === 'loading') {
-    V.innerHTML = head + '<div class="card"><div class="empty2" data-testid="state-condition-loading">正在讀取條件影子報告…</div></div>';
+    V.innerHTML = head + '<div class="card"><div class="empty2" data-testid="state-condition-loading">正在讀取條件研究報告…</div></div>';
   } else if (CONDITION.state === 'missing') {
     V.innerHTML = head + '<div class="card"><div class="empty2" data-testid="state-condition-missing">報告尚未生成；不會回填凍結前歷史。</div></div>';
   } else if (CONDITION.state === 'error') {
@@ -2646,7 +2517,7 @@ function challengerMarketCard(market, test) {
   }
 
   body += `<div class="chal-foot"><span>自動套用:<b class="bad-txt">否</b></span>
-    <span>影子研究,唔影響現行預測</span></div>`;
+    <span>獨立研究,唔影響現行預測</span></div>`;
 
   return `<div class="card chal-card ${reviewing ? 'is-review' : ''}" data-testid="card-challenger-${market}">
     <h2 class="card-h">${name}

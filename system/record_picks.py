@@ -1,20 +1,14 @@
-"""三段預測記錄 + 模擬倉。
+"""三段 Footbreak 預測記錄與固定注碼條件模擬倉。
 
-規則(用戶定):
-  首預  每晚 23:59 掃馬會全板,每場只做一次。參考初盤 / 開盤結構。
-  T-30  開賽前 30 分鐘 —— 陣容、傷患出咗,賠率漸定。只記錄,不落注。
-  T-5   開賽前 5 分鐘  —— 唯一可以落注嘅時點。綜合天氣、傷患、陣容、
-                          賠率變化做最終決定。
-
-所以 sim_ledger.json 有兩層:
-  watch  —— 每場嘅三段預測記錄(全部階段都寫)
-  bets   —— 真正落注(只由 T-5 產生)
+所有階段均保存為預測證據；只有首次保存的 T-5 快照，才可依據已結算
+歷史細緻條件建立 HK$1,000 模擬注。T-30、重跑和歷史回填永不建注。
 """
 import json
 import os
 import sys
 import tempfile
 import datetime as dt
+from pathlib import Path
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -22,17 +16,18 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from analysis.learning_store import LearningStore
-import predict as P
-from settle import recompute_shadow_stats
+from condition_portfolio import (
+    AUDIT_LIMIT, DECISION_STAGE, LOG_LIMIT, STARTING_BANKROLL, evaluate_new_t5,
+)
+from settle import condition_bets, recompute
 
 LEDGER = os.path.join(HERE, "sim_ledger.json")
 HKT = dt.timezone(dt.timedelta(hours=8))
 
-BANKROLL = 50000.0
-DAILY_CAP = 1.00   # 用戶指定:單日不設限
-OPEN_CAP = 1.00    # 用戶指定:在場不設限
-BET_STAGE = "T-5"          # 唯一落注階段
-MIN_BET_LEAD_SECONDS = 5   # 少過 5 秒已無實際通知/落注時間
+BANKROLL = STARTING_BANKROLL
+BET_STAGE = DECISION_STAGE
+MIN_BET_LEAD_SECONDS = 5   # 少過五秒，視為沒有可靠的賽前建立時間
+ACCURACY_HISTORY = os.path.join(HERE, "accuracy_history.json")
 PREDICTION_ERA = "2026-08-10-market-learning-v2"
 PREDICTION_SCHEMA_VERSION = 2
 
@@ -40,17 +35,17 @@ PREDICTION_SCHEMA_VERSION = 2
 def load():
     if os.path.exists(LEDGER):
         with open(LEDGER, encoding="utf-8") as handle:
-            d = json.load(handle)
+            data = json.load(handle)
     else:
-        d = {"bankroll": BANKROLL, "bets": [], "shadow_bets": [], "log": [],
-             "stats": {}, "shadow_stats": {}}
-    d.setdefault("watch", {})
-    d.setdefault("bets", [])
-    d.setdefault("shadow_bets", [])
-    d.setdefault("log", [])
-    d.setdefault("stats", {})
-    d.setdefault("shadow_stats", {})
-    return d
+        data = {"bankroll": BANKROLL, "bets": [], "log": [], "stats": {}, "watch": {}}
+    data.setdefault("watch", {})
+    data.setdefault("bets", [])
+    data.setdefault("log", [])
+    data.setdefault("stats", {})
+    # Retired state stays untouched until the explicit reset, but active code
+    # does not create, display, settle, or otherwise read it.
+    data["log"] = [entry for entry in data["log"] if isinstance(entry, dict)][-LOG_LIMIT:]
+    return data
 
 
 def save(led):
@@ -65,15 +60,6 @@ def save(led):
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
-
-
-def day_open(led, day):
-    return sum(b["stake"] for b in led["bets"]
-               if b["status"] == "PENDING" and b["kickoff"][:10] == day)
-
-
-def total_open(led):
-    return sum(b["stake"] for b in led["bets"] if b["status"] == "PENDING")
 
 
 def _slim_adjs(adjs):
@@ -119,8 +105,8 @@ def _market_predictions(candidates, observed_at=None):
             "condition": best.get("condition"),
             # Preserve the selected market's exact numeric line for isolated
             # notification-only T-5 signals.  This does not affect pricing,
-            # staking, settlement, model learning, or any official/shadow
-            # ledger decision.
+            # staking, settlement, model learning, or condition-portfolio
+            # decision.
             "line": best.get("line", best.get("condition")),
             "side": best.get("side"),
             "label": best.get("label"),
@@ -174,87 +160,6 @@ def _odds_journal(r, market_predictions):
     return journal
 
 
-def _shadow_pick(result):
-    """Return the isolated no-benchmark T-5 shadow decision, if eligible.
-
-    This intentionally never calls the EV, Kelly, dynamic-threshold, or
-    official-staking paths.  It is a confidence-only observation portfolio.
-    """
-    if result.get("stage") != BET_STAGE:
-        return None
-    if result.get("source") == "fallback":
-        # A cached PinnAPI quote is diagnostic-only.  Do not let it enter even
-        # the isolated no-benchmark shadow portfolio.
-        return None
-    if result.get("sharp_reference_available"):
-        return None
-    if float(result.get("conviction") or 0) < float(P.CONF_FLOOR):
-        return None
-    candidates = list(result.get("candidates") or [])
-    if not candidates:
-        return None
-
-    def decided_probability(candidate):
-        probability = float(candidate.get("prob") or 0)
-        push = float(candidate.get("push") or 0)
-        return probability / max(1e-9, 1.0 - push)
-
-    # Main lines are chosen before probability, so a peripheral alternative
-    # never supplants the market's liquid central line merely on probability.
-    main = [candidate for candidate in candidates if candidate.get("is_main")]
-    pool = main or candidates
-    selected = max(
-        pool,
-        key=lambda candidate: (
-            decided_probability(candidate), float(candidate.get("prob") or 0),
-        ),
-    )
-    return {
-        "market": selected.get("market"), "code": selected.get("code"),
-        "condition": selected.get("condition"), "side": selected.get("side"),
-        "label": f"{selected.get('market')} {selected.get('label')}",
-        "odds": selected.get("odds"), "prob": selected.get("prob"),
-        "push": selected.get("push"), "is_main": bool(selected.get("is_main")),
-        "conviction": result.get("conviction"),
-        "stake": round(float(P.BANKROLL) * 0.02, 2),
-    }
-
-
-def _record_shadow_bet(ledger, result, match_id, now):
-    """Persist one immutable shadow row per fixture without touching official bets."""
-    shadow_pick = _shadow_pick(result)
-    if not shadow_pick:
-        return None
-    shadow_bets = ledger.setdefault("shadow_bets", [])
-    if any(str(bet.get("match_id")) == str(match_id) for bet in shadow_bets):
-        return None
-    bet_id = (f"shadow|{match_id}|{shadow_pick['code']}|"
-              f"{shadow_pick['condition']}|{shadow_pick['side']}")
-    shadow_bets.append({
-        "bet_id": bet_id, "match_id": str(match_id),
-        "league": result.get("league"), "fixture_id": result.get("fixture_id"),
-        "league_id": result.get("league_id"), "home": result.get("home"),
-        "away": result.get("away"), "home_en": result.get("home_en"),
-        "away_en": result.get("away_en"), "kickoff": result.get("kickoff_hkt"),
-        "model_source": result.get("model_source"),
-        "sharp_reference_available": False,
-        "market": shadow_pick["market"], "code": shadow_pick["code"],
-        "condition": shadow_pick["condition"], "side": shadow_pick["side"],
-        "label": shadow_pick["label"], "odds": shadow_pick["odds"],
-        "stake": shadow_pick["stake"], "model_prob": shadow_pick["prob"],
-        "push_prob": shadow_pick["push"], "ev": None, "fair": None,
-        "kelly": None, "kelly_full": None, "conviction": shadow_pick["conviction"],
-        "confidence_only": True, "shadow_only": True, "portfolio": "shadow",
-        "first_stage": BET_STAGE, "stage": BET_STAGE, "status": "PENDING",
-        "result": None, "pnl": None, "created_at": now,
-        "history": [{"ts": now, "stage": BET_STAGE, "action": "影子注建立",
-                     "label": shadow_pick["label"], "odds": shadow_pick["odds"],
-                     "stake": shadow_pick["stake"],
-                     "reason": "confidence-only；固定 2% 本金；無 PinnAPI 基準；不計 EV"}],
-    })
-    return bet_id
-
-
 def _snap(r, now):
     """把一次預測壓成一個階段記錄。"""
     can_bet = bool(r.get("can_bet"))
@@ -278,6 +183,7 @@ def _snap(r, now):
         "schema_version": PREDICTION_SCHEMA_VERSION,
         "stage": r["stage"],
         "ts": now,
+        "kickoff": r.get("kickoff_hkt"),
         # Fixture context is stored with every immutable stage snapshot so the
         # offline challenger can encode league/home-away context without
         # joining mutable live-watch state.
@@ -293,8 +199,8 @@ def _snap(r, now):
         "sharp_reference_note": r.get("sharp_reference_note"),
         # Source provenance is deliberately persisted with the immutable stage
         # snapshot so source-health analysis can be calculated entirely from
-        # raw rows.  `fallback` never authorises a pick, EV, Kelly, official
-        # portfolio row, shadow row, or notification.
+        # raw rows.  A fallback source never authorises a condition simulation
+        # bet or notification.
         "provider_live": bool(r.get("provider_live")),
         "source": r.get("source"),
         "data_age_seconds": r.get("data_age_seconds"),
@@ -302,7 +208,7 @@ def _snap(r, now):
         "pinnapi_fixture_identity": r.get("pinnapi_fixture_identity"),
         "verdict": verdict,
         "no_bet_reason": r.get("no_bet_reason"),
-        # 只有 T-5 嘅 pick 會變成真注;前兩段只係傾向
+        # 模型 pick 只屬預測記錄；建立模擬注另由歷史條件規則處理。
         "pick": ({"market": pick["market"], "code": pick["code"],
                   "condition": pick["condition"], "side": pick["side"],
                   "label": f"{pick['market']} {pick['label']}",
@@ -372,57 +278,73 @@ def _record_learning_snapshot(mid, r, snap):
         )
 
 
-def sync(preds_file="predictions.json"):
-    led = load()
-    with open(os.path.join(HERE, preds_file), encoding="utf-8") as handle:
-        preds = json.load(handle)
-    now = dt.datetime.now(HKT).isoformat(timespec="seconds")
-    changes, notes = [], []
-    fresh_condition_signal_ids = []
+def _condition_change(bet):
+    rate = float(bet.get("condition_accuracy") or 0) * 100
+    hits = int(bet.get("condition_hits") or 0)
+    decided = int(bet.get("condition_decided") or 0)
+    line = bet.get("selected_line")
+    line_text = f" {float(line):g}" if isinstance(line, (int, float)) else ""
+    return (
+        f"{bet.get('home') or '—'} 對 {bet.get('away') or '—'} — 條件模擬注："
+        f"{bet.get('market_label') or '—'} {bet.get('selected_role') or '—'}{line_text}，"
+        f"賠率 {float(bet.get('odds') or 0):.2f}，歷史命中率 {rate:.1f}%（{hits}/{decided}）"
+    )
 
-    for r in preds:
-        mid = str(r["match_id"])
-        stage = r["stage"]
+
+def sync(preds_file="predictions.json"):
+    """Persist prediction snapshots and evaluate only newly saved T-5 rows.
+
+    The decision and audit are committed atomically with the new snapshot. A
+    replayed stage is merely refreshed as prediction evidence; it cannot
+    create, alter, or withdraw a condition simulation bet.
+    """
+    ledger = load()
+    with open(os.path.join(HERE, preds_file), encoding="utf-8") as handle:
+        predictions = json.load(handle)
+    now = dt.datetime.now(HKT).isoformat(timespec="seconds")
+    changes, notes, fresh_bet_ids, fresh_t30_events = [], [], [], []
+
+    for result in predictions:
+        match_id = str(result["match_id"])
+        stage = result["stage"]
         if stage not in STAGE_ORDER:
-            continue                      # 待入窗 — 未到第一個預測點,唔記錄
+            continue
+        t5_safe_to_evaluate = True
         if stage == BET_STAGE:
             try:
-                kickoff = dt.datetime.fromisoformat(r["kickoff_hkt"])
+                kickoff = dt.datetime.fromisoformat(str(result["kickoff_hkt"]))
                 if kickoff.tzinfo is None:
                     kickoff = kickoff.replace(tzinfo=HKT)
                 lead = (kickoff - dt.datetime.now(HKT)).total_seconds()
             except (KeyError, TypeError, ValueError):
                 lead = -1
             if lead < MIN_BET_LEAD_SECONDS:
+                t5_safe_to_evaluate = False
                 notes.append(
-                    f"⏭ {r.get('home')} v {r.get('away')} — "
-                    "T-5 到帳本前已過安全落注時間，沒有建立或更新注單"
+                    f"{result.get('home') or '—'} v {result.get('away') or '—'} — "
+                    "T-5 已保存為預測證據，但到帳本前已過安全落注時間，沒有建立條件模擬注"
                 )
-                continue
 
-        # ── 1. 寫入 / 更新階段記錄 ────────────────────────────
-        w = led["watch"].setdefault(mid, {
-            "match_id": mid, "league": r["league"],
-            "home": r["home"], "away": r["away"],
-            "home_en": r.get("home_en"), "away_en": r.get("away_en"),
-            "kickoff": r["kickoff_hkt"],
-            "fixture_id": r.get("fixture_id"),
-            "league_id": r.get("league_id"),
-            "venue": r.get("venue"), "venue_city": r.get("venue_city"),
-            "stages": [],
+        watch = ledger["watch"].setdefault(match_id, {
+            "match_id": match_id, "league": result.get("league"),
+            "home": result.get("home"), "away": result.get("away"),
+            "home_en": result.get("home_en"), "away_en": result.get("away_en"),
+            "kickoff": result.get("kickoff_hkt"), "fixture_id": result.get("fixture_id"),
+            "league_id": result.get("league_id"), "venue": result.get("venue"),
+            "venue_city": result.get("venue_city"), "stages": [],
         })
-        w["fixture_id"] = w.get("fixture_id") or r.get("fixture_id")
-        w["league_id"] = w.get("league_id") or r.get("league_id")
-        snap = _snap(r, now)
+        for key in ("league", "home", "away", "home_en", "away_en", "kickoff", "fixture_id", "league_id", "venue", "venue_city"):
+            value = result.get("kickoff_hkt") if key == "kickoff" else result.get(key)
+            if value is not None:
+                watch[key] = value
+        snapshot = _snap(result, now)
         if stage == BET_STAGE:
-            # This is a data-path completeness flag only.  It deliberately
-            # does not alter conviction, pick eligibility, or stake.
-            snap["t30_data_complete"] = any(
-                item.get("stage") == "T-30" for item in w["stages"]
+            snapshot["t30_data_complete"] = any(
+                item.get("stage") == "T-30" for item in watch["stages"]
             )
-        learning = _record_learning_snapshot(mid, r, snap)
+        learning = _record_learning_snapshot(match_id, result, snapshot)
         if learning:
-            snap.update({
+            snapshot.update({
                 "learning_snapshot_id": learning["snapshot_id"],
                 "learning_attempt": learning["attempt"],
                 "learning_pre_kickoff": learning["pre_kickoff"],
@@ -430,219 +352,70 @@ def sync(preds_file="predictions.json"):
             })
             if not learning["pre_kickoff"]:
                 notes.append(
-                    f"⏭ {r.get('home')} v {r.get('away')} — "
+                    f"{result.get('home') or '—'} v {result.get('away') or '—'} — "
                     f"{stage} 賽後重跑已隔離，沒有覆蓋賽前預測"
                 )
                 continue
-        prev = next((x for x in w["stages"] if x["stage"] == stage), None)
-        if prev:
-            w["stages"][w["stages"].index(prev)] = snap    # 同階段重跑 → 覆蓋
-        else:
-            w["stages"].append(snap)
-            lbl = snap["pick"]["label"] if snap["pick"] else "無明顯傾向"
-            notes.append(f"📝 {r['home']} v {r['away']} — {stage} "
-                         f"{snap['verdict']}:{lbl}(信念 {r['conviction']:.1f})")
-            if stage in {"T-30", BET_STAGE}:
-                fresh_condition_signal_ids.append({"match_id": mid, "stage": stage})
-        w["stages"].sort(key=lambda x: STAGE_ORDER.get(x["stage"], 9))
 
-        # ── 2. 只有 T-5 才可以落注 ───────────────────────────
-        if stage != BET_STAGE:
+        previous = next((row for row in watch["stages"] if row.get("stage") == stage), None)
+        if previous is not None:
+            watch["stages"][watch["stages"].index(previous)] = snapshot
+            notes.append(f"{result.get('home') or '—'} v {result.get('away') or '—'} — {stage} 預測重跑，只更新記錄")
             continue
 
-        # This is deliberately outside the official pick/change path: a
-        # missing independent benchmark can create a shadow observation only,
-        # never an official bet, notification, learning input or threshold.
-        _record_shadow_bet(led, r, mid, now)
+        watch["stages"].append(snapshot)
+        watch["stages"].sort(key=lambda row: STAGE_ORDER.get(row.get("stage"), 9))
+        label = (snapshot.get("pick") or {}).get("label") or "無明顯傾向"
+        notes.append(f"{result.get('home') or '—'} v {result.get('away') or '—'} — {stage} {snapshot['verdict']}：{label}")
+        if stage == "T-30":
+            fresh_t30_events.append({"match_id": match_id, "stage": stage})
 
-        pick = r.get("pick")
-        day = r["kickoff_hkt"][:10]
-        cur = next((b for b in led["bets"]
-                    if b["match_id"] == mid and b["status"] == "PENDING"), None)
-
-        if not pick:
-            if cur:      # T-5 重跑後改觀望 → 撤回
-                cur["history"].append({"ts": now, "stage": stage,
-                                       "action": "轉觀望",
-                                       "reason": r["no_bet_reason"],
-                                       "conviction": r["conviction"],
-                                       "final": r["final"]})
-                cur["status"] = "VOIDED"
-                cur["void_reason"] = f"{stage} 轉觀望:{r['no_bet_reason']}"
-                changes.append(f"❌ {r['home']} v {r['away']} — T-5 撤回"
-                               f"({r['no_bet_reason']})")
-            else:
-                changes.append(f"⏸ {r['home']} v {r['away']} — T-5 最終決定:"
-                               f"觀望({r['no_bet_reason']})")
+        # Only this branch is allowed to create active bets: a fresh, persisted
+        # T-5 snapshot. T-30, historical backfill, and replay paths never call
+        # the evaluator.
+        if stage != BET_STAGE or not t5_safe_to_evaluate:
             continue
+        created, audit = evaluate_new_t5(ledger, watch, history_path=Path(ACCURACY_HISTORY))
+        audit_rows = ledger.setdefault("condition_simulation_audit", [])
+        audit_rows.extend({"ts": now, "match_id": match_id, **row} for row in audit)
+        ledger["condition_simulation_audit"] = audit_rows[-AUDIT_LIMIT:]
+        if created:
+            ledger["bets"].extend(created)
+            fresh_bet_ids.extend(str(bet["bet_id"]) for bet in created)
+            changes.extend(_condition_change(bet) for bet in created)
 
-        label = f"{pick['market']} {pick['label']}"
-        want = pick["stake"]
-        room_day = max(0.0, BANKROLL * DAILY_CAP - day_open(led, day))
-        room_all = max(0.0, BANKROLL * OPEN_CAP - total_open(led))
-        capped = min(want, room_day, room_all)
+    recompute(ledger)
+    ledger["log"].append({
+        "ts": now, "kind": "預測", "n_changes": len(changes),
+        "changes": (changes or ["本次沒有建立條件模擬注"])[:LOG_LIMIT],
+        "notes": notes[:40],
+    })
+    ledger["log"] = ledger["log"][-LOG_LIMIT:]
+    save(ledger)
 
-        if cur is None:
-            if capped <= 0:
-                changes.append(f"⚠ {r['home']} v {r['away']} — 組合上限已滿,唔落注")
-                continue
-            # 落注時把三段演變一併帶入注單
-            path = [{"stage": x["stage"], "ts": x["ts"],
-                     "verdict": x["verdict"],
-                     "label": (x["pick"] or x["lead"] or {}).get("label"),
-                     "odds": (x["pick"] or x["lead"] or {}).get("odds"),
-                     "ev": (x["pick"] or x["lead"] or {}).get("ev"),
-                     "conviction": x["conviction"],
-                     "final": x["final"]}
-                    for x in w["stages"] if x["stage"] != BET_STAGE]
-            hist = [{"ts": x["ts"], "stage": x["stage"], "action": "預測",
-                     "label": (x["pick"] or x["lead"] or {}).get("label"),
-                     "odds": (x["pick"] or x["lead"] or {}).get("odds"),
-                     "ev": (x["pick"] or x["lead"] or {}).get("ev"),
-                     "conviction": x["conviction"],
-                     "reason": (None if x["verdict"] == "投注"
-                                else x.get("no_bet_reason")),
-                     "final": x["final"]}
-                    for x in w["stages"] if x["stage"] != BET_STAGE]
-            hist.append({"ts": now, "stage": stage, "action": "落注",
-                         "label": label, "odds": pick["odds"],
-                         "stake": round(capped), "ev": pick["ev"],
-                         "conviction": r["conviction"], "final": r["final"]})
-            led["bets"].append({
-                "bet_id": f"{mid}|{pick['code']}|{pick['condition']}|{pick['side']}",
-                "match_id": mid, "league": r["league"],
-                "fixture_id": r.get("fixture_id"),
-                "league_id": r.get("league_id"),
-                "model_source": r.get("model_source"),
-                "sharp_reference_available": bool(r.get("sharp_reference_available")),
-                "home": r["home"], "away": r["away"],
-                "home_en": r.get("home_en"), "away_en": r.get("away_en"),
-                "kickoff": r["kickoff_hkt"],
-                "market": pick["market"], "code": pick["code"],
-                "condition": pick["condition"], "side": pick["side"],
-                "label": label, "odds": pick["odds"],
-                "stake": round(capped), "model_prob": pick["prob"],
-                "push_prob": pick["push"], "ev": pick["ev"],
-                "kelly": pick["kelly_used"], "conviction": r["conviction"],
-                "kelly_full": pick.get("kelly_raw"),
-                "stake_stage": pick.get("stake_stage"),
-                "created_at": dt.datetime.now(HKT).isoformat(timespec="seconds"),
-                "first_stage": BET_STAGE, "stage": stage, "status": "PENDING",
-                "result": None, "pnl": None,
-                "path": path, "history": hist,
-            })
-            diff = [x for x in path
-                    if (x.get("label") or "") != label]
-            changes.append(f"✅ {r['home']} v {r['away']} — T-5 落注 "
-                           f"{label} @{pick['odds']} ${capped:,.0f}"
-                           + (f"(與前 {len(diff)} 段預測唔同)" if diff else "(三段一致)"))
-            continue
-
-        # T-5 同一場重跑 — 更新
-        same = (cur["code"] == pick["code"]
-                and cur["condition"] == pick["condition"]
-                and cur["side"] == pick["side"])
-        if not same:
-            cur["history"].append({"ts": now, "stage": stage,
-                                   "action": "改盤口",
-                                   "from": cur["label"], "to": label,
-                                   "odds": pick["odds"], "ev": pick["ev"],
-                                   "conviction": r["conviction"],
-                                   "final": r["final"]})
-            changes.append(f"🔄 {r['home']} v {r['away']} — T-5 由 "
-                           f"{cur['label']} 改為 {label} @{pick['odds']}")
-            cur.update({"code": pick["code"], "condition": pick["condition"],
-                        "side": pick["side"], "label": label,
-                        "market": pick["market"]})
-        add = 0.0
-        if want > cur["stake"]:
-            add = min(want - cur["stake"], room_day, room_all)
-        cur.update({"odds": pick["odds"], "model_prob": pick["prob"],
-                    "push_prob": pick["push"], "ev": pick["ev"],
-                    "conviction": r["conviction"], "stage": stage})
-        cur.setdefault("fixture_id", r.get("fixture_id"))
-        cur.setdefault("league_id", r.get("league_id"))
-        if add > 0:
-            cur["stake"] = round(cur["stake"] + add)
-            cur["history"].append({"ts": now, "stage": stage, "action": "加注",
-                                   "add": round(add), "stake": cur["stake"],
-                                   "odds": pick["odds"], "ev": pick["ev"],
-                                   "conviction": r["conviction"],
-                                   "final": r["final"]})
-            changes.append(f"➕ {r['home']} v {r['away']} — T-5 加注 "
-                           f"${add:,.0f} → ${cur['stake']:,.0f}")
-        elif same:
-            cur["history"].append({"ts": now, "stage": stage, "action": "維持",
-                                   "odds": pick["odds"], "ev": pick["ev"],
-                                   "conviction": r["conviction"],
-                                   "final": r["final"]})
-
-    led["log"].append({"ts": now, "kind": "預測",
-                       "n_changes": len(changes),
-                       "changes": changes or ["今次無落注動作"],
-                       "notes": notes[:40]})
-    # Shadow rows appear before their first result-settlement run.  Refresh
-    # their isolated dashboard totals here without recomputing or touching the
-    # official portfolio's stats/staking state.
-    recompute_shadow_stats(led)
-    save(led)
-    # Notification is strictly after the immutable live snapshot has been
-    # saved and only stages persisted by this pass are eligible. Independent
-    # T-30/T-5 dedupe prevents repeats; history is never backfilled. A delivery
-    # failure remains non-fatal and cannot alter the saved transaction.
-    try:
-        import notify
-        notify.notify_fresh_granular_conditions(led, fresh_condition_signal_ids)
-    except Exception as exc:
-        notes.append(f"Telegram 條件提示發送失敗({type(exc).__name__})；已保存預測，唔影響注單。")
-    return changes, notes, led
-
-
-def migrate_pre_t5(led):
-    """規則更新前(T-60/T-30 就落注)嘅舊注單 → 撤回,只保留為預測記錄。"""
-    n = 0
-    now = dt.datetime.now(HKT).isoformat(timespec="seconds")
-    for b in led["bets"]:
-        if b.get("status") != "PENDING":
-            continue
-        if b.get("first_stage") in (None, "T-5"):
-            continue
-        b["status"] = "VOIDED"
-        b["void_reason"] = ("規則更新:只可以喺開賽前 5 分鐘落注,"
-                            f"此注原本喺 {b.get('first_stage')} 建立,轉為預測記錄")
-        b.setdefault("history", []).append(
-            {"ts": now, "stage": b.get("stage"), "action": "轉觀望",
-             "reason": "規則更新 — 落注時點統一為 T-5"})
-        n += 1
-    return n
-
-
-def migrate_min_odds(led, floor=None):
-    """規則更新前(未設最低賠率門檻)嘅短賠率待決注單 → 撤回。"""
-    import model as _M
-    fl = _M.MIN_ODDS if floor is None else float(floor)
-    n = 0
-    now = dt.datetime.now(HKT).isoformat(timespec="seconds")
-    for b in led["bets"]:
-        if b.get("status") != "PENDING":
-            continue
-        if float(b.get("odds") or 0) >= fl:
-            continue
-        b["status"] = "VOIDED"
-        b["void_reason"] = (f"規則更新:最低賠率門檻 {fl:.2f},"
-                            f"此注賠率 {float(b.get('odds') or 0):.2f} 不達標,"
-                            f"轉為預測記錄")
-        b.setdefault("history", []).append(
-            {"ts": now, "stage": b.get("stage"), "action": "轉觀望",
-             "reason": f"規則更新 — 最低賠率 {fl:.2f}"})
-        n += 1
-    return n
+    # Alerts are intentionally post-commit. T-30 remains a preparation notice;
+    # T-5 sends only an actual newly created condition bet, so the same T-5
+    # opportunity is never duplicated by the generic condition notifier.
+    if fresh_t30_events:
+        try:
+            import notify
+            notify.notify_fresh_granular_conditions(ledger, fresh_t30_events)
+        except Exception as exc:
+            notes.append(f"T-30 條件提示發送失敗（{type(exc).__name__}）；已保存預測。")
+    if fresh_bet_ids:
+        try:
+            import notify
+            notify.notify_new_condition_bets(ledger, fresh_bet_ids)
+        except Exception as exc:
+            notes.append(f"條件模擬注通知發送失敗（{type(exc).__name__}）；已保存模擬注。")
+    return changes, notes, ledger
 
 
 def summary(led):
-    pend = [b for b in led["bets"] if b["status"] == "PENDING"]
-    void = [b for b in led["bets"] if b["status"] == "VOIDED"]
-    done = [b for b in led["bets"] if b["status"] == "SETTLED"]
+    bets = condition_bets(led)
+    pend = [b for b in bets if b["status"] == "PENDING"]
+    void = [b for b in bets if b["status"] == "VOIDED"]
+    done = [b for b in bets if b["status"] == "SETTLED"]
     tot = sum(b["stake"] for b in pend)
     pnl = sum(b.get("pnl") or 0 for b in done)
     n_st = sum(len(w.get("stages") or []) for w in led["watch"].values())
@@ -663,7 +436,7 @@ def export_csv(led, path=None):
         w.writerow(["開賽時間", "聯賽", "主隊", "客隊", "市場", "投注",
                     "賠率", "注碼", "模型勝率", "走水率", "EV", "信念",
                     "落注階段", "最新階段", "狀態", "賽果", "盈虧", "更新次數"])
-        for b in led["bets"]:
+        for b in condition_bets(led):
             w.writerow([b.get(c) if c != "n_updates" else len(b.get("history") or [])
                         for c in cols])
     return path
@@ -699,15 +472,6 @@ def export_watch_csv(led, path=None):
 
 if __name__ == "__main__":
     import sys
-    led0 = load()
-    if "--migrate" in sys.argv:
-        n = migrate_pre_t5(led0)
-        save(led0)
-        print(f"已把 {n} 注舊規則注單轉為預測記錄")
-    if "--void-low-odds" in sys.argv:
-        n = migrate_min_odds(led0)
-        save(led0)
-        print(f"已把 {n} 注低於最低賠率門檻嘅注單轉為預測記錄")
     ch, notes, led = sync()
     print("\n".join(notes) if notes else "無新階段預測")
     print()

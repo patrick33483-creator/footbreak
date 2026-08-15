@@ -181,7 +181,7 @@ class DataHealthDashboardUiTests(unittest.TestCase):
                 self.assertEqual(len(set(versions)), 1, versions)
                 if dashboard == "hkjc-dashboard":
                     self.assertIn("data-health", versions[0])
-                    self.assertIn("shadow-condition", versions[0])
+                    self.assertIn("condition-research", versions[0])
                 else:
                     self.assertIn("condition-simulation", versions[0])
 
