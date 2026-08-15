@@ -1490,6 +1490,20 @@ class CrownSafetyTests(unittest.TestCase):
                 "bankroll": 50000, "bets": [], "watch": watch, "log": [], "stats": {},
             })
             titan_client, pinnapi_client = Mock(), Mock()
+            def bulk_snapshot(match_id: str) -> dict:
+                return {
+                    "prices": [{
+                        "market": "HDC", "line": -0.25, "selection": "H",
+                        "odds": 1.91, "source_at": now.timestamp(),
+                    }],
+                    "quote_source": "titan007-crown-id-3-bulk-current",
+                }
+            # A missing bulk row is retried next minute; valid rows commit
+            # independently without waiting for the old page worker.
+            titan_client.crown_bulk_price_snapshots.return_value = {
+                match_id: bulk_snapshot(match_id)
+                for match_id in ("same-kickoff", "next-kickoff")
+            }
             pinnapi_client.fixtures.return_value = []
             started = time.monotonic()
             with patch.dict(os.environ, {
@@ -1515,6 +1529,9 @@ class CrownSafetyTests(unittest.TestCase):
 
             # The deferred fixture has no stage at all, so the ordinary next
             # minute scheduler retries it as T-5 rather than relabelling it.
+            titan_client.crown_bulk_price_snapshots.return_value = {
+                "hung": bulk_snapshot("hung"),
+            }
             with patch.dict(os.environ, {
                 "CROWN_TICK_PASS_DEADLINE_SECONDS": "1",
                 "CROWN_TICK_MAX_WORKERS": "2",
@@ -1575,6 +1592,95 @@ class CrownSafetyTests(unittest.TestCase):
             titan_client.crown_price_snapshot.assert_not_called()
             titan_client.crown_prices.assert_not_called()
 
+    def test_persisted_due_t5_bulk_commit_bypasses_hung_discovery_and_providers(self) -> None:
+        """A valid local T-5 must commit without entering optional slow paths."""
+        with tempfile.TemporaryDirectory() as directory:
+            config = replace(
+                settings(), state_dir=Path(directory), enabled=True, pinnapi_key="test",
+            )
+            now = datetime.now(__import__("crown.common", fromlist=["HKT"]).HKT)
+            cards = [
+                {
+                    "match_id": match_id, "league": "L",
+                    "home": f"{match_id} Home", "away": f"{match_id} Away",
+                    "kickoff_hkt": (now + timedelta(minutes=5)).isoformat(),
+                }
+                for match_id in ("fast-a", "fast-b")
+            ]
+            save_predictions(config, cards)
+            save_ledger(config, {
+                "bankroll": 50000, "bets": [], "log": [], "stats": {},
+                "watch": {
+                    card["match_id"]: {
+                        "matching_version": MATCHING_VERSION,
+                        "prediction_era": PREDICTION_ERA,
+                        "stages": [{"stage": "首預"}, {"stage": "T-30"}],
+                    }
+                    for card in cards
+                },
+            })
+            titan_client = Mock()
+            titan_client.crown_bulk_price_snapshots.return_value = {
+                card["match_id"]: {
+                    "prices": [
+                        {
+                            "market": market, "line": line, "selection": side,
+                            "odds": odds, "source_at": now.timestamp(),
+                        }
+                        for market, line, sides in (
+                            ("HDC", -0.25, (("H", 1.91), ("A", 1.99))),
+                            ("HIL", 2.5, (("H", 1.95), ("L", 1.95))),
+                        )
+                        for side, odds in sides
+                    ],
+                    "asian_ok": True, "total_ok": True,
+                    "quote_source": "titan007-crown-id-3-bulk-current",
+                }
+                for card in cards
+            }
+            titan_client.crown_prices.side_effect = AssertionError(
+                "per-fixture Crown page must not run"
+            )
+            with patch("crown.engine.TitanClient", return_value=titan_client), \
+                 patch("crown.engine.PinnapiClient", side_effect=AssertionError(
+                     "PinnAPI fixture discovery must not run"
+                 )), \
+                 patch("crown.engine.fetch_matches", side_effect=AssertionError(
+                     "HKJC fixture discovery must not run"
+                 )), \
+                 patch("crown.engine.market_entry_thresholds", side_effect=AssertionError(
+                     "policy/model must not run"
+                 )), \
+                 patch("crown.engine.bridge_titan_to_pinnapi", side_effect=AssertionError(
+                     "bridge mapping must not run"
+                 )):
+                result = run("tick", config)
+
+            self.assertTrue(result["fast_t5_bulk"])
+            self.assertEqual(result["predictions"], 2)
+            titan_client.crown_bulk_price_snapshots.assert_called_once_with()
+            titan_client.crown_prices.assert_not_called()
+            stored = {row["match_id"]: row for row in load_predictions(config)}
+            self.assertEqual(set(stored), {"fast-a", "fast-b"})
+            for match_id, card in stored.items():
+                self.assertIsNone(card["probability"])
+                self.assertEqual(
+                    card["edge_reference_status"], "deferred_t5_stage_priority",
+                )
+                self.assertEqual(
+                    {row["source"] for row in card["forecast_candidates"]},
+                    {"titan007-crown-id-3-bulk-current"},
+                )
+                self.assertFalse(any(
+                    "ev" in row or "kelly_raw" in row
+                    for row in card["forecast_candidates"]
+                ))
+                self.assertEqual(
+                    [stage["stage"] for stage in load_ledger(config)["watch"][match_id]["stages"]]
+                    .count("T-5"),
+                    1,
+                )
+
     def test_completed_t5_creates_one_bet_and_one_notification_key(self) -> None:
         """A retry/no-op cannot duplicate either idempotent outward effect."""
         with tempfile.TemporaryDirectory() as directory:
@@ -1595,6 +1701,15 @@ class CrownSafetyTests(unittest.TestCase):
                 }},
             })
             titan_client, pinnapi_client = Mock(), Mock()
+            titan_client.crown_bulk_price_snapshots.return_value = {
+                "single": {
+                    "prices": [{
+                        "market": "HDC", "line": -0.25, "selection": "H",
+                        "odds": 1.91, "source_at": now.timestamp(),
+                    }],
+                    "quote_source": "titan007-crown-id-3-bulk-current",
+                },
+            }
             pinnapi_client.fixtures.return_value = []
             created_bet = {
                 "bet_id": "single|HDC|T-5|granular-condition-v1",

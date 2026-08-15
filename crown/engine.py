@@ -22,7 +22,7 @@ from .ledger import (
     sync_prediction,
 )
 from .lines import parse_hkjc_total
-from .matching import MATCHING_VERSION, Event, BridgeMatch, bridge_titan_to_pinnapi
+from .matching import MATCHING_VERSION, Event, Match, BridgeMatch, bridge_titan_to_pinnapi
 from .pinnapi import PinnapiClient
 from .period import in_current_period
 from .state import load_ledger, load_predictions, merge_predictions, save_ledger, state_lock
@@ -1355,6 +1355,114 @@ def _commit_stage_predictions(
     return emitted, fresh_condition_predictions, len(retained)
 
 
+def _local_bulk_t5_prediction(
+    titan: dict[str, Any],
+    config: Settings,
+    crown_snapshot: dict[str, Any],
+) -> dict[str, Any]:
+    """Build a T-5 card from a persisted identity and current bulk Crown odds.
+
+    This deliberately supplies no HKJC/PinnAPI bridge.  A validated current
+    ID-3 bulk board makes the existing T-5 branch return before any optional
+    reference provider is read.  The empty bridge is diagnostic only; it must
+    never trigger fixture discovery or matching for this deadline-bound path.
+    """
+    no_provider_match = Match(
+        None, False, 0.0, "deferred_for_local_bulk_t5"
+    )
+    prediction = _prediction(
+        titan,
+        BridgeMatch(
+            no_provider_match,
+            no_provider_match,
+            "local_bulk_t5",
+            "optional_providers_deferred_for_t5",
+        ),
+        None,
+        "T-5",
+        config,
+        None,  # Valid bulk evidence prevents the existing direct-page branch.
+        None,  # Valid bulk evidence prevents the existing PinnAPI branch.
+        crown_snapshot,
+    )
+    # The ordinary prediction function retains a low-confidence WDL baseline
+    # for incomplete provider passes.  This route has only Crown HDC/HIL
+    # evidence, so do not represent that baseline as an independently observed
+    # result probability.  Market no-vig forecasts remain tied to the exact
+    # current two-sided Crown quotes, and EV/Kelly remain absent.
+    prediction.update({
+        "outcome": None,
+        "forecast": None,
+        "probability": None,
+        "likely_score": None,
+        "prediction_source": None,
+    })
+    prediction.pop("probabilities", None)
+    prediction.pop("baseline_low_confidence", None)
+    return prediction
+
+
+def _run_local_bulk_t5(
+    config: Settings,
+    rows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Persist all eligible locally due T-5 cards without slow discovery.
+
+    Each usable fixture is committed before the next is processed.  Missing,
+    malformed, or post-kickoff bulk rows remain due for a later tick; this
+    path never falls through to per-fixture pages or optional providers.
+    """
+    titan_client = TitanClient(config)
+    try:
+        snapshots = titan_client.crown_bulk_price_snapshots()
+    except OSError:
+        snapshots = {}
+    if not isinstance(snapshots, dict):
+        snapshots = {}
+
+    emitted: list[str] = []
+    fresh_condition_predictions: list[dict[str, str]] = []
+    retained = len(load_predictions(config))
+    completed = 0
+    unavailable = 0
+    for titan in rows:
+        kickoff = parse_time(titan.get("kickoff"))
+        snapshot = snapshots.get(str(titan.get("id") or ""))
+        if (
+            kickoff is None
+            or not _valid_pre_kickoff_bulk_snapshot(snapshot, kickoff)
+            or not snapshot
+            or snapshot.get("quote_source") != _CROWN_BULK_ID3_SOURCE
+        ):
+            unavailable += 1
+            continue
+        prediction = _local_bulk_t5_prediction(titan, config, snapshot)
+        created, fresh, retained = _commit_stage_predictions(
+            config, "tick", [prediction]
+        )
+        emitted.extend(created)
+        fresh_condition_predictions.extend(fresh)
+        completed += 1
+    return {
+        "ok": True,
+        "mode": "tick",
+        "fast_t5_bulk": True,
+        "predictions": completed,
+        "retained_predictions": retained,
+        "simulations_created": len(emitted),
+        "fresh_condition_predictions": fresh_condition_predictions,
+        "fresh_t5_predictions": [
+            item["match_id"] for item in fresh_condition_predictions
+            if item["stage"] == "T-5"
+        ],
+        "bulk_unavailable_predictions": unavailable,
+        "pinnapi_fixtures": 0,
+        "hkjc_fixtures": 0,
+        "deferred_predictions": unavailable,
+        "failed_predictions": 0,
+    }
+
+
 def run(mode: str, config: Settings) -> dict[str, Any]:
     """Run a remote pass only when the explicit validation gate and PinnAPI key exist."""
     if mode not in {"tick", "sweep", "settle", "refresh"}:
@@ -1363,9 +1471,9 @@ def run(mode: str, config: Settings) -> dict[str, Any]:
         return {"ok": False, "reason": "CROWN_ENABLED=0; no network call was made"}
     if mode == "refresh":
         return refresh_current_quotes(config)
-    if not config.pinnapi_configured:
-        return {"ok": False, "reason": "PinnAPI credentials are not configured; no network call was made"}
     if mode == "settle":
+        if not config.pinnapi_configured:
+            return {"ok": False, "reason": "PinnAPI credentials are not configured; no network call was made"}
         from .settle import settle_due
         # settle_due owns a separate long-running settlement lock and takes
         # state_lock only for its final merge.  Never hold the commit lock
@@ -1386,12 +1494,20 @@ def run(mode: str, config: Settings) -> dict[str, Any]:
         # A due T-5 owns this tick.  Deferring recoverable T-30/first-look
         # work by one minute is safe; making a T-5 wait behind it is not.
         titan_rows = _prioritize_tick_rows(titan_rows)
+        if any(row.get("_due_stage") == "T-5" for row in titan_rows):
+            # This return is intentionally before PinnAPI credentials,
+            # policy/model reads, fixture discovery, bridge mapping, and
+            # per-fixture providers.  A stalled optional path cannot delay a
+            # valid persisted T-5 Crown record.
+            return _run_local_bulk_t5(config, titan_rows)
         # This is deliberately measured before any provider work.  The
         # systemd 55-second limit remains the final safeguard for an upstream
         # fixture-list call that cannot be interrupted in-process.
         tick_deadline = time.monotonic() + _tick_pass_deadline_seconds()
     else:
         tick_deadline = None
+    if not config.pinnapi_configured:
+        return {"ok": False, "reason": "PinnAPI credentials are not configured; no network call was made"}
     # This can read the local learning store.  Keep it after the local tick
     # due check so a genuine no-op has no expensive work or provider calls.
     entry_policies = {
