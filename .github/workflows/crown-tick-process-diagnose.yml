@@ -38,7 +38,12 @@ jobs:
               sudo git -C /opt/footbreak rev-parse HEAD 2>/dev/null || true
               sudo systemctl show crown-tick.service --no-pager \
                 -p ActiveState -p SubState -p Result -p MainPID \
-                -p ExecMainStartTimestamp -p TimeoutStartUSec
+                -p ExecMainStartTimestamp -p TimeoutStartUSec -p ExecMainStatus
+              echo "=== aggregate exception types ==="
+              sudo journalctl -u crown-tick.service --since "-20 minutes" \
+                --no-pager -o cat \
+                | grep -oE "upstream_[A-Za-z0-9_]+" \
+                | sort | uniq -c || true
               pid=$(sudo systemctl show crown-tick.service -p MainPID --value)
               case "$pid" in ""|0|*[!0-9]*) exit 0 ;; esac
               echo "=== process tree (no arguments/environment) ==="
