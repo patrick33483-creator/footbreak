@@ -21,6 +21,12 @@ on:
         default: "50"
         type: choice
         options: ["25", "50", "100"]
+      restart_t5_worker:
+        description: Stop a stale Crown tick and start a fresh T-5 pass
+        required: true
+        default: "no"
+        type: choice
+        options: ["no", "yes"]
 
 permissions:
   contents: write
@@ -74,6 +80,22 @@ jobs:
             -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
             "$DEPLOY_USER@$DEPLOY_HOST" "$remote_command" \
             < deploy/audit-crown-stage-state.py
+
+      - name: 明確要求後重啟皇冠 T-5 worker
+        if: ${{ inputs.restart_t5_worker == 'yes' }}
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            'sudo systemctl stop crown-tick.service
+             sudo systemctl reset-failed crown-tick.service
+             sudo systemctl start --no-block crown-tick.service
+             sudo systemctl show crown-tick.service --no-pager \
+               -p Id -p LoadState -p ActiveState -p SubState -p Result -p ExecMainStatus'
 
       - name: 保存已遮罩階段摘要到臨時私人分支
         run: |
