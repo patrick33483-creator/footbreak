@@ -1,14 +1,14 @@
 === deployed revision ===
 5dc36366e57576c29ff969cb1d7341adab5d6ddc
 TimeoutStartUSec=55s
-MainPID=1293997
+MainPID=1294313
 Result=success
-ExecMainStartTimestamp=Sun 2026-08-16 03:10:01 HKT
+ExecMainStartTimestamp=Sun 2026-08-16 03:11:38 HKT
 ExecMainStatus=0
 ActiveState=activating
 SubState=start
 === aggregate exception types ===
-     22 upstream_KeyError
+     23 upstream_KeyError
 === process tree (no arguments/environment) ===
-1293997       1       7 SNs  do_wait                          bash
-1294008 1293997       7 SN   do_poll.constprop.0              python3
+1294313       1       6 SNs  do_wait                          bash
+1294324 1294313       6 RN   -                                python3
