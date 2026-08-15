@@ -184,17 +184,25 @@ class OddsRecoveryTests(unittest.TestCase):
             target, quote(observed="2026-08-10T09:59:30+08:00")
         )
         different_price = _entry(target, quote(odds="1.8"))
+        new_target = prediction_targets([row(match_id="event-2")], "footbreak")[0][0]
+        new_entry = _entry(new_target, quote(fixture="persisted:event-2"))
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "overlay.json"
             apply(path, [original])
             comparison = sidecar_comparison(
-                path, [original, metadata_changed, same_price_later, different_price]
+                path, [original, metadata_changed, same_price_later, different_price, new_entry]
+            )
+            self.assertEqual(
+                comparison["new_key_by_system_stage_market"],
+                {"footbreak|T-5|HDC": 1},
             )
         self.assertEqual(comparison, {
-            "candidate_total": 4,
+            "candidate_total": 5,
             "different_price_conflict": 1,
             "exact_hash_match": 1,
             "existing_entry_total": 1,
+            "new_key": 1,
+            "new_key_by_system_stage_market": {"footbreak|T-5|HDC": 1},
             "same_price_different_observation": 1,
             "same_quote_metadata_changed": 1,
         })

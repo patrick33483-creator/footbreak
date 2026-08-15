@@ -1920,7 +1920,7 @@ def apply(path: Path, entries: list[dict[str, Any]]) -> dict[str, int]:
     return {"added": added, "already_present": already}
 
 
-def sidecar_comparison(path: Path, entries: list[dict[str, Any]]) -> dict[str, int]:
+def sidecar_comparison(path: Path, entries: list[dict[str, Any]]) -> dict[str, Any]:
     """Return aggregate-only candidate/sidecar conflict diagnostics.
 
     This deliberately exposes no fixture IDs, source URLs, prices, or hashes.
@@ -1936,11 +1936,18 @@ def sidecar_comparison(path: Path, entries: list[dict[str, Any]]) -> dict[str, i
         for e in current["entries"] if isinstance(e, dict)
     }
     counts: Counter = Counter()
+    new_key_breakdown: Counter = Counter()
     for entry in entries:
         key = tuple(entry[k] for k in ("system", "snapshot_identity", "market_code", "line", "side"))
         old = existing.get(key)
         if old is None:
             counts["new_key"] += 1
+            try:
+                stage = str(entry["snapshot_identity"]).split("|", 3)[2]
+            except (KeyError, IndexError):
+                stage = "unknown"
+            marker = f"{entry.get('system') or 'unknown'}|{stage}|{entry.get('market_code') or 'unknown'}"
+            new_key_breakdown[marker] += 1
         elif old.get("entry_hash") == entry.get("entry_hash"):
             counts["exact_hash_match"] += 1
         elif (
@@ -1954,7 +1961,9 @@ def sidecar_comparison(path: Path, entries: list[dict[str, Any]]) -> dict[str, i
             counts["different_price_conflict"] += 1
     counts["candidate_total"] = len(entries)
     counts["existing_entry_total"] = len(existing)
-    return dict(sorted(counts.items()))
+    result: dict[str, Any] = dict(sorted(counts.items()))
+    result["new_key_by_system_stage_market"] = dict(sorted(new_key_breakdown.items()))
+    return result
 
 
 def overlay_rows(rows: list[dict[str, Any]], system: str, sidecar_path: str | Path | None = None) -> list[dict[str, Any]]:
