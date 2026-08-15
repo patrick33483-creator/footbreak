@@ -85,18 +85,31 @@ def _seed_index(seeds: tuple[tuple[str, str], ...]) -> dict[str, str]:
     return output
 
 
-_TEAM_SEEDS = _seed_index(TEAM_ALIAS_SEEDS)
-_LEAGUE_SEEDS = _seed_index(LEAGUE_ALIAS_SEEDS)
+@lru_cache(maxsize=1)
+def _team_seed_index() -> dict[str, str]:
+    """Build reviewed team aliases only when ordinary matching needs them.
+
+    Seed normalization can invoke ICU for CJK aliases. Keeping it lazy is
+    essential for the deadline-bound persisted T-5 route, which imports the
+    matching types but does not perform provider bridge matching.
+    """
+    return _seed_index(TEAM_ALIAS_SEEDS)
+
+
+@lru_cache(maxsize=1)
+def _league_seed_index() -> dict[str, str]:
+    """Build reviewed league aliases only when ordinary matching needs them."""
+    return _seed_index(LEAGUE_ALIAS_SEEDS)
 
 
 def canonical_team_key(value: str | None) -> str:
     key = normalize_name(value)
-    return _TEAM_SEEDS.get(key, key)
+    return _team_seed_index().get(key, key)
 
 
 def canonical_league_key(value: str | None) -> str:
     key = normalize_name(value)
-    return _LEAGUE_SEEDS.get(key, key)
+    return _league_seed_index().get(key, key)
 
 
 def qualifiers(event: "Event") -> frozenset[str]:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import gzip
+import importlib
 import io
 import json
 import os
@@ -140,6 +141,17 @@ class CrownSafetyTests(unittest.TestCase):
         self.assertEqual(normalize_name("曼彻斯特城(中)"), "曼彻斯特城")
         self.assertEqual(normalize_name("FC悉尼"), "悉尼")
         self.assertEqual(normalize_name("枥木市FC"), "枥木市")
+
+    def test_matching_import_defers_cjk_seed_normalization(self) -> None:
+        """Importing matching types must not start one ICU process per seed."""
+        import crown.matching as matching
+
+        with patch("subprocess.run", side_effect=AssertionError(
+            "uconv must not run while matching imports"
+        )):
+            matching = importlib.reload(matching)
+        self.assertEqual(matching._team_seed_index.cache_info().currsize, 0)
+        self.assertEqual(matching._league_seed_index.cache_info().currsize, 0)
 
     def test_reviewed_hong_kong_team_aliases_canonicalize(self) -> None:
         self.assertEqual(canonical_team_key("曼城"), canonical_team_key("曼彻斯特城"))
@@ -1633,9 +1645,14 @@ class CrownSafetyTests(unittest.TestCase):
     def test_persisted_due_t5_bulk_commit_bypasses_hung_discovery_and_providers(self) -> None:
         """A valid local T-5 must commit without entering optional slow paths."""
         with tempfile.TemporaryDirectory() as directory:
+            from crown import engine as crown_engine
+            import crown.matching as matching
+
             config = replace(
                 settings(), state_dir=Path(directory), enabled=True, pinnapi_key="test",
             )
+            matching._team_seed_index.cache_clear()
+            matching._league_seed_index.cache_clear()
             now = datetime.now(__import__("crown.common", fromlist=["HKT"]).HKT)
             cards = [
                 {
@@ -1691,8 +1708,27 @@ class CrownSafetyTests(unittest.TestCase):
                  )), \
                  patch("crown.engine.bridge_titan_to_pinnapi", side_effect=AssertionError(
                      "bridge mapping must not run"
-                 )):
+                 )), \
+                 patch("crown.matching._team_seed_index", side_effect=AssertionError(
+                     "team seed index must not initialize"
+                 )), \
+                 patch("crown.matching._league_seed_index", side_effect=AssertionError(
+                     "league seed index must not initialize"
+                 )), \
+                 patch("crown.engine._commit_stage_predictions",
+                       wraps=crown_engine._commit_stage_predictions) as commit, \
+                 patch("crown.engine.recompute_stats",
+                       wraps=crown_engine.recompute_stats) as recompute, \
+                 patch("crown.engine.save_ledger",
+                       wraps=crown_engine.save_ledger) as save:
                 result = run("tick", config)
+
+            self.assertEqual(matching._team_seed_index.cache_info().currsize, 0)
+            self.assertEqual(matching._league_seed_index.cache_info().currsize, 0)
+            commit.assert_called_once()
+            self.assertEqual(len(commit.call_args.args[2]), 2)
+            recompute.assert_called_once()
+            save.assert_called_once()
 
             self.assertTrue(result["fast_t5_bulk"])
             self.assertEqual(result["predictions"], 2)

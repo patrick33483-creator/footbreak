@@ -1420,10 +1420,8 @@ def _run_local_bulk_t5(
     if not isinstance(snapshots, dict):
         snapshots = {}
 
-    emitted: list[str] = []
-    fresh_condition_predictions: list[dict[str, str]] = []
+    stage_predictions: list[dict[str, Any]] = []
     retained = len(load_predictions(config))
-    completed = 0
     unavailable = 0
     for titan in rows:
         kickoff = parse_time(titan.get("kickoff"))
@@ -1436,18 +1434,22 @@ def _run_local_bulk_t5(
         ):
             unavailable += 1
             continue
-        prediction = _local_bulk_t5_prediction(titan, config, snapshot)
-        created, fresh, retained = _commit_stage_predictions(
-            config, "tick", [prediction]
+        stage_predictions.append(
+            _local_bulk_t5_prediction(titan, config, snapshot)
         )
-        emitted.extend(created)
-        fresh_condition_predictions.extend(fresh)
-        completed += 1
+
+    # The commit helper already rejects a prediction that has crossed kickoff,
+    # preserves stage idempotency, and evaluates each T-5 once. One batch
+    # avoids repeating ledger read/recompute/write work for same-kickoff
+    # fixtures while retaining those per-prediction protections.
+    emitted, fresh_condition_predictions, retained = _commit_stage_predictions(
+        config, "tick", stage_predictions
+    )
     return {
         "ok": True,
         "mode": "tick",
         "fast_t5_bulk": True,
-        "predictions": completed,
+        "predictions": len(stage_predictions),
         "retained_predictions": retained,
         "simulations_created": len(emitted),
         "fresh_condition_predictions": fresh_condition_predictions,
