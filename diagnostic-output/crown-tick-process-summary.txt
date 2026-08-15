@@ -1,0 +1,12 @@
+=== deployed revision ===
+aac4a166124042d835bb982f4638646531e6d094
+TimeoutStartUSec=55s
+MainPID=1285160
+Result=success
+ExecMainStartTimestamp=Sun 2026-08-16 02:58:03 HKT
+ActiveState=activating
+SubState=start
+=== process tree (no arguments/environment) ===
+1285160       1      33 SNs  do_wait                          bash
+1285171 1285160      33 SN   do_poll.constprop.0              python3
+1285806 1285171       0 RN   -                                uconv
