@@ -2,9 +2,12 @@
 from __future__ import annotations
 
 import math
+import multiprocessing
+import os
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
+from multiprocessing.connection import wait as wait_for_connections
 from typing import Any
 
 from .common import HKT, iso_hkt, parse_time
@@ -77,6 +80,136 @@ def _prioritize_tick_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     if any(row.get("_due_stage") == "T-5" for row in rows):
         return [row for row in rows if row.get("_due_stage") == "T-5"]
     return rows
+
+
+def _tick_pass_deadline_seconds() -> float:
+    """Return a bounded tick budget, leaving time for the service to stop cleanly."""
+    try:
+        configured = float(os.getenv("CROWN_TICK_PASS_DEADLINE_SECONDS", "40"))
+    except ValueError:
+        configured = 40.0
+    # The systemd service is the final 55-second backstop.  Keep the in-process
+    # budget meaningfully below it, including when an operator misconfigures it.
+    return min(50.0, max(1.0, configured))
+
+
+def _tick_workers() -> int:
+    try:
+        configured = int(os.getenv("CROWN_TICK_MAX_WORKERS", "8"))
+    except ValueError:
+        configured = 8
+    return min(12, max(1, configured))
+
+
+def _prediction_process(send: Any, payload: tuple[Any, ...]) -> None:
+    """Run one provider-heavy prediction outside the tick process.
+
+    A socket/library call can ignore cancellation in a Python thread.  A
+    separate process is deliberately used here so the parent can terminate an
+    overdue page without waiting for an executor's worker shutdown.  This runs
+    only on the Linux deployment target, where ``fork`` also avoids sharing a
+    request connection between fixtures.
+    """
+    try:
+        send.send(("ok", _prediction(*payload)))
+    except BaseException as exc:
+        send.send(("error", type(exc).__name__))
+    finally:
+        send.close()
+
+
+def _run_tick_predictions(
+    payloads: list[tuple[Any, ...]],
+    deadline: float,
+    on_complete: Any,
+) -> dict[str, int]:
+    """Bound concurrent T-5 work and commit each completed result immediately.
+
+    ``Process.terminate`` is essential: ``Future.cancel`` cannot cancel a
+    running ThreadPoolExecutor task, and executor context-manager shutdown
+    waits for exactly the stuck worker that caused this incident.
+    """
+    if not payloads:
+        return {"completed": 0, "failed": 0, "deferred": 0}
+    if os.name != "posix":
+        # Crown production is Linux.  Failing closed elsewhere is safer than
+        # silently reintroducing an unkillable thread-based deadline breach.
+        return {"completed": 0, "failed": 0, "deferred": len(payloads)}
+
+    context = multiprocessing.get_context("fork")
+    queued = iter(payloads)
+    active: dict[Any, tuple[Any, Any]] = {}
+    completed = failed = submitted = 0
+    exhausted = False
+    while active or not exhausted:
+        while (
+            not exhausted
+            and len(active) < _tick_workers()
+            and time.monotonic() < deadline
+        ):
+            try:
+                payload = next(queued)
+            except StopIteration:
+                exhausted = True
+                break
+            receiver, sender = context.Pipe(duplex=False)
+            process = context.Process(target=_prediction_process, args=(sender, payload))
+            process.start()
+            sender.close()
+            active[receiver] = (process, payload)
+            submitted += 1
+
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        if not active:
+            continue
+        ready = wait_for_connections(
+            list(active), timeout=min(0.10, remaining)
+        )
+        for receiver in ready:
+            process, _payload = active.pop(receiver)
+            try:
+                status, value = receiver.recv()
+            except EOFError:
+                status, value = "error", "worker_exited"
+            finally:
+                receiver.close()
+                process.join(timeout=0.05)
+            if status == "ok":
+                on_complete(value)
+                completed += 1
+            else:
+                failed += 1
+
+        # A worker can die before writing its pipe.  Do not wait for a timeout
+        # before releasing its slot for the next kickoff group.
+        for receiver, (process, _payload) in list(active.items()):
+            if process.is_alive():
+                continue
+            if receiver.poll():
+                continue
+            active.pop(receiver)
+            receiver.close()
+            process.join(timeout=0.05)
+            failed += 1
+
+    for receiver, (process, _payload) in active.items():
+        if process.is_alive():
+            process.terminate()
+        process.join(timeout=0.25)
+        if process.is_alive():
+            process.kill()
+            process.join(timeout=0.25)
+        receiver.close()
+    # Anything never submitted, plus forcibly terminated workers, remains due
+    # because no stage was written.  The next minute will collect fresh,
+    # correctly-labelled pre-kickoff evidence.
+    return {
+        "completed": completed,
+        "failed": failed,
+        "deferred": len(payloads) - completed - failed,
+    }
 
 
 def _sweep_rows_with_due_existing(
@@ -931,6 +1064,60 @@ def refresh_current_quotes(config: Settings) -> dict[str, Any]:
     }
 
 
+def _commit_stage_predictions(
+    config: Settings,
+    mode: str,
+    stage_predictions: list[dict[str, Any]],
+) -> tuple[list[str], list[dict[str, str]], int]:
+    """Commit a completed batch while holding the state lock only briefly."""
+    if not stage_predictions:
+        return [], [], len(load_predictions(config))
+    with state_lock(config):
+        # Reload after every small batch: another mode can have committed
+        # independently while this provider process was working.
+        ledger = load_ledger(config)
+        emitted: list[str] = []
+        fresh_condition_predictions: list[dict[str, str]] = []
+        committed_predictions: list[dict[str, Any]] = []
+        for prediction in stage_predictions:
+            kickoff = datetime.fromisoformat(str(prediction["kickoff_hkt"]))
+            if kickoff.tzinfo is None:
+                kickoff = kickoff.replace(tzinfo=HKT)
+            if kickoff <= datetime.now(HKT):
+                # A request admitted before kickoff is no longer a valid
+                # pre-kickoff observation if it returns after kickoff.
+                continue
+            stage = str(prediction.get("stage") or "")
+            match_id = str(prediction.get("match_id") or "")
+            prior_stage = any(
+                row.get("stage") == stage
+                for row in ((ledger.get("watch") or {}).get(match_id, {}).get("stages") or [])
+                if isinstance(row, dict)
+            )
+            created = sync_prediction(ledger, prediction, config)
+            emitted.extend(created)
+            prediction["stages"] = list(
+                ledger["watch"].get(match_id, {}).get("stages") or []
+            )
+            committed_predictions.append(prediction)
+            if stage in {"T-30", "T-5"} and (
+                not prior_stage or (stage == "T-5" and bool(created))
+            ) and any(
+                row.get("stage") == stage for row in prediction["stages"]
+                if isinstance(row, dict)
+            ):
+                fresh_condition_predictions.append({"match_id": match_id, "stage": stage})
+        recompute_stats(ledger, config)
+        ledger["log"].append({
+            "ts": iso_hkt(), "kind": mode, "n_changes": len(emitted),
+            "changes": emitted or ["今次無模擬注動作"], "simulation_only": True,
+        })
+        ledger["log"] = ledger["log"][-100:]
+        save_ledger(config, ledger)
+        retained = merge_predictions(config, committed_predictions)
+    return emitted, fresh_condition_predictions, len(retained)
+
+
 def run(mode: str, config: Settings) -> dict[str, Any]:
     """Run a remote pass only when the explicit validation gate and PinnAPI key exist."""
     if mode not in {"tick", "sweep", "settle", "refresh"}:
@@ -962,6 +1149,12 @@ def run(mode: str, config: Settings) -> dict[str, Any]:
         # A due T-5 owns this tick.  Deferring recoverable T-30/first-look
         # work by one minute is safe; making a T-5 wait behind it is not.
         titan_rows = _prioritize_tick_rows(titan_rows)
+        # This is deliberately measured before any provider work.  The
+        # systemd 55-second limit remains the final safeguard for an upstream
+        # fixture-list call that cannot be interrupted in-process.
+        tick_deadline = time.monotonic() + _tick_pass_deadline_seconds()
+    else:
+        tick_deadline = None
     # This can read the local learning store.  Keep it after the local tick
     # due check so a genuine no-op has no expensive work or provider calls.
     entry_policies = {
@@ -1104,6 +1297,48 @@ def run(mode: str, config: Settings) -> dict[str, Any]:
             job[0]["kickoff"],
         )
     )
+    if mode == "tick":
+        payloads = [
+            (
+                titan, bridge, h_row, stage, config, titan_client,
+                pinnapi_client, crown_snapshot, previous_crown_prices,
+                entry_policies,
+            )
+            for (
+                titan, bridge, h_row, stage, crown_snapshot,
+                previous_crown_prices,
+            ) in pending_predictions
+        ]
+        emitted: list[str] = []
+        fresh_condition_predictions: list[dict[str, str]] = []
+        retained = len(existing_predictions)
+
+        def commit_completed(prediction: dict[str, Any]) -> None:
+            nonlocal retained
+            created, fresh, retained = _commit_stage_predictions(
+                config, mode, [prediction]
+            )
+            emitted.extend(created)
+            fresh_condition_predictions.extend(fresh)
+
+        runtime = _run_tick_predictions(
+            payloads, tick_deadline if tick_deadline is not None else time.monotonic(),
+            commit_completed,
+        )
+        return {
+            "ok": True, "mode": mode, "predictions": runtime["completed"],
+            "retained_predictions": retained, "simulations_created": len(emitted),
+            "mapping": mapping, "pinnapi_fixtures": len(pinnapi_rows),
+            "titan_fixtures": len(titan_rows), "hkjc_fixtures": len(h_events),
+            "fresh_condition_predictions": fresh_condition_predictions,
+            "fresh_t5_predictions": [
+                item["match_id"] for item in fresh_condition_predictions
+                if item["stage"] == "T-5"
+            ],
+            "deadline_seconds": _tick_pass_deadline_seconds(),
+            "deferred_predictions": runtime["deferred"],
+            "failed_predictions": runtime["failed"],
+        }
     if pending_predictions:
         with ThreadPoolExecutor(max_workers=min(10, len(pending_predictions))) as pool:
             futures = {
