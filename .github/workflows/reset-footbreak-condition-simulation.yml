@@ -76,7 +76,18 @@ jobs:
           /opt/footbreak/.venv/bin/python3 - <<'PY'
           import json
           from pathlib import Path
-          data = json.loads(Path('/tmp/footbreak-condition-reset.json').read_text())
+          raw = Path('/tmp/footbreak-condition-reset.json').read_text()
+          data = None
+          for line in reversed(raw.splitlines()):
+              try:
+                  candidate = json.loads(line)
+              except json.JSONDecodeError:
+                  continue
+              if isinstance(candidate, dict) and candidate.get('ok') is True:
+                  data = candidate
+                  break
+          if data is None:
+              raise SystemExit('aggregate reset summary not found')
           print(json.dumps({
               'ok': data.get('ok') is True,
               'bankroll': data.get('bankroll'),
