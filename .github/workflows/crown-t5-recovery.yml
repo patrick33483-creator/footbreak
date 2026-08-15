@@ -16,7 +16,7 @@ on:
         default: AUDIT
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: crown-t5-recovery
@@ -68,6 +68,17 @@ jobs:
           path: crown-t5-recovery-audit.json
           retention-days: 14
           if-no-files-found: error
+
+      - name: Save aggregate audit to this temporary private branch
+        run: |
+          set -euo pipefail
+          install -d -m 700 diagnostic-output
+          cp crown-t5-recovery-audit.json diagnostic-output/crown-t5-recovery-audit.json
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+          git add -f diagnostic-output/crown-t5-recovery-audit.json
+          git commit -m 'Store aggregate Crown T-5 recovery audit' || exit 0
+          git push origin "HEAD:${GITHUB_REF_NAME}"
 
       - name: Confirmed production apply after audit
         if: ${{ inputs.mode == 'APPLY' && inputs.apply_confirmation == 'APPLY_CROWN_T5_RECOVERY' }}
