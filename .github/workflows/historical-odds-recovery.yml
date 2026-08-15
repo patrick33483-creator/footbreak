@@ -16,7 +16,7 @@ on:
         options: [LOCAL, TITAN_AUDIT, TITAN_APPLY, PUBLIC_CROSSWALK_AUDIT, PUBLIC_CROSSWALK_APPLY]
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   recover:
@@ -310,6 +310,17 @@ jobs:
             historical-odds-recovery-provider-warm.json
             historical-odds-recovery-provider.json
           retention-days: 7
+      - name: 保存聚合供應商摘要到臨時私人分支
+        if: ${{ inputs.provider_mode == 'TITAN_AUDIT' || inputs.provider_mode == 'PUBLIC_CROSSWALK_AUDIT' }}
+        run: |
+          set -euo pipefail
+          install -d -m 700 audit-output
+          install -m 600 historical-odds-recovery-provider.json audit-output/provider-summary.json
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+          git add -f audit-output/provider-summary.json
+          git commit -m 'Store aggregate historical odds audit' || exit 0
+          git push origin "HEAD:${GITHUB_REF_NAME}"
       - name: 明確確認後才寫入私有 sidecar
         if: ${{ inputs.apply_confirmation == 'APPLY_HISTORICAL_ODDS_RECOVERY' && inputs.provider_mode == 'LOCAL' }}
         env:
