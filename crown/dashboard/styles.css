@@ -627,6 +627,7 @@ table.t tr.pickrow td:first-child { box-shadow: inset 3px 0 0 var(--amber); }
 
 /* ═══ 模擬倉頁 ═══ */
 .page { padding: var(--s5); display: grid; gap: var(--s4); max-width: 1600px; margin: 0 auto; width: 100%; }
+#viewLedger.page { max-width: none; padding-inline: clamp(10px, 1.25vw, 22px); }
 .page[hidden], .shell[hidden] { display: none !important; }
 .ledger-head { display: grid; gap: var(--s3); }
 .ledger-title-row { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--s4); }
@@ -667,6 +668,33 @@ table.t.bets td.stk { font-weight: 700; color: var(--ink); }
 table.t.bets td.nowrap { white-space: nowrap; }
 .cell-sub { font-family: var(--mono); font-size: 0.5625rem; color: var(--ink-4); font-weight: 400; }
 table.t.bets td.good { color: var(--good); } table.t.bets td.amber { color: var(--amber); } table.t.bets td.bad { color: var(--ink-4); }
+.condition-bets-wrap { overflow-x: hidden; }
+table.t.condition-bets { table-layout: fixed; min-width: 0; }
+table.t.condition-bets th,
+table.t.condition-bets td {
+  padding-inline: 5px;
+  overflow-wrap: anywhere;
+  white-space: normal;
+  vertical-align: top;
+}
+table.t.condition-bets th:nth-child(1) { width: 1.5%; }
+table.t.condition-bets th:nth-child(2) { width: 6.5%; }
+table.t.condition-bets th:nth-child(3) { width: 13%; }
+table.t.condition-bets th:nth-child(4) { width: 5.5%; }
+table.t.condition-bets th:nth-child(5) { width: 10%; }
+table.t.condition-bets th:nth-child(6) { width: 4%; }
+table.t.condition-bets th:nth-child(7) { width: 5%; }
+table.t.condition-bets th:nth-child(8) { width: 27%; }
+table.t.condition-bets th:nth-child(9) { width: 7%; }
+table.t.condition-bets th:nth-child(10) { width: 5%; }
+table.t.condition-bets th:nth-child(11) { width: 5%; }
+table.t.condition-bets th:nth-child(12) { width: 6%; }
+table.t.condition-bets th:nth-child(13) { width: 4.5%; }
+table.t.condition-bets td:nth-child(8) { line-height: 1.45; }
+@media (max-width: 900px) {
+  .condition-bets-wrap { overflow-x: auto; }
+  table.t.condition-bets { min-width: 1180px; }
+}
 .stpill { font-family: var(--mono); font-size: 0.5625rem; padding: 1px 6px; border-radius: 3px; border: 1px solid currentColor; }
 .stpill.pending { color: var(--amber); }
 .stpill.settled { color: var(--good); }

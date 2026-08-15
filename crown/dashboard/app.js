@@ -1062,7 +1062,7 @@ function renderLedger() {
   else {
     if (s.n_settled) h += `<div class="grid g2">${equityCard(s)}${resultCard(s)}</div>`;
     if (s.n_settled) h += marketCard(s);
-    h += `<div class="card"><h2 class="card-h">條件模擬注單 <span class="sub">${bets.length} 筆 · 每筆 HK$1,000</span></h2><div class="tbl-wrap"><table class="t bets"><tr><th></th><th>開賽</th><th>賽事</th><th>市場</th><th>投注</th><th>賠率</th><th>注碼</th><th>條件</th><th>歷史命中</th><th>狀態</th><th>結果</th><th>比分</th><th>盈虧</th></tr>${bets.map((b, i) => betRow(b, i, 'condition')).join('')}</table></div></div>`;
+    h += `<div class="card"><h2 class="card-h">條件模擬注單 <span class="sub">${bets.length} 筆 · 每筆 HK$1,000</span></h2><div class="tbl-wrap condition-bets-wrap"><table class="t bets condition-bets"><tr><th></th><th>開賽</th><th>賽事</th><th>市場</th><th>投注</th><th>賠率</th><th>注碼</th><th>條件</th><th>歷史命中</th><th>狀態</th><th>結果</th><th>比分</th><th>盈虧</th></tr>${bets.map((b, i) => betRow(b, i, 'condition')).join('')}</table></div></div>`;
   }
   h += conditionAuditCard(audit);
   V.innerHTML = h; bindSettlementButton('settleNow', renderLedger); bindBetRows('#viewLedger');
