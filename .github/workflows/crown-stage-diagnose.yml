@@ -58,7 +58,7 @@ jobs:
         run: |
           set -euo pipefail
           install -d -m 700 diagnostic-output
-          exec > >(tee diagnostic-output/crown-stage-summary.txt) 2>&1
+          exec > diagnostic-output/crown-stage-summary.txt 2>&1
           case "$FUTURE_HOURS" in 6|12|24) ;; *) exit 2;; esac
           case "$CURRENT_GRACE_MINUTES" in 15|30|60) ;; *) exit 2;; esac
           case "$FIXTURE_LIMIT" in 25|50|100) ;; *) exit 2;; esac
@@ -80,6 +80,7 @@ jobs:
             -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
             "$DEPLOY_USER@$DEPLOY_HOST" "$remote_command" \
             < deploy/audit-crown-stage-state.py
+          cat diagnostic-output/crown-stage-summary.txt
 
       - name: 明確要求後重啟皇冠 T-5 worker
         if: ${{ inputs.restart_t5_worker == 'yes' }}
