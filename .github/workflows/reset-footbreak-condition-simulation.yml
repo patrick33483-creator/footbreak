@@ -70,7 +70,7 @@ jobs:
             systemctl start footbreak-tick.timer footbreak-sweep.timer footbreak-settle.timer
           }
           trap restart_timers EXIT
-          /opt/footbreak/.venv/bin/python3 /opt/footbreak/system/reset_condition_simulation.py \
+          PYTHONPATH=/opt/footbreak /opt/footbreak/.venv/bin/python3 /opt/footbreak/system/reset_condition_simulation.py \
             --confirm "$CONFIRMATION" \
             --post-deploy "$POST_DEPLOY_CONFIRMATION" > /tmp/footbreak-condition-reset.json
           /opt/footbreak/.venv/bin/python3 - <<'PY'
