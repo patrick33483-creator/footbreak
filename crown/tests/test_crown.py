@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import ast
 import copy
+import contextlib
 import gzip
 import importlib
 import io
@@ -1754,6 +1756,93 @@ class CrownSafetyTests(unittest.TestCase):
                     .count("T-5"),
                     1,
                 )
+
+    def test_fast_t5_tolerates_legacy_watch_row_without_stage_key(self) -> None:
+        """A malformed historic audit row must not abort all current T-5s."""
+        with tempfile.TemporaryDirectory() as directory:
+            config = replace(
+                settings(), state_dir=Path(directory), enabled=True, pinnapi_key="test",
+            )
+            now = datetime.now(__import__("crown.common", fromlist=["HKT"]).HKT)
+            card = {
+                "match_id": "legacy-stage", "league": "L", "home": "Home", "away": "Away",
+                "kickoff_hkt": (now + timedelta(minutes=5)).isoformat(),
+            }
+            save_predictions(config, [card])
+            save_ledger(config, {
+                "bankroll": 50000, "bets": [], "log": [], "stats": {},
+                "watch": {
+                    "legacy-stage": {
+                        "matching_version": MATCHING_VERSION,
+                        "prediction_era": PREDICTION_ERA,
+                        # This production-shaped historic audit dict is
+                        # ignored by stage scheduling but previously raised
+                        # KeyError in sync_prediction's sort key.
+                        "stages": [
+                            {"stage": "首預"},
+                            {"stage": "T-30"},
+                            {"legacy_audit": True},
+                        ],
+                    },
+                },
+            })
+            titan_client = Mock()
+            titan_client.crown_bulk_price_snapshots.return_value = {
+                "legacy-stage": {
+                    "prices": [
+                        {
+                            "market": "HDC", "line": -0.25, "selection": side,
+                            "odds": odds, "source_at": now.timestamp(),
+                        }
+                        for side, odds in (("H", 1.91), ("A", 1.99))
+                    ],
+                    "quote_source": "titan007-crown-id-3-bulk-current",
+                },
+            }
+            with patch("crown.engine.TitanClient", return_value=titan_client):
+                result = run("tick", config)
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["predictions"], 1)
+            stages = load_ledger(config)["watch"]["legacy-stage"]["stages"]
+            self.assertTrue(any(
+                isinstance(row, dict) and row.get("legacy_audit") is True
+                for row in stages
+            ))
+            self.assertEqual(
+                sum(
+                    isinstance(row, dict) and row.get("stage") == "T-5"
+                    for row in stages
+                ),
+                1,
+            )
+
+    def test_run_failure_fingerprint_has_origin_without_exception_message(self) -> None:
+        import crown.run as crown_run
+
+        def failing_run(_mode, _config):
+            raise KeyError("private-fixture-or-provider-payload")
+
+        with tempfile.TemporaryDirectory() as directory:
+            config = replace(
+                settings(), state_dir=Path(directory), web_root=Path(directory) / "web",
+            )
+            stdout = io.StringIO()
+            with patch("crown.run.settings", return_value=config), \
+                 patch("crown.run.run", side_effect=failing_run), \
+                 patch("sys.argv", ["crown.run", "tick"]), \
+                 contextlib.redirect_stdout(stdout):
+                self.assertEqual(crown_run.main(), 4)
+        result = ast.literal_eval(stdout.getvalue())
+        self.assertEqual(result["reason"], "upstream_KeyError")
+        self.assertEqual(result["exception_origin"]["type"], "KeyError")
+        self.assertEqual(
+            result["exception_origin"]["module"], "crown/tests/test_crown.py",
+        )
+        self.assertEqual(
+            result["exception_origin"]["function"], "failing_run",
+        )
+        self.assertIsInstance(result["exception_origin"]["line"], int)
+        self.assertNotIn("private-fixture-or-provider-payload", stdout.getvalue())
 
     def test_completed_t5_creates_one_bet_and_one_notification_key(self) -> None:
         """A retry/no-op cannot duplicate either idempotent outward effect."""

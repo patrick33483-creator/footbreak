@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import argparse
 import os
+from pathlib import Path
+import traceback
 
 from .config import settings
 from .dashboard_data import write_dashboard_data
@@ -10,6 +12,24 @@ from .engine import run
 from .notify import notify_new
 from .prediction_history import update_history
 from .state import load_ledger
+
+_REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _exception_origin(exc: BaseException) -> dict[str, object]:
+    """Return only a repository-relative failure origin, never exception data."""
+    for frame in reversed(traceback.extract_tb(exc.__traceback__)):
+        try:
+            module = Path(frame.filename).resolve().relative_to(_REPOSITORY_ROOT)
+        except (OSError, ValueError):
+            continue
+        return {
+            "type": type(exc).__name__,
+            "module": module.as_posix(),
+            "function": frame.name,
+            "line": frame.lineno,
+        }
+    return {"type": type(exc).__name__}
 
 
 def _ensure_dashboard_path(path) -> None:
@@ -41,7 +61,12 @@ def main() -> int:
     except Exception as exc:
         # Do not serialize an upstream response (which can contain unwanted
         # detail); a failed pass must be visible and must not create a bet.
-        print({"ok": False, "mode": args.mode, "reason": f"upstream_{type(exc).__name__}"})
+        print({
+            "ok": False,
+            "mode": args.mode,
+            "reason": f"upstream_{type(exc).__name__}",
+            "exception_origin": _exception_origin(exc),
+        })
         return 4
     if not result.get("ok"):
         print(result)

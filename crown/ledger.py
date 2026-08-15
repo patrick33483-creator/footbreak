@@ -29,6 +29,7 @@ def completed_stages(
     done = {
         str(row.get("stage"))
         for row in watch.get("stages", [])
+        if isinstance(row, dict)
         # A provider/mapping outage is not a completed prediction.  Keep the
         # stage eligible for a later recovery pass; sync_prediction updates
         # the same stage row idempotently and still cannot duplicate a bet.
@@ -325,8 +326,14 @@ def sync_prediction(ledger: dict[str, Any], prediction: dict[str, Any], config: 
     watch["kickoff"] = prediction.get("kickoff_hkt")
     if not watch.get("discovered_at"):
         watch["discovered_at"] = prediction.get("discovered_at") or iso_hkt()
-    stage_rows = watch["stages"]
-    existing = next((row for row in stage_rows if row.get("stage") == stage), None)
+    stage_rows = watch.get("stages")
+    if not isinstance(stage_rows, list):
+        stage_rows = []
+        watch["stages"] = stage_rows
+    existing = next((
+        row for row in stage_rows
+        if isinstance(row, dict) and row.get("stage") == stage
+    ), None)
     existing_had_quote = bool(
         existing
         and existing.get("odds_status") == "available"
@@ -343,7 +350,14 @@ def sync_prediction(ledger: dict[str, Any], prediction: dict[str, Any], config: 
             return []
     if existing is None:
         stage_rows.append(snapshot)
-        stage_rows.sort(key=lambda row: STAGES[row["stage"]])
+        # Older persisted watch data can contain an audit/legacy dict without
+        # a stage. Scheduler reads already tolerate that shape; keep it
+        # visible but place it after recognized stages instead of allowing a
+        # single malformed historic row to abort every due T-5 commit.
+        stage_rows.sort(key=lambda row: STAGES.get(
+            str(row.get("stage")) if isinstance(row, dict) else "",
+            len(STAGES) + 1,
+        ))
     else:
         existing.update(snapshot)
     # A T-5 that first persisted with no auditable selected quote stays due.
