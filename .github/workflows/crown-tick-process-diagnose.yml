@@ -1,0 +1,43 @@
+name: 診斷皇冠 Tick Process
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: 設定 SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: 只讀檢查 Tick 等待位置
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" '
+              set -eu
+              sudo systemctl show crown-tick.service --no-pager \
+                -p ActiveState -p SubState -p Result -p MainPID \
+                -p ExecMainStartTimestamp -p TimeoutStartUSec
+              pid=$(sudo systemctl show crown-tick.service -p MainPID --value)
+              case "$pid" in ""|0|*[!0-9]*) exit 0 ;; esac
+              echo "=== process tree (no arguments/environment) ==="
+              sudo ps -o pid=,ppid=,etimes=,stat=,wchan:32=,comm= \
+                -p "$pid" --ppid "$pid"
+              for child in $(sudo pgrep -P "$pid" || true); do
+                sudo ps -o pid=,ppid=,etimes=,stat=,wchan:32=,comm= \
+                  --ppid "$child" || true
+              done
+            '
