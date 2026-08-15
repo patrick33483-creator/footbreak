@@ -13,6 +13,9 @@ from .config import Settings
 from .condition_portfolio import FIXED_STAKE, STARTING_BANKROLL, STRATEGY, evaluate_new_t5
 
 STAGES = {"首預": 1, "T-30": 2, "T-5": 3}
+# This deliberately is not part of ``STAGES``.  It is a post-hoc audit record,
+# never a schedulable or genuine T-5 prediction stage.
+RECOVERED_T5_STAGE = "T-5（事後回補）"
 PREDICTION_ERA = "2026-08-12-hkjc-corner-forecast-v4"
 PREDICTION_SCHEMA_VERSION = 2
 

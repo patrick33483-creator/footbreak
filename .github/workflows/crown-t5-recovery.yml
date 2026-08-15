@@ -1,0 +1,108 @@
+name: Crown missed T-5 recovery (audit first)
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'AUDIT is read-only. APPLY runs only after the same run has completed its dry-run audit.'
+        required: true
+        type: choice
+        default: AUDIT
+        options: [AUDIT, APPLY]
+      apply_confirmation:
+        description: 'For APPLY only, type exactly APPLY_CROWN_T5_RECOVERY.'
+        required: true
+        type: string
+        default: AUDIT
+
+permissions:
+  contents: read
+
+concurrency:
+  group: crown-t5-recovery
+  cancel-in-progress: false
+
+jobs:
+  recover:
+    name: Offline Crown T-5 recovery audit
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: Dry-run audit first (no provider, notifications, settlement, or writes)
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          ssh -o BatchMode=yes -o ConnectTimeout=20 "$DEPLOY_USER@$DEPLOY_HOST" \
+            'sudo env PYTHONPATH=/opt/footbreak /opt/footbreak/.venv/bin/python3 -m crown.t5_recovery \
+              --dry-run --provider-company-id 3' > crown-t5-recovery-audit.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          payload = json.loads(Path("crown-t5-recovery-audit.json").read_text(encoding="utf-8"))
+          # The workflow deliberately retains only this aggregate audit shape.
+          if set(payload) - {"schema_version", "mode", "aggregate"}:
+              raise SystemExit("unexpected non-aggregate recovery audit output")
+          Path("crown-t5-recovery-audit.json").write_text(
+              json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Save aggregate dry-run audit
+        uses: actions/upload-artifact@v4
+        with:
+          name: crown-t5-recovery-audit
+          path: crown-t5-recovery-audit.json
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: Confirmed production apply after audit
+        if: ${{ inputs.mode == 'APPLY' && inputs.apply_confirmation == 'APPLY_CROWN_T5_RECOVERY' }}
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          ssh -o BatchMode=yes -o ConnectTimeout=20 "$DEPLOY_USER@$DEPLOY_HOST" \
+            'sudo env PYTHONPATH=/opt/footbreak /opt/footbreak/.venv/bin/python3 -m crown.t5_recovery \
+              --apply --apply-confirmation APPLY_CROWN_T5_RECOVERY --provider-company-id 3' \
+            > crown-t5-recovery-apply.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          payload = json.loads(Path("crown-t5-recovery-apply.json").read_text(encoding="utf-8"))
+          if set(payload) - {"schema_version", "mode", "aggregate", "apply"}:
+              raise SystemExit("unexpected non-aggregate recovery apply output")
+          Path("crown-t5-recovery-apply.json").write_text(
+              json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Save aggregate apply audit
+        if: ${{ inputs.mode == 'APPLY' && inputs.apply_confirmation == 'APPLY_CROWN_T5_RECOVERY' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: crown-t5-recovery-apply
+          path: crown-t5-recovery-apply.json
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: Refuse unconfirmed apply
+        if: ${{ inputs.mode == 'APPLY' && inputs.apply_confirmation != 'APPLY_CROWN_T5_RECOVERY' }}
+        run: |
+          echo 'APPLY was not run: exact confirmation APPLY_CROWN_T5_RECOVERY is required.' >&2
+          exit 2

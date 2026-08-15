@@ -25,7 +25,12 @@ from .common import (
 )
 from .config import Settings
 from .hkjc import fetch_official_match_statuses, fetch_official_result_events
-from .ledger import PREDICTION_ERA, PREDICTION_SCHEMA_VERSION, STAGES
+from .ledger import (
+    PREDICTION_ERA,
+    PREDICTION_SCHEMA_VERSION,
+    RECOVERED_T5_STAGE,
+    STAGES,
+)
 from .lines import settle_handicap, settle_total
 from .matching import Event, canonical_league_key, canonical_team_key, match_event
 from .titan import TitanClient
@@ -74,6 +79,41 @@ def _has_scoreable_market_prediction(row: dict[str, Any]) -> bool:
     )
 
 
+def _is_recovered_audit_row(row: dict[str, Any]) -> bool:
+    """Backfilled records remain visible, but never join model statistics."""
+    return bool(
+        row.get("post_hoc_backfill")
+        or row.get("exclude_from_primary_statistics")
+        or str(row.get("stage") or "") == RECOVERED_T5_STAGE
+    )
+
+
+def _recovery_audit_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Return aggregate-only recovery counts without fixture/provider details."""
+    by_kickoff: dict[str, dict[str, dict[str, dict[str, int]]]] = {}
+    total = 0
+    for row in rows:
+        if not isinstance(row, dict) or not _is_recovered_audit_row(row):
+            continue
+        kickoff = parse_time(row.get("kickoff"))
+        day = kickoff.date().isoformat() if kickoff else "unknown"
+        source_stage = str((row.get("recovery") or {}).get("source_stage") or "unknown")
+        for market in row.get("market_predictions") or []:
+            if not isinstance(market, dict):
+                continue
+            code = str(market.get("code") or "unknown")
+            evidence = str(market.get("recovery_evidence_type") or "unknown")
+            bucket = by_kickoff.setdefault(day, {}).setdefault(source_stage, {}).setdefault(code, {})
+            bucket[evidence] = bucket.get(evidence, 0) + 1
+            total += 1
+    return {
+        "records": sum(1 for row in rows if isinstance(row, dict) and _is_recovered_audit_row(row)),
+        "markets": total,
+        "by_kickoff_stage_market_evidence": by_kickoff,
+        "policy": "post_hoc/backfilled audit only; excluded from primary statistics, learning, simulation, and Telegram",
+    }
+
+
 def normalize_history(history: dict[str, Any]) -> dict[str, Any]:
     """Purge non-market rows and keep later kickoffs at the top."""
     rows = []
@@ -117,7 +157,7 @@ def normalize_history(history: dict[str, Any]) -> dict[str, Any]:
         return (
             kickoff.timestamp() if kickoff else float("-inf"),
             str(row.get("predicted_at") or ""),
-            STAGES.get(str(row.get("stage") or ""), 0),
+            STAGES.get(str(row.get("stage") or ""), 4 if _is_recovered_audit_row(row) else 0),
         )
 
     rows.sort(key=sort_key, reverse=True)
@@ -179,11 +219,17 @@ def _history_row(watch: dict[str, Any], stage: dict[str, Any]) -> dict[str, Any]
         "learning_pre_kickoff": stage.get("learning_pre_kickoff"),
         "learning_payload_sha256": stage.get("learning_payload_sha256"),
         "market_predictions": stage.get("market_predictions") or [],
+        "post_hoc_backfill": bool(stage.get("post_hoc_backfill")),
+        "exclude_from_telegram": bool(stage.get("exclude_from_telegram")),
+        "exclude_from_simulation": bool(stage.get("exclude_from_simulation")),
+        "exclude_from_learning": bool(stage.get("exclude_from_learning")),
+        "exclude_from_primary_statistics": bool(stage.get("exclude_from_primary_statistics")),
+        "recovery": copy.deepcopy(stage.get("recovery")) if isinstance(stage.get("recovery"), dict) else None,
         "market_grades": [],
         "conviction": stage.get("conviction"),
         # A forecast-only EV/Kelly pick is not a simulated bet.  Only the
         # T-5 fixed-stake condition evaluator can mark this history row as one.
-        "simulated_bet": bool(created_condition),
+        "simulated_bet": bool(created_condition) and not bool(stage.get("post_hoc_backfill")),
         "simulation_strategy": "granular-condition-v1" if created_condition else None,
         "bet_label": created_condition.get("selected_label") if created_condition else None,
         "no_bet_reason": (
@@ -222,7 +268,10 @@ def project_watch_rows(
         if not isinstance(watch, dict):
             continue
         for stage in watch.get("stages") or []:
-            if not isinstance(stage, dict) or stage.get("stage") not in STAGES:
+            if not isinstance(stage, dict) or (
+                stage.get("stage") not in STAGES
+                and stage.get("stage") != RECOVERED_T5_STAGE
+            ):
                 continue
             row = _history_row(watch, stage)
             key = (str(row.get("match_id") or ""), str(row.get("stage") or ""))
@@ -248,7 +297,7 @@ def archive_watch(config: Settings, ledger: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(watch, dict):
             continue
         for stage in watch.get("stages") or []:
-            if stage.get("stage") not in STAGES:
+            if stage.get("stage") not in STAGES and stage.get("stage") != RECOVERED_T5_STAGE:
                 continue
             row = _history_row(watch, stage)
             if not _has_scoreable_market_prediction(row):
@@ -749,6 +798,8 @@ def grade_history(config: Settings) -> dict[str, Any]:
     # this is idempotent and never guesses a score or terminal state.
     exclusions_backfilled = 0
     for row in rows:
+        if _is_recovered_audit_row(row):
+            continue
         detail = row.get("result_detail")
         source = str(row.get("result_source") or "")
         terminal_status = (
@@ -784,6 +835,10 @@ def grade_history(config: Settings) -> dict[str, Any]:
 
     due = []
     for row in rows:
+        # Recovery records are immutable audit evidence, not predictions to
+        # settle/grade or material for learning.
+        if _is_recovered_audit_row(row):
+            continue
         kickoff = parse_time(row.get("kickoff"))
         if kickoff is None or (now - kickoff).total_seconds() < SETTLE_AFTER_SECONDS:
             continue
@@ -979,8 +1034,17 @@ def calculate_stats(
     rows: list[dict[str, Any]], comparable_era: str | None = None,
 ) -> dict[str, Any]:
     all_rows = list(rows)
+    recovered_rows = [row for row in all_rows if _is_recovered_audit_row(row)]
+    # A post-hoc backfill is useful audit evidence, never an observation for
+    # hit rate, ranking, three-stage consensus, or learning statistics.
+    all_primary_rows = [row for row in all_rows if not _is_recovered_audit_row(row)]
     if comparable_era is not None:
-        rows = [row for row in all_rows if row.get("prediction_era") == comparable_era]
+        rows = [
+            row for row in all_primary_rows
+            if row.get("prediction_era") == comparable_era
+        ]
+    else:
+        rows = all_primary_rows
     overall = _metrics(rows)
     stage_rows = {
         stage: [row for row in rows if row.get("stage") == stage]
@@ -1025,6 +1089,7 @@ def calculate_stats(
         "latest": latest,
         "learning_status": "collecting_market_level_shadow_samples",
         "minimum_sample_per_bucket": 30,
+        "recovery_audit": _recovery_audit_summary(recovered_rows),
     }
     stats["wdl_graded"] = stats["graded"]
     stats["wdl_hits"] = stats["hits"]
@@ -1039,7 +1104,7 @@ def calculate_stats(
             "all_history_rows": len(all_rows),
             "description": "目前模型版本；全歷史保留於 all_history_audit。",
         }
-        stats["all_history_audit"] = calculate_stats(all_rows)
+        stats["all_history_audit"] = calculate_stats(all_primary_rows)
         # Compute this compact payload only for the public comparable era.
         # The recursive all-history audit intentionally does not re-mine a
         # second (and model-mixed) cohort.
