@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import copy
 import gzip
+import io
 import json
 import os
 import shutil
 import subprocess
 import tempfile
 import time
+import types
 import unittest
 from stat import S_IMODE
 from dataclasses import replace
@@ -2687,6 +2689,34 @@ class CrownSafetyTests(unittest.TestCase):
                 read_published_data(replace(settings(), web_root=root)),
                 payload,
             )
+
+    def test_dashboard_api_streams_published_snapshot_without_reserializing(self) -> None:
+        from crown.dashboard_api import CrownDashboardHandler
+
+        payload = (
+            b'{"schema_version":"crown-dashboard-v2","matches":['
+            + (b'{"id":1},' * 200_000)
+            + b'{}]}'
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "data.json").write_bytes(payload)
+            handler = object.__new__(CrownDashboardHandler)
+            handler.server = types.SimpleNamespace(
+                config=replace(settings(), web_root=root)
+            )
+            handler.wfile = io.BytesIO()
+            statuses: list[int] = []
+            headers: dict[str, str] = {}
+            handler.send_response = statuses.append
+            handler.send_header = headers.__setitem__
+            handler.end_headers = lambda: None
+
+            handler._published_json()
+
+            self.assertEqual(statuses, [200])
+            self.assertEqual(headers["Content-Length"], str(len(payload)))
+            self.assertEqual(handler.wfile.getvalue(), payload)
 
     def test_crown_history_uses_footbreak_result_layout_and_large_score(self) -> None:
         root = Path(__file__).resolve().parents[1] / "dashboard"
