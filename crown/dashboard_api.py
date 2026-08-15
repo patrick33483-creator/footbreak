@@ -8,6 +8,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import shutil
+import stat
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
@@ -76,6 +79,32 @@ class CrownDashboardHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _published_json(self) -> None:
+        """Stream the immutable published snapshot without rebuilding it.
+
+        The Crown history can be large.  Parsing and serialising the complete
+        document for every GET multiplied memory use and could exceed the
+        dashboard health-check timeout.  The writer already replaces this
+        trusted file atomically, so an opened descriptor is a consistent
+        snapshot for the whole response.
+        """
+        path = self.config.web_root / "data.json"
+        with path.open("rb") as handle:
+            metadata = os.fstat(handle.fileno())
+            if not stat.S_ISREG(metadata.st_mode) or metadata.st_size <= 0:
+                raise ValueError("dashboard_payload_not_regular")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(metadata.st_size))
+            self.end_headers()
+            try:
+                shutil.copyfileobj(handle, self.wfile, length=1024 * 1024)
+            except (BrokenPipeError, ConnectionResetError):
+                # A client timeout must not produce a noisy traceback or
+                # terminate the threaded API server.
+                return
+
     def do_GET(self) -> None:  # noqa: N802
         path = self.path.split("?", 1)[0]
         if path == "/api/health":
@@ -88,7 +117,7 @@ class CrownDashboardHandler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.NOT_FOUND, {"ok": False, "error": "not_found"})
             return
         try:
-            self._json(HTTPStatus.OK, read_published_data(self.config))
+            self._published_json()
         except Exception as exc:
             self._json(
                 HTTPStatus.SERVICE_UNAVAILABLE,

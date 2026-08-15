@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import copy
 import gzip
+import io
 import json
 import os
 import shutil
 import subprocess
 import tempfile
+import time
+import types
 import unittest
 from stat import S_IMODE
 from dataclasses import replace
@@ -16,9 +19,10 @@ from unittest.mock import Mock, patch
 
 from crown.config import settings
 from crown.dashboard_data import build, write_dashboard_data
-from crown.engine import _candidates, _crown_market_forecasts, _fixture_baseline_prediction, _fresh, _hkjc_chl_candidates, _hkjc_chl_forecasts, _prediction, _prioritize_tick_rows, _refresh_crown_quote, _skip_new_confirmed_empty_crown, _sweep_rows_with_due_existing, _tick_rows_from_predictions, _wdl_prediction, run
+from crown.engine import _cached_t5_crown_snapshot, _candidates, _crown_market_forecasts, _fixture_baseline_prediction, _fresh, _hkjc_chl_candidates, _hkjc_chl_forecasts, _prediction, _prioritize_tick_rows, _refresh_crown_quote, _skip_new_confirmed_empty_crown, _sweep_rows_with_due_existing, _tick_rows_from_predictions, _wdl_prediction, run
 from crown.hkjc import fetch_official_results
 from crown.ledger import (
+    PREDICTION_ERA,
     completed_stages,
     market_entry_thresholds,
     recompute_stats,
@@ -27,7 +31,7 @@ from crown.ledger import (
 )
 from crown.lines import parse_hkjc_handicap, parse_hkjc_total, settle_handicap, settle_total
 from crown.matching import (
-    BridgeMatch, Event, Match, bridge_titan_to_pinnapi, canonical_league_key, canonical_team_key, match_event,
+    MATCHING_VERSION, BridgeMatch, Event, Match, bridge_titan_to_pinnapi, canonical_league_key, canonical_team_key, match_event,
     normalize_name, qualifiers, same_event_for_hkjc, same_identity_for_hkjc,
 )
 from crown.notify import _bet_label, notify_new
@@ -43,12 +47,34 @@ from analysis.learning_store import LearningStore
 from crown import settle as crown_settle
 from crown.state import load_ledger, load_predictions, merge_predictions, save_ledger, save_predictions
 from crown.titan import (
-    crown_prices_from_pages,
+    crown_prices_from_pages, parse_crown_bulk_prices,
     parse_crown_fixture_ids,
     parse_match_header,
     parse_match_statistics,
     parse_schedule_page,
 )
+
+
+def _runtime_batch_prediction(
+    titan, _bridge, _h_match, stage, _config, _titan_client, _pinnapi_client,
+    _crown_snapshot=None, _previous_crown_prices=None, _entry_policies=None,
+):
+    """Fork-safe fake provider response used by the bounded-runtime tests."""
+    if str(titan["id"]) == os.getenv("CROWN_RUNTIME_TEST_HANG_ID"):
+        time.sleep(10)
+    kickoff = titan["kickoff"]
+    return {
+        "match_id": str(titan["id"]), "league": titan["league"],
+        "home": titan["home"], "away": titan["away"],
+        "kickoff_hkt": kickoff.isoformat(), "stage": stage,
+        "status": "PREDICTION_READY", "matching_version": MATCHING_VERSION,
+        "forecast_candidates": [{
+            "code": "HDC", "market": "讓球", "line": -0.25,
+            "condition": "-0.25", "side": "H", "odds": 1.91,
+            "observed_at": time.time(), "prob": 0.60,
+            "source": "titan007-crown-id-3",
+        }],
+    }
 
 
 class CrownSafetyTests(unittest.TestCase):
@@ -955,6 +981,164 @@ class CrownSafetyTests(unittest.TestCase):
         <ids>123,999,</ids><jcIds></jcIds><isMaintain>0</isMaintain></c>"""
         self.assertEqual(parse_crown_fixture_ids(source), {"123", "999"})
 
+    def test_bulk_crown_feed_parses_exact_id3_hdc_hil_and_rejects_bad_rows(self) -> None:
+        source = """<?xml version='1.0' encoding='UTF-8'?>
+        <c><match>
+          <m>1001,x,0.25,0.92,0.88,x,x,x,x,x,2.5,0.96,0.94</m>
+          <m>bad,x,not-a-line,0.92,0.88,x,x,x,x,x,2.5,0.96,0.94</m>
+          <m>short,x,0.25,0.92</m>
+        </match><ids>1001,bad,short,</ids></c>"""
+        snapshots = parse_crown_bulk_prices(source, observed_at=1234)
+        self.assertEqual(set(snapshots), {"1001", "bad"})
+        prices = snapshots["1001"]["prices"]
+        self.assertEqual(
+            [(row["market"], row["line"], row["selection"], row["odds"])
+             for row in prices],
+            [("HDC", -0.25, "H", 1.92), ("HDC", -0.25, "A", 1.88),
+             ("HIL", 2.5, "H", 1.96), ("HIL", 2.5, "L", 1.94)],
+        )
+        self.assertEqual(snapshots["1001"]["quote_source"],
+                         "titan007-crown-id-3-bulk-current")
+        self.assertEqual(
+            [(row["market"], row["selection"]) for row in snapshots["bad"]["prices"]],
+            [("HIL", "H"), ("HIL", "L")],
+        )
+        self.assertEqual(parse_crown_bulk_prices("<c><match><m>bad"), {})
+
+    def test_t5_bulk_snapshot_skips_optional_pinnapi_and_preserves_provenance(self) -> None:
+        kickoff = self.now + timedelta(minutes=5)
+        titan = {"id": "bulk-1", "league": "L", "home": "A", "away": "B", "kickoff": kickoff}
+        bridge = BridgeMatch(
+            Match(Event("h", "L", "A", "B", kickoff), False, 1.0, None),
+            Match(Event("p", "L", "A", "B", kickoff), False, 1.0, None),
+            "hkjc_bilingual_bridge", None,
+        )
+        bulk = {
+            "prices": [
+                {"market": "HDC", "line": -0.25, "selection": "H", "odds": 1.91, "source_at": 1000},
+                {"market": "HDC", "line": -0.25, "selection": "A", "odds": 1.99, "source_at": 1000},
+                {"market": "HIL", "line": 2.5, "selection": "H", "odds": 1.95, "source_at": 1000},
+                {"market": "HIL", "line": 2.5, "selection": "L", "odds": 1.95, "source_at": 1000},
+            ],
+            "asian_ok": True, "total_ok": True,
+            "quote_source": "titan007-crown-id-3-bulk-current",
+        }
+        titan_client, pinnapi_client = Mock(), Mock()
+        pinnapi_client.lines.side_effect = RuntimeError("must not run for bulk T-5")
+        with patch("crown.engine.datetime") as mocked_datetime, \
+                patch("crown.engine.time.time", return_value=1001):
+            mocked_datetime.now.return_value = self.now
+            prediction = _prediction(
+                titan, bridge, None, "T-5", settings(), titan_client,
+                pinnapi_client, crown_snapshot=bulk,
+            )
+        titan_client.crown_prices.assert_not_called()
+        pinnapi_client.lines.assert_not_called()
+        self.assertEqual(prediction["crown_quote_source"],
+                         "titan007-crown-id-3-bulk-current")
+        self.assertEqual(prediction["edge_reference_status"], "deferred_t5_stage_priority")
+        self.assertTrue(prediction["forecast_candidates"])
+        self.assertEqual(
+            {row["source"] for row in prediction["forecast_candidates"] if row["code"] in {"HDC", "HIL"}},
+            {"titan007-crown-id-3-bulk-current"},
+        )
+
+    def test_strict_t5_cache_requires_fresh_exact_pre_kickoff_selected_evidence(self) -> None:
+        kickoff = self.now + timedelta(minutes=5)
+        titan = {"id": "cache-1", "league": "L", "home": "A", "away": "B", "kickoff": kickoff}
+        prices = [
+            {"market": "HDC", "line": -0.25, "selection": "H", "odds": 1.91, "source_at": self.now.timestamp()},
+            {"market": "HDC", "line": -0.25, "selection": "A", "odds": 1.99, "source_at": self.now.timestamp()},
+        ]
+        card = {
+            "match_id": "cache-1", "home": "A", "away": "B", "kickoff_hkt": kickoff.isoformat(),
+            "book_odds": {"crown": prices},
+            "current_selected_odds_journal": [{
+                "code": "HDC", "line": -0.25, "side": "H", "odds": 1.91,
+                "provider": "Crown", "source": "titan007-crown-id-3",
+                "observed_at": self.now.timestamp(),
+            }],
+        }
+        accepted = _cached_t5_crown_snapshot(titan, card, self.now)
+        self.assertTrue(accepted and accepted["cached_t5_fallback"])
+        self.assertEqual(
+            accepted["cached_t5_fallback_source"],
+            "cached_t5_exact_pre_kickoff_crown_id_3",
+        )
+        for changed in (
+            {"match_id": "other"},
+            {"home": "Other"},
+            {"kickoff_hkt": (kickoff + timedelta(minutes=1)).isoformat()},
+            {"current_selected_odds_journal": [card["current_selected_odds_journal"][0] | {"odds": 2.01}]},
+            {"current_selected_odds_journal": [card["current_selected_odds_journal"][0] | {"observed_at": kickoff.timestamp()}]},
+            {"current_selected_odds_journal": [card["current_selected_odds_journal"][0] | {"observed_at": (self.now - timedelta(minutes=11)).timestamp()}]},
+        ):
+            self.assertIsNone(_cached_t5_crown_snapshot(titan, card | changed, self.now))
+
+    def test_t5_saved_cache_avoids_crown_timeout_and_direct_bulk_wins(self) -> None:
+        kickoff = self.now + timedelta(minutes=5)
+        titan = {"id": "cache-live", "league": "L", "home": "A", "away": "B", "kickoff": kickoff}
+        bridge = BridgeMatch(
+            Match(None, False, 0.0, "no_candidate_in_kickoff_window"),
+            Match(None, False, 0.0, "no_candidate_in_kickoff_window"),
+            None, "direct_same_script:no_candidate_in_kickoff_window",
+        )
+        observed = self.now.timestamp()
+        prior_prices = [
+            {"market": "HDC", "line": -0.25, "selection": "H", "odds": 1.91, "source_at": observed},
+            {"market": "HDC", "line": -0.25, "selection": "A", "odds": 1.99, "source_at": observed},
+        ]
+        saved = {
+            "match_id": "cache-live", "home": "A", "away": "B", "kickoff_hkt": kickoff.isoformat(),
+            "book_odds": {"crown": prior_prices},
+            "current_selected_odds_journal": [{
+                "code": "HDC", "line": -0.25, "side": "H", "odds": 1.91,
+                "provider": "Crown", "source": "titan007-crown-id-3", "observed_at": observed,
+            }],
+        }
+        titan_client, pinnapi_client = Mock(), Mock()
+        with patch("crown.engine.datetime") as mocked_datetime, \
+                patch("crown.engine.time.time", return_value=observed + 1):
+            mocked_datetime.now.return_value = self.now
+            fallback = _prediction(
+                titan, bridge, None, "T-5", settings(), titan_client,
+                pinnapi_client, cached_t5_card=saved,
+            )
+            direct = _prediction(
+                titan, bridge, None, "T-5", settings(), titan_client,
+                pinnapi_client,
+                crown_snapshot={
+                    "prices": [prior_prices[0] | {"odds": 2.10}, prior_prices[1]],
+                    "quote_source": "titan007-crown-id-3-bulk-current",
+                },
+                cached_t5_card=saved,
+            )
+        titan_client.crown_prices.assert_not_called()
+        self.assertTrue(fallback["crown_cached_t5_fallback"])
+        self.assertEqual(fallback["crown_quote_status"], "cached_t5_fallback")
+        self.assertEqual(
+            next(row["odds"] for row in fallback["forecast_candidates"] if row["code"] == "HDC"),
+            1.91,
+        )
+        self.assertEqual(direct["crown_quote_status"], "bulk_current")
+        self.assertEqual(
+            next(row["odds"] for row in direct["book_odds"]["crown"]
+                 if row["market"] == "HDC" and row["selection"] == "H"),
+            2.10,
+        )
+        ledger = {"bankroll": 50000, "bets": [], "watch": {}, "log": [], "stats": {}}
+        with patch("crown.ledger.evaluate_new_t5", return_value=([], [])) as evaluate:
+            self.assertEqual(sync_prediction(ledger, fallback, settings()), [])
+            self.assertEqual(sync_prediction(ledger, fallback, settings()), [])
+        self.assertEqual(evaluate.call_count, 1)
+        self.assertEqual(len(ledger["watch"]["cache-live"]["stages"]), 1)
+        stored = ledger["watch"]["cache-live"]["stages"][0]
+        self.assertEqual(stored["crown_quote_status"], "cached_t5_fallback")
+        self.assertEqual(
+            stored["selected_odds_journal"][0]["source"],
+            "cached_t5_exact_pre_kickoff_crown_id_3",
+        )
+
     def test_stage_windows_and_simulated_ledger_are_idempotent(self) -> None:
         self.assertEqual(stage_for(120, True, set()), "首預")
         self.assertIsNone(stage_for(120, True, {"首預"}))
@@ -1277,6 +1461,177 @@ class CrownSafetyTests(unittest.TestCase):
             policies.assert_not_called()
             titan.assert_not_called()
             pinnapi.assert_not_called()
+
+    def test_tick_deadline_commits_completed_t5s_and_retries_hung_page_next_minute(self) -> None:
+        """One stuck page must not hold back later kickoff groups or persistence."""
+        with tempfile.TemporaryDirectory() as directory:
+            config = replace(
+                settings(), state_dir=Path(directory), enabled=True, pinnapi_key="test",
+            )
+            now = datetime.now(__import__("crown.common", fromlist=["HKT"]).HKT)
+            cards = [
+                {
+                    "match_id": match_id, "league": "L", "home": f"{match_id} H",
+                    "away": f"{match_id} A",
+                    "kickoff_hkt": (now + timedelta(minutes=5 + index)).isoformat(),
+                }
+                for index, match_id in enumerate(("hung", "same-kickoff", "next-kickoff"))
+            ]
+            watch = {
+                card["match_id"]: {
+                    "matching_version": MATCHING_VERSION,
+                    "prediction_era": PREDICTION_ERA,
+                    "stages": [{"stage": "首預"}, {"stage": "T-30"}],
+                }
+                for card in cards
+            }
+            save_predictions(config, cards)
+            save_ledger(config, {
+                "bankroll": 50000, "bets": [], "watch": watch, "log": [], "stats": {},
+            })
+            titan_client, pinnapi_client = Mock(), Mock()
+            pinnapi_client.fixtures.return_value = []
+            started = time.monotonic()
+            with patch.dict(os.environ, {
+                "CROWN_TICK_PASS_DEADLINE_SECONDS": "1",
+                "CROWN_TICK_MAX_WORKERS": "2",
+                "CROWN_RUNTIME_TEST_HANG_ID": "hung",
+            }, clear=False), \
+                 patch("crown.engine.TitanClient", return_value=titan_client), \
+                 patch("crown.engine.PinnapiClient", return_value=pinnapi_client), \
+                 patch("crown.engine.fetch_matches", return_value=[]), \
+                 patch("crown.engine.market_entry_thresholds", return_value={}), \
+                 patch("crown.engine._prediction", new=_runtime_batch_prediction):
+                first = run("tick", config)
+            self.assertLess(time.monotonic() - started, 2.5)
+            self.assertEqual(first["predictions"], 2)
+            self.assertEqual(first["deferred_predictions"], 1)
+            first_ledger = load_ledger(config)
+            self.assertEqual(
+                {match_id for match_id, row in first_ledger["watch"].items()
+                 if any(stage.get("stage") == "T-5" for stage in row["stages"])},
+                {"same-kickoff", "next-kickoff"},
+            )
+
+            # The deferred fixture has no stage at all, so the ordinary next
+            # minute scheduler retries it as T-5 rather than relabelling it.
+            with patch.dict(os.environ, {
+                "CROWN_TICK_PASS_DEADLINE_SECONDS": "1",
+                "CROWN_TICK_MAX_WORKERS": "2",
+                "CROWN_RUNTIME_TEST_HANG_ID": "",
+            }, clear=False), \
+                 patch("crown.engine.TitanClient", return_value=titan_client), \
+                 patch("crown.engine.PinnapiClient", return_value=pinnapi_client), \
+                 patch("crown.engine.fetch_matches", return_value=[]), \
+                 patch("crown.engine.market_entry_thresholds", return_value={}), \
+                 patch("crown.engine._prediction", new=_runtime_batch_prediction):
+                second = run("tick", config)
+            self.assertEqual(second["predictions"], 1)
+            stages = load_ledger(config)["watch"]["hung"]["stages"]
+            self.assertEqual([stage["stage"] for stage in stages].count("T-5"), 1)
+
+    def test_same_kickoff_t5_batch_fetches_bulk_crown_once_not_fixture_pages(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = replace(settings(), state_dir=Path(directory), enabled=True, pinnapi_key="test")
+            now = datetime.now(__import__("crown.common", fromlist=["HKT"]).HKT)
+            cards = [
+                {
+                    "match_id": match_id, "league": "L", "home": f"{match_id} H",
+                    "away": f"{match_id} A",
+                    "kickoff_hkt": (now + timedelta(minutes=5)).isoformat(),
+                }
+                for match_id in ("bulk-a", "bulk-b")
+            ]
+            save_predictions(config, cards)
+            save_ledger(config, {
+                "bankroll": 50000, "bets": [], "log": [], "stats": {},
+                "watch": {
+                    card["match_id"]: {
+                        "matching_version": MATCHING_VERSION, "prediction_era": PREDICTION_ERA,
+                        "stages": [{"stage": "首預"}, {"stage": "T-30"}],
+                    } for card in cards
+                },
+            })
+            titan_client, pinnapi_client = Mock(), Mock()
+            titan_client.crown_bulk_price_snapshots.return_value = {
+                card["match_id"]: {
+                    "prices": [{
+                        "market": "HDC", "line": -0.25, "selection": "H",
+                        "odds": 1.91, "source_at": now.timestamp(),
+                    }],
+                    "quote_source": "titan007-crown-id-3-bulk-current",
+                }
+                for card in cards
+            }
+            pinnapi_client.fixtures.return_value = []
+            with patch("crown.engine.TitanClient", return_value=titan_client), \
+                 patch("crown.engine.PinnapiClient", return_value=pinnapi_client), \
+                 patch("crown.engine.fetch_matches", return_value=[]), \
+                 patch("crown.engine.market_entry_thresholds", return_value={}), \
+                 patch("crown.engine._prediction", new=_runtime_batch_prediction):
+                result = run("tick", config)
+            self.assertEqual(result["predictions"], 2)
+            titan_client.crown_bulk_price_snapshots.assert_called_once_with()
+            titan_client.crown_price_snapshot.assert_not_called()
+            titan_client.crown_prices.assert_not_called()
+
+    def test_completed_t5_creates_one_bet_and_one_notification_key(self) -> None:
+        """A retry/no-op cannot duplicate either idempotent outward effect."""
+        with tempfile.TemporaryDirectory() as directory:
+            config = replace(
+                settings(), state_dir=Path(directory), enabled=True, pinnapi_key="test",
+            )
+            now = datetime.now(__import__("crown.common", fromlist=["HKT"]).HKT)
+            card = {
+                "match_id": "single", "league": "L", "home": "Home", "away": "Away",
+                "kickoff_hkt": (now + timedelta(minutes=5)).isoformat(),
+            }
+            save_predictions(config, [card])
+            save_ledger(config, {
+                "bankroll": 50000, "bets": [], "log": [], "stats": {},
+                "watch": {"single": {
+                    "matching_version": MATCHING_VERSION, "prediction_era": PREDICTION_ERA,
+                    "stages": [{"stage": "首預"}, {"stage": "T-30"}],
+                }},
+            })
+            titan_client, pinnapi_client = Mock(), Mock()
+            pinnapi_client.fixtures.return_value = []
+            created_bet = {
+                "bet_id": "single|HDC|T-5|granular-condition-v1",
+                "portfolio": "condition_simulation", "strategy": "granular-condition-v1",
+                "status": "PENDING", "market": "HDC", "stake": 1000, "odds": 1.91,
+                "created_at": now.isoformat(), "market_label": "讓球", "condition_label": "主讓",
+            }
+            with patch("crown.engine.TitanClient", return_value=titan_client), \
+                 patch("crown.engine.PinnapiClient", return_value=pinnapi_client), \
+                 patch("crown.engine.fetch_matches", return_value=[]), \
+                 patch("crown.engine.market_entry_thresholds", return_value={}), \
+                 patch("crown.engine._prediction", new=_runtime_batch_prediction), \
+                 patch("crown.ledger.evaluate_new_t5", return_value=([created_bet], [])) as evaluate:
+                first = run("tick", config)
+                second = run("tick", config)
+            self.assertEqual(first["simulations_created"], 1)
+            self.assertTrue(second["fast_noop"])
+            self.assertEqual(evaluate.call_count, 1)
+            self.assertEqual(len(load_ledger(config)["bets"]), 1)
+
+            watch = {
+                "match_id": "single", "kickoff_hkt": card["kickoff_hkt"],
+                "kickoff": card["kickoff_hkt"], "league": "L", "home": "Home", "away": "Away",
+            }
+            opportunity = {
+                "watch": watch, "selected": {"line": -0.25, "odds": 1.91, "side": "H"},
+                "stage": "T-5", "fixture": "single", "market": "HDC",
+                "matches": [{"label": "主讓", "odds_tier": "≥1.70", "badge": "A",
+                             "total": {"accuracy": 0.7, "hits": 7, "decided": 10}}],
+            }
+            notification_ledger = {"watch": {"single": watch}}
+            with patch("analysis.granular_conditions.notification_opportunities",
+                       return_value=[opportunity]), \
+                 patch("crown.notify._send", return_value=True) as sender:
+                self.assertEqual(notify_new(notification_ledger, config, [{"match_id": "single", "stage": "T-5"}]), 1)
+                self.assertEqual(notify_new(notification_ledger, config, [{"match_id": "single", "stage": "T-5"}]), 0)
+            self.assertEqual(sender.call_count, 1)
 
     def test_sweep_recovers_due_first_look_omitted_from_titan_list(self) -> None:
         kickoff = self.now + timedelta(hours=3)
@@ -2537,6 +2892,34 @@ class CrownSafetyTests(unittest.TestCase):
                 read_published_data(replace(settings(), web_root=root)),
                 payload,
             )
+
+    def test_dashboard_api_streams_published_snapshot_without_reserializing(self) -> None:
+        from crown.dashboard_api import CrownDashboardHandler
+
+        payload = (
+            b'{"schema_version":"crown-dashboard-v2","matches":['
+            + (b'{"id":1},' * 200_000)
+            + b'{}]}'
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "data.json").write_bytes(payload)
+            handler = object.__new__(CrownDashboardHandler)
+            handler.server = types.SimpleNamespace(
+                config=replace(settings(), web_root=root)
+            )
+            handler.wfile = io.BytesIO()
+            statuses: list[int] = []
+            headers: dict[str, str] = {}
+            handler.send_response = statuses.append
+            handler.send_header = headers.__setitem__
+            handler.end_headers = lambda: None
+
+            handler._published_json()
+
+            self.assertEqual(statuses, [200])
+            self.assertEqual(headers["Content-Length"], str(len(payload)))
+            self.assertEqual(handler.wfile.getvalue(), payload)
 
     def test_crown_history_uses_footbreak_result_layout_and_large_score(self) -> None:
         root = Path(__file__).resolve().parents[1] / "dashboard"

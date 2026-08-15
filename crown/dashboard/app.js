@@ -1207,6 +1207,18 @@ function historyOdds(p) {
   }
   return '';
 }
+function historyRecoveryEvidence(p) {
+  if (!p || !p.recovery_evidence_type) return '';
+  const label = p.recovery_evidence_type === 'closing_substitution'
+    ? '收市賠率替代'
+    : p.recovery_evidence_type === 't5_exact'
+      ? 'T-5 實際證據'
+      : 'T-5 LOCF 證據';
+  const observed = p.observed_at ? ` · 證據 ${hkStamp(p.observed_at)}` : '';
+  const carried = p.prediction_stage_substitution_type === 'last_pre_t5_prediction_carry_forward';
+  const prediction = carried ? '預測階段替代：承接最後 T-5 前方向（非真實 T-5）' : '已存 T-5 模型載荷';
+  return `<span class="cell-sub recovery-evidence">POST-HOC／回補 · ${prediction} · ${label}${observed}</span>`;
+}
 
 function historyCornerResult(r, p) {
   if (p.code !== 'CHL') return '';
@@ -1237,6 +1249,7 @@ function historyMarkets(r) {
       <span class="history-market-pick"><b>${marketLabel(HIST_MARKET_LABEL[p.code] || p.code)}</b>
         ${esc(historyPredictionLabel(r, p))}
         <span class="cell-sub history-market-meta">${pc(p.probability, 1)} ${historyOdds(p)}</span>
+        ${historyRecoveryEvidence(p)}
       </span>
       ${result}
     </div>`;
@@ -1594,6 +1607,7 @@ function renderHistory() {
     <td data-label="賽事">${esc(r.home)} <span class="dim">v</span> ${esc(r.away)}
       <div class="cell-sub">${esc(r.league || '')}</div></td>
     <td data-label="階段"><span class="fx-tag ${TAG[r.stage] || 'tag-wait'}">${esc(r.stage || '—')}</span>
+      ${r.post_hoc_backfill ? `<div class="cell-sub recovery-audit-label">POST-HOC／BACKFILLED · ${((r.recovery || {}).recovery_kind === 'last_pre_t5_prediction_carry_forward') ? '最後 T-5 前預測承接（非真實 T-5）' : '已存 T-5 模型載荷回補（非原生 T-5）'} · 來源 ${esc((r.recovery || {}).source_stage || '已存階段')} · ${((r.recovery || {}).closing_odds_substitution) ? '含收市賠率替代 · ' : ''}不計主統計／不結算</div>` : ''}
       <div class="cell-sub mono">${r.predicted_at ? hkStamp(r.predicted_at) : '—'}</div></td>
     <td data-label="1X2 輔助"><b class="forecast-pick">${esc(r.forecast || '冇主客和預測')}</b>
       <div class="cell-sub">${r.probability == null ? '正式結果見市場欄' : `最高機率 ${pc(r.probability, 1)}`}${r.likely_score ? ` · 最可能 ${esc(r.likely_score)}` : ''}</div></td>
@@ -1620,7 +1634,7 @@ function renderHistory() {
       ${historyRows(items) || `<tr class="history-empty-row"><td colspan="8" class="empty2">${empty}</td></tr>`}
     </table></div>`;
   const historyFilters = `<div class="history-stage-filters" role="group" aria-label="按預測階段篩選紀錄">
-    ${[['all', '全部'], ['首預', '首預'], ['T-30', 'T-30'], ['T-5', 'T-5']].map(([value, label]) =>
+    ${[['all', '全部'], ['首預', '首預'], ['T-30', 'T-30'], ['T-5', 'T-5'], ['T-5（事後回補）', '回補稽核']].map(([value, label]) =>
       `<button type="button" class="history-stage-filter ${HISTORY_STAGE === value ? 'is-on' : ''}"
         data-history-stage="${value}" aria-pressed="${HISTORY_STAGE === value}">${label}</button>`).join('')}
   </div>`;
@@ -1637,7 +1651,7 @@ function renderHistory() {
     <div class="history-stage-summary">${marketSummary}</div>
     ${historyStageMarketMatrix(s)}
     ${historyConsensusCards(s)}
-    <p class="mx-note">合併市場數字會計首預、T-30、T-5 每個獨立快照；下表將所有狀態合併，按最新開賽時間優先排列。正式學習樣本為當時主線，走水不計入命中率分母；未完場或未取到賽果唔當輸。</p>
+    <p class="mx-note">合併市場數字只計首預、T-30、T-5 原生獨立快照；事後回補只作稽核展示，絕不計入命中率、排名、學習、Telegram 或模擬注。下表按最新開賽時間優先排列。</p>
   </div>
   ${historyFilters}
   <div class="card"><h2 class="card-h">${HISTORY_STAGE === 'all' ? '全部紀錄' : `${HISTORY_STAGE} 紀錄`} <span class="sub">${rows.length} 筆 · 最新開賽時間優先</span></h2>

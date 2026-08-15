@@ -96,7 +96,6 @@ jobs:
              sudo systemctl start --no-block crown-tick.service
              sudo systemctl show crown-tick.service --no-pager \
                -p Id -p LoadState -p ActiveState -p SubState -p Result -p ExecMainStatus'
-
       - name: 保存已遮罩階段摘要到臨時私人分支
         run: |
           set -euo pipefail

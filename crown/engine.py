@@ -2,9 +2,12 @@
 from __future__ import annotations
 
 import math
+import multiprocessing
+import os
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
+from multiprocessing.connection import wait as wait_for_connections
 from typing import Any
 
 from .common import HKT, iso_hkt, parse_time
@@ -79,6 +82,136 @@ def _prioritize_tick_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return rows
 
 
+def _tick_pass_deadline_seconds() -> float:
+    """Return a bounded tick budget, leaving time for the service to stop cleanly."""
+    try:
+        configured = float(os.getenv("CROWN_TICK_PASS_DEADLINE_SECONDS", "40"))
+    except ValueError:
+        configured = 40.0
+    # The systemd service is the final 55-second backstop.  Keep the in-process
+    # budget meaningfully below it, including when an operator misconfigures it.
+    return min(50.0, max(1.0, configured))
+
+
+def _tick_workers() -> int:
+    try:
+        configured = int(os.getenv("CROWN_TICK_MAX_WORKERS", "8"))
+    except ValueError:
+        configured = 8
+    return min(12, max(1, configured))
+
+
+def _prediction_process(send: Any, payload: tuple[Any, ...]) -> None:
+    """Run one provider-heavy prediction outside the tick process.
+
+    A socket/library call can ignore cancellation in a Python thread.  A
+    separate process is deliberately used here so the parent can terminate an
+    overdue page without waiting for an executor's worker shutdown.  This runs
+    only on the Linux deployment target, where ``fork`` also avoids sharing a
+    request connection between fixtures.
+    """
+    try:
+        send.send(("ok", _prediction(*payload)))
+    except BaseException as exc:
+        send.send(("error", type(exc).__name__))
+    finally:
+        send.close()
+
+
+def _run_tick_predictions(
+    payloads: list[tuple[Any, ...]],
+    deadline: float,
+    on_complete: Any,
+) -> dict[str, int]:
+    """Bound concurrent T-5 work and commit each completed result immediately.
+
+    ``Process.terminate`` is essential: ``Future.cancel`` cannot cancel a
+    running ThreadPoolExecutor task, and executor context-manager shutdown
+    waits for exactly the stuck worker that caused this incident.
+    """
+    if not payloads:
+        return {"completed": 0, "failed": 0, "deferred": 0}
+    if os.name != "posix":
+        # Crown production is Linux.  Failing closed elsewhere is safer than
+        # silently reintroducing an unkillable thread-based deadline breach.
+        return {"completed": 0, "failed": 0, "deferred": len(payloads)}
+
+    context = multiprocessing.get_context("fork")
+    queued = iter(payloads)
+    active: dict[Any, tuple[Any, Any]] = {}
+    completed = failed = submitted = 0
+    exhausted = False
+    while active or not exhausted:
+        while (
+            not exhausted
+            and len(active) < _tick_workers()
+            and time.monotonic() < deadline
+        ):
+            try:
+                payload = next(queued)
+            except StopIteration:
+                exhausted = True
+                break
+            receiver, sender = context.Pipe(duplex=False)
+            process = context.Process(target=_prediction_process, args=(sender, payload))
+            process.start()
+            sender.close()
+            active[receiver] = (process, payload)
+            submitted += 1
+
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        if not active:
+            continue
+        ready = wait_for_connections(
+            list(active), timeout=min(0.10, remaining)
+        )
+        for receiver in ready:
+            process, _payload = active.pop(receiver)
+            try:
+                status, value = receiver.recv()
+            except EOFError:
+                status, value = "error", "worker_exited"
+            finally:
+                receiver.close()
+                process.join(timeout=0.05)
+            if status == "ok":
+                on_complete(value)
+                completed += 1
+            else:
+                failed += 1
+
+        # A worker can die before writing its pipe.  Do not wait for a timeout
+        # before releasing its slot for the next kickoff group.
+        for receiver, (process, _payload) in list(active.items()):
+            if process.is_alive():
+                continue
+            if receiver.poll():
+                continue
+            active.pop(receiver)
+            receiver.close()
+            process.join(timeout=0.05)
+            failed += 1
+
+    for receiver, (process, _payload) in active.items():
+        if process.is_alive():
+            process.terminate()
+        process.join(timeout=0.25)
+        if process.is_alive():
+            process.kill()
+            process.join(timeout=0.25)
+        receiver.close()
+    # Anything never submitted, plus forcibly terminated workers, remains due
+    # because no stage was written.  The next minute will collect fresh,
+    # correctly-labelled pre-kickoff evidence.
+    return {
+        "completed": completed,
+        "failed": failed,
+        "deferred": len(payloads) - completed - failed,
+    }
+
+
 def _sweep_rows_with_due_existing(
     titan_rows: list[dict[str, Any]],
     predictions: list[dict[str, Any]],
@@ -120,6 +253,161 @@ def _sweep_rows_with_due_existing(
 
 def _line_key(market: str, line: float | None) -> tuple[str, int | None]:
     return market, None if line is None else round(line * 4)
+
+
+_CROWN_ID3_SOURCE = "titan007-crown-id-3"
+_CROWN_BULK_ID3_SOURCE = "titan007-crown-id-3-bulk-current"
+_CACHED_T5_FALLBACK_SOURCE = "cached_t5_exact_pre_kickoff_crown_id_3"
+_CACHED_T5_FALLBACK_MAX_AGE_SECONDS = 10 * 60
+
+
+def _epoch_observed_at(value: Any) -> float | None:
+    """Return a finite epoch timestamp without inventing an observation time."""
+    try:
+        observed = float(value)
+    except (TypeError, ValueError):
+        parsed = parse_time(str(value or ""))
+        return parsed.timestamp() if parsed is not None else None
+    if not math.isfinite(observed) or observed <= 0:
+        return None
+    # The price adapter writes seconds, but old immutable journals can contain
+    # milliseconds.  Normalize only an otherwise real timestamp.
+    return observed / 1000 if observed >= 10_000_000_000 else observed
+
+
+def _same_cached_fixture_identity(
+    titan: dict[str, Any],
+    cached_card: dict[str, Any],
+) -> bool:
+    """Require the complete, direct fixture identity; never name-match a cache."""
+    kickoff = parse_time(titan.get("kickoff"))
+    cached_kickoff = parse_time(
+        cached_card.get("kickoff_hkt") or cached_card.get("kickoff")
+    )
+    return bool(
+        str(cached_card.get("match_id") or "") == str(titan.get("id") or "")
+        and str(cached_card.get("home") or "") == str(titan.get("home") or "")
+        and str(cached_card.get("away") or "") == str(titan.get("away") or "")
+        and kickoff is not None
+        and cached_kickoff is not None
+        and cached_kickoff == kickoff
+    )
+
+
+def _cached_t5_crown_snapshot(
+    titan: dict[str, Any],
+    cached_card: dict[str, Any] | None,
+    now: datetime | None = None,
+) -> dict[str, Any] | None:
+    """Build a narrow T-5 fallback only from saved exact Crown-ID-3 evidence.
+
+    ``book_odds.crown`` by itself is deliberately insufficient: older cards
+    have no fixture-bound selected-quote provenance.  A cache is usable only
+    when its current journal proves one exact HDC/HIL selected quote, with the
+    same real source timestamp and decimal odds, for this exact fixture.  The
+    returned prices remain a complete saved board so the ordinary forecast
+    code derives its payload rather than fabricating a selected prediction.
+    """
+    if not isinstance(cached_card, dict) or not _same_cached_fixture_identity(
+        titan, cached_card
+    ):
+        return None
+    now = (now or datetime.now(HKT)).astimezone(HKT)
+    kickoff = parse_time(titan.get("kickoff"))
+    if kickoff is None or now >= kickoff:
+        return None
+    prices = list(((cached_card.get("book_odds") or {}).get("crown") or []))
+    journal = list(cached_card.get("current_selected_odds_journal") or [])
+    if not prices or not journal:
+        return None
+    accepted: list[dict[str, Any]] = []
+    for selected in journal:
+        if not isinstance(selected, dict):
+            continue
+        market = str(selected.get("code") or "")
+        side = str(selected.get("side") or "")
+        allowed_sides = {"HDC": {"H", "A"}, "HIL": {"H", "L"}}
+        if (
+            market not in allowed_sides
+            or side not in allowed_sides[market]
+            or selected.get("provider") != "Crown"
+            or selected.get("source") not in {
+                _CROWN_ID3_SOURCE, _CROWN_BULK_ID3_SOURCE,
+            }
+        ):
+            continue
+        try:
+            line = float(selected.get("line"))
+            odds = float(selected.get("odds"))
+        except (TypeError, ValueError):
+            continue
+        if not (math.isfinite(line) and math.isfinite(odds) and odds > 1):
+            continue
+        def exact_saved_quote(row: Any) -> bool:
+            try:
+                return bool(
+                    isinstance(row, dict)
+                    and row.get("market") == market
+                    and row.get("selection") == side
+                    and float(row.get("line")) == line
+                    and float(row.get("odds")) == odds
+                )
+            except (TypeError, ValueError):
+                return False
+        quote = next((row for row in prices if exact_saved_quote(row)), None)
+        if quote is None:
+            continue
+        observed = _epoch_observed_at(quote.get("source_at"))
+        journal_observed = _epoch_observed_at(selected.get("observed_at"))
+        if (
+            observed is None
+            or journal_observed is None
+            or observed != journal_observed
+            or observed >= kickoff.timestamp()
+            or observed > now.timestamp()
+            or now.timestamp() - observed > _CACHED_T5_FALLBACK_MAX_AGE_SECONDS
+            or kickoff.timestamp() - observed > _CACHED_T5_FALLBACK_MAX_AGE_SECONDS
+        ):
+            continue
+        accepted.append({
+            "market": market, "line": line, "selection": side, "odds": odds,
+            "observed_at": observed,
+        })
+    if not accepted:
+        return None
+    # Keep only supported Crown markets.  A selected exact quote is mandatory;
+    # unselected opposite sides are retained solely to calculate the normal
+    # complete-market forecast and are never used as a substitute selection.
+    fallback_prices = [
+        dict(row) for row in prices
+        if isinstance(row, dict) and row.get("market") in {"HDC", "HIL"}
+    ]
+    if not fallback_prices:
+        return None
+    return {
+        "prices": fallback_prices,
+        "asian_ok": False,
+        "total_ok": False,
+        "cached_t5_fallback": True,
+        "cached_t5_fallback_source": _CACHED_T5_FALLBACK_SOURCE,
+        "cached_t5_selected_quotes": accepted,
+    }
+
+
+def _valid_pre_kickoff_bulk_snapshot(
+    snapshot: dict[str, Any] | None,
+    kickoff: datetime,
+) -> bool:
+    """Bulk current odds are unusable if any retained observation is in-play."""
+    if not snapshot or snapshot.get("quote_source") != _CROWN_BULK_ID3_SOURCE:
+        return True
+    prices = list(snapshot.get("prices") or [])
+    return bool(prices) and all(
+        isinstance(row, dict)
+        and (observed := _epoch_observed_at(row.get("source_at"))) is not None
+        and observed < kickoff.timestamp()
+        for row in prices
+    )
 
 
 def _fresh(line: dict[str, Any], config: Settings, now: float) -> tuple[bool, str | None]:
@@ -535,7 +823,8 @@ def _prediction(titan: dict[str, Any], bridge: BridgeMatch, h_match: dict[str, A
                 stage: str, config: Settings, titan_client: TitanClient, pinnapi_client: PinnapiClient,
                 crown_snapshot: dict[str, Any] | None = None,
                 previous_crown_prices: list[dict[str, Any]] | None = None,
-                entry_policies: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
+                entry_policies: dict[str, dict[str, Any]] | None = None,
+                cached_t5_card: dict[str, Any] | None = None) -> dict[str, Any]:
     event = _event_from_titan(titan)
     minutes = round((event.kickoff - datetime.now(HKT)).total_seconds() / 60, 1)
     base = {
@@ -576,10 +865,42 @@ def _prediction(titan: dict[str, Any], bridge: BridgeMatch, h_match: dict[str, A
     base["forecast_candidates"] = corner_forecasts
     if corner_forecast_reasons:
         base["corner_forecast_notes"] = corner_forecast_reasons
-    # Crown is the board master.  Fetch and preserve its quote before any
+    # Crown is the board master.  A direct bulk/page snapshot wins.  Only when
+    # it is absent may a verified, exact saved T-5 card prevent a per-fixture
+    # page timeout; an unscoped old price list is never enough to skip a call.
+    if not _valid_pre_kickoff_bulk_snapshot(crown_snapshot, event.kickoff):
+        crown_snapshot = None
+    cached_t5_snapshot = (
+        _cached_t5_crown_snapshot(titan, cached_t5_card)
+        if stage == "T-5" and crown_snapshot is None else None
+    )
+    quote_snapshot = crown_snapshot or cached_t5_snapshot
+    quote_source = str(
+        (quote_snapshot or {}).get("quote_source")
+        or (quote_snapshot or {}).get("cached_t5_fallback_source")
+        or _CROWN_ID3_SOURCE
+    )
+    cached_t5_fallback = bool(
+        (quote_snapshot or {}).get("cached_t5_fallback")
+    )
+    base["market_sources"]["HDC"] = quote_source
+    base["market_sources"]["HIL"] = quote_source
+    base["crown_quote_source"] = quote_source
+    base["crown_quote_status"] = (
+        "cached_t5_fallback"
+        if cached_t5_fallback
+        else "bulk_current"
+        if quote_source == "titan007-crown-id-3-bulk-current"
+        else "direct_current"
+    )
+    # Fetch and preserve its quote before any
     # HKJC/PinnAPI bridge decision so Crown-only fixtures can still be shown,
     # while edge calculation remains fail-closed without PinnAPI.
-    crown = list((crown_snapshot or {}).get("prices") or []) if crown_snapshot is not None else titan_client.crown_prices(event.id)
+    crown = (
+        list((quote_snapshot or {}).get("prices") or [])
+        if quote_snapshot is not None
+        else titan_client.crown_prices(event.id)
+    )
     used_cached_crown = False
     if not crown and previous_crown_prices:
         # A current empty/error response must not erase an earlier valid
@@ -612,11 +933,39 @@ def _prediction(titan: dict[str, Any], bridge: BridgeMatch, h_match: dict[str, A
         # the real pre-kickoff observation time.  Do not discard that valid
         # 首預 evidence merely because it waited in the local work queue.
         # Tick-mode direct reads still enforce the normal freshness gate.
-        require_fresh=not (used_cached_crown or crown_snapshot is not None),
+        require_fresh=not (used_cached_crown or quote_snapshot is not None),
     )
+    if cached_t5_fallback:
+        # The cache proves only the saved selected quote(s), not every other
+        # line retained on the board.  Refuse a recomputed direction unless it
+        # is exactly the market/line/side/odds evidence that passed validation.
+        accepted = {
+            (
+                row["market"], float(row["line"]), row["selection"],
+                float(row["odds"]), float(row["observed_at"]),
+            )
+            for row in (quote_snapshot or {}).get("cached_t5_selected_quotes", [])
+            if isinstance(row, dict)
+        }
+        forecasts = [
+            forecast for forecast in forecasts
+            if (
+                forecast.get("code"),
+                float(forecast.get("line")),
+                forecast.get("side"),
+                float(forecast.get("odds")),
+                _epoch_observed_at(forecast.get("observed_at")),
+            ) in accepted
+        ]
+    for forecast in forecasts:
+        forecast["source"] = quote_source
+        if cached_t5_fallback:
+            forecast["quote_status"] = "cached_t5_fallback"
+            forecast["quote_fallback_source"] = _CACHED_T5_FALLBACK_SOURCE
     all_forecasts = forecasts + corner_forecasts
     base["forecast_candidates"] = all_forecasts
     base["crown_quote_cached_forecast_only"] = used_cached_crown
+    base["crown_cached_t5_fallback"] = cached_t5_fallback
     if used_cached_crown:
         source_times = [
             float(row.get("source_at") or 0)
@@ -651,6 +1000,22 @@ def _prediction(titan: dict[str, Any], bridge: BridgeMatch, h_match: dict[str, A
             "皇冠即時盤目前不可用；已沿用最後一次有效皇冠盤作純預測及學習，"
             "禁止計算 edge 及投注。"
         )
+        return base
+    if stage == "T-5" and (
+        quote_source == _CROWN_BULK_ID3_SOURCE or cached_t5_fallback
+    ):
+        # T-5 stage persistence is time-critical.  A valid exact current bulk
+        # Crown board is enough for the granular-condition portfolio; optional
+        # per-fixture PinnAPI EV/corner calls can otherwise consume the entire
+        # same-kickoff batch deadline.  Do not invent EV, Kelly, or a sharp
+        # probability: defer those fields and retain only the real Crown
+        # complete-market forecast/selected quote evidence.
+        base["edge_reference_status"] = "deferred_t5_stage_priority"
+        base["edge_reference_note"] = (
+            "T-5 已以皇冠精確盤優先落盤；PinnAPI EV 參考延後，未計算 EV 或 Kelly。"
+        )
+        base["sharp_reference_available"] = False
+        base["no_bet_reason"] = None
         return base
     if not bridge.event:
         # PinnAPI is an optional EV reference, never a prerequisite for Crown
@@ -694,6 +1059,11 @@ def _prediction(titan: dict[str, Any], bridge: BridgeMatch, h_match: dict[str, A
     base["edge_reference_status"] = "available"
     base["edge_reference_note"] = None
     candidates, reasons = _candidates(crown, prices, config, now, bool(pinnapi["timestamp_inferred"]))
+    for candidate in candidates:
+        candidate["source"] = quote_source
+        if cached_t5_fallback:
+            candidate["quote_status"] = "cached_t5_fallback"
+            candidate["quote_fallback_source"] = _CACHED_T5_FALLBACK_SOURCE
     corner_candidates: list[dict[str, Any]] = []
     corner_reasons: list[str] = []
     if base["book_odds"]["hkjc_chl"]:
@@ -931,6 +1301,60 @@ def refresh_current_quotes(config: Settings) -> dict[str, Any]:
     }
 
 
+def _commit_stage_predictions(
+    config: Settings,
+    mode: str,
+    stage_predictions: list[dict[str, Any]],
+) -> tuple[list[str], list[dict[str, str]], int]:
+    """Commit a completed batch while holding the state lock only briefly."""
+    if not stage_predictions:
+        return [], [], len(load_predictions(config))
+    with state_lock(config):
+        # Reload after every small batch: another mode can have committed
+        # independently while this provider process was working.
+        ledger = load_ledger(config)
+        emitted: list[str] = []
+        fresh_condition_predictions: list[dict[str, str]] = []
+        committed_predictions: list[dict[str, Any]] = []
+        for prediction in stage_predictions:
+            kickoff = datetime.fromisoformat(str(prediction["kickoff_hkt"]))
+            if kickoff.tzinfo is None:
+                kickoff = kickoff.replace(tzinfo=HKT)
+            if kickoff <= datetime.now(HKT):
+                # A request admitted before kickoff is no longer a valid
+                # pre-kickoff observation if it returns after kickoff.
+                continue
+            stage = str(prediction.get("stage") or "")
+            match_id = str(prediction.get("match_id") or "")
+            prior_stage = any(
+                row.get("stage") == stage
+                for row in ((ledger.get("watch") or {}).get(match_id, {}).get("stages") or [])
+                if isinstance(row, dict)
+            )
+            created = sync_prediction(ledger, prediction, config)
+            emitted.extend(created)
+            prediction["stages"] = list(
+                ledger["watch"].get(match_id, {}).get("stages") or []
+            )
+            committed_predictions.append(prediction)
+            if stage in {"T-30", "T-5"} and (
+                not prior_stage or (stage == "T-5" and bool(created))
+            ) and any(
+                row.get("stage") == stage for row in prediction["stages"]
+                if isinstance(row, dict)
+            ):
+                fresh_condition_predictions.append({"match_id": match_id, "stage": stage})
+        recompute_stats(ledger, config)
+        ledger["log"].append({
+            "ts": iso_hkt(), "kind": mode, "n_changes": len(emitted),
+            "changes": emitted or ["今次無模擬注動作"], "simulation_only": True,
+        })
+        ledger["log"] = ledger["log"][-100:]
+        save_ledger(config, ledger)
+        retained = merge_predictions(config, committed_predictions)
+    return emitted, fresh_condition_predictions, len(retained)
+
+
 def run(mode: str, config: Settings) -> dict[str, Any]:
     """Run a remote pass only when the explicit validation gate and PinnAPI key exist."""
     if mode not in {"tick", "sweep", "settle", "refresh"}:
@@ -962,6 +1386,12 @@ def run(mode: str, config: Settings) -> dict[str, Any]:
         # A due T-5 owns this tick.  Deferring recoverable T-30/first-look
         # work by one minute is safe; making a T-5 wait behind it is not.
         titan_rows = _prioritize_tick_rows(titan_rows)
+        # This is deliberately measured before any provider work.  The
+        # systemd 55-second limit remains the final safeguard for an upstream
+        # fixture-list call that cannot be interrupted in-process.
+        tick_deadline = time.monotonic() + _tick_pass_deadline_seconds()
+    else:
+        tick_deadline = None
     # This can read the local learning store.  Keep it after the local tick
     # due check so a genuine no-op has no expensive work or provider calls.
     entry_policies = {
@@ -969,6 +1399,16 @@ def run(mode: str, config: Settings) -> dict[str, Any]:
         for code in ("HDC", "HIL", "CHL")
     }
     titan_client, pinnapi_client = TitanClient(config), PinnapiClient(config)
+    bulk_crown_quotes: dict[str, dict[str, Any]] = {}
+    if mode == "tick":
+        # A single company-ID-3 bulk read serves every due local card.  Do not
+        # turn a transport/parser failure into a fabricated quote; the
+        # per-fixture/cache paths below remain guarded fallbacks.
+        try:
+            fetched_bulk = titan_client.crown_bulk_price_snapshots()
+            bulk_crown_quotes = fetched_bulk if isinstance(fetched_bulk, dict) else {}
+        except OSError:
+            bulk_crown_quotes = {}
     if mode == "sweep":
         titan_rows = _sweep_rows_with_due_existing(
             titan_client.fixtures(),
@@ -1050,7 +1490,17 @@ def run(mode: str, config: Settings) -> dict[str, Any]:
                 )
             )
             continue
-        crown_snapshot = refresh_quotes.get(event.id) if mode == "sweep" else None
+        crown_snapshot = (
+            refresh_quotes.get(event.id)
+            if mode == "sweep" else bulk_crown_quotes.get(event.id)
+        )
+        if mode == "tick" and not _valid_pre_kickoff_bulk_snapshot(
+            crown_snapshot, event.kickoff
+        ):
+            # A malformed/in-play bulk row is not direct evidence.  Clear it
+            # before cache selection so it cannot accidentally suppress the
+            # strict saved-cache fallback or masquerade as a fresh quote.
+            crown_snapshot = None
         if _skip_new_confirmed_empty_crown(crown_snapshot, previous):
             # The fixture exists on Titan's complete schedule but Crown has
             # neither supported market and has no earlier valid Crown quote.
@@ -1065,6 +1515,11 @@ def run(mode: str, config: Settings) -> dict[str, Any]:
         stage = stage_for(minutes, mode == "sweep", done)
         if not stage:
             continue
+        if mode == "tick" and stage == "T-5" and crown_snapshot is None:
+            # This is intentionally after stage selection: the narrow saved
+            # cache can only suppress a per-fixture direct page for a due
+            # native T-5, never for ordinary sweeps/earlier stages.
+            crown_snapshot = _cached_t5_crown_snapshot(titan, previous)
         mapping["titan_due"] += 1
         bridge = bridge_titan_to_pinnapi(event, [item[0] for item in h_events], p_events)
         if bridge.hkjc.event:
@@ -1104,6 +1559,48 @@ def run(mode: str, config: Settings) -> dict[str, Any]:
             job[0]["kickoff"],
         )
     )
+    if mode == "tick":
+        payloads = [
+            (
+                titan, bridge, h_row, stage, config, titan_client,
+                pinnapi_client, crown_snapshot, previous_crown_prices,
+                entry_policies,
+            )
+            for (
+                titan, bridge, h_row, stage, crown_snapshot,
+                previous_crown_prices,
+            ) in pending_predictions
+        ]
+        emitted: list[str] = []
+        fresh_condition_predictions: list[dict[str, str]] = []
+        retained = len(existing_predictions)
+
+        def commit_completed(prediction: dict[str, Any]) -> None:
+            nonlocal retained
+            created, fresh, retained = _commit_stage_predictions(
+                config, mode, [prediction]
+            )
+            emitted.extend(created)
+            fresh_condition_predictions.extend(fresh)
+
+        runtime = _run_tick_predictions(
+            payloads, tick_deadline if tick_deadline is not None else time.monotonic(),
+            commit_completed,
+        )
+        return {
+            "ok": True, "mode": mode, "predictions": runtime["completed"],
+            "retained_predictions": retained, "simulations_created": len(emitted),
+            "mapping": mapping, "pinnapi_fixtures": len(pinnapi_rows),
+            "titan_fixtures": len(titan_rows), "hkjc_fixtures": len(h_events),
+            "fresh_condition_predictions": fresh_condition_predictions,
+            "fresh_t5_predictions": [
+                item["match_id"] for item in fresh_condition_predictions
+                if item["stage"] == "T-5"
+            ],
+            "deadline_seconds": _tick_pass_deadline_seconds(),
+            "deferred_predictions": runtime["deferred"],
+            "failed_predictions": runtime["failed"],
+        }
     if pending_predictions:
         with ThreadPoolExecutor(max_workers=min(10, len(pending_predictions))) as pool:
             futures = {

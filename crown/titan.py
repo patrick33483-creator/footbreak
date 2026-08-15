@@ -148,6 +148,90 @@ def parse_crown_fixture_ids(source: str) -> set[str]:
     }
 
 
+def parse_crown_bulk_prices(
+    source: str,
+    observed_at: float | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Parse exact current Crown-ID-3 HDC/HIL rows from Titan's bulk feed.
+
+    The company-specific ``goal3.xml`` feed carries one CSV record per exact
+    Titan fixture.  Only its documented current handicap/total fields are
+    accepted; malformed rows, invalid Asian lines, and non-positive Hong Kong
+    water fail closed.  The feed does not expose a dependable live-state field,
+    so callers must additionally require a pre-kickoff fixture before use.
+    """
+    try:
+        root = ET.fromstring(source)
+    except ET.ParseError:
+        return {}
+    observed_at = observed_at or time.time()
+    output: dict[str, dict[str, Any]] = {}
+    for node in root.findall("./match/m"):
+        if not node.text:
+            continue
+        fields = [value.strip() for value in node.text.split(",")]
+        if len(fields) < 13 or not fields[0]:
+            continue
+        match_id = fields[0]
+        prices: list[dict[str, Any]] = []
+        try:
+            handicap = parse_titan_handicap(float(fields[2]))
+            home_water, away_water = float(fields[3]), float(fields[4])
+        except (TypeError, ValueError):
+            handicap = None
+            home_water = away_water = 0.0
+        if (
+            handicap is not None
+            and home_water > 0
+            and away_water > 0
+            and home_water + 1 > 1
+            and away_water + 1 > 1
+        ):
+            prices.extend([
+                {
+                    "market": "HDC", "line": handicap, "selection": "H",
+                    "odds": home_water + 1, "source_at": observed_at,
+                },
+                {
+                    "market": "HDC", "line": handicap, "selection": "A",
+                    "odds": away_water + 1, "source_at": observed_at,
+                },
+            ])
+        try:
+            total = parse_titan_total(float(fields[10]))
+            over_water, under_water = float(fields[11]), float(fields[12])
+        except (TypeError, ValueError):
+            total = None
+            over_water = under_water = 0.0
+        if (
+            total is not None
+            and over_water > 0
+            and under_water > 0
+            and over_water + 1 > 1
+            and under_water + 1 > 1
+        ):
+            prices.extend([
+                {
+                    "market": "HIL", "line": total, "selection": "H",
+                    "odds": over_water + 1, "source_at": observed_at,
+                },
+                {
+                    "market": "HIL", "line": total, "selection": "L",
+                    "odds": under_water + 1, "source_at": observed_at,
+                },
+            ])
+        if prices:
+            output[match_id] = {
+                "prices": prices,
+                "asian_ok": any(row["market"] == "HDC" for row in prices),
+                "total_ok": any(row["market"] == "HIL" for row in prices),
+                "quote_source": "titan007-crown-id-3-bulk-current",
+                "company_id": "3",
+                "bulk_observed_at": observed_at,
+            }
+    return output
+
+
 def _row_triple(row: str) -> tuple[float, float, float] | None:
     # `wholeOdds` is the visible current quote.  Titan can leave malformed or
     # stale `wholeLastOdds` cells hidden in the same row, so never prefer a
@@ -247,11 +331,19 @@ class TitanClient:
 
     def fixtures(self, offsets: tuple[int, ...] = (0, 1)) -> list[dict[str, Any]]:
         try:
-            company_feed = self._read(
+            source = self._read(
                 "https://livestatic.titan007.com/vbsxml/"
                 f"goal{self.config.titan_company_id}.xml?r=007{int(time.time() * 1000)}"
             )
-            crown_ids = parse_crown_fixture_ids(company_feed)
+            bulk = (
+                parse_crown_bulk_prices(source, observed_at=time.time())
+                if self.config.titan_company_id == "3" else {}
+            )
+            # Discovery retains every exact company-feed ID, including a row
+            # whose current bulk quote is malformed.  Such a fixture can use
+            # the slower page fallback, but a valid bulk row never needs it.
+            crown_ids = parse_crown_fixture_ids(source)
+            self._last_crown_bulk_snapshots = bulk
         except OSError:
             crown_ids = set()
         if not crown_ids:
@@ -275,6 +367,16 @@ class TitanClient:
                 continue
         return list({row["id"]: row for row in output}.values())
 
+    def crown_bulk_price_snapshots(self) -> dict[str, dict[str, Any]]:
+        """Fetch company-ID-3 bulk current odds once for an entire tick."""
+        if self.config.titan_company_id != "3":
+            return {}
+        source = self._read(
+            "https://livestatic.titan007.com/vbsxml/"
+            f"goal{self.config.titan_company_id}.xml?r=007{int(time.time() * 1000)}"
+        )
+        return parse_crown_bulk_prices(source, observed_at=time.time())
+
     def crown_prices(self, titan_id: str) -> list[dict[str, Any]]:
         return self.crown_price_snapshot(titan_id)["prices"]
 
@@ -285,6 +387,11 @@ class TitanClient:
         network failure is different: callers must keep the last known market
         rather than making the whole fixture disappear from the dashboard.
         """
+        # This adapter is intentionally a Crown company-ID-3 adapter.  Do not
+        # silently turn an environment typo into a different bookmaker's
+        # evidence under Crown provenance.
+        if self.config.titan_company_id != "3":
+            return {"prices": [], "asian_ok": False, "total_ok": False}
         asian = total = None
         asian_ok = total_ok = False
         try:

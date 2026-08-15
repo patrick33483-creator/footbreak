@@ -13,6 +13,9 @@ from .config import Settings
 from .condition_portfolio import FIXED_STAKE, STARTING_BANKROLL, STRATEGY, evaluate_new_t5
 
 STAGES = {"首預": 1, "T-30": 2, "T-5": 3}
+# This deliberately is not part of ``STAGES``.  It is a post-hoc audit record,
+# never a schedulable or genuine T-5 prediction stage.
+RECOVERED_T5_STAGE = "T-5（事後回補）"
 PREDICTION_ERA = "2026-08-12-hkjc-corner-forecast-v4"
 PREDICTION_SCHEMA_VERSION = 2
 
@@ -182,6 +185,8 @@ def _market_predictions(
             "source": best.get("reference") or "pinnapi_exact_line",
             "quote_source": best.get("source") or best.get("reference") or "pinnapi_exact_line",
             "provider": best.get("provider") or "Crown",
+            "quote_status": best.get("quote_status"),
+            "quote_fallback_source": best.get("quote_fallback_source"),
         })
     return sorted(output, key=lambda row: row["code"]), rejected
 
@@ -194,6 +199,8 @@ def _selected_odds_journal(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         "source": row.get("quote_source") or row.get("source"),
         "provider": row.get("provider"),
         "observed_at": row.get("observed_at"),
+        "quote_status": row.get("quote_status"),
+        "quote_fallback_source": row.get("quote_fallback_source"),
     } for row in rows]
 
 
@@ -218,6 +225,7 @@ def _snapshot(prediction: dict[str, Any], stage: str) -> dict[str, Any]:
         "pinnapi_timestamp_inferred", "pinnapi_timestamp_basis",
         "pinnapi_corner_event_id", "pinnapi_corner_source_at", "pinnapi_corner_timestamp_inferred",
         "matching_version", "crown_quote_cached_forecast_only", "crown_cached_source_at",
+        "crown_quote_source", "crown_quote_status", "crown_cached_t5_fallback",
     )} | {
         "prediction_era": PREDICTION_ERA,
         "schema_version": PREDICTION_SCHEMA_VERSION,

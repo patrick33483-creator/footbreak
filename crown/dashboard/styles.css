@@ -1259,6 +1259,11 @@ table.t.history-table td {
   gap: 2px 6px;
   overflow-wrap: anywhere;
 }
+.recovery-evidence,
+.recovery-audit-label {
+  color: var(--amber);
+  font-weight: 700;
+}
 .history-market-odds {
   color: var(--ink-3);
   font-variant-numeric: tabular-nums;
