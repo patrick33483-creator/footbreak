@@ -55,7 +55,7 @@ jobs:
           path: historical-odds-recovery-audit.json
           retention-days: 7
       - name: GitHub 建立私有公共供應商 crosswalk 快取並安全交接
-        if: ${{ inputs.provider_mode == 'TITAN_AUDIT' || inputs.provider_mode == 'TITAN_APPLY' || inputs.provider_mode == 'PUBLIC_CROSSWALK_AUDIT' || inputs.provider_mode == 'PUBLIC_CROSSWALK_APPLY' }}
+        if: ${{ false }}
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
@@ -301,6 +301,45 @@ jobs:
             --allow crown=/var/lib/footbreak/crown/prediction_history.json \
             --allow crown=/var/lib/footbreak/crown/ledger.json \
             --allow crown=/var/lib/footbreak/crown/source_snapshots" > historical-odds-recovery-provider.json
+      - name: 從正式環境私人快取輸出只讀聚合摘要
+        if: ${{ inputs.provider_mode == 'TITAN_AUDIT' }}
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=20 "$DEPLOY_USER@$DEPLOY_HOST" 'sudo /opt/footbreak/.venv/bin/python3 /opt/footbreak/analysis/odds_recovery.py \
+            --provider-audit \
+            --provider titan \
+            --provider-rate 1 \
+            --provider-timeout 8 \
+            --provider-retries 0 \
+            --provider-workers 8 \
+            --provider-max-pages 250 \
+            --exact-window-seconds 60 \
+            --freshness-t30-seconds 3600 \
+            --freshness-t5-seconds 900 \
+            --provider-cache /var/lib/footbreak/private/odds-recovery-provider-cache \
+            --provider-cache-only \
+            --footbreak-history /var/www/footbreak/data.json \
+            --crown-history /var/lib/footbreak/crown/prediction_history.json \
+            --sidecar /var/lib/footbreak/private/odds-recovery-overlay.json \
+            --allow footbreak=/opt/footbreak/system/snapshots \
+            --allow footbreak=/opt/footbreak/system/hk_snapshots.json \
+            --allow footbreak=/var/lib/footbreak/prediction_history_archive.json \
+            --allow footbreak=/opt/footbreak/system/sim_ledger.json \
+            --allow crown=/var/lib/footbreak/crown/prediction_history.json \
+            --allow crown=/var/lib/footbreak/crown/ledger.json \
+            --allow crown=/var/lib/footbreak/crown/source_snapshots' > historical-odds-recovery-provider.json
+          printf '%s\n' '{}' > historical-odds-recovery-provider-warm.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          payload = json.loads(Path("historical-odds-recovery-provider.json").read_text())
+          print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+          PY
+
       - name: 保存供應商輔助摘要（僅聚合 JSON）
         if: ${{ inputs.provider_mode == 'TITAN_AUDIT' || inputs.provider_mode == 'TITAN_APPLY' || inputs.provider_mode == 'PUBLIC_CROSSWALK_AUDIT' || inputs.provider_mode == 'PUBLIC_CROSSWALK_APPLY' }}
         uses: actions/upload-artifact@v4
