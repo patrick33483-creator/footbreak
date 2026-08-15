@@ -68,7 +68,7 @@ jobs:
           ssh -o BatchMode=yes -o ConnectTimeout=20 \
             -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
             "$DEPLOY_USER@$DEPLOY_HOST" \
-            'sudo systemctl show crown-tick.timer crown-sweep.timer crown-tick.service crown-sweep.service --no-pager -p Id -p LoadState -p UnitFileState -p ActiveState -p SubState -p Result -p ExecMainStatus -p LastTriggerUSec -p NextElapseUSecRealtime 2>/dev/null || true'
+            'sudo systemctl show crown-tick.timer crown-sweep.timer crown-tick.service crown-sweep.service --no-pager -p Id -p LoadState -p UnitFileState -p ActiveState -p SubState -p Result -p ExecMainStatus -p TimeoutStartUSec -p LastTriggerUSec -p NextElapseUSecRealtime 2>/dev/null || true'
 
           # Inputs are choice-constrained above and shell-quoted here.  The
           # streamed script reads only local Crown state; it does not source
@@ -94,10 +94,11 @@ jobs:
             -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
             "$DEPLOY_USER@$DEPLOY_HOST" \
             'sudo systemctl stop crown-tick.service
+             sudo systemctl daemon-reload
              sudo systemctl reset-failed crown-tick.service
              sudo systemctl start --no-block crown-tick.service
              sudo systemctl show crown-tick.service --no-pager \
-               -p Id -p LoadState -p ActiveState -p SubState -p Result -p ExecMainStatus'
+               -p Id -p LoadState -p ActiveState -p SubState -p Result -p ExecMainStatus -p TimeoutStartUSec'
 
       - name: 保存已遮罩階段摘要到臨時私人分支
         run: |
