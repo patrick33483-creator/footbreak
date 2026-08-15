@@ -33,7 +33,7 @@ const TAG = { 'T-5': 'tag-t5', 'T-30': 'tag-t30', '首預': 'tag-t60', '待入�
 const STAGE_DESC = {
   '首預': '每晚 23:59 掃全板 · 參考初盤同開盤結構',
   'T-30': '開賽前 30 分鐘 · 陣容、傷患出咗,賠率漸定',
-  'T-5': '開賽前 5 分鐘 · 唯一落注時點',
+  'T-5': '開賽前約 10 分鐘起 · 唯一落注時點',
 };
 const VD_CLS = { '落注': 'v-go', '傾向': 'v-lean', '偏向': 'v-soft', '已預測': 'v-lean', '觀望': 'v-wait', '無傾向': 'v-none' };
 const MKT = { HDC: '讓球', HIL: '入球大細', CHL: '角球大細', HAD: '主客和' };
@@ -113,7 +113,7 @@ function cdText(m) {
 }
 function stageOf(m) {
   if (m < 0) return '已開賽';
-  if (m <= 9) return 'T-5';
+  if (m <= 10) return 'T-5';
   if (m <= 36) return 'T-30';
   return '待入窗';
 }
@@ -511,7 +511,7 @@ function verdictCard(m) {
     const why = hasT5
       ? (m.no_bet_reason || '未達條件模擬倉入場規則')
       : (mm > 0
-        ? `最終投注決定統一喺<b>開賽前 5 分鐘</b>先出。依家係${esc(stageOf(mm))}，只做預測記錄。距開賽 ${cdText(mm)}。`
+        ? `最終投注決定統一喺<b>開賽前約 10 分鐘起</b>處理。依家係${esc(stageOf(mm))}，只做預測記錄。距開賽 ${cdText(mm)}。`
         : '本場冇跑到 T-5，冇落注。');
     return `<div class="card verdict wait">
       <div class="vd-top"><span class="vd-badge wait">${badge}</span>
@@ -712,7 +712,7 @@ function runsCard(m) {
   const body = all.length
     ? `${t5 ? runRow(t5, true, all) : `<div class="run-await">
           <span class="run-await-b">T-5 最終決定</span>
-          <span>${mm > 0 ? '仲有 ' + cdText(mm) + ' 到開賽,最終投注決定會喺開賽前 5 分鐘先出' : '本場冇做到 T-5,無落注'}</span>
+          <span>${mm > 0 ? '仲有 ' + cdText(mm) + ' 到開賽,最終投注決定會喺開賽前約 10 分鐘起處理' : '本場冇做到 T-5,無落注'}</span>
         </div>`}
        ${prior.length ? `<div class="run-prior-h">之前嘅預測</div>` : ''}
        ${prior.slice().reverse().map((x) => runRow(x, false, all)).join('')}`
@@ -1536,6 +1536,8 @@ function historyStageCompletenessCard(raw) {
         <span>已記錄 <b>${recorded}</b></span>
         <span>應完成 <b>${due}</b></span>
         <span>未到期 <b>${notDue}</b></span>
+        <span>有賠率 <b>${Number(item.odds_available || 0)}</b></span>
+        <span>缺賠率 <b>${Number(item.odds_missing || 0)}</b></span>
       </div>
     </article>`;
   }).join('');

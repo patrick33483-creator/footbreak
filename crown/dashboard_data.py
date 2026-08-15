@@ -55,6 +55,12 @@ def stage_completeness(
             "due": 0,
             "missing_due": 0,
             "not_due": 0,
+            # A recorded stage and its price evidence are separate facts.
+            # This lets operations distinguish scheduler starvation from an
+            # explicit, auditable provider quote failure.
+            "odds_available": 0,
+            "odds_missing": 0,
+            "odds_unobserved": 0,
             "completeness": None,
         }
         for stage in ("首預", "T-30", "T-5")
@@ -64,8 +70,8 @@ def stage_completeness(
         match_id = str(match.get("match_id") or "").strip()
         watch = watches.get(match_id) if match_id else None
         watch = watch if isinstance(watch, dict) else {}
-        valid_stages = {
-            str(row.get("stage"))
+        stage_rows = {
+            str(row.get("stage")): row
             for row in (watch.get("stages") or [])
             if (
                 isinstance(row, dict)
@@ -86,9 +92,16 @@ def stage_completeness(
             "T-5": minutes_to_kickoff is None or minutes_to_kickoff <= 0,
         }
         for stage, metric in stages.items():
-            if stage in valid_stages:
+            if stage in stage_rows:
                 metric["recorded"] += 1
                 metric["due"] += 1
+                snapshot = stage_rows[stage]
+                if snapshot.get("odds_status") == "available":
+                    metric["odds_available"] += 1
+                elif snapshot.get("odds_status") == "missing":
+                    metric["odds_missing"] += 1
+                else:
+                    metric["odds_unobserved"] += 1
             elif due[stage]:
                 metric["due"] += 1
                 metric["missing_due"] += 1

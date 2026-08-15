@@ -1,6 +1,7 @@
 """Safe Crown simulation settlement: PinnAPI live cache first, then identified fallback only."""
 from __future__ import annotations
 
+import copy
 from datetime import datetime
 from typing import Any
 
@@ -19,7 +20,7 @@ from .ledger import condition_bets, recompute_stats
 from .lines import pnl, settle_handicap, settle_total
 from .matching import Event, canonical_league_key, canonical_team_key, match_event
 from .pinnapi import PinnapiClient
-from .state import load_ledger, paths, save_ledger
+from .state import load_ledger, paths, save_ledger, settlement_lock, state_lock
 from .titan import TitanClient
 
 
@@ -274,9 +275,54 @@ def _verified_titan_detail_score(
     return {"home_score": home_score, "away_score": away_score}
 
 
-def settle_due(config: Settings) -> dict[str, Any]:
-    """Settle due rows from the sole condition-driven simulation portfolio."""
+def _commit_settlement(
+    config: Settings,
+    before: dict[str, dict[str, Any]],
+    staged: dict[str, Any],
+) -> None:
+    """Merge only settlement-owned changes into the newest ledger atomically.
+
+    The slow result lookup runs without ``state_lock`` so a T-5 can commit.
+    Reload under that lock and apply only updates to bets that are still
+    pending; this avoids restoring an old watch/prediction snapshot over a
+    concurrent tick and makes a second settlement pass idempotent.
+    """
+    current = load_ledger(config)
+    current_by_id = {
+        str(bet.get("bet_id") or ""): bet
+        for bet in current.get("bets") or []
+        if isinstance(bet, dict)
+    }
+    owned = (
+        "status", "result", "pnl", "score", "settled_at",
+        "settlement_source", "void_reason", "last_settlement_attempt_at",
+        "settlement_pending_reason", "history",
+    )
+    for staged_bet in condition_bets(staged):
+        bet_id = str(staged_bet.get("bet_id") or "")
+        original = before.get(bet_id)
+        current_bet = current_by_id.get(bet_id)
+        if not original or not current_bet or current_bet.get("status") != "PENDING":
+            continue
+        if all(staged_bet.get(key) == original.get(key) for key in owned):
+            continue
+        for key in owned:
+            if key in staged_bet:
+                current_bet[key] = staged_bet[key]
+            else:
+                current_bet.pop(key, None)
+    recompute_stats(current, config)
+    save_ledger(config, current)
+
+
+def _settle_due_locked(config: Settings) -> dict[str, Any]:
+    """Perform one settlement pass; caller holds settlement_lock only."""
     ledger = load_ledger(config)
+    before = {
+        str(bet.get("bet_id") or ""): copy.deepcopy(bet)
+        for bet in condition_bets(ledger)
+        if bet.get("bet_id")
+    }
     now = datetime.now(HKT)
     official_bets = condition_bets(ledger)
     official_due = [
@@ -287,7 +333,12 @@ def settle_due(config: Settings) -> dict[str, Any]:
     ]
     due = official_due
     if not due:
-        recompute_stats(ledger, config)
+        # Retain the historical cheap statistics refresh, but do it as a
+        # fresh short commit so a concurrently written T-5 is never lost.
+        with state_lock(config):
+            current = load_ledger(config)
+            recompute_stats(current, config)
+            save_ledger(config, current)
         return {"ok": True, "settled": 0, "voided": 0,
                 "pending": sum(b.get("status") == "PENDING" for b in official_bets)}
     cache: dict[str, Any] = {}
@@ -427,7 +478,18 @@ def settle_due(config: Settings) -> dict[str, Any]:
             if live.get("seen_live")
             else "verified_result_unavailable",
         )
-    recompute_stats(ledger, config)
-    save_ledger(config, ledger)
+    # Do not save the stale ledger loaded before provider reads.  A tick can
+    # have created T-5 stages/bets while this pass was waiting on a result
+    # source, so merge settlement-owned fields into the latest ledger only.
+    with state_lock(config):
+        _commit_settlement(config, before, ledger)
     return {"ok": True, "settled": counters["settled"], "voided": counters["voided"],
             "pending": sum(b.get("status") == "PENDING" for b in official_bets)}
+
+
+def settle_due(config: Settings) -> dict[str, Any]:
+    """Settle due rows without blocking time-critical prediction commits."""
+    with settlement_lock(config) as acquired:
+        if not acquired:
+            return {"ok": False, "reason": "settlement_busy"}
+        return _settle_due_locked(config)

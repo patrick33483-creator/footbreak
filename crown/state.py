@@ -25,6 +25,28 @@ def state_lock(config: Settings):
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
+@contextmanager
+def settlement_lock(config: Settings):
+    """Serialize settlement passes without holding the short state commit lock.
+
+    A result lookup can take minutes.  It must not prevent the time-critical
+    T-5 worker from persisting an independently prepared pre-kickoff stage.
+    The final settlement merge still uses ``state_lock``.
+    """
+    config.state_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = config.state_dir / ".settlement.lock"
+    with lock_path.open("a+", encoding="utf-8") as handle:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            yield False
+            return
+        try:
+            yield True
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
 def paths(config: Settings) -> dict[str, Path]:
     return {"ledger": config.state_dir / "ledger.json", "predictions": config.state_dir / "predictions.json",
             "notify": config.state_dir / "notify_state.json", "health": config.state_dir / "health.json",

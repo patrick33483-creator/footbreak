@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import gzip
 import json
 import os
@@ -15,7 +16,7 @@ from unittest.mock import Mock, patch
 
 from crown.config import settings
 from crown.dashboard_data import build, write_dashboard_data
-from crown.engine import _candidates, _crown_market_forecasts, _fixture_baseline_prediction, _fresh, _hkjc_chl_candidates, _hkjc_chl_forecasts, _prediction, _refresh_crown_quote, _skip_new_confirmed_empty_crown, _sweep_rows_with_due_existing, _tick_rows_from_predictions, _wdl_prediction
+from crown.engine import _candidates, _crown_market_forecasts, _fixture_baseline_prediction, _fresh, _hkjc_chl_candidates, _hkjc_chl_forecasts, _prediction, _prioritize_tick_rows, _refresh_crown_quote, _skip_new_confirmed_empty_crown, _sweep_rows_with_due_existing, _tick_rows_from_predictions, _wdl_prediction, run
 from crown.hkjc import fetch_official_results
 from crown.ledger import (
     completed_stages,
@@ -40,7 +41,7 @@ from crown.prediction_history import (
 )
 from analysis.learning_store import LearningStore
 from crown import settle as crown_settle
-from crown.state import load_predictions, merge_predictions, save_predictions
+from crown.state import load_ledger, load_predictions, merge_predictions, save_ledger, save_predictions
 from crown.titan import (
     crown_prices_from_pages,
     parse_crown_fixture_ids,
@@ -52,8 +53,15 @@ from crown.titan import (
 
 class CrownSafetyTests(unittest.TestCase):
     def setUp(self) -> None:
+        self._settlement_state = tempfile.TemporaryDirectory()
         self.now = datetime(2026, 8, 9, 12, 0, tzinfo=__import__("crown.common", fromlist=["HKT"]).HKT)
         self.target = Event("t", "League", "Alpha FC", "Beta FC", self.now)
+
+    def tearDown(self) -> None:
+        self._settlement_state.cleanup()
+
+    def _settlement_config(self):
+        return replace(settings(), state_dir=Path(self._settlement_state.name))
 
     def test_asian_line_normalization_and_settlement(self) -> None:
         self.assertEqual(parse_hkjc_handicap("0/-0.5"), -0.25)
@@ -1038,6 +1046,76 @@ class CrownSafetyTests(unittest.TestCase):
         }
         self.assertEqual(completed_stages(priced, "same"), {"首預"})
 
+    def test_t5_quote_retry_updates_one_stage_and_can_create_one_bet(self) -> None:
+        """A missing quote is retryable, but never creates a second T-5 row."""
+        with tempfile.TemporaryDirectory() as directory:
+            config = replace(settings(), state_dir=Path(directory), telegram_enabled=False)
+            kickoff = (self.now + timedelta(minutes=5)).isoformat()
+            missing = {
+                "match_id": "retry-t5", "league": "L", "home": "A", "away": "B",
+                "kickoff_hkt": kickoff, "stage": "T-5", "status": "REFERENCE_READY",
+                "forecast_candidates": [],
+            }
+            ledger = {"bankroll": 50000, "bets": [], "watch": {}, "log": [], "stats": {}}
+            self.assertEqual(sync_prediction(ledger, missing, config), [])
+            self.assertEqual(
+                completed_stages(ledger["watch"]["retry-t5"], "same"), set()
+            )
+            priced = missing | {
+                "forecast_candidates": [{
+                    "code": "HDC", "market": "讓球", "line": -0.5, "condition": "-0.5",
+                    "side": "H", "odds": 1.9, "observed_at": self.now.timestamp(),
+                    "prob": .6, "source": "titan007-crown-id-3",
+                }],
+            }
+            with patch("crown.ledger.evaluate_new_t5", return_value=([], [])) as evaluate:
+                self.assertEqual(sync_prediction(ledger, priced, config), [])
+            self.assertEqual(evaluate.call_count, 1)
+            self.assertEqual(len(ledger["watch"]["retry-t5"]["stages"]), 1)
+            self.assertEqual(
+                ledger["watch"]["retry-t5"]["stages"][0]["odds_status"], "available"
+            )
+            self.assertEqual(
+                completed_stages(ledger["watch"]["retry-t5"], "same"), {"T-5"}
+            )
+
+    def test_settlement_merge_preserves_concurrent_t5_commit(self) -> None:
+        """Slow settlement must never write an old ledger over a new T-5."""
+        with tempfile.TemporaryDirectory() as directory:
+            config = replace(settings(), state_dir=Path(directory))
+            original = {
+                "bankroll": 50000, "watch": {}, "log": [], "stats": {},
+                "bets": [{
+                    "bet_id": "old|HDC|T-5|granular-condition-v1",
+                    "portfolio": "condition_simulation", "strategy": "granular-condition-v1",
+                    "status": "PENDING", "code": "HDC", "stake": 1000, "odds": 2,
+                }],
+            }
+            staged = copy.deepcopy(original)
+            staged["bets"][0].update({
+                "status": "SETTLED", "result": "Won", "pnl": 1000,
+                "settled_at": self.now.isoformat(), "history": [{"action": "模擬結算"}],
+            })
+            concurrent = copy.deepcopy(original)
+            concurrent["watch"]["new-t5"] = {"stages": [{"stage": "T-5"}]}
+            concurrent["bets"].append({
+                "bet_id": "new|HIL|T-5|granular-condition-v1",
+                "portfolio": "condition_simulation", "strategy": "granular-condition-v1",
+                "status": "PENDING", "code": "HIL", "stake": 1000, "odds": 2,
+            })
+            save_ledger(config, concurrent)
+            from crown.settle import _commit_settlement
+            _commit_settlement(
+                config,
+                {original["bets"][0]["bet_id"]: copy.deepcopy(original["bets"][0])},
+                staged,
+            )
+            merged = load_ledger(config)
+            self.assertEqual(merged["watch"], concurrent["watch"])
+            by_id = {bet["bet_id"]: bet for bet in merged["bets"]}
+            self.assertEqual(by_id["old|HDC|T-5|granular-condition-v1"]["status"], "SETTLED")
+            self.assertEqual(by_id["new|HIL|T-5|granular-condition-v1"]["status"], "PENDING")
+
     def test_prediction_era_refreshes_only_first_look(self) -> None:
         first_only = {
             "matching_version": "same",
@@ -1173,6 +1251,32 @@ class CrownSafetyTests(unittest.TestCase):
                                      "stages": [{"stage": "T-5"}]}}}
         rows = _tick_rows_from_predictions(predictions, ledger, self.now)
         self.assertEqual([row["id"] for row in rows], ["t5"])
+
+    def test_t5_exclusively_owns_tick_when_t30_is_also_due(self) -> None:
+        rows = [
+            {"id": "t30", "_due_stage": "T-30"},
+            {"id": "t5-a", "_due_stage": "T-5"},
+            {"id": "first", "_due_stage": "首預"},
+            {"id": "t5-b", "_due_stage": "T-5"},
+        ]
+        self.assertEqual(
+            [row["id"] for row in _prioritize_tick_rows(rows)],
+            ["t5-a", "t5-b"],
+        )
+
+    def test_tick_fast_noop_avoids_local_policy_and_provider_clients(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = replace(
+                settings(), state_dir=Path(directory), enabled=True, pinnapi_key="test",
+            )
+            with patch("crown.engine.market_entry_thresholds") as policies, \
+                 patch("crown.engine.TitanClient") as titan, \
+                 patch("crown.engine.PinnapiClient") as pinnapi:
+                result = run("tick", config)
+            self.assertTrue(result["fast_noop"])
+            policies.assert_not_called()
+            titan.assert_not_called()
+            pinnapi.assert_not_called()
 
     def test_sweep_recovers_due_first_look_omitted_from_titan_list(self) -> None:
         kickoff = self.now + timedelta(hours=3)
@@ -1404,16 +1508,40 @@ class CrownSafetyTests(unittest.TestCase):
         self.assertFalse(summary["healthy"])
         self.assertEqual(
             summary["stages"]["首預"],
-            {"recorded": 3, "due": 3, "missing_due": 0, "not_due": 0, "completeness": 1.0},
+            {"recorded": 3, "due": 3, "missing_due": 0, "not_due": 0,
+             "odds_available": 0, "odds_missing": 0, "odds_unobserved": 3,
+             "completeness": 1.0},
         )
         self.assertEqual(
             summary["stages"]["T-30"],
-            {"recorded": 1, "due": 2, "missing_due": 1, "not_due": 1, "completeness": 0.5},
+            {"recorded": 1, "due": 2, "missing_due": 1, "not_due": 1,
+             "odds_available": 0, "odds_missing": 0, "odds_unobserved": 1,
+             "completeness": 0.5},
         )
         self.assertEqual(
             summary["stages"]["T-5"],
-            {"recorded": 1, "due": 1, "missing_due": 0, "not_due": 2, "completeness": 1.0},
+            {"recorded": 1, "due": 1, "missing_due": 0, "not_due": 2,
+             "odds_available": 0, "odds_missing": 0, "odds_unobserved": 1,
+             "completeness": 1.0},
         )
+
+    def test_dashboard_stage_metrics_distinguish_missing_stage_from_quote(self) -> None:
+        from crown.dashboard_data import stage_completeness
+
+        summary = stage_completeness(
+            [
+                {"match_id": "quote-missing", "kickoff_hkt": "2026-08-13T21:55:00+08:00"},
+                {"match_id": "stage-missing", "kickoff_hkt": "2026-08-13T21:55:00+08:00"},
+            ],
+            {"watch": {"quote-missing": {"stages": [{
+                "stage": "T-5", "status": "REFERENCE_READY", "odds_status": "missing",
+            }]}}},
+            now=datetime(2026, 8, 13, 22, 0, tzinfo=__import__("crown.common", fromlist=["HKT"]).HKT),
+        )
+        t5 = summary["stages"]["T-5"]
+        self.assertEqual(t5["recorded"], 1)
+        self.assertEqual(t5["missing_due"], 1)
+        self.assertEqual(t5["odds_missing"], 1)
 
     def test_dashboard_stage_completeness_fails_visible_for_missing_first_look(self) -> None:
         from crown.common import HKT
@@ -2168,7 +2296,7 @@ class CrownSafetyTests(unittest.TestCase):
         self.assertEqual(_bet_label(corner), "角球大細 · 大 9.5")
 
     def test_legacy_shadow_bet_is_not_settled(self) -> None:
-        config = settings()
+        config = self._settlement_config()
         ledger = {
             "bankroll": 50000, "watch": {}, "log": [], "stats": {},
             "shadow_stats": {}, "bets": [],
@@ -2202,7 +2330,7 @@ class CrownSafetyTests(unittest.TestCase):
         self.assertEqual(ledger["shadow_bets"][0]["status"], "PENDING")
 
     def test_legacy_shadow_bet_does_not_use_titan_detail(self) -> None:
-        config = settings()
+        config = self._settlement_config()
         ledger = {
             "bankroll": 50000, "watch": {}, "log": [], "stats": {},
             "shadow_stats": {}, "bets": [],
@@ -2235,7 +2363,7 @@ class CrownSafetyTests(unittest.TestCase):
         self.assertEqual(ledger["shadow_bets"][0]["status"], "PENDING")
 
     def test_legacy_shadow_bet_remains_inactive_on_identity_mismatch(self) -> None:
-        config = settings()
+        config = self._settlement_config()
         ledger = {
             "bankroll": 50000, "watch": {}, "log": [], "stats": {},
             "shadow_stats": {}, "bets": [],
@@ -2268,7 +2396,7 @@ class CrownSafetyTests(unittest.TestCase):
         self.assertEqual(ledger["shadow_bets"][0]["status"], "PENDING")
 
     def test_chl_settlement_uses_hkjc_exact_id_corners_even_when_live_cache_exists(self) -> None:
-        config = settings()
+        config = self._settlement_config()
         ledger = {
             "bankroll": 50000, "watch": {}, "log": [], "stats": {},
             "bets": [{
@@ -2299,7 +2427,7 @@ class CrownSafetyTests(unittest.TestCase):
         titan_results.assert_not_called()
 
     def test_chl_settlement_uses_verified_titan_detail_when_official_corners_are_missing(self) -> None:
-        config = settings()
+        config = self._settlement_config()
         ledger = {
             "bankroll": 50000, "watch": {}, "log": [], "stats": {},
             "bets": [{
@@ -2337,7 +2465,7 @@ class CrownSafetyTests(unittest.TestCase):
         )
 
     def test_chl_titan_detail_rejects_official_score_mismatch(self) -> None:
-        config = settings()
+        config = self._settlement_config()
         ledger = {
             "bankroll": 50000, "watch": {}, "log": [], "stats": {},
             "bets": [{

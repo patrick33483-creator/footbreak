@@ -6,9 +6,13 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 WorkingDirectory=/opt/footbreak
+ExecStartPre=/opt/footbreak/deploy/crown-tick-preempt.sh
 ExecStart=/opt/footbreak/deploy/crown-run.sh tick
 TimeoutStartSec=900
+TimeoutStopSec=5
 Nice=5
+SuccessExitStatus=75
+ExecStopPost=-/usr/bin/rm -f /run/crown-t5-priority
 
 [Install]
 WantedBy=multi-user.target

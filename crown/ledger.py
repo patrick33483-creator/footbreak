@@ -319,6 +319,11 @@ def sync_prediction(ledger: dict[str, Any], prediction: dict[str, Any], config: 
         watch["discovered_at"] = prediction.get("discovered_at") or iso_hkt()
     stage_rows = watch["stages"]
     existing = next((row for row in stage_rows if row.get("stage") == stage), None)
+    existing_had_quote = bool(
+        existing
+        and existing.get("odds_status") == "available"
+        and existing.get("market_predictions")
+    )
     snapshot = _snapshot(prediction, stage)
     learning = _record_learning_snapshot(prediction, snapshot)
     if learning:
@@ -333,7 +338,19 @@ def sync_prediction(ledger: dict[str, Any], prediction: dict[str, Any], config: 
         stage_rows.sort(key=lambda row: STAGES[row["stage"]])
     else:
         existing.update(snapshot)
-    if stage != "T-5" or existing is not None:
+    # A T-5 that first persisted with no auditable selected quote stays due.
+    # When a later, still-pre-kickoff retry supplies that evidence, it may be
+    # evaluated exactly once as a newly eligible decision.  It is the same
+    # immutable stage row (updated in place), never a fabricated/backfilled
+    # second T-5 stage.  Existing priced T-5 stages remain idempotent.
+    retry_with_new_quote = (
+        stage == "T-5"
+        and existing is not None
+        and not existing_had_quote
+        and snapshot.get("odds_status") == "available"
+        and bool(snapshot.get("market_predictions"))
+    )
+    if stage != "T-5" or (existing is not None and not retry_with_new_quote):
         return []
     created, audit = evaluate_new_t5(ledger, watch, config)
     snapshot["condition_simulation"] = {"strategy": STRATEGY, "stage": "T-5", "audit": audit}

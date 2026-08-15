@@ -54,7 +54,8 @@ def _tick_rows_from_predictions(
             MATCHING_VERSION,
             PREDICTION_ERA,
         )
-        if not stage_for(minutes, False, done):
+        stage = stage_for(minutes, False, done)
+        if not stage:
             continue
         rows.append({
             "id": match_id,
@@ -62,9 +63,19 @@ def _tick_rows_from_predictions(
             "home": card.get("home") or "",
             "away": card.get("away") or "",
             "kickoff": kickoff,
+            # Local-only scheduling metadata.  It never becomes provider
+            # evidence or a persisted stage field.
+            "_due_stage": stage,
         })
         seen.add(match_id)
     rows.sort(key=lambda row: row["kickoff"])
+    return rows
+
+
+def _prioritize_tick_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Give all due T-5 work exclusive use of the current tick."""
+    if any(row.get("_due_stage") == "T-5" for row in rows):
+        return [row for row in rows if row.get("_due_stage") == "T-5"]
     return rows
 
 
@@ -932,13 +943,11 @@ def run(mode: str, config: Settings) -> dict[str, Any]:
         return {"ok": False, "reason": "PinnAPI credentials are not configured; no network call was made"}
     if mode == "settle":
         from .settle import settle_due
-        with state_lock(config):
-            return settle_due(config)
+        # settle_due owns a separate long-running settlement lock and takes
+        # state_lock only for its final merge.  Never hold the commit lock
+        # while result providers are read: a T-5 commit is deadline-bound.
+        return settle_due(config)
     ledger = load_ledger(config)
-    entry_policies = {
-        code: market_entry_thresholds(ledger, code, config)
-        for code in ("HDC", "HIL", "CHL")
-    }
     existing_predictions = load_predictions(config)
     if mode == "tick":
         titan_rows = _tick_rows_from_predictions(
@@ -950,6 +959,15 @@ def run(mode: str, config: Settings) -> dict[str, Any]:
                 "predictions": 0, "retained_predictions": len(existing_predictions),
                 "simulations_created": 0,
             }
+        # A due T-5 owns this tick.  Deferring recoverable T-30/first-look
+        # work by one minute is safe; making a T-5 wait behind it is not.
+        titan_rows = _prioritize_tick_rows(titan_rows)
+    # This can read the local learning store.  Keep it after the local tick
+    # due check so a genuine no-op has no expensive work or provider calls.
+    entry_policies = {
+        code: market_entry_thresholds(ledger, code, config)
+        for code in ("HDC", "HIL", "CHL")
+    }
     titan_client, pinnapi_client = TitanClient(config), PinnapiClient(config)
     if mode == "sweep":
         titan_rows = _sweep_rows_with_due_existing(
@@ -1148,7 +1166,9 @@ def run(mode: str, config: Settings) -> dict[str, Any]:
             prediction["stages"] = list(
                 ledger["watch"].get(str(prediction["match_id"]), {}).get("stages") or []
             )
-            if stage in {"T-30", "T-5"} and not prior_stage and any(
+            if stage in {"T-30", "T-5"} and (
+                not prior_stage or (stage == "T-5" and bool(emitted))
+            ) and any(
                 row.get("stage") == stage for row in prediction["stages"]
                 if isinstance(row, dict)
             ):

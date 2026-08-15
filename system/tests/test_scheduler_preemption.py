@@ -45,6 +45,23 @@ class SchedulerPreemptionTests(unittest.TestCase):
         self.assertIn('t5_due = 0.0 < minutes <= 10.5 and "T-5" not in stages', helper)
         self.assertIn("/usr/bin/systemctl stop footbreak-sweep.service footbreak-settle.service", helper)
 
+    def test_crown_tick_preempts_only_when_a_local_t5_is_due(self):
+        unit = (ROOT / "deploy/systemd/crown-tick.service").read_text(encoding="utf-8")
+        self.assertLess(
+            unit.index("ExecStartPre=/opt/footbreak/deploy/crown-tick-preempt.sh"),
+            unit.index("ExecStart=/opt/footbreak/deploy/crown-run.sh tick"),
+        )
+        self.assertIn("ExecStopPost=-/usr/bin/rm -f /run/crown-t5-priority", unit)
+        helper = (ROOT / "deploy/crown-tick-preempt.sh").read_text(encoding="utf-8")
+        self.assertIn('if 0.0 < minutes <= 10.5 and not t5_complete:', helper)
+        self.assertIn(
+            "/usr/bin/systemctl stop --no-block crown-sweep.service crown-settle.service",
+            helper,
+        )
+        for name in ("crown-sweep.service", "crown-settle.service"):
+            slow = (ROOT / "deploy/systemd" / name).read_text(encoding="utf-8")
+            self.assertIn("ConditionPathExists=!/run/crown-t5-priority", slow)
+
     def test_slow_jobs_yield_when_t5_priority_marker_exists(self):
         wrapper = (ROOT / "deploy/run.sh").read_text(encoding="utf-8")
         self.assertIn('elif [ -e "$PRIORITY_MARKER" ]; then', wrapper)

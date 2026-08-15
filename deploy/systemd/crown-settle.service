@@ -2,6 +2,7 @@
 Description=皇冠 · 獨立賽果結算及三市場準繩度更新
 After=network-online.target
 Wants=network-online.target
+ConditionPathExists=!/run/crown-t5-priority
 
 [Service]
 Type=oneshot
@@ -10,7 +11,7 @@ Environment=FOOTBREAK_LEDGER_PATH=/opt/footbreak/system/sim_ledger.json
 Environment=FOOTBREAK_RESULT_CACHE_DIR=/opt/footbreak/system/cache/results
 ExecStart=/opt/footbreak/deploy/crown-run.sh settle
 TimeoutStartSec=900
-Nice=10
+Nice=15
 NoNewPrivileges=true
 PrivateTmp=true
 
