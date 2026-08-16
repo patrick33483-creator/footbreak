@@ -1,0 +1,67 @@
+name: 診斷皇冠 Telegram 通知
+
+on:
+  workflow_dispatch:
+    inputs:
+      audit_hours:
+        description: Recent stage window in hours
+        required: true
+        default: "12"
+        type: choice
+        options: ["6", "12", "24"]
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    name: Read-only Crown Telegram diagnosis
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: 設定 SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: 只讀取得通知設定及條件摘要
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          AUDIT_HOURS: ${{ inputs.audit_hours }}
+        run: |
+          set -euo pipefail
+          case "$AUDIT_HOURS" in 6|12|24) ;; *) exit 2;; esac
+          printf -v remote_command \
+            'sudo env CROWN_NOTIFY_AUDIT_HOURS=%q PYTHONPATH=%q bash -c %q' \
+            "$AUDIT_HOURS" "/opt/footbreak" \
+            'set -a; . /etc/footbreak-crown.env; set +a; exec /opt/footbreak/.venv/bin/python3 -'
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
+            "$DEPLOY_USER@$DEPLOY_HOST" "$remote_command" \
+            < deploy/audit-crown-notification-state.py
+
+      - name: 只讀取得通知警告總數
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          AUDIT_HOURS: ${{ inputs.audit_hours }}
+        run: |
+          set -euo pipefail
+          case "$AUDIT_HOURS" in 6|12|24) ;; *) exit 2;; esac
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "sudo journalctl -u crown-tick.service --since '${AUDIT_HOURS} hours ago' --no-pager -o cat |
+             python3 -c 'import json,sys
+          text=sys.stdin.read()
+          print(json.dumps({
+            \"telegram_warning_count\": text.count(\"notification_warning\") + text.count(\"telegram_\"),
+            \"tick_failure_count\": text.count(\"\\\"ok\\\": false\")
+          }, sort_keys=True))'"
