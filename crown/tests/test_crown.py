@@ -43,6 +43,7 @@ from crown.period import in_current_period, is_upcoming_in_current_period, perio
 from crown.prediction_history import (
     _persist_learning_exclusion,
     archive_watch,
+    archive_watch_fast,
     calculate_stats,
     grade_history,
 )
@@ -2316,6 +2317,109 @@ class CrownSafetyTests(unittest.TestCase):
             self.assertEqual(len(second["rows"]), 1)
             self.assertFalse(second["rows"][0]["simulated_bet"])
             self.assertEqual(second["stats"]["predictions"], 1)
+
+    def test_fast_archive_persists_stage_without_grading_or_statistics(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = replace(settings(), state_dir=Path(directory))
+            cached_stats = {
+                "granular_conditions": {"ranking": [{"cached": "ranking"}]},
+                "predictions": 12,
+            }
+            (config.state_dir / "prediction_history.json").parent.mkdir(
+                parents=True, exist_ok=True,
+            )
+            (config.state_dir / "prediction_history.json").write_text(
+                json.dumps({"rows": [], "stats": cached_stats}), encoding="utf-8",
+            )
+            ledger = {"watch": {"x": {
+                "match_id": "x", "league": "L", "home": "A", "away": "B",
+                "kickoff": "2026-08-09T12:05:00+08:00",
+                "stages": [{
+                    "match_id": "x", "stage": "T-5",
+                    "kickoff_hkt": "2026-08-09T12:05:00+08:00",
+                    "ts": "2026-08-09T12:00:00+08:00",
+                    "market_predictions": [{
+                        "code": "HDC", "line": -0.25, "side": "H", "odds": 1.91,
+                    }],
+                }],
+            }}}
+            with patch(
+                "crown.prediction_history.calculate_stats",
+                side_effect=AssertionError("tick must not calculate statistics"),
+            ), patch(
+                "crown.prediction_history.mine_granular_conditions",
+                side_effect=AssertionError("tick must not mine granular conditions"),
+            ), patch(
+                "crown.prediction_history.grade_history",
+                side_effect=AssertionError("tick must not grade results"),
+            ):
+                history = archive_watch_fast(config, ledger)
+            self.assertEqual(len(history["rows"]), 1)
+            self.assertEqual(history["stats"], cached_stats)
+            persisted = json.loads(
+                (config.state_dir / "prediction_history.json").read_text()
+            )
+            self.assertEqual(persisted["stats"], cached_stats)
+            self.assertEqual(persisted["rows"][0]["history_key"], "x|T-5")
+
+    def test_tick_post_processing_skips_full_history_and_dashboard_work(self) -> None:
+        import crown.run as crown_run
+
+        with tempfile.TemporaryDirectory() as directory:
+            config = replace(
+                settings(), state_dir=Path(directory), web_root=Path(directory) / "web",
+            )
+            result = {
+                "ok": True, "mode": "tick",
+                "fresh_condition_predictions": [{"match_id": "x", "stage": "T-5"}],
+            }
+            ledger = {"watch": {}}
+            stdout = io.StringIO()
+            with patch("crown.run.settings", return_value=config), \
+                 patch("crown.run.run", return_value=result), \
+                 patch("crown.run.load_ledger", return_value=ledger), \
+                 patch("crown.run.archive_watch_fast") as archive, \
+                 patch(
+                     "crown.run.update_history",
+                     side_effect=AssertionError("tick must not grade history"),
+                 ), patch(
+                     "crown.run.write_dashboard_data",
+                     side_effect=AssertionError("tick must not rebuild dashboard"),
+                 ), patch("crown.run.notify_new", return_value=1) as notify, \
+                 patch("sys.argv", ["crown.run", "tick"]), \
+                 contextlib.redirect_stdout(stdout):
+                self.assertEqual(crown_run.main(), 0)
+            archive.assert_called_once_with(config, ledger)
+            notify.assert_called_once_with(
+                ledger, config, [{"match_id": "x", "stage": "T-5"}],
+            )
+            self.assertEqual(
+                ast.literal_eval(stdout.getvalue())["dashboard_refresh_deferred"],
+                "sweep",
+            )
+
+    def test_sweep_retains_full_history_and_dashboard_processing(self) -> None:
+        import crown.run as crown_run
+
+        with tempfile.TemporaryDirectory() as directory:
+            config = replace(
+                settings(), state_dir=Path(directory), web_root=Path(directory) / "web",
+            )
+            ledger = {"watch": {}}
+            stdout = io.StringIO()
+            with patch("crown.run.settings", return_value=config), \
+                 patch("crown.run.run", return_value={"ok": True, "mode": "sweep"}), \
+                 patch("crown.run.load_ledger", return_value=ledger), \
+                 patch("crown.run.update_history", return_value={}) as update, \
+                 patch("crown.run.write_dashboard_data") as dashboard, \
+                 patch("crown.run.archive_watch_fast") as archive, \
+                 patch("crown.run.notify_new", return_value=0), \
+                 patch("sys.argv", ["crown.run", "sweep"]), \
+                 contextlib.redirect_stdout(stdout):
+                self.assertEqual(crown_run.main(), 0)
+            update.assert_called_once_with(config, ledger)
+            dashboard.assert_called_once_with(config)
+            archive.assert_not_called()
 
     def test_prediction_history_advances_valid_learning_snapshot_reference(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

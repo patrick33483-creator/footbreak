@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
+from analysis.granular_conditions import mine
 from crown.config import settings
 from crown.notify import _public_condition_text, notify_new
 
@@ -41,8 +42,12 @@ def ledger():
 class CrownGranularNotificationTests(unittest.TestCase):
     def _config_with_history(self, directory):
         config = replace(settings(), state_dir=Path(directory), telegram_enabled=False)
+        rows = history("T-30") + history("T-5")
         (config.state_dir / "prediction_history.json").write_text(
-            json.dumps({"rows": history("T-30") + history("T-5")}),
+            json.dumps({
+                "rows": rows,
+                "stats": {"granular_conditions": mine(rows, system="crown")},
+            }),
             encoding="utf-8",
         )
         return config
@@ -84,6 +89,24 @@ class CrownGranularNotificationTests(unittest.TestCase):
             with patch("crown.notify._send", return_value=True) as sender:
                 self.assertEqual(notify_new(current, config, []), 1)
                 self.assertEqual(notify_new(current, config, []), 0)
+            self.assertEqual(sender.call_count, 1)
+
+    def test_cached_ranking_notifies_without_remine(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = self._config_with_history(directory)
+            current = ledger()
+            current["watch"]["future"]["stages"] = [
+                stage for stage in current["watch"]["future"]["stages"]
+                if stage["stage"] == "T-5"
+            ]
+            with patch(
+                "analysis.granular_conditions.mine",
+                side_effect=AssertionError("tick must reuse cached ranking"),
+            ), patch("crown.notify._send", return_value=True) as sender:
+                self.assertEqual(
+                    notify_new(current, config, [{"match_id": "future", "stage": "T-5"}]),
+                    1,
+                )
             self.assertEqual(sender.call_count, 1)
 
     def test_fresh_and_recovery_candidates_are_deduplicated(self):

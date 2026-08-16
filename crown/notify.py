@@ -431,13 +431,26 @@ def notify_new(
             else history if isinstance(history, list) else []
         )
         history_rows = [row for row in history_rows if isinstance(row, dict)]
+        # Tick is deadline-bound.  A full granular mine belongs to sweep/settle
+        # history maintenance, not to the post-commit Telegram transport
+        # path.  An absent/malformed cache therefore fails closed rather than
+        # rebuilding statistics or touching result providers here.
+        cached_ranking = (
+            ((history.get("stats") or {}).get("granular_conditions") or {})
+            .get("ranking")
+            if isinstance(history, dict)
+            else None
+        )
+        cached_ranking = (
+            cached_ranking if isinstance(cached_ranking, list) else []
+        )
         seen_signals = set(state["signals"])
         eligible_events = _native_recent_condition_events(
             ledger, fresh_t5_predictions,
         )
         for item in notification_opportunities(
             history_rows, ledger.get("watch") or {}, eligible_events,
-            system="crown",
+            system="crown", ranking=cached_ranking,
         ):
             watch, selected, stage = item["watch"], item["selected"], item["stage"]
             try:

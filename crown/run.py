@@ -10,7 +10,7 @@ from .config import settings
 from .dashboard_data import write_dashboard_data
 from .engine import run
 from .notify import notify_new
-from .prediction_history import update_history
+from .prediction_history import archive_watch_fast, update_history
 from .state import load_ledger
 
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -81,7 +81,14 @@ def main() -> int:
     ledger = load_ledger(config)
     history_warning = None
     try:
-        update_history(config, ledger)
+        if args.mode == "tick":
+            # Tick has a sub-minute service cap.  Archive its committed stage
+            # immediately, but leave provider result sync, grading, aggregate
+            # stats, and granular mining to sweep/settle.
+            archive_watch_fast(config, ledger)
+            result["dashboard_refresh_deferred"] = "sweep"
+        else:
+            update_history(config, ledger)
     except Exception as exc:
         history_warning = f"prediction_history_{type(exc).__name__}"
     try:
@@ -90,7 +97,8 @@ def main() -> int:
         # Signals are notification-only.  A transport failure must never roll
         # back or corrupt the already committed live prediction state.
         result["notification_warning"] = f"telegram_{type(exc).__name__}"
-    write_dashboard_data(config)
+    if args.mode != "tick":
+        write_dashboard_data(config)
     if history_warning:
         result["warning"] = history_warning
         if args.mode == "settle":

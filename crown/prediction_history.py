@@ -186,7 +186,8 @@ def normalize_history(history: dict[str, Any]) -> dict[str, Any]:
     return history
 
 
-def load_history(config: Settings) -> dict[str, Any]:
+def _history_document(config: Settings) -> dict[str, Any]:
+    """Load the persisted history envelope without statistics work."""
     value = read_json(_path(config), {"rows": [], "stats": {}})
     if not isinstance(value, dict):
         value = {"rows": [], "stats": {}}
@@ -197,7 +198,12 @@ def load_history(config: Settings) -> dict[str, Any]:
     value.setdefault("started_at", iso_hkt())
     value["rows"] = value.get("rows") if isinstance(value.get("rows"), list) else []
     value["stats"] = value.get("stats") if isinstance(value.get("stats"), dict) else {}
-    return normalize_history(value)
+    return value
+
+
+def load_history(config: Settings) -> dict[str, Any]:
+    """Load and normalize history for grading or full dashboard/stat work."""
+    return normalize_history(_history_document(config))
 
 
 def _history_row(watch: dict[str, Any], stage: dict[str, Any]) -> dict[str, Any]:
@@ -304,18 +310,22 @@ def project_watch_rows(
     return holder["rows"]
 
 
-def archive_watch(config: Settings, ledger: dict[str, Any]) -> dict[str, Any]:
-    history = load_history(config)
+def _archive_watch_rows(history: dict[str, Any], ledger: dict[str, Any]) -> None:
+    """Merge persisted native watch stages without grading or statistics work."""
     rows = history["rows"]
     generated = {
         str(row.get("history_key")): row
         for row in rows
-        if row.get("_origin") == "crown_ledger_v1" and row.get("history_key")
+        if isinstance(row, dict)
+        and row.get("_origin") == "crown_ledger_v1"
+        and row.get("history_key")
     }
     for watch in (ledger.get("watch") or {}).values():
         if not isinstance(watch, dict):
             continue
         for stage in watch.get("stages") or []:
+            if not isinstance(stage, dict):
+                continue
             if stage.get("stage") not in STAGES and stage.get("stage") != RECOVERED_T5_STAGE:
                 continue
             row = _history_row(watch, stage)
@@ -336,7 +346,26 @@ def archive_watch(config: Settings, ledger: dict[str, Any]) -> dict[str, Any]:
                 }
                 old.update(row)
                 old.update({key: value for key, value in result_fields.items() if value is not None})
+
+
+def archive_watch(config: Settings, ledger: dict[str, Any]) -> dict[str, Any]:
+    """Archive stages and refresh complete derived history statistics."""
+    history = load_history(config)
+    _archive_watch_rows(history, ledger)
     normalize_history(history)
+    write_json_atomic(_path(config), history)
+    return history
+
+
+def archive_watch_fast(config: Settings, ledger: dict[str, Any]) -> dict[str, Any]:
+    """Archive committed watch stages without grading, mining, or stat refresh.
+
+    This is the deadline-safe tick path.  It retains the last full
+    ``history.stats`` payload (including granular-condition ranking) verbatim;
+    sweep and settle remain responsible for reconciliation and recomputation.
+    """
+    history = _history_document(config)
+    _archive_watch_rows(history, ledger)
     write_json_atomic(_path(config), history)
     return history
 

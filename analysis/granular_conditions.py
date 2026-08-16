@@ -474,15 +474,24 @@ def match_upcoming(
 def notification_opportunities(
     history_rows: Iterable[dict[str, Any]], watches: dict[str, Any],
     fresh_events: Iterable[dict[str, Any]], *, system: str,
+    ranking: Iterable[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
-    """Return only just-persisted stage opportunities; never scan for replay.
+    """Return granular opportunities from a cached or freshly mined ranking.
 
     The caller owns transport and durable acknowledgement.  This pure helper
-    makes a failed transport harmless to prediction persistence and lets both
-    systems use the same historical-only threshold and deterministic ordering.
+    makes a failed transport harmless to prediction persistence.  ``ranking``
+    lets deadline-sensitive callers reuse the persisted historical ranking
+    instead of mining the full history on every notification attempt; omitted
+    ranking retains the existing standalone/test behavior.
     """
     history_rows = list(history_rows)
-    ranking = mine(history_rows, system=system)["ranking"]
+    if ranking is None:
+        ranking = mine(history_rows, system=system)["ranking"]
+    else:
+        ranking = [
+            item for item in ranking
+            if isinstance(item, dict) and item.get("system") == system
+        ]
     live_rows = [
         {
             "match_id": str(match_id), "stage": stage.get("stage"),
