@@ -84,3 +84,13 @@ jobs:
             "failed_tick_count": text.count("\"ok\": false")
           }, sort_keys=True))'"'"'
             '
+
+      - name: 只讀聚合皇冠及足破模擬倉表現
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            'sudo /opt/footbreak/.venv/bin/python3 -' \
+            < deploy/audit-condition-portfolios.py
