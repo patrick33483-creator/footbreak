@@ -57,3 +57,22 @@ jobs:
           ssh -o BatchMode=yes -o ConnectTimeout=20 \
             "$DEPLOY_USER@$DEPLOY_HOST" "$remote_command" \
             < deploy/audit-crown-notification-state.py
+
+      - name: 只讀取得皇冠通知警告計數
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" '
+              sudo journalctl -u crown-tick.service --since "12 hours ago" \
+                --no-pager -o cat |
+              python3 -c '"'"'import json,sys
+          text=sys.stdin.read()
+          print(json.dumps({
+            "notification_warning_count": text.count("notification_warning"),
+            "telegram_error_count": text.count("telegram_"),
+            "failed_tick_count": text.count("\"ok\": false")
+          }, sort_keys=True))'"'"'
+            '
