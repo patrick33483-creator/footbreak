@@ -820,7 +820,7 @@ class CrownSafetyTests(unittest.TestCase):
         official = [{
             "status": "SETTLED", "code": "HIL", "market": "入球大細", "stake": 100,
             "pnl": -100, "result": "Lost", "model_prob": 0.60,
-            "portfolio": "condition_simulation", "strategy": "granular-condition-v1",
+            "portfolio": "crown_independent_validation", "strategy": "independent-validation-v1",
         } for _ in range(29)]
         shadow = [{
             "status": "SETTLED", "code": "HIL", "market": "HIL", "stake": 1000,
@@ -871,6 +871,8 @@ class CrownSafetyTests(unittest.TestCase):
         losing = [{
             "status": "SETTLED", "code": "HIL", "stake": 100,
             "pnl": -100, "result": "Lost", "model_prob": 0.60,
+            "portfolio": "crown_independent_validation",
+            "strategy": "independent-validation-v1",
         } for _ in range(30)]
         ledger = {"bets": losing[:29]}
         small = market_entry_thresholds(ledger, "HIL", config)
@@ -1283,8 +1285,8 @@ class CrownSafetyTests(unittest.TestCase):
         }
         self.assertEqual(completed_stages(priced, "same"), {"首預"})
 
-    def test_t5_quote_retry_updates_one_stage_and_can_create_one_bet(self) -> None:
-        """A missing quote is retryable, but never creates a second T-5 row."""
+    def test_t5_quote_refresh_updates_one_stage_but_cannot_create_a_bet(self) -> None:
+        """Only the first persisted T-5 may admit an independent validation bet."""
         with tempfile.TemporaryDirectory() as directory:
             config = replace(settings(), state_dir=Path(directory), telegram_enabled=False)
             kickoff = (self.now + timedelta(minutes=5)).isoformat()
@@ -1307,7 +1309,7 @@ class CrownSafetyTests(unittest.TestCase):
             }
             with patch("crown.ledger.evaluate_new_t5", return_value=([], [])) as evaluate:
                 self.assertEqual(sync_prediction(ledger, priced, config), [])
-            self.assertEqual(evaluate.call_count, 1)
+            self.assertEqual(evaluate.call_count, 0)
             self.assertEqual(len(ledger["watch"]["retry-t5"]["stages"]), 1)
             self.assertEqual(
                 ledger["watch"]["retry-t5"]["stages"][0]["odds_status"], "available"
@@ -1323,8 +1325,8 @@ class CrownSafetyTests(unittest.TestCase):
             original = {
                 "bankroll": 50000, "watch": {}, "log": [], "stats": {},
                 "bets": [{
-                    "bet_id": "old|HDC|T-5|granular-condition-v1",
-                    "portfolio": "condition_simulation", "strategy": "granular-condition-v1",
+                    "bet_id": "old|HDC|T-5|independent-validation-v1",
+                    "portfolio": "crown_independent_validation", "strategy": "independent-validation-v1",
                     "status": "PENDING", "code": "HDC", "stake": 1000, "odds": 2,
                 }],
             }
@@ -1336,8 +1338,8 @@ class CrownSafetyTests(unittest.TestCase):
             concurrent = copy.deepcopy(original)
             concurrent["watch"]["new-t5"] = {"stages": [{"stage": "T-5"}]}
             concurrent["bets"].append({
-                "bet_id": "new|HIL|T-5|granular-condition-v1",
-                "portfolio": "condition_simulation", "strategy": "granular-condition-v1",
+                "bet_id": "new|HIL|T-5|independent-validation-v1",
+                "portfolio": "crown_independent_validation", "strategy": "independent-validation-v1",
                 "status": "PENDING", "code": "HIL", "stake": 1000, "odds": 2,
             })
             save_ledger(config, concurrent)
@@ -1350,8 +1352,8 @@ class CrownSafetyTests(unittest.TestCase):
             merged = load_ledger(config)
             self.assertEqual(merged["watch"], concurrent["watch"])
             by_id = {bet["bet_id"]: bet for bet in merged["bets"]}
-            self.assertEqual(by_id["old|HDC|T-5|granular-condition-v1"]["status"], "SETTLED")
-            self.assertEqual(by_id["new|HIL|T-5|granular-condition-v1"]["status"], "PENDING")
+            self.assertEqual(by_id["old|HDC|T-5|independent-validation-v1"]["status"], "SETTLED")
+            self.assertEqual(by_id["new|HIL|T-5|independent-validation-v1"]["status"], "PENDING")
 
     def test_prediction_era_refreshes_only_first_look(self) -> None:
         first_only = {
@@ -1876,8 +1878,8 @@ class CrownSafetyTests(unittest.TestCase):
             }
             pinnapi_client.fixtures.return_value = []
             created_bet = {
-                "bet_id": "single|HDC|T-5|granular-condition-v1",
-                "portfolio": "condition_simulation", "strategy": "granular-condition-v1",
+                "bet_id": "single|HDC|T-5|independent-validation-v1",
+                "portfolio": "crown_independent_validation", "strategy": "independent-validation-v1",
                 "status": "PENDING", "market": "HDC", "stake": 1000, "odds": 1.91,
                 "created_at": now.isoformat(), "market_label": "讓球", "condition_label": "主讓",
             }
@@ -2947,12 +2949,12 @@ class CrownSafetyTests(unittest.TestCase):
             "bets": [
                 {"status": "SETTLED", "market": "讓球", "stake": 1000, "pnl": 900,
                  "result": "Won", "home": "A", "away": "B", "settled_at": "2026-08-08T10:00:00Z",
-                 "portfolio": "condition_simulation", "strategy": "granular-condition-v1"},
+                 "portfolio": "crown_independent_validation", "strategy": "independent-validation-v1"},
                 {"status": "SETTLED", "market": "讓球", "stake": 500, "pnl": -500,
                  "result": "Lost", "home": "C", "away": "D", "settled_at": "2026-08-08T11:00:00Z",
-                 "portfolio": "condition_simulation", "strategy": "granular-condition-v1"},
+                 "portfolio": "crown_independent_validation", "strategy": "independent-validation-v1"},
                 {"status": "VOIDED", "market": "入球大細", "stake": 2000, "pnl": None,
-                 "portfolio": "condition_simulation", "strategy": "granular-condition-v1"},
+                 "portfolio": "crown_independent_validation", "strategy": "independent-validation-v1"},
             ],
         }
         stats = recompute_stats(ledger, settings())
@@ -3149,7 +3151,7 @@ class CrownSafetyTests(unittest.TestCase):
                 "kickoff": "2020-01-01T12:00:00+08:00",
                 "market": "角球大細", "code": "CHL", "condition": "9.5", "side": "H",
                 "odds": 2.0, "stake": 1000, "status": "PENDING",
-                "portfolio": "condition_simulation", "strategy": "granular-condition-v1",
+                "portfolio": "crown_independent_validation", "strategy": "independent-validation-v1",
             }],
         }
         official = {
@@ -3180,7 +3182,7 @@ class CrownSafetyTests(unittest.TestCase):
                 "away": "德累斯顿", "kickoff": "2020-01-01T12:00:00+08:00",
                 "market": "角球大細", "code": "CHL", "condition": "10.5", "side": "H",
                 "odds": 2.0, "stake": 1000, "status": "PENDING",
-                "portfolio": "condition_simulation", "strategy": "granular-condition-v1",
+                "portfolio": "crown_independent_validation", "strategy": "independent-validation-v1",
             }],
         }
         official = {
@@ -3218,7 +3220,7 @@ class CrownSafetyTests(unittest.TestCase):
                 "away": "德累斯顿", "kickoff": "2020-01-01T12:00:00+08:00",
                 "code": "CHL", "condition": "10.5", "side": "H",
                 "odds": 2.0, "stake": 1000, "status": "PENDING",
-                "portfolio": "condition_simulation", "strategy": "granular-condition-v1",
+                "portfolio": "crown_independent_validation", "strategy": "independent-validation-v1",
             }],
         }
         official = {

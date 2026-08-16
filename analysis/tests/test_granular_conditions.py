@@ -39,9 +39,9 @@ class GranularConditionsTests(unittest.TestCase):
         self.assertEqual(_badge({"decided": 30}, empty, empty, None, None), "觀察")
         self.assertEqual(_badge({"decided": 60}, {"decided": 40}, {"decided": 20}, 0, .04), "穩健觀察 · q≤0.05")
 
-        rows = [row(f"sixty-{i}", "T-5", hit=i < 6,
+        rows = [row(f"sixty-{i}", "T-5", hit=i < 12,
                     kickoff=datetime(2026, 8, 1, 20, tzinfo=HKT) + timedelta(days=i))
-                for i in range(10)]
+                for i in range(20)]
         self.assertEqual(mine(rows, system="footbreak")["ranking"], [])
         rows[-1]["market_grades"][0]["hit"] = True
         self.assertTrue(mine(rows, system="footbreak")["ranking"])
@@ -59,7 +59,7 @@ class GranularConditionsTests(unittest.TestCase):
         self.assertEqual(_role("CHL", "L", 9.5), "角球細")
 
         rows = []
-        for i in range(10):
+        for i in range(20):
             kickoff = datetime(2026, 8, 1, 20, tzinfo=HKT) + timedelta(days=i)
             rows.extend([
                 row(f"p{i}", "首預", side="H", hit=True, kickoff=kickoff),
@@ -105,7 +105,7 @@ class GranularConditionsTests(unittest.TestCase):
 
     def test_odds_tiers_are_distinct_and_t30_never_uses_t5(self):
         settled = []
-        for i in range(12):
+        for i in range(20):
             kickoff = datetime(2026, 8, 1, 20, tzinfo=HKT) + timedelta(days=i)
             settled.append(row(f"high-{i}", "T-30", odds=1.7, kickoff=kickoff, hit=True))
             settled.append(row(f"low-{i}", "T-30", odds=1.69, kickoff=kickoff, hit=True))
@@ -131,7 +131,7 @@ class GranularConditionsTests(unittest.TestCase):
 
     def test_identical_fixture_cohorts_do_not_collapse_different_markets(self):
         settled = []
-        for i in range(10):
+        for i in range(20):
             kickoff = datetime(2026, 8, 1, 20, tzinfo=HKT) + timedelta(days=i)
             settled.extend([
                 row(f"shared-{i}", "T-5", code="HDC", side="H", line=-.25,

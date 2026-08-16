@@ -475,9 +475,12 @@ def notify_new(
             role = _role(item["market"], selected.get("side"), raw_line)
             selected_line = -raw_line if item["market"] == "HDC" and selected.get("side") == "A" else raw_line
             line_text = _quarter_line(selected_line, signed=item["market"] == "HDC")
-            title = "預備提示" if stage == "T-30" else "數據提示"
+            # Granular rankings are discovery candidates, never a formal
+            # recommendation.  A frozen cohort can be promoted only by the
+            # independent validation ledger, not by this notification path.
+            title = "候選條件，獨立驗證中"
             message = "\n".join([
-                f"皇冠 {title}",
+                f"皇冠 · {title}",
                 f"開賽：{kickoff.astimezone(HKT).strftime('%d/%m %H:%M')} HKT",
                 f"聯賽：{league}",
                 f"對賽：{watch.get('home') or ''} vs {watch.get('away') or ''}",
@@ -486,12 +489,13 @@ def notify_new(
                 f"盤口：{line_text}",
                 f"賠率：{odds:.2f}",
                 f"主條件：{_public_condition_text(primary['label'])}",
-                f"命中率：{total['accuracy'] * 100:.1f}%（{total['hits']}/{total['decided']}）· {primary['odds_tier']} · {primary['badge']}",
+                f"凍結前歷史發現率：{total['accuracy'] * 100:.1f}%（{total['hits']}/{total['decided']}）· {primary['odds_tier']}",
+                "獨立驗證率：尚未建立／不構成正式推介",
                 *[
                     f"＋ {_public_condition_text(extra['label'])}：{extra['total']['accuracy'] * 100:.1f}%（{extra['total']['hits']}/{extra['total']['decided']}）"
                     for extra in extras
                 ],
-                "只作數據提示，由你自行決定。",
+                "候選條件，獨立驗證中；未達已驗證，不構成正式推介。",
             ])
             delivered = _send(config, message)
             if delivered is False:

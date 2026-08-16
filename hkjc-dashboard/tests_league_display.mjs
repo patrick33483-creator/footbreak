@@ -1,0 +1,10 @@
+import assert from 'node:assert/strict';
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
+const display = require('./league_display.js');
+assert.equal(display.display('USA - Major League Soccer'), '美國職業足球大聯盟');
+assert.equal(display.display('Chile - Primera Division'), '智利甲組聯賽');
+assert.equal(display.display('Brazil - Serie A'), '巴西甲組聯賽');
+assert.equal(display.display('Argentina - Liga Pro'), '阿根廷甲組聯賽');
+assert.equal(display.display('Unmapped - Competition'), 'Unmapped - Competition');
+console.log('league display mapping ok');

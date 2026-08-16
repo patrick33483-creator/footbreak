@@ -20,6 +20,7 @@ const STAGE_DESC = {
 };
 const VD_CLS = { '落注': 'v-go', '傾向': 'v-lean', '偏向': 'v-soft', '觀望': 'v-wait', '無傾向': 'v-none' };
 const MKT = { HDC: '讓球', HIL: '入球大細', CHL: '角球大細', HAD: '主客和' };
+const leagueDisplay = (value) => (window.LeagueDisplay && window.LeagueDisplay.display ? window.LeagueDisplay.display(value) : String(value || ''));
 const marketLabel = (value) => {
   const raw = String(value ?? '').trim();
   const code = raw.toUpperCase();
@@ -308,7 +309,7 @@ function renderList() {
         <div class="fx-meta">
           <span class="fx-tag ${TAG[st]}">${st}</span>
           <span class="conv-pill ${convClass(m.conviction)}">信念 ${m.conviction == null ? '—' : Number(m.conviction).toFixed(1)}</span>
-          <span class="fx-lg">${esc(hkDay(m.kickoff_hkt))} · ${esc(m.league)}</span>
+          <span class="fx-lg">${esc(hkDay(m.kickoff_hkt))} · ${esc(leagueDisplay(m.league))}</span>
         </div>
         <div class="fx-foot">${dots(m)}
           ${m.pick
@@ -350,7 +351,7 @@ function head(m, mm, st) {
   return `<div class="mhead">
     <div class="mhead-top">
       <span class="fx-tag ${TAG[st]}">${st}</span>
-      <span class="mhead-lg">${esc(m.league)}</span>
+      <span class="mhead-lg">${esc(leagueDisplay(m.league))}</span>
     </div>
     <div class="mhead-teams">
       <div><div class="mt-name">${esc(m.home)}</div><div class="mt-en">${esc(m.home_en)}</div></div>
@@ -881,7 +882,7 @@ function fcCard(m) {
       <div class="fcc-m">
         <b>${esc(m.home)}</b><span class="vs">vs</span><b>${esc(m.away)}</b>
       </div>
-      <div class="fcc-lg">${esc(m.league || '')}</div>
+      <div class="fcc-lg">${esc(leagueDisplay(m.league || ''))}</div>
       <div class="fcc-cv ${convClass(conv)}">信念 ${conv == null ? '—' : Number(conv).toFixed(1)}</div>
     </header>
 
@@ -1504,41 +1505,47 @@ function stakeStageCard() {
 
 function renderLedger() {
   const s = LED.stats || {}, bets = (LED.bets || []).filter((bet) =>
-    bet && bet.portfolio === 'footbreak_condition_simulation' && bet.strategy === 'granular-condition-v1'
+    bet && bet.portfolio === 'footbreak_independent_validation' && bet.strategy === 'independent-validation-v1'
   );
+  const validation = LED.independent_validation || {};
+  const archive = validation.historical_discovery_archive || {};
   const V = $('#viewLedger');
   const K = [
+    ['驗證起點', validation.validation_started_at ? hkStamp(validation.validation_started_at) : '—', ''],
     ['起始本金', money(s.starting_bankroll ?? LED.bankroll), ''],
-    ['固定注碼', money(s.fixed_stake), ''],
+    ['每注', money(s.fixed_stake), ''],
+    ['每場上限', money(s.fixture_stake_cap), ''],
     ['待決', s.n_pending || 0, ''],
     ['已結算', s.n_settled || 0, ''],
     ['累計盈虧', s.n_settled ? money(s.pnl) : '—', (s.pnl || 0) >= 0 ? 'good' : 'bad'],
-    ['ROI', s.roi == null ? '—' : pc(s.roi, 2), (s.roi || 0) >= 0 ? 'good' : 'bad'],
+    ['前瞻回報率', s.roi == null ? '—' : pc(s.roi, 2), (s.roi || 0) >= 0 ? 'good' : 'bad'],
     ['命中率', s.n_decided ? `${pc(s.hit_rate, 1)} (${s.hits}/${s.n_decided})` : '—',
       s.n_decided ? ((s.hit_rate || 0) >= 0.5 ? 'good' : 'bad') : ''],
-    ['模擬結餘', money(s.equity ?? LED.bankroll), (s.pnl || 0) >= 0 ? 'good' : 'bad'],
+    ['現金 / 權益', `${money(s.cash ?? LED.bankroll)} / ${money(s.equity ?? LED.bankroll)}`, (s.pnl || 0) >= 0 ? 'good' : 'bad'],
   ];
   const rule = s.rules || {};
   let h = `<div class="ledger-head">
-    <h1 class="pg-h">條件模擬倉 <span class="sub">只作模擬記錄，不作真實投注</span></h1>
+    <h1 class="pg-h">獨立驗證倉 <span class="sub">舊歷史發現期唯讀封存；只作模擬記錄</span></h1>
     <div class="kpis wide">${K.map(([l, v, c]) =>
       `<div class="kpi"><span class="kpi-lbl">${l}</span><span class="kpi-val ${c}">${v}</span></div>`).join('')}</div>
   </div>`;
   h += `<div class="card"><h2 class="card-h">建立規則</h2>
     <div class="rule-grid">
       <div><b>建立時點</b><span>只限新保存的 T-5 預測；重跑、T-30 與歷史回填不會建立注單。</span></div>
-      <div><b>歷史條件</b><span>命中率嚴格高於 ${esc(rule.historical_hit_rate || '60%')}，且最少 ${esc(rule.minimum_decided || 10)} 個已結算有效樣本。</span></div>
-      <div><b>市場與防呆</b><span>讓球、入球大細、角球大細可各一注；同市場方向或盤口矛盾即跳過。</span></div>
+      <div><b>歷史發現期</b><span>只作候選發現：命中率嚴格高於 60%，且最少 20 個已判定樣本；首次入倉即凍結定義及基線。</span></div>
+      <div><b>市場與防呆</b><span>每注 HK$250；每場最多兩個市場及 HK$500；同市場方向或盤口矛盾即跳過。</span></div>
       <div><b>資料證據</b><span>必須有有效方向、有限盤口、賠率大於 1，以及可證明在開賽前觀測的賠率。</span></div>
     </div>
   </div>`;
+  h += `<div class="card history-note"><h2 class="card-h">舊歷史發現期 <span class="sub">唯讀封存，不混入獨立驗證盈虧、回報率、命中率或本金</span></h2>
+    <p class="mx-note">摘要：已保留舊注單 ${numeric(archive.legacy_bet_count) == null ? '—' : archive.legacy_bet_count} 筆；舊帳本本金 ${archive.legacy_bankroll == null ? '—' : money(archive.legacy_bankroll)}。凍結條件會顯示當時的「歷史發現 x/y」，其後的驗證結果不會回寫該基線。</p></div>`;
   if (s.n_settled) h += `<div class="grid g2">${equityCard(s)}${resultCard(s)}</div>${marketCard(s)}`;
   if (!bets.length) {
-    h += `<div class="card"><div class="empty2">尚未有符合條件的模擬注單。系統會在新保存的 T-5 預測才作評估。</div></div>`;
+    h += `<div class="card"><div class="empty2">尚未有符合條件的獨立驗證注單。系統只在首次保存的原生 T-5 評估。</div></div>`;
   } else {
-    h += `<div class="card"><h2 class="card-h">條件模擬注單 <span class="sub">${bets.length} 筆 · 每注 ${money(s.fixed_stake || 1000)}</span></h2>
+    h += `<div class="card"><h2 class="card-h">獨立驗證注單 <span class="sub">${bets.length} 筆 · 每注 ${money(s.fixed_stake || 250)}</span></h2>
       <div class="tbl-wrap"><table class="t bets condition-bets"><thead><tr>
-        <th>開賽</th><th>聯賽 / 對賽</th><th>市場</th><th>方向</th><th>盤口</th><th>賠率</th><th>歷史命中率</th><th>注碼</th><th>狀態</th><th>結果</th><th>盈虧</th>
+        <th>開賽</th><th>對賽 / 聯賽</th><th>市場</th><th>方向</th><th>盤口</th><th>賠率</th><th>歷史發現 / 獨立驗證</th><th>注碼</th><th>狀態</th><th>結果</th><th>盈虧</th>
       </tr></thead><tbody>${bets.map(conditionBetRow).join('')}</tbody></table></div></div>`;
   }
   V.innerHTML = h;
@@ -1546,13 +1553,15 @@ function renderLedger() {
 
 function conditionBetRow(b) {
   const result = b.result ? `<span class="respill ${RES_CLS[b.result] || ''}">${RES_LBL[b.result] || b.result}</span>` : '<span class="dim">—</span>';
-  const history = numeric(b.condition_accuracy) == null ? '—' : `${pc(b.condition_accuracy, 1)} (${b.condition_hits ?? 0}/${b.condition_decided ?? 0})`;
+  const frozen = (LED.independent_validation?.conditions || {})[b.frozen_condition_signature] || {};
+  const prospective = frozen.prospective || {};
+  const history = numeric(b.condition_accuracy) == null ? '—' : `歷史發現 ${pc(b.condition_accuracy, 1)} (${b.condition_hits ?? 0}/${b.condition_decided ?? 0})<div class="cell-sub">獨立驗證 ${pc(prospective.accuracy, 1)} (${prospective.hits ?? 0}/${prospective.decided ?? 0}) · ${esc(prospective.status || '驗證中')} · 前瞻盈虧 ${money(prospective.pnl ?? 0)} · 前瞻回報率 ${pc(prospective.roi, 2)}</div>`;
   const status = `<span class="stpill ${String(b.status || '').toLowerCase()}">${ST_LBL[b.status] || b.status || '—'}</span>`;
   const pnl = b.pnl == null ? '—' : money(b.pnl);
   const tone = (b.pnl || 0) > 0 ? 'ev-p' : (b.pnl || 0) < 0 ? 'ev-n' : 'dim';
   return `<tr class="brow ${String(b.status || '').toLowerCase()}">
     <td class="mono nowrap">${hkDay(b.kickoff)} ${hkClock(b.kickoff)}</td>
-    <td><b>${esc(b.league || '—')}</b><div class="cell-sub">主隊：${esc(b.home || '—')}／客隊：${esc(b.away || '—')}</div></td>
+    <td><b>${esc(b.home || '—')} <span class="dim">vs</span> ${esc(b.away || '—')}</b><div class="cell-sub">${esc(leagueDisplay(b.league || '—'))}</div></td>
     <td class="lbl">${esc(marketLabel(b.market_label))}</td>
     <td><b>${esc(publicText(b.selected_role || '—'))}</b></td>
     <td class="mono">${numeric(b.selected_line) == null ? '—' : numeric(b.selected_line).toString()}</td>

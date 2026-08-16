@@ -666,6 +666,14 @@ def main():
         "bankroll": bank,
         "bets": [_public_bet(bet) for bet in sorted(bets, key=lambda b: b.get("kickoff") or "")],
         "log": _public_log_entries(led.get("log", [])),
+        "independent_validation": {
+            "schema_version": (led.get("independent_validation") or {}).get("schema_version"),
+            "validation_started_at": (led.get("independent_validation") or {}).get("validation_started_at"),
+            "conditions": (led.get("independent_validation") or {}).get("conditions") or {},
+            "historical_discovery_archive": (led.get("independent_validation") or {}).get("historical_discovery_archive") or {
+                "read_only": True, "legacy_bets_preserved": True, "legacy_stats_preserved": True,
+            },
+        },
         "stats": {
             "portfolio": PORTFOLIO,
             "strategy": STRATEGY,
@@ -695,8 +703,10 @@ def main():
             "rules": {
                 "stake": FIXED_STAKE,
                 "historical_hit_rate": ">60%",
-                "minimum_decided": 10,
+                "minimum_decided": 20,
                 "new_t5_only": True,
+                "fixture_stake_cap": 500,
+                "fixture_market_cap": 2,
             },
             "n_watch": len(watch),
             "n_stage_preds": sum(len(w.get("stages") or []) for w in watch.values()),

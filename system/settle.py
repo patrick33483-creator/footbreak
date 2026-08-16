@@ -16,6 +16,7 @@ import sys
 import tempfile
 
 from condition_portfolio import FIXED_STAKE, PORTFOLIO, STARTING_BANKROLL, STRATEGY
+from analysis.independent_validation import recompute_namespace, validation_bets
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -537,62 +538,15 @@ def run(force=False):
 
 
 def condition_bets(ledger):
-    """Return only the fixed-stake Footbreak condition simulation rows."""
-    return [
-        bet for bet in (ledger.get("bets") or [])
-        if isinstance(bet, dict)
-        and bet.get("portfolio") == PORTFOLIO
-        and bet.get("strategy") == STRATEGY
-    ]
+    """Return only Footbreak's active independent-validation rows."""
+    return validation_bets(ledger, "footbreak")
 
 
 def recompute(led):
-    """Recompute public totals from active condition bets only."""
-    active = condition_bets(led)
-    settled = [bet for bet in active if bet.get("status") == "SETTLED"]
-    pending = [bet for bet in active if bet.get("status") == "PENDING"]
-    voided = [bet for bet in active if bet.get("status") == "VOIDED"]
-    pnl = round(sum(float(bet.get("pnl") or 0) for bet in settled), 2)
-    turnover = round(sum(float(bet.get("stake") or 0) for bet in settled), 2)
-    decided = [bet for bet in settled if bet.get("result") != "Refunded"]
-    hits = sum(bet.get("result") in ("Won", "Half Won") for bet in decided)
-    by_market = {}
-    for bet in settled:
-        market = bet.get("market_label") or bet.get("market") or "其他"
-        row = by_market.setdefault(market, {"n": 0, "stake": 0.0, "pnl": 0.0, "hit": 0, "dec": 0})
-        row["n"] += 1
-        row["stake"] += float(bet.get("stake") or 0)
-        row["pnl"] += float(bet.get("pnl") or 0)
-        if bet.get("result") != "Refunded":
-            row["dec"] += 1
-            row["hit"] += int(bet.get("result") in ("Won", "Half Won"))
-    for row in by_market.values():
-        row["stake"] = round(row["stake"], 2)
-        row["pnl"] = round(row["pnl"], 2)
-        row["roi"] = round(row["pnl"] / row["stake"], 4) if row["stake"] else None
-        row["hit_rate"] = round(row["hit"] / row["dec"], 4) if row["dec"] else None
-    running, curve = STARTING_BANKROLL, []
-    for bet in sorted(settled, key=lambda b: str(b.get("settled_at") or b.get("created_at") or "")):
-        bet_pnl = float(bet.get("pnl") or 0)
-        running += bet_pnl
-        curve.append({"ts": bet.get("settled_at") or bet.get("created_at"),
-                      "label": f"{bet.get('home', '')} v {bet.get('away', '')}".strip(),
-                      "pnl": round(bet_pnl, 2), "equity": round(running, 2)})
-    stats = {
-        "portfolio": PORTFOLIO, "starting_bankroll": STARTING_BANKROLL,
-        "fixed_stake": FIXED_STAKE, "strategy": STRATEGY, "bet_stage": "T-5",
-        "n_pending": len(pending), "n_voided": len(voided), "n_settled": len(settled),
-        "n_decided": len(decided), "hits": hits,
-        "hit_rate": round(hits / len(decided), 4) if decided else None,
-        "pnl": pnl, "turnover": turnover,
-        "roi": round(pnl / turnover, 4) if turnover else None,
-        "open_stake": round(sum(float(b.get("stake") or 0) for b in pending), 2),
-        "open_pct": round(sum(float(b.get("stake") or 0) for b in pending) / STARTING_BANKROLL, 4),
-        "equity": round(STARTING_BANKROLL + pnl, 2), "by_market": by_market, "curve": curve,
-        "res_counts": {name: sum(b.get("result") == name for b in settled)
-                       for name in ("Won", "Half Won", "Refunded", "Half Lost", "Lost")},
-    }
-    led["bankroll"] = STARTING_BANKROLL
+    """Recompute public totals from active independent-validation bets only."""
+    # Keep the established top-level keys for old dashboard callers, but only
+    # derive them from the new namespace. Legacy discovery records stay inert.
+    stats = recompute_namespace(led, "footbreak")
     led["stats"] = stats
     return stats
 

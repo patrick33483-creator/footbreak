@@ -336,6 +336,35 @@ def _badge(total: dict[str, Any], train: dict[str, Any], holdout: dict[str, Any]
     return "觀察"
 
 
+def _stable_signature(item: dict[str, Any]) -> str:
+    """A lexical final tie-breaker which cannot reward a lucky hit rate."""
+    key = item.get("key")
+    if isinstance(key, list):
+        return "\x1f".join(str(value) for value in key)
+    return str(key or item.get("label") or "")
+
+
+def conservative_rank_key(item: dict[str, Any]) -> tuple[Any, ...]:
+    """Rank discovery candidates without using raw accuracy as a winner.
+
+    Accuracy remains an eligibility threshold.  Once a condition has cleared
+    it, prefer a usable Wilson lower bound, then more decided samples, then a
+    less-specific definition and a stable signature.  This same ordering is
+    used before bounded cache/public lists are cut, otherwise a raw-accuracy
+    ranking could hide the conservative candidate from the T-5 fast path.
+    """
+    total = item.get("total") if isinstance(item.get("total"), dict) else {}
+    wilson = total.get("wilson95")
+    lower = _number(wilson[0]) if isinstance(wilson, (list, tuple)) and wilson else None
+    return (
+        0 if lower is not None else 1,
+        -(lower or 0.0),
+        -int(total.get("decided") or 0),
+        int(item.get("specificity") or 0),
+        _stable_signature(item),
+    )
+
+
 def mine(rows: Iterable[dict[str, Any]], *, system: str) -> dict[str, Any]:
     """Return a bounded dashboard payload from current-era, settled rows."""
     rows = list(rows)
@@ -366,7 +395,10 @@ def mine(rows: Iterable[dict[str, Any]], *, system: str) -> dict[str, Any]:
     candidates: list[dict[str, Any]] = []
     for key, samples in cohorts.items():
         total = _metrics(samples)
-        if total["decided"] < 10 or total["accuracy"] is None or total["accuracy"] <= .60:
+        # The discovery phase may retain all historical rows, but a condition
+        # is not a candidate for the independent validation portfolio until it
+        # has at least 20 decided outcomes and clears the strict rate gate.
+        if total["decided"] < 20 or total["accuracy"] is None or total["accuracy"] <= .60:
             continue
         train_ids, holdout_ids, cutoff = _split(samples)
         train = _metrics([sample for sample in samples if sample[0]["fixture"] in train_ids])
@@ -410,14 +442,7 @@ def mine(rows: Iterable[dict[str, Any]], *, system: str) -> dict[str, Any]:
         old = retained.get(signature)
         if old is None or (candidate["specificity"], len(candidate["label"])) > (old["specificity"], len(old["label"])):
             retained[signature] = candidate
-    ranked = sorted(
-        retained.values(),
-        key=lambda item: (
-            item["total"]["accuracy"], (item["total"]["wilson95"] or [-1])[0],
-            item["total"]["decided"], item["specificity"], item["label"],
-        ),
-        reverse=True,
-    )[:MAX_PUBLIC]
+    ranked = sorted(retained.values(), key=conservative_rank_key)[:MAX_PUBLIC]
     return {
         "version": "granular-condition-v1", "system": system,
         "source_rows": len(rows),
@@ -460,14 +485,7 @@ def match_upcoming(
                     })
     for fixture, values in matches.items():
         dedup = {tuple(item["key"]): item for item in values}
-        matches[fixture] = sorted(
-            dedup.values(),
-            key=lambda item: (
-                item["total"]["accuracy"], (item["total"]["wilson95"] or [-1])[0],
-                item["total"]["decided"], item["specificity"], item["label"],
-            ),
-            reverse=True,
-        )[:MAX_CARD_MATCHES]
+        matches[fixture] = sorted(dedup.values(), key=conservative_rank_key)[:MAX_CARD_MATCHES]
     return dict(matches)
 
 
@@ -525,13 +543,7 @@ def notification_opportunities(
             choices = [item for item in matches if item.get("market") == market]
             if not choices:
                 continue
-            choices.sort(
-                key=lambda item: (
-                    item["total"]["accuracy"], (item["total"]["wilson95"] or [-1])[0],
-                    item["total"]["decided"], item["specificity"], item["label"],
-                ),
-                reverse=True,
-            )
+            choices.sort(key=conservative_rank_key)
             output.append({
                 "fixture": fixture, "stage": stage_name, "market": market,
                 "watch": watch, "selected": selected[0], "matches": choices[:MAX_CARD_MATCHES],

@@ -11,14 +11,17 @@ class ConditionSimulationUiTests(unittest.TestCase):
     def test_crown_navigation_has_one_simulation_portfolio_and_no_retired_sections(self) -> None:
         index = (ROOT / "crown" / "dashboard" / "index.html").read_text(encoding="utf-8")
         app = (ROOT / "crown" / "dashboard" / "app.js").read_text(encoding="utf-8")
-        self.assertIn('data-view="ledger">模擬倉', index)
+        self.assertIn('data-view="ledger">獨立驗證倉', index)
         self.assertNotIn('data-view="shadow"', index)
         self.assertNotIn("影子倉", index)
         self.assertNotIn("讓球世界", index)
         self.assertNotIn("renderShadow", app)
-        self.assertIn("條件驅動 · 起始 HK$50,000 · 每注固定 HK$1,000", app)
-        self.assertIn("只在新持久化 T-5 建立注單", app)
-        self.assertIn("不使用 EV 或凱利注碼", app)
+        for text in (
+            "歷史發現期唯讀封存", "起始 HK$50,000", "每注 HK$250", "每場 HK$500",
+            "只在首次持久化原生賽前 T-5 建立注單", "歷史發現／獨立驗證",
+            "前瞻盈虧", "前瞻回報率",
+        ):
+            self.assertIn(text, app)
         self.assertIn("conditionBets", app)
 
     def test_user_facing_market_labels_are_chinese_and_legacy_labels_are_sanitized(self) -> None:

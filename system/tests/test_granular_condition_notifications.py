@@ -20,7 +20,7 @@ HKT = timezone(timedelta(hours=8))
 
 def _history(stage: str, code="HDC"):
     rows = []
-    for index in range(12):
+    for index in range(20):
         kickoff = datetime(2026, 8, 1, 20, tzinfo=HKT) + timedelta(days=index)
         rows.append({
             "match_id": f"history-{stage}-{index}", "stage": stage,
@@ -35,12 +35,17 @@ def _history(stage: str, code="HDC"):
 
 
 def _ledger():
-    kickoff = datetime(2099, 8, 2, 20, tzinfo=HKT).isoformat()
+    kickoff_at = datetime(2099, 8, 2, 20, tzinfo=HKT)
+    kickoff = kickoff_at.isoformat()
     stages = []
     for stage, minutes in (("首預", 90), ("T-30", 30), ("T-5", 5)):
         stages.append({
-            "stage": stage, "ts": (datetime(2099, 8, 2, 20, tzinfo=HKT) - timedelta(minutes=minutes + 1)).isoformat(),
-            "market_predictions": [{"code": "HDC", "side": "H", "line": -.25, "odds": 1.82}],
+            "stage": stage, "ts": (kickoff_at - timedelta(minutes=minutes + 1)).isoformat(),
+            "market_predictions": [{
+                "code": "HDC", "side": "H", "line": -.25, "odds": 1.82,
+                "observed_at": (kickoff_at - timedelta(minutes=minutes + 2)).isoformat(),
+                "source": "hkjc_public_board",
+            }],
         })
     return {"watch": {"future": {
         "match_id": "future", "kickoff": kickoff, "home": "主隊", "away": "客隊",
@@ -65,9 +70,9 @@ class GranularConditionNotificationTests(unittest.TestCase):
                 self.assertEqual(notify.notify_fresh_granular_conditions(
                     ledger, [{"match_id": "future", "stage": "T-5"}]), 1)
             self.assertEqual(sender.call_count, 2)
-            self.assertIn("預備提示", sender.call_args_list[0].args[0])
-            self.assertIn("數據提示", sender.call_args_list[1].args[0])
-            self.assertIn("只作數據提示，由你自行決定。", sender.call_args_list[1].args[0])
+            self.assertIn("候選條件，獨立驗證中", sender.call_args_list[0].args[0])
+            self.assertIn("候選條件，獨立驗證中", sender.call_args_list[1].args[0])
+            self.assertIn("不構成正式推介", sender.call_args_list[1].args[0])
             for call in sender.call_args_list:
                 message = call.args[0]
                 self.assertIn("聯賽：測試", message)
@@ -75,7 +80,7 @@ class GranularConditionNotificationTests(unittest.TestCase):
                 self.assertIn("選擇：主讓", message)
                 self.assertIn("盤口：-0.25", message)
                 self.assertIn("賠率：1.82", message)
-                self.assertIn("命中率：", message)
+                self.assertIn("凍結前歷史發現率：", message)
                 self.assertNotIn("HDC", message)
                 self.assertNotIn("HIL", message)
                 self.assertNotIn("CHL", message)
@@ -152,9 +157,9 @@ class GranularConditionNotificationTests(unittest.TestCase):
     def test_new_condition_bet_alert_is_true_new_chinese_and_fails_closed(self):
         kickoff = (datetime.now(HKT) + timedelta(hours=2)).isoformat()
         bet = {
-            "bet_id": "fixture|HIL|T-5|granular-condition-v1",
-            "portfolio": "footbreak_condition_simulation",
-            "strategy": "granular-condition-v1",
+            "bet_id": "fixture|HIL|T-5|independent-validation-v1",
+            "portfolio": "footbreak_independent_validation",
+            "strategy": "independent-validation-v1",
             "league": "測試聯賽",
             "home": "主隊",
             "away": "客隊",
@@ -164,8 +169,8 @@ class GranularConditionNotificationTests(unittest.TestCase):
             "selected_line": 2.5,
             "odds": 1.82,
             "condition_accuracy": .7,
-            "condition_hits": 7,
-            "condition_decided": 10,
+            "condition_hits": 14,
+            "condition_decided": 20,
         }
         with tempfile.TemporaryDirectory() as directory:
             state = Path(directory, "state.json")
@@ -174,7 +179,8 @@ class GranularConditionNotificationTests(unittest.TestCase):
                 self.assertEqual(notify.notify_new_condition_bets({"bets": [bet]}, [bet["bet_id"]]), 0)
             message = sender.call_args.args[0]
         for field in ("聯賽：測試聯賽", "主隊：主隊", "客隊：客隊", "開賽：", "市場：入球大細",
-                      "方向：大", "盤口：2.5", "賠率：1.82", "歷史命中率：70.0%（7/10）"):
+                      "方向：大", "盤口：2.5", "賠率：1.82", "凍結的歷史發現率：70.0%（14/20）",
+                      "候選條件，獨立驗證中", "未達已驗證，不構成正式推介"):
             self.assertIn(field, message)
         for code in ("HDC", "HIL", "CHL", " A", " B", " C"):
             self.assertNotIn(code, message)
@@ -185,12 +191,44 @@ class GranularConditionNotificationTests(unittest.TestCase):
                 self.assertEqual(notify.notify_new_condition_bets({"bets": [bet]}, [bet["bet_id"]]), 0)
             sender.assert_not_called()
 
+    def test_committed_validation_message_reads_frozen_metrics_and_deduplicates(self):
+        kickoff = (datetime.now(HKT) + timedelta(hours=2)).isoformat()
+        bet = {
+            "bet_id": "frozen|HDC|T-5|independent-validation-v1",
+            "portfolio": "footbreak_independent_validation",
+            "strategy": "independent-validation-v1",
+            "league": "測試聯賽", "home": "主隊", "away": "客隊", "kickoff": kickoff,
+            "market_label": "讓球", "selected_role": "主讓", "selected_line": -0.25,
+            "odds": 2.0, "condition_accuracy": .7, "condition_hits": 14,
+            "condition_decided": 20, "frozen_condition_signature": "condition-1",
+        }
+        ledger = {
+            "bets": [bet],
+            "independent_validation": {"conditions": {"condition-1": {"prospective": {
+                "status": "已驗證", "hits": 30, "decided": 30, "accuracy": .75,
+                "pnl": 1250, "roi": .166667,
+            }}}},
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory, "state.json")
+            with patch.object(notify, "STATE", str(state)), patch.object(notify, "send") as sender:
+                self.assertEqual(notify.notify_pending_condition_bets(ledger), 1)
+                self.assertEqual(notify.notify_pending_condition_bets(ledger), 0)
+        message = sender.call_args.args[0]
+        for text in (
+            "已通過獨立驗證", "凍結的歷史發現率：70.0%（14/20）",
+            "獨立驗證率：75.0%（30/30）", "狀態：已驗證",
+            "前瞻盈虧：HK$+1,250", "ROI：+16.67%", "仍只作模擬追蹤",
+        ):
+            self.assertIn(text, message)
+        self.assertNotIn("可投注", message)
+
     def test_unsent_committed_bet_retries_after_transport_recovers(self):
         kickoff = (datetime.now(HKT) + timedelta(minutes=8)).isoformat()
         bet = {
-            "bet_id": "retry|HDC|T-5|granular-condition-v1",
-            "portfolio": "footbreak_condition_simulation",
-            "strategy": "granular-condition-v1",
+            "bet_id": "retry|HDC|T-5|independent-validation-v1",
+            "portfolio": "footbreak_independent_validation",
+            "strategy": "independent-validation-v1",
             "league": "瑞典超級聯賽",
             "home": "米贊比",
             "away": "天狼星",

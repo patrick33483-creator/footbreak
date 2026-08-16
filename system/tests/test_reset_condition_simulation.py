@@ -15,7 +15,7 @@ import reset_condition_simulation as reset
 
 
 class ResetConditionSimulationTests(unittest.TestCase):
-    def test_confirmation_is_exact_and_only_simulation_state_is_reset(self):
+    def test_confirmation_is_exact_and_migration_preserves_historical_archive(self):
         with tempfile.TemporaryDirectory() as directory:
             ledger_path = Path(directory, "ledger.json")
             ledger_path.write_text(json.dumps({
@@ -37,14 +37,21 @@ class ResetConditionSimulationTests(unittest.TestCase):
             dashboard.assert_called_once()
             ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
         self.assertEqual(outcome["bankroll"], 50000.0)
-        self.assertEqual(outcome["cleared_main_bets"], 1)
-        self.assertTrue(outcome["retired_shadow_state_removed"])
-        self.assertEqual(ledger["bets"], [])
-        self.assertEqual(ledger["stats"], {})
+        self.assertEqual(outcome["cleared_main_bets"], 0)
+        self.assertFalse(outcome["retired_shadow_state_removed"])
+        self.assertTrue(outcome["migration_only"])
+        self.assertEqual(ledger["bets"], [{"bet_id": "old"}])
+        self.assertEqual(ledger["stats"], {"pnl": 9})
         self.assertEqual(ledger["watch"], {"preserved": {"stages": []}})
         self.assertEqual(ledger["provider_data"], {"keep": True})
-        for key in ("shadow_bets", "shadow_stats", "shadow_comparison", "condition_simulation_audit"):
-            self.assertNotIn(key, ledger)
+        self.assertIn("shadow_bets", ledger)
+        self.assertIn("shadow_stats", ledger)
+        self.assertIn("shadow_comparison", ledger)
+        self.assertIn("condition_simulation_audit", ledger)
+        namespace = ledger["independent_validation"]
+        self.assertEqual(namespace["system"], "footbreak")
+        self.assertTrue(namespace["historical_discovery_archive"]["read_only"])
+        self.assertEqual(namespace["historical_discovery_archive"]["legacy_bet_count"], 1)
 
 
 if __name__ == "__main__":

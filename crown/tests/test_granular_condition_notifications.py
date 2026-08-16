@@ -17,7 +17,7 @@ HKT = timezone(timedelta(hours=8))
 
 def history(stage):
     values = []
-    for i in range(12):
+    for i in range(20):
         kickoff = datetime(2026, 8, 1, 20, tzinfo=HKT) + timedelta(days=i)
         values.append({"match_id": f"{stage}-{i}", "stage": stage, "kickoff": kickoff.isoformat(),
                        "predicted_at": (kickoff - timedelta(minutes=40)).isoformat(),
@@ -31,7 +31,11 @@ def ledger():
     kickoff = now + timedelta(minutes=5)
     stages = [{"stage": name, "match_id": "future", "kickoff_hkt": kickoff.isoformat(),
                "ts": (kickoff - timedelta(minutes=minutes + 1)).isoformat(),
-               "market_predictions": [{"code": "HIL", "side": "H", "line": 2.5, "odds": 1.83}]}
+               "market_predictions": [{
+                   "code": "HIL", "side": "H", "line": 2.5, "odds": 1.83,
+                   "observed_at": (kickoff - timedelta(minutes=minutes + 2)).isoformat(),
+                   "quote_source": "crown_public_board",
+               }]}
               for name, minutes in (("首預", 90), ("T-30", 30), ("T-5", 5))]
     return {"watch": {"future": {"match_id": "future", "kickoff": kickoff.isoformat(),
                                  "kickoff_hkt": kickoff.isoformat(), "home": "主", "away": "客",
@@ -60,8 +64,8 @@ class CrownGranularNotificationTests(unittest.TestCase):
                 self.assertEqual(notify_new(ledger(), config, [{"match_id": "future", "stage": "T-30"}]), 0)
                 self.assertEqual(notify_new(ledger(), config, [{"match_id": "future", "stage": "T-30"}]), 0)
             self.assertEqual(sender.call_count, 2)
-            self.assertIn("預備提示", sender.call_args_list[0].args[1])
-            self.assertIn("數據提示", sender.call_args_list[1].args[1])
+            self.assertIn("候選條件，獨立驗證中", sender.call_args_list[0].args[1])
+            self.assertIn("候選條件，獨立驗證中", sender.call_args_list[1].args[1])
             for call in sender.call_args_list:
                 message = call.args[1]
                 self.assertIn("聯賽：測試聯賽", message)
@@ -69,7 +73,7 @@ class CrownGranularNotificationTests(unittest.TestCase):
                 self.assertIn("選擇：大", message)
                 self.assertIn("盤口：2.5", message)
                 self.assertIn("賠率：1.83", message)
-                self.assertIn("命中率：", message)
+                self.assertIn("凍結前歷史發現率：", message)
                 self.assertNotIn("HDC", message)
                 self.assertNotIn("HIL", message)
                 self.assertNotIn("CHL", message)

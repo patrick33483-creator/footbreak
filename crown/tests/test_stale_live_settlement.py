@@ -25,7 +25,7 @@ class StaleLiveSettlementTests(unittest.TestCase):
             "kickoff": "2026-08-01T12:00:00+08:00",
             "code": "HDC", "condition": "-0.5", "side": "H",
             "odds": 1.8, "stake": 1000, "status": "PENDING",
-            "portfolio": "condition_simulation", "strategy": "granular-condition-v1",
+            "portfolio": "crown_independent_validation", "strategy": "independent-validation-v1",
         }
 
     def test_stale_seen_live_uses_strict_exact_official_result(self) -> None:

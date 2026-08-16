@@ -22,6 +22,9 @@ except Exception:
     _KNEE = 0.80
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(HERE)
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
 LEDGER = os.path.join(HERE, "sim_ledger.json")
 STATE = os.path.join(HERE, "notify_state.json")
 ACCURACY_HISTORY = os.path.join(HERE, "accuracy_history.json")
@@ -36,8 +39,8 @@ TOOL = "telegram_bot_api-send-text-message-or-reply"
 
 DEFAULT_WINDOW_MIN = 45.0          # 只通知近期建立嘅注單,避免補發舊注
 MARKET_LABELS = {"HDC": "讓球", "HIL": "入球大細", "CHL": "角球大細"}
-CONDITION_PORTFOLIO = "footbreak_condition_simulation"
-CONDITION_STRATEGY = "granular-condition-v1"
+CONDITION_PORTFOLIO = "footbreak_independent_validation"
+CONDITION_STRATEGY = "independent-validation-v1"
 STATE_LIMIT = 1600
 
 SIDE_TXT = {"H": "主", "A": "客", "D": "和"}
@@ -285,7 +288,11 @@ def _granular_bet(selected, watch):
 
 
 def notify_fresh_granular_conditions(ledger, fresh_events):
-    """Send exactly one best historical-only condition notice per fresh market."""
+    """Send the legacy, non-bet candidate notice in conservative Chinese.
+
+    It is deliberately distinct from committed validation-bet notifications:
+    the wording never presents a historical candidate as a formal bet.
+    """
     from analysis.granular_conditions import _role, notification_opportunities
     history = _granular_history_rows()
     opportunities = notification_opportunities(
@@ -333,9 +340,9 @@ def notify_fresh_granular_conditions(ledger, fresh_events):
             )
             for match in extra
         ]
-        title = "預備提示" if stage == "T-30" else "數據提示"
+        title = "候選條件，獨立驗證中"
         text = "\n".join([
-            f"足破 {title}",
+            f"足破 · {title}",
             f"開賽：{kickoff.astimezone(HKT).strftime('%d/%m %H:%M')} HKT",
             f"聯賽：{esc(league)}",
             f"對賽：{esc(watch.get('home') or '')} vs {esc(watch.get('away') or '')}",
@@ -344,9 +351,10 @@ def notify_fresh_granular_conditions(ledger, fresh_events):
             f"盤口：{esc(selected_line_text)}",
             f"賠率：{float(selected['odds']):.2f}",
             f"主條件：{esc(_public_condition_text(primary['label']))}",
-            f"命中率：{100 * summary['accuracy']:.1f}%（{summary['hits']}/{summary['decided']}）· {esc(primary['odds_tier'])} · {esc(primary['badge'])}",
+            f"凍結前歷史發現率：{100 * summary['accuracy']:.1f}%（{summary['hits']}/{summary['decided']}）· {esc(primary['odds_tier'])}",
+            "獨立驗證率：尚未建立／不構成正式推介",
             *more,
-            "只作數據提示，由你自行決定。",
+            "候選條件，獨立驗證中；未達已驗證，不構成正式推介。",
         ])
         send(text)
         sent_keys.add(key)
@@ -369,7 +377,16 @@ def _future_kickoff(value):
     return kickoff if kickoff > dt.datetime.now(HKT) else None
 
 
-def _condition_bet_message(bet):
+def _condition_prospective(ledger, bet):
+    """Read the frozen cohort's isolated prospective metrics without mutation."""
+    namespace = ledger.get("independent_validation") if isinstance(ledger, dict) else {}
+    conditions = namespace.get("conditions") if isinstance(namespace, dict) else {}
+    frozen = conditions.get(str(bet.get("frozen_condition_signature") or "")) if isinstance(conditions, dict) else {}
+    prospective = frozen.get("prospective") if isinstance(frozen, dict) else {}
+    return prospective if isinstance(prospective, dict) else {}
+
+
+def _condition_bet_message(bet, prospective=None):
     """Return one safe Traditional-Chinese condition-bet message or ``None``."""
     if bet.get("portfolio") != CONDITION_PORTFOLIO or bet.get("strategy") != CONDITION_STRATEGY:
         return None
@@ -389,11 +406,28 @@ def _condition_bet_message(bet):
     if (
         not league or not home or not away or kickoff is None or market not in set(MARKET_LABELS.values())
         or not direction or odds is None or odds <= 1 or not math.isfinite(line)
-        or not math.isfinite(accuracy) or accuracy <= .60 or decided < 10 or hits < 0 or hits > decided
+        or not math.isfinite(accuracy) or accuracy <= .60 or decided < 20 or hits < 0 or hits > decided
     ):
         return None
+    prospective = prospective if isinstance(prospective, dict) else {}
+    prospective_accuracy = prospective.get("accuracy")
+    prospective_hits = int(prospective.get("hits") or 0)
+    prospective_decided = int(prospective.get("decided") or 0)
+    prospective_status = str(prospective.get("status") or "驗證中")
+    passed = prospective_status == "已驗證"
+    title = "已通過獨立驗證" if passed else "候選條件，獨立驗證中"
+    validation_rate = (
+        f"{float(prospective_accuracy) * 100:.1f}%（{prospective_hits}/{prospective_decided}）"
+        if isinstance(prospective_accuracy, (float, int)) else f"—（{prospective_hits}/{prospective_decided}）"
+    )
+    pnl = prospective.get("pnl")
+    roi = prospective.get("roi")
+    metrics = (
+        f" · 前瞻盈虧：HK${float(pnl):+,.0f} · ROI：{float(roi) * 100:+.2f}%"
+        if isinstance(pnl, (float, int)) and isinstance(roi, (float, int)) else ""
+    )
     return "\n".join([
-        "<b>足破 · 模擬倉新注</b>",
+        f"<b>足破 · {title}</b>",
         f"聯賽：{esc(league)}",
         f"主隊：{esc(home)}",
         f"客隊：{esc(away)}",
@@ -402,9 +436,12 @@ def _condition_bet_message(bet):
         f"方向：{esc(direction)}",
         f"盤口：{line:g}",
         f"賠率：{odds:.2f}",
-        f"歷史命中率：{accuracy * 100:.1f}%（{hits}/{decided}）",
-        "模擬注碼：HK$1,000",
-        "只作模擬記錄，不作真實投注。",
+        f"凍結的歷史發現率：{accuracy * 100:.1f}%（{hits}/{decided}）",
+        f"獨立驗證率：{validation_rate} · 狀態：{prospective_status}{metrics}",
+        (
+            "獨立驗證注碼：HK$250；已通過獨立驗證，仍只作模擬追蹤。"
+            if passed else "獨立驗證注碼：HK$250；未達已驗證，不構成正式推介。"
+        ),
     ])
 
 
@@ -435,7 +472,7 @@ def notify_pending_condition_bets(ledger, bet_ids=None):
         bid = str(bet.get("bet_id") or "")
         if (requested is not None and bid not in requested) or bid in sent_ids:
             continue
-        text = _condition_bet_message(bet)
+        text = _condition_bet_message(bet, _condition_prospective(ledger, bet))
         if text is None:
             continue
         send(text)

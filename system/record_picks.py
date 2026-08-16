@@ -19,6 +19,7 @@ from analysis.learning_store import LearningStore
 from condition_portfolio import (
     AUDIT_LIMIT, DECISION_STAGE, LOG_LIMIT, STARTING_BANKROLL, evaluate_new_t5,
 )
+from analysis.independent_validation import ensure_namespace
 from settle import condition_bets, recompute
 
 LEDGER = os.path.join(HERE, "sim_ledger.json")
@@ -42,6 +43,7 @@ def load():
     data.setdefault("bets", [])
     data.setdefault("log", [])
     data.setdefault("stats", {})
+    ensure_namespace(data, "footbreak")
     # Retired state stays untouched until the explicit reset, but active code
     # does not create, display, settle, or otherwise read it.
     data["log"] = [entry for entry in data["log"] if isinstance(entry, dict)][-LOG_LIMIT:]
@@ -285,7 +287,7 @@ def _condition_change(bet):
     line = bet.get("selected_line")
     line_text = f" {float(line):g}" if isinstance(line, (int, float)) else ""
     return (
-        f"{bet.get('home') or '—'} 對 {bet.get('away') or '—'} — 條件模擬注："
+        f"{bet.get('home') or '—'} 對 {bet.get('away') or '—'} — 獨立驗證注："
         f"{bet.get('market_label') or '—'} {bet.get('selected_role') or '—'}{line_text}，"
         f"賠率 {float(bet.get('odds') or 0):.2f}，歷史命中率 {rate:.1f}%（{hits}/{decided}）"
     )
@@ -375,10 +377,21 @@ def sync(preds_file="predictions.json"):
         # the evaluator.
         if stage != BET_STAGE or not t5_safe_to_evaluate:
             continue
-        created, audit = evaluate_new_t5(ledger, watch, history_path=Path(ACCURACY_HISTORY))
-        audit_rows = ledger.setdefault("condition_simulation_audit", [])
+        try:
+            history_payload = json.loads(Path(ACCURACY_HISTORY).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            history_payload = {}
+        cached_ranking = (
+            ((history_payload.get("stats") or {}).get("granular_conditions") or {}).get("ranking")
+            if isinstance(history_payload, dict) else None
+        )
+        created, audit = evaluate_new_t5(
+            ledger, watch, history_path=Path(ACCURACY_HISTORY),
+            ranking=cached_ranking if isinstance(cached_ranking, list) else None,
+        )
+        audit_rows = ledger["independent_validation"].setdefault("audit", [])
         audit_rows.extend({"ts": now, "match_id": match_id, **row} for row in audit)
-        ledger["condition_simulation_audit"] = audit_rows[-AUDIT_LIMIT:]
+        ledger["independent_validation"]["audit"] = audit_rows[-AUDIT_LIMIT:]
         if created:
             ledger["bets"].extend(created)
             changes.extend(_condition_change(bet) for bet in created)

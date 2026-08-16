@@ -12,7 +12,7 @@ from crown.state import load_ledger, save_ledger
 
 
 class ResetConditionSimulationTests(unittest.TestCase):
-    def test_confirmation_is_exact_and_reset_clears_all_retired_state(self) -> None:
+    def test_confirmation_is_exact_and_migration_preserves_historical_archive(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             config = replace(settings(), state_dir=root / "state", web_root=root / "web")
@@ -34,17 +34,23 @@ class ResetConditionSimulationTests(unittest.TestCase):
                 result = reset(CONFIRMATION)
             dashboard.assert_called_once_with(config)
             ledger = load_ledger(config)
-        self.assertEqual(result, {
-            "ok": True, "bankroll": 50_000.0, "cleared_main_bets": 1, "legacy_keys_removed": True,
-        })
-        self.assertEqual(ledger["bankroll"], 50_000.0)
-        self.assertEqual(ledger["bets"], [])
-        self.assertEqual(ledger["stats"], {})
+        self.assertEqual(result["ok"], True)
+        self.assertEqual(result["bankroll"], 50_000.0)
+        self.assertEqual(result["cleared_main_bets"], 0)
+        self.assertFalse(result["legacy_keys_removed"])
+        self.assertTrue(result["migration_only"])
+        self.assertEqual(ledger["bankroll"], 123)
+        self.assertEqual(ledger["bets"], [{"bet_id": "old"}])
+        self.assertEqual(ledger["stats"], {"pnl": 9})
+        namespace = ledger["independent_validation"]
+        self.assertEqual(namespace["system"], "crown")
+        self.assertTrue(namespace["historical_discovery_archive"]["read_only"])
+        self.assertEqual(namespace["historical_discovery_archive"]["legacy_bet_count"], 1)
         for key in (
             "shadow_bets", "shadow_stats", "shadow_comparison", "handicap_world",
             "handicap_world_audit", "handicap_world_stats", "condition_simulation_audit",
         ):
-            self.assertNotIn(key, ledger)
+            self.assertIn(key, ledger)
 
 
 if __name__ == "__main__":

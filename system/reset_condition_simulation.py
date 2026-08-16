@@ -16,7 +16,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from condition_portfolio import LOG_LIMIT, STARTING_BANKROLL
+from condition_portfolio import STARTING_BANKROLL
+from analysis.independent_validation import ensure_namespace
 
 HERE = Path(__file__).resolve().parent
 LEDGER = Path(os.environ.get("FOOTBREAK_LEDGER_PATH", HERE / "sim_ledger.json"))
@@ -61,32 +62,14 @@ def _save_ledger(payload: dict[str, Any]) -> None:
 
 
 def reset(confirmation: str, post_deploy_confirmation: str | None = None) -> dict[str, object]:
-    """Clear only Footbreak simulation state after exact manual confirmation."""
+    """Compatibility entry point: destructive historical resets are retired."""
     if confirmation != CONFIRMATION:
         raise ValueError("exact_confirmation_required")
     if post_deploy_confirmation != POST_DEPLOY_CONFIRMATION:
         raise ValueError("post_deploy_confirmation_required")
     with ledger_lock():
         ledger = _read_ledger()
-        cleared_main_bets = len(ledger.get("bets") or [])
-        retired_present = any(
-            key in ledger for key in ("shadow_bets", "shadow_stats", "shadow_comparison")
-        )
-        ledger["bankroll"] = STARTING_BANKROLL
-        ledger["bets"] = []
-        ledger["stats"] = {}
-        # These keys were simulation-only; no predictions, historical grades,
-        # learning DB, result cache, or provider material is changed.
-        for key in (
-            "shadow_bets", "shadow_stats", "shadow_comparison",
-            "condition_simulation_audit",
-        ):
-            ledger.pop(key, None)
-        ledger["log"] = [{
-            "ts": datetime.now(HKT).isoformat(timespec="seconds"),
-            "kind": "條件模擬倉重設",
-            "cleared_main_bets": cleared_main_bets,
-        }][-LOG_LIMIT:]
+        namespace = ensure_namespace(ledger, "footbreak")
         _save_ledger(ledger)
 
     # The writer uses an atomic replacement. It reads existing local data only.
@@ -95,8 +78,10 @@ def reset(confirmation: str, post_deploy_confirmation: str | None = None) -> dic
     return {
         "ok": True,
         "bankroll": STARTING_BANKROLL,
-        "cleared_main_bets": cleared_main_bets,
-        "retired_shadow_state_removed": retired_present,
+        "cleared_main_bets": 0,
+        "retired_shadow_state_removed": False,
+        "migration_only": True,
+        "validation_started_at": namespace["validation_started_at"],
     }
 
 

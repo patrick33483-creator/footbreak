@@ -8,9 +8,15 @@ from typing import Any
 
 from analysis.learning_store import LearningStore
 
-from .common import HKT, iso_hkt, parse_time
+from .common import HKT, iso_hkt, parse_time, read_json
 from .config import Settings
 from .condition_portfolio import FIXED_STAKE, STARTING_BANKROLL, STRATEGY, evaluate_new_t5
+from analysis.independent_validation import (
+    ensure_namespace,
+    portfolio_name,
+    recompute_namespace,
+    validation_bets,
+)
 
 STAGES = {"首預": 1, "T-30": 2, "T-5": 3}
 # This deliberately is not part of ``STAGES``.  It is a post-hoc audit record,
@@ -183,8 +189,13 @@ def _market_predictions(
             "probability_observed_at": best.get("probability_observed_at"),
             # Keep the historical learning-source field backward compatible;
             # quote_source is the provider evidence for the selected price.
-            "source": best.get("reference") or "pinnapi_exact_line",
-            "quote_source": best.get("source") or best.get("reference") or "pinnapi_exact_line",
+            # A missing provenance must remain missing.  In particular, do not
+            # synthesize ``pinnapi_exact_line`` here: independent validation
+            # may only admit a selection with an actually persisted source
+            # observation, and the downstream source-evidence gate fails
+            # closed when this field is empty.
+            "source": best.get("reference") or best.get("source"),
+            "quote_source": best.get("source") or best.get("reference"),
             "provider": best.get("provider") or "Crown",
             "quote_status": best.get("quote_status"),
             "quote_fallback_source": best.get("quote_fallback_source"),
@@ -275,12 +286,7 @@ def condition_bets(ledger: dict[str, Any]) -> list[dict[str, Any]]:
     Old ledger rows remain readable until the explicit reset is performed, but
     must not appear in the new portfolio's statistics or settlement queue.
     """
-    return [
-        bet for bet in (ledger.get("bets") or [])
-        if isinstance(bet, dict)
-        and bet.get("portfolio") == "condition_simulation"
-        and bet.get("strategy") == STRATEGY
-    ]
+    return validation_bets(ledger, "crown")
 
 
 def _record_learning_snapshot(
@@ -307,6 +313,9 @@ def sync_prediction(ledger: dict[str, Any], prediction: dict[str, Any], config: 
     """Persist a stage and create only newly-observed eligible T-5 condition bets."""
     ledger.setdefault("bets", [])
     ledger.setdefault("watch", {})
+    # The cutover only appends this namespace.  Legacy bet/stat rows remain
+    # untouched and cannot enter the active validation flow.
+    ensure_namespace(ledger, "crown")
     stage = prediction.get("stage")
     if stage not in STAGES:
         return []
@@ -334,11 +343,6 @@ def sync_prediction(ledger: dict[str, Any], prediction: dict[str, Any], config: 
         row for row in stage_rows
         if isinstance(row, dict) and row.get("stage") == stage
     ), None)
-    existing_had_quote = bool(
-        existing
-        and existing.get("odds_status") == "available"
-        and existing.get("market_predictions")
-    )
     snapshot = _snapshot(prediction, stage)
     learning = _record_learning_snapshot(prediction, snapshot)
     if learning:
@@ -360,29 +364,28 @@ def sync_prediction(ledger: dict[str, Any], prediction: dict[str, Any], config: 
         ))
     else:
         existing.update(snapshot)
-    # A T-5 that first persisted with no auditable selected quote stays due.
-    # When a later, still-pre-kickoff retry supplies that evidence, it may be
-    # evaluated exactly once as a newly eligible decision.  It is the same
-    # immutable stage row (updated in place), never a fabricated/backfilled
-    # second T-5 stage.  Existing priced T-5 stages remain idempotent.
-    retry_with_new_quote = (
-        stage == "T-5"
-        and existing is not None
-        and not existing_had_quote
-        and snapshot.get("odds_status") == "available"
-        and bool(snapshot.get("market_predictions"))
-    )
-    if stage != "T-5" or (existing is not None and not retry_with_new_quote):
+    # Validation admission is singular: only the very first persisted native
+    # pre-kickoff T-5 may create a bet.  A later quote refresh can enrich the
+    # prediction record but is a replay, never a second admission chance.
+    if stage != "T-5" or existing is not None:
         return []
-    created, audit = evaluate_new_t5(ledger, watch, config)
-    snapshot["condition_simulation"] = {"strategy": STRATEGY, "stage": "T-5", "audit": audit}
-    audit_rows = ledger.setdefault("condition_simulation_audit", [])
+    history = read_json(config.state_dir / "prediction_history.json", {})
+    cached_ranking = (
+        ((history.get("stats") or {}).get("granular_conditions") or {}).get("ranking")
+        if isinstance(history, dict) else None
+    )
+    created, audit = evaluate_new_t5(
+        ledger, watch, config,
+        ranking=cached_ranking if isinstance(cached_ranking, list) else None,
+    )
+    snapshot["independent_validation"] = {"strategy": STRATEGY, "stage": "T-5", "audit": audit}
+    audit_rows = ledger["independent_validation"].setdefault("audit", [])
     audit_rows.extend([{"match_id": match_id, **item} for item in audit])
-    ledger["condition_simulation_audit"] = audit_rows[-1600:]
+    ledger["independent_validation"]["audit"] = audit_rows[-1600:]
     ledger["bets"].extend(created)
     if created:
         ledger.setdefault("log", []).extend([
-            {"ts": bet["created_at"], "action": "條件模擬注建立", "bet_id": bet["bet_id"],
+            {"ts": bet["created_at"], "action": "獨立驗證注建立", "bet_id": bet["bet_id"],
              "match_id": match_id, "market": bet["market_label"], "condition": bet["condition_label"]}
             for bet in created
         ])
@@ -453,13 +456,11 @@ def recompute_stats(ledger: dict[str, Any], config: Settings) -> dict[str, Any]:
     """Compute statistics for the sole fixed-stake condition portfolio."""
     del config
     ledger.setdefault("bets", [])
-    bets = condition_bets(ledger)
-    ledger["bankroll"] = STARTING_BANKROLL
-    base = _portfolio_stats(bets, STARTING_BANKROLL)
-    base.update({
-        "strategy": STRATEGY, "starting_bankroll": STARTING_BANKROLL,
-        "fixed_stake": FIXED_STAKE, "entry_rule": "T-5 only; historical GRADED condition accuracy >60%; decided >=10",
-    })
+    base = recompute_namespace(ledger, "crown")
+    base["entry_rule"] = (
+        "首次持久化原生賽前 T-5；歷史發現期 decided >=20、命中率 >60%；"
+        "HK$250 每注、每場最多兩市場／HK$500"
+    )
     ledger["stats"] = base
     # Retired keys are tolerated if read from old state but are never created,
     # displayed, settled, or included in statistics.
@@ -479,7 +480,7 @@ def market_entry_thresholds(
     this function never loosens the configured production floor.
     """
     settled = [
-        bet for bet in (ledger.get("bets") or [])
+        bet for bet in condition_bets(ledger)
         if bet.get("status") == "SETTLED" and str(bet.get("code") or "") == code
     ]
     decided = [bet for bet in settled if bet.get("result") != "Refunded"]
