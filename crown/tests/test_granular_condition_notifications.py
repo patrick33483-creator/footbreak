@@ -26,8 +26,10 @@ def history(stage):
 
 
 def ledger():
-    kickoff = datetime(2099, 8, 1, 20, tzinfo=HKT)
-    stages = [{"stage": name, "ts": (kickoff - timedelta(minutes=minutes + 1)).isoformat(),
+    now = datetime.now(HKT).replace(microsecond=0)
+    kickoff = now + timedelta(minutes=5)
+    stages = [{"stage": name, "match_id": "future", "kickoff_hkt": kickoff.isoformat(),
+               "ts": (kickoff - timedelta(minutes=minutes + 1)).isoformat(),
                "market_predictions": [{"code": "HIL", "side": "H", "line": 2.5, "odds": 1.83}]}
               for name, minutes in (("首預", 90), ("T-30", 30), ("T-5", 5))]
     return {"watch": {"future": {"match_id": "future", "kickoff": kickoff.isoformat(),
@@ -37,16 +39,21 @@ def ledger():
 
 
 class CrownGranularNotificationTests(unittest.TestCase):
-    def test_t30_t5_are_independent_and_no_backfill(self):
+    def _config_with_history(self, directory):
+        config = replace(settings(), state_dir=Path(directory), telegram_enabled=False)
+        (config.state_dir / "prediction_history.json").write_text(
+            json.dumps({"rows": history("T-30") + history("T-5")}),
+            encoding="utf-8",
+        )
+        return config
+
+    def test_t30_t5_are_independent_and_recent_unacknowledged_rows_recover(self):
         with tempfile.TemporaryDirectory() as directory:
-            config = replace(settings(), state_dir=Path(directory), telegram_enabled=False)
-            (config.state_dir / "prediction_history.json").write_text(
-                json.dumps({"rows": history("T-30") + history("T-5")}), encoding="utf-8")
+            config = self._config_with_history(directory)
             with patch("crown.notify._send") as sender:
-                self.assertEqual(notify_new(ledger(), config, []), 0)
-                self.assertEqual(notify_new(ledger(), config, [{"match_id": "future", "stage": "T-30"}]), 1)
+                self.assertEqual(notify_new(ledger(), config, []), 2)
                 self.assertEqual(notify_new(ledger(), config, [{"match_id": "future", "stage": "T-30"}]), 0)
-                self.assertEqual(notify_new(ledger(), config, [{"match_id": "future", "stage": "T-5"}]), 1)
+                self.assertEqual(notify_new(ledger(), config, [{"match_id": "future", "stage": "T-30"}]), 0)
             self.assertEqual(sender.call_count, 2)
             self.assertIn("預備提示", sender.call_args_list[0].args[1])
             self.assertIn("數據提示", sender.call_args_list[1].args[1])
@@ -63,11 +70,79 @@ class CrownGranularNotificationTests(unittest.TestCase):
                 self.assertNotIn("CHL", message)
                 self.assertNotRegex(message, r"\b[ABC](?:→[ABC])+\b")
 
+    def test_timeout_retries_once_on_next_tick_without_a_fresh_handoff(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = self._config_with_history(directory)
+            current = ledger()
+            current["watch"]["future"]["stages"] = [
+                stage for stage in current["watch"]["future"]["stages"]
+                if stage["stage"] == "T-5"
+            ]
+            with patch("crown.notify._send", side_effect=TimeoutError("telegram timeout")):
+                with self.assertRaises(TimeoutError):
+                    notify_new(current, config, [{"match_id": "future", "stage": "T-5"}])
+            with patch("crown.notify._send", return_value=True) as sender:
+                self.assertEqual(notify_new(current, config, []), 1)
+                self.assertEqual(notify_new(current, config, []), 0)
+            self.assertEqual(sender.call_count, 1)
+
+    def test_fresh_and_recovery_candidates_are_deduplicated(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = self._config_with_history(directory)
+            current = ledger()
+            current["watch"]["future"]["stages"] = [
+                stage for stage in current["watch"]["future"]["stages"]
+                if stage["stage"] == "T-5"
+            ]
+            with patch("crown.notify._send", return_value=True) as sender:
+                self.assertEqual(
+                    notify_new(current, config, [{"match_id": "future", "stage": "T-5"}]),
+                    1,
+                )
+            self.assertEqual(sender.call_count, 1)
+
+    def test_post_kickoff_and_stale_native_stage_never_replay(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = self._config_with_history(directory)
+            post_kickoff = ledger()
+            now = datetime.now(HKT).replace(microsecond=0)
+            watch = post_kickoff["watch"]["future"]
+            watch["kickoff"] = watch["kickoff_hkt"] = (now - timedelta(minutes=1)).isoformat()
+            watch["stages"] = [stage for stage in watch["stages"] if stage["stage"] == "T-5"]
+            watch["stages"][0]["kickoff_hkt"] = watch["kickoff_hkt"]
+            watch["stages"][0]["ts"] = (now - timedelta(minutes=6)).isoformat()
+
+            stale = ledger()
+            stale_watch = stale["watch"]["future"]
+            stale_watch["stages"] = [
+                stage for stage in stale_watch["stages"] if stage["stage"] == "T-30"
+            ]
+            stale_watch["stages"][0]["ts"] = (now - timedelta(minutes=46)).isoformat()
+            with patch("crown.notify._send") as sender:
+                self.assertEqual(notify_new(post_kickoff, config, []), 0)
+                self.assertEqual(notify_new(stale, config, []), 0)
+            sender.assert_not_called()
+
+    def test_post_hoc_recovered_stage_never_notifies(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = self._config_with_history(directory)
+            recovered = ledger()
+            recovered["watch"]["future"]["stages"] = [
+                stage for stage in recovered["watch"]["future"]["stages"]
+                if stage["stage"] == "T-5"
+            ]
+            recovered["watch"]["future"]["stages"][0]["post_hoc_backfill"] = True
+            recovered["watch"]["future"]["stages"][0]["exclude_from_telegram"] = True
+            with patch("crown.notify._send") as sender:
+                self.assertEqual(
+                    notify_new(recovered, config, [{"match_id": "future", "stage": "T-5"}]),
+                    0,
+                )
+            sender.assert_not_called()
+
     def test_missing_league_fails_closed(self):
         with tempfile.TemporaryDirectory() as directory:
-            config = replace(settings(), state_dir=Path(directory), telegram_enabled=False)
-            (config.state_dir / "prediction_history.json").write_text(
-                json.dumps({"rows": history("T-5")}), encoding="utf-8")
+            config = self._config_with_history(directory)
             current = ledger()
             current["watch"]["future"]["league"] = ""
             with patch("crown.notify._send") as sender:

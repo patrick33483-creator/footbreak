@@ -5,6 +5,7 @@ import json
 import math
 import re
 import urllib.request
+from datetime import timedelta
 from typing import Any
 
 from .common import HKT, iso_hkt, now_hkt, parse_time, read_json, write_json_atomic
@@ -15,6 +16,10 @@ from analysis.three_stage_consensus import calculate_three_stage_consensus
 
 ODDS_TIER_THRESHOLD = 1.70
 MARKET_LABELS = {"HDC": "讓球", "HIL": "入球大細", "CHL": "角球大細"}
+NOTIFICATION_STAGE_MAX_AGE = {
+    "T-30": timedelta(minutes=45),
+    "T-5": timedelta(minutes=15),
+}
 
 
 def _public_condition_text(value: Any) -> str:
@@ -325,16 +330,96 @@ def _fresh_signal_events(
     return events
 
 
+def _native_recent_condition_events(
+    ledger: dict[str, Any], fresh_events: list[Any] | None,
+) -> list[dict[str, str]]:
+    """Return bounded native stage events for delivery or transport recovery.
+
+    A stage is eligible only when its own persisted timestamp is auditable,
+    pre-kickoff, and still recent enough to be actionable.  Recovery is
+    intentionally limited to the same currently upcoming window as delivery:
+    this is not a history/backfill scan.  The caller's durable signal key
+    remains the acknowledgement authority.
+    """
+    watches = ledger.get("watch") or {}
+    if not isinstance(watches, dict):
+        return []
+    now = now_hkt()
+    requested: list[tuple[str, str]] = []
+    for item in fresh_events or []:
+        if not isinstance(item, dict):
+            continue
+        requested.append((
+            str(item.get("match_id") or "").strip(),
+            str(item.get("stage") or "").strip(),
+        ))
+    # A timeout leaves no acknowledgement.  Reconsider only the short,
+    # native T-30/T-5 action window on later ticks.
+    requested.extend(
+        (str(match_id).strip(), stage_name)
+        for match_id in watches
+        for stage_name in NOTIFICATION_STAGE_MAX_AGE
+    )
+
+    output: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for match_id, stage_name in requested:
+        event_key = (match_id, stage_name)
+        if event_key in seen or stage_name not in NOTIFICATION_STAGE_MAX_AGE:
+            continue
+        seen.add(event_key)
+        watch = watches.get(match_id)
+        if not isinstance(watch, dict):
+            continue
+        kickoff = parse_time(str(watch.get("kickoff_hkt") or watch.get("kickoff") or ""))
+        if kickoff is None or kickoff <= now:
+            continue
+        rows = [
+            row for row in (watch.get("stages") or [])
+            if isinstance(row, dict) and row.get("stage") == stage_name
+        ]
+        if len(rows) != 1:
+            continue
+        stage = rows[0]
+        stage_kickoff = parse_time(str(stage.get("kickoff_hkt") or ""))
+        stage_at = parse_time(str(stage.get("ts") or ""))
+        if (
+            stage.get("post_hoc_backfill")
+            or stage.get("exclude_from_telegram")
+            or str(stage.get("match_id") or "").strip() != match_id
+            or stage_kickoff is None
+            or stage_kickoff != kickoff
+            or stage_at is None
+            or stage_at > now
+            or stage_at >= kickoff
+            or now - stage_at > NOTIFICATION_STAGE_MAX_AGE[stage_name]
+        ):
+            continue
+        selected = [
+            row for row in (stage.get("market_predictions") or [])
+            if isinstance(row, dict)
+            and str(row.get("code") or "") in MARKET_LABELS
+            and _finite_positive(row.get("odds")) is not None
+            and _finite_positive(row.get("odds")) > 1
+        ]
+        if not selected:
+            continue
+        output.append({"match_id": match_id, "stage": stage_name})
+    return output
+
+
 def notify_new(
     ledger: dict[str, Any],
     config: Settings,
     fresh_t5_predictions: list[Any] | None = None,
 ) -> int:
-    """Send only fresh persisted T-30/T-5 condition opportunities.
+    """Send recent native T-30/T-5 condition opportunities exactly once.
 
-    Despite the retained argument name for callers on an old deployment, the
-    accepted event is now ``{"match_id": ..., "stage": "T-30"|"T-5"}``.
-    There is deliberately no recovery scan/backfill over watch history.
+    ``fresh_t5_predictions`` supplies just-persisted events.  An
+    unacknowledged notification may also be retried from the same live watch
+    data after a transport failure, but only before kickoff and inside the
+    short per-stage action window.  Historical, recovered, post-hoc, malformed
+    and stale rows fail closed.
     """
     from analysis.granular_conditions import _role, notification_opportunities
     with state_lock(config):
@@ -347,8 +432,11 @@ def notify_new(
         )
         history_rows = [row for row in history_rows if isinstance(row, dict)]
         seen_signals = set(state["signals"])
+        eligible_events = _native_recent_condition_events(
+            ledger, fresh_t5_predictions,
+        )
         for item in notification_opportunities(
-            history_rows, ledger.get("watch") or {}, fresh_t5_predictions or [],
+            history_rows, ledger.get("watch") or {}, eligible_events,
             system="crown",
         ):
             watch, selected, stage = item["watch"], item["selected"], item["stage"]

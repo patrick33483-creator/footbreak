@@ -1896,6 +1896,13 @@ class CrownSafetyTests(unittest.TestCase):
             watch = {
                 "match_id": "single", "kickoff_hkt": card["kickoff_hkt"],
                 "kickoff": card["kickoff_hkt"], "league": "L", "home": "Home", "away": "Away",
+                "stages": [{
+                    "stage": "T-5", "match_id": "single",
+                    "kickoff_hkt": card["kickoff_hkt"], "ts": now.isoformat(),
+                    "market_predictions": [{
+                        "code": "HDC", "side": "H", "line": -0.25, "odds": 1.91,
+                    }],
+                }],
             }
             opportunity = {
                 "watch": watch, "selected": {"line": -0.25, "odds": 1.91, "side": "H"},
