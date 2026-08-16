@@ -73,6 +73,14 @@ jobs:
           print(json.dumps({
             "notification_warning_count": text.count("notification_warning"),
             "telegram_error_count": text.count("telegram_"),
+            "telegram_HTTPError": text.count("telegram_HTTPError"),
+            "telegram_URLError": text.count("telegram_URLError"),
+            "telegram_TimeoutError": text.count("telegram_TimeoutError"),
+            "telegram_KeyError": text.count("telegram_KeyError"),
+            "telegram_TypeError": text.count("telegram_TypeError"),
+            "telegram_ValueError": text.count("telegram_ValueError"),
+            "telegram_RuntimeError": text.count("telegram_RuntimeError"),
+            "telegram_OSError": text.count("telegram_OSError"),
             "failed_tick_count": text.count("\"ok\": false")
           }, sort_keys=True))'"'"'
             '
