@@ -41,3 +41,17 @@ jobs:
                   --ppid "$child" || true
               done
             '
+
+      - name: 只讀取得皇冠 Telegram 通知摘要
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          printf -v remote_command \
+            'sudo env CROWN_NOTIFY_AUDIT_HOURS=%q PYTHONPATH=%q bash -c %q' \
+            "12" "/opt/footbreak" \
+            'set -a; . /etc/footbreak-crown.env; set +a; exec /opt/footbreak/.venv/bin/python3 -'
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" "$remote_command" \
+            < deploy/audit-crown-notification-state.py
