@@ -35,15 +35,10 @@ jobs:
               sudo systemctl start footbreak-tick.timer
               sudo systemctl start footbreak-sweep.timer
               sudo systemctl start footbreak-settle.timer
-              sudo systemctl start crown-tick.timer
-              sudo systemctl start crown-sweep.timer
-              sudo systemctl start crown-settle.timer
             }
             trap restart_timers EXIT
             sudo systemctl stop footbreak-tick.timer footbreak-sweep.timer footbreak-settle.timer
-            sudo systemctl stop crown-tick.timer crown-sweep.timer crown-settle.timer
             sudo systemctl stop footbreak-tick.service footbreak-sweep.service footbreak-settle.service || true
-            sudo systemctl stop crown-tick.service crown-sweep.service crown-settle.service || true
             sudo rm -f /run/footbreak-t5-priority
             for i in $(seq 1 120); do
               sudo flock -n /var/lock/footbreak.lock true && break
@@ -83,7 +78,8 @@ jobs:
             fi
             python3 -c "import json; d=json.load(open(\"/var/www/crown/data.json\", encoding=\"utf-8\")); assert d.get(\"schema_version\") == \"crown-dashboard-v2\"; l=d.get(\"ledger\") or {}; print(\"Crown direct OK\", {\"condition_simulation_bets\": len(l.get(\"bets\") or []), \"strategy\": (l.get(\"stats\") or {}).get(\"strategy\"), \"result_sync\": (d.get(\"prediction_history\") or {}).get(\"result_sync\")})"
             echo "=== Prediction-history production assertions ==="
-            sudo /opt/footbreak/.venv/bin/python3 \
+            cd /opt/footbreak
+            sudo env PYTHONPATH=/opt/footbreak /opt/footbreak/.venv/bin/python3 \
               /opt/footbreak/deploy/verify-result-integrity.py
           ' > /tmp/settlement.log 2>&1
           settlement_rc=$?

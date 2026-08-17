@@ -355,6 +355,9 @@ class ResultSourceTests(unittest.TestCase):
             "systemctl stop footbreak-tick.timer footbreak-sweep.timer footbreak-settle.timer",
             workflow,
         )
+        self.assertNotIn("systemctl stop crown-tick.timer", workflow)
+        self.assertNotIn("systemctl stop crown-tick.service", workflow)
+        self.assertIn("PYTHONPATH=/opt/footbreak", workflow)
         self.assertIn(
             "systemctl stop footbreak-tick.service footbreak-sweep.service footbreak-settle.service",
             workflow,
@@ -362,7 +365,6 @@ class ResultSourceTests(unittest.TestCase):
         self.assertIn("rm -f /run/footbreak-t5-priority", workflow)
         self.assertIn('/var/www/crown/data.json', workflow)
         self.assertNotIn('/var/www/footbreak-crown/data.json', workflow)
-        self.assertIn("systemctl stop crown-tick.service", workflow)
         deploy_workflow = Path(
             SYSTEM_DIR.parent, ".github", "workflows", "deploy.yml"
         ).read_text(encoding="utf-8")

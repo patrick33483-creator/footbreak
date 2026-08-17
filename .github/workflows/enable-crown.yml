@@ -37,7 +37,7 @@ jobs:
         run: |
           ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=20 \
             "$DEPLOY_USER@$DEPLOY_HOST" \
-            'sudo systemctl start crown-sweep.service; sudo systemctl start crown-tick.service'
+            'sudo systemctl start crown-tick.service; sudo systemctl start --no-block crown-sweep.service'
 
       - name: 完整健康檢查
         env:
