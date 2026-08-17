@@ -37,4 +37,7 @@ if ! flock -n 9; then
 fi
 
 cd "$APP_DIR"
-"$PYTHON" -m crown.run "$MODE"
+# Keep the non-blocking lock owned by this wrapper while Python runs, but do
+# not let fd 9 cross the exec boundary. Provider helpers spawned by Python
+# therefore cannot keep a stale runner lock alive after the service is killed.
+"$PYTHON" -m crown.run "$MODE" 9>&-

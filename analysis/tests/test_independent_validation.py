@@ -9,8 +9,10 @@ ROOT = Path(__file__).resolve().parents[2]
 SYSTEM = ROOT / 'system'
 if str(SYSTEM) not in sys.path: sys.path.insert(0, str(SYSTEM))
 from analysis.independent_validation import (
-    FIXED_STAKE, FIXTURE_STAKE_CAP, ensure_namespace, prospective_metrics,
-    recompute_namespace, validation_bets,
+    DIAGNOSTIC_EVALUATION_LIMIT, DIAGNOSTIC_LABELS, FIXED_STAKE,
+    FIXTURE_STAKE_CAP, ensure_namespace, prospective_metrics,
+    public_diagnostics, record_evaluation_diagnostics, recompute_namespace,
+    validation_bets,
 )
 import condition_portfolio as footbreak
 
@@ -112,5 +114,47 @@ class IndependentValidationTests(unittest.TestCase):
         self.assertEqual((push['decided'], push['pushes'], push['accuracy']), (0, 1, None))
         half = prospective_metrics([{'status': 'SETTLED', 'result': 'Half Won', 'stake': 250, 'odds': 2, 'pnl': 125}])
         self.assertEqual((half['hits'], half['pnl']), (1, 125))
+
+    def test_diagnostics_are_bounded_replay_safe_and_publicly_chinese(self):
+        ledger = {'bets': []}
+        namespace = ensure_namespace(ledger, 'footbreak', now='2026-08-16T10:00:00+08:00')
+        rejected = [{'market': 'HDC', 'status': 'SKIPPED',
+                     'reason': 'selected_odds_invalid_or_missing'}]
+        record_evaluation_diagnostics(namespace, 'fixture-1', 'T-5', rejected,
+                                      now='2026-08-16T10:01:00+08:00')
+        # A replay replaces exactly the same fixture+market+stage decision.
+        record_evaluation_diagnostics(namespace, 'fixture-1', 'T-5', rejected,
+                                      now='2026-08-16T10:02:00+08:00')
+        public = public_diagnostics(namespace)
+        self.assertEqual(public['evaluated'], 1)
+        self.assertEqual(public['counts']['selected_quote_invalid'], 1)
+        self.assertIn('入選盤口', public['labels']['selected_quote_invalid'])
+        self.assertEqual(public['labels'], DIAGNOSTIC_LABELS)
+        self.assertNotIn('evaluations', public)
+
+        for number in range(DIAGNOSTIC_EVALUATION_LIMIT + 3):
+            record_evaluation_diagnostics(
+                namespace, f'fixture-{number + 2}', 'T-5',
+                [{'market': 'HDC', 'status': 'SKIPPED', 'reason': 'no_granular_match'}],
+                now='2026-08-16T10:03:00+08:00',
+            )
+        self.assertLessEqual(
+            len(namespace['diagnostics']['evaluations']),
+            DIAGNOSTIC_EVALUATION_LIMIT,
+        )
+        self.assertEqual(public_diagnostics(namespace)['evaluated'], DIAGNOSTIC_EVALUATION_LIMIT)
+
+    def test_native_t5_records_zero_bet_granular_mismatch_diagnostic(self):
+        ledger = {'bets': []}
+        mismatched = candidate()
+        mismatched['selected_line'] = -.5
+        with patch.object(footbreak, 'match_upcoming', return_value={'future': [mismatched]}):
+            made, audit = footbreak.evaluate_new_t5(
+                ledger, watch(), None, ranking=[mismatched],
+            )
+        self.assertEqual(made, [])
+        self.assertEqual(audit[0]['reason'], 'no_granular_match')
+        public = public_diagnostics(ledger['independent_validation'])
+        self.assertEqual(public['counts']['no_granular_match'], 1)
 
 if __name__ == '__main__': unittest.main()

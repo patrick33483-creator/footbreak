@@ -1539,6 +1539,15 @@ function renderLedger() {
   </div>`;
   h += `<div class="card history-note"><h2 class="card-h">舊歷史發現期 <span class="sub">唯讀封存，不混入獨立驗證盈虧、回報率、命中率或本金</span></h2>
     <p class="mx-note">摘要：已保留舊注單 ${numeric(archive.legacy_bet_count) == null ? '—' : archive.legacy_bet_count} 筆；舊帳本本金 ${archive.legacy_bankroll == null ? '—' : money(archive.legacy_bankroll)}。凍結條件會顯示當時的「歷史發現 x/y」，其後的驗證結果不會回寫該基線。</p></div>`;
+  const diagnostics = validation.diagnostics || {}, diagnosticLabels = diagnostics.labels || {}, diagnosticCounts = diagnostics.counts || {};
+  const diagnosticRows = Object.keys(diagnosticLabels).map((code) => ({
+    label: diagnosticLabels[code], count: numeric(diagnosticCounts[code]) || 0,
+  })).filter((row) => row.count > 0);
+  h += `<div class="card"><h2 class="card-h">建立診斷 <span class="sub">最近 ${numeric(diagnostics.window_limit) || 0} 個原生 T-5 市場評估；只顯示彙總，不含供應商原始資料</span></h2>${
+    diagnosticRows.length
+      ? `<div class="rule-grid">${diagnosticRows.map((row) => `<div><b>${esc(row.label)}</b><span>${row.count} 次</span></div>`).join('')}</div>`
+      : '<div class="empty2">暫未有可顯示的原生 T-5 市場評估診斷。</div>'
+  }</div>`;
   if (s.n_settled) h += `<div class="grid g2">${equityCard(s)}${resultCard(s)}</div>${marketCard(s)}`;
   if (!bets.length) {
     h += `<div class="card"><div class="empty2">尚未有符合條件的獨立驗證注單。系統只在首次保存的原生 T-5 評估。</div></div>`;

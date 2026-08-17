@@ -22,6 +22,43 @@ DECISION_STAGE = "T-5"
 STRATEGY = "independent-validation-v1"
 AUDIT_LIMIT = 1_600
 CONDITION_AUDIT_LIMIT = 400
+DIAGNOSTIC_EVALUATION_LIMIT = 600
+
+# These codes are intentionally coarse. They describe the admission decision
+# without carrying a provider quote, candidate collection, team name, or other
+# raw input into the public dashboard payload.
+DIAGNOSTIC_LABELS = {
+    "stage_not_eligible": "非原生／階段不符／開賽後",
+    "selected_quote_invalid": "入選盤口、賠率、方向或來源時間戳無效",
+    "no_granular_match": "沒有相符的細緻歷史條件",
+    "historical_gate_not_passed": "沒有通過凍結歷史門檻（命中率＞60%、已判定≥20）",
+    "conservative_selection_failed": "保守條件選擇未能完成",
+    "same_market_conflict": "同市場已有衝突或重播紀錄",
+    "fixture_cap_reached": "已達單場市場或注碼上限",
+    "created": "已建立獨立驗證注",
+    "other_rejection": "其他安全拒絕",
+}
+
+_DIAGNOSTIC_REASON_CODES = {
+    "missing_new_t5_snapshot": "stage_not_eligible",
+    "not_first_native_pre_kickoff_t5": "stage_not_eligible",
+    "t5_safe_lead_not_met": "stage_not_eligible",
+    "missing_fixture_context_for_public_condition_bet": "stage_not_eligible",
+    "cached_discovery_ranking_unavailable": "no_granular_match",
+    "selected_market_missing_or_ambiguous": "selected_quote_invalid",
+    "selected_odds_invalid_or_missing": "selected_quote_invalid",
+    "selected_line_or_side_invalid": "selected_quote_invalid",
+    "selected_source_observation_invalid_or_missing": "selected_quote_invalid",
+    "selected_quote_not_provably_pre_kickoff": "selected_quote_invalid",
+    "no_granular_match": "no_granular_match",
+    "no_historical_condition_above_60pct_with_20_decided": "historical_gate_not_passed",
+    "no_conservative_candidate": "conservative_selection_failed",
+    "idempotent_existing_market": "same_market_conflict",
+    "idempotent_existing_bet": "same_market_conflict",
+    "fixture_two_market_cap": "fixture_cap_reached",
+    "fixture_stake_cap": "fixture_cap_reached",
+    "independent_validation_candidate_frozen": "created",
+}
 
 
 def _number(value: Any) -> float | None:
@@ -66,6 +103,7 @@ def ensure_namespace(ledger: dict[str, Any], system: str, *, now: str | None = N
     namespace.setdefault("fixture_market_cap", FIXTURE_MARKET_CAP)
     namespace.setdefault("conditions", {})
     namespace.setdefault("audit", [])
+    namespace.setdefault("diagnostics", {"evaluations": {}})
     # This snapshot is written only at cutover, before active validation
     # recomputation replaces the conventional top-level public stats.  The
     # original legacy bet rows stay in ``ledger["bets"]`` untouched as well.
@@ -84,7 +122,72 @@ def ensure_namespace(ledger: dict[str, Any], system: str, *, now: str | None = N
         namespace["conditions"] = {}
     if not isinstance(namespace["audit"], list):
         namespace["audit"] = []
+    diagnostics = namespace.get("diagnostics")
+    if not isinstance(diagnostics, dict):
+        namespace["diagnostics"] = diagnostics = {}
+    if not isinstance(diagnostics.get("evaluations"), dict):
+        diagnostics["evaluations"] = {}
     return namespace
+
+
+def record_evaluation_diagnostics(
+    namespace: dict[str, Any],
+    fixture: str,
+    stage: str,
+    audit: Iterable[dict[str, Any]],
+    *,
+    now: str,
+) -> None:
+    """Store one bounded, replay-safe aggregate input per fixture/market/stage.
+
+    The ledger keeps the key only to replace a replay of the same evaluation.
+    The dashboard receives ``public_diagnostics`` below, never these keys or
+    raw audit rows.
+    """
+    diagnostics = namespace.setdefault("diagnostics", {})
+    evaluations = diagnostics.setdefault("evaluations", {})
+    if not isinstance(evaluations, dict):
+        diagnostics["evaluations"] = evaluations = {}
+    for row in audit:
+        if not isinstance(row, dict):
+            continue
+        market = str(row.get("market") or "*")
+        reason = str(row.get("reason") or "")
+        code = _DIAGNOSTIC_REASON_CODES.get(
+            reason,
+            "created" if str(row.get("status") or "").upper() == "CREATED" else "other_rejection",
+        )
+        # A digest remains deterministically keyed by fixture+market+stage
+        # without retaining a provider identity in this diagnostic namespace.
+        identity = json.dumps(
+            [str(fixture or "_missing_fixture_"), market, str(stage or "_missing_stage_")],
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        key = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:32]
+        evaluations[key] = {"code": code, "updated_at": now}
+    # Preserve insertion order: rewriting an existing key on replay does not
+    # inflate the window or make the aggregate non-deterministic.
+    while len(evaluations) > DIAGNOSTIC_EVALUATION_LIMIT:
+        evaluations.pop(next(iter(evaluations)))
+
+
+def public_diagnostics(namespace: dict[str, Any] | None) -> dict[str, Any]:
+    """Return only bounded Chinese aggregate diagnostics for public consumers."""
+    diagnostics = (namespace or {}).get("diagnostics")
+    evaluations = diagnostics.get("evaluations") if isinstance(diagnostics, dict) else {}
+    counts = {code: 0 for code in DIAGNOSTIC_LABELS}
+    if isinstance(evaluations, dict):
+        for row in evaluations.values():
+            if isinstance(row, dict):
+                code = str(row.get("code") or "other_rejection")
+                counts[code if code in counts else "other_rejection"] += 1
+    return {
+        "window_limit": DIAGNOSTIC_EVALUATION_LIMIT,
+        "evaluated": sum(counts.values()),
+        "labels": DIAGNOSTIC_LABELS.copy(),
+        "counts": counts,
+    }
 
 
 def condition_definition(system: str, candidate: dict[str, Any]) -> dict[str, Any]:

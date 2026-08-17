@@ -14,6 +14,8 @@ ExecStart=/opt/footbreak/deploy/crown-run.sh tick
 Environment=CROWN_TICK_PASS_DEADLINE_SECONDS=40
 TimeoutStartSec=55
 TimeoutStopSec=5
+KillMode=control-group
+SendSIGKILL=yes
 Nice=5
 SuccessExitStatus=75
 ExecStopPost=-/usr/bin/rm -f /run/crown-t5-priority

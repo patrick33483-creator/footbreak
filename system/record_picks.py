@@ -19,7 +19,7 @@ from analysis.learning_store import LearningStore
 from condition_portfolio import (
     AUDIT_LIMIT, DECISION_STAGE, LOG_LIMIT, STARTING_BANKROLL, evaluate_new_t5,
 )
-from analysis.independent_validation import ensure_namespace
+from analysis.independent_validation import ensure_namespace, record_evaluation_diagnostics
 from settle import condition_bets, recompute
 
 LEDGER = os.path.join(HERE, "sim_ledger.json")
@@ -376,6 +376,12 @@ def sync(preds_file="predictions.json"):
         # T-5 snapshot. T-30, historical backfill, and replay paths never call
         # the evaluator.
         if stage != BET_STAGE or not t5_safe_to_evaluate:
+            if stage == BET_STAGE:
+                record_evaluation_diagnostics(
+                    ledger["independent_validation"], match_id, BET_STAGE,
+                    [{"market": "*", "status": "SKIPPED", "reason": "t5_safe_lead_not_met"}],
+                    now=now,
+                )
             continue
         try:
             history_payload = json.loads(Path(ACCURACY_HISTORY).read_text(encoding="utf-8"))

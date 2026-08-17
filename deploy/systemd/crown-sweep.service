@@ -10,6 +10,9 @@ WorkingDirectory=/opt/footbreak
 ExecStart=/opt/footbreak/deploy/crown-run.sh sweep
 ExecStartPost=/opt/footbreak/.venv/bin/python3 /opt/footbreak/deploy/check-crown-first-look.py --state-dir /var/lib/footbreak/crown
 TimeoutStartSec=3600
+KillMode=control-group
+TimeoutStopSec=30
+SendSIGKILL=yes
 Nice=15
 
 [Install]

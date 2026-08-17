@@ -11,6 +11,13 @@ Environment=FOOTBREAK_LEDGER_PATH=/opt/footbreak/system/sim_ledger.json
 Environment=FOOTBREAK_RESULT_CACHE_DIR=/opt/footbreak/system/cache/results
 ExecStart=/opt/footbreak/deploy/crown-run.sh settle
 TimeoutStartSec=900
+# A timeout or urgent T-5 preemption must terminate Python and every provider
+# helper in this unit's cgroup. The runner lock is then released by its shell;
+# no age-based lock breaking is used, so a genuinely live settlement is never
+# displaced merely for being old.
+KillMode=control-group
+TimeoutStopSec=30
+SendSIGKILL=yes
 Nice=15
 NoNewPrivileges=true
 PrivateTmp=true

@@ -129,6 +129,15 @@ class ConditionPortfolioTests(unittest.TestCase):
         self.assertEqual(
             audit[0]["reason"], "missing_fixture_context_for_public_condition_bet",
         )
+        diagnostics = ledger = {"bets": []}
+        created, _ = cp.evaluate_new_t5(
+            diagnostics, missing_league, history_rows=rows,
+        )
+        self.assertEqual(created, [])
+        self.assertEqual(
+            {row["code"] for row in diagnostics["independent_validation"]["diagnostics"]["evaluations"].values()},
+            {"stage_not_eligible"},
+        )
 
 
 class ConditionDashboardSourceTests(unittest.TestCase):
@@ -153,6 +162,9 @@ class ConditionDashboardSourceTests(unittest.TestCase):
         self.assertNotIn('"shadow_bets"', source)
         self.assertIn("_public_bet", source)
         self.assertIn("historical_discovery_archive", source)
+        self.assertIn("public_diagnostics", source)
+        self.assertIn("建立診斷", app)
+        self.assertIn("只顯示彙總，不含供應商原始資料", app)
 
 
 if __name__ == "__main__":

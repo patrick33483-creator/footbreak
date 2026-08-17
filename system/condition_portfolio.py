@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 from analysis.granular_conditions import MARKET_LABELS, MARKETS, _role, match_upcoming, mine
-from analysis.independent_validation import (AUDIT_LIMIT, DECISION_STAGE, FIXED_STAKE, STARTING_BANKROLL, STRATEGY, FIXTURE_MARKET_CAP, FIXTURE_STAKE_CAP, ensure_namespace, eligible, selection_signature, choose_candidate, conservative_key, attach_frozen_condition, existing_fixture_markets, portfolio_name)
+from analysis.independent_validation import (AUDIT_LIMIT, DECISION_STAGE, FIXED_STAKE, STARTING_BANKROLL, STRATEGY, FIXTURE_MARKET_CAP, FIXTURE_STAKE_CAP, ensure_namespace, eligible, selection_signature, choose_candidate, conservative_key, attach_frozen_condition, existing_fixture_markets, portfolio_name, record_evaluation_diagnostics)
 import json
 HKT = timezone(timedelta(hours=8))
 SYSTEM = "footbreak"
@@ -87,24 +87,30 @@ def evaluate_new_t5(ledger: dict[str, Any], watch: dict[str, Any], history_path:
     pass the persisted granular ranking, so deadline-bound ticks never mine.
     """
     fixture = str(watch.get("match_id") or "")
+    now = iso_hkt()
+    namespace = ensure_namespace(ledger, SYSTEM, now=now)
+
+    def skipped(reason: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        audit = [{"market": "*", "status": "SKIPPED", "reason": reason}]
+        record_evaluation_diagnostics(namespace, fixture, DECISION_STAGE, audit, now=now)
+        return [], audit
+
     stages = [row for row in (watch.get("stages") or []) if isinstance(row, dict)]
     current = next((row for row in stages if row.get("stage") == DECISION_STAGE), None)
     if not fixture or current is None:
-        return [], [{"market": "*", "status": "SKIPPED", "reason": "missing_new_t5_snapshot"}]
+        return skipped("missing_new_t5_snapshot")
     current = {**current, "kickoff": current.get("kickoff") or watch.get("kickoff") or watch.get("kickoff_hkt")}
     if not _native_t5(current, current.get("kickoff")):
-        return [], [{"market": "*", "status": "SKIPPED", "reason": "not_first_native_pre_kickoff_t5"}]
+        return skipped("not_first_native_pre_kickoff_t5")
     if not all(str(watch.get(field) or "").strip() for field in ("league", "home", "away")):
-        return [], [{"market": "*", "status": "SKIPPED", "reason": "missing_fixture_context_for_public_condition_bet"}]
+        return skipped("missing_fixture_context_for_public_condition_bet")
     if ranking is None:
         if history_rows is None:
-            return [], [{"market": "*", "status": "SKIPPED", "reason": "cached_discovery_ranking_unavailable"}]
+            return skipped("cached_discovery_ranking_unavailable")
         rows = [row for row in history_rows if str(row.get("match_id") or row.get("history_key") or "") != fixture]
         ranking = mine(rows, system=SYSTEM)["ranking"]
     ranking = list(ranking or [])
     matches = match_upcoming(_live_rows(watch), ranking, system=SYSTEM, decision_stage=DECISION_STAGE).get(fixture, [])
-    now = iso_hkt()
-    namespace = ensure_namespace(ledger, SYSTEM, now=now)
     existing = existing_fixture_markets(ledger, SYSTEM, fixture)
     existing_markets = {str(bet.get("code") or bet.get("market") or "") for bet in existing}
     existing_stake = sum(float(bet.get("stake") or 0) for bet in existing)
@@ -115,12 +121,27 @@ def evaluate_new_t5(ledger: dict[str, Any], watch: dict[str, Any], history_path:
             audit.append({"market": market, "market_label": MARKET_LABELS[market], "status": "SKIPPED", "reason": reason})
             continue
         quote_signature = selection_signature(market, _audit_selection(market, selected))
-        candidates = [
+        market_matches = [
             item for item in matches
             if str(item.get("market") or "") == market
-            and eligible(item)
             and selection_signature(market, item) == quote_signature
         ]
+        if not market_matches:
+            # The cached ranking already excludes candidates that fail the
+            # frozen >60% / >=20 admission gate. If a market survived that
+            # gate but its exact live line/side does not match, report a true
+            # granular mismatch; otherwise retain the established gate reason.
+            market_ranked = any(
+                str(item.get("market") or "") == market for item in ranking
+                if isinstance(item, dict)
+            )
+            reason = (
+                "no_granular_match" if market_ranked
+                else "no_historical_condition_above_60pct_with_20_decided"
+            )
+            audit.append({"market": market, "market_label": MARKET_LABELS[market], "status": "SKIPPED", "reason": reason})
+            continue
+        candidates = [item for item in market_matches if eligible(item)]
         if not candidates:
             audit.append({"market": market, "market_label": MARKET_LABELS[market], "status": "SKIPPED", "reason": "no_historical_condition_above_60pct_with_20_decided"})
             continue
@@ -168,4 +189,5 @@ def evaluate_new_t5(ledger: dict[str, Any], watch: dict[str, Any], history_path:
         audit.append({"market": market, "market_label": MARKET_LABELS[market], "status": "CREATED", "reason": "independent_validation_candidate_frozen", "bet_id": bid,
                       "condition_label": baseline.get("label"), "accuracy": baseline.get("accuracy"), "hits": baseline.get("hits"), "decided": baseline.get("decided"), "frozen_condition_signature": signature, **selection})
     namespace["audit"] = (namespace.get("audit") or [])[-AUDIT_LIMIT:]
+    record_evaluation_diagnostics(namespace, fixture, DECISION_STAGE, audit, now=now)
     return created, audit

@@ -16,6 +16,7 @@ import model as M
 import predict as P
 from record_picks import PREDICTION_ERA, PREDICTION_SCHEMA_VERSION
 from condition_portfolio import FIXED_STAKE, PORTFOLIO, STARTING_BANKROLL, STRATEGY
+from analysis.independent_validation import public_diagnostics
 
 OUT = os.environ.get(
     "FOOTBREAK_DASHBOARD_DATA",
@@ -670,6 +671,9 @@ def main():
             "schema_version": (led.get("independent_validation") or {}).get("schema_version"),
             "validation_started_at": (led.get("independent_validation") or {}).get("validation_started_at"),
             "conditions": (led.get("independent_validation") or {}).get("conditions") or {},
+            # Public boundary: only bounded Chinese counters, never the
+            # per-fixture keys or raw audit/provider inputs retained privately.
+            "diagnostics": public_diagnostics(led.get("independent_validation")),
             "historical_discovery_archive": (led.get("independent_validation") or {}).get("historical_discovery_archive") or {
                 "read_only": True, "legacy_bets_preserved": True, "legacy_stats_preserved": True,
             },
