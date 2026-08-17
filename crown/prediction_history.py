@@ -47,6 +47,7 @@ def _path(config: Settings):
 
 _SCOREABLE_MARKETS = {"HDC", "HIL", "CHL"}
 _CORNER_RESULT_RETRY_DAYS = 7
+_RESULT_DETAIL_REQUEST_BUDGET = 12
 _HKJC_RESULT_GRACE_SECONDS = 6 * 60 * 60
 _TERMINAL_RESULT_SOURCES = {
     "hkjc_official_exact_id_terminal_status",
@@ -904,6 +905,7 @@ def grade_history(config: Settings) -> dict[str, Any]:
     titan_error = None
     official_error = None
     titan_client = TitanClient(config)
+    titan_client.limit_result_detail_requests(_RESULT_DETAIL_REQUEST_BUDGET)
     try:
         titan_rows = titan_client.results(dates) if due else []
     except Exception as exc:

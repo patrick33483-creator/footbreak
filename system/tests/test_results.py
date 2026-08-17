@@ -343,12 +343,18 @@ class ResultSourceTests(unittest.TestCase):
         self.assertIn(".history-result-cell .hist-result", styles)
         self.assertIn(".history-result-cell .hist-result b", styles)
 
-    def test_manual_settlement_runs_crown_directly_without_http_timeout(self) -> None:
+    def test_manual_settlement_uses_managed_crown_service_without_http_timeout(self) -> None:
         workflow = Path(
             SYSTEM_DIR.parent, ".github", "workflows", "settle.yml"
         ).read_text(encoding="utf-8")
-        self.assertIn("deploy/crown-run.sh settle", workflow)
+        self.assertIn("systemctl start crown-settle.service", workflow)
+        self.assertNotIn("deploy/crown-run.sh settle", workflow)
         self.assertNotIn("curl --fail", workflow)
+        self.assertIn("ServerAliveInterval=20", workflow)
+        self.assertIn(
+            "systemctl stop footbreak-tick.timer footbreak-sweep.timer footbreak-settle.timer",
+            workflow,
+        )
         self.assertIn(
             "systemctl stop footbreak-tick.service footbreak-sweep.service footbreak-settle.service",
             workflow,

@@ -28,17 +28,19 @@ jobs:
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
         run: |
           set +e
-          ssh "$DEPLOY_USER@$DEPLOY_HOST" '
+          ssh -o ServerAliveInterval=20 -o ServerAliveCountMax=60 \
+            "$DEPLOY_USER@$DEPLOY_HOST" '
             set -e
             restart_timers() {
               sudo systemctl start footbreak-tick.timer
               sudo systemctl start footbreak-sweep.timer
+              sudo systemctl start footbreak-settle.timer
               sudo systemctl start crown-tick.timer
               sudo systemctl start crown-sweep.timer
               sudo systemctl start crown-settle.timer
             }
             trap restart_timers EXIT
-            sudo systemctl stop footbreak-tick.timer footbreak-sweep.timer
+            sudo systemctl stop footbreak-tick.timer footbreak-sweep.timer footbreak-settle.timer
             sudo systemctl stop crown-tick.timer crown-sweep.timer crown-settle.timer
             sudo systemctl stop footbreak-tick.service footbreak-sweep.service footbreak-settle.service || true
             sudo systemctl stop crown-tick.service crown-sweep.service crown-settle.service || true
@@ -62,20 +64,19 @@ jobs:
               echo "::error file=.github/workflows/settle.yml,line=52::$footbreak_error"
               exit "$footbreak_rc"
             fi
-            echo "=== Crown direct settlement ==="
-            crown_rc=75
-            crown_output=""
-            for crown_attempt in 1 2 3; do
-              set +e
-              crown_output=$(sudo /opt/footbreak/deploy/crown-run.sh settle 2>&1)
-              crown_rc=$?
-              set -e
-              printf "%s\n" "$crown_output"
-              [ "$crown_rc" -ne 75 ] && break
-              echo "Crown settle lock busy; retry $crown_attempt/3"
-              sleep 5
-            done
+            echo "=== Crown managed settlement ==="
+            sudo systemctl reset-failed crown-settle.service || true
+            set +e
+            crown_output=$(sudo systemctl start crown-settle.service 2>&1)
+            crown_rc=$?
+            set -e
+            printf "%s\n" "$crown_output"
+            sudo systemctl show crown-settle.service --no-pager \
+              -p ActiveState -p SubState -p Result -p ExecMainStatus \
+              -p ExecMainStartTimestamp -p ExecMainExitTimestamp
             if [ "$crown_rc" -ne 0 ]; then
+              sudo journalctl -u crown-settle.service -n 80 --no-pager \
+                -o short-iso || true
               crown_error=$(printf "%s\n" "$crown_output" | tail -n 20 | tr "\n" " " | sed "s/%/%25/g")
               echo "::error file=.github/workflows/settle.yml,line=65::$crown_error"
               exit "$crown_rc"

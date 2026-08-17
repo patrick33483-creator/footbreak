@@ -289,6 +289,17 @@ def crown_prices_from_pages(asian_html: str | None, total_html: str | None, comp
 class TitanClient:
     def __init__(self, config: Settings):
         self.config = config
+        self._result_detail_cache: dict[str, dict[str, Any] | None] = {}
+        self._result_detail_requests_remaining: int | None = None
+
+    def limit_result_detail_requests(self, limit: int) -> None:
+        """Bound exact-detail fanout for one caller/pass.
+
+        Missing rows remain pending for the next scheduled pass.  The limit is
+        deliberately per client instance, so a large historical recovery set
+        cannot monopolize the settlement service.
+        """
+        self._result_detail_requests_remaining = max(0, int(limit))
 
     @staticmethod
     def _read(
@@ -456,7 +467,14 @@ class TitanClient:
             }
         for day in sorted(days):
             try:
-                output.extend(parse_schedule_page(self._read(f"{self.config.titan_bf_base}/Over_{day}.htm"), day))
+                output.extend(parse_schedule_page(
+                    self._read(
+                        f"{self.config.titan_bf_base}/Over_{day}.htm",
+                        timeout=8,
+                        attempts=1,
+                    ),
+                    day,
+                ))
             except OSError:
                 continue
         return list({row["id"]: row for row in output}.values())
@@ -466,21 +484,36 @@ class TitanClient:
         titan_id = str(titan_id)
         if not titan_id.isdigit():
             return None
+        if titan_id in self._result_detail_cache:
+            return self._result_detail_cache[titan_id]
+        if self._result_detail_requests_remaining is not None:
+            if self._result_detail_requests_remaining <= 0:
+                return None
+            self._result_detail_requests_remaining -= 1
         header = parse_match_header(
             self._read(
                 "https://livestatic.titan007.com/phone/txt/analysisheader/cn/"
                 f"{titan_id[0]}/{titan_id[1:3]}/{titan_id}.txt",
                 encoding="utf-8",
+                timeout=8,
+                attempts=1,
             ),
             titan_id,
         )
         if not header:
+            self._result_detail_cache[titan_id] = None
             return None
         stats = parse_match_statistics(
-            self._read(f"https://live.titan007.com/detail/{titan_id}cn.htm")
+            self._read(
+                f"https://live.titan007.com/detail/{titan_id}cn.htm",
+                timeout=8,
+                attempts=1,
+            )
         ) or {}
-        return {
+        result = {
             **header,
             **stats,
             "source": "titan007_match_detail",
         }
+        self._result_detail_cache[titan_id] = result
+        return result

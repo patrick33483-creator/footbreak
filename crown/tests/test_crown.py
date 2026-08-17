@@ -1060,6 +1060,26 @@ class CrownSafetyTests(unittest.TestCase):
         self.assertEqual(read.call_args.kwargs["attempts"], 1)
         self.assertIn("livestatic.titan007.com/vbsxml/goal3.xml", read.call_args.args[0])
 
+    def test_result_reads_are_bounded_and_detail_fanout_has_a_pass_budget(self) -> None:
+        from crown.titan import TitanClient
+
+        client = TitanClient(settings())
+        with patch.object(client, "_read", return_value="") as read:
+            self.assertEqual(client.results({"2026-08-16", "2026-08-17"}), [])
+        self.assertEqual(read.call_count, 2)
+        for call in read.call_args_list:
+            self.assertEqual(call.kwargs["timeout"], 8)
+            self.assertEqual(call.kwargs["attempts"], 1)
+
+        client.limit_result_detail_requests(1)
+        with patch.object(client, "_read", return_value="not-a-completed-header") as read:
+            self.assertIsNone(client.result_detail("2961746"))
+            self.assertIsNone(client.result_detail("2961747"))
+            self.assertIsNone(client.result_detail("2961746"))
+        self.assertEqual(read.call_count, 1)
+        self.assertEqual(read.call_args.kwargs["timeout"], 8)
+        self.assertEqual(read.call_args.kwargs["attempts"], 1)
+
     def test_t5_bulk_snapshot_skips_optional_pinnapi_and_preserves_provenance(self) -> None:
         kickoff = self.now + timedelta(minutes=5)
         titan = {"id": "bulk-1", "league": "L", "home": "A", "away": "B", "kickoff": kickoff}
