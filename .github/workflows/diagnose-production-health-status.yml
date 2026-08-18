@@ -59,4 +59,24 @@ jobs:
             -f description="$description" \
             -f target_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
+          set +e
+          ssh "$DEPLOY_USER@$DEPLOY_HOST" \
+            "sudo journalctl -u crown-sweep.service -n 240 --no-pager -o cat" \
+            > /tmp/crown-sweep.log 2>/dev/null
+          set -e
+          origin="$(
+            grep -F '"exception_origin"' /tmp/crown-sweep.log \
+              | tail -n 1 \
+              | tr -cd 'A-Za-z0-9_.:= /{}",-' \
+              | cut -c1-140
+          )"
+          [ -n "$origin" ] || origin="no-safe-exception-origin"
+          gh api \
+            --method POST \
+            "repos/$REPOSITORY/statuses/$COMMIT_SHA" \
+            -f state="$state" \
+            -f context="diagnostic/crown-sweep-origin" \
+            -f description="$(printf '%s' "$origin" | cut -c1-140)" \
+            -f target_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
           exit "$health_rc"
