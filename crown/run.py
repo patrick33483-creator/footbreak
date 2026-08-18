@@ -92,7 +92,15 @@ def main() -> int:
     except Exception as exc:
         history_warning = f"prediction_history_{type(exc).__name__}"
     try:
-        notify_new(ledger, config, result.get("fresh_condition_predictions") or [])
+        notify_new(
+            ledger,
+            config,
+            result.get("fresh_condition_predictions") or [],
+            # Telegram is retryable from persisted live watch state.  A tick
+            # attempts at most one delivery so transport cannot consume the
+            # sub-minute prediction deadline.
+            max_attempts=1 if args.mode == "tick" else None,
+        )
     except Exception as exc:
         # Signals are notification-only.  A transport failure must never roll
         # back or corrupt the already committed live prediction state.

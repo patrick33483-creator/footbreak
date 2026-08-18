@@ -10,7 +10,8 @@ from unittest.mock import patch
 
 from analysis.granular_conditions import mine
 from crown.config import settings
-from crown.notify import _public_condition_text, notify_new
+from crown.notify import _public_condition_text, _send, notify_new
+from crown.state import notification_lock, state_lock
 
 HKT = timezone(timedelta(hours=8))
 
@@ -94,6 +95,55 @@ class CrownGranularNotificationTests(unittest.TestCase):
                 self.assertEqual(notify_new(current, config, []), 1)
                 self.assertEqual(notify_new(current, config, []), 0)
             self.assertEqual(sender.call_count, 1)
+
+    def test_tick_attempt_limit_defers_remaining_signal_without_losing_it(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = self._config_with_history(directory)
+            current = ledger()
+            with patch("crown.notify._send", return_value=True) as sender:
+                self.assertEqual(
+                    notify_new(current, config, [], max_attempts=1),
+                    1,
+                )
+                self.assertEqual(
+                    notify_new(current, config, [], max_attempts=1),
+                    1,
+                )
+                self.assertEqual(
+                    notify_new(current, config, [], max_attempts=1),
+                    0,
+                )
+            self.assertEqual(sender.call_count, 2)
+
+    def test_telegram_transport_timeout_is_bounded_to_five_seconds(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = replace(
+                settings(),
+                state_dir=Path(directory),
+                telegram_enabled=True,
+                telegram_bot_token="test-token",
+                telegram_chat_id="test-chat",
+            )
+            response = unittest.mock.MagicMock()
+            response.__enter__.return_value = response
+            with patch("crown.notify.urllib.request.urlopen", return_value=response) as opener:
+                self.assertTrue(_send(config, "測試"))
+            self.assertEqual(opener.call_args.kwargs["timeout"], 5)
+
+    def test_notification_lock_is_independent_from_prediction_state_lock(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = replace(settings(), state_dir=Path(directory))
+            with notification_lock(config) as notification_acquired:
+                self.assertTrue(notification_acquired)
+                with state_lock(config):
+                    self.assertTrue((config.state_dir / ".state.lock").exists())
+
+    def test_busy_notification_delivery_skips_without_waiting_for_state_lock(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = self._config_with_history(directory)
+            with notification_lock(config) as notification_acquired:
+                self.assertTrue(notification_acquired)
+                self.assertEqual(notify_new(ledger(), config, []), 0)
 
     def test_cached_ranking_notifies_without_remine(self):
         with tempfile.TemporaryDirectory() as directory:

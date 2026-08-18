@@ -47,6 +47,28 @@ def settlement_lock(config: Settings):
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
+@contextmanager
+def notification_lock(config: Settings):
+    """Serialize Telegram delivery without blocking prediction state commits.
+
+    Delivery is best-effort and retryable.  If another mode is already
+    delivering, the caller skips this pass instead of waiting inside a
+    deadline-bound tick.
+    """
+    config.state_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = config.state_dir / ".notification.lock"
+    with lock_path.open("a+", encoding="utf-8") as handle:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            yield False
+            return
+        try:
+            yield True
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
 def paths(config: Settings) -> dict[str, Path]:
     return {"ledger": config.state_dir / "ledger.json", "predictions": config.state_dir / "predictions.json",
             "notify": config.state_dir / "notify_state.json", "health": config.state_dir / "health.json",

@@ -10,7 +10,7 @@ from typing import Any
 
 from .common import HKT, iso_hkt, now_hkt, parse_time, read_json, write_json_atomic
 from .config import Settings
-from .state import paths, state_lock
+from .state import notification_lock, paths
 from analysis.three_stage_consensus import calculate_three_stage_consensus
 
 
@@ -88,7 +88,9 @@ def _send(config: Settings, text: str) -> bool:
     body = json.dumps({"chat_id": config.telegram_chat_id, "text": text}).encode()
     request = urllib.request.Request(f"https://api.telegram.org/bot{config.telegram_bot_token}/sendMessage", data=body,
                                      headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(request, timeout=20):
+    # Notification transport is retryable on the next tick.  Keep a failed
+    # Telegram call well below the prediction service deadline.
+    with urllib.request.urlopen(request, timeout=5):
         pass
     return True
 
@@ -412,6 +414,8 @@ def notify_new(
     ledger: dict[str, Any],
     config: Settings,
     fresh_t5_predictions: list[Any] | None = None,
+    *,
+    max_attempts: int | None = None,
 ) -> int:
     """Send recent native T-30/T-5 condition opportunities exactly once.
 
@@ -422,8 +426,11 @@ def notify_new(
     and stale rows fail closed.
     """
     from analysis.granular_conditions import _role, notification_opportunities
-    with state_lock(config):
+    with notification_lock(config) as acquired:
+        if not acquired:
+            return 0
         state, sent = _load(config), 0
+        attempted = 0
         history = read_json(config.state_dir / "prediction_history.json", {})
         history_rows = (
             history.get("rows") or []
@@ -466,6 +473,8 @@ def notify_new(
             )
             if notification_id in seen_signals:
                 continue
+            if max_attempts is not None and attempted >= max(0, max_attempts):
+                break
             league = str(watch.get("league") or "").strip()
             if not league:
                 continue
@@ -497,6 +506,7 @@ def notify_new(
                 ],
                 "候選條件，獨立驗證中；未達已驗證，不構成正式推介。",
             ])
+            attempted += 1
             delivered = _send(config, message)
             if delivered is False:
                 continue

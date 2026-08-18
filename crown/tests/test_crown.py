@@ -2413,7 +2413,10 @@ class CrownSafetyTests(unittest.TestCase):
                 self.assertEqual(crown_run.main(), 0)
             archive.assert_called_once_with(config, ledger)
             notify.assert_called_once_with(
-                ledger, config, [{"match_id": "x", "stage": "T-5"}],
+                ledger,
+                config,
+                [{"match_id": "x", "stage": "T-5"}],
+                max_attempts=1,
             )
             self.assertEqual(
                 ast.literal_eval(stdout.getvalue())["dashboard_refresh_deferred"],
