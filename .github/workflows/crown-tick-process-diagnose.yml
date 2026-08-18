@@ -1,4 +1,4 @@
-name: 診斷皇冠 Tick Process
+name: 診斷皇冠 Process 及鎖
 
 on:
   workflow_dispatch:
@@ -20,7 +20,7 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
 
-      - name: 只讀檢查 Tick 等待位置
+      - name: 只讀檢查 Tick、結算及鎖持有人
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
@@ -28,16 +28,46 @@ jobs:
           ssh -o BatchMode=yes -o ConnectTimeout=20 \
             "$DEPLOY_USER@$DEPLOY_HOST" '
               set -eu
-              sudo systemctl show crown-tick.service --no-pager \
-                -p ActiveState -p SubState -p Result -p MainPID \
-                -p ExecMainStartTimestamp -p TimeoutStartUSec
-              pid=$(sudo systemctl show crown-tick.service -p MainPID --value)
-              case "$pid" in ""|0|*[!0-9]*) exit 0 ;; esac
-              echo "=== process tree (no arguments/environment) ==="
-              sudo ps -o pid=,ppid=,etimes=,stat=,wchan:32=,comm= \
-                -p "$pid" --ppid "$pid"
-              for child in $(sudo pgrep -P "$pid" || true); do
+              show_process_tree() {
+                unit="$1"
+                echo "=== $unit ==="
+                sudo systemctl show "$unit" --no-pager \
+                  -p ActiveState -p SubState -p Result -p MainPID -p ControlPID \
+                  -p ExecMainStatus -p ExecMainStartTimestamp \
+                  -p ExecMainExitTimestamp -p TimeoutStartUSec -p ControlGroup
+                pid=$(sudo systemctl show "$unit" -p MainPID --value)
+                case "$pid" in ""|0|*[!0-9]*) return 0 ;; esac
+                echo "=== $unit process tree (no arguments/environment) ==="
                 sudo ps -o pid=,ppid=,etimes=,stat=,wchan:32=,comm= \
-                  --ppid "$child" || true
-              done
+                  -p "$pid" --ppid "$pid" || true
+                for child in $(sudo pgrep -P "$pid" || true); do
+                  sudo ps -o pid=,ppid=,etimes=,stat=,wchan:32=,comm= \
+                    --ppid "$child" || true
+                done
+              }
+
+              show_lock_holders() {
+                lock_path="$1"
+                echo "=== lock: $lock_path ==="
+                holders=$(sudo fuser "$lock_path" 2>/dev/null || true)
+                if [ -z "$holders" ]; then
+                  echo "no holder"
+                  return 0
+                fi
+                for pid in $holders; do
+                  case "$pid" in ""|*[!0-9]*) continue ;; esac
+                  sudo ps -o pid=,ppid=,etimes=,stat=,wchan:32=,comm= \
+                    -p "$pid" || true
+                  ppid=$(sudo ps -o ppid= -p "$pid" | tr -d " " || true)
+                  case "$ppid" in ""|0|*[!0-9]*) continue ;; esac
+                  echo "--- parent of lock holder $pid ---"
+                  sudo ps -o pid=,ppid=,etimes=,stat=,wchan:32=,comm= \
+                    -p "$ppid" || true
+                done
+              }
+
+              show_process_tree crown-tick.service
+              show_process_tree crown-settle.service
+              show_lock_holders /var/lock/footbreak-crown-settle.lock
+              show_lock_holders /var/lib/footbreak/crown/.settlement.lock
             '
