@@ -60,7 +60,13 @@ def _traditional_to_simplified(value: str) -> str:
 
 
 def normalize_name(value: str | None) -> str:
-    raw = _traditional_to_simplified(unicodedata.normalize("NFKD", str(value or ""))).lower()
+    raw = _traditional_to_simplified(unicodedata.normalize("NFKD", str(value or "")))
+    return _normalize_preconverted_name(raw)
+
+
+def _normalize_preconverted_name(value: str | None) -> str:
+    """Finish normalization after any Traditional-to-Simplified conversion."""
+    raw = str(value or "").lower()
     raw = "".join(ch for ch in raw if not unicodedata.combining(ch))
     raw = _NEUTRAL_MARKER.sub(" ", raw)
     raw = _MIXED_SCRIPT_CLUB_AFFIX.sub(" ", raw)
@@ -75,11 +81,38 @@ def normalize_name(value: str | None) -> str:
 
 
 def _seed_index(seeds: tuple[tuple[str, str], ...]) -> dict[str, str]:
+    # Converting every reviewed CJK alias in its own ``uconv`` subprocess made
+    # the first ordinary matcher in each short-lived settlement process take
+    # several minutes. Convert the complete reviewed seed set in one bounded
+    # batch instead. If ICU is unavailable or the batch shape is unexpected,
+    # the reviewed pairs remain sufficient: both spellings are still assigned
+    # the same canonical seed without guessing.
+    names = [str(name) for pair in seeds for name in pair]
+    normalized = [unicodedata.normalize("NFKD", name) for name in names]
+    converted = list(normalized)
+    if _UCONV and normalized:
+        try:
+            completed = subprocess.run(
+                (_UCONV, "-x", "Traditional-Simplified"),
+                input="\n".join(normalized),
+                text=True,
+                capture_output=True,
+                timeout=5,
+                check=True,
+            )
+            rows = completed.stdout.splitlines()
+            if len(rows) == len(normalized):
+                converted = rows
+        except (OSError, subprocess.SubprocessError):
+            pass
+
     output: dict[str, str] = {}
+    offset = 0
     for number, pair in enumerate(seeds):
         canonical = f"seed:{number}"
-        for name in pair:
-            key = normalize_name(name)
+        for _name in pair:
+            key = _normalize_preconverted_name(converted[offset])
+            offset += 1
             if key:
                 output[key] = canonical
     return output

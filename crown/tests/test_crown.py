@@ -13,6 +13,7 @@ import subprocess
 import tempfile
 import time
 import types
+import unicodedata
 import unittest
 from stat import S_IMODE
 from dataclasses import replace
@@ -155,6 +156,28 @@ class CrownSafetyTests(unittest.TestCase):
             matching = importlib.reload(matching)
         self.assertEqual(matching._team_seed_index.cache_info().currsize, 0)
         self.assertEqual(matching._league_seed_index.cache_info().currsize, 0)
+
+    def test_reviewed_alias_seed_index_uses_one_bounded_uconv_batch(self) -> None:
+        import crown.matching as matching
+
+        matching._team_seed_index.cache_clear()
+        completed = subprocess.CompletedProcess(
+            args=("uconv",), returncode=0,
+            stdout="\n".join(
+                unicodedata.normalize("NFKD", name)
+                for pair in matching.TEAM_ALIAS_SEEDS
+                for name in pair
+            ),
+            stderr="",
+        )
+        with patch.object(matching, "_UCONV", "/usr/bin/uconv"), \
+             patch("crown.matching.subprocess.run", return_value=completed) as run:
+            index = matching._team_seed_index()
+        self.assertTrue(index)
+        run.assert_called_once()
+        self.assertEqual(run.call_args.kwargs["timeout"], 5)
+        self.assertGreater(run.call_args.kwargs["input"].count("\n"), 1)
+        matching._team_seed_index.cache_clear()
 
     def test_reviewed_hong_kong_team_aliases_canonicalize(self) -> None:
         self.assertEqual(canonical_team_key("曼城"), canonical_team_key("曼彻斯特城"))
