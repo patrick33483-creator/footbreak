@@ -1,0 +1,16 @@
+[Unit]
+Description=Footbreak/Crown operational incident alert for %I
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/footbreak
+EnvironmentFile=-/etc/footbreak.env
+EnvironmentFile=-/etc/footbreak-crown.env
+# `%I` is the failed unit instance.  The helper reads only Result/status and
+# suppresses documented exit-75 and active-timer SIGTERM pre-emption.
+ExecStart=/usr/bin/python3 /opt/footbreak/system/incident_alert.py systemd-failure --unit %I
+TimeoutStartSec=15
+NoNewPrivileges=true
+PrivateTmp=true

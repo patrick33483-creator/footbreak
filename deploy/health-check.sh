@@ -12,6 +12,24 @@ set -a
 [ ! -f "$CROWN_ENV_FILE" ] || . "$CROWN_ENV_FILE"
 set +a
 
+# Health-check failures are deployment/runtime incidents, not betting events.
+# EXIT (rather than ERR) also covers this script's explicit `exit 1` guards.
+ALERT_HELPER="$APP_DIR/system/incident_alert.py"
+report_health_check_exit() {
+  rc=$?
+  if [ -f "$ALERT_HELPER" ]; then
+    if [ "$rc" -eq 0 ]; then
+      "$ALERT_HELPER" clear --system footbreak \
+        --kind health_check_failure >/dev/null 2>&1 || true
+    else
+      "$ALERT_HELPER" event --system footbreak \
+        --kind health_check_failure >/dev/null 2>&1 || true
+    fi
+  fi
+  exit "$rc"
+}
+trap report_health_check_exit EXIT
+
 crown_is_enabled() {
   case "${CROWN_ENABLED:-0}" in
     1|true|TRUE|yes|YES|on|ON) return 0 ;;
@@ -445,5 +463,11 @@ if crown_kickoffs != sorted(crown_kickoffs, reverse=True):
     raise SystemExit("FAIL Crown prediction history is not newest-kickoff-first")
 print(f"OK Crown prediction history market rows={len(crown_rows)} newest-first")
 PY
+
+# Reuse the existing deployment/health pass for bounded ledger monitoring;
+# this deliberately creates no additional polling scheduler.
+if [ -f "$ALERT_HELPER" ]; then
+  "$ALERT_HELPER" check --system all >/dev/null 2>&1 || true
+fi
 
 echo "=== production health PASS ==="

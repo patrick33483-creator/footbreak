@@ -2,6 +2,7 @@
 Description=足破 · T-30 / T-5 預測執行點
 After=network-online.target
 Wants=network-online.target
+OnFailure=footbreak-incident-alert@%n.service
 
 [Service]
 Type=oneshot

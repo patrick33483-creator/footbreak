@@ -2,6 +2,7 @@
 Description=足破 · 獨立賽果結算及準繩度更新
 After=network-online.target
 Wants=network-online.target
+OnFailure=footbreak-incident-alert@%n.service
 ConditionPathExists=!/run/footbreak-t5-priority
 
 [Service]

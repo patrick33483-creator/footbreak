@@ -15,6 +15,20 @@ CROWN_LOCK_DIR="${CROWN_LOCK_DIR:-/var/lock}"
 if [ -f /etc/footbreak.env ]; then set -a; . /etc/footbreak.env; set +a; fi
 if [ -f /etc/footbreak-crown.env ]; then set -a; . /etc/footbreak-crown.env; set +a; fi
 export CROWN_APP_DIR CROWN_STATE_DIR CROWN_WEB_ROOT TZ=Asia/Hong_Kong
+ALERT_HELPER="$APP_DIR/system/incident_alert.py"
+SERVICE_UNIT="crown-${MODE}.service"
+report_runner_failure() {
+  rc=$?
+  case "${CROWN_ENABLED:-0}" in
+    1|true|TRUE|yes|YES|on|ON) crown_alertable=true ;;
+    *) crown_alertable=false ;;
+  esac
+  if [ "$rc" -ne 0 ] && [ "$rc" -ne 75 ] && "$crown_alertable" && [ -f "$ALERT_HELPER" ]; then
+    python3 "$ALERT_HELPER" event --system crown \
+      --kind "service_failure:${SERVICE_UNIT}" >/dev/null 2>&1 || true
+  fi
+}
+trap report_runner_failure EXIT
 export LEARNING_DB_PATH="${LEARNING_DB_PATH:-/var/lib/footbreak/learning/predictions.sqlite}"
 export ODDS_RECOVERY_SIDECAR="${ODDS_RECOVERY_SIDECAR:-/var/lib/footbreak/private/odds-recovery-overlay.json}"
 
@@ -41,3 +55,8 @@ cd "$APP_DIR"
 # not let fd 9 cross the exec boundary. Provider helpers spawned by Python
 # therefore cannot keep a stale runner lock alive after the service is killed.
 "$PYTHON" -m crown.run "$MODE" 9>&-
+
+if [ -f "$ALERT_HELPER" ]; then
+  python3 "$ALERT_HELPER" clear-service --system crown --unit "$SERVICE_UNIT" >/dev/null 2>&1 || true
+  python3 "$ALERT_HELPER" check --system crown >/dev/null 2>&1 || true
+fi

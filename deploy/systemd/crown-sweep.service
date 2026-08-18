@@ -2,6 +2,7 @@
 Description=足破 · 皇冠 15-minute fixture discovery and first-look recovery
 After=network-online.target
 Wants=network-online.target
+OnFailure=footbreak-incident-alert@%n.service
 ConditionPathExists=!/run/crown-t5-priority
 
 [Service]

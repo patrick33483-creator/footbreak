@@ -2,6 +2,7 @@
 Description=足破 · 每晚全板首預
 After=network-online.target
 Wants=network-online.target
+OnFailure=footbreak-incident-alert@%n.service
 ConditionPathExists=!/run/footbreak-t5-priority
 
 [Service]

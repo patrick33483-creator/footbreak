@@ -22,6 +22,19 @@ if [ -f /etc/footbreak-crown.env ]; then
   set -a; . /etc/footbreak-crown.env; set +a
 fi
 
+ALERT_HELPER="$APP_DIR/system/incident_alert.py"
+SERVICE_UNIT="footbreak-${MODE}.service"
+report_runner_failure() {
+  rc=$?
+  # Exit 75 is a documented lock/pre-emption retry, not an operational
+  # incident.  The systemd OnFailure path also catches hard timeouts.
+  if [ "$rc" -ne 0 ] && [ "$rc" -ne 75 ] && [ -f "$ALERT_HELPER" ]; then
+    python3 "$ALERT_HELPER" event --system footbreak \
+      --kind "service_failure:${SERVICE_UNIT}" >/dev/null 2>&1 || true
+  fi
+}
+trap report_runner_failure EXIT
+
 export PATH="$APP_DIR/bin:$PATH"
 export TZ="Asia/Hong_Kong"
 export PYTHONPATH="$APP_DIR${PYTHONPATH:+:$PYTHONPATH}"
@@ -67,6 +80,13 @@ fi
 # Only a fully successful pass may replace the nginx dashboard artifact.
 if [ -f "$APP_DIR/hkjc-dashboard/data.json" ] && [ -d "$WEB_ROOT" ]; then
   install -m 0644 "$APP_DIR/hkjc-dashboard/data.json" "$WEB_ROOT/data.json"
+fi
+
+# Resolve only this service's prior incident after all of its durable output
+# has been published, then assess ledger-backed T-5/source/settlement health.
+if [ -f "$ALERT_HELPER" ]; then
+  python3 "$ALERT_HELPER" clear-service --system footbreak --unit "$SERVICE_UNIT" >/dev/null 2>&1 || true
+  python3 "$ALERT_HELPER" check --system footbreak >/dev/null 2>&1 || true
 fi
 
 exit 0

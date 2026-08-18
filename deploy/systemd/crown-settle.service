@@ -2,6 +2,7 @@
 Description=皇冠 · 獨立賽果結算及三市場準繩度更新
 After=network-online.target
 Wants=network-online.target
+OnFailure=footbreak-incident-alert@%n.service
 ConditionPathExists=!/run/crown-t5-priority
 
 [Service]
