@@ -112,19 +112,37 @@ _RESULT_PAGE_SIZE = 20
 _RESULT_MAX_PAGES = 20
 
 
-def _fetch_official_result_matches(dates: set[str]) -> list[dict[str, Any]]:
+def _fetch_official_result_matches(
+    dates: set[str],
+    *,
+    target_ids: set[str] | None = None,
+    max_seconds: float | None = None,
+    request_timeout: float = 30.0,
+    attempts: int = 2,
+) -> list[dict[str, Any]]:
     """Return raw HKJC result-board matches, including non-finished states."""
     if not dates:
         return []
+    wanted = {str(value) for value in (target_ids or set()) if value}
+    deadline = time.monotonic() + max_seconds if max_seconds is not None else None
     endpoint = "https://info.cld.hkjc.com/graphql/base/"
     result: dict[str, dict[str, Any]] = {}
     failed_days: list[tuple[str, Exception]] = []
     for day in sorted(dates):
+        if deadline is not None and time.monotonic() >= deadline:
+            failed_days.append((day, TimeoutError("HKJC result pass budget exhausted")))
+            break
         last_error: Exception | None = None
-        for attempt in range(2):
+        for attempt in range(max(1, attempts)):
+            day_rows: dict[str, dict[str, Any]] = {}
             try:
-                day_rows: dict[str, dict[str, Any]] = {}
                 for page in range(_RESULT_MAX_PAGES):
+                    remaining = (
+                        deadline - time.monotonic()
+                        if deadline is not None else request_timeout
+                    )
+                    if remaining <= 0:
+                        raise TimeoutError("HKJC result pass budget exhausted")
                     start = page * _RESULT_PAGE_SIZE
                     body = json.dumps({"query": _RESULT_QUERY, "variables": {
                         "startDate": day,
@@ -140,7 +158,10 @@ def _fetch_official_result_matches(dates: set[str]) -> list[dict[str, Any]]:
                         "User-Agent": "Mozilla/5.0",
                         "Referer": "https://bet.hkjc.com/",
                     })
-                    with urllib.request.urlopen(request, timeout=30) as response:
+                    with urllib.request.urlopen(
+                        request,
+                        timeout=max(0.1, min(request_timeout, remaining)),
+                    ) as response:
                         raw = response.read()
                     if raw[:2] == b"\x1f\x8b":
                         import gzip
@@ -155,32 +176,40 @@ def _fetch_official_result_matches(dates: set[str]) -> list[dict[str, Any]]:
                         if match_id:
                             day_rows[match_id] = match
                     total = int(((data.get("matchNumByDate") or {}).get("total")) or 0)
-                    if not matches or start + len(matches) >= total:
+                    if (
+                        (wanted and wanted.issubset(set(result) | set(day_rows)))
+                        or not matches
+                        or start + len(matches) >= total
+                    ):
                         break
                 result.update(day_rows)
                 last_error = None
                 break
             except Exception as exc:
                 last_error = exc
-                if attempt == 0:
+                # Confirmed rows already received before the cutoff remain
+                # usable. Missing target IDs stay unresolved and retry later.
+                result.update(day_rows)
+                if attempt + 1 < max(1, attempts):
+                    if deadline is not None and time.monotonic() + 1.0 >= deadline:
+                        break
                     time.sleep(1.0)
         if last_error is not None:
             failed_days.append((day, last_error))
+        if wanted and wanted.issubset(result):
+            break
     # One bad date must not discard confirmed rows already fetched for other
     # dates. If every requested date failed, surface the source failure.
-    if failed_days and len(failed_days) == len(dates):
+    if not result and failed_days and len(failed_days) == len(dates):
         raise failed_days[-1][1]
     return list(result.values())
 
 
-def fetch_official_match_statuses(
-    match_ids: set[str], dates: set[str],
+def _official_match_statuses(
+    match_ids: set[str], matches: list[dict[str, Any]],
 ) -> dict[str, dict[str, Any]]:
-    """Return exact-ID HKJC result-board statuses, including suspended/refunded."""
-    if not match_ids or not dates:
-        return {}
     out = {}
-    for match in _fetch_official_result_matches(dates):
+    for match in matches:
         match_id = str(match.get("id") or "")
         if match_id not in match_ids:
             continue
@@ -194,10 +223,9 @@ def fetch_official_match_statuses(
     return out
 
 
-def fetch_official_result_events(dates: set[str]) -> list[dict[str, Any]]:
-    """Return confirmed full-match HKJC result events with identity metadata."""
+def _official_result_events(matches: list[dict[str, Any]]) -> list[dict[str, Any]]:
     result: dict[str, dict[str, Any]] = {}
-    for match in _fetch_official_result_matches(dates):
+    for match in matches:
         match_id = str(match.get("id") or "")
         if not match_id or str(match.get("status", "")).upper() not in _ENDED_STATUSES:
             continue
@@ -254,6 +282,52 @@ def fetch_official_result_events(dates: set[str]) -> list[dict[str, Any]]:
         except (TypeError, ValueError, KeyError):
             continue
     return list(result.values())
+
+
+def fetch_official_match_statuses(
+    match_ids: set[str], dates: set[str],
+) -> dict[str, dict[str, Any]]:
+    """Return exact-ID HKJC result-board statuses, including suspended/refunded."""
+    if not match_ids or not dates:
+        return {}
+    return _official_match_statuses(
+        match_ids,
+        _fetch_official_result_matches(dates),
+    )
+
+
+def fetch_official_result_events(dates: set[str]) -> list[dict[str, Any]]:
+    """Return confirmed full-match HKJC result events with identity metadata."""
+    return _official_result_events(_fetch_official_result_matches(dates))
+
+
+def fetch_official_settlement_bundle(
+    match_ids: set[str],
+    dates: set[str],
+    *,
+    max_seconds: float = 60.0,
+) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+    """Fetch one bounded exact-ID snapshot for both results and statuses."""
+    if not match_ids or not dates:
+        return {}, {}
+    matches = _fetch_official_result_matches(
+        dates,
+        target_ids=match_ids,
+        max_seconds=max_seconds,
+        request_timeout=8.0,
+        attempts=1,
+    )
+    results = {
+        row["id"]: {
+            "home_score": row["home_score"],
+            "away_score": row["away_score"],
+            "corners_total": row.get("corners_total"),
+            "source": row["source"],
+        }
+        for row in _official_result_events(matches)
+        if row["id"] in match_ids
+    }
+    return results, _official_match_statuses(match_ids, matches)
 
 
 def fetch_official_results(match_ids: set[str], dates: set[str]) -> dict[str, dict[str, Any]]:

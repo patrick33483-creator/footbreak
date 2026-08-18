@@ -15,7 +15,7 @@ from .common import (
     write_json_atomic,
 )
 from .config import Settings
-from .hkjc import fetch_official_match_statuses, fetch_official_results
+from .hkjc import fetch_official_settlement_bundle
 from .ledger import condition_bets, recompute_stats
 from .lines import pnl, settle_handicap, settle_total
 from .matching import Event, canonical_league_key, canonical_team_key, match_event
@@ -369,13 +369,13 @@ def _settle_due_locked(config: Settings) -> dict[str, Any]:
         dates = {parse_time(bet.get("kickoff")).strftime("%Y-%m-%d") for bet in result_lookup_due if parse_time(bet.get("kickoff"))}
         ids = {str(bet.get("hkjc_match_id")) for bet in result_lookup_due if bet.get("hkjc_match_id")}
         try:
-            hkjc_results = fetch_official_results(ids, dates)
+            hkjc_results, hkjc_statuses = fetch_official_settlement_bundle(
+                ids,
+                dates,
+                max_seconds=60.0,
+            )
         except Exception:
-            hkjc_results = {}
-        try:
-            hkjc_statuses = fetch_official_match_statuses(ids, dates)
-        except Exception:
-            hkjc_statuses = {}
+            hkjc_results, hkjc_statuses = {}, {}
     def needs_titan_result(bet: dict[str, Any]) -> bool:
         hkjc_id = str(bet.get("hkjc_match_id") or "")
         hkjc_state = hkjc_statuses.get(hkjc_id) or {}
@@ -392,6 +392,9 @@ def _settle_due_locked(config: Settings) -> dict[str, Any]:
         return not _live_blocks_fallback(live, now) and official is None
 
     titan_client = TitanClient(config)
+    # Exact detail pages can require two provider reads each. Keep a small
+    # per-pass fanout cap; unresolved bets remain pending for the next pass.
+    titan_client.limit_result_detail_requests(3)
     titan_results: list[dict[str, Any]] = []
     if any(needs_titan_result(bet) for bet in due):
         try:

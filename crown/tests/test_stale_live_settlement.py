@@ -36,10 +36,9 @@ class StaleLiveSettlementTests(unittest.TestCase):
              patch("crown.settle._refresh_live", return_value={
                  "pin-1": {"seen_live": True, "last_live_seen_at": stale},
              }), \
-             patch("crown.settle.fetch_official_results", return_value={
+             patch("crown.settle.fetch_official_settlement_bundle", return_value=({
                  "hkjc-1": {"home_score": 2, "away_score": 0},
-             }), \
-             patch("crown.settle.fetch_official_match_statuses", return_value={}), \
+             }, {})), \
              patch("crown.settle.TitanClient.results", return_value=[]), \
              patch("crown.settle.save_ledger"):
             result = settle.settle_due(self._config(directory))
@@ -55,15 +54,13 @@ class StaleLiveSettlementTests(unittest.TestCase):
              patch("crown.settle._refresh_live", return_value={
                  "pin-1": {"seen_live": True, "last_live_seen_at": fresh},
              }), \
-             patch("crown.settle.fetch_official_results") as official, \
-             patch("crown.settle.fetch_official_match_statuses") as statuses, \
+             patch("crown.settle.fetch_official_settlement_bundle") as official, \
              patch("crown.settle.TitanClient.results") as titan_results, \
              patch("crown.settle.save_ledger"):
             result = settle.settle_due(self._config(directory))
         self.assertEqual(result["settled"], 0)
         self.assertEqual(ledger["bets"][0]["settlement_pending_reason"], "pinnapi_live_cache_fresh")
         official.assert_not_called()
-        statuses.assert_not_called()
         titan_results.assert_not_called()
 
     def test_repeated_live_refresh_failure_releases_legacy_cache(self) -> None:
@@ -74,10 +71,9 @@ class StaleLiveSettlementTests(unittest.TestCase):
              patch("crown.settle._refresh_live", side_effect=OSError("temporary")), \
              patch("crown.settle.read_json", return_value=cache), \
              patch("crown.settle.write_json_atomic"), \
-             patch("crown.settle.fetch_official_results", return_value={
+             patch("crown.settle.fetch_official_settlement_bundle", return_value=({
                  "hkjc-1": {"home_score": 2, "away_score": 0},
-             }), \
-             patch("crown.settle.fetch_official_match_statuses", return_value={}), \
+             }, {})), \
              patch("crown.settle.TitanClient.results", return_value=[]), \
              patch("crown.settle.save_ledger"):
             result = settle.settle_due(self._config(directory))

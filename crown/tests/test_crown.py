@@ -23,7 +23,7 @@ from unittest.mock import MagicMock, Mock, patch
 from crown.config import settings
 from crown.dashboard_data import build, write_dashboard_data
 from crown.engine import _cached_t5_crown_snapshot, _candidates, _crown_market_forecasts, _fixture_baseline_prediction, _fresh, _hkjc_chl_candidates, _hkjc_chl_forecasts, _prediction, _prioritize_tick_rows, _refresh_crown_quote, _skip_new_confirmed_empty_crown, _sweep_rows_with_due_existing, _tick_rows_from_predictions, _wdl_prediction, run
-from crown.hkjc import fetch_official_results
+from crown.hkjc import fetch_official_results, fetch_official_settlement_bundle
 from crown.ledger import (
     PREDICTION_ERA,
     completed_stages,
@@ -3087,8 +3087,7 @@ class CrownSafetyTests(unittest.TestCase):
         }]
         with patch("crown.settle.load_ledger", return_value=ledger), \
              patch("crown.settle._refresh_live", return_value={}), \
-             patch("crown.settle.fetch_official_results", return_value={}), \
-             patch("crown.settle.fetch_official_match_statuses", return_value={}), \
+             patch("crown.settle.fetch_official_settlement_bundle", return_value=({}, {})), \
              patch("crown.settle.TitanClient.results", return_value=titan), \
              patch("crown.settle.save_ledger"):
             result = crown_settle.settle_due(config)
@@ -3121,8 +3120,7 @@ class CrownSafetyTests(unittest.TestCase):
         }
         with patch("crown.settle.load_ledger", return_value=ledger), \
              patch("crown.settle._refresh_live", return_value={}), \
-             patch("crown.settle.fetch_official_results", return_value={}), \
-             patch("crown.settle.fetch_official_match_statuses", return_value={}), \
+             patch("crown.settle.fetch_official_settlement_bundle", return_value=({}, {})), \
              patch("crown.settle.TitanClient.results", return_value=[]), \
              patch("crown.settle.TitanClient.result_detail", return_value=detail), \
              patch("crown.settle.save_ledger"):
@@ -3154,8 +3152,7 @@ class CrownSafetyTests(unittest.TestCase):
         }
         with patch("crown.settle.load_ledger", return_value=ledger), \
              patch("crown.settle._refresh_live", return_value={}), \
-             patch("crown.settle.fetch_official_results", return_value={}), \
-             patch("crown.settle.fetch_official_match_statuses", return_value={}), \
+             patch("crown.settle.fetch_official_settlement_bundle", return_value=({}, {})), \
              patch("crown.settle.TitanClient.results", return_value=[]), \
              patch("crown.settle.TitanClient.result_detail", return_value=wrong_detail), \
              patch("crown.settle.save_ledger"):
@@ -3185,7 +3182,7 @@ class CrownSafetyTests(unittest.TestCase):
         }
         with patch("crown.settle.load_ledger", return_value=ledger), \
              patch("crown.settle._refresh_live", return_value={"pin-match": {"seen_live": True}}), \
-             patch("crown.settle.fetch_official_results", return_value=official), \
+             patch("crown.settle.fetch_official_settlement_bundle", return_value=(official, {})), \
              patch("crown.settle.TitanClient.results") as titan_results, \
              patch("crown.settle.save_ledger"):
             result = crown_settle.settle_due(config)
@@ -3220,7 +3217,7 @@ class CrownSafetyTests(unittest.TestCase):
             "home_score": 3, "away_score": 0,
         }]
         with patch("crown.settle.load_ledger", return_value=ledger), \
-             patch("crown.settle.fetch_official_results", return_value=official), \
+             patch("crown.settle.fetch_official_settlement_bundle", return_value=(official, {})), \
              patch("crown.settle.TitanClient.results", return_value=titan), \
              patch("crown.settle.TitanClient.result_detail", return_value={"corners_total": 11}), \
              patch("crown.settle.save_ledger"):
@@ -3258,7 +3255,7 @@ class CrownSafetyTests(unittest.TestCase):
             "home_score": 3, "away_score": 0,
         }]
         with patch("crown.settle.load_ledger", return_value=ledger), \
-             patch("crown.settle.fetch_official_results", return_value=official), \
+             patch("crown.settle.fetch_official_settlement_bundle", return_value=(official, {})), \
              patch("crown.settle.TitanClient.results", return_value=titan), \
              patch("crown.settle.TitanClient.result_detail") as detail, \
              patch("crown.settle.save_ledger"):
@@ -3517,6 +3514,106 @@ class CrownSafetyTests(unittest.TestCase):
         self.assertEqual(rows["wanted"]["away_score"], 1)
         self.assertEqual(rows["wanted"]["corners_total"], 12)
         self.assertEqual(rows["wanted"]["source"], "hkjc_official")
+
+    def test_hkjc_settlement_bundle_fetches_once_for_results_and_statuses(self) -> None:
+        class Response:
+            def __init__(self, payload):
+                self.raw = json.dumps(payload).encode("utf-8")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+            def read(self):
+                return self.raw
+
+        payload = {
+            "data": {
+                "matchNumByDate": {"total": 2},
+                "matches": [
+                    {
+                        "id": "result-id",
+                        "status": "MATCHENDED",
+                        "results": [{
+                            "homeResult": "2",
+                            "awayResult": "0",
+                            "ttlCornerResult": "9",
+                            "payoutConfirmed": True,
+                            "stageId": 5,
+                            "resultType": 1,
+                            "sequence": 1,
+                        }],
+                    },
+                    {
+                        "id": "refund-id",
+                        "status": "REFUNDED",
+                        "poolInfo": {"refundPools": ["HDC"]},
+                        "results": [],
+                    },
+                ],
+            },
+        }
+        with patch(
+            "crown.hkjc.urllib.request.urlopen",
+            return_value=Response(payload),
+        ) as opener:
+            results, statuses = fetch_official_settlement_bundle(
+                {"result-id", "refund-id"},
+                {"2026-08-09"},
+            )
+        self.assertEqual(opener.call_count, 1)
+        self.assertLessEqual(opener.call_args.kwargs["timeout"], 8.0)
+        self.assertEqual(results["result-id"]["home_score"], 2)
+        self.assertNotIn("refund-id", results)
+        self.assertEqual(statuses["refund-id"]["status"], "REFUNDED")
+        self.assertEqual(statuses["refund-id"]["refund_pools"], ["HDC"])
+
+    def test_hkjc_settlement_bundle_keeps_partial_rows_at_global_deadline(self) -> None:
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+            def read(self):
+                return json.dumps({
+                    "data": {
+                        "matchNumByDate": {"total": 40},
+                        "matches": [{
+                            "id": "confirmed-id",
+                            "status": "MATCHENDED",
+                            "results": [{
+                                "homeResult": "1",
+                                "awayResult": "0",
+                                "payoutConfirmed": True,
+                                "stageId": 5,
+                                "resultType": 1,
+                                "sequence": 1,
+                            }],
+                        }],
+                    },
+                }).encode("utf-8")
+
+        with patch(
+            "crown.hkjc.time.monotonic",
+            side_effect=[0.0, 0.1, 0.2, 61.0],
+        ), patch(
+            "crown.hkjc.urllib.request.urlopen",
+            return_value=Response(),
+        ) as opener:
+            results, statuses = fetch_official_settlement_bundle(
+                {"confirmed-id", "not-yet-seen"},
+                {"2026-08-09"},
+                max_seconds=60.0,
+            )
+        self.assertEqual(opener.call_count, 1)
+        self.assertEqual(results["confirmed-id"]["home_score"], 1)
+        self.assertEqual(statuses["confirmed-id"]["status"], "MATCHENDED")
+        self.assertNotIn("not-yet-seen", results)
+        self.assertNotIn("not-yet-seen", statuses)
 
 
 if __name__ == "__main__":
