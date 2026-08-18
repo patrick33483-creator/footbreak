@@ -119,6 +119,32 @@ class ResultSourceTests(unittest.TestCase):
         )
         self.assertEqual(stats["n_settled"], 0)
 
+    def test_due_pending_bet_records_real_settlement_attempt_before_result_lookup(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            ledger_path = Path(directory, "sim_ledger.json")
+            ledger_path.write_text(json.dumps({
+                "bankroll": 50000,
+                "bets": [{
+                    "bet_id": "pending-attempt", "match_id": "50079999",
+                    "home": "主隊", "away": "客隊",
+                    "kickoff": "2026-08-09 10:00",
+                    "market": "讓球", "code": "HDC",
+                    "condition": "-0.5", "side": "H",
+                    "label": "主 -0.5", "odds": 2.0,
+                    "stake": 100, "status": "PENDING",
+                    "portfolio": settle.PORTFOLIO,
+                    "strategy": settle.STRATEGY,
+                }],
+                "watch": {}, "log": [], "stats": {},
+            }), encoding="utf-8")
+            with patch.object(settle, "LEDGER", str(ledger_path)), \
+                 patch.object(settle, "fetch_hkjc_results", return_value={}), \
+                 patch.object(settle, "fetch_hkjc_statuses", return_value={}):
+                settle.run(force=True)
+            saved = json.loads(ledger_path.read_text(encoding="utf-8"))
+        self.assertEqual(saved["bets"][0]["status"], "PENDING")
+        self.assertIsNotNone(datetime.fromisoformat(saved["bets"][0]["last_settlement_attempt_at"]))
+
     def test_terminal_footbreak_exclusion_is_persisted_to_learning_store(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "learning.sqlite"

@@ -378,6 +378,11 @@ def run(force=False):
             continue
         if force or (now - kickoff).total_seconds() / 60 >= SETTLE_AFTER_MIN:
             due.append((bet, kickoff))
+    # Record a real, durable attempt before contacting any results source.  The
+    # incident monitor deliberately requires this post-start evidence instead
+    # of treating an old kickoff as a stuck settlement by itself.
+    for bet, _ in due:
+        bet["last_settlement_attempt_at"] = now.isoformat(timespec="seconds")
     changes, unresolved, provider_errors = [], [], []
     official = {}
     official_statuses = {}

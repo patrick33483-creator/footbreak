@@ -30,7 +30,7 @@ report_runner_failure() {
   # incident.  The systemd OnFailure path also catches hard timeouts.
   if [ "$rc" -ne 0 ] && [ "$rc" -ne 75 ] && [ -f "$ALERT_HELPER" ]; then
     python3 "$ALERT_HELPER" event --system footbreak \
-      --kind "service_failure:${SERVICE_UNIT}" >/dev/null 2>&1 || true
+      --unit "$SERVICE_UNIT" >/dev/null 2>&1 || true
   fi
 }
 trap report_runner_failure EXIT

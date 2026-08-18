@@ -25,7 +25,7 @@ report_runner_failure() {
   esac
   if [ "$rc" -ne 0 ] && [ "$rc" -ne 75 ] && "$crown_alertable" && [ -f "$ALERT_HELPER" ]; then
     python3 "$ALERT_HELPER" event --system crown \
-      --kind "service_failure:${SERVICE_UNIT}" >/dev/null 2>&1 || true
+      --unit "$SERVICE_UNIT" >/dev/null 2>&1 || true
   fi
 }
 trap report_runner_failure EXIT

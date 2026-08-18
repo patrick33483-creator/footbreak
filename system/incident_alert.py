@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Bounded, low-noise operational alerts for Footbreak and Crown.
+"""Private, low-noise operational alerts for Footbreak and Crown.
 
-This is intentionally independent of prediction/recommendation notifications.
-It sends only sanitised operational facts and never inspects or emits provider
-payloads, credentials, betting signals, or recommendation content.
+This component is independent of prediction/recommendation notifications.  It
+stores only sanitised category/count state and never emits provider payloads,
+credentials, exception details, fixture identifiers, or betting content.
 """
 from __future__ import annotations
 
@@ -14,25 +14,24 @@ import os
 import re
 import subprocess
 import tempfile
-import time
 import urllib.request
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
 HKT = timezone(timedelta(hours=8))
-STATE_VERSION = 1
+STATE_VERSION = 2
 STATE_LIMIT = 128
 AUDIT_LIMIT = 256
-DEFAULT_COOLDOWN_SECONDS = 30 * 60
 DEFAULT_T5_LOOKBACK_SECONDS = 6 * 60 * 60
 DEFAULT_SETTLEMENT_GRACE_SECONDS = 4 * 60 * 60
+DEFAULT_SETTLEMENT_ATTEMPT_MAX_AGE_SECONDS = 24 * 60 * 60
+LEDGER_POSITIVE_OBSERVATIONS = 2
+LEDGER_HEALTHY_OBSERVATIONS = 2
+SERVICE_HEALTHY_OBSERVATIONS = 2
 _SAFE_TOKEN = re.compile(r"[^A-Za-z0-9_.:@/-]+")
-
-
-class IncidentAlertError(Exception):
-    """A local alerting error that must never break the production job."""
+_SAFE_DETAIL_KEYS = {"missed_t5", "source_persistence", "settlement_stuck"}
 
 
 def _flag(name: str, default: bool = False) -> bool:
@@ -88,6 +87,16 @@ def _safe_count(value: Any) -> int:
         return 0
 
 
+def _safe_details(value: Mapping[str, Any] | None) -> dict[str, int]:
+    if not isinstance(value, Mapping):
+        return {}
+    return {
+        str(key): _safe_count(count)
+        for key, count in value.items()
+        if str(key) in _SAFE_DETAIL_KEYS and _safe_count(count) > 0
+    }
+
+
 def _read_json(path: Path, fallback: Any) -> Any:
     try:
         return json.loads(path.read_text(encoding="utf-8"))
@@ -125,22 +134,29 @@ def _state_lock(path: Path):
 
 
 def _default_state() -> dict[str, Any]:
-    return {"version": STATE_VERSION, "incidents": {}, "audit": []}
+    return {
+        "version": STATE_VERSION,
+        "monitoring_started_at": None,
+        "incidents": {},
+        "audit": [],
+    }
 
 
 def _normalise_state(value: Any) -> dict[str, Any]:
     state = value if isinstance(value, dict) else {}
     incidents = state.get("incidents") if isinstance(state.get("incidents"), dict) else {}
     audit = state.get("audit") if isinstance(state.get("audit"), list) else []
+    started = _parse_time(state.get("monitoring_started_at"))
     return {
         "version": STATE_VERSION,
+        "monitoring_started_at": _iso(started) if started else None,
         "incidents": dict(list(incidents.items())[-STATE_LIMIT:]),
         "audit": [row for row in audit if isinstance(row, dict)][-AUDIT_LIMIT:],
     }
 
 
 def telegram_sender(system: str) -> Callable[[str], bool]:
-    """Use the already-configured direct Telegram transport without exposing it."""
+    """Use each system's existing direct Telegram configuration."""
     if system == "crown":
         enabled = _flag("CROWN_TELEGRAM_ENABLED")
         token = os.environ.get("CROWN_TELEGRAM_BOT_TOKEN") or os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -162,12 +178,16 @@ def telegram_sender(system: str) -> Callable[[str], bool]:
         )
         try:
             with urllib.request.urlopen(request, timeout=5) as response:
-                payload = json.loads(response.read().decode("utf-8"))
-            return bool(payload.get("ok"))
+                return bool(json.loads(response.read().decode("utf-8")).get("ok"))
         except Exception:
             return False
 
     return send
+
+
+def service_incident_key(unit: str) -> str:
+    """One canonical key shared by shell wrappers and systemd OnFailure."""
+    return f"service_failure:{_safe_token(unit)}"
 
 
 class IncidentAlerts:
@@ -175,34 +195,61 @@ class IncidentAlerts:
         self,
         state_path: Path | None = None,
         sender: Callable[[str], bool] | None = None,
-        cooldown_seconds: int | None = None,
+        enabled: bool | None = None,
     ) -> None:
         self.state_path = state_path or Path(
             os.environ.get("INCIDENT_ALERT_STATE_PATH", "/var/lib/footbreak/incident-alerts.json")
         )
-        # Tests may inject a sender.  Production chooses each system's existing
-        # Telegram configuration at report time, keeping Crown separate.
         self.sender = sender
-        self.cooldown_seconds = cooldown_seconds or _positive_int(
-            "INCIDENT_ALERT_COOLDOWN_SECONDS", DEFAULT_COOLDOWN_SECONDS, 24 * 60 * 60
-        )
+        self.enabled = _flag("INCIDENT_ALERT_ENABLED", True) if enabled is None else bool(enabled)
 
     @staticmethod
-    def message(system: str, kind: str, active: bool, count: int = 0) -> str:
+    def message(
+        system: str,
+        kind: str,
+        active: bool,
+        count: int = 0,
+        details: Mapping[str, Any] | None = None,
+    ) -> str:
         system_label = "皇冠" if system == "crown" else "足破"
         kind_base = kind.split(":", 1)[0]
         descriptions = {
             "service_failure": "排程／服務執行失敗或逾時",
-            "missed_t5": "T-5 必要賽前快照已越過安全時窗仍未保存",
-            "source_persistence": "資料來源故障，未能保存可用的必要階段資料",
-            "settlement_stuck": "模擬結算超過容許時間仍未完成",
             "health_check_failure": "部署或健康檢查異常",
         }
+        if kind_base == "ledger_digest":
+            if not active:
+                return f"【運作恢復：{system_label}】帳本監察異常已連續健康並恢復。"
+            labels = {
+                "missed_t5": "T-5 快照逾時未保存",
+                "source_persistence": "必要資料來源未能保存",
+                "settlement_stuck": "模擬結算逾時",
+            }
+            parts = [
+                f"{labels[key]} {_safe_count(value)} 項"
+                for key, value in _safe_details(details).items()
+                if key in labels
+            ]
+            return f"【運作警報：{system_label}】帳本監察發現：{'、'.join(parts) or '異常'}。"
         description = descriptions.get(kind_base, "運作異常")
         suffix = f"（受影響項目：{_safe_count(count)}）" if active and count else ""
         if active:
-            return f"【運作警報：{system_label}】{description}{suffix}。已記錄並會按冷卻時間去重。"
-        return f"【運作恢復：{system_label}】{description}已恢復。"
+            return f"【運作警報：{system_label}】{description}{suffix}。"
+        return f"【運作恢復：{system_label}】{description}已連續健康並恢復。"
+
+    def monitoring_started_at(self, now: datetime | None = None) -> tuple[datetime | None, bool]:
+        """Create a silent ledger baseline exactly once when monitoring is enabled."""
+        if not self.enabled:
+            return None, False
+        current = _now(now)
+        with _state_lock(self.state_path):
+            state = _normalise_state(_read_json(self.state_path, _default_state()))
+            started = _parse_time(state.get("monitoring_started_at"))
+            if started:
+                return started, False
+            state["monitoring_started_at"] = _iso(current)
+            _write_json_atomic(self.state_path, state)
+            return current, True
 
     def report(
         self,
@@ -211,45 +258,73 @@ class IncidentAlerts:
         kind: str,
         active: bool,
         count: int = 0,
+        details: Mapping[str, Any] | None = None,
+        positive_needed: int = 1,
+        healthy_needed: int = 1,
         now: datetime | None = None,
     ) -> bool:
+        """Record an observation and emit at most one transition notification.
+
+        An active incident never repeats periodically.  Positive/healthy
+        observation thresholds provide hysteresis for ledger findings and
+        stable service recovery without delaying service-failure alerts.
+        """
+        if not self.enabled:
+            return False
         system = "crown" if system == "crown" else "footbreak"
         kind = _safe_token(kind)
         key = f"{system}:{kind}"
         observed_at = _iso(now)
-        epoch = _now(now).timestamp()
+        count = _safe_count(count)
+        details = _safe_details(details)
+        positive_needed = max(1, int(positive_needed))
+        healthy_needed = max(1, int(healthy_needed))
         delivered = False
         with _state_lock(self.state_path):
             state = _normalise_state(_read_json(self.state_path, _default_state()))
             incidents = state["incidents"]
             prior = incidents.get(key) if isinstance(incidents.get(key), dict) else {}
             was_active = bool(prior.get("active"))
-            last_alert_epoch = float(prior.get("last_alert_epoch") or 0)
-            send_now = active and (
-                not was_active or epoch - last_alert_epoch >= self.cooldown_seconds
-            )
-            recovery = not active and was_active
-            if send_now or recovery:
+            positive_streak = int(prior.get("positive_streak") or 0)
+            healthy_streak = int(prior.get("healthy_streak") or 0)
+            emit = False
+            event = ""
+            if active:
+                positive_streak += 1
+                healthy_streak = 0
+                current_active = was_active
+                if not was_active and positive_streak >= positive_needed:
+                    current_active = True
+                    emit, event = True, "alert"
+            else:
+                positive_streak = 0
+                healthy_streak += 1
+                current_active = was_active
+                if was_active and healthy_streak >= healthy_needed:
+                    current_active = False
+                    emit, event = True, "recovery"
+            if emit:
                 sender = self.sender or telegram_sender(system)
-                delivered = bool(sender(self.message(system, kind, active, count)))
-            current = {
-                "active": bool(active),
+                delivered = bool(sender(self.message(system, kind, current_active, count, details)))
+            incidents[key] = {
+                "active": current_active,
+                "positive_streak": positive_streak,
+                "healthy_streak": healthy_streak,
                 "last_observed_at": observed_at,
-                "last_count": _safe_count(count),
-                "last_alert_epoch": epoch if send_now else last_alert_epoch,
-                "last_transition_at": observed_at if was_active != bool(active) else prior.get("last_transition_at", observed_at),
+                "last_count": count,
+                "last_details": details,
+                "last_transition_at": observed_at if emit else prior.get("last_transition_at"),
             }
-            incidents[key] = current
-            # Keep the most recently observed incidents and a bounded redacted audit.
             state["incidents"] = dict(
                 sorted(incidents.items(), key=lambda item: str(item[1].get("last_observed_at", "")))[-STATE_LIMIT:]
             )
-            if send_now or recovery:
+            if emit:
                 state["audit"].append({
                     "at": observed_at,
                     "incident": key,
-                    "event": "alert" if active else "recovery",
-                    "count": _safe_count(count),
+                    "event": event,
+                    "count": count,
+                    "details": details,
                     "delivered": delivered,
                 })
             state["audit"] = state["audit"][-AUDIT_LIMIT:]
@@ -267,8 +342,7 @@ def _has_t5_stage(watch: dict[str, Any]) -> bool:
 
 
 def _is_unusable_t5_stage(row: dict[str, Any]) -> bool:
-    # This only identifies explicit fail-closed source outcomes.  A normal
-    # "觀望"/no-pick T-5 record is healthy and must never become an alert.
+    # A normal "觀望"/no-pick T-5 is healthy and cannot become an incident.
     if str(row.get("stage")) != "T-5":
         return False
     return (
@@ -276,6 +350,12 @@ def _is_unusable_t5_stage(row: dict[str, Any]) -> bool:
         or str(row.get("source_status") or "") in {
             "analysis_exception", "no_prediction_due_to_source", "source_or_model_unavailable"
         }
+    )
+
+
+def _stage_time(row: dict[str, Any]) -> datetime | None:
+    return _parse_time(
+        row.get("ts") or row.get("captured_at") or row.get("created_at") or row.get("observed_at")
     )
 
 
@@ -289,37 +369,54 @@ def _load_footbreak(path: Path) -> tuple[list[dict[str, Any]], list[dict[str, An
     return rows, [row for row in bets if isinstance(row, dict)]
 
 
-def _load_crown(path: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    return _load_footbreak(path)
-
-
 def _operational_findings(
     watches: list[dict[str, Any]],
     bets: list[dict[str, Any]],
+    monitoring_started_at: datetime,
     now: datetime,
 ) -> dict[str, int]:
-    t5_cutoff = now - timedelta(seconds=_positive_int(
-        "INCIDENT_T5_LOOKBACK_SECONDS", DEFAULT_T5_LOOKBACK_SECONDS, 48 * 60 * 60
-    ))
-    settlement_cutoff = now - timedelta(seconds=_positive_int(
+    t5_cutoff = max(
+        monitoring_started_at,
+        now - timedelta(seconds=_positive_int(
+            "INCIDENT_T5_LOOKBACK_SECONDS", DEFAULT_T5_LOOKBACK_SECONDS, 48 * 60 * 60
+        )),
+    )
+    settlement_grace = timedelta(seconds=_positive_int(
         "INCIDENT_SETTLEMENT_GRACE_SECONDS", DEFAULT_SETTLEMENT_GRACE_SECONDS, 7 * 24 * 60 * 60
+    ))
+    attempt_max_age = timedelta(seconds=_positive_int(
+        "INCIDENT_SETTLEMENT_ATTEMPT_MAX_AGE_SECONDS", DEFAULT_SETTLEMENT_ATTEMPT_MAX_AGE_SECONDS, 14 * 24 * 60 * 60
     ))
     missed = source_failed = 0
     for watch in watches:
         kickoff = _parse_time(watch.get("kickoff") or watch.get("kickoff_hkt"))
-        if not kickoff or not (t5_cutoff <= kickoff <= now):
+        # Existing/deployed backlog is not actionable.  Only fixtures which
+        # crossed their T-5 window after monitoring began can be considered.
+        if not kickoff or not (t5_cutoff < kickoff <= now):
             continue
         stages = _stages(watch)
         if not _has_t5_stage(watch):
             missed += 1
-        elif any(_is_unusable_t5_stage(stage) for stage in stages):
+            continue
+        if any(
+            _is_unusable_t5_stage(stage)
+            and (stage_at := _stage_time(stage)) is not None
+            and monitoring_started_at < stage_at <= now
+            for stage in stages
+        ):
             source_failed += 1
-    settlement_stuck = sum(
-        1
-        for bet in bets
-        if str(bet.get("status") or "").upper() == "PENDING"
-        and (_parse_time(bet.get("kickoff") or bet.get("kickoff_hkt")) or now) < settlement_cutoff
-    )
+    settlement_stuck = 0
+    for bet in bets:
+        if str(bet.get("status") or "").upper() != "PENDING":
+            continue
+        attempt = _parse_time(bet.get("last_settlement_attempt_at"))
+        # Kickoff age alone is intentionally insufficient: the operator needs
+        # proof a real post-start settlement pass attempted this pending row.
+        if not attempt or not (monitoring_started_at < attempt <= now):
+            continue
+        age = now - attempt
+        if settlement_grace <= age <= attempt_max_age:
+            settlement_stuck += 1
     return {
         "missed_t5": missed,
         "source_persistence": source_failed,
@@ -336,7 +433,9 @@ def check_ledgers(
     now: datetime | None = None,
 ) -> dict[str, int]:
     current = _now(now)
-    findings: dict[str, int] = {}
+    monitoring_started_at, baseline = alerts.monitoring_started_at(current)
+    if not alerts.enabled or monitoring_started_at is None:
+        return {}
     targets: list[tuple[str, tuple[list[dict[str, Any]], list[dict[str, Any]]]]] = []
     if system in {"footbreak", "all"}:
         path = footbreak_ledger or Path(os.environ.get("FOOTBREAK_LEDGER_PATH", "/opt/footbreak/system/sim_ledger.json"))
@@ -344,11 +443,25 @@ def check_ledgers(
     if system in {"crown", "all"}:
         default = Path(os.environ.get("CROWN_STATE_DIR", "/var/lib/footbreak/crown")) / "ledger.json"
         path = crown_ledger or Path(os.environ.get("CROWN_LEDGER_PATH", default))
-        targets.append(("crown", _load_crown(path)))
+        targets.append(("crown", _load_footbreak(path)))
+    findings: dict[str, int] = {}
     for label, (watches, bets) in targets:
-        for kind, count in _operational_findings(watches, bets, current).items():
-            alerts.report(system=label, kind=kind, active=count > 0, count=count, now=current)
-            findings[f"{label}:{kind}"] = count
+        grouped = _operational_findings(watches, bets, monitoring_started_at, current)
+        findings.update({f"{label}:{kind}": count for kind, count in grouped.items()})
+        # First observed ledger state is a silent baseline.  It must not alert
+        # or resolve historical conditions even if they look overdue.
+        if baseline:
+            continue
+        alerts.report(
+            system=label,
+            kind="ledger_digest",
+            active=any(grouped.values()),
+            count=sum(grouped.values()),
+            details=grouped,
+            positive_needed=LEDGER_POSITIVE_OBSERVATIONS,
+            healthy_needed=LEDGER_HEALTHY_OBSERVATIONS,
+            now=current,
+        )
     return findings
 
 
@@ -386,7 +499,8 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     event = sub.add_parser("event")
     event.add_argument("--system", choices=("footbreak", "crown"), required=True)
-    event.add_argument("--kind", required=True)
+    event.add_argument("--kind")
+    event.add_argument("--unit")
     event.add_argument("--count", type=int, default=1)
     clear = sub.add_parser("clear-service")
     clear.add_argument("--system", choices=("footbreak", "crown"), required=True)
@@ -404,23 +518,32 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     alerts = _alerts_from_args(args)
     if args.command == "event":
-        alerts.report(system=args.system, kind=args.kind, active=True, count=args.count)
+        if not args.kind and not args.unit:
+            parser.error("event requires --kind or --unit")
+        alerts.report(
+            system=args.system,
+            kind=service_incident_key(args.unit) if args.unit else args.kind,
+            active=True,
+            count=args.count,
+        )
     elif args.command == "clear-service":
         alerts.report(
             system=args.system,
-            kind=f"service_failure:{_safe_token(args.unit)}",
+            kind=service_incident_key(args.unit),
             active=False,
+            healthy_needed=SERVICE_HEALTHY_OBSERVATIONS,
         )
     elif args.command == "clear":
-        alerts.report(system=args.system, kind=args.kind, active=False)
+        alerts.report(
+            system=args.system,
+            kind=args.kind,
+            active=False,
+            healthy_needed=SERVICE_HEALTHY_OBSERVATIONS if args.kind == "health_check_failure" else 1,
+        )
     elif args.command == "systemd-failure":
         if not _systemd_expected_preemption(args.unit):
             system = "crown" if _safe_token(args.unit).startswith("crown-") else args.system
-            alerts.report(
-                system=system,
-                kind=f"service_failure:{_safe_token(args.unit)}",
-                active=True,
-            )
+            alerts.report(system=system, kind=service_incident_key(args.unit), active=True)
     else:
         check_ledgers(
             alerts, system=args.system,
