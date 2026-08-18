@@ -7,7 +7,7 @@ from pathlib import Path
 import traceback
 
 from .config import settings
-from .dashboard_data import write_dashboard_data
+from .dashboard_data import write_dashboard_data, write_tick_dashboard_projection
 from .engine import run
 from .notify import notify_new
 from .prediction_history import archive_watch_fast, update_history
@@ -84,9 +84,20 @@ def main() -> int:
         if args.mode == "tick":
             # Tick has a sub-minute service cap.  Archive its committed stage
             # immediately, but leave provider result sync, grading, aggregate
-            # stats, and granular mining to sweep/settle.
+            # stats, and granular mining to sweep/settle.  Publish only the
+            # committed local card/ledger projection so the public board does
+            # not falsely lag a native T-5 until the next full sweep.
             archive_watch_fast(config, ledger)
-            result["dashboard_refresh_deferred"] = "sweep"
+            try:
+                write_tick_dashboard_projection(config, ledger)
+                result["dashboard_projection"] = "post_tick_local_state"
+            except Exception as exc:
+                # The persisted stage remains the source of truth and will be
+                # projected by the next sweep.  A display write must never
+                # turn a successful deadline-bound prediction into a failure.
+                result["dashboard_projection_warning"] = (
+                    f"dashboard_projection_{type(exc).__name__}"
+                )
         else:
             update_history(config, ledger)
     except Exception as exc:

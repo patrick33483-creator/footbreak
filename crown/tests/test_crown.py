@@ -22,7 +22,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, Mock, patch
 
 from crown.config import settings
-from crown.dashboard_data import build, write_dashboard_data
+from crown.dashboard_data import build, write_dashboard_data, write_tick_dashboard_projection
 from crown.engine import _cached_t5_crown_snapshot, _candidates, _crown_market_forecasts, _fixture_baseline_prediction, _fresh, _hkjc_chl_candidates, _hkjc_chl_forecasts, _prediction, _prioritize_tick_rows, _refresh_crown_quote, _skip_new_confirmed_empty_crown, _sweep_rows_with_due_existing, _tick_rows_from_predictions, _wdl_prediction, run
 from crown.hkjc import fetch_official_results, fetch_official_settlement_bundle
 from crown.ledger import (
@@ -2111,6 +2111,55 @@ class CrownSafetyTests(unittest.TestCase):
             self.assertEqual(S_IMODE(output.stat().st_mode), 0o644)
             self.assertNotEqual(output.parent, config.state_dir)
 
+    def test_tick_dashboard_projection_publishes_persisted_t5_without_heavy_history_work(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = replace(settings(), state_dir=root / "private-state", web_root=root / "web")
+            kickoff = (period_bounds()[0] + timedelta(hours=1)).isoformat()
+            card = {
+                "match_id": "native-t5", "league": "League", "home": "Home", "away": "Away",
+                "kickoff_hkt": kickoff, "stage": "T-5", "status": "PREDICTION_READY",
+                "book_odds": {"crown": [{"market": "HDC", "odds": 1.91}]},
+                "stages": [{"stage": "首預"}, {"stage": "T-30"}, {"stage": "T-5",
+                            "status": "PREDICTION_READY", "ts": kickoff}],
+            }
+            save_predictions(config, [card])
+            ledger = load_ledger(config)
+            ledger["watch"] = {"native-t5": {
+                "match_id": "native-t5", "kickoff": kickoff, "stages": card["stages"],
+            }}
+            save_ledger(config, ledger)
+            config.web_root.mkdir(parents=True)
+            (config.web_root / "data.json").write_text(json.dumps({
+                "schema_version": "crown-dashboard-v2",
+                "generated_at": "2026-08-18T23:21:00+08:00",
+                "matches": [{"match_id": "native-t5", "stage": "T-30",
+                             "stages": [{"stage": "T-30"}]}],
+                "prediction_history": {"rows": [{"match_id": "old"}], "stats": {"cached": True}},
+            }), encoding="utf-8")
+            with patch(
+                "crown.dashboard_data.build",
+                side_effect=AssertionError("tick must not rebuild full dashboard"),
+            ), patch(
+                "crown.dashboard_data.normalize_history",
+                side_effect=AssertionError("tick must not normalize or grade history"),
+            ), patch(
+                "crown.prediction_history.calculate_stats",
+                side_effect=AssertionError("tick must not calculate history statistics"),
+            ), patch(
+                "crown.prediction_history.mine_granular_conditions",
+                side_effect=AssertionError("tick must not mine conditions"),
+            ):
+                output = write_tick_dashboard_projection(config, load_ledger(config))
+            payload = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(payload["matches"][0]["stage"], "T-5")
+            self.assertEqual(
+                [row["stage"] for row in payload["matches"][0]["stages"]],
+                ["首預", "T-30", "T-5"],
+            )
+            self.assertEqual(payload["prediction_history"]["stats"], {"cached": True})
+            self.assertNotEqual(payload["generated_at"], "2026-08-18T23:21:00+08:00")
+
     def test_dashboard_live_board_uses_verified_crown_prices_as_the_master_list(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -2353,14 +2402,23 @@ class CrownSafetyTests(unittest.TestCase):
         index = (root / "index.html").read_text(encoding="utf-8")
 
         self.assertIn("function nextStageText(m, mins)", app)
+        self.assertIn("function stageSnapshotStatus(m, stage, nowMs, generatedAt)", app)
         self.assertIn("if (t5) return '○ T-5 完成 · 唔買';", app)
         self.assertIn("if (t30) return '○ T-30 完成 · 等 T-5';", app)
         self.assertIn("if (mins > 40) return '○ 等 T-30';", app)
-        self.assertIn("if (mins >= 20) return '○ 正等 T-30 處理';", app)
-        self.assertIn("return '○ 錯過 T-30 · 等 T-5';", app)
+        self.assertIn("○ 儀表板快照過期 · 未能確認 T-30", app)
+        self.assertIn("○ 已確認未記錄 T-30 · 等 T-5", app)
+        self.assertIn("暫不判定冇落注", app)
         self.assertIn("nextStageText(m, mm)", app)
         self.assertNotIn("? '○ 唔買' : '○ 等 T-5'", app)
         self.assertIn("app.js?v=20260814-condition-simulation-v1", index)
+
+    def test_dashboard_freshness_status_smoke(self) -> None:
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("node is unavailable")
+        smoke = Path(__file__).with_name("dashboard_freshness_smoke.mjs")
+        subprocess.run([node, str(smoke)], check=True)
 
     def test_crown_history_orders_fixture_groups_and_stages(self) -> None:
         node = shutil.which("node")
@@ -2445,7 +2503,7 @@ class CrownSafetyTests(unittest.TestCase):
             self.assertEqual(persisted["stats"], cached_stats)
             self.assertEqual(persisted["rows"][0]["history_key"], "x|T-5")
 
-    def test_tick_post_processing_skips_full_history_and_dashboard_work(self) -> None:
+    def test_tick_post_processing_skips_full_history_and_full_dashboard_work(self) -> None:
         import crown.run as crown_run
 
         with tempfile.TemporaryDirectory() as directory:
@@ -2468,11 +2526,14 @@ class CrownSafetyTests(unittest.TestCase):
                  ), patch(
                      "crown.run.write_dashboard_data",
                      side_effect=AssertionError("tick must not rebuild dashboard"),
-                 ), patch("crown.run.notify_new", return_value=1) as notify, \
+                 ), patch(
+                     "crown.run.write_tick_dashboard_projection",
+                 ) as projection, patch("crown.run.notify_new", return_value=1) as notify, \
                  patch("sys.argv", ["crown.run", "tick"]), \
                  contextlib.redirect_stdout(stdout):
                 self.assertEqual(crown_run.main(), 0)
             archive.assert_called_once_with(config, ledger)
+            projection.assert_called_once_with(config, ledger)
             notify.assert_called_once_with(
                 ledger,
                 config,
@@ -2480,8 +2541,8 @@ class CrownSafetyTests(unittest.TestCase):
                 max_attempts=1,
             )
             self.assertEqual(
-                ast.literal_eval(stdout.getvalue())["dashboard_refresh_deferred"],
-                "sweep",
+                ast.literal_eval(stdout.getvalue())["dashboard_projection"],
+                "post_tick_local_state",
             )
 
     def test_sweep_retains_full_history_and_dashboard_processing(self) -> None:

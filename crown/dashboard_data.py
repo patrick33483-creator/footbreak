@@ -16,6 +16,98 @@ from .ledger import PREDICTION_ERA
 from .state import load_ledger, load_predictions, paths
 
 
+def _dashboard_matches(config: Settings) -> list[dict[str, Any]]:
+    """Return the persisted current-period Crown cards without remote work."""
+    return [
+        row for row in load_predictions(config)
+        if (kickoff := parse_time(row.get("kickoff_hkt") or row.get("kickoff"))) is not None
+        and in_current_period(kickoff)
+        and bool((row.get("book_odds") or {}).get("crown"))
+    ]
+
+
+def _public_ledger(ledger: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Return the browser-safe active portfolio projection of a Crown ledger."""
+    dashboard_ledger = dict(ledger)
+    active_condition_bets = condition_bets(ledger)
+    dashboard_ledger["bets"] = active_condition_bets
+    for key in (
+        "shadow_bets", "shadow_stats", "shadow_comparison",
+        "handicap_world", "handicap_world_audit", "handicap_world_stats",
+    ):
+        dashboard_ledger.pop(key, None)
+    return dashboard_ledger, active_condition_bets
+
+
+def _summary(matches: list[dict[str, Any]], active_condition_bets: list[dict[str, Any]]) -> dict[str, int]:
+    return {
+        "crown_matches": len(matches),
+        "hkjc_overlaps": sum(bool(row.get("hkjc_match_id")) for row in matches),
+        "predicted": sum(
+            row.get("status") in {"PREDICTION_READY", "REFERENCE_READY", "SIMULATION_READY"}
+            for row in matches
+        ),
+        "actionable": len(active_condition_bets),
+        "simulation_t5_picks": sum(
+            str(bet.get("stage") or "") == "T-5" for bet in active_condition_bets
+        ),
+        "signal_data_missing": sum(row.get("status") == "DATA_MISSING" for row in matches),
+    }
+
+
+def write_tick_dashboard_projection(
+    config: Settings,
+    ledger: dict[str, Any] | None = None,
+    out: Path | None = None,
+) -> Path:
+    """Publish committed tick cards without history grading, mining, or remote reads.
+
+    A normal dashboard rebuild derives history statistics and condition matches,
+    which is intentionally deferred from the deadline-bound tick.  This small
+    projection replaces only the current card/ledger view from already-persisted
+    local state, so a native T-5 cannot remain invisible until a later sweep.
+    """
+    destination = out or config.web_root / "data.json"
+    previous = read_json(destination, {})
+    payload = previous if (
+        isinstance(previous, dict)
+        and previous.get("schema_version") == "crown-dashboard-v2"
+    ) else {}
+    current_ledger = ledger if isinstance(ledger, dict) else load_ledger(config)
+    matches = _dashboard_matches(config)
+    old_matches = {
+        str(row.get("match_id") or ""): row
+        for row in (payload.get("matches") or [])
+        if isinstance(row, dict) and row.get("match_id")
+    }
+    # Preserve dashboard-only fields such as the last condition-ranking match,
+    # then replace every persisted stage/card field with the committed state.
+    projected_matches = [
+        (dict(old_matches.get(str(row.get("match_id") or ""), {})) | row)
+        for row in matches
+    ]
+    dashboard_ledger, active_condition_bets = _public_ledger(current_ledger)
+    payload.update({
+        "schema_version": "crown-dashboard-v2",
+        "generated_at": iso_hkt(),
+        "title": payload.get("title") or "足破 · 皇冠賽事預測終端",
+        "summary": _summary(projected_matches, active_condition_bets),
+        "matches": projected_matches,
+        "ledger": dashboard_ledger,
+        # The fast archive already writes raw history rows.  Do not parse,
+        # normalize, grade, calculate statistics, or mine conditions here.
+        "prediction_history": (
+            payload.get("prediction_history")
+            if isinstance(payload.get("prediction_history"), dict)
+            else {"rows": [], "stats": {}}
+        ),
+        "stage_completeness": stage_completeness(projected_matches, current_ledger),
+    })
+    write_json_atomic(destination, payload)
+    os.chmod(destination, 0o644)
+    return destination
+
+
 def stage_completeness(
     matches: list[dict[str, Any]],
     ledger: dict[str, Any],
@@ -125,13 +217,8 @@ def stage_completeness(
 
 
 def build(config: Settings) -> dict[str, Any]:
-    ledger, all_matches = load_ledger(config), load_predictions(config)
-    matches = [
-        row for row in all_matches
-        if (kickoff := parse_time(row.get("kickoff_hkt") or row.get("kickoff"))) is not None
-        and in_current_period(kickoff)
-        and bool((row.get("book_odds") or {}).get("crown"))
-    ]
+    ledger = load_ledger(config)
+    matches = _dashboard_matches(config)
     prediction_history = read_json(
         config.state_dir / "prediction_history.json",
         {"rows": [], "stats": {}},
@@ -184,24 +271,10 @@ def build(config: Settings) -> dict[str, Any]:
     # Project a condition-portfolio-only ledger for the browser.  Retired
     # portfolio keys may survive in old state until an explicit reset, but
     # cannot become dashboard data again.
-    dashboard_ledger = dict(ledger)
-    active_condition_bets = condition_bets(ledger)
-    dashboard_ledger["bets"] = active_condition_bets
-    for key in (
-        "shadow_bets", "shadow_stats", "shadow_comparison",
-        "handicap_world", "handicap_world_audit", "handicap_world_stats",
-    ):
-        dashboard_ledger.pop(key, None)
+    dashboard_ledger, active_condition_bets = _public_ledger(ledger)
     return {
         "schema_version": "crown-dashboard-v2", "generated_at": iso_hkt(), "title": "足破 · 皇冠賽事預測終端",
-        "summary": {"crown_matches": len(matches), "hkjc_overlaps": sum(bool(row.get("hkjc_match_id")) for row in matches),
-                    "predicted": sum(
-                        row.get("status") in {"PREDICTION_READY", "REFERENCE_READY", "SIMULATION_READY"}
-                        for row in matches
-                    ),
-                    "actionable": len(active_condition_bets),
-                    "simulation_t5_picks": sum(str(bet.get("stage") or "") == "T-5" for bet in active_condition_bets),
-                    "signal_data_missing": sum(row.get("status") == "DATA_MISSING" for row in matches)},
+        "summary": _summary(matches, active_condition_bets),
         "market_policy": {"model_HDC": "Titan007 Crown company ID=3", "model_HIL": "Titan007 Crown company ID=3",
                           "model_CHL": "HKJC角球大細 vs PinnAPI CHL exact line; never Crown odds",
                           "sharp_reference": "PinnAPI Edge"},

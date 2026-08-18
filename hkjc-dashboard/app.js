@@ -64,6 +64,25 @@ function stageOf(m) {
   if (m <= 36) return 'T-30';
   return '待入窗';
 }
+function stageSnapshotStatus(m, stage, nowMs, generatedAt) {
+  // An absent stage in an old public JSON is not evidence of a scheduler miss.
+  // Only a snapshot written after a stage's window closes may confirm one.
+  const kickoff = kt(m && m.kickoff_hkt);
+  const generated = kt(generatedAt);
+  if (!Number.isFinite(kickoff.getTime()) || !Number.isFinite(generated.getTime())) return 'unknown';
+  const windowStart = kickoff.getTime() - (stage === 'T-30' ? 40 : 10) * 60000;
+  const windowEnd = stage === 'T-30' ? kickoff.getTime() - 20 * 60000 : kickoff.getTime();
+  if (generated.getTime() < windowStart) return 'stale';
+  if (nowMs < windowStart) return 'not_due';
+  if (nowMs < windowEnd) return 'window_open';
+  return generated.getTime() >= windowEnd ? 'confirmed_missing' : 'stale';
+}
+function missingT5Text(m, mins) {
+  if (mins > 0) return '';
+  return stageSnapshotStatus(m, 'T-5', Date.now(), DATA && DATA.generated_at) === 'confirmed_missing'
+    ? '本場冇跑到 T-5，冇落注（已由開賽後快照確認）。'
+    : '儀表板快照早於 T-5 完成時點或狀態未明，未能確認本場有冇跑到 T-5；等待最新同步，暫不判定冇落注。';
+}
 function convClass(c) { return c >= 65 ? 'good' : c >= 58 ? 'amber' : c >= 50 ? '' : 'bad'; }
 function heat(p, max) {
   if (max <= 0) return 'oklch(21% 0.01 258)';
@@ -290,8 +309,20 @@ function nextStageText(m, mins) {
   if (t5) return '○ T-5 完成 · 唔買';
   if (t30) return '○ T-30 完成 · 等 T-5';
   if (mins > 40) return '○ 等 T-30';
-  if (mins >= 20) return '○ 正等 T-30 處理';
-  return '○ 錯過 T-30 · 等 T-5';
+  const t30State = stageSnapshotStatus(m, 'T-30', Date.now(), DATA && DATA.generated_at);
+  if (mins >= 20) {
+    return ['stale', 'unknown'].includes(t30State)
+      ? '○ 儀表板快照過期 · 未能確認 T-30'
+      : '○ T-30 窗口中 · 等待處理記錄';
+  }
+  if (mins > 0) {
+    return t30State === 'confirmed_missing'
+      ? '○ 已確認未記錄 T-30 · 等 T-5'
+      : '○ 儀表板快照過期 · 未能確認 T-30';
+  }
+  return stageSnapshotStatus(m, 'T-5', Date.now(), DATA && DATA.generated_at) === 'confirmed_missing'
+    ? '○ 已確認未記錄 T-5'
+    : '○ 儀表板快照過期 · 未能確認 T-5';
 }
 
 function renderList() {
@@ -390,12 +421,15 @@ function verdictCard(m) {
   if (!m.pick) {
     const hasT5 = (m.stages || []).some((x) => x.stage === 'T-5');
     const mm = minsLeft(m.kickoff_hkt);
-    const badge = hasT5 ? '觀望 · 唔買' : (mm > 0 ? '未到落注時點' : '無落注');
+    const missingT5 = missingT5Text(m, mm);
+    const badge = hasT5 ? '觀望 · 唔買' : (mm > 0 ? '未到落注時點' : (
+      missingT5.startsWith('本場') ? '無落注' : '狀態待同步'
+    ));
     const why = hasT5
       ? (m.no_bet_reason || '未達投注條件')
       : (mm > 0
         ? `最終投注決定統一喺<b>開賽前 5 分鐘</b>先出。依家係${esc(stageOf(mm))},只做預測記錄。距開賽 ${cdText(mm)}。`
-        : '本場冇跑到 T-5,冇落注。');
+        : missingT5);
     return `<div class="card verdict wait">
       <div class="vd-top"><span class="vd-badge wait">${badge}</span>
         <span class="vd-conv ${convClass(c)}">信念 ${f2(c)}</span></div>
@@ -593,7 +627,7 @@ function runsCard(m) {
   const body = all.length
     ? `${t5 ? runRow(t5, true, all) : `<div class="run-await">
           <span class="run-await-b">T-5 最終決定</span>
-          <span>${mm > 0 ? '仲有 ' + cdText(mm) + ' 到開賽,最終投注決定會喺開賽前 5 分鐘先出' : '本場冇做到 T-5,無落注'}</span>
+          <span>${mm > 0 ? '仲有 ' + cdText(mm) + ' 到開賽,最終投注決定會喺開賽前 5 分鐘先出' : missingT5Text(m, mm)}</span>
         </div>`}
        ${prior.length ? `<div class="run-prior-h">之前嘅預測</div>` : ''}
        ${prior.slice().reverse().map((x) => runRow(x, false, all)).join('')}`
