@@ -1,0 +1,62 @@
+name: 診斷生產健康狀態（安全摘要）
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  statuses: write
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: 設定 SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: 執行唯讀健康檢查並發布安全摘要
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          set +e
+          ssh "$DEPLOY_USER@$DEPLOY_HOST" \
+            'sudo /opt/footbreak/deploy/health-check.sh' \
+            > /tmp/health-check.log 2>&1
+          health_rc=$?
+          set -e
+
+          summary="$(
+            grep -E -m1 '^(FAIL|ERROR) ' /tmp/health-check.log \
+              | tr -cd 'A-Za-z0-9_.:= /-'
+          )"
+          if [ -z "$summary" ]; then
+            if [ "$health_rc" -eq 0 ]; then
+              summary="production health check passed"
+            else
+              summary="production health check failed without classified output"
+            fi
+          fi
+          description="$(printf 'rc=%s %s' "$health_rc" "$summary" | cut -c1-140)"
+          state=success
+          [ "$health_rc" -eq 0 ] || state=failure
+
+          gh api \
+            --method POST \
+            "repos/$REPOSITORY/statuses/$COMMIT_SHA" \
+            -f state="$state" \
+            -f context="diagnostic/production-health" \
+            -f description="$description" \
+            -f target_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+          exit "$health_rc"
