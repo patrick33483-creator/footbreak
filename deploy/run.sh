@@ -30,7 +30,7 @@ report_runner_failure() {
   # incident.  The systemd OnFailure path also catches hard timeouts.
   if [ "$rc" -ne 0 ] && [ "$rc" -ne 75 ] && [ -f "$ALERT_HELPER" ]; then
     python3 "$ALERT_HELPER" event --system footbreak \
-      --unit "$SERVICE_UNIT" >/dev/null 2>&1 || true
+      --unit "$SERVICE_UNIT" --invocation "${INVOCATION_ID:-}" >/dev/null 2>&1 || true
   fi
 }
 trap report_runner_failure EXIT
@@ -85,7 +85,8 @@ fi
 # Resolve only this service's prior incident after all of its durable output
 # has been published, then assess ledger-backed T-5/source/settlement health.
 if [ -f "$ALERT_HELPER" ]; then
-  python3 "$ALERT_HELPER" clear-service --system footbreak --unit "$SERVICE_UNIT" >/dev/null 2>&1 || true
+  python3 "$ALERT_HELPER" clear-service --system footbreak --unit "$SERVICE_UNIT" \
+    --invocation "${INVOCATION_ID:-}" >/dev/null 2>&1 || true
   python3 "$ALERT_HELPER" check --system footbreak >/dev/null 2>&1 || true
 fi
 

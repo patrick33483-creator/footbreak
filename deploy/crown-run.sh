@@ -25,7 +25,7 @@ report_runner_failure() {
   esac
   if [ "$rc" -ne 0 ] && [ "$rc" -ne 75 ] && "$crown_alertable" && [ -f "$ALERT_HELPER" ]; then
     python3 "$ALERT_HELPER" event --system crown \
-      --unit "$SERVICE_UNIT" >/dev/null 2>&1 || true
+      --unit "$SERVICE_UNIT" --invocation "${INVOCATION_ID:-}" >/dev/null 2>&1 || true
   fi
 }
 trap report_runner_failure EXIT
@@ -57,6 +57,7 @@ cd "$APP_DIR"
 "$PYTHON" -m crown.run "$MODE" 9>&-
 
 if [ -f "$ALERT_HELPER" ]; then
-  python3 "$ALERT_HELPER" clear-service --system crown --unit "$SERVICE_UNIT" >/dev/null 2>&1 || true
+  python3 "$ALERT_HELPER" clear-service --system crown --unit "$SERVICE_UNIT" \
+    --invocation "${INVOCATION_ID:-}" >/dev/null 2>&1 || true
   python3 "$ALERT_HELPER" check --system crown >/dev/null 2>&1 || true
 fi

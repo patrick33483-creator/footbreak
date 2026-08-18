@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import hashlib
 import json
 import os
 import re
@@ -30,8 +31,19 @@ DEFAULT_SETTLEMENT_ATTEMPT_MAX_AGE_SECONDS = 24 * 60 * 60
 LEDGER_POSITIVE_OBSERVATIONS = 2
 LEDGER_HEALTHY_OBSERVATIONS = 2
 SERVICE_HEALTHY_OBSERVATIONS = 2
+SERVICE_FAILURE_OBSERVATIONS = 2
+DEFAULT_SERVICE_FAILURE_CONFIRMATION_SECONDS = 36 * 60 * 60
+DEFAULT_SERVICE_DUPLICATE_BUCKET_SECONDS = 2 * 60
 _SAFE_TOKEN = re.compile(r"[^A-Za-z0-9_.:@/-]+")
 _SAFE_DETAIL_KEYS = {"missed_t5", "source_persistence", "settlement_stuck"}
+_SERVICE_LABELS = {
+    "crown-tick.service": "皇冠 T-30/T-5 臨場預測",
+    "crown-sweep.service": "皇冠首預掃描",
+    "crown-settle.service": "皇冠結算",
+    "footbreak-tick.service": "足破 T-30/T-5 臨場預測",
+    "footbreak-sweep.service": "足破首預掃描",
+    "footbreak-settle.service": "足破結算",
+}
 
 
 def _flag(name: str, default: bool = False) -> bool:
@@ -190,6 +202,49 @@ def service_incident_key(unit: str) -> str:
     return f"service_failure:{_safe_token(unit)}"
 
 
+def service_label(kind: str) -> str:
+    """Return a safe operator-facing Chinese label without exposing unit IDs."""
+    unit = _safe_token(kind.split(":", 1)[1] if ":" in kind else "")
+    return _SERVICE_LABELS.get(unit, "已識別排程服務")
+
+
+def _private_observation_token(value: Any) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:24]
+
+
+def service_observation_token(
+    unit: str,
+    invocation: str | None,
+    now: datetime | None = None,
+    *,
+    outcome: str = "failure",
+) -> str:
+    """Hash an invocation ID, or a short fallback bucket, before persisting it."""
+    safe_unit = _safe_token(unit)
+    raw_invocation = str(invocation or "").strip()
+    if raw_invocation:
+        source = f"{safe_unit}:{outcome}:invocation:{raw_invocation}"
+    else:
+        seconds = _positive_int(
+            "INCIDENT_SERVICE_DUPLICATE_BUCKET_SECONDS",
+            DEFAULT_SERVICE_DUPLICATE_BUCKET_SECONDS,
+            15 * 60,
+        )
+        source = f"{safe_unit}:{outcome}:bucket:{int(_now(now).timestamp() // seconds)}"
+    return _private_observation_token(source) or ""
+
+
+def _service_confirmation_seconds() -> int:
+    return _positive_int(
+        "INCIDENT_SERVICE_FAILURE_CONFIRMATION_SECONDS",
+        DEFAULT_SERVICE_FAILURE_CONFIRMATION_SECONDS,
+        7 * 24 * 60 * 60,
+    )
+
+
 class IncidentAlerts:
     def __init__(
         self,
@@ -231,6 +286,11 @@ class IncidentAlerts:
                 if key in labels
             ]
             return f"【運作警報：{system_label}】帳本監察發現：{'、'.join(parts) or '異常'}。"
+        if kind_base == "service_failure":
+            label = service_label(kind)
+            if active:
+                return f"【運作警報：{system_label}】{label}：排程／服務執行失敗或逾時。"
+            return f"【運作恢復：{system_label}】{label}：排程／服務已連續健康並恢復。"
         description = descriptions.get(kind_base, "運作異常")
         suffix = f"（受影響項目：{_safe_count(count)}）" if active and count else ""
         if active:
@@ -260,7 +320,9 @@ class IncidentAlerts:
         count: int = 0,
         details: Mapping[str, Any] | None = None,
         positive_needed: int = 1,
+        positive_window_seconds: int | None = None,
         healthy_needed: int = 1,
+        observation_token: str | None = None,
         now: datetime | None = None,
     ) -> bool:
         """Record an observation and emit at most one transition notification.
@@ -279,6 +341,15 @@ class IncidentAlerts:
         details = _safe_details(details)
         positive_needed = max(1, int(positive_needed))
         healthy_needed = max(1, int(healthy_needed))
+        if kind.startswith("service_failure:"):
+            positive_needed = max(positive_needed, SERVICE_FAILURE_OBSERVATIONS)
+            healthy_needed = max(healthy_needed, SERVICE_HEALTHY_OBSERVATIONS)
+            if positive_window_seconds is None:
+                positive_window_seconds = _service_confirmation_seconds()
+        positive_window_seconds = (
+            max(1, int(positive_window_seconds)) if positive_window_seconds is not None else None
+        )
+        observation_token = _private_observation_token(observation_token)
         delivered = False
         with _state_lock(self.state_path):
             state = _normalise_state(_read_json(self.state_path, _default_state()))
@@ -287,10 +358,21 @@ class IncidentAlerts:
             was_active = bool(prior.get("active"))
             positive_streak = int(prior.get("positive_streak") or 0)
             healthy_streak = int(prior.get("healthy_streak") or 0)
+            if observation_token and observation_token == prior.get("last_observation_digest"):
+                # Wrapper EXIT and systemd OnFailure can describe the same
+                # failed invocation.  A private token makes it one observation.
+                return False
             emit = False
             event = ""
             if active:
-                positive_streak += 1
+                previous_positive = _parse_time(prior.get("last_positive_at"))
+                if (
+                    positive_window_seconds is not None
+                    and previous_positive is not None
+                    and (_now(now) - previous_positive).total_seconds() > positive_window_seconds
+                ):
+                    positive_streak = 0
+                positive_streak = min(9999, positive_streak + 1)
                 healthy_streak = 0
                 current_active = was_active
                 if not was_active and positive_streak >= positive_needed:
@@ -298,7 +380,7 @@ class IncidentAlerts:
                     emit, event = True, "alert"
             else:
                 positive_streak = 0
-                healthy_streak += 1
+                healthy_streak = min(9999, healthy_streak + 1)
                 current_active = was_active
                 if was_active and healthy_streak >= healthy_needed:
                     current_active = False
@@ -314,6 +396,8 @@ class IncidentAlerts:
                 "last_count": count,
                 "last_details": details,
                 "last_transition_at": observed_at if emit else prior.get("last_transition_at"),
+                "last_positive_at": observed_at if active else prior.get("last_positive_at"),
+                "last_observation_digest": observation_token,
             }
             state["incidents"] = dict(
                 sorted(incidents.items(), key=lambda item: str(item[1].get("last_observed_at", "")))[-STATE_LIMIT:]
@@ -465,6 +549,45 @@ def check_ledgers(
     return findings
 
 
+def report_service_failure(
+    alerts: IncidentAlerts,
+    *,
+    system: str,
+    unit: str,
+    invocation: str | None = None,
+    now: datetime | None = None,
+) -> bool:
+    """Record one confirmed service failure through every runtime entry point."""
+    return alerts.report(
+        system=system,
+        kind=service_incident_key(unit),
+        active=True,
+        positive_needed=SERVICE_FAILURE_OBSERVATIONS,
+        positive_window_seconds=_service_confirmation_seconds(),
+        observation_token=service_observation_token(unit, invocation, now, outcome="failure"),
+        now=now,
+    )
+
+
+def report_service_success(
+    alerts: IncidentAlerts,
+    *,
+    system: str,
+    unit: str,
+    invocation: str | None = None,
+    now: datetime | None = None,
+) -> bool:
+    """Reset provisional failure state or recover an already-confirmed incident."""
+    return alerts.report(
+        system=system,
+        kind=service_incident_key(unit),
+        active=False,
+        healthy_needed=SERVICE_HEALTHY_OBSERVATIONS,
+        observation_token=service_observation_token(unit, invocation, now, outcome="success"),
+        now=now,
+    )
+
+
 def _systemd_expected_preemption(unit: str) -> bool:
     """Do not page for documented exit-75 or T-5 preemption behaviour."""
     safe_unit = _safe_token(unit)
@@ -489,6 +612,18 @@ def _systemd_expected_preemption(unit: str) -> bool:
         return False
 
 
+def _systemd_invocation_id(unit: str) -> str | None:
+    """Read only the failed unit's opaque invocation marker for deduplication."""
+    try:
+        marker = subprocess.run(
+            ["systemctl", "show", _safe_token(unit), "-p", "InvocationID", "--value"],
+            text=True, capture_output=True, timeout=3, check=False,
+        ).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return marker if marker and marker.lower() not in {"n/a", "not-found"} else None
+
+
 def _alerts_from_args(args: argparse.Namespace) -> IncidentAlerts:
     return IncidentAlerts(Path(args.state) if getattr(args, "state", None) else None)
 
@@ -501,10 +636,12 @@ def main(argv: list[str] | None = None) -> int:
     event.add_argument("--system", choices=("footbreak", "crown"), required=True)
     event.add_argument("--kind")
     event.add_argument("--unit")
+    event.add_argument("--invocation")
     event.add_argument("--count", type=int, default=1)
     clear = sub.add_parser("clear-service")
     clear.add_argument("--system", choices=("footbreak", "crown"), required=True)
     clear.add_argument("--unit", required=True)
+    clear.add_argument("--invocation")
     resolve = sub.add_parser("clear")
     resolve.add_argument("--system", choices=("footbreak", "crown"), required=True)
     resolve.add_argument("--kind", required=True)
@@ -520,18 +657,15 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "event":
         if not args.kind and not args.unit:
             parser.error("event requires --kind or --unit")
-        alerts.report(
-            system=args.system,
-            kind=service_incident_key(args.unit) if args.unit else args.kind,
-            active=True,
-            count=args.count,
-        )
+        if args.unit:
+            report_service_failure(
+                alerts, system=args.system, unit=args.unit, invocation=args.invocation,
+            )
+        else:
+            alerts.report(system=args.system, kind=args.kind, active=True, count=args.count)
     elif args.command == "clear-service":
-        alerts.report(
-            system=args.system,
-            kind=service_incident_key(args.unit),
-            active=False,
-            healthy_needed=SERVICE_HEALTHY_OBSERVATIONS,
+        report_service_success(
+            alerts, system=args.system, unit=args.unit, invocation=args.invocation,
         )
     elif args.command == "clear":
         alerts.report(
@@ -543,7 +677,12 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "systemd-failure":
         if not _systemd_expected_preemption(args.unit):
             system = "crown" if _safe_token(args.unit).startswith("crown-") else args.system
-            alerts.report(system=system, kind=service_incident_key(args.unit), active=True)
+            report_service_failure(
+                alerts,
+                system=system,
+                unit=args.unit,
+                invocation=_systemd_invocation_id(args.unit),
+            )
     else:
         check_ledgers(
             alerts, system=args.system,

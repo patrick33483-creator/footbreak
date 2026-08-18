@@ -141,23 +141,95 @@ class IncidentAlertTests(unittest.TestCase):
             self.assertFalse(state.exists())
         self.assertEqual(delivered, [])
 
-    def test_service_failure_is_immediate_deduplicated_and_needs_two_healthy_runs(self) -> None:
+    def test_service_failure_labels_are_specific_traditional_chinese_and_hide_unit_id(self) -> None:
+        labels = {
+            "crown-tick.service": "皇冠 T-30/T-5 臨場預測",
+            "crown-sweep.service": "皇冠首預掃描",
+            "crown-settle.service": "皇冠結算",
+            "footbreak-tick.service": "足破 T-30/T-5 臨場預測",
+            "footbreak-sweep.service": "足破首預掃描",
+            "footbreak-settle.service": "足破結算",
+        }
+        for unit, label in labels.items():
+            with self.subTest(unit=unit):
+                kind = alerts_module.service_incident_key(unit)
+                alert = alerts_module.IncidentAlerts.message(
+                    "crown" if unit.startswith("crown-") else "footbreak", kind, True,
+                )
+                recovery = alerts_module.IncidentAlerts.message(
+                    "crown" if unit.startswith("crown-") else "footbreak", kind, False,
+                )
+                self.assertIn(label, alert)
+                self.assertIn(label, recovery)
+                self.assertIn("排程／服務執行失敗或逾時", alert)
+                self.assertNotIn(unit, alert)
+                self.assertNotIn(unit, recovery)
+
+    def test_service_failure_requires_confirmation_dedupes_one_invocation_and_recovers_stably(self) -> None:
         delivered: list[str] = []
-        unit = "footbreak-tick.service"
+        unit = "crown-tick.service"
         key = alerts_module.service_incident_key(unit)
         with tempfile.TemporaryDirectory() as directory:
             alerts = alerts_module.IncidentAlerts(Path(directory) / "state.json", sender=sent_to(delivered))
-            alerts.report(system="footbreak", kind=key, active=True, now=NOW)
-            alerts.report(system="footbreak", kind=key, active=True, now=NOW + timedelta(minutes=1))
-            alerts.report(system="footbreak", kind=key, active=False, healthy_needed=2, now=NOW + timedelta(minutes=2))
-            alerts.report(system="footbreak", kind=key, active=True, now=NOW + timedelta(minutes=3))
-            alerts.report(system="footbreak", kind=key, active=False, healthy_needed=2, now=NOW + timedelta(minutes=4))
-            alerts.report(system="footbreak", kind=key, active=False, healthy_needed=2, now=NOW + timedelta(minutes=5))
+            # The wrapper EXIT hook and systemd OnFailure both observe one
+            # failed invocation.  It is one provisional failure, not two.
+            alerts_module.report_service_failure(
+                alerts, system="crown", unit=unit, invocation="same-invocation", now=NOW,
+            )
+            alerts_module.report_service_failure(
+                alerts, system="crown", unit=unit, invocation="same-invocation", now=NOW + timedelta(seconds=10),
+            )
+            provisional = json.loads(alerts.state_path.read_text(encoding="utf-8"))["incidents"][f"crown:{key}"]
+            self.assertEqual(provisional["positive_streak"], 1)
+            self.assertEqual(delivered, [])
+
+            # The second distinct consecutive failure confirms one alert.
+            alerts_module.report_service_failure(
+                alerts, system="crown", unit=unit, invocation="second-invocation", now=NOW + timedelta(minutes=1),
+            )
+            alerts_module.report_service_failure(
+                alerts, system="crown", unit=unit, invocation="third-invocation", now=NOW + timedelta(minutes=2),
+            )
+            # One successful completion is insufficient to recover.
+            alerts_module.report_service_success(
+                alerts, system="crown", unit=unit, invocation="success-one", now=NOW + timedelta(minutes=3),
+            )
+            alerts_module.report_service_success(
+                alerts, system="crown", unit=unit, invocation="success-two", now=NOW + timedelta(minutes=4),
+            )
 
         self.assertEqual(len(delivered), 2)
+        self.assertIn("皇冠 T-30/T-5 臨場預測", delivered[0])
         self.assertIn("排程／服務執行失敗或逾時", delivered[0])
+        self.assertNotIn(unit, delivered[0])
         self.assertIn("連續健康並恢復", delivered[1])
-        self.assertEqual(key, "service_failure:footbreak-tick.service")
+        self.assertIn("皇冠 T-30/T-5 臨場預測", delivered[1])
+        self.assertEqual(key, "service_failure:crown-tick.service")
+
+    def test_isolated_service_failure_is_silently_reset_and_confirmation_window_is_bounded(self) -> None:
+        delivered: list[str] = []
+        unit = "footbreak-settle.service"
+        with tempfile.TemporaryDirectory() as directory:
+            alerts = alerts_module.IncidentAlerts(Path(directory) / "state.json", sender=sent_to(delivered))
+            alerts_module.report_service_failure(
+                alerts, system="footbreak", unit=unit, invocation="isolated-failure", now=NOW,
+            )
+            alerts_module.report_service_success(
+                alerts, system="footbreak", unit=unit, invocation="successful-reset", now=NOW + timedelta(minutes=1),
+            )
+            alerts_module.report_service_failure(
+                alerts, system="footbreak", unit=unit, invocation="after-reset", now=NOW + timedelta(minutes=2),
+            )
+            # A failure outside the confirmation window begins a fresh
+            # provisional streak instead of confirming the old failure.
+            alerts_module.report_service_failure(
+                alerts, system="footbreak", unit=unit, invocation="after-window",
+                now=NOW + timedelta(
+                    seconds=alerts_module.DEFAULT_SERVICE_FAILURE_CONFIRMATION_SECONDS + 1,
+                    minutes=3,
+                ),
+            )
+        self.assertEqual(delivered, [])
 
     def test_health_check_anomaly_uses_traditional_chinese_and_stable_recovery(self) -> None:
         delivered: list[str] = []
@@ -226,7 +298,12 @@ class IncidentAlertTests(unittest.TestCase):
              patch.dict(os.environ, environment, clear=False), \
              patch.object(alerts_module.urllib.request, "urlopen", return_value=context) as opener:
             alerts = alerts_module.IncidentAlerts(Path(directory) / "state.json")
-            alerts.report(system="crown", kind="service_failure:crown-tick.service", active=True, now=NOW)
+            alerts_module.report_service_failure(
+                alerts, system="crown", unit="crown-tick.service", invocation="one", now=NOW,
+            )
+            alerts_module.report_service_failure(
+                alerts, system="crown", unit="crown-tick.service", invocation="two", now=NOW + timedelta(minutes=1),
+            )
         request = opener.call_args.args[0]
         self.assertIn("/botcrown-token/sendMessage", request.full_url)
         self.assertEqual(json.loads(request.data.decode("utf-8"))["chat_id"], "crown-chat")
@@ -237,7 +314,8 @@ class IncidentAlertTests(unittest.TestCase):
             self.assertTrue(alerts_module._systemd_expected_preemption("footbreak-tick.service"))
         root = SYSTEM.parents[0]
         for runner in ("run.sh", "crown-run.sh"):
-            self.assertIn('--unit "$SERVICE_UNIT"', (root / "deploy" / runner).read_text(encoding="utf-8"))
+            runner_text = (root / "deploy" / runner).read_text(encoding="utf-8")
+            self.assertIn('--unit "$SERVICE_UNIT" --invocation "${INVOCATION_ID:-}"', runner_text)
         for name in (
             "footbreak-tick.service", "footbreak-sweep.service", "footbreak-settle.service",
             "crown-tick.service", "crown-sweep.service", "crown-settle.service",
