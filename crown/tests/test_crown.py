@@ -1103,6 +1103,25 @@ class CrownSafetyTests(unittest.TestCase):
         self.assertEqual(read.call_args.kwargs["timeout"], 8)
         self.assertEqual(read.call_args.kwargs["attempts"], 1)
 
+    def test_result_index_scan_stops_at_shared_deadline(self) -> None:
+        from crown.titan import TitanClient
+
+        client = TitanClient(settings())
+        with patch(
+            "crown.titan.time.monotonic",
+            side_effect=[100.0, 101.0, 106.0],
+        ), patch.object(client, "_read", return_value="") as read:
+            self.assertEqual(
+                client.results(
+                    {"2026-08-15", "2026-08-16", "2026-08-17"},
+                    max_seconds=5.0,
+                ),
+                [],
+            )
+        read.assert_called_once()
+        self.assertEqual(read.call_args.kwargs["timeout"], 4.0)
+        self.assertEqual(read.call_args.kwargs["attempts"], 1)
+
     def test_t5_bulk_snapshot_skips_optional_pinnapi_and_preserves_provenance(self) -> None:
         kickoff = self.now + timedelta(minutes=5)
         titan = {"id": "bulk-1", "league": "L", "home": "A", "away": "B", "kickoff": kickoff}
@@ -2536,7 +2555,10 @@ class CrownSafetyTests(unittest.TestCase):
                 "kickoff": kickoff, "home_score": 2, "away_score": 1,
             }
             with patch("crown.prediction_history.TitanClient.results", return_value=[result]), \
-                 patch("crown.prediction_history.fetch_official_result_events", return_value=[]):
+                 patch(
+                     "crown.prediction_history.fetch_official_settlement_bundle",
+                     return_value=({}, {}),
+                 ):
                 history = grade_history(config)
             row = history["rows"][0]
             self.assertEqual(row["actual"], "主勝")
@@ -2626,11 +2648,8 @@ class CrownSafetyTests(unittest.TestCase):
                 "crown.prediction_history.TitanClient.results",
                 return_value=[status],
             ), patch(
-                "crown.prediction_history.fetch_official_result_events",
-                return_value=[],
-            ), patch(
-                "crown.prediction_history.fetch_official_match_statuses",
-                return_value={},
+                "crown.prediction_history.fetch_official_settlement_bundle",
+                return_value=({}, {}),
             ):
                 history = grade_history(config)
             row = history["rows"][0]
@@ -2704,14 +2723,15 @@ class CrownSafetyTests(unittest.TestCase):
             with patch(
                 "crown.prediction_history.TitanClient.results", return_value=[]
             ), patch(
-                "crown.prediction_history.fetch_official_result_events",
-                return_value=[official],
-            ), patch(
-                "crown.prediction_history.fetch_official_match_statuses",
-                return_value={"50072834": {
-                    "status": "INPLAYMATCHENDED",
-                    "refund_pools": ["CHL"],
-                }},
+                "crown.prediction_history.fetch_official_settlement_bundle",
+                return_value=({
+                    "50072834": official,
+                }, {
+                    "50072834": {
+                        "status": "INPLAYMATCHENDED",
+                        "refund_pools": ["CHL"],
+                    },
+                }),
             ):
                 history = grade_history(config)
             row = history["rows"][0]
@@ -2751,11 +2771,8 @@ class CrownSafetyTests(unittest.TestCase):
                 "crown.prediction_history.TitanClient.result_detail",
                 return_value=detail,
             ), patch(
-                "crown.prediction_history.fetch_official_result_events",
-                return_value=[],
-            ), patch(
-                "crown.prediction_history.fetch_official_match_statuses",
-                return_value={},
+                "crown.prediction_history.fetch_official_settlement_bundle",
+                return_value=({}, {}),
             ):
                 history = grade_history(config)
             row = history["rows"][0]
@@ -2929,7 +2946,10 @@ class CrownSafetyTests(unittest.TestCase):
                 "kickoff": kickoff, "home_score": 2, "away_score": 1, "corners_total": 9,
             }
             with patch("crown.prediction_history.TitanClient.results", return_value=[]), \
-                 patch("crown.prediction_history.fetch_official_result_events", return_value=[official]):
+                 patch(
+                     "crown.prediction_history.fetch_official_settlement_bundle",
+                     return_value=({"h1": official}, {}),
+                 ):
                 history = grade_history(config)
             row = history["rows"][0]
             self.assertEqual(row["result_source"], "hkjc_official_exact_id")
@@ -2974,7 +2994,10 @@ class CrownSafetyTests(unittest.TestCase):
                      "FOOTBREAK_LEDGER_PATH": str(footbreak_ledger),
                      "FOOTBREAK_RESULT_CACHE_DIR": str(result_cache),
                  }), patch("crown.prediction_history.TitanClient.results", return_value=[]), \
-                 patch("crown.prediction_history.fetch_official_result_events", return_value=[official]):
+                 patch(
+                     "crown.prediction_history.fetch_official_settlement_bundle",
+                     return_value=({"h1": official}, {}),
+                 ):
                 history = grade_history(config)
             row = history["rows"][0]
             self.assertEqual(row["result_detail"]["corners_total"], 9)

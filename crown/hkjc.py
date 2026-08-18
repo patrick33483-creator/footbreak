@@ -318,12 +318,7 @@ def fetch_official_settlement_bundle(
         attempts=1,
     )
     results = {
-        row["id"]: {
-            "home_score": row["home_score"],
-            "away_score": row["away_score"],
-            "corners_total": row.get("corners_total"),
-            "source": row["source"],
-        }
+        row["id"]: row
         for row in _official_result_events(matches)
         if row["id"] in match_ids
     }

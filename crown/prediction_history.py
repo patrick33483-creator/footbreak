@@ -24,7 +24,7 @@ from .common import (
     write_json_atomic,
 )
 from .config import Settings
-from .hkjc import fetch_official_match_statuses, fetch_official_result_events
+from .hkjc import fetch_official_settlement_bundle
 from .ledger import (
     PREDICTION_ERA,
     PREDICTION_SCHEMA_VERSION,
@@ -47,7 +47,9 @@ def _path(config: Settings):
 
 _SCOREABLE_MARKETS = {"HDC", "HIL", "CHL"}
 _CORNER_RESULT_RETRY_DAYS = 7
-_RESULT_DETAIL_REQUEST_BUDGET = 12
+_RESULT_DETAIL_REQUEST_BUDGET = 3
+_TITAN_RESULT_PASS_SECONDS = 30.0
+_HKJC_RESULT_PASS_SECONDS = 45.0
 _HKJC_RESULT_GRACE_SECONDS = 6 * 60 * 60
 _TERMINAL_RESULT_SOURCES = {
     "hkjc_official_exact_id_terminal_status",
@@ -907,22 +909,30 @@ def grade_history(config: Settings) -> dict[str, Any]:
     titan_client = TitanClient(config)
     titan_client.limit_result_detail_requests(_RESULT_DETAIL_REQUEST_BUDGET)
     try:
-        titan_rows = titan_client.results(dates) if due else []
+        titan_rows = (
+            titan_client.results(dates, max_seconds=_TITAN_RESULT_PASS_SECONDS)
+            if due else []
+        )
     except Exception as exc:
         titan_error = type(exc).__name__
         titan_rows = []
-    try:
-        official_rows = fetch_official_result_events(dates) if due else []
-    except Exception as exc:
-        official_error = type(exc).__name__
-        official_rows = []
     hkjc_ids = {
         str(row.get("hkjc_match_id") or "")
         for row in due if row.get("hkjc_match_id")
     }
     try:
-        official_statuses = fetch_official_match_statuses(hkjc_ids, dates) if due else {}
-    except Exception:
+        official_by_id, official_statuses = (
+            fetch_official_settlement_bundle(
+                hkjc_ids,
+                dates,
+                max_seconds=_HKJC_RESULT_PASS_SECONDS,
+            )
+            if due and hkjc_ids else ({}, {})
+        )
+        official_rows = list(official_by_id.values())
+    except Exception as exc:
+        official_error = type(exc).__name__
+        official_rows = []
         official_statuses = {}
     titan_by_id = {str(row.get("id")): row for row in titan_rows}
     hkjc_by_id = {str(row.get("id")): row for row in official_rows}

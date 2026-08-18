@@ -447,7 +447,12 @@ class TitanClient:
             "total_ok": total_ok,
         }
 
-    def results(self, dates: set[str] | None = None) -> list[dict[str, Any]]:
+    def results(
+        self,
+        dates: set[str] | None = None,
+        *,
+        max_seconds: float | None = None,
+    ) -> list[dict[str, Any]]:
         """Return completed results for the requested HKT calendar dates.
 
         Settlement callers pass every still-pending kickoff date.  The old
@@ -465,12 +470,16 @@ class TitanClient:
                 (datetime.now(HKT) + timedelta(days=offset)).strftime("%Y%m%d")
                 for offset in (0, -1, -2)
             }
+        deadline = time.monotonic() + max_seconds if max_seconds is not None else None
         for day in sorted(days):
+            remaining = deadline - time.monotonic() if deadline is not None else 8.0
+            if remaining <= 0:
+                break
             try:
                 output.extend(parse_schedule_page(
                     self._read(
                         f"{self.config.titan_bf_base}/Over_{day}.htm",
-                        timeout=8,
+                        timeout=max(0.1, min(8.0, remaining)),
                         attempts=1,
                     ),
                     day,
