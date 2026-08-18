@@ -698,6 +698,15 @@ def main():
             "hit_rate": S.get("hit_rate"),
             "equity": S.get("equity", bank),
             "by_market": S.get("by_market", {}),
+            # Shared statistics are derived exclusively from active
+            # footbreak_independent_validation rows.  The dashboard never
+            # recomputes bands from historical discovery or legacy bets.
+            "odds_tiers": S.get("odds_tiers", {
+                "scope": "active_independent_validation_bets_and_results_only",
+                "system": "footbreak",
+                "tiers": [],
+                "excluded_diagnostics": {},
+            }),
             "curve": S.get("curve", []),
             "res_counts": {k: sum(1 for b in done if b.get("result") == k)
                            for k in ("Won", "Half Won", "Refunded",

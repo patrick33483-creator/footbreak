@@ -1063,6 +1063,7 @@ function renderLedger() {
   <div class="kpis wide">${K.map(([l, v, c]) => `<div class="kpi"><span class="kpi-lbl">${l}</span><span class="kpi-val ${c}">${v}</span></div>`).join('')}</div></div>
   <div class="card history-note"><h2 class="card-h">舊歷史發現期 <span class="sub">唯讀封存，不混入獨立驗證盈虧、回報率、命中率、樣本或本金</span></h2>
     <p class="mx-note">摘要：已保留舊注單 ${numeric(archive.legacy_bet_count) == null ? '—' : archive.legacy_bet_count} 筆；舊帳本本金 ${archive.legacy_bankroll == null ? '—' : money(archive.legacy_bankroll)}。凍結條件會保留當時「歷史發現 x/y」，驗證結果不會回寫該基線。</p></div>`;
+  h += oddsTierCard(s);
   if (!bets.length) h += `<div class="card"><div class="empty2">暫時未有合資格獨立驗證注。系統不會在 T-30、重跑或回補歷史時建倉。</div></div>`;
   else {
     if (s.n_settled) h += `<div class="grid g2">${equityCard(s)}${resultCard(s)}</div>`;
@@ -1764,6 +1765,54 @@ function marketCard(s) {
         <td class="mono ${m.roi >= 0 ? 'ev-p' : 'ev-n'}">${pc(m.roi, 2)}</td>
         <td class="mono">${m.dec ? `${pc(m.hit_rate, 1)} (${m.hit}/${m.dec})` : '—'}</td></tr>`; }).join('')}
     </table></div></div>`;
+}
+
+
+/* ── 獨立驗證賠率分層 ── */
+function oddsTierCard(s) {
+  const report = s.odds_tiers || {};
+  const received = Array.isArray(report.tiers) ? report.tiers : [];
+  const expected = [
+    ['1.70-1.79', '1.70–1.79'], ['1.80-1.89', '1.80–1.89'],
+    ['1.90-1.99', '1.90–1.99'], ['2.00-plus', '≥2.00'],
+  ];
+  const byKey = Object.fromEntries(received.map((row) => [row.key, row]));
+  const tiers = expected.map(([key, label]) => byKey[key] || {
+    key, label, n_bets: 0, n_settled: 0, n_decided: 0, hits: 0,
+    pushes: 0, pnl: 0, roi: null, hit_rate: null, wilson95: null, by_market: [],
+  });
+  const diagnostics = report.excluded_diagnostics || {};
+  const split = (tier) => {
+    const markets = Array.isArray(tier.by_market) ? tier.by_market : [];
+    if (!markets.length) return '';
+    return `<tr class="odds-tier-split"><td colspan="6"><b>${esc(tier.label || '—')} · 按市場</b>
+      <div class="tbl-wrap"><table class="t odds-tier-market-table"><tr><th>市場</th><th>注數／已決定</th><th>命中率</th><th>實際盈虧</th><th>ROI</th><th>Wilson 95%</th></tr>
+      ${markets.map((m) => `<tr><td class="lbl">${esc(marketLabel(m.market))}</td>
+        <td class="mono">${m.n_bets || 0}／${m.n_decided || 0}</td>
+        <td class="mono">${m.n_decided ? `${pc(m.hit_rate, 1)} (${m.hits || 0}/${m.n_decided})` : '—'}</td>
+        <td class="mono ${(m.pnl || 0) > 0 ? 'ev-p' : (m.pnl || 0) < 0 ? 'ev-n' : 'dim'}">${money(m.pnl)}</td>
+        <td class="mono ${m.roi == null ? 'dim' : m.roi >= 0 ? 'ev-p' : 'ev-n'}">${pc(m.roi, 2)}</td>
+        <td class="mono">${Array.isArray(m.wilson95) ? `${pc(m.wilson95[0], 1)}–${pc(m.wilson95[1], 1)}` : '—'}</td></tr>`).join('')}
+      </table></div></td></tr>`;
+  };
+  const excluded = [
+    ['低於 1.70', diagnostics.below_1_70],
+    ['無效／缺失賠率', diagnostics.invalid_or_missing_odds],
+  ].filter(([, count]) => Number(count) > 0)
+    .map(([label, count]) => `${label} ${count} 注`).join('；');
+  return `<div class="card odds-tier-card"><h2 class="card-h">賠率分層統計
+      <span class="sub">只計前瞻獨立驗證倉有效注單／賽果；走水不計入命中率分母</span></h2>
+    <div class="tbl-wrap"><table class="t odds-tier-table" aria-label="獨立驗證倉賠率分層統計">
+      <tr><th>賠率層</th><th>注數／已決定</th><th>命中率</th><th>實際盈虧</th><th>ROI</th><th>Wilson 95%</th></tr>
+      ${tiers.map((tier) => `<tr><td class="lbl">${esc(tier.label || '—')}</td>
+        <td class="mono">${tier.n_bets || 0}／${tier.n_decided || 0}</td>
+        <td class="mono">${tier.n_decided ? `${pc(tier.hit_rate, 1)} (${tier.hits || 0}/${tier.n_decided})` : '—'}</td>
+        <td class="mono ${(tier.pnl || 0) > 0 ? 'ev-p' : (tier.pnl || 0) < 0 ? 'ev-n' : 'dim'}">${money(tier.pnl)}</td>
+        <td class="mono ${tier.roi == null ? 'dim' : tier.roi >= 0 ? 'ev-p' : 'ev-n'}">${pc(tier.roi, 2)}</td>
+        <td class="mono">${Array.isArray(tier.wilson95) ? `${pc(tier.wilson95[0], 1)}–${pc(tier.wilson95[1], 1)}` : '—'}</td></tr>${split(tier)}`).join('')}
+    </table></div>
+    <p class="mx-note">「注數」包括待決及已結算有效注；「已決定」只包括非走水的已結算注。實際盈虧及 ROI 以已結算注的實際亞洲盤盈虧／投注額計算。${excluded ? ` ${esc(excluded)}只作內部排除診斷，絕不混入上述四層。` : ''}</p>
+  </div>`;
 }
 
 function notifyCard() {

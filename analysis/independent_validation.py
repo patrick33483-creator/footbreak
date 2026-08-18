@@ -24,6 +24,18 @@ AUDIT_LIMIT = 1_600
 CONDITION_AUDIT_LIMIT = 400
 DIAGNOSTIC_EVALUATION_LIMIT = 600
 
+# Public independent-validation reporting uses these four mutually exclusive
+# selected-odds bands.  Keep their numeric boundaries here rather than
+# reusing historical discovery tiers: discovery data may contain a different
+# bucketing convention and must never leak into prospective portfolio results.
+ODDS_TIERS = (
+    ("1.70-1.79", "1.70–1.79", 1.70, 1.80),
+    ("1.80-1.89", "1.80–1.89", 1.80, 1.90),
+    ("1.90-1.99", "1.90–1.99", 1.90, 2.00),
+    ("2.00-plus", "≥2.00", 2.00, None),
+)
+ACTIVE_VALIDATION_STATUSES = frozenset({"PENDING", "SETTLED"})
+
 # These codes are intentionally coarse. They describe the admission decision
 # without carrying a provider quote, candidate collection, team name, or other
 # raw input into the public dashboard payload.
@@ -348,6 +360,145 @@ def prospective_metrics(bets: Iterable[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def odds_tier_for_odds(value: Any) -> str | None:
+    """Return the exact public reporting band for one selected decimal odds.
+
+    Values below 1.70 and missing/non-finite quotes are deliberately outside
+    the four bands.  They remain available only as aggregate diagnostics in
+    ``odds_tier_metrics`` and cannot affect prospective hit rate, PnL or ROI.
+    """
+    odds = _number(value)
+    if odds is None:
+        return None
+    for key, _label, lower, upper in ODDS_TIERS:
+        if odds >= lower and (upper is None or odds < upper):
+            return key
+    return None
+
+
+def wilson95(hits: int, decided: int) -> list[float] | None:
+    """Return a 95% Wilson interval for a binary prospective hit rate."""
+    if decided <= 0:
+        return None
+    z = 1.959963984540054
+    p = hits / decided
+    denominator = 1 + z * z / decided
+    center = (p + z * z / (2 * decided)) / denominator
+    margin = z * math.sqrt((p * (1 - p) + z * z / (4 * decided)) / decided) / denominator
+    return [round(max(0.0, center - margin), 6), round(min(1.0, center + margin), 6)]
+
+
+def _odds_tier_row(
+    key: str,
+    label: str,
+    lower: float,
+    upper: float | None,
+    bets: Iterable[dict[str, Any]],
+) -> dict[str, Any]:
+    """Summarise only active prospective rows already assigned to one band."""
+    rows = list(bets)
+    settled = [bet for bet in rows if bet.get("status") == "SETTLED"]
+    decided_rows = [bet for bet in settled if bet.get("result") != "Refunded"]
+    hits = sum(bet.get("result") in {"Won", "Half Won"} for bet in decided_rows)
+    pushes = sum(bet.get("result") == "Refunded" for bet in settled)
+    pnl = round(sum(_number(bet.get("pnl")) or 0.0 for bet in settled), 2)
+    turnover = round(sum(_number(bet.get("stake")) or 0.0 for bet in settled), 2)
+    decided = len(decided_rows)
+    hit_rate = hits / decided if decided else None
+    return {
+        "key": key,
+        "label": label,
+        "lower": lower,
+        "upper_exclusive": upper,
+        "n_bets": len(rows),
+        "n_settled": len(settled),
+        "n_decided": decided,
+        "hits": hits,
+        "pushes": pushes,
+        "pnl": pnl,
+        "turnover": turnover,
+        "roi": round(pnl / turnover, 6) if turnover else None,
+        "hit_rate": round(hit_rate, 6) if hit_rate is not None else None,
+        "wilson95": wilson95(hits, decided),
+    }
+
+
+def odds_tier_metrics(ledger: dict[str, Any], system: str) -> dict[str, Any]:
+    """Build four-band, prospective-only independent-validation statistics.
+
+    ``validation_bets`` enforces both the system-specific portfolio namespace
+    and the independent-validation strategy.  Only PENDING/SETTLED rows are
+    active; legacy, discovery, backfill, post-hoc and voided rows cannot enter
+    either tier metrics or their market splits.
+    """
+    excluded_non_prospective = 0
+    active = []
+    for bet in validation_bets(ledger, system):
+        if str(bet.get("status") or "").upper() not in ACTIVE_VALIDATION_STATUSES:
+            continue
+        # Admission code already fails closed for these paths.  Preserve the
+        # reporting boundary as a second line of defence so a malformed/manual
+        # ledger row cannot make backfill or post-hoc evidence look
+        # prospective in the public odds-tier table.
+        if any(bool(bet.get(field)) for field in (
+            "post_hoc_backfill", "post_hoc", "is_post_hoc", "backfill",
+            "is_backfill", "historical_discovery", "exclude_from_simulation",
+        )):
+            excluded_non_prospective += 1
+            continue
+        active.append(bet)
+    grouped = {key: [] for key, _label, _lower, _upper in ODDS_TIERS}
+    below_1_70 = 0
+    invalid_or_missing = 0
+    for bet in active:
+        odds = _number(bet.get("odds"))
+        key = odds_tier_for_odds(odds)
+        if key is not None:
+            grouped[key].append(bet)
+        elif odds is None or odds <= 1:
+            invalid_or_missing += 1
+        else:
+            # Valid decimal quotes between 1.00 and 1.699… are diagnostic
+            # only.  They never appear in or dilute any of the four bands.
+            below_1_70 += 1
+
+    tiers = [
+        _odds_tier_row(key, label, lower, upper, grouped[key])
+        for key, label, lower, upper in ODDS_TIERS
+    ]
+    for tier in tiers:
+        market_groups: dict[str, list[dict[str, Any]]] = {}
+        for bet in grouped[tier["key"]]:
+            market = str(bet.get("code") or bet.get("market") or "其他")
+            market_groups.setdefault(market, []).append(bet)
+        # Omit empty market splits, while retaining every one of the four
+        # top-level bands so the public report stays comparable over time.
+        tier["by_market"] = [
+            {
+                "market": market,
+                **{
+                    name: value
+                    for name, value in _odds_tier_row(
+                        tier["key"], tier["label"], tier["lower"],
+                        tier["upper_exclusive"], rows,
+                    ).items()
+                    if name not in {"key", "label", "lower", "upper_exclusive"}
+                },
+            }
+            for market, rows in sorted(market_groups.items())
+        ]
+    return {
+        "scope": "active_independent_validation_bets_and_results_only",
+        "system": system,
+        "tiers": tiers,
+        "excluded_diagnostics": {
+            "below_1_70": below_1_70,
+            "invalid_or_missing_odds": invalid_or_missing,
+            "non_prospective_or_post_hoc": excluded_non_prospective,
+        },
+    }
+
+
 def recompute_namespace(ledger: dict[str, Any], system: str) -> dict[str, Any]:
     ns = ensure_namespace(ledger, system)
     bets = validation_bets(ledger, system)
@@ -408,6 +559,7 @@ def recompute_namespace(ledger: dict[str, Any], system: str) -> dict[str, Any]:
         },
         "conditions": ns["conditions"],
         "historical_discovery_archive": ns["historical_discovery_archive"],
+        "odds_tiers": odds_tier_metrics(ledger, system),
     })
     ns["stats"] = aggregate
     return aggregate

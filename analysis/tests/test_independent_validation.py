@@ -10,7 +10,8 @@ SYSTEM = ROOT / 'system'
 if str(SYSTEM) not in sys.path: sys.path.insert(0, str(SYSTEM))
 from analysis.independent_validation import (
     DIAGNOSTIC_EVALUATION_LIMIT, DIAGNOSTIC_LABELS, FIXED_STAKE,
-    FIXTURE_STAKE_CAP, ensure_namespace, prospective_metrics,
+    FIXTURE_STAKE_CAP, ensure_namespace, odds_tier_for_odds, odds_tier_metrics,
+    prospective_metrics,
     public_diagnostics, record_evaluation_diagnostics, recompute_namespace,
     validation_bets,
 )
@@ -114,6 +115,61 @@ class IndependentValidationTests(unittest.TestCase):
         self.assertEqual((push['decided'], push['pushes'], push['accuracy']), (0, 1, None))
         half = prospective_metrics([{'status': 'SETTLED', 'result': 'Half Won', 'stake': 250, 'odds': 2, 'pnl': 125}])
         self.assertEqual((half['hits'], half['pnl']), (1, 125))
+
+    def test_odds_tiers_use_exact_boundaries_and_only_active_prospective_portfolio(self):
+        def bet(odds, *, result='Won', pnl=100, market='HDC', **extra):
+            return {
+                'portfolio': 'footbreak_independent_validation',
+                'strategy': 'independent-validation-v1',
+                'status': 'SETTLED', 'odds': odds, 'stake': 250,
+                'result': result, 'pnl': pnl, 'code': market, **extra,
+            }
+
+        # Boundary values belong to the higher tier, whereas 1.6999 is
+        # diagnostic-only.  A push has real zero PnL but is not decided.
+        ledger = {'bets': [
+            bet(1.70, result='Won', pnl=175, market='HDC'),
+            bet(1.7999, result='Refunded', pnl=0, market='HIL'),
+            bet(1.80, result='Lost', pnl=-250, market='HIL'),
+            bet(1.90, result='Half Won', pnl=112.5, market='CHL'),
+            bet(2.00, result='Won', pnl=250, market='CHL'),
+            bet(1.6999, result='Won', pnl=999),
+            bet(None, result='Won', pnl=999),
+            # Not an active prospective result even though its namespace is
+            # malformed to look active.
+            bet(1.80, result='Won', pnl=999, post_hoc_backfill=True),
+            # Old portfolio and the other system must never cross this
+            # system's report boundary.
+            {'portfolio': 'footbreak_condition_simulation', 'strategy': 'granular-condition-v1',
+             'status': 'SETTLED', 'odds': 2.00, 'stake': 9999, 'result': 'Won', 'pnl': 9999},
+            {'portfolio': 'crown_independent_validation', 'strategy': 'independent-validation-v1',
+             'status': 'SETTLED', 'odds': 2.00, 'stake': 9999, 'result': 'Won', 'pnl': 9999},
+        ]}
+        metrics = odds_tier_metrics(ledger, 'footbreak')
+        tiers = {tier['key']: tier for tier in metrics['tiers']}
+        self.assertEqual(
+            [odds_tier_for_odds(value) for value in (1.70, 1.80, 1.90, 2.00, 1.6999)],
+            ['1.70-1.79', '1.80-1.89', '1.90-1.99', '2.00-plus', None],
+        )
+        self.assertEqual((tiers['1.70-1.79']['n_bets'], tiers['1.70-1.79']['n_decided'],
+                          tiers['1.70-1.79']['hits'], tiers['1.70-1.79']['pushes']),
+                         (2, 1, 1, 1))
+        self.assertEqual((tiers['1.70-1.79']['pnl'], tiers['1.70-1.79']['roi']),
+                         (175, .35))
+        self.assertEqual((tiers['1.80-1.89']['n_bets'], tiers['1.80-1.89']['n_decided'],
+                          tiers['1.80-1.89']['hits']), (1, 1, 0))
+        self.assertEqual((tiers['1.90-1.99']['n_bets'], tiers['1.90-1.99']['hits']),
+                         (1, 1))
+        self.assertEqual((tiers['2.00-plus']['n_bets'], tiers['2.00-plus']['pnl']),
+                         (1, 250))
+        self.assertEqual(metrics['excluded_diagnostics']['below_1_70'], 1)
+        self.assertEqual(metrics['excluded_diagnostics']['invalid_or_missing_odds'], 1)
+        self.assertEqual(metrics['excluded_diagnostics']['non_prospective_or_post_hoc'], 1)
+        self.assertEqual(
+            [row['market'] for row in tiers['1.70-1.79']['by_market']],
+            ['HDC', 'HIL'],
+        )
+        self.assertEqual(odds_tier_metrics(ledger, 'crown')['tiers'][-1]['n_bets'], 1)
 
     def test_diagnostics_are_bounded_replay_safe_and_publicly_chinese(self):
         ledger = {'bets': []}

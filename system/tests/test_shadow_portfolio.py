@@ -165,6 +165,13 @@ class ConditionDashboardSourceTests(unittest.TestCase):
         self.assertIn("public_diagnostics", source)
         self.assertIn("建立診斷", app)
         self.assertIn("只顯示彙總，不含供應商原始資料", app)
+        self.assertIn("oddsTierCard", app)
+        for text in (
+            "賠率分層統計", "1.70–1.79", "1.80–1.89", "1.90–1.99", "≥2.00",
+            "只計前瞻獨立驗證倉有效注單／賽果", "走水不計入命中率分母",
+        ):
+            self.assertIn(text, app)
+        self.assertIn('"odds_tiers"', source)
 
 
 if __name__ == "__main__":

@@ -19,10 +19,13 @@ class ConditionSimulationUiTests(unittest.TestCase):
         for text in (
             "歷史發現期唯讀封存", "起始 HK$50,000", "每注 HK$250", "每場 HK$500",
             "只在首次持久化原生賽前 T-5 建立注單", "歷史發現／獨立驗證",
-            "前瞻盈虧", "前瞻回報率",
+            "前瞻盈虧", "前瞻回報率", "賠率分層統計",
+            "1.70–1.79", "1.80–1.89", "1.90–1.99", "≥2.00",
+            "只計前瞻獨立驗證倉有效注單／賽果", "走水不計入命中率分母",
         ):
             self.assertIn(text, app)
         self.assertIn("conditionBets", app)
+        self.assertIn("oddsTierCard", app)
 
     def test_user_facing_market_labels_are_chinese_and_legacy_labels_are_sanitized(self) -> None:
         for path in (ROOT / "crown" / "dashboard" / "app.js", ROOT / "hkjc-dashboard" / "app.js"):

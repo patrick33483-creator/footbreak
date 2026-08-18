@@ -1549,6 +1549,7 @@ function renderLedger() {
       : '<div class="empty2">暫未有可顯示的原生 T-5 市場評估診斷。</div>'
   }</div>`;
   if (s.n_settled) h += `<div class="grid g2">${equityCard(s)}${resultCard(s)}</div>${marketCard(s)}`;
+  h += oddsTierCard(s);
   if (!bets.length) {
     h += `<div class="card"><div class="empty2">尚未有符合條件的獨立驗證注單。系統只在首次保存的原生 T-5 評估。</div></div>`;
   } else {
@@ -1659,6 +1660,54 @@ function marketCard(s) {
         <td class="mono ${m.roi >= 0 ? 'ev-p' : 'ev-n'}">${pc(m.roi, 2)}</td>
         <td class="mono">${m.dec ? `${pc(m.hit_rate, 1)} (${m.hit}/${m.dec})` : '—'}</td></tr>`; }).join('')}
     </table></div></div>`;
+}
+
+
+/* ── 獨立驗證賠率分層 ── */
+function oddsTierCard(s) {
+  const report = s.odds_tiers || {};
+  const received = Array.isArray(report.tiers) ? report.tiers : [];
+  const expected = [
+    ['1.70-1.79', '1.70–1.79'], ['1.80-1.89', '1.80–1.89'],
+    ['1.90-1.99', '1.90–1.99'], ['2.00-plus', '≥2.00'],
+  ];
+  const byKey = Object.fromEntries(received.map((row) => [row.key, row]));
+  const tiers = expected.map(([key, label]) => byKey[key] || {
+    key, label, n_bets: 0, n_settled: 0, n_decided: 0, hits: 0,
+    pushes: 0, pnl: 0, roi: null, hit_rate: null, wilson95: null, by_market: [],
+  });
+  const diagnostics = report.excluded_diagnostics || {};
+  const split = (tier) => {
+    const markets = Array.isArray(tier.by_market) ? tier.by_market : [];
+    if (!markets.length) return '';
+    return `<tr class="odds-tier-split"><td colspan="6"><b>${esc(tier.label || '—')} · 按市場</b>
+      <div class="tbl-wrap"><table class="t odds-tier-market-table"><tr><th>市場</th><th>注數／已決定</th><th>命中率</th><th>實際盈虧</th><th>ROI</th><th>Wilson 95%</th></tr>
+      ${markets.map((m) => `<tr><td class="lbl">${esc(marketLabel(m.market))}</td>
+        <td class="mono">${m.n_bets || 0}／${m.n_decided || 0}</td>
+        <td class="mono">${m.n_decided ? `${pc(m.hit_rate, 1)} (${m.hits || 0}/${m.n_decided})` : '—'}</td>
+        <td class="mono ${(m.pnl || 0) > 0 ? 'ev-p' : (m.pnl || 0) < 0 ? 'ev-n' : 'dim'}">${money(m.pnl)}</td>
+        <td class="mono ${m.roi == null ? 'dim' : m.roi >= 0 ? 'ev-p' : 'ev-n'}">${pc(m.roi, 2)}</td>
+        <td class="mono">${Array.isArray(m.wilson95) ? `${pc(m.wilson95[0], 1)}–${pc(m.wilson95[1], 1)}` : '—'}</td></tr>`).join('')}
+      </table></div></td></tr>`;
+  };
+  const excluded = [
+    ['低於 1.70', diagnostics.below_1_70],
+    ['無效／缺失賠率', diagnostics.invalid_or_missing_odds],
+  ].filter(([, count]) => Number(count) > 0)
+    .map(([label, count]) => `${label} ${count} 注`).join('；');
+  return `<div class="card odds-tier-card"><h2 class="card-h">賠率分層統計
+      <span class="sub">只計前瞻獨立驗證倉有效注單／賽果；走水不計入命中率分母</span></h2>
+    <div class="tbl-wrap"><table class="t odds-tier-table" aria-label="獨立驗證倉賠率分層統計">
+      <tr><th>賠率層</th><th>注數／已決定</th><th>命中率</th><th>實際盈虧</th><th>ROI</th><th>Wilson 95%</th></tr>
+      ${tiers.map((tier) => `<tr><td class="lbl">${esc(tier.label || '—')}</td>
+        <td class="mono">${tier.n_bets || 0}／${tier.n_decided || 0}</td>
+        <td class="mono">${tier.n_decided ? `${pc(tier.hit_rate, 1)} (${tier.hits || 0}/${tier.n_decided})` : '—'}</td>
+        <td class="mono ${(tier.pnl || 0) > 0 ? 'ev-p' : (tier.pnl || 0) < 0 ? 'ev-n' : 'dim'}">${money(tier.pnl)}</td>
+        <td class="mono ${tier.roi == null ? 'dim' : tier.roi >= 0 ? 'ev-p' : 'ev-n'}">${pc(tier.roi, 2)}</td>
+        <td class="mono">${Array.isArray(tier.wilson95) ? `${pc(tier.wilson95[0], 1)}–${pc(tier.wilson95[1], 1)}` : '—'}</td></tr>${split(tier)}`).join('')}
+    </table></div>
+    <p class="mx-note">「注數」包括待決及已結算有效注；「已決定」只包括非走水的已結算注。實際盈虧及 ROI 以已結算注的實際亞洲盤盈虧／投注額計算。${excluded ? ` ${esc(excluded)}只作內部排除診斷，絕不混入上述四層。` : ''}</p>
+  </div>`;
 }
 
 function notifyCard() {
