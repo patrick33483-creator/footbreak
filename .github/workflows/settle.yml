@@ -35,10 +35,13 @@ jobs:
               sudo systemctl start footbreak-tick.timer
               sudo systemctl start footbreak-sweep.timer
               sudo systemctl start footbreak-settle.timer
+              sudo systemctl start crown-settle.timer
             }
             trap restart_timers EXIT
             sudo systemctl stop footbreak-tick.timer footbreak-sweep.timer footbreak-settle.timer
             sudo systemctl stop footbreak-tick.service footbreak-sweep.service footbreak-settle.service || true
+            sudo systemctl stop crown-settle.timer
+            sudo systemctl stop crown-settle.service || true
             sudo rm -f /run/footbreak-t5-priority
             for i in $(seq 1 120); do
               sudo flock -n /var/lock/footbreak.lock true && break
@@ -46,6 +49,14 @@ jobs:
             done
             if ! sudo flock -n /var/lock/footbreak.lock true; then
               echo "足破資料鎖超過 10 分鐘仍未釋放，拒絕假裝結算成功" >&2
+              exit 1
+            fi
+            for i in $(seq 1 24); do
+              sudo flock -n /var/lock/footbreak-crown-settle.lock true && break
+              sleep 5
+            done
+            if ! sudo flock -n /var/lock/footbreak-crown-settle.lock true; then
+              echo "皇冠結算鎖超過 2 分鐘仍未釋放，拒絕重複結算" >&2
               exit 1
             fi
             echo "=== Footbreak settlement ==="
