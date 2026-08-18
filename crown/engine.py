@@ -1534,7 +1534,16 @@ def run(mode: str, config: Settings) -> dict[str, Any]:
             ledger,
             datetime.now(HKT),
         )
-    pinnapi_rows, hkjc_rows = pinnapi_client.fixtures(), fetch_matches()
+    pinnapi_fixture_status = "available"
+    try:
+        pinnapi_rows = pinnapi_client.fixtures()
+    except (OSError, ValueError, TypeError):
+        # PinnAPI is an optional reference for bridge/EV work.  A transport
+        # failure or malformed response must fail closed for that reference,
+        # but must not abort Crown/Titan first-look discovery and persistence.
+        pinnapi_rows = []
+        pinnapi_fixture_status = "unavailable_fail_closed"
+    hkjc_rows = fetch_matches()
     h_events = [(event_from_match(row), row) for row in hkjc_rows]
     h_events = [(event, row) for event, row in h_events if event]
     p_events = [_event_from_pinnapi(row) for row in pinnapi_rows]
@@ -1709,6 +1718,7 @@ def run(mode: str, config: Settings) -> dict[str, Any]:
             "ok": True, "mode": mode, "predictions": runtime["completed"],
             "retained_predictions": retained, "simulations_created": len(emitted),
             "mapping": mapping, "pinnapi_fixtures": len(pinnapi_rows),
+            "pinnapi_fixture_status": pinnapi_fixture_status,
             "titan_fixtures": len(titan_rows), "hkjc_fixtures": len(h_events),
             "fresh_condition_predictions": fresh_condition_predictions,
             "fresh_t5_predictions": [
@@ -1796,7 +1806,9 @@ def run(mode: str, config: Settings) -> dict[str, Any]:
         retained = merge_predictions(config, predictions)
     return {"ok": True, "mode": mode, "predictions": len(predictions), "retained_predictions": len(retained),
             "simulations_created": len(emitted), "mapping": mapping,
-            "pinnapi_fixtures": len(pinnapi_rows), "titan_fixtures": len(titan_rows), "hkjc_fixtures": len(h_events),
+            "pinnapi_fixtures": len(pinnapi_rows),
+            "pinnapi_fixture_status": pinnapi_fixture_status,
+            "titan_fixtures": len(titan_rows), "hkjc_fixtures": len(h_events),
             "fresh_condition_predictions": fresh_condition_predictions,
             # Compatibility only; notification dispatch uses the explicit
             # stage list above and never scans historical cards.

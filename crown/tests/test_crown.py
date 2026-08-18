@@ -1579,6 +1579,25 @@ class CrownSafetyTests(unittest.TestCase):
             titan.assert_not_called()
             pinnapi.assert_not_called()
 
+    def test_sweep_continues_fail_closed_when_pinnapi_fixture_list_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = replace(
+                settings(), state_dir=Path(directory), enabled=True, pinnapi_key="test",
+            )
+            titan_client, pinnapi_client = Mock(), Mock()
+            titan_client.fixtures.return_value = []
+            pinnapi_client.fixtures.side_effect = OSError("provider unavailable")
+            with patch("crown.engine.TitanClient", return_value=titan_client), \
+                 patch("crown.engine.PinnapiClient", return_value=pinnapi_client), \
+                 patch("crown.engine.fetch_matches", return_value=[]), \
+                 patch("crown.engine.market_entry_thresholds", return_value={}):
+                result = run("sweep", config)
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["pinnapi_fixtures"], 0)
+            self.assertEqual(
+                result["pinnapi_fixture_status"], "unavailable_fail_closed",
+            )
+
     def test_tick_deadline_commits_completed_t5s_and_retries_hung_page_next_minute(self) -> None:
         """One stuck page must not hold back later kickoff groups or persistence."""
         with tempfile.TemporaryDirectory() as directory:
