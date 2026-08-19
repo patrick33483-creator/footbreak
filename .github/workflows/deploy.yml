@@ -23,9 +23,15 @@ jobs:
 
       - name: 檢查 shell 腳本
         run: |
-          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
           bash -n system/run_all.sh deploy/run.sh deploy/crown-run.sh deploy/reconcile-results.sh deploy/backtest-run.sh deploy/health-check.sh deploy/dashboard-self-heal.sh deploy/enable-crown.sh deploy/footbreak-tick-preempt.sh deploy/footbreak-refresh-current-odds.sh deploy/setup.sh deploy/update.sh
-          shellcheck -S error deploy/*.sh system/run_all.sh || true
+          if ! command -v shellcheck >/dev/null 2>&1; then
+            timeout 120s sudo apt-get update -qq &&
+              timeout 120s sudo apt-get install -y -qq shellcheck ||
+              echo "ShellCheck 套件暫時不可用；已完成強制 bash -n 語法檢查"
+          fi
+          if command -v shellcheck >/dev/null 2>&1; then
+            shellcheck -S error deploy/*.sh system/run_all.sh || true
+          fi
           echo "Shell 語法 OK"
 
       - name: 驗證 Crown 與 Footbreak PinnAPI 離線回歸測試
