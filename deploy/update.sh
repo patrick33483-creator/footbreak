@@ -37,7 +37,7 @@ sync_crown_web_root() {
   # Only the static nginx tree is made readable.  Never recurse into
   # /var/lib/footbreak/crown, which is private runtime state.
   install -d -o root -g www-data -m 0755 /var/www /var/www/crown
-  rsync -a --delete --exclude 'data.json' --chmod=Du=rwx,Dgo=rx,Fu=rw,Fgo=r \
+  rsync -a --delete --exclude 'data.json' --exclude 'history.json' --chmod=Du=rwx,Dgo=rx,Fu=rw,Fgo=r \
     "$APP_DIR/crown/dashboard/" /var/www/crown/
   chown -R root:www-data /var/www/crown
   find /var/www/crown -type d -exec chmod 0755 {} +
@@ -207,6 +207,8 @@ CROWN_STATE_DIR=/var/lib/footbreak/crown CROWN_WEB_ROOT=/var/www/crown \
   "$APP_DIR/.venv/bin/python3" -m crown.dashboard_data --out /var/www/crown/data.json
 chown root:www-data /var/www/crown/data.json
 chmod 0644 /var/www/crown/data.json
+chown root:www-data /var/www/crown/history.json
+chmod 0644 /var/www/crown/history.json
 
 # Generate the isolated report-only condition artifacts immediately after a
 # deploy, rather than leaving both dashboards at 404 until the next 15-minute

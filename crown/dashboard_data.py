@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 import os
 from datetime import datetime
 from pathlib import Path
@@ -14,6 +16,10 @@ from .period import in_current_period
 from .prediction_history import normalize_history, project_watch_rows
 from .ledger import PREDICTION_ERA
 from .state import load_ledger, load_predictions, paths
+
+
+HISTORY_DATA_URL = "history.json"
+HISTORY_ARTIFACT_SCHEMA = "crown-history-v1"
 
 
 def _dashboard_matches(config: Settings) -> list[dict[str, Any]]:
@@ -224,7 +230,24 @@ def stage_completeness(
     }
 
 
-def build(config: Settings) -> dict[str, Any]:
+def _history_version(prediction_history: dict[str, Any]) -> str:
+    """Return a stable content marker for the separately published history."""
+    encoded = json.dumps(
+        prediction_history,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()[:20]
+
+
+def _build_payloads(config: Settings) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Build the lightweight dashboard and its complete history sidecar.
+
+    History calculation remains exactly the same as before.  Only publication
+    changes: the boot payload retains the aggregate contract while the row
+    collection is moved to a separately fetched, versioned artifact.
+    """
     ledger = load_ledger(config)
     matches = _dashboard_matches(config)
     prediction_history = read_json(
@@ -281,8 +304,10 @@ def build(config: Settings) -> dict[str, Any]:
     # cannot become dashboard data again.
     dashboard_ledger, active_condition_bets = _public_ledger(ledger)
     challenger_v2 = ledger.get("crown_v2_challenger")
-    return {
-        "schema_version": "crown-dashboard-v2", "generated_at": iso_hkt(), "title": "足破 · 皇冠賽事預測終端",
+    generated_at = iso_hkt()
+    history_version = _history_version(prediction_history)
+    dashboard = {
+        "schema_version": "crown-dashboard-v2", "generated_at": generated_at, "title": "足破 · 皇冠賽事預測終端",
         "summary": _summary(matches, active_condition_bets),
         "market_policy": {"model_HDC": "Titan007 Crown company ID=3", "model_HIL": "Titan007 Crown company ID=3",
                           "model_CHL": "HKJC角球大細 vs PinnAPI CHL exact line; never Crown odds",
@@ -297,15 +322,40 @@ def build(config: Settings) -> dict[str, Any]:
                           "stages": ["首預", "T-30", "T-5"], "decision_stage": "T-5", "minimum_odds": 1.01},
         "matches": matches, "ledger": dashboard_ledger,
         "v2_challenger": challenger_v2 if isinstance(challenger_v2, dict) else None,
-        "prediction_history": prediction_history,
+        # Keep all history aggregates in the fast boot contract.  Rows are
+        # deliberately absent; the History view asks for the sidecar on
+        # demand, avoiding a download and browser walk of unbounded history.
+        "prediction_history": {"stats": prediction_history["stats"]},
+        "history_data_url": HISTORY_DATA_URL,
+        "history_data_version": history_version,
         "stage_completeness": stage_completeness(matches, ledger),
     }
+    history_artifact = {
+        "schema_version": HISTORY_ARTIFACT_SCHEMA,
+        "generated_at": generated_at,
+        "history_data_version": history_version,
+        "prediction_history": prediction_history,
+    }
+    return dashboard, history_artifact
+
+
+def build(config: Settings) -> dict[str, Any]:
+    """Build the lightweight boot payload without embedding history rows."""
+    dashboard, _history_artifact = _build_payloads(config)
+    return dashboard
 
 
 def write_dashboard_data(config: Settings, out: Path | None = None) -> Path:
-    """Atomically write a world-readable static artifact, never Crown state."""
+    """Atomically publish a lightweight dashboard and complete history sidecar."""
     destination = out or config.web_root / "data.json"
-    write_json_atomic(destination, build(config))
+    dashboard, history_artifact = _build_payloads(config)
+    history_destination = destination.with_name(HISTORY_DATA_URL)
+    # Publish the sidecar first.  The browser verifies the version marker
+    # before using it, so it never renders a mixed-generation history during
+    # the short two-file replacement window.
+    write_json_atomic(history_destination, history_artifact)
+    os.chmod(history_destination, 0o644)
+    write_json_atomic(destination, dashboard)
     # A root-owned runner replaces the file atomically; retain nginx readability
     # on every pass, not just setup/update.
     os.chmod(destination, 0o644)

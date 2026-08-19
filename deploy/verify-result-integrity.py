@@ -15,6 +15,7 @@ from typing import Any
 FOOTBREAK_DATA = Path("/var/www/footbreak/data.json")
 CROWN_HISTORY = Path("/var/lib/footbreak/crown/prediction_history.json")
 CROWN_DATA = Path("/var/www/crown/data.json")
+CROWN_PUBLIC_HISTORY = Path("/var/www/crown/history.json")
 STAGES = ("首預", "T-30", "T-5")
 MARKETS = ("HDC", "HIL", "CHL")
 HKT = timezone(timedelta(hours=8))
@@ -322,6 +323,7 @@ def report_result_gaps(label: str, history_rows: list[dict[str, Any]]) -> None:
 def assert_crown_publication_matches(
     crown_history: dict[str, Any],
     crown_public: dict[str, Any],
+    crown_public_history: dict[str, Any] | None = None,
 ) -> None:
     from analysis.odds_recovery import overlay_rows
     from crown.ledger import PREDICTION_ERA
@@ -331,7 +333,18 @@ def assert_crown_publication_matches(
         project_watch_rows,
     )
 
-    public_history = crown_public.get("prediction_history") or {}
+    # Keep the verifier callable against archived inline-history snapshots,
+    # while requiring the sidecar contract for the live publication path.
+    if crown_public_history is None:
+        public_history = crown_public.get("prediction_history") or {}
+    else:
+        public_history = crown_public_history.get("prediction_history") or {}
+        assert crown_public.get("history_data_url") == "history.json", (
+            "Crown boot payload is missing the history sidecar marker"
+        )
+        assert crown_public.get("history_data_version") == crown_public_history.get(
+            "history_data_version"
+        ), "Crown boot/history sidecar version mismatch"
     projected_history = copy.deepcopy(crown_history)
     normalize_history(projected_history)
     raw_rows = rows(projected_history)
@@ -384,6 +397,7 @@ def main() -> None:
     footbreak = load(FOOTBREAK_DATA)
     crown = load(CROWN_HISTORY)
     crown_public = load(CROWN_DATA)
+    crown_public_history = load(CROWN_PUBLIC_HISTORY)
     footbreak_rows = rows(footbreak.get("prediction_history") or {})
     crown_rows = rows(crown)
     run_integrity_check(
@@ -419,6 +433,7 @@ def main() -> None:
         assert_crown_publication_matches,
         crown,
         crown_public,
+        crown_public_history,
     )
     report_result_gaps("Footbreak", footbreak_rows)
     report_result_gaps("Crown", crown_rows)

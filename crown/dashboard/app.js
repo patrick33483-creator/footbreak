@@ -87,6 +87,10 @@ const oddsSourceLabel = (value) => ODDS_SOURCE_LABEL[value] || value || '未提�
 const API_BASE = '/api';
 let DATA = null, LIST = [], LED = null, SEL = null, STAGE = 'all', Q = '', VIEW = 'pred';
 let HISTORY_STAGE = 'all';
+const HISTORY_PAGE_SIZE = 50;
+let HISTORY_VISIBLE = HISTORY_PAGE_SIZE;
+let HISTORY = { state: 'idle', payload: null, error: '', version: null, source: null, promise: null };
+let HISTORY_REQUEST_ID = 0;
 let SETTLE_MESSAGE = '', SETTLE_BAD = false, SETTLING = false;
 const FINISHED_MATCH_GRACE_MINUTES = 150;
 
@@ -163,12 +167,20 @@ async function fetchDashboardData() {
   throw new Error('後端同靜態備份都無法讀取');
 }
 
-function applyData(raw) {
-  const history = raw && raw.prediction_history;
-  if (history && Array.isArray(history.rows)) {
-    history.rows = history.rows.flatMap((row) => {
-      if (!row || typeof row !== 'object') return [];
-      row.market_predictions = (row.market_predictions || []).filter((prediction) => {
+function historyVersion(raw = DATA) {
+  if (!raw || typeof raw !== 'object') return null;
+  return raw.history_data_version || raw.history_generated_at || raw.generated_at || null;
+}
+
+function sanitizeHistory(history) {
+  const source = history && typeof history === 'object' ? history : {};
+  const rows = Array.isArray(source.rows) ? source.rows : [];
+  return {
+    ...source,
+    rows: rows.flatMap((sourceRow) => {
+      if (!sourceRow || typeof sourceRow !== 'object') return [];
+      const row = { ...sourceRow };
+      row.market_predictions = (sourceRow.market_predictions || []).filter((prediction) => {
         if (!prediction || !['HDC', 'HIL', 'CHL'].includes(prediction.code)) return false;
         if (!['H', 'A', 'L'].includes(prediction.side)) return false;
         const rawLine = prediction.line == null ? prediction.condition : prediction.line;
@@ -177,7 +189,108 @@ function applyData(raw) {
           && Number.isFinite(odds) && odds > 1;
       });
       return row.market_predictions.length ? [row] : [];
-    });
+    }),
+  };
+}
+
+function historyPayloadFromArtifact(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  if (raw.prediction_history && typeof raw.prediction_history === 'object') {
+    return raw.prediction_history;
+  }
+  // Accept a direct history contract as well as the v1 sidecar wrapper.  This
+  // keeps manually published and older dashboard artifacts viewable.
+  return Array.isArray(raw.rows) || raw.stats ? raw : null;
+}
+
+function historyRequestUrl() {
+  const rawUrl = DATA && DATA.history_data_url;
+  if (typeof rawUrl !== 'string' || !rawUrl.trim()) return null;
+  try {
+    const url = new URL(rawUrl, window.location.href);
+    if (url.origin !== window.location.origin) return null;
+    const version = historyVersion();
+    if (version) url.searchParams.set('v', version);
+    return url.toString();
+  } catch (_) {
+    return null;
+  }
+}
+
+async function loadHistory({ force = false } = {}) {
+  if (HISTORY.source === 'inline') return HISTORY.payload;
+  if (HISTORY.state === 'loading') return HISTORY.promise;
+  if (HISTORY.state === 'ready' && !force) return HISTORY.payload;
+  const url = historyRequestUrl();
+  if (!url) {
+    HISTORY = {
+      state: 'error', payload: null, error: '歷史紀錄檔未提供，請重新載入儀表板後再試。',
+      version: historyVersion(), source: null, promise: null,
+    };
+    if (VIEW === 'history') renderHistory();
+    return null;
+  }
+  const expectedVersion = historyVersion();
+  const requestId = ++HISTORY_REQUEST_ID;
+  const request = (async () => {
+    let loaded = null;
+    try {
+      const response = await fetch(url, { cache: 'no-store' });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const artifact = await response.json();
+      const responseVersion = artifact && artifact.history_data_version;
+      if (expectedVersion && responseVersion !== expectedVersion) {
+        throw new Error('紀錄正在更新，請重新讀取。');
+      }
+      const payload = historyPayloadFromArtifact(artifact);
+      if (!payload || !Array.isArray(payload.rows)) throw new Error('紀錄檔格式無效');
+      // A main-data refresh may have launched a newer request while this
+      // response was in flight.  Never let the older response overwrite it.
+      if (requestId !== HISTORY_REQUEST_ID) return null;
+      // Apply row sanitisation only after the History artifact has arrived.
+      HISTORY = {
+        state: 'ready', payload: sanitizeHistory(payload), error: '',
+        version: expectedVersion || responseVersion || null, source: 'remote', promise: null,
+      };
+      loaded = HISTORY.payload;
+    } catch (error) {
+      if (requestId === HISTORY_REQUEST_ID) {
+        HISTORY = {
+          state: 'error', payload: null, error: error.message || '讀取失敗',
+          version: expectedVersion, source: null, promise: null,
+        };
+      }
+    }
+    if (requestId === HISTORY_REQUEST_ID && VIEW === 'history') renderHistory();
+    return loaded;
+  })();
+  HISTORY = {
+    state: 'loading', payload: HISTORY.payload, error: '', version: expectedVersion,
+    source: HISTORY.source, promise: request,
+  };
+  if (VIEW === 'history') renderHistory();
+  return request;
+}
+
+function applyData(raw) {
+  const history = raw && raw.prediction_history;
+  const previousVersion = HISTORY.version;
+  if (history && Array.isArray(history.rows)) {
+    // Legacy inline-history snapshots remain supported without a sidecar.
+    HISTORY = {
+      state: 'ready', payload: sanitizeHistory(history), error: '',
+      version: historyVersion(raw), source: 'inline', promise: null,
+    };
+  } else if (HISTORY.source === 'inline' || (
+    previousVersion && historyVersion(raw) && previousVersion !== historyVersion(raw)
+  )) {
+    // A new main snapshot invalidates only an already-loaded remote sidecar.
+    // Do not fetch here: loading remains strictly demand-driven by History.
+    HISTORY_REQUEST_ID += 1;
+    HISTORY = {
+      state: 'idle', payload: null, error: '', version: historyVersion(raw),
+      source: null, promise: null,
+    };
   }
   DATA = raw;
   LED = raw.ledger || { bets: [], stats: {}, log: [] };
@@ -227,9 +340,17 @@ async function refresh(silent) {
       raw = result.data;
     }
     if (!raw) raw = await fetchDashboardData();
+    const oldHistoryVersion = historyVersion();
+    const historyWasOpen = VIEW === 'history';
     const changed = raw.generated_at !== (DATA && DATA.generated_at);
     applyData(raw);
     render();
+    const newHistoryVersion = historyVersion();
+    if (historyWasOpen && HISTORY.source !== 'inline') {
+      if (oldHistoryVersion !== newHistoryVersion || HISTORY.state === 'error') {
+        void loadHistory({ force: true });
+      }
+    }
     if (!silent) {
       flash(settlementBusy
         ? '結算程序運行中，已載入目前最新資料'
@@ -276,6 +397,7 @@ function render() {
     else $('#detail').innerHTML = '<div class="empty">暫時冇未完場賽事</div>';
   } else if (VIEW === 'history') {
     renderHistory();
+    if (HISTORY.state === 'idle') void loadHistory();
   } else if (VIEW === 'chal') {
     renderChallenger();
     if (CHAL.state === 'idle') void loadChallenger({});
@@ -1616,10 +1738,12 @@ function historyStageCompletenessCard(raw) {
 
 function renderHistory() {
   const V = $('#viewHistory');
-  const payload = DATA.prediction_history || { rows: [], stats: {} };
+  const summaryPayload = DATA.prediction_history || { stats: {} };
+  const payload = HISTORY.payload || summaryPayload;
   const rows = orderHistoryRows(
     (payload.rows || []).filter((row) => HISTORY_STAGE === 'all' || row.stage === HISTORY_STAGE),
   );
+  const visibleRows = rows.slice(0, HISTORY_VISIBLE);
   const s = payload.stats || {};
   const accuracy = s.wdl_accuracy == null ? '待賽果' : pc(s.wdl_accuracy, 1);
   const K = [
@@ -1683,6 +1807,28 @@ function renderHistory() {
       `<button type="button" class="history-stage-filter ${HISTORY_STAGE === value ? 'is-on' : ''}"
         data-history-stage="${value}" aria-pressed="${HISTORY_STAGE === value}">${label}</button>`).join('')}
   </div>`;
+  const historyStatus = (() => {
+    if (HISTORY.state === 'loading') {
+      return `<div class="card history-load-state"><div class="empty2" data-testid="history-loading">正在讀取完整預測紀錄…</div></div>`;
+    }
+    if (HISTORY.state === 'error') {
+      return `<div class="card history-load-state"><div class="empty2 bad-txt" data-testid="history-error">
+        預測紀錄讀取失敗:${esc(HISTORY.error || '未知錯誤')}。
+        <button type="button" class="history-refresh-btn" data-history-refresh>重新讀取紀錄</button>
+      </div></div>`;
+    }
+    if (HISTORY.state !== 'ready') {
+      return `<div class="card history-load-state"><div class="empty2" data-testid="history-not-loaded">開啟完整紀錄中…</div></div>`;
+    }
+    return '';
+  })();
+  const more = rows.length > visibleRows.length
+    ? `<div class="history-more"><button type="button" class="history-more-btn" data-history-more>
+        顯示更多
+      </button><span>${visibleRows.length} / ${rows.length} 筆</span></div>`
+    : rows.length
+      ? `<div class="history-more"><span>已顯示全部 ${rows.length} 筆</span></div>`
+      : '';
 
   V.innerHTML = `<div class="ledger-head">
     <h1 class="pg-h">預測紀錄 <span class="sub">有冇落注都照記 · 準確率與模擬倉分開</span></h1>
@@ -1700,11 +1846,26 @@ function renderHistory() {
   </div>
   ${historyFilters}
   <div class="card"><h2 class="card-h">${HISTORY_STAGE === 'all' ? '全部紀錄' : `${HISTORY_STAGE} 紀錄`} <span class="sub">${rows.length} 筆 · 最新開賽時間優先</span></h2>
-    ${historyTable(rows, '暫時未有預測紀錄。')}
+    ${historyStatus || historyTable(visibleRows, '暫時未有預測紀錄。')}
+    ${historyStatus ? '' : more}
   </div>`;
   $$('#viewHistory [data-history-stage]').forEach((button) => {
-    button.onclick = () => { HISTORY_STAGE = button.dataset.historyStage; renderHistory(); };
+    button.onclick = () => {
+      HISTORY_STAGE = button.dataset.historyStage;
+      HISTORY_VISIBLE = HISTORY_PAGE_SIZE;
+      renderHistory();
+    };
   });
+  const retry = $('#viewHistory [data-history-refresh]');
+  if (retry) retry.onclick = () => loadHistory({ force: true });
+  const showMore = $('#viewHistory [data-history-more]');
+  if (showMore) showMore.onclick = () => {
+    HISTORY_VISIBLE += HISTORY_PAGE_SIZE;
+    renderHistory();
+  };
+  if (HISTORY.state === 'idle') {
+    void loadHistory();
+  }
 }
 
 function dayStake(bets) {

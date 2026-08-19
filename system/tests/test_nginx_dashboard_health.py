@@ -6,6 +6,17 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class NginxDashboardHealthTests(unittest.TestCase):
+    def test_crown_history_sidecar_survives_static_sync_and_is_never_cached(self):
+        nginx = (ROOT / "deploy" / "nginx-crown.conf").read_text(encoding="utf-8")
+        setup = (ROOT / "deploy" / "setup.sh").read_text(encoding="utf-8")
+        update = (ROOT / "deploy" / "update.sh").read_text(encoding="utf-8")
+
+        self.assertIn("location = /history.json {", nginx)
+        self.assertIn('add_header Cache-Control "no-store, must-revalidate";', nginx)
+        for script in (setup, update):
+            self.assertIn("--exclude 'history.json'", script)
+            self.assertIn("history.json", script)
+
     def test_deploy_repairs_auth_and_static_permissions(self):
         script = (ROOT / "deploy" / "update.sh").read_text(encoding="utf-8")
 

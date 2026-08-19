@@ -2135,7 +2135,9 @@ class CrownSafetyTests(unittest.TestCase):
                 "generated_at": "2026-08-18T23:21:00+08:00",
                 "matches": [{"match_id": "native-t5", "stage": "T-30",
                              "stages": [{"stage": "T-30"}]}],
-                "prediction_history": {"rows": [{"match_id": "old"}], "stats": {"cached": True}},
+                "prediction_history": {"stats": {"cached": True}},
+                "history_data_url": "history.json",
+                "history_data_version": "cached-history-version",
             }), encoding="utf-8")
             with patch(
                 "crown.dashboard_data.build",
@@ -2158,6 +2160,8 @@ class CrownSafetyTests(unittest.TestCase):
                 ["首預", "T-30", "T-5"],
             )
             self.assertEqual(payload["prediction_history"]["stats"], {"cached": True})
+            self.assertEqual(payload["history_data_url"], "history.json")
+            self.assertEqual(payload["history_data_version"], "cached-history-version")
             self.assertNotEqual(payload["generated_at"], "2026-08-18T23:21:00+08:00")
 
     def test_dashboard_live_board_uses_verified_crown_prices_as_the_master_list(self) -> None:
@@ -2178,7 +2182,7 @@ class CrownSafetyTests(unittest.TestCase):
             self.assertEqual([row["match_id"] for row in payload["matches"]], ["crown-only"])
             self.assertEqual(payload["summary"]["crown_matches"], 1)
 
-    def test_dashboard_includes_persisted_prediction_history(self) -> None:
+    def test_dashboard_publishes_history_rows_only_in_complete_sidecar(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             config = replace(settings(), state_dir=root / "private-state", web_root=root / "web")
@@ -2190,12 +2194,23 @@ class CrownSafetyTests(unittest.TestCase):
                 encoding="utf-8",
             )
             payload = build(config)
-            self.assertEqual(payload["prediction_history"]["rows"][0]["match_id"], "old")
+            self.assertNotIn("rows", payload["prediction_history"])
+            self.assertEqual(payload["history_data_url"], "history.json")
+            self.assertTrue(payload["history_data_version"])
             # A persisted row without an immutable model-version tag remains
             # auditable, but cannot be attributed to the current scorecard.
             stats = payload["prediction_history"]["stats"]
             self.assertEqual(stats["predictions"], 0)
             self.assertEqual(stats["all_history_audit"]["predictions"], 1)
+            output = write_dashboard_data(config)
+            artifact = json.loads((output.parent / "history.json").read_text(encoding="utf-8"))
+            self.assertEqual(artifact["schema_version"], "crown-history-v1")
+            self.assertEqual(artifact["history_data_version"], payload["history_data_version"])
+            self.assertEqual(
+                artifact["prediction_history"]["rows"][0]["match_id"],
+                "old",
+            )
+            self.assertEqual(S_IMODE((output.parent / "history.json").stat().st_mode), 0o644)
 
     def test_dashboard_projects_persisted_ledger_stage_missing_from_history(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -2238,8 +2253,11 @@ class CrownSafetyTests(unittest.TestCase):
             }
             save_ledger(config, ledger)
 
-            payload = build(config)
-            rows = payload["prediction_history"]["rows"]
+            output = write_dashboard_data(config)
+            payload = json.loads(output.read_text(encoding="utf-8"))
+            artifact = json.loads((output.parent / "history.json").read_text(encoding="utf-8"))
+            self.assertNotIn("rows", payload["prediction_history"])
+            rows = artifact["prediction_history"]["rows"]
             self.assertEqual([(row["match_id"], row["stage"]) for row in rows], [
                 ("future", "首預"),
             ])
@@ -2425,6 +2443,13 @@ class CrownSafetyTests(unittest.TestCase):
         if not node:
             self.skipTest("node is unavailable")
         smoke = Path(__file__).with_name("prediction_history_order_smoke.mjs")
+        subprocess.run([node, str(smoke)], check=True)
+
+    def test_crown_history_is_lazy_loaded_and_paginated(self) -> None:
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("node is unavailable")
+        smoke = Path(__file__).with_name("history_lazy_load_smoke.mjs")
         subprocess.run([node, str(smoke)], check=True)
 
     def test_crown_handicap_display_uses_selected_team_perspective(self) -> None:
@@ -3512,7 +3537,9 @@ class CrownSafetyTests(unittest.TestCase):
             '<span class="sub">${rows.length} 筆 · 最新開賽時間優先',
             app,
         )
-        self.assertIn("historyTable(rows, '暫時未有預測紀錄。')", app)
+        self.assertIn("historyTable(visibleRows, '暫時未有預測紀錄。')", app)
+        self.assertIn("const HISTORY_PAGE_SIZE = 50;", app)
+        self.assertIn("顯示更多", app)
         self.assertNotIn("const gradedRows =", app)
         self.assertNotIn("const pendingRows =", app)
         self.assertNotIn("const excludedRows =", app)

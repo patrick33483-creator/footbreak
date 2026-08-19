@@ -100,9 +100,24 @@ body {
 .history-stage-filter.is-on, .history-stage-filter:hover {
   border-color: var(--amber); color: var(--amber); background: var(--amber-bg);
 }
+.history-load-state { margin-top: var(--s3); }
+.history-refresh-btn,
+.history-more-btn {
+  min-width: 44px; min-height: 40px; margin: 0 var(--s2);
+  padding: 8px 14px; border: 1px solid var(--amber-dim);
+  border-radius: var(--radius-sm); background: var(--amber-bg); color: var(--amber);
+  font-weight: 700;
+}
+.history-refresh-btn:hover,
+.history-more-btn:hover { border-color: var(--amber); background: transparent; }
+.history-more {
+  display: flex; align-items: center; justify-content: center; gap: var(--s2);
+  padding: var(--s3) 0 0; color: var(--dim); font-size: var(--text-sm);
+}
 @media (max-width: 620px) {
   .history-stage-filters { gap: 6px; }
   .history-stage-filter { flex: 1 1 calc(50% - 6px); }
+  .history-more { align-items: stretch; flex-direction: column; text-align: center; }
 }
 
 button { font: inherit; color: inherit; cursor: pointer; }

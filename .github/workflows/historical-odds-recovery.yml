@@ -394,7 +394,7 @@ jobs:
               "mode": "post_regeneration_odds_statistics",
               "systems": {
                   "footbreak": summarize("/var/www/footbreak/data.json"),
-                  "crown": summarize("/var/www/crown/data.json"),
+                  "crown": summarize("/var/www/crown/history.json"),
               },
           }, ensure_ascii=False, sort_keys=True))
           PY
