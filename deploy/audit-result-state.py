@@ -7,9 +7,11 @@ import json
 import re
 import subprocess
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from urllib.request import urlopen
 
 
 FOOTBREAK_DATA = Path("/var/www/footbreak/data.json")
@@ -80,6 +82,110 @@ def compact(row: dict[str, Any]) -> dict[str, Any]:
             "market_predictions",
             "market_grades",
         )
+    }
+
+
+def validation_summary(payload: dict[str, Any], system: str) -> dict[str, Any]:
+    """Return aggregate-only independent-validation dashboard statistics."""
+    ledger = payload.get("ledger") or {}
+    stats = ledger.get("stats") or {}
+    namespace = ledger.get("independent_validation") or {}
+    odds_tiers = stats.get("odds_tiers") or {}
+
+    def metric_row(row: Any) -> dict[str, Any]:
+        if not isinstance(row, dict):
+            return {}
+        return {
+            key: row.get(key)
+            for key in (
+                "market",
+                "key",
+                "label",
+                "n_bets",
+                "n_settled",
+                "n_decided",
+                "hits",
+                "pushes",
+                "pnl",
+                "turnover",
+                "roi",
+                "hit_rate",
+                "wilson95",
+            )
+            if key in row
+        }
+
+    tiers = []
+    for tier in odds_tiers.get("tiers") or []:
+        if not isinstance(tier, dict):
+            continue
+        item = metric_row(tier)
+        item["by_market"] = [
+            metric_row(row)
+            for row in (tier.get("by_market") or [])
+            if isinstance(row, dict)
+        ]
+        tiers.append(item)
+
+    return {
+        "system": system,
+        "validation_started_at": namespace.get("validation_started_at"),
+        "diagnostics": namespace.get("diagnostics") or {},
+        "portfolio": stats.get("portfolio"),
+        "strategy": stats.get("strategy"),
+        **{
+            key: stats.get(key)
+            for key in (
+                "starting_bankroll",
+                "fixed_stake",
+                "n_pending",
+                "n_settled",
+                "n_decided",
+                "hits",
+                "pushes",
+                "hit_rate",
+                "accuracy",
+                "weighted_implied_break_even",
+                "pnl",
+                "turnover",
+                "roi",
+                "equity",
+                "cash",
+                "status",
+            )
+            if key in stats
+        },
+        "by_market": {
+            str(market): metric_row({"market": market, **row})
+            for market, row in (stats.get("by_market") or {}).items()
+            if isinstance(row, dict)
+        },
+        "odds_tiers": {
+            "scope": odds_tiers.get("scope"),
+            "tiers": tiers,
+            "excluded_diagnostics": odds_tiers.get("excluded_diagnostics") or {},
+        },
+    }
+
+
+def dashboard_performance(path: Path, port: int) -> dict[str, Any]:
+    """Measure only local payload size and bounded API transfer latency."""
+    started = time.monotonic()
+    try:
+        with urlopen(f"http://127.0.0.1:{port}/api/data", timeout=15) as response:
+            body = response.read()
+            status = response.status
+        api_error = None
+    except Exception as exc:
+        body = b""
+        status = None
+        api_error = type(exc).__name__
+    return {
+        "file_bytes": path.stat().st_size if path.is_file() else None,
+        "api_status": status,
+        "api_bytes": len(body),
+        "api_elapsed_ms": round((time.monotonic() - started) * 1000, 2),
+        "api_error_type": api_error,
     }
 
 
@@ -837,6 +943,11 @@ def main() -> None:
         "historical_odds_recovery": odds_recovery_state(footbreak, crown),
         "pinnapi_source_health": pinnapi_source_health_state(),
         "crown": {
+            "dashboard_performance": dashboard_performance(CROWN_DATA, 8765),
+            "independent_validation": validation_summary(
+                crown_dashboard,
+                "crown",
+            ),
             "stats": crown.get("stats"),
             "result_sync": crown.get("result_sync"),
             "three_stage_consensus": calculate_three_stage_consensus(crown_rows),
@@ -852,6 +963,11 @@ def main() -> None:
             "row_count": len(crown_rows),
         },
         "footbreak": {
+            "dashboard_performance": dashboard_performance(FOOTBREAK_DATA, 8766),
+            "independent_validation": validation_summary(
+                footbreak,
+                "footbreak",
+            ),
             "stats": (footbreak.get("prediction_history") or {}).get("stats"),
             "three_stage_consensus": calculate_three_stage_consensus(footbreak_rows),
             "condition_analysis": prediction_condition_analysis(footbreak_rows),
