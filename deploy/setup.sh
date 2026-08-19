@@ -39,7 +39,8 @@ bootstrap_footbreak_web_root() {
       echo "ERROR: Footbreak 儀表板 Python 不可用" >&2
       return 1
     fi
-    (cd "$APP_DIR" && "$dashboard_python" -m system.gen_app_data \
+    (cd "$APP_DIR" && PYTHONPATH="$APP_DIR${PYTHONPATH:+:$PYTHONPATH}" \
+      "$dashboard_python" -m system.gen_app_data \
       --bootstrap-empty --out "$WEB_ROOT/data.json")
     if [ ! -f "$WEB_ROOT/data.json" ] || [ ! -f "$WEB_ROOT/history.json" ]; then
       echo "ERROR: Footbreak 初始 data.json/history.json 未能建立" >&2
