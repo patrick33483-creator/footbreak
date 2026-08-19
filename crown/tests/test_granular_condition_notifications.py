@@ -57,30 +57,16 @@ class CrownGranularNotificationTests(unittest.TestCase):
         )
         return config
 
-    def test_t30_t5_are_independent_and_recent_unacknowledged_rows_recover(self):
+    def test_retired_granular_candidate_notifications_are_silent(self):
         with tempfile.TemporaryDirectory() as directory:
             config = self._config_with_history(directory)
             with patch("crown.notify._send") as sender:
-                self.assertEqual(notify_new(ledger(), config, []), 2)
+                self.assertEqual(notify_new(ledger(), config, []), 0)
                 self.assertEqual(notify_new(ledger(), config, [{"match_id": "future", "stage": "T-30"}]), 0)
                 self.assertEqual(notify_new(ledger(), config, [{"match_id": "future", "stage": "T-30"}]), 0)
-            self.assertEqual(sender.call_count, 2)
-            self.assertIn("候選條件，獨立驗證中", sender.call_args_list[0].args[1])
-            self.assertIn("候選條件，獨立驗證中", sender.call_args_list[1].args[1])
-            for call in sender.call_args_list:
-                message = call.args[1]
-                self.assertIn("聯賽：測試聯賽", message)
-                self.assertIn("投注：入球大細", message)
-                self.assertIn("選擇：大", message)
-                self.assertIn("盤口：2.5", message)
-                self.assertIn("賠率：1.83", message)
-                self.assertIn("凍結前歷史發現率：", message)
-                self.assertNotIn("HDC", message)
-                self.assertNotIn("HIL", message)
-                self.assertNotIn("CHL", message)
-                self.assertNotRegex(message, r"\b[ABC](?:→[ABC])+\b")
+            sender.assert_not_called()
 
-    def test_timeout_retries_once_on_next_tick_without_a_fresh_handoff(self):
+    def test_retired_candidate_notifications_never_enter_retry_outbox(self):
         with tempfile.TemporaryDirectory() as directory:
             config = self._config_with_history(directory)
             current = ledger()
@@ -89,31 +75,30 @@ class CrownGranularNotificationTests(unittest.TestCase):
                 if stage["stage"] == "T-5"
             ]
             with patch("crown.notify._send", side_effect=TimeoutError("telegram timeout")):
-                with self.assertRaises(TimeoutError):
-                    notify_new(current, config, [{"match_id": "future", "stage": "T-5"}])
+                self.assertEqual(notify_new(current, config, [{"match_id": "future", "stage": "T-5"}]), 0)
             with patch("crown.notify._send", return_value=True) as sender:
-                self.assertEqual(notify_new(current, config, []), 1)
                 self.assertEqual(notify_new(current, config, []), 0)
-            self.assertEqual(sender.call_count, 1)
+                self.assertEqual(notify_new(current, config, []), 0)
+            sender.assert_not_called()
 
-    def test_tick_attempt_limit_defers_remaining_signal_without_losing_it(self):
+    def test_retired_candidate_tick_limit_is_inert(self):
         with tempfile.TemporaryDirectory() as directory:
             config = self._config_with_history(directory)
             current = ledger()
             with patch("crown.notify._send", return_value=True) as sender:
                 self.assertEqual(
                     notify_new(current, config, [], max_attempts=1),
-                    1,
-                )
-                self.assertEqual(
-                    notify_new(current, config, [], max_attempts=1),
-                    1,
+                    0,
                 )
                 self.assertEqual(
                     notify_new(current, config, [], max_attempts=1),
                     0,
                 )
-            self.assertEqual(sender.call_count, 2)
+                self.assertEqual(
+                    notify_new(current, config, [], max_attempts=1),
+                    0,
+                )
+            sender.assert_not_called()
 
     def test_telegram_transport_timeout_is_bounded_to_five_seconds(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -145,7 +130,7 @@ class CrownGranularNotificationTests(unittest.TestCase):
                 self.assertTrue(notification_acquired)
                 self.assertEqual(notify_new(ledger(), config, []), 0)
 
-    def test_cached_ranking_notifies_without_remine(self):
+    def test_retired_candidate_ranking_never_notifies_or_remines(self):
         with tempfile.TemporaryDirectory() as directory:
             config = self._config_with_history(directory)
             current = ledger()
@@ -159,11 +144,11 @@ class CrownGranularNotificationTests(unittest.TestCase):
             ), patch("crown.notify._send", return_value=True) as sender:
                 self.assertEqual(
                     notify_new(current, config, [{"match_id": "future", "stage": "T-5"}]),
-                    1,
+                    0,
                 )
-            self.assertEqual(sender.call_count, 1)
+            sender.assert_not_called()
 
-    def test_fresh_and_recovery_candidates_are_deduplicated(self):
+    def test_retired_fresh_candidates_are_silent(self):
         with tempfile.TemporaryDirectory() as directory:
             config = self._config_with_history(directory)
             current = ledger()
@@ -174,9 +159,9 @@ class CrownGranularNotificationTests(unittest.TestCase):
             with patch("crown.notify._send", return_value=True) as sender:
                 self.assertEqual(
                     notify_new(current, config, [{"match_id": "future", "stage": "T-5"}]),
-                    1,
+                    0,
                 )
-            self.assertEqual(sender.call_count, 1)
+            sender.assert_not_called()
 
     def test_post_kickoff_and_stale_native_stage_never_replay(self):
         with tempfile.TemporaryDirectory() as directory:

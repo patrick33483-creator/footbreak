@@ -47,39 +47,32 @@ def watch(*, fixture="future", codes=("HDC",), odds=1.83):
 
 
 class ConditionPortfolioTests(unittest.TestCase):
-    def test_thresholds_three_markets_conflicts_and_idempotency(self):
-        sixty = [historical_row(f"s{i}", "HDC", hit=i < 12, kickoff=datetime(2026, 1, 1, 20, tzinfo=HKT) + timedelta(days=i)) for i in range(20)]
+    def test_wilson_thresholds_three_markets_and_idempotency(self):
+        forty_nine = [historical_row(f"s{i}", "HDC", hit=True, kickoff=datetime(2026, 1, 1, 20, tzinfo=HKT) + timedelta(days=i)) for i in range(49)]
+        created, audit = cp.evaluate_new_t5({"bets": []}, watch(), history_rows=forty_nine)
+        self.assertEqual(created, [])
+        self.assertEqual(audit[0]["reason"], "no_frozen_historical_condition")
+
+        sixty = [historical_row(f"s{i}", "HDC", hit=i < 40, kickoff=datetime(2026, 1, 1, 20, tzinfo=HKT) + timedelta(days=i)) for i in range(59)]
         created, audit = cp.evaluate_new_t5({"bets": []}, watch(), history_rows=sixty)
         self.assertEqual(created, [])
-        self.assertEqual(audit[0]["reason"], "no_historical_condition_above_60pct_with_20_decided")
-        nineteen = [historical_row(f"n{i}", "HDC", kickoff=datetime(2026, 2, 1, 20, tzinfo=HKT) + timedelta(days=i)) for i in range(19)]
-        self.assertEqual(cp.evaluate_new_t5({"bets": []}, watch(), history_rows=nineteen)[0], [])
+        self.assertEqual(audit[0]["reason"], "wilson_gate_not_passed")
 
         rows = []
-        for i in range(20):
+        for i in range(59):
             when = datetime(2026, 3, 1, 20, tzinfo=HKT) + timedelta(days=i)
-            rows.extend(historical_row(f"all{i}", code, hit=i < 13, kickoff=when) for code in ("HDC", "HIL", "CHL"))
+            rows.extend(historical_row(f"all{i}", code, hit=True, kickoff=when) for code in ("HDC", "HIL", "CHL"))
         ledger = {"bets": []}
         created, audit = cp.evaluate_new_t5(ledger, watch(codes=("HDC", "HIL", "CHL")), history_rows=rows)
-        self.assertEqual(len(created), 2)
-        self.assertTrue(all(bet["stake"] == 250 for bet in created))
-        self.assertLessEqual(sum(bet["stake"] for bet in created), 500)
-        self.assertTrue(all(bet["condition_accuracy"] > .60 and bet["condition_decided"] >= 20 for bet in created))
-        self.assertTrue(all("HDC" not in bet["label"] for bet in created))
+        self.assertEqual(len(created), 3)
+        self.assertTrue(all(bet["stake"] == 500 for bet in created))
+        self.assertLessEqual(sum(bet["stake"] for bet in created), 1500)
+        self.assertTrue(all(bet["frozen_historical_evidence"]["decided"] >= 50 for bet in created))
         ledger["bets"].extend(created)
         self.assertEqual(cp.evaluate_new_t5(ledger, watch(codes=("HDC", "HIL", "CHL")), history_rows=rows)[0], [])
 
-        candidate = {"market": "HDC", "label": "讓球｜T-5", "total": {"accuracy": .7, "hits": 14, "decided": 20}, "specificity": 1}
-        with patch.object(cp, "mine", return_value={"ranking": [candidate]}), patch.object(cp, "match_upcoming", return_value={"future": [
-            candidate | {"selected_side": "H", "selected_line": -.25},
-            candidate | {"selected_side": "A", "selected_line": .25},
-        ]}):
-            created, audit = cp.evaluate_new_t5({"bets": []}, watch(), history_rows=[])
-        self.assertEqual(len(created), 1)
-        self.assertEqual(created[0]["side"], "H")
-
     def test_invalid_quote_and_canonical_settlement(self):
-        rows = [historical_row(f"ok{i}", "HDC", kickoff=datetime(2026, 4, 1, 20, tzinfo=HKT) + timedelta(days=i)) for i in range(20)]
+        rows = [historical_row(f"ok{i}", "HDC", kickoff=datetime(2026, 4, 1, 20, tzinfo=HKT) + timedelta(days=i)) for i in range(59)]
         invalid = watch(odds=1.0)
         self.assertEqual(cp.evaluate_new_t5({"bets": []}, invalid, history_rows=rows)[0], [])
         post = watch()
@@ -107,10 +100,10 @@ class ConditionPortfolioTests(unittest.TestCase):
         self.assertEqual(evaluate.call_count, 1)
         ledger = {"bets": [
             {"portfolio": "legacy", "strategy": "old", "status": "SETTLED", "stake": 9000, "pnl": 9000},
-            {"portfolio": cp.PORTFOLIO, "strategy": cp.STRATEGY, "status": "SETTLED", "stake": 250, "pnl": 125, "result": "Won"},
+            {"portfolio": cp.PORTFOLIO, "strategy": cp.STRATEGY, "status": "SETTLED", "stake": 500, "pnl": 250, "result": "Won"},
         ]}
         stats = settle.recompute(ledger)
-        self.assertEqual((stats["turnover"], stats["pnl"]), (250.0, 125.0))
+        self.assertEqual((stats["turnover"], stats["pnl"]), (500.0, 250.0))
 
     def test_missing_fixture_context_fails_closed_before_bet_creation(self):
         rows = [
@@ -118,7 +111,7 @@ class ConditionPortfolioTests(unittest.TestCase):
                 f"ctx{i}", "HDC",
                 kickoff=datetime(2026, 7, 1, 20, tzinfo=HKT) + timedelta(days=i),
             )
-            for i in range(20)
+            for i in range(59)
         ]
         missing_league = watch()
         missing_league["league"] = ""
@@ -135,13 +128,13 @@ class ConditionPortfolioTests(unittest.TestCase):
         )
         self.assertEqual(created, [])
         self.assertEqual(
-            {row["code"] for row in diagnostics["independent_validation"]["diagnostics"]["evaluations"].values()},
-            {"stage_not_eligible"},
+            {row["reason"] for row in diagnostics["wilson_validation"]["audit"]},
+            {"missing_fixture_context_for_public_condition_bet"},
         )
 
 
 class ConditionDashboardSourceTests(unittest.TestCase):
-    def test_only_condition_simulation_is_public(self):
+    def test_wilson_condition_simulation_and_read_only_archive_are_public(self):
         index = (ROOT / "hkjc-dashboard" / "index.html").read_text(encoding="utf-8")
         app = (ROOT / "hkjc-dashboard" / "app.js").read_text(encoding="utf-8")
         source = (SYSTEM / "gen_app_data.py").read_text(encoding="utf-8")
@@ -149,11 +142,11 @@ class ConditionDashboardSourceTests(unittest.TestCase):
         self.assertNotIn('data-view="shadow"', index)
         self.assertNotIn('id="viewShadow"', index)
         self.assertNotIn("renderShadow", app)
-        self.assertIn("footbreak_independent_validation", app)
-        self.assertIn("只限新保存的 T-5 預測", app)
-        self.assertIn("舊歷史發現期", app)
-        self.assertIn("歷史發現 / 獨立驗證", app)
-        self.assertIn("前瞻盈虧", app)
+        self.assertIn("footbreak_wilson_test", app)
+        self.assertIn("Wilson 測試攻略", app)
+        self.assertIn("首次原生 T-5", app)
+        self.assertIn("已封存／退役", app)
+        self.assertIn("前瞻", app)
         self.assertNotIn("Prospective PnL", app)
         self.assertIn("每注", app)
         self.assertIn("fx-teams", app)
@@ -161,14 +154,9 @@ class ConditionDashboardSourceTests(unittest.TestCase):
         self.assertIn("league_display.js", index)
         self.assertNotIn('"shadow_bets"', source)
         self.assertIn("_public_bet", source)
-        self.assertIn("historical_discovery_archive", source)
-        self.assertIn("public_diagnostics", source)
-        self.assertIn("建立診斷", app)
-        self.assertIn("只顯示彙總，不含供應商原始資料", app)
-        self.assertIn("oddsTierCard", app)
+        self.assertIn("retired_v1", source)
         for text in (
-            "賠率分層統計", "1.70–1.79", "1.80–1.89", "1.90–1.99", "≥2.00",
-            "只計前瞻獨立驗證倉有效注單／賽果", "走水不計入命中率分母",
+            "Wilson 95%", "最低可接受賠率", "走水不計入命中率分母",
         ):
             self.assertIn(text, app)
         self.assertIn('"odds_tiers"', source)

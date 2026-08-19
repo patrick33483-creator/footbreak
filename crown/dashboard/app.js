@@ -658,7 +658,7 @@ function verdictCard(m) {
   // source of a visible simulated position.
   const conditionBets = (LED.bets || []).filter((bet) =>
     bet.match_id === m.match_id
-      && bet.portfolio === 'crown_independent_validation'
+      && bet.portfolio === 'crown_wilson_test'
       && bet.strategy === 'independent-validation-v1');
   if (!conditionBets.length) {
     const hasT5 = (m.stages || []).some((x) => x.stage === 'T-5');
@@ -1199,33 +1199,35 @@ function stakeStageCard() {
 function renderLedger() {
   const s = LED.stats || {};
   const bets = (LED.bets || []).filter((bet) =>
-    bet && bet.portfolio === 'crown_independent_validation' && bet.strategy === 'independent-validation-v1'
+    bet && bet.portfolio === 'crown_wilson_test' && bet.strategy === 'wilson-test-strategy-v1'
   );
   const audit = Array.isArray(LED.independent_validation?.audit) ? LED.independent_validation.audit.slice(-48).reverse() : [];
   const V = $('#viewLedger');
   const archive = LED.independent_validation?.historical_discovery_archive || {};
   const K = [
-    ['驗證起點', hkStamp(LED.independent_validation?.validation_started_at || DATA.generated_at), ''], ['起始本金', money(s.starting_bankroll || 50000), ''], ['每注', money(s.fixed_stake || 250), 'amber'], ['每場上限', money(s.fixture_stake_cap || 500), 'amber'],
+    ['啟用／切換', hkStamp(LED.independent_validation?.activation_at || DATA.generated_at), ''], ['起始本金', money(s.starting_bankroll || 50000), ''], ['每注', money(s.fixed_stake || 500), 'amber'], ['每場上限', money(s.fixture_stake_cap || 1500), 'amber'],
     ['待決', s.n_pending || 0, ''], ['已撤回', s.n_voided || 0, ''],
     ['已結算', s.n_settled || 0, ''], ['累計盈虧', s.n_settled ? money(s.pnl) : '—', (s.pnl || 0) >= 0 ? 'good' : 'bad'],
     ['前瞻回報率', s.roi == null ? '—' : pc(s.roi, 2), (s.roi || 0) >= 0 ? 'good' : 'bad'],
+    ['前瞻命中／Wilson', s.n_decided ? `${pc(s.hit_rate, 1)} (${s.hits}/${s.n_decided}) · ${Array.isArray(s.wilson95) ? `${pc(s.wilson95[0], 1)}–${pc(s.wilson95[1], 1)}` : '—'}` : '—', ''],
     ['現金 / 權益', `${money(s.cash == null ? 50000 : s.cash)} / ${money(s.equity == null ? 50000 : s.equity)}`, (s.pnl || 0) >= 0 ? 'good' : 'bad'],
   ];
   let h = `<div class="ledger-head"><div class="ledger-title-row">
-    <h1 class="pg-h">獨立驗證倉 <span class="sub">歷史發現期唯讀封存 · 起始 HK$50,000 · 每注 HK$250 · 每場 HK$500</span></h1>
+    <h1 class="pg-h">Wilson 測試攻略 <span class="sub">v1 已封存 · 起始 HK$50,000 · 每注 HK$500 · 每場 HK$1,500</span></h1>
     <button class="settle-btn" id="settleNow" data-testid="button-settle-simulation" type="button" ${SETTLING || !API_BASE ? 'disabled' : ''}><span>${SETTLING ? '結算中…' : '立即結算'}</span></button>
   </div>
   <p class="settle-status ${SETTLE_BAD ? 'bad' : SETTLE_MESSAGE ? 'good' : ''}" id="settleStatus" data-testid="status-settlement" aria-live="polite">${esc(SETTLE_MESSAGE || (API_BASE ? '只會結算已完場並有可靠賽果的獨立驗證注。' : '結算後端未連接，請重新開啟已部署的皇冠面板。'))}</p>
-  <div class="shadow-note" role="note"><strong>入場規則</strong><span>只在首次持久化原生賽前 T-5 建立注單；歷史發現期命中率嚴格高於 60%、已判定至少 20。每注 HK$250，每場最多兩市場及 HK$500；凍結條件基線不會受驗證結果回寫。</span></div>
+  <div class="shadow-note" role="note"><strong>入場規則</strong><span>只在首次持久化原生賽前 T-5 建立模擬注；凍結歷史證據至少 50 個唯一已判定 fixture-market，Wilson 95% 下限須 ≥ 實際損益平衡命中率 + 3 個百分點。每注 HK$500，每場最多三市場及 HK$1,500；基線永不受前瞻結果回寫。</span></div>
   <div class="kpis wide">${K.map(([l, v, c]) => `<div class="kpi"><span class="kpi-lbl">${l}</span><span class="kpi-val ${c}">${v}</span></div>`).join('')}</div></div>
-  <div class="card history-note"><h2 class="card-h">舊歷史發現期 <span class="sub">唯讀封存，不混入獨立驗證盈虧、回報率、命中率、樣本或本金</span></h2>
-    <p class="mx-note">摘要：已保留舊注單 ${numeric(archive.legacy_bet_count) == null ? '—' : archive.legacy_bet_count} 筆；舊帳本本金 ${archive.legacy_bankroll == null ? '—' : money(archive.legacy_bankroll)}。凍結條件會保留當時「歷史發現 x/y」，驗證結果不會回寫該基線。</p></div>`;
+  <div class="card history-note"><h2 class="card-h">已封存／退役 previous strategy（v1） <span class="sub">唯讀，保留歷史及待決結算，不混入 Wilson 前瞻盈虧、回報率、命中率、樣本或本金</span></h2>
+    <p class="mx-note">摘要：已保留舊注單 ${numeric(archive.legacy_bet_count) == null ? '—' : archive.legacy_bet_count} 筆；舊帳本本金 ${archive.legacy_bankroll == null ? '—' : money(archive.legacy_bankroll)}。凍結條件會保留當時「歷史發現 x/y」，驗證結果不會回寫該基線。</p>
+    ${Array.isArray(archive.legacy_bets) && archive.legacy_bets.length ? `<details><summary>查看已封存舊注單（唯讀）</summary><div class="tbl-wrap"><table class="t"><tr><th>賽事</th><th>市場</th><th>注碼</th><th>狀態</th><th>盈虧</th></tr>${archive.legacy_bets.map((b) => `<tr><td>${esc(b.home || '—')} vs ${esc(b.away || '—')}</td><td>${esc(marketLabel(b.market || b.code))}</td><td>${money(b.stake)}</td><td>${esc(b.status || '—')}</td><td>${b.pnl == null ? '—' : money(b.pnl)}</td></tr>`).join('')}</table></div></details>` : ''}</div>`;
   h += oddsTierCard(s);
-  if (!bets.length) h += `<div class="card"><div class="empty2">暫時未有合資格獨立驗證注。系統不會在 T-30、重跑或回補歷史時建倉。</div></div>`;
+  if (!bets.length) h += `<div class="card"><div class="empty2">暫時未有合資格 Wilson 模擬注。系統不會在 T-30、重跑或回補歷史時建倉。</div></div>`;
   else {
     if (s.n_settled) h += `<div class="grid g2">${equityCard(s)}${resultCard(s)}</div>`;
     if (s.n_settled) h += marketCard(s);
-    h += `<div class="card"><h2 class="card-h">獨立驗證注單 <span class="sub">${bets.length} 筆 · 每筆 ${money(s.fixed_stake || 250)}</span></h2><div class="tbl-wrap condition-bets-wrap"><table class="t bets condition-bets"><tr><th></th><th>開賽</th><th>賽事</th><th>市場</th><th>投注</th><th>賠率</th><th>注碼</th><th>凍結條件</th><th>歷史發現／獨立驗證</th><th>狀態</th><th>結果</th><th>比分</th><th>前瞻盈虧</th></tr>${bets.map((b, i) => betRow(b, i, 'condition')).join('')}</table></div></div>`;
+    h += `<div class="card"><h2 class="card-h">Wilson 模擬注單 <span class="sub">${bets.length} 筆 · 每筆 ${money(s.fixed_stake || 500)}</span></h2><div class="tbl-wrap condition-bets-wrap"><table class="t bets condition-bets"><tr><th></th><th>開賽</th><th>賽事</th><th>市場</th><th>投注</th><th>賠率</th><th>注碼</th><th>凍結歷史條件</th><th>Wilson 凍結算式／前瞻表現</th><th>狀態</th><th>結果</th><th>比分</th><th>前瞻盈虧</th></tr>${bets.map((b, i) => betRow(b, i, 'condition')).join('')}</table></div></div>`;
   }
   h += conditionAuditCard(audit);
   V.innerHTML = h; bindSettlementButton('settleNow', renderLedger); bindBetRows('#viewLedger');
@@ -1876,10 +1878,14 @@ function dayStake(bets) {
 
 function betRow(b, i, prefix = 'condition') {
   const H = b.history || [], target = `${prefix}-hist-${i}`;
-  const condition = `${publicText(b.condition_label || '—')} · 歷史發現 ${pc(b.condition_accuracy, 1)} (${b.condition_hits || 0}/${b.condition_decided || 0})`;
   const frozen = LED.independent_validation?.conditions?.[b.frozen_condition_signature] || {};
   const prospective = frozen.prospective || {};
-  const validation = `獨立驗證 ${pc(prospective.accuracy, 1)} (${prospective.hits || 0}/${prospective.decided || 0}) · ${prospective.status || '驗證中'} · 前瞻回報率 ${pc(prospective.roi, 2)}`;
+  const evidence = b.frozen_historical_evidence || frozen.historical_evidence || {};
+  const arithmetic = b.wilson_admission || frozen.admission_arithmetic || {};
+  const condition = `${publicText((b.frozen_condition_definition || {}).path || evidence.label || '凍結歷史條件')} · 命中 ${evidence.hits || 0}/${evidence.decided || 0}`;
+  const validation = numeric(arithmetic.wilson95_lower_raw) == null
+    ? '—'
+    : `凍結命中率 ${pc(arithmetic.hit_rate_raw, 1)} · Wilson 下限 ${pc(arithmetic.wilson95_lower_raw, 1)} ≥ 所需 ${pc(arithmetic.required_rate_raw, 1)}<div class="cell-sub">最低可接受賠率 ${f2(arithmetic.minimum_acceptable_odds_raw)}；目前 ${f2(arithmetic.actual_decimal_odds_raw)}</div><div class="cell-sub">前瞻 ${pc(prospective.hit_rate, 1)} (${prospective.hits || 0}/${prospective.decided || 0}) · Wilson ${Array.isArray(prospective.wilson95) ? `${pc(prospective.wilson95[0], 1)}–${pc(prospective.wilson95[1], 1)}` : '—'} · ROI ${pc(prospective.roi, 2)}</div>`;
   return `<tr class="brow ${String(b.status || '').toLowerCase()}" data-i="${i}" data-target="${target}"><td class="exp">${H.length ? '▸' : ''}</td><td class="mono nowrap">${hkDay(b.kickoff)} ${hkClock(b.kickoff)}</td><td>${esc(b.home)} <span class="dim">v</span> ${esc(b.away)}<div class="cell-sub">${esc(b.league || '')}</div></td><td class="lbl">${esc(marketLabel(b.market || b.code))}</td><td><b>${esc(publicText(b.label || ''))}</b><div class="cell-sub">線位 ${esc(b.selected_line ?? b.line)}</div></td><td>${f2(b.odds)}</td><td class="stk">${money(b.stake)}</td><td>${esc(condition)}</td><td>${esc(validation)}</td><td><span class="stpill ${String(b.status || '').toLowerCase()}">${ST_LBL[b.status] || b.status || '—'}</span></td><td>${b.result ? `<span class="respill ${RES_CLS[b.result] || ''}">${RES_LBL[b.result] || b.result}</span>` : '<span class="dim">—</span>'}</td><td class="mono nowrap">${scoreCell(b)}</td><td class="${(b.pnl || 0) > 0 ? 'ev-p' : (b.pnl || 0) < 0 ? 'ev-n' : 'dim'}">${b.pnl == null ? '—' : money(b.pnl)}</td></tr><tr class="hrowwrap"><td colspan="13" class="histcell"><div class="hist-panel" id="${target}"><ol class="tl">${H.map((x) => `<li class="tl-i"><span class="tl-dot">·</span><div class="tl-b"><div class="tl-h"><b>${esc(x.action || '')}</b><span class="fx-tag ${TAG[x.stage] || 'tag-wait'}">${esc(x.stage || '')}</span><span class="tl-ts mono">${hkStamp(x.ts)}</span></div><div class="tl-d">${x.reason ? `<span class="tl-kv">${esc(publicText(x.reason))}</span>` : ''}${x.result ? `<span class="tl-kv">${esc(x.result)}</span>` : ''}</div></div></li>`).join('')}</ol></div></td></tr>`;
 }
 

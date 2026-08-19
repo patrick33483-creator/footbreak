@@ -39,8 +39,8 @@ TOOL = "telegram_bot_api-send-text-message-or-reply"
 
 DEFAULT_WINDOW_MIN = 45.0          # 只通知近期建立嘅注單,避免補發舊注
 MARKET_LABELS = {"HDC": "讓球", "HIL": "入球大細", "CHL": "角球大細"}
-CONDITION_PORTFOLIO = "footbreak_independent_validation"
-CONDITION_STRATEGY = "independent-validation-v1"
+CONDITION_PORTFOLIO = "footbreak_wilson_test"
+CONDITION_STRATEGY = "wilson-test-strategy-v1"
 STATE_LIMIT = 1600
 
 SIDE_TXT = {"H": "主", "A": "客", "D": "和"}
@@ -293,6 +293,12 @@ def notify_fresh_granular_conditions(ledger, fresh_events):
     It is deliberately distinct from committed validation-bet notifications:
     the wording never presents a historical candidate as a formal bet.
     """
+    # Retired at the Wilson cutover.  Keeping this inert compatibility entry
+    # point ensures callers cannot accidentally resume pre-cutover candidate
+    # notifications; only committed Wilson simulation bets may be sent.
+    del ledger, fresh_events
+    return 0
+
     from analysis.granular_conditions import _role, notification_opportunities
     history = _granular_history_rows()
     opportunities = notification_opportunities(
@@ -379,7 +385,7 @@ def _future_kickoff(value):
 
 def _condition_prospective(ledger, bet):
     """Read the frozen cohort's isolated prospective metrics without mutation."""
-    namespace = ledger.get("independent_validation") if isinstance(ledger, dict) else {}
+    namespace = ledger.get("wilson_validation") if isinstance(ledger, dict) else {}
     conditions = namespace.get("conditions") if isinstance(namespace, dict) else {}
     frozen = conditions.get(str(bet.get("frozen_condition_signature") or "")) if isinstance(conditions, dict) else {}
     prospective = frozen.get("prospective") if isinstance(frozen, dict) else {}
@@ -390,6 +396,8 @@ def _condition_bet_message(bet, prospective=None):
     """Return one safe Traditional-Chinese condition-bet message or ``None``."""
     if bet.get("portfolio") != CONDITION_PORTFOLIO or bet.get("strategy") != CONDITION_STRATEGY:
         return None
+    arithmetic = bet.get("wilson_admission") if isinstance(bet.get("wilson_admission"), dict) else {}
+    historical = bet.get("frozen_historical_evidence") if isinstance(bet.get("frozen_historical_evidence"), dict) else {}
     league = str(bet.get("league") or "").strip()
     home, away = str(bet.get("home") or "").strip(), str(bet.get("away") or "").strip()
     kickoff = _future_kickoff(bet.get("kickoff"))
@@ -398,36 +406,25 @@ def _condition_bet_message(bet, prospective=None):
     odds = _finite_positive(bet.get("odds"))
     try:
         line = float(bet.get("selected_line"))
-        accuracy = float(bet.get("condition_accuracy"))
-        hits = int(bet.get("condition_hits"))
-        decided = int(bet.get("condition_decided"))
+        hits = int(historical.get("hits"))
+        decided = int(historical.get("decided"))
+        lower = float(arithmetic.get("wilson95_lower_raw"))
+        break_even = float(arithmetic.get("break_even_rate_raw"))
+        required = float(arithmetic.get("required_rate_raw"))
+        minimum = float(arithmetic.get("minimum_acceptable_odds_raw"))
     except (TypeError, ValueError):
         return None
     if (
         not league or not home or not away or kickoff is None or market not in set(MARKET_LABELS.values())
         or not direction or odds is None or odds <= 1 or not math.isfinite(line)
-        or not math.isfinite(accuracy) or accuracy <= .60 or decided < 20 or hits < 0 or hits > decided
+        or decided < 50 or hits < 0 or hits > decided or lower < required
     ):
         return None
-    prospective = prospective if isinstance(prospective, dict) else {}
-    prospective_accuracy = prospective.get("accuracy")
-    prospective_hits = int(prospective.get("hits") or 0)
-    prospective_decided = int(prospective.get("decided") or 0)
-    prospective_status = str(prospective.get("status") or "驗證中")
-    passed = prospective_status == "已驗證"
-    title = "已通過獨立驗證" if passed else "候選條件，獨立驗證中"
-    validation_rate = (
-        f"{float(prospective_accuracy) * 100:.1f}%（{prospective_hits}/{prospective_decided}）"
-        if isinstance(prospective_accuracy, (float, int)) else f"—（{prospective_hits}/{prospective_decided}）"
-    )
-    pnl = prospective.get("pnl")
-    roi = prospective.get("roi")
-    metrics = (
-        f" · 前瞻盈虧：HK${float(pnl):+,.0f} · ROI：{float(roi) * 100:+.2f}%"
-        if isinstance(pnl, (float, int)) and isinstance(roi, (float, int)) else ""
-    )
+    definition = bet.get("frozen_condition_definition") if isinstance(bet.get("frozen_condition_definition"), dict) else {}
+    wording = str(historical.get("label") or definition.get("path") or "凍結歷史條件")
     return "\n".join([
-        f"<b>足破 · {title}</b>",
+        "<b>Wilson 測試攻略｜模擬注</b>",
+        "系統：Footbreak",
         f"聯賽：{esc(league)}",
         f"主隊：{esc(home)}",
         f"客隊：{esc(away)}",
@@ -435,13 +432,15 @@ def _condition_bet_message(bet, prospective=None):
         f"市場：{esc(market)}",
         f"方向：{esc(direction)}",
         f"盤口：{line:g}",
-        f"賠率：{odds:.2f}",
-        f"凍結的歷史發現率：{accuracy * 100:.1f}%（{hits}/{decided}）",
-        f"獨立驗證率：{validation_rate} · 狀態：{prospective_status}{metrics}",
-        (
-            "獨立驗證注碼：HK$250；已通過獨立驗證，仍只作模擬追蹤。"
-            if passed else "獨立驗證注碼：HK$250；未達已驗證，不構成正式推介。"
-        ),
+        f"實際十進制賠率：{odds:.2f}",
+        "模擬注碼：HK$500",
+        f"凍結條件：{esc(wording)}",
+        f"歷史：命中 {hits}/{decided} · {hits / decided * 100:.1f}%",
+        f"Wilson 95% 下限：{lower * 100:.1f}%",
+        f"損益平衡命中率：{break_even * 100:.1f}% + 3% = {required * 100:.1f}%",
+        f"PASS：Wilson下限 {lower * 100:.1f}% ≥ {required * 100:.1f}%",
+        f"最低可接受賠率 {minimum:.2f}；目前賠率 {odds:.2f}",
+        "此為獨立測試模擬，沒有任何保證，並非真實投注或投資建議。",
     ])
 
 

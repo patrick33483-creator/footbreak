@@ -12,11 +12,8 @@ from .common import HKT, iso_hkt, parse_time, read_json
 from .config import Settings
 from .condition_portfolio import FIXED_STAKE, STARTING_BANKROLL, STRATEGY, evaluate_new_t5
 from . import challenger_v2
-from analysis.independent_validation import (
-    ensure_namespace,
-    portfolio_name,
-    recompute_namespace,
-    validation_bets,
+from analysis.wilson_validation import (
+    ensure_namespace, portfolio_name, recompute_namespace, all_settleable_bets,
 )
 
 STAGES = {"首預": 1, "T-30": 2, "T-5": 3}
@@ -287,7 +284,7 @@ def condition_bets(ledger: dict[str, Any]) -> list[dict[str, Any]]:
     Old ledger rows remain readable until the explicit reset is performed, but
     must not appear in the new portfolio's statistics or settlement queue.
     """
-    return validation_bets(ledger, "crown")
+    return all_settleable_bets(ledger, "crown")
 
 
 def _record_learning_snapshot(
@@ -383,10 +380,10 @@ def sync_prediction(ledger: dict[str, Any], prediction: dict[str, Any], config: 
         ledger, watch, config,
         ranking=cached_ranking if isinstance(cached_ranking, list) else None,
     )
-    snapshot["independent_validation"] = {"strategy": STRATEGY, "stage": "T-5", "audit": audit}
-    audit_rows = ledger["independent_validation"].setdefault("audit", [])
-    audit_rows.extend([{"match_id": match_id, **item} for item in audit])
-    ledger["independent_validation"]["audit"] = audit_rows[-1600:]
+    snapshot["wilson_validation"] = {"strategy": STRATEGY, "stage": "T-5", "audit": audit}
+    # ``evaluate_new_t5`` persists the admission audit itself.  Keeping the
+    # returned list in the snapshot is useful for this run, without duplicating
+    # durable audit records.
     ledger["bets"].extend(created)
     # The v2 challenger sees the same newly persisted native T-5 but records
     # only isolated research rows. It does not append to ``ledger['bets']``.
@@ -394,8 +391,8 @@ def sync_prediction(ledger: dict[str, Any], prediction: dict[str, Any], config: 
     challenger_v2.recompute(ledger[challenger_v2.NAMESPACE], ledger)
     if created:
         ledger.setdefault("log", []).extend([
-            {"ts": bet["created_at"], "action": "獨立驗證注建立", "bet_id": bet["bet_id"],
-             "match_id": match_id, "market": bet["market_label"], "condition": bet["condition_label"]}
+            {"ts": bet["created_at"], "action": "Wilson 模擬注建立", "bet_id": bet["bet_id"],
+             "match_id": match_id, "market": bet["market_label"], "condition": bet.get("frozen_condition_definition", {}).get("path", "凍結條件")}
             for bet in created
         ])
     return [str(bet["bet_id"]) for bet in created]
@@ -470,8 +467,8 @@ def recompute_stats(ledger: dict[str, Any], config: Settings) -> dict[str, Any]:
     if isinstance(challenger, dict):
         challenger_v2.recompute(challenger, ledger)
     base["entry_rule"] = (
-        "首次持久化原生賽前 T-5；歷史發現期 decided >=20、命中率 >60%；"
-        "HK$250 每注、每場最多兩市場／HK$500"
+        "首次持久化原生賽前 T-5；凍結歷史條件 decided >=50；"
+        "Wilson 95% 下限 ≥ 實際賠率損益平衡率 +3pp；HK$500 每注、每場最多三市場／HK$1,500"
     )
     ledger["stats"] = base
     # Retired keys are tolerated if read from old state but are never created,

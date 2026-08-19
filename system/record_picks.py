@@ -20,7 +20,7 @@ from condition_portfolio import (
     AUDIT_LIMIT, DECISION_STAGE, LOG_LIMIT, STARTING_BANKROLL, evaluate_new_t5,
 )
 from probability_research import evaluate_new_t5 as evaluate_probability_research
-from analysis.independent_validation import ensure_namespace, record_evaluation_diagnostics
+from analysis.wilson_validation import ensure_namespace, recompute_namespace
 from settle import condition_bets, recompute
 
 LEDGER = os.path.join(HERE, "sim_ledger.json")
@@ -382,11 +382,10 @@ def sync(preds_file="predictions.json", *, send_notifications=True):
         # the evaluator.
         if stage != BET_STAGE or not t5_safe_to_evaluate:
             if stage == BET_STAGE:
-                record_evaluation_diagnostics(
-                    ledger["independent_validation"], match_id, BET_STAGE,
-                    [{"market": "*", "status": "SKIPPED", "reason": "t5_safe_lead_not_met"}],
-                    now=now,
-                )
+                ledger["wilson_validation"]["audit"].append({
+                    "ts": now, "match_id": match_id, "market": "*",
+                    "status": "SKIPPED", "reason": "t5_safe_lead_not_met",
+                })
             continue
         try:
             ranking_payload = json.loads(Path(GRANULAR_RANKING).read_text(encoding="utf-8"))
@@ -417,9 +416,8 @@ def sync(preds_file="predictions.json", *, send_notifications=True):
             ranking=cached_ranking if isinstance(cached_ranking, list) else None,
             evidence_path=Path(PROBABILITY_EVIDENCE),
         )
-        audit_rows = ledger["independent_validation"].setdefault("audit", [])
-        audit_rows.extend({"ts": now, "match_id": match_id, **row} for row in audit)
-        ledger["independent_validation"]["audit"] = audit_rows[-AUDIT_LIMIT:]
+        # The shared evaluator writes its own immutable admission audit exactly
+        # once.  Do not append the returned view a second time.
         if created:
             ledger["bets"].extend(created)
             changes.extend(_condition_change(bet) for bet in created)
@@ -433,17 +431,8 @@ def sync(preds_file="predictions.json", *, send_notifications=True):
     ledger["log"] = ledger["log"][-LOG_LIMIT:]
     save(ledger)
 
-    # Alerts are intentionally post-commit. T-30 remains a preparation notice.
-    # For T-5, scan the complete still-upcoming unsent condition portfolio on
-    # every tick. This is a durable outbox: if Telegram failed after a bet was
-    # saved, the next idempotent tick retries it even though no new bet is
-    # created on that replay.
-    if send_notifications and fresh_t30_events:
-        try:
-            import notify
-            notify.notify_fresh_granular_conditions(ledger, fresh_t30_events)
-        except Exception as exc:
-            notes.append(f"T-30 條件提示發送失敗（{type(exc).__name__}）；已保存預測。")
+    # v1 granular candidate entry notices are retired at the Wilson cutover.
+    # Only committed Wilson bets are eligible for the durable outbox below.
     if send_notifications:
         try:
             import notify

@@ -17,8 +17,12 @@ class ResetConditionSimulationTests(unittest.TestCase):
             root = Path(directory)
             config = replace(settings(), state_dir=root / "state", web_root=root / "web")
             config.web_root.mkdir()
+            legacy_bet = {
+                "bet_id": "old", "portfolio": "crown_independent_validation",
+                "strategy": "independent-validation-v1", "status": "PENDING",
+            }
             save_ledger(config, {
-                "bankroll": 123, "bets": [{"bet_id": "old"}], "watch": {}, "log": [],
+                "bankroll": 123, "bets": [legacy_bet], "watch": {}, "log": [],
                 "stats": {"pnl": 9}, "shadow_bets": [{"bet_id": "shadow"}],
                 "shadow_stats": {"n": 1}, "shadow_comparison": {"n": 1},
                 "handicap_world": {"bets": [{"bet_id": "world"}]},
@@ -40,12 +44,14 @@ class ResetConditionSimulationTests(unittest.TestCase):
         self.assertFalse(result["legacy_keys_removed"])
         self.assertTrue(result["migration_only"])
         self.assertEqual(ledger["bankroll"], 123)
-        self.assertEqual(ledger["bets"], [{"bet_id": "old"}])
+        self.assertEqual(ledger["bets"], [legacy_bet])
         self.assertEqual(ledger["stats"], {"pnl": 9})
-        namespace = ledger["independent_validation"]
+        namespace = ledger["wilson_validation"]
         self.assertEqual(namespace["system"], "crown")
-        self.assertTrue(namespace["historical_discovery_archive"]["read_only"])
-        self.assertEqual(namespace["historical_discovery_archive"]["legacy_bet_count"], 1)
+        self.assertTrue(namespace["retired_v1"]["read_only"])
+        self.assertTrue(namespace["retired_v1"]["new_entries_disabled"])
+        self.assertTrue(namespace["retired_v1"]["pending_settlement_retained"])
+        self.assertEqual(namespace["retired_v1"]["legacy_bet_count"], 1)
         for key in (
             "shadow_bets", "shadow_stats", "shadow_comparison", "handicap_world",
             "handicap_world_audit", "handicap_world_stats", "condition_simulation_audit",

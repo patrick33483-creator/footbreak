@@ -16,7 +16,6 @@ import model as M
 import predict as P
 from record_picks import PREDICTION_ERA, PREDICTION_SCHEMA_VERSION
 from condition_portfolio import FIXED_STAKE, PORTFOLIO, STARTING_BANKROLL, STRATEGY
-from analysis.independent_validation import public_diagnostics
 
 OUT = os.environ.get(
     "FOOTBREAK_DASHBOARD_DATA",
@@ -580,6 +579,9 @@ def _public_bet(bet):
         "selected_role", "label", "odds", "stake", "stage", "first_stage", "status",
         "simulation_only", "real_betting_enabled", "created_at", "condition_accuracy",
         "condition_hits", "condition_decided", "condition_badge", "condition_odds_tier",
+        "code", "market", "side", "line", "condition", "strategy_name",
+        "frozen_condition_signature", "frozen_condition_definition",
+        "frozen_historical_evidence", "wilson_admission",
         "result", "pnl", "settled_at", "score", "settlement_source", "void_reason",
     }
     return {key: value for key, value in bet.items() if key in visible}
@@ -675,7 +677,9 @@ def main():
     pend = [bet for bet in bets if bet.get("status") == "PENDING"]
     done = [bet for bet in bets if bet.get("status") == "SETTLED"]
     bank = STARTING_BANKROLL
-    S = led.get("stats") or {}
+    # Prefer the self-contained Wilson metrics so a freshly migrated ledger
+    # renders correctly even before the next scheduler/settlement recompute.
+    S = ((led.get("wilson_validation") or {}).get("stats") or led.get("stats") or {})
     _NTF = {"last_sent": None, "n_bets": 0, "n_settled": 0,
             "n_queue": 0, "n_sweeps": 0, "last_sweep": None}
     _nf = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -696,16 +700,17 @@ def main():
         "bankroll": bank,
         "bets": [_public_bet(bet) for bet in sorted(bets, key=lambda b: b.get("kickoff") or "")],
         "log": _public_log_entries(led.get("log", [])),
+        # Compatibility key consumed by the existing dashboard; it projects
+        # only Wilson data. v1 stays in its clearly labelled archival snapshot.
         "independent_validation": {
-            "schema_version": (led.get("independent_validation") or {}).get("schema_version"),
-            "validation_started_at": (led.get("independent_validation") or {}).get("validation_started_at"),
-            "conditions": (led.get("independent_validation") or {}).get("conditions") or {},
-            # Public boundary: only bounded Chinese counters, never the
-            # per-fixture keys or raw audit/provider inputs retained privately.
-            "diagnostics": public_diagnostics(led.get("independent_validation")),
-            "historical_discovery_archive": (led.get("independent_validation") or {}).get("historical_discovery_archive") or {
-                "read_only": True, "legacy_bets_preserved": True, "legacy_stats_preserved": True,
-            },
+            "schema_version": (led.get("wilson_validation") or {}).get("schema_version"),
+            "validation_started_at": (led.get("wilson_validation") or {}).get("activation_at"),
+            "activation_at": (led.get("wilson_validation") or {}).get("activation_at"),
+            "cutover_at": (led.get("wilson_validation") or {}).get("cutover_at"),
+            "display_name": "Wilson 測試攻略",
+            "conditions": (led.get("wilson_validation") or {}).get("conditions") or {},
+            "retired_v1": (led.get("wilson_validation") or {}).get("retired_v1") or {},
+            "historical_discovery_archive": (led.get("wilson_validation") or {}).get("retired_v1") or {},
         },
         # A separate research projection.  It is deliberately not a bet
         # portfolio, cannot alter v1 stats/PnL, and carries no notification
@@ -736,13 +741,15 @@ def main():
             "n_decided": S.get("n_decided", 0),
             "hits": S.get("hits", 0),
             "hit_rate": S.get("hit_rate"),
+            "wilson95": S.get("wilson95"),
+            "pushes": S.get("pushes", 0),
+            "cash": S.get("cash", bank),
             "equity": S.get("equity", bank),
             "by_market": S.get("by_market", {}),
-            # Shared statistics are derived exclusively from active
-            # footbreak_independent_validation rows.  The dashboard never
-            # recomputes bands from historical discovery or legacy bets.
+            # Wilson prospective rows only.  The dashboard never recomputes
+            # admission evidence from historical discovery or legacy bets.
             "odds_tiers": S.get("odds_tiers", {
-                "scope": "active_independent_validation_bets_and_results_only",
+                "scope": "active_wilson_bets_and_results_only",
                 "system": "footbreak",
                 "tiers": [],
                 "excluded_diagnostics": {},
@@ -755,11 +762,11 @@ def main():
             "bet_stage": "T-5",
             "rules": {
                 "stake": FIXED_STAKE,
-                "historical_hit_rate": ">60%",
-                "minimum_decided": 20,
+                "historical_hit_rate": "Wilson 95% 下限 ≥ 實際損益平衡率 +3pp",
+                "minimum_decided": 50,
                 "new_t5_only": True,
-                "fixture_stake_cap": 500,
-                "fixture_market_cap": 2,
+                "fixture_stake_cap": 1500,
+                "fixture_market_cap": 3,
             },
             "n_watch": len(watch),
             "n_stage_preds": sum(len(w.get("stages") or []) for w in watch.values()),

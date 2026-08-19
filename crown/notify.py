@@ -79,7 +79,83 @@ def _load(config: Settings) -> dict[str, Any]:
     # historical predictions.
     state.setdefault("corner_t5", [])
     state.setdefault("signals", [])
+    state.setdefault("wilson_bets", [])
     return state
+
+
+def _wilson_message(bet: dict[str, Any]) -> str | None:
+    """Traditional-Chinese committed Wilson simulation notification only."""
+    if bet.get("portfolio") != "crown_wilson_test" or bet.get("strategy") != "wilson-test-strategy-v1":
+        return None
+    history = bet.get("frozen_historical_evidence")
+    arithmetic = bet.get("wilson_admission")
+    if not isinstance(history, dict) or not isinstance(arithmetic, dict):
+        return None
+    try:
+        kickoff = parse_time(bet.get("kickoff"))
+        odds = float(bet.get("odds"))
+        hits, decided = int(history["hits"]), int(history["decided"])
+        lower = float(arithmetic["wilson95_lower_raw"])
+        break_even = float(arithmetic["break_even_rate_raw"])
+        required = float(arithmetic["required_rate_raw"])
+        minimum = float(arithmetic["minimum_acceptable_odds_raw"])
+        line = float(bet.get("selected_line"))
+    except (KeyError, TypeError, ValueError):
+        return None
+    if kickoff is None or kickoff <= now_hkt() or odds <= 1 or decided < 50 or lower < required:
+        return None
+    definition = bet.get("frozen_condition_definition") if isinstance(bet.get("frozen_condition_definition"), dict) else {}
+    wording = str(history.get("label") or definition.get("path") or "凍結歷史條件")
+    return "\n".join([
+        "Wilson 測試攻略｜模擬注",
+        "系統：Crown",
+        f"開賽：{kickoff.astimezone(HKT).strftime('%d/%m %H:%M')} HKT",
+        f"對賽：{bet.get('home') or ''} vs {bet.get('away') or ''}",
+        f"市場：{bet.get('market_label') or MARKET_LABELS.get(bet.get('code'), '—')}",
+        f"選擇／盤口：{bet.get('selected_role') or '—'} {line:g}",
+        f"實際十進制賠率：{odds:.2f}",
+        "模擬注碼：HK$500",
+        f"凍結條件：{_public_condition_text(wording)}",
+        f"歷史：命中 {hits}/{decided} · {hits / decided * 100:.1f}%",
+        f"Wilson 95% 下限：{lower * 100:.1f}%",
+        f"損益平衡命中率：{break_even * 100:.1f}% + 3% = {required * 100:.1f}%",
+        f"PASS：Wilson下限 {lower * 100:.1f}% ≥ {required * 100:.1f}%",
+        f"最低可接受賠率 {minimum:.2f}；目前賠率 {odds:.2f}",
+        "此為獨立測試模擬，沒有任何保證，並非真實投注或投資建議。",
+    ])
+
+
+def notify_wilson_pending(
+    ledger: dict[str, Any], config: Settings, *, max_attempts: int | None = None,
+) -> int:
+    """Durable retryable Crown Wilson outbox; old strategy entries are excluded."""
+    with notification_lock(config) as acquired:
+        if not acquired:
+            return 0
+        state = _load(config)
+        sent_ids = {str(value) for value in state.get("wilson_bets") or []}
+        sent = attempted = 0
+        for bet in ledger.get("bets") or []:
+            bid = str(bet.get("bet_id") or "") if isinstance(bet, dict) else ""
+            if not bid or bid in sent_ids or bet.get("status") != "PENDING":
+                continue
+            message = _wilson_message(bet)
+            if message is None:
+                continue
+            if max_attempts is not None and attempted >= max(0, max_attempts):
+                break
+            attempted += 1
+            if _send(config, message) is False:
+                continue
+            state["wilson_bets"].append(bid)
+            state["wilson_bets"] = state["wilson_bets"][-1600:]
+            sent_ids.add(bid)
+            sent += 1
+            state["updated_at"] = iso_hkt()
+            write_json_atomic(paths(config)["notify"], state)
+        state["updated_at"] = iso_hkt()
+        write_json_atomic(paths(config)["notify"], state)
+        return sent
 
 
 def _send(config: Settings, text: str) -> bool:
@@ -417,7 +493,7 @@ def notify_new(
     *,
     max_attempts: int | None = None,
 ) -> int:
-    """Send recent native T-30/T-5 condition opportunities exactly once.
+    """Send committed Wilson simulations exactly once.
 
     ``fresh_t5_predictions`` supplies just-persisted events.  An
     unacknowledged notification may also be retried from the same live watch
@@ -425,6 +501,12 @@ def notify_new(
     short per-stage action window.  Historical, recovered, post-hoc, malformed
     and stale rows fail closed.
     """
+    # v1 granular candidate alerts were retired at the immutable Wilson
+    # cutover.  `fresh_t5_predictions` stays accepted for API compatibility
+    # but notification eligibility is the committed Wilson bet itself.
+    del fresh_t5_predictions
+    return notify_wilson_pending(ledger, config, max_attempts=max_attempts)
+
     from analysis.granular_conditions import _role, notification_opportunities
     with notification_lock(config) as acquired:
         if not acquired:

@@ -17,6 +17,12 @@ from analysis.independent_validation import (
 )
 import condition_portfolio as footbreak
 from analysis.granular_conditions import mine
+from analysis.wilson_validation import (
+    FIXED_STAKE as WILSON_FIXED_STAKE,
+    FIXTURE_STAKE_CAP as WILSON_FIXTURE_STAKE_CAP,
+    ensure_namespace as ensure_wilson_namespace,
+    recompute_namespace as recompute_wilson_namespace,
+)
 
 HKT = timezone(timedelta(hours=8))
 
@@ -35,77 +41,86 @@ def watch(codes=('HDC',)):
 
 class IndependentValidationTests(unittest.TestCase):
     def test_non_destructive_migration_and_old_new_isolation(self):
-        ledger = {'bets': [{'portfolio': 'footbreak_condition_simulation', 'strategy': 'granular-condition-v1', 'stake': 1000, 'pnl': 999}], 'stats': {'legacy': 1}}
-        ns = ensure_namespace(ledger, 'footbreak', now='2026-08-16T10:00:00+08:00')
-        self.assertEqual(ledger['bets'][0]['stake'], 1000)
-        self.assertEqual(ns['validation_started_at'], '2026-08-16T10:00:00+08:00')
-        stats = recompute_namespace(ledger, 'footbreak')
+        legacy = {'portfolio': 'footbreak_independent_validation', 'strategy': 'independent-validation-v1',
+                  'status': 'PENDING', 'stake': 250, 'pnl': 999}
+        ledger = {'bets': [legacy.copy()], 'stats': {'legacy': 1}}
+        ns = ensure_wilson_namespace(ledger, 'footbreak', now='2026-08-16T10:00:00+08:00')
+        self.assertEqual(ledger['bets'][0]['stake'], 250)
+        self.assertEqual(ns['activation_at'], '2026-08-16T10:00:00+08:00')
+        self.assertTrue(ns['retired_v1']['read_only'])
+        self.assertEqual(ns['retired_v1']['legacy_bets'], [legacy])
+        stats = recompute_wilson_namespace(ledger, 'footbreak')
         self.assertEqual(stats['pnl'], 0)
-        self.assertEqual(validation_bets(ledger, 'footbreak'), [])
+        self.assertEqual(stats['n_pending'], 0)
 
     def test_t5_caps_freeze_and_conservative_selection(self):
-        low_accuracy_high_sample = candidate(decided=40, hits=25, wilson=.45, specificity=1, key='role=主讓')
-        high_accuracy_low_wilson = candidate(decided=20, hits=18, wilson=.40, specificity=3, key='role=主受讓')
+        historical = [
+            {'match_id': f'prior-{i}', 'stage': 'T-5',
+             'kickoff': (datetime(2026, 1, 1, 20, tzinfo=HKT) + timedelta(days=i)).isoformat(),
+             'predicted_at': (datetime(2026, 1, 1, 20, tzinfo=HKT) + timedelta(days=i, minutes=-5)).isoformat(),
+             'market_grades': [{'code': 'HDC', 'side': 'H', 'line': -.25, 'odds': 1.8,
+                                'grade_status': 'GRADED', 'hit': i < 50}]}
+            for i in range(59)
+        ]
         ledger = {'bets': []}
-        with patch.object(footbreak, 'match_upcoming', return_value={'future': [low_accuracy_high_sample, high_accuracy_low_wilson]}):
-            made, audit = footbreak.evaluate_new_t5(ledger, watch(), None, ranking=[low_accuracy_high_sample, high_accuracy_low_wilson])
+        made, audit = footbreak.evaluate_new_t5(ledger, watch(), None, history_rows=historical)
         self.assertEqual(len(made), 1); bet = made[0]
-        self.assertEqual(bet['stake'], FIXED_STAKE)
-        self.assertLessEqual(sum(row['stake'] for row in made), FIXTURE_STAKE_CAP)
-        self.assertEqual(bet['discovery_baseline']['decided'], 40)
-        frozen = ledger['independent_validation']['conditions'][bet['frozen_condition_signature']]['discovery_baseline'].copy()
-        refreshed = candidate(decided=99, hits=99, wilson=.99, specificity=1, key='role=主讓')
+        self.assertEqual(bet['stake'], WILSON_FIXED_STAKE)
+        self.assertLessEqual(sum(row['stake'] for row in made), WILSON_FIXTURE_STAKE_CAP)
+        self.assertEqual(bet['frozen_historical_evidence']['decided'], 59)
+        frozen = ledger['wilson_validation']['conditions'][bet['frozen_condition_signature']]['historical_evidence'].copy()
         ledger['bets'].extend(made)
-        with patch.object(footbreak, 'match_upcoming', return_value={'future': [refreshed]}):
-            repeated, _ = footbreak.evaluate_new_t5(ledger, watch(), None, ranking=[refreshed])
+        repeated, _ = footbreak.evaluate_new_t5(ledger, watch(), None, history_rows=historical)
         self.assertEqual(repeated, [])
-        self.assertEqual(ledger['independent_validation']['conditions'][bet['frozen_condition_signature']]['discovery_baseline'], frozen)
-        self.assertEqual(audit[-1]['reason'], 'independent_validation_candidate_frozen')
+        self.assertEqual(ledger['wilson_validation']['conditions'][bet['frozen_condition_signature']]['historical_evidence'], frozen)
+        self.assertEqual(audit[-1]['reason'], 'wilson_candidate_frozen')
 
     def test_two_market_cap_opposition_timing_and_idempotency(self):
-        rows = [candidate()]
+        rows = []
+        for index in range(59):
+            kickoff = datetime(2026, 2, 1, 20, tzinfo=HKT) + timedelta(days=index)
+            rows.append({'match_id': f'prior-{index}', 'stage': 'T-5', 'kickoff': kickoff.isoformat(),
+                         'predicted_at': (kickoff - timedelta(minutes=5)).isoformat(),
+                         'market_grades': [{'code': 'HDC', 'side': 'H', 'line': -.25, 'odds': 1.8,
+                                            'grade_status': 'GRADED', 'hit': True}]})
         ledger = {'bets': []}
         bad = watch(); bad['stages'][0]['post_hoc_backfill'] = True
         made, audit = footbreak.evaluate_new_t5(ledger, bad, None, ranking=rows)
         self.assertEqual(made, []); self.assertEqual(audit[0]['reason'], 'not_first_native_pre_kickoff_t5')
-        opposing = candidate(); opposing['selected_side'] = 'A'; opposing['selected_line'] = .25
-        with patch.object(footbreak, 'match_upcoming', return_value={'future': [candidate(), opposing]}):
-            made, audit = footbreak.evaluate_new_t5({'bets': []}, watch(), None, ranking=rows)
+        made, audit = footbreak.evaluate_new_t5({'bets': []}, watch(), None, history_rows=rows)
         self.assertEqual(len(made), 1)
         self.assertEqual(made[0]['selected_side'], 'H')
-        # Three valid markets still produce only two HK$250 entries.
-        all_rows = []
-        for market in ('HDC', 'HIL', 'CHL'):
-            c = candidate(); c['market'] = market; c['key'][1] = f'market={market}'; c['selected_line'] = -.25 if market == 'HDC' else 2.5
-            all_rows.append(c)
+        # Three valid markets create all three HK$500 simulation entries.
+        all_rows = [
+            {'match_id': f'{market}-{index}', 'stage': 'T-5', 'kickoff': (datetime(2026, 3, 1, 20, tzinfo=HKT) + timedelta(days=index)).isoformat(),
+             'predicted_at': (datetime(2026, 3, 1, 20, tzinfo=HKT) + timedelta(days=index, minutes=-5)).isoformat(),
+             'market_grades': [{'code': market, 'side': 'H', 'line': -.25 if market == 'HDC' else 2.5,
+                                'odds': 1.8, 'grade_status': 'GRADED', 'hit': True}]}
+            for market in ('HDC', 'HIL', 'CHL') for index in range(59)
+        ]
         ledger = {'bets': []}
-        with patch.object(footbreak, 'match_upcoming', return_value={'future': all_rows}):
-            made, _ = footbreak.evaluate_new_t5(ledger, watch(('HDC','HIL','CHL')), None, ranking=all_rows)
-        self.assertEqual(len(made), 2); self.assertEqual(sum(x['stake'] for x in made), 500)
+        made, _ = footbreak.evaluate_new_t5(ledger, watch(('HDC','HIL','CHL')), None, history_rows=all_rows)
+        self.assertEqual(len(made), 3); self.assertEqual(sum(x['stake'] for x in made), 1500)
 
     def test_source_evidence_is_required_and_accuracy_never_breaks_a_tie(self):
         """Fixtures must explicitly contain quote evidence; raw accuracy cannot win."""
         no_source = watch()
         del no_source['stages'][0]['market_predictions'][0]['source']
-        with patch.object(footbreak, 'match_upcoming', return_value={'future': [candidate()]}):
-            made, audit = footbreak.evaluate_new_t5({'bets': []}, no_source, None, ranking=[candidate()])
+        historical = [
+            {'match_id': f'prior-{i}', 'stage': 'T-5', 'kickoff': (datetime(2026, 4, 1, 20, tzinfo=HKT) + timedelta(days=i)).isoformat(),
+             'predicted_at': (datetime(2026, 4, 1, 20, tzinfo=HKT) + timedelta(days=i, minutes=-5)).isoformat(),
+             'market_grades': [{'code': 'HDC', 'side': 'H', 'line': -.25, 'odds': 1.8, 'grade_status': 'GRADED', 'hit': True}]}
+            for i in range(59)
+        ]
+        made, audit = footbreak.evaluate_new_t5({'bets': []}, no_source, None, history_rows=historical)
         self.assertEqual(made, [])
         self.assertEqual(audit[0]['reason'], 'selected_source_observation_invalid_or_missing')
 
-        lower_accuracy_more_samples = candidate(decided=40, hits=25, key='role=主讓')
-        lower_accuracy_more_samples['total'].pop('wilson95')
-        higher_accuracy_fewer_samples = candidate(decided=20, hits=18, key='role=主讓')
-        higher_accuracy_fewer_samples['total'].pop('wilson95')
-        ledger = {'bets': []}
-        with patch.object(footbreak, 'match_upcoming', return_value={
-            'future': [lower_accuracy_more_samples, higher_accuracy_fewer_samples],
-        }):
-            made, _ = footbreak.evaluate_new_t5(
-                ledger, watch(), None,
-                ranking=[lower_accuracy_more_samples, higher_accuracy_fewer_samples],
-            )
-        self.assertEqual(len(made), 1)
-        self.assertEqual(made[0]['condition_decided'], 40)
+        # The frozen ranking must supply a complete canonical definition; raw
+        # accuracy-only fragments cannot be matched into an admission.
+        made, audit = footbreak.evaluate_new_t5({'bets': []}, watch(), None, ranking=[candidate()])
+        self.assertEqual(made, [])
+        self.assertEqual(audit[0]['reason'], 'no_frozen_historical_condition')
 
     def test_asian_prospective_status_uses_pnl_and_push_exclusion(self):
         bets = [{'status': 'SETTLED', 'result': 'Won', 'stake': 250, 'odds': 2, 'pnl': 250} for _ in range(30)]
@@ -201,23 +216,23 @@ class IndependentValidationTests(unittest.TestCase):
         )
         self.assertEqual(public_diagnostics(namespace)['evaluated'], DIAGNOSTIC_EVALUATION_LIMIT)
 
-    def test_native_t5_records_zero_bet_granular_mismatch_diagnostic(self):
+    def test_native_t5_line_bucket_evidence_is_frozen_on_admission(self):
         ledger = {'bets': []}
-        mismatched = candidate()
-        mismatched['selected_line'] = -.5
-        with patch.object(footbreak, 'match_upcoming', return_value={'future': [mismatched]}):
-            made, audit = footbreak.evaluate_new_t5(
-                ledger, watch(), None, ranking=[mismatched],
-            )
-        self.assertEqual(made, [])
-        self.assertEqual(audit[0]['reason'], 'no_granular_match')
-        public = public_diagnostics(ledger['independent_validation'])
-        self.assertEqual(public['counts']['no_granular_match'], 1)
+        mismatched = [
+            {'match_id': f'prior-{i}', 'stage': 'T-5', 'kickoff': (datetime(2026, 5, 1, 20, tzinfo=HKT) + timedelta(days=i)).isoformat(),
+             'predicted_at': (datetime(2026, 5, 1, 20, tzinfo=HKT) + timedelta(days=i, minutes=-5)).isoformat(),
+             'market_grades': [{'code': 'HDC', 'side': 'H', 'line': -.5, 'odds': 1.8, 'grade_status': 'GRADED', 'hit': True}]}
+            for i in range(59)
+        ]
+        made, audit = footbreak.evaluate_new_t5(ledger, watch(), None, history_rows=mismatched)
+        self.assertEqual(len(made), 1)
+        self.assertEqual(next(row for row in audit if row['status'] == 'CREATED')['reason'], 'wilson_candidate_frozen')
+        self.assertEqual(made[0]['frozen_historical_evidence']['decided'], 59)
 
     def test_real_persisted_ranking_and_native_t5_match_exactly_once(self):
         """Regression for the raw-history/dashboard cache schema split."""
         historical = []
-        for index in range(20):
+        for index in range(59):
             kickoff = datetime(2026, 3, 1, 20, tzinfo=HKT) + timedelta(days=index)
             historical.append({
                 "match_id": f"rank-{index}", "stage": "T-5",
@@ -235,7 +250,7 @@ class IndependentValidationTests(unittest.TestCase):
         self.assertEqual(made[0]["selected_side"], "H")
         self.assertEqual(made[0]["selected_line"], -.25)
         self.assertEqual(next(row for row in audit if row["status"] == "CREATED")["reason"],
-                         "independent_validation_candidate_frozen")
+                         "wilson_candidate_frozen")
         ledger["bets"].extend(made)
         repeated, repeat_audit = footbreak.evaluate_new_t5(ledger, watch(), None, ranking=ranking)
         self.assertEqual(repeated, [])

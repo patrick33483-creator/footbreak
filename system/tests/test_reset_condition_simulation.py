@@ -19,7 +19,8 @@ class ResetConditionSimulationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             ledger_path = Path(directory, "ledger.json")
             ledger_path.write_text(json.dumps({
-                "bankroll": 321, "bets": [{"bet_id": "old"}], "stats": {"pnl": 9}, "log": [],
+                "bankroll": 321, "bets": [{"bet_id": "old", "portfolio": "footbreak_independent_validation",
+                                             "strategy": "independent-validation-v1", "status": "PENDING"}], "stats": {"pnl": 9}, "log": [],
                 "watch": {"preserved": {"stages": []}}, "shadow_bets": [{"bet_id": "old-shadow"}],
                 "shadow_stats": {"n": 1}, "shadow_comparison": {"n": 1},
                 "condition_simulation_audit": [{"x": 1}], "provider_data": {"keep": True},
@@ -40,7 +41,8 @@ class ResetConditionSimulationTests(unittest.TestCase):
         self.assertEqual(outcome["cleared_main_bets"], 0)
         self.assertFalse(outcome["retired_shadow_state_removed"])
         self.assertTrue(outcome["migration_only"])
-        self.assertEqual(ledger["bets"], [{"bet_id": "old"}])
+        self.assertEqual(ledger["bets"], [{"bet_id": "old", "portfolio": "footbreak_independent_validation",
+                                            "strategy": "independent-validation-v1", "status": "PENDING"}])
         self.assertEqual(ledger["stats"], {"pnl": 9})
         self.assertEqual(ledger["watch"], {"preserved": {"stages": []}})
         self.assertEqual(ledger["provider_data"], {"keep": True})
@@ -48,10 +50,10 @@ class ResetConditionSimulationTests(unittest.TestCase):
         self.assertIn("shadow_stats", ledger)
         self.assertIn("shadow_comparison", ledger)
         self.assertIn("condition_simulation_audit", ledger)
-        namespace = ledger["independent_validation"]
+        namespace = ledger["wilson_validation"]
         self.assertEqual(namespace["system"], "footbreak")
-        self.assertTrue(namespace["historical_discovery_archive"]["read_only"])
-        self.assertEqual(namespace["historical_discovery_archive"]["legacy_bet_count"], 1)
+        self.assertTrue(namespace["retired_v1"]["read_only"])
+        self.assertEqual(namespace["retired_v1"]["legacy_bet_count"], 1)
 
 
 if __name__ == "__main__":

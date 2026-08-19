@@ -54,7 +54,7 @@ def _ledger():
 
 
 class GranularConditionNotificationTests(unittest.TestCase):
-    def test_fresh_only_stage_independent_idempotency_and_transport_failure(self):
+    def test_retired_granular_candidate_notifications_are_silent(self):
         ledger = _ledger()
         payload = {"prediction_history": {"rows": _history("T-30") + _history("T-5")}}
         with tempfile.TemporaryDirectory() as directory:
@@ -64,27 +64,10 @@ class GranularConditionNotificationTests(unittest.TestCase):
                  patch.object(notify, "STATE", str(state)), \
                  patch.object(notify, "send") as sender:
                 self.assertEqual(notify.notify_fresh_granular_conditions(
-                    ledger, [{"match_id": "future", "stage": "T-30"}]), 1)
-                self.assertEqual(notify.notify_fresh_granular_conditions(
                     ledger, [{"match_id": "future", "stage": "T-30"}]), 0)
                 self.assertEqual(notify.notify_fresh_granular_conditions(
-                    ledger, [{"match_id": "future", "stage": "T-5"}]), 1)
-            self.assertEqual(sender.call_count, 2)
-            self.assertIn("候選條件，獨立驗證中", sender.call_args_list[0].args[0])
-            self.assertIn("候選條件，獨立驗證中", sender.call_args_list[1].args[0])
-            self.assertIn("不構成正式推介", sender.call_args_list[1].args[0])
-            for call in sender.call_args_list:
-                message = call.args[0]
-                self.assertIn("聯賽：測試", message)
-                self.assertIn("投注：讓球", message)
-                self.assertIn("選擇：主讓", message)
-                self.assertIn("盤口：-0.25", message)
-                self.assertIn("賠率：1.82", message)
-                self.assertIn("凍結前歷史發現率：", message)
-                self.assertNotIn("HDC", message)
-                self.assertNotIn("HIL", message)
-                self.assertNotIn("CHL", message)
-                self.assertNotRegex(message, r"\b[ABC](?:→[ABC])+\b")
+                    ledger, [{"match_id": "future", "stage": "T-5"}]), 0)
+            sender.assert_not_called()
 
         with tempfile.TemporaryDirectory() as directory:
             data, state = Path(directory, "data.json"), Path(directory, "state.json")
@@ -93,9 +76,8 @@ class GranularConditionNotificationTests(unittest.TestCase):
             with patch.object(notify, "DASHBOARD_DATA", str(data)), \
                  patch.object(notify, "STATE", str(state)), \
                  patch.object(notify, "send", side_effect=RuntimeError("down")):
-                with self.assertRaisesRegex(RuntimeError, "down"):
-                    notify.notify_fresh_granular_conditions(
-                        ledger, [{"match_id": "future", "stage": "T-30"}])
+                self.assertEqual(notify.notify_fresh_granular_conditions(
+                    ledger, [{"match_id": "future", "stage": "T-30"}]), 0)
             self.assertEqual(ledger, before)
             self.assertFalse(state.exists())
 
@@ -145,7 +127,7 @@ class GranularConditionNotificationTests(unittest.TestCase):
         source = (SYSTEM / "record_picks.py").read_text(encoding="utf-8")
         notifier = (SYSTEM / "notify.py").read_text(encoding="utf-8")
         self.assertIn("notify_pending_condition_bets(ledger)", source)
-        self.assertIn("notify_fresh_granular_conditions(ledger, fresh_t30_events)", source)
+        self.assertNotIn("notify_fresh_granular_conditions(ledger, fresh_t30_events)", source)
         self.assertIn('if stage == "T-30":', source)
         self.assertNotIn(
             'fresh_t30_events.append({"match_id": match_id, "stage": "T-5"})',
@@ -154,7 +136,7 @@ class GranularConditionNotificationTests(unittest.TestCase):
         self.assertNotIn("notify_fresh_t5_signals(led", source)
         self.assertIn("舊有 Telegram 通知已停用", notifier)
 
-    def test_new_condition_bet_alert_is_true_new_chinese_and_fails_closed(self):
+    def test_old_v1_entry_bet_never_alerts_after_cutover(self):
         kickoff = (datetime.now(HKT) + timedelta(hours=2)).isoformat()
         bet = {
             "bet_id": "fixture|HIL|T-5|independent-validation-v1",
@@ -175,15 +157,9 @@ class GranularConditionNotificationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             state = Path(directory, "state.json")
             with patch.object(notify, "STATE", str(state)), patch.object(notify, "send") as sender:
-                self.assertEqual(notify.notify_new_condition_bets({"bets": [bet]}, [bet["bet_id"]]), 1)
                 self.assertEqual(notify.notify_new_condition_bets({"bets": [bet]}, [bet["bet_id"]]), 0)
-            message = sender.call_args.args[0]
-        for field in ("聯賽：測試聯賽", "主隊：主隊", "客隊：客隊", "開賽：", "市場：入球大細",
-                      "方向：大", "盤口：2.5", "賠率：1.82", "凍結的歷史發現率：70.0%（14/20）",
-                      "候選條件，獨立驗證中", "未達已驗證，不構成正式推介"):
-            self.assertIn(field, message)
-        for code in ("HDC", "HIL", "CHL", " A", " B", " C"):
-            self.assertNotIn(code, message)
+                self.assertEqual(notify.notify_new_condition_bets({"bets": [bet]}, [bet["bet_id"]]), 0)
+            sender.assert_not_called()
 
         bet["league"] = ""
         with tempfile.TemporaryDirectory() as directory:
@@ -191,7 +167,7 @@ class GranularConditionNotificationTests(unittest.TestCase):
                 self.assertEqual(notify.notify_new_condition_bets({"bets": [bet]}, [bet["bet_id"]]), 0)
             sender.assert_not_called()
 
-    def test_committed_validation_message_reads_frozen_metrics_and_deduplicates(self):
+    def test_old_v1_pending_bet_is_silent_even_with_historical_metrics(self):
         kickoff = (datetime.now(HKT) + timedelta(hours=2)).isoformat()
         bet = {
             "bet_id": "frozen|HDC|T-5|independent-validation-v1",
@@ -212,18 +188,11 @@ class GranularConditionNotificationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             state = Path(directory, "state.json")
             with patch.object(notify, "STATE", str(state)), patch.object(notify, "send") as sender:
-                self.assertEqual(notify.notify_pending_condition_bets(ledger), 1)
                 self.assertEqual(notify.notify_pending_condition_bets(ledger), 0)
-        message = sender.call_args.args[0]
-        for text in (
-            "已通過獨立驗證", "凍結的歷史發現率：70.0%（14/20）",
-            "獨立驗證率：75.0%（30/30）", "狀態：已驗證",
-            "前瞻盈虧：HK$+1,250", "ROI：+16.67%", "仍只作模擬追蹤",
-        ):
-            self.assertIn(text, message)
-        self.assertNotIn("可投注", message)
+                self.assertEqual(notify.notify_pending_condition_bets(ledger), 0)
+        sender.assert_not_called()
 
-    def test_unsent_committed_bet_retries_after_transport_recovers(self):
+    def test_old_v1_pending_bet_never_enters_retry_outbox(self):
         kickoff = (datetime.now(HKT) + timedelta(minutes=8)).isoformat()
         bet = {
             "bet_id": "retry|HDC|T-5|independent-validation-v1",
@@ -246,16 +215,14 @@ class GranularConditionNotificationTests(unittest.TestCase):
             state = Path(directory, "state.json")
             with patch.object(notify, "STATE", str(state)), \
                  patch.object(notify, "send", side_effect=RuntimeError("temporary outage")):
-                with self.assertRaisesRegex(RuntimeError, "temporary outage"):
-                    notify.notify_pending_condition_bets(ledger)
+                self.assertEqual(notify.notify_pending_condition_bets(ledger), 0)
             self.assertFalse(state.exists())
 
             with patch.object(notify, "STATE", str(state)), patch.object(notify, "send") as sender:
-                self.assertEqual(notify.notify_pending_condition_bets(ledger), 1)
                 self.assertEqual(notify.notify_pending_condition_bets(ledger), 0)
-            sender.assert_called_once()
-            saved = json.loads(state.read_text(encoding="utf-8"))
-            self.assertIn(bet["bet_id"], saved["condition_simulation_bets"])
+                self.assertEqual(notify.notify_pending_condition_bets(ledger), 0)
+            sender.assert_not_called()
+            self.assertFalse(state.exists())
 
 
 if __name__ == "__main__":

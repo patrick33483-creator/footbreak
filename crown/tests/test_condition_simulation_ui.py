@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class ConditionSimulationUiTests(unittest.TestCase):
-    def test_crown_navigation_has_one_simulation_portfolio_and_no_retired_sections(self) -> None:
+    def test_crown_navigation_has_active_wilson_and_read_only_retired_archive(self) -> None:
         index = (ROOT / "crown" / "dashboard" / "index.html").read_text(encoding="utf-8")
         app = (ROOT / "crown" / "dashboard" / "app.js").read_text(encoding="utf-8")
         self.assertIn('data-view="ledger">獨立驗證倉', index)
@@ -17,15 +17,12 @@ class ConditionSimulationUiTests(unittest.TestCase):
         self.assertNotIn("讓球世界", index)
         self.assertNotIn("renderShadow", app)
         for text in (
-            "歷史發現期唯讀封存", "起始 HK$50,000", "每注 HK$250", "每場 HK$500",
-            "只在首次持久化原生賽前 T-5 建立注單", "歷史發現／獨立驗證",
-            "前瞻盈虧", "前瞻回報率", "賠率分層統計",
-            "1.70–1.79", "1.80–1.89", "1.90–1.99", "≥2.00",
-            "只計前瞻獨立驗證倉有效注單／賽果", "走水不計入命中率分母",
+            "Wilson 測試攻略", "起始 HK$50,000", "每注 HK$500", "每場 HK$1,500",
+            "首次原生", "Wilson 95%", "最低可接受賠率",
+            "已封存／退役", "走水不計入命中率分母",
         ):
             self.assertIn(text, app)
         self.assertIn("conditionBets", app)
-        self.assertIn("oddsTierCard", app)
 
     def test_user_facing_market_labels_are_chinese_and_legacy_labels_are_sanitized(self) -> None:
         for path in (ROOT / "crown" / "dashboard" / "app.js", ROOT / "hkjc-dashboard" / "app.js"):

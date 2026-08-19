@@ -843,7 +843,7 @@ class CrownSafetyTests(unittest.TestCase):
         official = [{
             "status": "SETTLED", "code": "HIL", "market": "入球大細", "stake": 100,
             "pnl": -100, "result": "Lost", "model_prob": 0.60,
-            "portfolio": "crown_independent_validation", "strategy": "independent-validation-v1",
+            "portfolio": "crown_wilson_test", "strategy": "wilson-test-strategy-v1",
         } for _ in range(29)]
         shadow = [{
             "status": "SETTLED", "code": "HIL", "market": "HIL", "stake": 1000,
@@ -894,8 +894,8 @@ class CrownSafetyTests(unittest.TestCase):
         losing = [{
             "status": "SETTLED", "code": "HIL", "stake": 100,
             "pnl": -100, "result": "Lost", "model_prob": 0.60,
-            "portfolio": "crown_independent_validation",
-            "strategy": "independent-validation-v1",
+            "portfolio": "crown_wilson_test",
+            "strategy": "wilson-test-strategy-v1",
         } for _ in range(30)]
         ledger = {"bets": losing[:29]}
         small = market_entry_thresholds(ledger, "HIL", config)
@@ -1959,9 +1959,9 @@ class CrownSafetyTests(unittest.TestCase):
             }
             pinnapi_client.fixtures.return_value = []
             created_bet = {
-                "bet_id": "single|HDC|T-5|independent-validation-v1",
-                "portfolio": "crown_independent_validation", "strategy": "independent-validation-v1",
-                "status": "PENDING", "market": "HDC", "stake": 1000, "odds": 1.91,
+                "bet_id": "single|HDC|T-5|wilson-test-strategy-v1",
+                "portfolio": "crown_wilson_test", "strategy": "wilson-test-strategy-v1",
+                "status": "PENDING", "market": "HDC", "stake": 500, "odds": 1.91,
                 "created_at": now.isoformat(), "market_label": "讓球", "condition_label": "主讓",
             }
             with patch("crown.engine.TitanClient", return_value=titan_client), \
@@ -1988,19 +1988,12 @@ class CrownSafetyTests(unittest.TestCase):
                     }],
                 }],
             }
-            opportunity = {
-                "watch": watch, "selected": {"line": -0.25, "odds": 1.91, "side": "H"},
-                "stage": "T-5", "fixture": "single", "market": "HDC",
-                "matches": [{"label": "主讓", "odds_tier": "≥1.70", "badge": "A",
-                             "total": {"accuracy": 0.7, "hits": 7, "decided": 10}}],
-            }
-            notification_ledger = {"watch": {"single": watch}}
-            with patch("analysis.granular_conditions.notification_opportunities",
-                       return_value=[opportunity]), \
-                 patch("crown.notify._send", return_value=True) as sender:
-                self.assertEqual(notify_new(notification_ledger, config, [{"match_id": "single", "stage": "T-5"}]), 1)
-                self.assertEqual(notify_new(notification_ledger, config, [{"match_id": "single", "stage": "T-5"}]), 0)
-            self.assertEqual(sender.call_count, 1)
+            # Old granular entry notifications stay retired.  Wilson's exact
+            # committed-message/deduplication contract is tested separately.
+            with patch("crown.notify._send", return_value=True) as sender:
+                self.assertEqual(notify_new({"watch": {"single": watch}}, config,
+                                            [{"match_id": "single", "stage": "T-5"}]), 0)
+            sender.assert_not_called()
 
     def test_sweep_recovers_due_first_look_omitted_from_titan_list(self) -> None:
         kickoff = self.now + timedelta(hours=3)
@@ -3123,12 +3116,12 @@ class CrownSafetyTests(unittest.TestCase):
             "bets": [
                 {"status": "SETTLED", "market": "讓球", "stake": 1000, "pnl": 900,
                  "result": "Won", "home": "A", "away": "B", "settled_at": "2026-08-08T10:00:00Z",
-                 "portfolio": "crown_independent_validation", "strategy": "independent-validation-v1"},
+                 "portfolio": "crown_wilson_test", "strategy": "wilson-test-strategy-v1"},
                 {"status": "SETTLED", "market": "讓球", "stake": 500, "pnl": -500,
                  "result": "Lost", "home": "C", "away": "D", "settled_at": "2026-08-08T11:00:00Z",
-                 "portfolio": "crown_independent_validation", "strategy": "independent-validation-v1"},
+                 "portfolio": "crown_wilson_test", "strategy": "wilson-test-strategy-v1"},
                 {"status": "VOIDED", "market": "入球大細", "stake": 2000, "pnl": None,
-                 "portfolio": "crown_independent_validation", "strategy": "independent-validation-v1"},
+                 "portfolio": "crown_wilson_test", "strategy": "wilson-test-strategy-v1"},
             ],
         }
         stats = recompute_stats(ledger, settings())
@@ -3136,9 +3129,12 @@ class CrownSafetyTests(unittest.TestCase):
         self.assertEqual(stats["n_voided"], 1)
         self.assertEqual(stats["turnover"], 1500)
         self.assertEqual(stats["pnl"], 400)
-        self.assertEqual(stats["res_counts"]["Won"], 1)
-        self.assertEqual(stats["by_market"]["讓球"]["n"], 2)
-        self.assertEqual(len(stats["curve"]), 2)
+        # Wilson prospective metrics intentionally exclude the retired v1
+        # result-breakdown/curve schema, but preserve the active settled
+        # results, PnL and decided hit count.
+        self.assertEqual(stats["hits"], 1)
+        self.assertEqual(stats["n_decided"], 2)
+        self.assertEqual(stats["portfolio"], "crown_wilson_test")
 
     def test_crown_simulated_bet_notification_is_retired(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

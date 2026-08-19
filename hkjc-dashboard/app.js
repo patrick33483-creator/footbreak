@@ -1539,13 +1539,13 @@ function stakeStageCard() {
 
 function renderLedger() {
   const s = LED.stats || {}, bets = (LED.bets || []).filter((bet) =>
-    bet && bet.portfolio === 'footbreak_independent_validation' && bet.strategy === 'independent-validation-v1'
+    bet && bet.portfolio === 'footbreak_wilson_test' && bet.strategy === 'wilson-test-strategy-v1'
   );
   const validation = LED.independent_validation || {};
   const archive = validation.historical_discovery_archive || {};
   const V = $('#viewLedger');
   const K = [
-    ['驗證起點', validation.validation_started_at ? hkStamp(validation.validation_started_at) : '—', ''],
+    ['啟用／切換', validation.activation_at ? hkStamp(validation.activation_at) : '—', ''],
     ['起始本金', money(s.starting_bankroll ?? LED.bankroll), ''],
     ['每注', money(s.fixed_stake), ''],
     ['每場上限', money(s.fixture_stake_cap), ''],
@@ -1555,24 +1555,26 @@ function renderLedger() {
     ['前瞻回報率', s.roi == null ? '—' : pc(s.roi, 2), (s.roi || 0) >= 0 ? 'good' : 'bad'],
     ['命中率', s.n_decided ? `${pc(s.hit_rate, 1)} (${s.hits}/${s.n_decided})` : '—',
       s.n_decided ? ((s.hit_rate || 0) >= 0.5 ? 'good' : 'bad') : ''],
+    ['前瞻 Wilson 95%', s.wilson95 ? `${pc(s.wilson95[0], 1)}–${pc(s.wilson95[1], 1)}` : '—', ''],
     ['現金 / 權益', `${money(s.cash ?? LED.bankroll)} / ${money(s.equity ?? LED.bankroll)}`, (s.pnl || 0) >= 0 ? 'good' : 'bad'],
   ];
   const rule = s.rules || {};
   let h = `<div class="ledger-head">
-    <h1 class="pg-h">獨立驗證倉 <span class="sub">舊歷史發現期唯讀封存；只作模擬記錄</span></h1>
+    <h1 class="pg-h">Wilson 測試攻略 <span class="sub">啟用後首次原生 T-5 · 只作模擬記錄</span></h1>
     <div class="kpis wide">${K.map(([l, v, c]) =>
       `<div class="kpi"><span class="kpi-lbl">${l}</span><span class="kpi-val ${c}">${v}</span></div>`).join('')}</div>
   </div>`;
   h += `<div class="card"><h2 class="card-h">建立規則</h2>
     <div class="rule-grid">
       <div><b>建立時點</b><span>只限新保存的 T-5 預測；重跑、T-30 與歷史回填不會建立注單。</span></div>
-      <div><b>歷史發現期</b><span>只作候選發現：命中率嚴格高於 60%，且最少 20 個已判定樣本；首次入倉即凍結定義及基線。</span></div>
-      <div><b>市場與防呆</b><span>每注 HK$250；每場最多兩個市場及 HK$500；同市場方向或盤口矛盾即跳過。</span></div>
+      <div><b>凍結歷史證據</b><span>最少 50 個唯一已判定 fixture-market；Wilson 95% 下限必須不少於實際賠率損益平衡率加 3 個百分點。</span></div>
+      <div><b>市場與防呆</b><span>每注 HK$500；每場最多三個市場及 HK$1,500；同市場只可一注，絕不容許相反方向。</span></div>
       <div><b>資料證據</b><span>必須有有效方向、有限盤口、賠率大於 1，以及可證明在開賽前觀測的賠率。</span></div>
     </div>
   </div>`;
-  h += `<div class="card history-note"><h2 class="card-h">舊歷史發現期 <span class="sub">唯讀封存，不混入獨立驗證盈虧、回報率、命中率或本金</span></h2>
-    <p class="mx-note">摘要：已保留舊注單 ${numeric(archive.legacy_bet_count) == null ? '—' : archive.legacy_bet_count} 筆；舊帳本本金 ${archive.legacy_bankroll == null ? '—' : money(archive.legacy_bankroll)}。凍結條件會顯示當時的「歷史發現 x/y」，其後的驗證結果不會回寫該基線。</p></div>`;
+  h += `<div class="card history-note"><h2 class="card-h">已封存／退役 previous strategy（v1） <span class="sub">唯讀；保留歷史、盈虧及待決結算，不混入 Wilson 前瞻成績</span></h2>
+    <p class="mx-note">摘要：已保留舊注單 ${numeric(archive.legacy_bet_count) == null ? '—' : archive.legacy_bet_count} 筆；舊帳本本金 ${archive.legacy_bankroll == null ? '—' : money(archive.legacy_bankroll)}。凍結條件會顯示當時的「歷史發現 x/y」，其後的驗證結果不會回寫該基線。</p>
+    ${Array.isArray(archive.legacy_bets) && archive.legacy_bets.length ? `<details><summary>查看已封存舊注單（唯讀）</summary><div class="tbl-wrap"><table class="t"><tr><th>賽事</th><th>市場</th><th>注碼</th><th>狀態</th><th>盈虧</th></tr>${archive.legacy_bets.map((b) => `<tr><td>${esc(b.home || '—')} vs ${esc(b.away || '—')}</td><td>${esc(marketLabel(b.market || b.code))}</td><td>${money(b.stake)}</td><td>${esc(b.status || '—')}</td><td>${b.pnl == null ? '—' : money(b.pnl)}</td></tr>`).join('')}</table></div></details>` : ''}</div>`;
   const diagnostics = validation.diagnostics || {}, diagnosticLabels = diagnostics.labels || {}, diagnosticCounts = diagnostics.counts || {};
   const diagnosticRows = Object.keys(diagnosticLabels).map((code) => ({
     label: diagnosticLabels[code], count: numeric(diagnosticCounts[code]) || 0,
@@ -1586,9 +1588,9 @@ function renderLedger() {
   h += oddsTierCard(s);
   h += probabilityResearchCard(LED.probability_research || {});
   if (!bets.length) {
-    h += `<div class="card"><div class="empty2">尚未有符合條件的獨立驗證注單。系統只在首次保存的原生 T-5 評估。</div></div>`;
+    h += `<div class="card"><div class="empty2">尚未有符合條件的 Wilson 模擬注。系統只在首次保存的原生 T-5 評估。</div></div>`;
   } else {
-    h += `<div class="card"><h2 class="card-h">獨立驗證注單 <span class="sub">${bets.length} 筆 · 每注 ${money(s.fixed_stake || 250)}</span></h2>
+    h += `<div class="card"><h2 class="card-h">Wilson 模擬注單 <span class="sub">${bets.length} 筆 · 每注 ${money(s.fixed_stake || 500)}</span></h2>
       <div class="tbl-wrap"><table class="t bets condition-bets"><thead><tr>
         <th>開賽</th><th>對賽 / 聯賽</th><th>市場</th><th>方向</th><th>盤口</th><th>賠率</th><th>歷史發現 / 獨立驗證</th><th>注碼</th><th>狀態</th><th>結果</th><th>盈虧</th>
       </tr></thead><tbody>${bets.map(conditionBetRow).join('')}</tbody></table></div></div>`;
@@ -1636,7 +1638,9 @@ function conditionBetRow(b) {
   const result = b.result ? `<span class="respill ${RES_CLS[b.result] || ''}">${RES_LBL[b.result] || b.result}</span>` : '<span class="dim">—</span>';
   const frozen = (LED.independent_validation?.conditions || {})[b.frozen_condition_signature] || {};
   const prospective = frozen.prospective || {};
-  const history = numeric(b.condition_accuracy) == null ? '—' : `歷史發現 ${pc(b.condition_accuracy, 1)} (${b.condition_hits ?? 0}/${b.condition_decided ?? 0})<div class="cell-sub">獨立驗證 ${pc(prospective.accuracy, 1)} (${prospective.hits ?? 0}/${prospective.decided ?? 0}) · ${esc(prospective.status || '驗證中')} · 前瞻盈虧 ${money(prospective.pnl ?? 0)} · 前瞻回報率 ${pc(prospective.roi, 2)}</div>`;
+  const evidence = b.frozen_historical_evidence || frozen.historical_evidence || {};
+  const a = b.wilson_admission || frozen.admission_arithmetic || {};
+  const history = numeric(a.wilson95_lower_raw) == null ? '—' : `凍結歷史 ${evidence.hits ?? 0}/${evidence.decided ?? 0} · ${pc(a.hit_rate_raw, 1)}<div class="cell-sub">Wilson 95% 下限 ${pc(a.wilson95_lower_raw, 1)} ≥ 所需 ${pc(a.required_rate_raw, 1)}；最低可接受賠率 ${f2(a.minimum_acceptable_odds_raw)} · 目前 ${f2(a.actual_decimal_odds_raw)}</div><div class="cell-sub">前瞻 ${pc(prospective.hit_rate, 1)} (${prospective.hits ?? 0}/${prospective.decided ?? 0}) · Wilson ${prospective.wilson95 ? `${pc(prospective.wilson95[0], 1)}–${pc(prospective.wilson95[1], 1)}` : '—'} · ROI ${pc(prospective.roi, 2)}</div>`;
   const status = `<span class="stpill ${String(b.status || '').toLowerCase()}">${ST_LBL[b.status] || b.status || '—'}</span>`;
   const pnl = b.pnl == null ? '—' : money(b.pnl);
   const tone = (b.pnl || 0) > 0 ? 'ev-p' : (b.pnl || 0) < 0 ? 'ev-n' : 'dim';

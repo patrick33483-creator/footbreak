@@ -212,7 +212,7 @@ def load_history(config: Settings) -> dict[str, Any]:
 def _history_row(watch: dict[str, Any], stage: dict[str, Any]) -> dict[str, Any]:
     match_id = str(stage.get("match_id") or watch.get("match_id") or "")
     stage_name = str(stage.get("stage") or "")
-    condition = stage.get("independent_validation")
+    condition = stage.get("wilson_validation")
     condition_audit = condition.get("audit") if isinstance(condition, dict) else []
     created_condition = next(
         (
@@ -258,7 +258,7 @@ def _history_row(watch: dict[str, Any], stage: dict[str, Any]) -> dict[str, Any]
         # A forecast-only EV/Kelly pick is not a simulated bet.  Only the
         # T-5 fixed-stake condition evaluator can mark this history row as one.
         "simulated_bet": bool(created_condition) and not bool(stage.get("post_hoc_backfill")),
-        "simulation_strategy": "independent-validation-v1" if created_condition else None,
+        "simulation_strategy": "wilson-test-strategy-v1" if created_condition else None,
         "bet_label": created_condition.get("selected_label") if created_condition else None,
         "no_bet_reason": (
             None if created_condition else stage.get("no_bet_reason")

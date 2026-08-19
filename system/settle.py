@@ -16,7 +16,7 @@ import sys
 import tempfile
 
 from condition_portfolio import FIXED_STAKE, PORTFOLIO, STARTING_BANKROLL, STRATEGY
-from analysis.independent_validation import recompute_namespace, validation_bets
+from analysis.wilson_validation import all_settleable_bets, recompute_namespace
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -543,14 +543,12 @@ def run(force=False):
 
 
 def condition_bets(ledger):
-    """Return only Footbreak's active independent-validation rows."""
-    return validation_bets(ledger, "footbreak")
+    """Wilson rows plus retained pending/settleable v1 rows, never mixed in stats."""
+    return all_settleable_bets(ledger, "footbreak")
 
 
 def recompute(led):
-    """Recompute public totals from active independent-validation bets only."""
-    # Keep the established top-level keys for old dashboard callers, but only
-    # derive them from the new namespace. Legacy discovery records stay inert.
+    """Recompute public totals from Wilson rows only; v1 remains archival."""
     stats = recompute_namespace(led, "footbreak")
     led["stats"] = stats
     return stats

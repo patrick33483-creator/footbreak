@@ -16,6 +16,7 @@ from .period import in_current_period
 from .prediction_history import normalize_history, project_watch_rows
 from .ledger import PREDICTION_ERA
 from .state import load_ledger, load_predictions, paths
+from analysis.wilson_validation import active_bets
 
 
 HISTORY_DATA_URL = "history.json"
@@ -35,8 +36,20 @@ def _dashboard_matches(config: Settings) -> list[dict[str, Any]]:
 def _public_ledger(ledger: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Return the browser-safe active portfolio projection of a Crown ledger."""
     dashboard_ledger = dict(ledger)
-    active_condition_bets = condition_bets(ledger)
+    active_condition_bets = active_bets(ledger, "crown")
     dashboard_ledger["bets"] = active_condition_bets
+    wilson = ledger.get("wilson_validation") if isinstance(ledger.get("wilson_validation"), dict) else {}
+    dashboard_ledger["independent_validation"] = {
+        "schema_version": wilson.get("schema_version"),
+        "validation_started_at": wilson.get("activation_at"),
+        "activation_at": wilson.get("activation_at"),
+        "cutover_at": wilson.get("cutover_at"),
+        "display_name": "Wilson 測試攻略",
+        "conditions": wilson.get("conditions") or {},
+        "retired_v1": wilson.get("retired_v1") or {},
+        "historical_discovery_archive": wilson.get("retired_v1") or {},
+        "audit": wilson.get("audit") or [],
+    }
     for key in (
         "shadow_bets", "shadow_stats", "shadow_comparison",
         "handicap_world", "handicap_world_audit", "handicap_world_stats",
@@ -312,11 +325,11 @@ def _build_payloads(config: Settings) -> tuple[dict[str, Any], dict[str, Any]]:
         "market_policy": {"model_HDC": "Titan007 Crown company ID=3", "model_HIL": "Titan007 Crown company ID=3",
                           "model_CHL": "HKJC角球大細 vs PinnAPI CHL exact line; never Crown odds",
                           "sharp_reference": "PinnAPI Edge"},
-        "signal_policy": {"mode": "simulation_only", "execution_enabled": True, "execution_mode": "independent_validation",
+        "signal_policy": {"mode": "simulation_only", "execution_enabled": True, "execution_mode": "wilson_test",
                           "real_betting_enabled": False,
-                          "strategy": "independent-validation-v1",
-                          "entry_rule": "newly persisted native pre-kickoff T-5 only; frozen historical discovery accuracy >60% and decided >=20",
-                          "fixed_stake": 250, "fixture_stake_cap": 500, "fixture_market_cap": 2, "starting_bankroll": 50000,
+                          "strategy": "wilson-test-strategy-v1",
+                          "entry_rule": "newly persisted native pre-kickoff T-5 only; frozen unique decided fixture-markets >=50; Wilson 95% lower bound >= break-even +3pp",
+                          "fixed_stake": 500, "fixture_stake_cap": 1500, "fixture_market_cap": 3, "starting_bankroll": 50000,
                           "markets": {"HDC": "selected valid Crown/PinnAPI-backed snapshot", "HIL": "selected valid Crown/PinnAPI-backed snapshot",
                                       "CHL": "selected valid HKJC/PinnAPI-backed snapshot"},
                           "stages": ["首預", "T-30", "T-5"], "decision_stage": "T-5", "minimum_odds": 1.01},

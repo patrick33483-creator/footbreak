@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from condition_portfolio import STARTING_BANKROLL
-from analysis.independent_validation import ensure_namespace
+from analysis.wilson_validation import ensure_namespace
 
 HERE = Path(__file__).resolve().parent
 LEDGER = Path(os.environ.get("FOOTBREAK_LEDGER_PATH", HERE / "sim_ledger.json"))
@@ -81,7 +81,7 @@ def reset(confirmation: str, post_deploy_confirmation: str | None = None) -> dic
         "cleared_main_bets": 0,
         "retired_shadow_state_removed": False,
         "migration_only": True,
-        "validation_started_at": namespace["validation_started_at"],
+        "activation_at": namespace["activation_at"],
     }
 
 

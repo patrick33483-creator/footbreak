@@ -10,7 +10,7 @@ from .config import settings
 from .common import iso_hkt
 from .dashboard_data import write_dashboard_data
 from .state import load_ledger, save_ledger, state_lock
-from analysis.independent_validation import ensure_namespace
+from analysis.wilson_validation import ensure_namespace
 
 CONFIRMATION = "RESET_CROWN_CONDITION_SIMULATION_50000"
 
@@ -26,7 +26,7 @@ def reset(confirmation: str) -> dict[str, object]:
     write_dashboard_data(config)
     return {"ok": True, "bankroll": STARTING_BANKROLL, "cleared_main_bets": 0,
             "legacy_keys_removed": False, "migration_only": True,
-            "validation_started_at": namespace["validation_started_at"]}
+            "activation_at": namespace["activation_at"]}
 
 
 def main() -> None:
