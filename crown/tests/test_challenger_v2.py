@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import unittest
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from crown import challenger_v2 as v2
 from crown.dashboard_data import _public_ledger
@@ -139,6 +140,8 @@ class CrownV2ChallengerTests(unittest.TestCase):
             row.update({"status": "SETTLED", "result": "Won", "pnl": row["stake"] * (row["odds"] - 1)})
         report = v2.recompute(namespace, ledger)
         market = report["by_market"]["HIL"]
+        self.assertIsNotNone(next(row for row in namespace["research_bets"] if row["market"] == "HIL")["brier"])
+        self.assertIsNotNone(next(row for row in namespace["research_bets"] if row["market"] == "HIL")["calibration_bucket"])
         self.assertEqual(market["no_league_ablation"]["unique_fixtures"], 1)
         self.assertFalse(market["promotion"]["promotion_review_eligible"])
         self.assertIn("unique_fixture_sample_below_100", market["promotion"]["reasons"])
@@ -153,6 +156,39 @@ class CrownV2ChallengerTests(unittest.TestCase):
         source = (__import__("pathlib").Path(__file__).resolve().parents[1] / "challenger_v2.py").read_text(encoding="utf-8")
         self.assertNotIn("notify", source)
         self.assertNotIn("sendMessage", source)
+        dashboard = (Path(__file__).resolve().parents[1] / "dashboard" / "app.js").read_text(encoding="utf-8")
+        self.assertIn("v2挑戰者研究中／非正式推介", dashboard)
+        self.assertIn("同市場雙邊、同盤口、同觀測時間及同來源", dashboard)
+        self.assertIn("CLV 覆蓋", dashboard)
+
+    def test_no_vig_requires_same_two_sided_quote_and_clv_never_uses_post_kickoff(self):
+        fixture, stage = watch()
+        selected = stage["market_predictions"][0]
+        stage["two_sided_quotes"] = [
+            selected | {"fixture_id": fixture["match_id"]},
+            {
+                "fixture_id": fixture["match_id"], "code": "HIL", "side": "L",
+                "line": 2.5, "odds": 2.02, "quote_source": selected["quote_source"],
+                "observed_at": selected["observed_at"],
+            },
+        ]
+        # A closing quote after kickoff is evidence-free, not a substitute.
+        stage["closing_quotes"] = [{
+            "code": "HIL", "side": "H", "line": 2.5, "odds": 1.80,
+            "quote_source": selected["quote_source"], "observed_at": stage["kickoff_hkt"],
+        }]
+        ledger = {"bets": []}
+        made, _ = v2.evaluate_new_t5(ledger, fixture, stage)
+        hil = next(row for row in made if row["market"] == "HIL" and row["variant"] == "no_league")
+        self.assertTrue(hil["market_implied_available"])
+        self.assertIsNone(hil["closing_line_value"])
+        self.assertFalse(hil["clv_available"])
+        self.assertEqual(hil["clv_reason"], "same_market_side_line_pre_kickoff_closing_quote_unavailable")
+        # A mismatched observed timestamp makes the two-sided baseline unavailable.
+        stage["two_sided_quotes"][1]["observed_at"] = "2026-08-20T19:55:00+08:00"
+        second = {"bets": []}
+        made, _ = v2.evaluate_new_t5(second, fixture, stage)
+        self.assertFalse(next(row for row in made if row["market"] == "HIL")["market_implied_available"])
 
 
 if __name__ == "__main__":

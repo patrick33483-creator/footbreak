@@ -44,6 +44,7 @@ LEDGER = os.path.join(HERE, "sim_ledger.json")
 OUT = os.path.join(HERE, "accuracy.json")
 HISTORY_OUT = os.path.join(HERE, "accuracy_history.json")
 GRANULAR_RANKING_OUT = os.path.join(HERE, "granular_condition_ranking.json")
+PROBABILITY_EVIDENCE_OUT = os.environ.get("FOOTBREAK_PROBABILITY_EVIDENCE_PATH")
 PREDICTION_ARCHIVE = os.environ.get(
     "FOOTBREAK_PREDICTION_ARCHIVE_PATH",
     os.path.join(HERE, "prediction_history_archive.json"),
@@ -629,6 +630,17 @@ def run(fetch=True):
                 sp = sum(d["p"]) or 1.0
                 sc["_p3"] = [x / sp for x in d["p"]]
             sc["match_id"] = mid
+            # Keep only the immutable admission/settlement provenance needed
+            # by the separate probability-evidence builder.  No scoring pass
+            # may turn a post-hoc/backfill snapshot into a native sample.
+            sc.update({
+                "source_snapshot_at": st.get("source_snapshot_at") or st.get("ts"),
+                "post_hoc_backfill": bool(st.get("post_hoc_backfill")),
+                "post_hoc": bool(st.get("post_hoc")),
+                "backfill": bool(st.get("backfill")),
+                "exclude_from_simulation": bool(st.get("exclude_from_simulation")),
+                "result_recorded_at": now.isoformat(timespec="seconds"),
+            })
             rows.append(sc)
             learning_rows.append((st, sc))
             scored.append(sc)
@@ -727,6 +739,18 @@ def run(fetch=True):
     }
     out = {**full_out, "matches": matches[:200]}
     _atomic_json(HISTORY_OUT, full_out)
+    # This independent artifact is constructed from the persisted formally
+    # graded raw stage rows, not from the aggregate ranking.  It is bounded,
+    # deterministic for a fixed boundary, and atomically replaced.
+    from analysis.footbreak_probability_evidence import build as build_probability_evidence
+    evidence_out = PROBABILITY_EVIDENCE_OUT or os.path.join(
+        os.path.dirname(HISTORY_OUT), "footbreak_probability_evidence.json",
+    )
+    _atomic_json(evidence_out, build_probability_evidence(
+        matches,
+        generated_at=now.isoformat(timespec="seconds"),
+        source_boundary_at=now.isoformat(timespec="seconds"),
+    ))
     # The T-5 worker is deadline-bound and must never mine history itself.
     # Publish a settled-only discovery artifact during the ordinary accuracy
     # pass, using exactly the rows that are already persisted in history.

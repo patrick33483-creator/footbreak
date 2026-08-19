@@ -2942,7 +2942,13 @@ function renderChallenger() {
   const v2 = (typeof DATA !== 'undefined' && DATA && DATA.v2_challenger) || {};
   const v2Cutover = v2.cutover_at ? `政策截點 ${esc(v2.cutover_at)}` : '固定政策截點';
   const v2Activation = v2.activation_at ? `啟用界線 ${esc(v2.activation_at)}` : '未見啟用界線';
-  const v2Banner = `<div class="shadow-note condition-note" data-testid="note-crown-v2-challenger"><strong>v2挑戰者研究中</strong><span>非正式推介；只收晚於 ${v2Cutover} 與 ${v2Activation} 的首次原生賽前 T-5。v1 歷史失敗基準按 v2 啟用時唯讀封存，v2 不發 actionable Telegram、不用 Kelly、不會自動升格。</span></div>`;
+  const v2Markets = (((v2.stats || {}).by_market) || {});
+  const v2Rows = Object.keys(v2Markets).map((market) => {
+    const item = v2Markets[market] || {}, model = ((item.league_shrunk || {}).probability_metrics) || {};
+    const base = item.market_no_vig_baseline || {}, clv = item.clv || {};
+    return `<div class="condition-kpi"><span>${esc(marketLabel(market))} · 分層收縮</span><b class="mono">${numeric(model.unique_fixtures) == null ? '未有證據' : model.unique_fixtures} 場</b><small>ROI ${pc(model.roi, 2)} · Brier ${f3(model.brier)} · Log Loss ${f3(model.log_loss)} · 校準 ${pc(model.calibration, 1)} · 無水基準 ${base.available ? f3(base.brier) : '未有證據'} · CLV 覆蓋 ${pc(clv.coverage, 0)}</small></div>`;
+  }).join('');
+  const v2Banner = `<div class="shadow-note condition-note" data-testid="note-crown-v2-challenger"><strong>v2挑戰者研究中／非正式推介</strong><span>只收晚於 ${v2Cutover} 與 ${v2Activation} 的首次原生賽前 T-5。每市場按 unique fixture＋market 計；同市場雙邊、同盤口、同觀測時間及同來源先可得無水機率，否則顯示「未有證據」。v1 歷史失敗基準按 v2 啟用時唯讀封存，v2 不發 actionable Telegram、不用 Kelly、不會自動升格。</span>${v2Rows ? `<div class="condition-grid">${v2Rows}</div>` : '<span>前瞻樣本／CLV 尚未有證據，不會用 0 或賽後資料代替。</span>'}</div>`;
   if (!V) return;
   if (CHAL.state === 'idle' || (CHAL.state === 'loading' && !CHAL.payload)) {
     V.innerHTML = challengerHead(v2Banner) +

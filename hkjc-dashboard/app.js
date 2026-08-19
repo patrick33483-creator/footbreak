@@ -1584,6 +1584,7 @@ function renderLedger() {
   }</div>`;
   if (s.n_settled) h += `<div class="grid g2">${equityCard(s)}${resultCard(s)}</div>${marketCard(s)}`;
   h += oddsTierCard(s);
+  h += probabilityResearchCard(LED.probability_research || {});
   if (!bets.length) {
     h += `<div class="card"><div class="empty2">尚未有符合條件的獨立驗證注單。系統只在首次保存的原生 T-5 評估。</div></div>`;
   } else {
@@ -1593,6 +1594,42 @@ function renderLedger() {
       </tr></thead><tbody>${bets.map(conditionBetRow).join('')}</tbody></table></div></div>`;
   }
   V.innerHTML = h;
+}
+
+function probabilityResearchCard(research) {
+  const report = research.stats || {}, markets = report.markets || {}, artifact = research.evidence_artifact || {};
+  const coverage = artifact.coverage || {}, excluded = coverage.excluded || {};
+  const artifactStamp = artifact.generated_at ? hkStamp(artifact.generated_at) : '未有證據';
+  const exclusionText = Object.keys(excluded).length
+    ? Object.keys(excluded).map((key) => `${esc(key)} ${numeric(excluded[key]) || 0}`).join(' · ')
+    : '暫未有排除紀錄';
+  const cell = (m, variant) => {
+    const row = (m || {})[variant] || {}, gate = (m || {}).promotion || {};
+    const unavailable = row.available === false;
+    return `<tr><td>${variant === 'exact_only' ? '只用完全相同條件' : '分層收縮'}</td>
+      <td>${numeric(row.unique_fixtures) == null ? '未有證據' : row.unique_fixtures}</td>
+      <td>${pc(row.roi, 2)}</td><td>${row.wilson95 ? `${pc(row.wilson95[0], 1)}–${pc(row.wilson95[1], 1)}` : '未有證據'}</td>
+      <td>${pc(row.weighted_break_even, 1)}</td><td>${f3(row.brier)}</td><td>${f3(row.log_loss)}</td>
+      <td>${unavailable ? '未有證據' : (row.calibration == null ? '未有證據' : pc(row.calibration, 1))}</td>
+      <td>${unavailable ? '未有證據' : 'CLV 尚未有證據'}</td>
+      <td>${gate.blocked ? '已阻擋（需人手覆核）' : '只可人手覆核'}</td></tr>`;
+  };
+  const bodies = Object.keys(markets).map((market) => {
+    const m = markets[market];
+    return `<h3 class="sub-h">${esc(marketLabel(market))}</h3><div class="tbl-wrap"><table class="t"><thead><tr><th>變體</th><th>獨立賽事</th><th>ROI</th><th>Wilson 95%</th><th>加權損益兩平</th><th>Brier</th><th>Log Loss</th><th>校準</th><th>CLV 覆蓋</th><th>晉級</th></tr></thead><tbody>${cell(m,'exact_only')}${cell(m,'hierarchical_shrunk')}</tbody></table></div>`;
+  }).join('');
+  return `<section class="card history-note" data-testid="footbreak-probability-research">
+    <h2 class="card-h">機率驗證研究 <span class="sub">研究中／非正式推介</span></h2>
+    <p class="mx-note">只收啟用界線後首次原生賽前 T-5，按同一 fixture＋市場計樣本。exact-only 與分層經驗貝葉斯收縮共用同批賽事作前瞻 ablation；缺少凍結賽前證據一律顯示「未有證據」，不是 0。固定每注 HK$250、每場最多 HK$500；不用 Kelly、不發 Telegram、不自動升級，亦不會改寫獨立驗證倉、舊注單或盈虧。</p>
+    <p class="mx-note">保守晉級門檻：每市場至少 100 場（200 較佳）、ROI 正、Wilson 下限高於加權損益兩平 3 個百分點、Brier／Log Loss 不差過市場基準、CLV 覆蓋達門檻且平均 CLV 非負；任何必要指標未有證據即阻擋。</p>
+    <div class="rule-grid" data-testid="footbreak-probability-evidence">
+      <div><b>Evidence artifact</b><span>${artifact.available ? `已驗證 · ${esc(artifactStamp)} · 接納 ${numeric(coverage.accepted_rows) || 0} 行` : `未有證據：${esc(artifact.reason || 'artifact 不可用')}`}</span></div>
+      <div><b>來源／邊界</b><span>${artifact.available ? `${esc(artifact.source || '—')}；source boundary ${esc(hkStamp(artifact.source_boundary_at))}` : '不會用 ranking aggregate、舊 validation 或回補資料代替。'}</span></div>
+      <div><b>按市場 coverage</b><span>${artifact.available ? Object.keys(coverage.by_market || {}).map((k) => `${esc(marketLabel(k))} ${numeric(coverage.by_market[k]) || 0}`).join(' · ') || '未有證據' : '未有證據'}</span></div>
+      <div><b>排除原因（aggregate）</b><span>${exclusionText}</span></div>
+    </div>
+    ${bodies || '<div class="empty2">尚未有前瞻研究列；不會以舊驗證倉或回補資料代替。</div>'}
+  </section>`;
 }
 
 function conditionBetRow(b) {

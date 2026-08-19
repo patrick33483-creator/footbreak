@@ -23,8 +23,37 @@ OUT = os.environ.get(
     os.path.join(os.path.dirname(HERE), "hkjc-dashboard", "data.json"),
 )
 LEDGER_PATH = os.environ.get("FOOTBREAK_LEDGER_PATH", os.path.join(HERE, "sim_ledger.json"))
+PROBABILITY_EVIDENCE_PATH = os.environ.get(
+    "FOOTBREAK_PROBABILITY_EVIDENCE_PATH",
+    os.path.join(HERE, "footbreak_probability_evidence.json"),
+)
 HKT = dt.timezone(dt.timedelta(hours=8))
 DONE_MIN = 130.0        # 開賽後幾分鐘當完場,同 settle.py 一致
+
+
+def probability_evidence_public() -> dict:
+    """Expose aggregate evidence health only—never fixture/provider identities."""
+    try:
+        payload = json.loads(open(PROBABILITY_EVIDENCE_PATH, encoding="utf-8").read())
+    except (OSError, ValueError, TypeError):
+        return {"available": False, "reason": "artifact_missing_or_malformed"}
+    if not isinstance(payload, dict) or payload.get("schema_version") != 2 or payload.get("system") != "footbreak":
+        return {"available": False, "reason": "artifact_schema_or_system_invalid"}
+    coverage = payload.get("coverage")
+    if not isinstance(coverage, dict):
+        return {"available": False, "reason": "artifact_coverage_invalid"}
+    return {
+        "available": True, "generated_at": payload.get("generated_at"),
+        "source_boundary_at": payload.get("source_boundary_at"),
+        "source": payload.get("source"),
+        "max_rows": payload.get("max_rows"),
+        "coverage": {
+            "accepted_rows": coverage.get("accepted_rows"),
+            "by_market": coverage.get("by_market") or {},
+            "by_path": coverage.get("by_path") or {},
+            "excluded": coverage.get("excluded") or {},
+        },
+    }
 
 
 def dists(r):
@@ -677,6 +706,17 @@ def main():
             "historical_discovery_archive": (led.get("independent_validation") or {}).get("historical_discovery_archive") or {
                 "read_only": True, "legacy_bets_preserved": True, "legacy_stats_preserved": True,
             },
+        },
+        # A separate research projection.  It is deliberately not a bet
+        # portfolio, cannot alter v1 stats/PnL, and carries no notification
+        # eligibility into the browser.
+        "probability_research": {
+            "schema_version": (led.get("footbreak_probability_research") or {}).get("schema_version"),
+            "activation_at": (led.get("footbreak_probability_research") or {}).get("activation_at"),
+            "cutover_at": (led.get("footbreak_probability_research") or {}).get("cutover_at"),
+            "mode": (led.get("footbreak_probability_research") or {}).get("mode"),
+            "stats": (led.get("footbreak_probability_research") or {}).get("stats") or {},
+            "evidence_artifact": probability_evidence_public(),
         },
         "stats": {
             "portfolio": PORTFOLIO,

@@ -18,6 +18,9 @@ from typing import Any
 from analysis.independent_validation import (
     FIXED_STAKE, implied_break_even, portfolio_name, validation_bets, wilson95,
 )
+from analysis.probability_research import (
+    number as research_number, promotion_gate, score_rows, two_sided_no_vig,
+)
 from .common import HKT, iso_hkt, parse_time
 
 STRATEGY = "crown-independent-validation-v2-challenger"
@@ -153,6 +156,45 @@ def _valid_quote(stage: dict[str, Any], market: str) -> tuple[dict[str, Any] | N
     return item, "ok"
 
 
+def _two_sided_baseline(
+    stage: dict[str, Any], selected: dict[str, Any], fixture: str, market: str,
+) -> dict[str, Any]:
+    """Strictly require the matching two-sided observed Crown quote set."""
+    kickoff = stage.get("kickoff") or stage.get("kickoff_hkt")
+    quotes = []
+    for key in ("two_sided_quotes", "market_quotes", "market_predictions"):
+        value = stage.get(key)
+        if isinstance(value, list):
+            quotes.extend(item for item in value if isinstance(item, dict))
+    # The helper matches fixture/market/line/observed/source exactly.  The
+    # pre-kickoff validity check applies to both legs, not only selection.
+    valid = [quote for quote in quotes if _before(quote.get("observed_at"), kickoff)]
+    return two_sided_no_vig(selected, valid, fixture=fixture, market=market, kickoff=kickoff)
+
+
+def _closing_clv(stage: dict[str, Any], selected: dict[str, Any]) -> dict[str, Any]:
+    """Use only a persisted, same-side real pre-kickoff closing quote."""
+    kickoff = stage.get("kickoff") or stage.get("kickoff_hkt")
+    entries = stage.get("closing_quotes") or []
+    if not isinstance(entries, list):
+        return {"available": False, "reason": "closing_quote_evidence_unavailable", "value": None}
+    matching = [
+        item for item in entries if isinstance(item, dict)
+        and str(item.get("code") or item.get("market") or "").upper() == str(selected.get("code") or "").upper()
+        and str(item.get("side") or "").upper() == str(selected.get("side") or "").upper()
+        and str(item.get("line", item.get("condition"))) == str(selected.get("line", selected.get("condition")))
+        and str(item.get("quote_source") or item.get("source") or "") == str(selected.get("quote_source") or selected.get("source") or "")
+        and _before(item.get("observed_at"), kickoff)
+    ]
+    if len(matching) != 1:
+        return {"available": False, "reason": "same_market_side_line_pre_kickoff_closing_quote_unavailable", "value": None}
+    entry, closing = _number(selected.get("odds")), _number(matching[0].get("odds"))
+    if entry is None or closing is None or entry <= 1 or closing <= 1:
+        return {"available": False, "reason": "closing_quote_invalid", "value": None}
+    # Positive means the admitted price was longer than the verified close.
+    return {"available": True, "value": round(entry / closing - 1, 6), "observed_at": matching[0].get("observed_at")}
+
+
 def _frozen_league_probability(
     namespace: dict[str, Any], market: str, league: str, probability: float | None,
 ) -> tuple[float | None, str]:
@@ -234,6 +276,8 @@ def evaluate_new_t5(
         probability = _number(selected.get("probability"))
         if probability is not None and not 0 <= probability <= 1:
             probability = None
+        no_vig = _two_sided_baseline(stage, selected, fixture, market)
+        closing_clv = _closing_clv(stage, selected)
         league_probability, league_status = _frozen_league_probability(
             namespace, market, str(watch["league"]), probability,
         )
@@ -261,6 +305,20 @@ def evaluate_new_t5(
                 "actionable_telegram": False, "quote_source": selected.get("quote_source") or selected.get("source"),
                 "quote_observed_at": selected.get("observed_at"), "probability": value,
                 "probability_available": value is not None,
+                # The no-vig baseline is unavailable unless *both* Crown legs
+                # share fixture, market, line, observed_at and source.
+                "market_implied_probability": no_vig.get("value"),
+                "market_implied_available": bool(no_vig.get("available")),
+                "market_implied_reason": no_vig.get("reason"),
+                "model_probability": probability,
+                "shrunk_probability": league_probability if variant == "league_shrunk" else None,
+                "break_even_probability": round(1 / odds, 6),
+                "edge": round(value - 1 / odds, 6) if value is not None else None,
+                "brier": None, "log_loss": None,
+                "calibration_bucket": _calibration_bucket(value),
+                "closing_line_value": closing_clv.get("value"),
+                "clv_available": bool(closing_clv.get("available")),
+                "clv_reason": closing_clv.get("reason"),
                 "league_effect_status": league_status if variant == "league_shrunk" else "no_league_ablation",
                 "odds_lane": "1.80-1.89" if odds < 1.90 else "1.90-1.99",
                 "history": [{"ts": now, "action": "v2挑戰者研究列建立", "reason": "首次原生賽前 T-5；非正式推介，不發 Telegram"}],
@@ -298,9 +356,9 @@ def _probability_metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def _metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
-    fixture_rows: dict[str, dict[str, Any]] = {}
+    fixture_rows: dict[tuple[str, str], dict[str, Any]] = {}
     for row in rows:
-        fixture_rows.setdefault(str(row.get("match_id") or ""), row)
+        fixture_rows.setdefault((str(row.get("match_id") or ""), str(row.get("market") or "")), row)
     rows = list(fixture_rows.values())
     settled = [row for row in rows if row.get("status") == "SETTLED"]
     decided = [row for row in settled if row.get("result") != "Refunded"]
@@ -319,7 +377,10 @@ def _metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def _promotion(metrics: dict[str, Any], no_league: dict[str, Any], v1: dict[str, Any]) -> dict[str, Any]:
+def _promotion(
+    metrics: dict[str, Any], no_league: dict[str, Any], market_baseline: dict[str, Any],
+    *, clv_coverage: float | None, mean_clv: float | None, v1: dict[str, Any],
+) -> dict[str, Any]:
     reasons: list[str] = []
     if metrics["unique_fixtures"] < PROMOTION_MIN_FIXTURES:
         reasons.append("unique_fixture_sample_below_100")
@@ -335,26 +396,59 @@ def _promotion(metrics: dict[str, Any], no_league: dict[str, Any], v1: dict[str,
     elif (
         metrics["brier"] > no_league["brier"]
         or metrics["log_loss"] > no_league["log_loss"]
-        or metrics["calibration_gap"] > no_league["calibration_gap"]
     ):
         reasons.append("league_variant_not_noninferior_to_no_league")
     # v1 did not persist probability per bet in the current schema.  Never
     # invent it merely to make a promotion gate pass.
     if not v1.get("probability_metrics_available"):
         reasons.append("v1_champion_probability_metrics_unavailable")
+    # This shared gate also fail-closes when the strict market no-vig baseline
+    # or pre-kickoff CLV evidence is missing.  It never promotes automatically.
+    strict = promotion_gate(metrics, market_baseline, clv_coverage=clv_coverage, mean_clv=mean_clv)
+    reasons.extend(reason for reason in strict["reasons"] if reason not in reasons)
+    strict.update({"promotion_review_eligible": not reasons, "strong_sample_preferred": PROMOTION_STRONG_FIXTURES, "reasons": reasons})
+    return strict
+
+
+def _clv_metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    unique: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in rows:
+        unique.setdefault((str(row.get("match_id") or ""), str(row.get("market") or "")), row)
+    values = [_number(row.get("closing_line_value")) for row in unique.values() if row.get("clv_available")]
+    total = len(unique)
     return {
-        "promotion_review_eligible": not reasons,
-        "automatic_promotion": False,
-        "human_review_required": True,
-        "minimum_unique_fixtures": PROMOTION_MIN_FIXTURES,
-        "strong_sample_preferred": PROMOTION_STRONG_FIXTURES,
-        "reasons": reasons,
+        "coverage": round(len(values) / total, 6) if total else None,
+        "mean": round(sum(values) / len(values), 6) if values else None,
+        "available": bool(values),
     }
+
+
+def _calibration_bucket(probability: float | None) -> str | None:
+    if probability is None or probability < 0 or probability > 1:
+        return None
+    low = math.floor(probability * 10) / 10
+    return f"{low:.1f}-{min(1.0, low + .1):.1f}"
+
+
+def _persist_row_probability_metrics(rows: list[dict[str, Any]]) -> None:
+    """Persist outcome-dependent research metrics only after real settlement."""
+    for row in rows:
+        probability = _number(row.get("probability"))
+        row["calibration_bucket"] = _calibration_bucket(probability)
+        if row.get("status") != "SETTLED" or row.get("result") == "Refunded" or probability is None:
+            row["brier"] = None
+            row["log_loss"] = None
+            continue
+        target = 1.0 if row.get("result") in {"Won", "Half Won"} else 0.0
+        clipped = min(1 - 1e-12, max(1e-12, probability))
+        row["brier"] = round((probability - target) ** 2, 6)
+        row["log_loss"] = round(-(target * math.log(clipped) + (1 - target) * math.log(1 - clipped)), 6)
 
 
 def recompute(namespace: dict[str, Any], ledger: dict[str, Any]) -> dict[str, Any]:
     """Compute prospective-only v2 report; rows remain separate from v1."""
     rows = [row for row in namespace.get("research_bets") or [] if isinstance(row, dict)]
+    _persist_row_probability_metrics(rows)
     admission_boundary = _admission_boundary(namespace)
     v1_rows = validation_bets(ledger, "crown")
     v1_probability = all(_number(row.get("probability")) is not None for row in v1_rows if row.get("status") == "SETTLED")
@@ -365,9 +459,22 @@ def recompute(namespace: dict[str, Any], ledger: dict[str, Any]) -> dict[str, An
         no_league = [row for row in rows if row.get("market") == market and row.get("variant") == "no_league"]
         league_rows = [row for row in rows if row.get("market") == market and row.get("variant") == "league_shrunk"]
         base, pooled = _metrics(no_league), _metrics(league_rows)
+        # All three scorecards use the identical prospective fixture+market
+        # unit.  Missing two-sided quotes stay unavailable rather than being
+        # rebuilt from a one-sided price or from post-kickoff data.
+        no_league_model = score_rows(no_league, "model_probability")
+        league_shrunk_model = score_rows(league_rows, "shrunk_probability")
+        market_no_vig = score_rows(no_league, "market_implied_probability")
+        clv = _clv_metrics(league_rows)
         by_market[market] = {
-            "no_league_ablation": base, "league_shrunk": pooled,
-            "promotion": _promotion(pooled, base, v1),
+            "no_league_ablation": base | {"probability_metrics": no_league_model},
+            "league_shrunk": pooled | {"probability_metrics": league_shrunk_model},
+            "market_no_vig_baseline": market_no_vig,
+            "clv": clv,
+            "promotion": _promotion(
+                league_shrunk_model, no_league_model, market_no_vig,
+                clv_coverage=clv["coverage"], mean_clv=clv["mean"], v1=v1,
+            ),
         }
     groups: dict[tuple[str, str, str], list[dict[str, Any]]] = defaultdict(list)
     for row in rows:

@@ -19,6 +19,7 @@ from analysis.learning_store import LearningStore
 from condition_portfolio import (
     AUDIT_LIMIT, DECISION_STAGE, LOG_LIMIT, STARTING_BANKROLL, evaluate_new_t5,
 )
+from probability_research import evaluate_new_t5 as evaluate_probability_research
 from analysis.independent_validation import ensure_namespace, record_evaluation_diagnostics
 from settle import condition_bets, recompute
 
@@ -30,6 +31,7 @@ BET_STAGE = DECISION_STAGE
 MIN_BET_LEAD_SECONDS = 5   # 少過五秒，視為沒有可靠的賽前建立時間
 ACCURACY_HISTORY = os.path.join(HERE, "accuracy_history.json")
 GRANULAR_RANKING = os.path.join(HERE, "granular_condition_ranking.json")
+PROBABILITY_EVIDENCE = os.path.join(HERE, "footbreak_probability_evidence.json")
 PREDICTION_ERA = "2026-08-10-market-learning-v2"
 PREDICTION_SCHEMA_VERSION = 2
 
@@ -405,6 +407,15 @@ def sync(preds_file="predictions.json", *, send_notifications=True):
         created, audit = evaluate_new_t5(
             ledger, watch, history_path=Path(ACCURACY_HISTORY),
             ranking=cached_ranking if isinstance(cached_ranking, list) else None,
+        )
+        # This is intentionally a second, isolated append-only evaluation.
+        # It receives the same first native T-5 and frozen ranking but never
+        # appends a v1 bet, changes notification eligibility, or supplies a
+        # missing historical evidence set from a fallback/post-hoc source.
+        evaluate_probability_research(
+            ledger, watch,
+            ranking=cached_ranking if isinstance(cached_ranking, list) else None,
+            evidence_path=Path(PROBABILITY_EVIDENCE),
         )
         audit_rows = ledger["independent_validation"].setdefault("audit", [])
         audit_rows.extend({"ts": now, "match_id": match_id, **row} for row in audit)
