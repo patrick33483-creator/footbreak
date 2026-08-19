@@ -1,11 +1,13 @@
 [Unit]
-Description=足破 · 每晚 23:59(香港時間)全板首預
+Description=足破 · 每15分鐘(香港時間)全板增量首預
 
 [Timer]
-OnCalendar=*-*-* 23:59:00
-# 機器時區已經由 setup.sh 設成 Asia/Hong_Kong,所以呢度就係香港時間
+# 機器時區已經由 setup.sh 設成 Asia/Hong_Kong,所以呢度就係香港時間。
+# run_predict 的 sweep 模式只會處理 ledger 未有「首預」的 PREEVENT 場，
+# 因此每次都是完整 board discovery 的增量寫入。
+OnCalendar=*:0/15
 Persistent=true
-AccuracySec=30s
+AccuracySec=1s
 Unit=footbreak-sweep.service
 
 [Install]

@@ -293,12 +293,12 @@ def _condition_change(bet):
     )
 
 
-def sync(preds_file="predictions.json"):
+def sync(preds_file="predictions.json", *, send_notifications=True):
     """Persist prediction snapshots and evaluate only newly saved T-5 rows.
 
     The decision and audit are committed atomically with the new snapshot. A
-    replayed stage is merely refreshed as prediction evidence; it cannot
-    create, alter, or withdraw a condition simulation bet.
+    a duplicate stage is ignored entirely: stage evidence is immutable and it
+    cannot create, alter, or withdraw a condition simulation bet.
     """
     ledger = load()
     with open(os.path.join(HERE, preds_file), encoding="utf-8") as handle:
@@ -339,6 +339,14 @@ def sync(preds_file="predictions.json"):
             value = result.get("kickoff_hkt") if key == "kickoff" else result.get(key)
             if value is not None:
                 watch[key] = value
+        previous = next((row for row in watch["stages"] if row.get("stage") == stage), None)
+        if previous is not None:
+            notes.append(
+                f"{result.get('home') or '—'} v {result.get('away') or '—'} — "
+                f"{stage} 已保存；保留原始記錄"
+            )
+            continue
+
         snapshot = _snap(result, now)
         if stage == BET_STAGE:
             snapshot["t30_data_complete"] = any(
@@ -358,12 +366,6 @@ def sync(preds_file="predictions.json"):
                     f"{stage} 賽後重跑已隔離，沒有覆蓋賽前預測"
                 )
                 continue
-
-        previous = next((row for row in watch["stages"] if row.get("stage") == stage), None)
-        if previous is not None:
-            watch["stages"][watch["stages"].index(previous)] = snapshot
-            notes.append(f"{result.get('home') or '—'} v {result.get('away') or '—'} — {stage} 預測重跑，只更新記錄")
-            continue
 
         watch["stages"].append(snapshot)
         watch["stages"].sort(key=lambda row: STAGE_ORDER.get(row.get("stage"), 9))
@@ -416,20 +418,21 @@ def sync(preds_file="predictions.json"):
     # every tick. This is a durable outbox: if Telegram failed after a bet was
     # saved, the next idempotent tick retries it even though no new bet is
     # created on that replay.
-    if fresh_t30_events:
+    if send_notifications and fresh_t30_events:
         try:
             import notify
             notify.notify_fresh_granular_conditions(ledger, fresh_t30_events)
         except Exception as exc:
             notes.append(f"T-30 條件提示發送失敗（{type(exc).__name__}）；已保存預測。")
-    try:
-        import notify
-        notify.notify_pending_condition_bets(ledger)
-    except Exception as exc:
-        notes.append(
-            f"條件模擬注通知發送失敗（{type(exc).__name__}）；"
-            "已保存模擬注，下一輪會自動重試。"
-        )
+    if send_notifications:
+        try:
+            import notify
+            notify.notify_pending_condition_bets(ledger)
+        except Exception as exc:
+            notes.append(
+                f"條件模擬注通知發送失敗（{type(exc).__name__}）；"
+                "已保存模擬注，下一輪會自動重試。"
+            )
     return changes, notes, ledger
 
 
@@ -494,7 +497,7 @@ def export_watch_csv(led, path=None):
 
 if __name__ == "__main__":
     import sys
-    ch, notes, led = sync()
+    ch, notes, led = sync(send_notifications="--no-notify" not in sys.argv[1:])
     print("\n".join(notes) if notes else "無新階段預測")
     print()
     print("\n".join(ch) if ch else "無落注動作")

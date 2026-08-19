@@ -2,6 +2,9 @@ import tempfile
 import unittest
 import json
 import datetime as dt
+import os
+import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -20,6 +23,82 @@ class SchedulerPreemptionTests(unittest.TestCase):
             r"systemctl enable --now\s+\\?\s*"
             r"footbreak-tick\.timer footbreak-sweep\.timer footbreak-settle\.timer",
         )
+
+    def test_incremental_full_board_refresh_runs_every_fifteen_minutes_and_yields_to_tick(self):
+        timer = (ROOT / "deploy/systemd/footbreak-sweep.timer").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("OnCalendar=*:0/15", timer)
+        self.assertIn("Persistent=true", timer)
+        self.assertIn("AccuracySec=1s", timer)
+
+        service = (ROOT / "deploy/systemd/footbreak-sweep.service").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("ExecStart=/opt/footbreak/deploy/run.sh sweep", service)
+        self.assertIn(
+            "ExecCondition=/opt/footbreak/deploy/footbreak-tick-preempt.sh --yield-if-urgent",
+            service,
+        )
+        self.assertIn("ConditionPathExists=!/run/footbreak-t5-priority", service)
+        self.assertIn("SuccessExitStatus=75", service)
+        self.assertIn("TimeoutStartSec=900", service)
+
+        helper = (ROOT / "deploy/footbreak-tick-preempt.sh").read_text(encoding="utf-8")
+        self.assertIn('if [ "$MODE" = "--yield-if-urgent" ]; then', helper)
+        self.assertIn("full-board refresh yielded", helper)
+        self.assertIn("/usr/bin/systemctl stop footbreak-sweep.service footbreak-settle.service", helper)
+
+    def test_refresh_precondition_yields_for_urgent_or_unreadable_ledger(self):
+        helper = ROOT / "deploy/footbreak-tick-preempt.sh"
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = Path(tmp, "sim_ledger.json")
+            env = os.environ | {
+                "FOOTBREAK_LEDGER": str(ledger),
+                "FOOTBREAK_PYTHON": sys.executable,
+                "FOOTBREAK_PRIORITY_MARKER": str(Path(tmp, "priority")),
+            }
+            kickoff = (dt.datetime.now(record_picks.HKT) + dt.timedelta(minutes=8)).strftime(
+                "%Y-%m-%d %H:%M"
+            )
+            ledger.write_text(
+                json.dumps({"watch": {"urgent": {"kickoff": kickoff, "stages": []}}}),
+                encoding="utf-8",
+            )
+            urgent = subprocess.run(
+                ["bash", str(helper), "--yield-if-urgent"],
+                env=env,
+                text=True,
+                capture_output=True,
+            )
+            self.assertEqual(urgent.returncode, 1, urgent.stderr)
+            self.assertIn("full-board refresh yielded", urgent.stdout)
+
+            safe_kickoff = (
+                dt.datetime.now(record_picks.HKT) + dt.timedelta(minutes=90)
+            ).strftime("%Y-%m-%d %H:%M")
+            ledger.write_text(
+                json.dumps({"watch": {"safe": {"kickoff": safe_kickoff, "stages": []}}}),
+                encoding="utf-8",
+            )
+            safe = subprocess.run(
+                ["bash", str(helper), "--yield-if-urgent"],
+                env=env,
+                text=True,
+                capture_output=True,
+            )
+            self.assertEqual(safe.returncode, 0, safe.stderr)
+            self.assertIn("may run", safe.stdout)
+
+            ledger.unlink()
+            unreadable = subprocess.run(
+                ["bash", str(helper), "--yield-if-urgent"],
+                env=env,
+                text=True,
+                capture_output=True,
+            )
+            self.assertEqual(unreadable.returncode, 2)
+            self.assertIn("state unavailable", unreadable.stderr)
 
     def test_tick_service_conditionally_preempts_slow_jobs_before_running(self):
         unit = (ROOT / "deploy/systemd/footbreak-tick.service").read_text(

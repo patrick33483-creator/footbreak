@@ -49,7 +49,7 @@ def load_news_adj() -> dict:
 
 
 # 三個預測時點:
-#   首預  每晚 23:59 掃全板,一場只做一次
+#   首預  每15分鐘掃全板；只為新發現賽事做一次
 #   T-30  開賽前 30 分鐘(陣容/傷患已出,賠率漸定)
 #   T-5   開賽前 5 分鐘 —— 唯一落注時點
 SWEEP = "首預"
@@ -535,7 +535,7 @@ def failed_prediction(m: dict, stage: str, mins: float, reason: str,
 def main(match_ids=None, horizon_min=700, out="predictions.json",
          mode="due", force=False, stage_filter=None):
     """mode:
-         sweep — 掃全板,每場做一次「首預」(已做過就跳過)
+         sweep — 掃全板,每場做一次「首預」(已做過就跳過；可安全每15分鐘重跑)
          due   — 只做啱啱踏入 T-30 / T-5 窗口而又未做過嘅場
          all   — 唔理窗口,horizon 內全部重跑(除錯用)
     """

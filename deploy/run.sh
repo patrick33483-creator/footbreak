@@ -2,7 +2,7 @@
 # 足破 · 執行包裝器(systemd 同手動都用呢個)
 #   run.sh tick    密集跑啱啱踏入 T-30 / T-5 窗口嘅場
 #   run.sh t30     獨立 T-30 資料點
-#   run.sh sweep   每晚 23:59,全板首預
+#   run.sh sweep   每15分鐘全板增量首預
 #   run.sh settle  只結算
 set -euo pipefail
 

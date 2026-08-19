@@ -1,5 +1,5 @@
 [Unit]
-Description=足破 · 每晚全板首預
+Description=足破 · 每15分鐘全板增量首預
 After=network-online.target
 Wants=network-online.target
 OnFailure=footbreak-incident-alert@%n.service
@@ -8,8 +8,15 @@ ConditionPathExists=!/run/footbreak-t5-priority
 [Service]
 Type=oneshot
 WorkingDirectory=/opt/footbreak/system
+# 在攞 shared lock 前重查一次到期隊列。若 T-30 / T-5 已到期就避讓本輪，
+# 絕不讓全板發現工作佔住臨場通道。
+# A non-zero ExecCondition skips this low-priority refresh.  The helper fails
+# closed when the ledger cannot be read, so an urgent T-30/T-5 tick is never
+# delayed by the full-board scan.
+ExecCondition=/opt/footbreak/deploy/footbreak-tick-preempt.sh --yield-if-urgent
 ExecStart=/opt/footbreak/deploy/run.sh sweep
-TimeoutStartSec=3600
+SuccessExitStatus=75
+TimeoutStartSec=900
 TimeoutStopSec=3
 Nice=10
 

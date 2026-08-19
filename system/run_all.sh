@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 足破 · 一鍵流程
-#   ./run_all.sh sweep   —— 每晚 23:59:掃馬會全板,每場做一次「首預」
+#   ./run_all.sh sweep   —— 每15分鐘掃馬會全板,只為新場建立「首預」
 #   ./run_all.sh tick    —— 一條到期隊列，T-5 優先，再做 T-30
 #   ./run_all.sh t30     —— 舊相容入口，只做 T-30
 #   ./run_all.sh settle  —— 淨係結算
@@ -22,13 +22,19 @@ esac
 
 if [ "$MODE" != "settle" ]; then
   echo "--- 寫入模擬倉 ---"
-  python3 record_picks.py
+  # Full-board discovery only appends new 首預 rows.  It intentionally has no
+  # Telegram side effect; timed tick remains the sole notification path.
+  if [ "$MODE" = "sweep" ]; then
+    python3 record_picks.py --no-notify
+  else
+    python3 record_picks.py
+  fi
 
 fi
 
-# 臨場 tick 必須保持輕量；結算與準繩度由獨立 timer 處理，唔可以
-# 長時間佔住 T-30/T-5 執行鎖。晚間 sweep 仍順手維護一次。
-if [ "$MODE" != "tick" ] && [ "$MODE" != "t30" ]; then
+# 臨場 tick 同全板發現都必須保持輕量；結算與準繩度由獨立 timer 處理，
+# 唔可以令每15分鐘 discovery 佔住 T-30/T-5 通道。
+if [ "$MODE" = "settle" ]; then
   echo "--- 賽果結算 ---"
   python3 settle.py
 

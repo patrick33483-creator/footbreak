@@ -15,8 +15,8 @@ HKJC 香港賽馬會足球賽事三階段預測系統 —— 自主 host 版。
 │ 本機 / PPLX │ ────────▶ │  GitHub  │ ─────▶ │  DigitalOcean droplet  │
 └─────────────┘           │  Actions │        │                        │
                           └──────────┘        │  systemd timer         │
-                            語法檢查           │   ├ tick   每 2 分鐘   │
-                                              │   └ sweep  每晚 23:59  │
+                            語法檢查           │   ├ tick   每分鐘／30秒 │
+                                              │   └ sweep  每15分鐘增量 │
                                               │  nginx → 儀表板        │
                                               └───────────┬────────────┘
                                                           │
@@ -30,7 +30,7 @@ HKJC 香港賽馬會足球賽事三階段預測系統 —— 自主 host 版。
 
 | 階段 | 時點 | 做咩 | 會唔會落注 |
 |---|---|---|---|
-| 首預 | 每晚 23:59 全板掃描 | 建立基準預測 | ❌ |
+| 首預 | 每15分鐘全板掃描（只加新場） | 建立基準預測 | ❌ |
 | T-30 | 開賽前 20–40 分鐘 | 更新預測,記錄變化 | ❌ |
 | T-5 | 開賽前 1–10 分鐘 | 尾盤賠率,最終決定 | ✅ **只有呢度** |
 
@@ -71,7 +71,8 @@ sudo /opt/footbreak/deploy/run.sh tick
 ```
 
 手動驗證成功後，先執行
-`sudo systemctl enable --now footbreak-tick.timer footbreak-sweep.timer`。
+`sudo systemctl enable --now footbreak-tick.timer footbreak-sweep.timer`。sweep 會每15分鐘讀取完整 HKJC
+板面，只為新增賽事建立一次首預，不會重寫任何既有階段或發送通知。
 儀表板喺 `http://<droplet-IP>:8081/`，登入名稱係 `footbreak`，
 密碼保存於 `/root/footbreak-dashboard-password.txt`。
 
@@ -122,7 +123,7 @@ journalctl -u footbreak-sweep --since today
 
 # 手動跑
 sudo /opt/footbreak/deploy/run.sh tick     # 檢查有冇場到 T-30 / T-5
-sudo /opt/footbreak/deploy/run.sh sweep    # 全板首預
+sudo /opt/footbreak/deploy/run.sh sweep    # 全板增量首預（新場）
 sudo /opt/footbreak/deploy/run.sh settle   # 只結算
 
 # 暫停 / 恢復落注
