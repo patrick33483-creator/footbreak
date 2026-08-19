@@ -16,6 +16,7 @@ from analysis.independent_validation import (
     validation_bets,
 )
 import condition_portfolio as footbreak
+from analysis.granular_conditions import mine
 
 HKT = timezone(timedelta(hours=8))
 
@@ -212,5 +213,32 @@ class IndependentValidationTests(unittest.TestCase):
         self.assertEqual(audit[0]['reason'], 'no_granular_match')
         public = public_diagnostics(ledger['independent_validation'])
         self.assertEqual(public['counts']['no_granular_match'], 1)
+
+    def test_real_persisted_ranking_and_native_t5_match_exactly_once(self):
+        """Regression for the raw-history/dashboard cache schema split."""
+        historical = []
+        for index in range(20):
+            kickoff = datetime(2026, 3, 1, 20, tzinfo=HKT) + timedelta(days=index)
+            historical.append({
+                "match_id": f"rank-{index}", "stage": "T-5",
+                "kickoff": kickoff.isoformat(),
+                "predicted_at": (kickoff - timedelta(minutes=5)).isoformat(),
+                "market_grades": [{
+                    "code": "HDC", "side": "H", "line": -.25, "odds": 1.80,
+                    "grade_status": "GRADED", "hit": True,
+                }],
+            })
+        ranking = mine(historical, system="footbreak")["ranking"]
+        ledger = {"bets": []}
+        made, audit = footbreak.evaluate_new_t5(ledger, watch(), None, ranking=ranking)
+        self.assertEqual(len(made), 1)
+        self.assertEqual(made[0]["selected_side"], "H")
+        self.assertEqual(made[0]["selected_line"], -.25)
+        self.assertEqual(next(row for row in audit if row["status"] == "CREATED")["reason"],
+                         "independent_validation_candidate_frozen")
+        ledger["bets"].extend(made)
+        repeated, repeat_audit = footbreak.evaluate_new_t5(ledger, watch(), None, ranking=ranking)
+        self.assertEqual(repeated, [])
+        self.assertIn("idempotent_existing_market", {row["reason"] for row in repeat_audit})
 
 if __name__ == '__main__': unittest.main()

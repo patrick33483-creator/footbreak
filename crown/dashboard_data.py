@@ -34,6 +34,9 @@ def _public_ledger(ledger: dict[str, Any]) -> tuple[dict[str, Any], list[dict[st
     for key in (
         "shadow_bets", "shadow_stats", "shadow_comparison",
         "handicap_world", "handicap_world_audit", "handicap_world_stats",
+        # v2 has a dedicated top-level dashboard contract.  Do not let its
+        # research-only rows appear inside the historical v1 ledger projection.
+        "crown_v2_challenger",
     ):
         dashboard_ledger.pop(key, None)
     return dashboard_ledger, active_condition_bets
@@ -100,6 +103,11 @@ def write_tick_dashboard_projection(
             payload.get("prediction_history")
             if isinstance(payload.get("prediction_history"), dict)
             else {"rows": [], "stats": {}}
+        ),
+        "v2_challenger": (
+            current_ledger.get("crown_v2_challenger")
+            if isinstance(current_ledger.get("crown_v2_challenger"), dict)
+            else None
         ),
         "stage_completeness": stage_completeness(projected_matches, current_ledger),
     })
@@ -272,6 +280,7 @@ def build(config: Settings) -> dict[str, Any]:
     # portfolio keys may survive in old state until an explicit reset, but
     # cannot become dashboard data again.
     dashboard_ledger, active_condition_bets = _public_ledger(ledger)
+    challenger_v2 = ledger.get("crown_v2_challenger")
     return {
         "schema_version": "crown-dashboard-v2", "generated_at": iso_hkt(), "title": "足破 · 皇冠賽事預測終端",
         "summary": _summary(matches, active_condition_bets),
@@ -287,6 +296,7 @@ def build(config: Settings) -> dict[str, Any]:
                                       "CHL": "selected valid HKJC/PinnAPI-backed snapshot"},
                           "stages": ["首預", "T-30", "T-5"], "decision_stage": "T-5", "minimum_odds": 1.01},
         "matches": matches, "ledger": dashboard_ledger,
+        "v2_challenger": challenger_v2 if isinstance(challenger_v2, dict) else None,
         "prediction_history": prediction_history,
         "stage_completeness": stage_completeness(matches, ledger),
     }

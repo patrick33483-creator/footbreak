@@ -344,6 +344,123 @@ def _stable_signature(item: dict[str, Any]) -> str:
     return str(key or item.get("label") or "")
 
 
+_KEY_AXIS_ALIASES = {
+    "stage": "decision",
+    "decision_stage": "decision",
+    "observed_path": "path",
+    "odds_tier": "tier",
+    "line_bucket": "bucket",
+    "role": "role",
+    "direction": "direction",
+    "movement": "movement",
+    "odds_trajectory": "tier_path",
+    "tier_path": "tier_path",
+}
+
+
+def _ranking_axis_map(candidate: dict[str, Any]) -> dict[str, str] | None:
+    """Read an exact legacy/current ranking definition without widening it.
+
+    Older persisted rankings stored some matcher axes only in ``key`` while
+    newer payloads also expose named fields.  This adapter accepts those
+    spelling changes *only when every supplied value agrees*.  It never
+    infers an absent direction, line bucket, market, stage, or system.
+    """
+    values: dict[str, str] = {}
+    raw_key = candidate.get("key")
+    if raw_key is not None:
+        if not isinstance(raw_key, list):
+            return None
+        for raw in raw_key:
+            if not isinstance(raw, str) or "=" not in raw:
+                return None
+            name, value = raw.split("=", 1)
+            name = _KEY_AXIS_ALIASES.get(name.strip(), name.strip())
+            value = value.strip()
+            if not name or not value or (name in values and values[name] != value):
+                return None
+            values[name] = value
+    for source, axis in (
+        ("system", "system"), ("market", "market"),
+        ("decision_stage", "decision"), ("stage", "decision"),
+        ("observed_path", "path"), ("path", "path"),
+        ("odds_tier", "tier"), ("line_bucket", "bucket"),
+        ("role", "role"), ("direction", "direction"),
+        ("movement", "movement"), ("odds_trajectory", "tier_path"),
+        ("tier_path", "tier_path"),
+    ):
+        value = candidate.get(source)
+        if value in (None, ""):
+            continue
+        value = str(value).strip()
+        if not value or (axis in values and values[axis] != value):
+            return None
+        values[axis] = value
+    return values
+
+
+def canonical_ranking(
+    ranking: Iterable[dict[str, Any]], *, system: str, decision_stage: str,
+) -> list[dict[str, Any]]:
+    """Return schema-compatible rankings with an exact canonical matcher key.
+
+    Compatibility is deliberately narrow: aliases such as ``tier`` /
+    ``odds_tier`` are normalized, but missing axes are not filled from a live
+    quote.  A malformed or cross-system record is dropped, so callers remain
+    fail-closed and cannot accidentally match another market or direction.
+    """
+    normalized: list[dict[str, Any]] = []
+    # A portfolio admission must carry the complete immutable definition.  A
+    # broad market/tier cohort is useful for a dashboard, but it cannot stand
+    # in for a direction-and-line-specific validation condition.
+    required = {
+        "system", "market", "path", "decision", "tier",
+        "direction", "role", "bucket",
+    }
+    optional = ("direction", "role", "bucket", "movement", "tier_path")
+    for candidate in ranking:
+        if not isinstance(candidate, dict):
+            continue
+        axes = _ranking_axis_map(candidate)
+        if axes is None or not required.issubset(axes):
+            continue
+        if (
+            axes["system"] != system
+            or axes["market"] not in MARKETS
+            or axes["decision"] != decision_stage
+            or axes["path"].split("→")[-1] != decision_stage
+        ):
+            continue
+        key_parts = [
+            ("system", axes["system"]), ("market", axes["market"]),
+            ("path", axes["path"]), ("decision", axes["decision"]),
+            ("tier", axes["tier"]),
+        ]
+        for name in optional:
+            if name in axes:
+                key_parts.append((name, axes[name]))
+        canonical_key = tuple(f"{name}={value}" for name, value in key_parts)
+        # Exact key agreement is required when a stored key was supplied.
+        # The emitted descriptor has a stable axis ordering, therefore this
+        # detects incompatible legacy schemas rather than guessing.
+        original_key = candidate.get("key")
+        if isinstance(original_key, list) and tuple(
+            f"{_KEY_AXIS_ALIASES.get(str(raw).split('=', 1)[0], str(raw).split('=', 1)[0])}="
+            f"{str(raw).split('=', 1)[1]}"
+            for raw in original_key if isinstance(raw, str) and "=" in raw
+        ) != canonical_key:
+            continue
+        normalized.append(candidate | {
+            "system": system,
+            "market": axes["market"],
+            "decision_stage": decision_stage,
+            "observed_path": axes["path"],
+            "odds_tier": axes["tier"],
+            "key": list(canonical_key),
+        })
+    return normalized
+
+
 def conservative_rank_key(item: dict[str, Any]) -> tuple[Any, ...]:
     """Rank discovery candidates without using raw accuracy as a winner.
 
@@ -462,9 +579,10 @@ def match_upcoming(
     if maximum is None:
         return {}
     allowed = {
-        tuple(item.get("key") or []): item
-        for item in ranking
-        if item.get("decision_stage") == decision_stage
+        tuple(item["key"]): item
+        for item in canonical_ranking(
+            ranking, system=system, decision_stage=decision_stage,
+        )
     }
     matches: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for panel in canonical_panels(rows, settled_only=False):

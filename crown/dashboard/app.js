@@ -2936,22 +2936,29 @@ function challengerMarketCard(market, test) {
 
 function renderChallenger() {
   const V = $('#viewChal');
+  // The standalone Challenger UI smoke test evaluates this renderer without
+  // bootstrapping the dashboard data object.  v2 is additive UI context only;
+  // it must never prevent the legacy challenger report from rendering.
+  const v2 = (typeof DATA !== 'undefined' && DATA && DATA.v2_challenger) || {};
+  const v2Cutover = v2.cutover_at ? `政策截點 ${esc(v2.cutover_at)}` : '固定政策截點';
+  const v2Activation = v2.activation_at ? `啟用界線 ${esc(v2.activation_at)}` : '未見啟用界線';
+  const v2Banner = `<div class="shadow-note condition-note" data-testid="note-crown-v2-challenger"><strong>v2挑戰者研究中</strong><span>非正式推介；只收晚於 ${v2Cutover} 與 ${v2Activation} 的首次原生賽前 T-5。v1 歷史失敗基準按 v2 啟用時唯讀封存，v2 不發 actionable Telegram、不用 Kelly、不會自動升格。</span></div>`;
   if (!V) return;
   if (CHAL.state === 'idle' || (CHAL.state === 'loading' && !CHAL.payload)) {
-    V.innerHTML = challengerHead() +
+    V.innerHTML = challengerHead(v2Banner) +
       `<div class="card"><div class="empty2" data-testid="state-challenger-loading">正在讀取挑戰模型報告…</div></div>`;
     challengerBind();
     return;
   }
   if (CHAL.state === 'missing') {
-    V.innerHTML = challengerHead() +
+    V.innerHTML = challengerHead(v2Banner) +
       `<div class="card"><div class="empty2" data-testid="state-challenger-missing">
         報告未生成。挑戰模型每日 12:20 HKT 先評估一次,第一次評估之前唔會有檔案。</div></div>`;
     challengerBind();
     return;
   }
   if (CHAL.state === 'error') {
-    V.innerHTML = challengerHead() +
+    V.innerHTML = challengerHead(v2Banner) +
       `<div class="card"><div class="empty2 bad-txt" data-testid="state-challenger-error">
         報告讀取失敗:${esc(CHAL.error || '未知錯誤')}。可以㩒「重新讀取」再試。</div></div>`;
     challengerBind();
@@ -2984,7 +2991,7 @@ function renderChallenger() {
     : `<div class="card chal-filter-empty" data-testid="state-challenger-filter-empty">
         <div class="empty2"><b>暫時冇模型等待覆核</b><span>新候選通過全部安全門檻後,會自動出現喺呢個篩選。</span></div>
       </div>`;
-  V.innerHTML = challengerHead(banner) +
+  V.innerHTML = challengerHead(banner + v2Banner) +
     challengerFilterControls(tests) + cards;
   challengerBind();
 }

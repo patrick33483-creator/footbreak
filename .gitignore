@@ -7,6 +7,7 @@ system/notify_state.json
 system/predictions.json
 system/accuracy.json
 system/accuracy_history.json
+system/granular_condition_ranking.json
 system/prediction_history_archive.json
 system/hk_snapshots.json
 system/picks_all.json

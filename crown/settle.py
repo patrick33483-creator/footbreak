@@ -17,6 +17,7 @@ from .common import (
 from .config import Settings
 from .hkjc import fetch_official_settlement_bundle
 from .ledger import condition_bets, recompute_stats
+from .challenger_v2 import NAMESPACE as V2_NAMESPACE, research_bets
 from .lines import pnl, settle_handicap, settle_total
 from .matching import Event, canonical_league_key, canonical_team_key, match_event
 from .pinnapi import PinnapiClient
@@ -293,6 +294,11 @@ def _commit_settlement(
         for bet in current.get("bets") or []
         if isinstance(bet, dict)
     }
+    current_v2 = current.get(V2_NAMESPACE)
+    current_v2_by_id = {
+        str(bet.get("research_id") or ""): bet
+        for bet in research_bets(current)
+    } if isinstance(current_v2, dict) else {}
     owned = (
         "status", "result", "pnl", "score", "settled_at",
         "settlement_source", "void_reason", "last_settlement_attempt_at",
@@ -311,6 +317,22 @@ def _commit_settlement(
                 current_bet[key] = staged_bet[key]
             else:
                 current_bet.pop(key, None)
+    # v2 research rows use their own namespace and own dedupe IDs.  Apply the
+    # same verified result only to the matching shadow row; v1 rows and stats
+    # remain untouched by this branch.
+    for staged_bet in research_bets(staged):
+        bet_id = str(staged_bet.get("research_id") or "")
+        original = before.get(bet_id)
+        current_bet = current_v2_by_id.get(bet_id)
+        if not original or not current_bet or current_bet.get("status") != "PENDING":
+            continue
+        if all(staged_bet.get(key) == original.get(key) for key in owned):
+            continue
+        for key in owned:
+            if key in staged_bet:
+                current_bet[key] = staged_bet[key]
+            else:
+                current_bet.pop(key, None)
     recompute_stats(current, config)
     save_ledger(config, current)
 
@@ -318,20 +340,31 @@ def _commit_settlement(
 def _settle_due_locked(config: Settings) -> dict[str, Any]:
     """Perform one settlement pass; caller holds settlement_lock only."""
     ledger = load_ledger(config)
+    official_bets = condition_bets(ledger)
+    v2_bets = research_bets(ledger)
     before = {
         str(bet.get("bet_id") or ""): copy.deepcopy(bet)
-        for bet in condition_bets(ledger)
+        for bet in official_bets
         if bet.get("bet_id")
     }
+    before.update({
+        str(bet.get("research_id") or ""): copy.deepcopy(bet)
+        for bet in v2_bets if bet.get("research_id")
+    })
     now = datetime.now(HKT)
-    official_bets = condition_bets(ledger)
     official_due = [
         bet for bet in official_bets
         if bet.get("status") == "PENDING"
         and parse_time(bet.get("kickoff"))
         and (now - parse_time(bet["kickoff"])).total_seconds() >= SETTLE_AFTER_SECONDS
     ]
-    due = official_due
+    v2_due = [
+        bet for bet in v2_bets
+        if bet.get("status") == "PENDING"
+        and parse_time(bet.get("kickoff"))
+        and (now - parse_time(bet["kickoff"])).total_seconds() >= SETTLE_AFTER_SECONDS
+    ]
+    due = official_due + v2_due
     if not due:
         # Retain the historical cheap statistics refresh, but do it as a
         # fresh short commit so a concurrently written T-5 is never lost.
@@ -340,7 +373,7 @@ def _settle_due_locked(config: Settings) -> dict[str, Any]:
             recompute_stats(current, config)
             save_ledger(config, current)
         return {"ok": True, "settled": 0, "voided": 0,
-                "pending": sum(b.get("status") == "PENDING" for b in official_bets)}
+                "pending": sum(b.get("status") == "PENDING" for b in official_bets + v2_bets)}
     cache: dict[str, Any] = {}
     standard_due = [bet for bet in due if bet.get("code") != "CHL"]
     try:
@@ -487,7 +520,7 @@ def _settle_due_locked(config: Settings) -> dict[str, Any]:
     with state_lock(config):
         _commit_settlement(config, before, ledger)
     return {"ok": True, "settled": counters["settled"], "voided": counters["voided"],
-            "pending": sum(b.get("status") == "PENDING" for b in official_bets)}
+            "pending": sum(b.get("status") == "PENDING" for b in official_bets + v2_bets)}
 
 
 def settle_due(config: Settings) -> dict[str, Any]:

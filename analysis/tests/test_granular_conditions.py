@@ -7,6 +7,7 @@ from analysis.granular_conditions import (
     _badge,
     _descriptor,
     _role,
+    canonical_ranking,
     canonical_panels,
     match_upcoming,
     mine,
@@ -113,7 +114,7 @@ class GranularConditionsTests(unittest.TestCase):
         self.assertEqual({item["odds_tier"] for item in ranking}, {"≥1.70", "<1.70"})
 
         upcoming = []
-        for stage, side in (("首預", "H"), ("T-30", "A"), ("T-5", "H")):
+        for stage, side in (("首預", "H"), ("T-30", "H"), ("T-5", "H")):
             kickoff = datetime(2099, 8, 1, 20, tzinfo=HKT)
             upcoming.append({
                 **row("future", stage, side=side, kickoff=kickoff,
@@ -141,6 +142,30 @@ class GranularConditionsTests(unittest.TestCase):
             ])
         ranking = mine(settled, system="crown")["ranking"]
         self.assertEqual({item["market"] for item in ranking}, {"HDC", "HIL"})
+
+    def test_persisted_ranking_schema_is_canonical_and_never_widens_a_match(self):
+        settled = [
+            row(f"shape-{index}", "T-5", side="H", line=-.25, odds=1.8,
+                hit=True, kickoff=datetime(2026, 9, 1, 20, tzinfo=HKT) + timedelta(days=index))
+            for index in range(20)
+        ]
+        ranking = mine(settled, system="footbreak")["ranking"]
+        # The old/current named-field spellings normalize only when the full
+        # key still proves market, direction, role, bucket, tier, path, stage
+        # and system.  This is compatibility, not fuzzy matching.
+        detailed = next(item for item in ranking if "role=" in "|".join(item["key"]))
+        legacy = dict(detailed)
+        legacy["key"] = [
+            value.replace("decision=", "stage=").replace("tier=", "odds_tier=").replace("bucket=", "line_bucket=")
+            for value in detailed["key"]
+        ]
+        legacy.pop("decision_stage")
+        legacy.pop("odds_tier")
+        self.assertEqual(len(canonical_ranking([legacy], system="footbreak", decision_stage="T-5")), 1)
+
+        incomplete = dict(legacy)
+        incomplete["key"] = [value for value in legacy["key"] if not value.startswith("direction=")]
+        self.assertEqual(canonical_ranking([incomplete], system="footbreak", decision_stage="T-5"), [])
 
 
 if __name__ == "__main__":

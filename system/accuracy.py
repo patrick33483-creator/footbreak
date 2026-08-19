@@ -43,6 +43,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 LEDGER = os.path.join(HERE, "sim_ledger.json")
 OUT = os.path.join(HERE, "accuracy.json")
 HISTORY_OUT = os.path.join(HERE, "accuracy_history.json")
+GRANULAR_RANKING_OUT = os.path.join(HERE, "granular_condition_ranking.json")
 PREDICTION_ARCHIVE = os.environ.get(
     "FOOTBREAK_PREDICTION_ARCHIVE_PATH",
     os.path.join(HERE, "prediction_history_archive.json"),
@@ -726,6 +727,27 @@ def run(fetch=True):
     }
     out = {**full_out, "matches": matches[:200]}
     _atomic_json(HISTORY_OUT, full_out)
+    # The T-5 worker is deadline-bound and must never mine history itself.
+    # Publish a settled-only discovery artifact during the ordinary accuracy
+    # pass, using exactly the rows that are already persisted in history.
+    from analysis.granular_conditions import mine
+    ranking_rows = [
+        {
+            "match_id": match.get("match_id"),
+            "kickoff": match.get("kickoff"),
+            "stage": stage.get("stage"),
+            "predicted_at": stage.get("predicted_at") or stage.get("ts"),
+            "market_grades": stage.get("market_grades") or [],
+        }
+        for match in matches if isinstance(match, dict)
+        for stage in (match.get("stages") or []) if isinstance(stage, dict)
+    ]
+    _atomic_json(GRANULAR_RANKING_OUT, {
+        "schema_version": 1,
+        "system": "footbreak",
+        "generated_at": now.isoformat(timespec="seconds"),
+        "ranking": mine(ranking_rows, system="footbreak")["ranking"],
+    })
     _atomic_json(OUT, out)
     return out
 

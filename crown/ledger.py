@@ -11,6 +11,7 @@ from analysis.learning_store import LearningStore
 from .common import HKT, iso_hkt, parse_time, read_json
 from .config import Settings
 from .condition_portfolio import FIXED_STAKE, STARTING_BANKROLL, STRATEGY, evaluate_new_t5
+from . import challenger_v2
 from analysis.independent_validation import (
     ensure_namespace,
     portfolio_name,
@@ -316,6 +317,9 @@ def sync_prediction(ledger: dict[str, Any], prediction: dict[str, Any], config: 
     # The cutover only appends this namespace.  Legacy bet/stat rows remain
     # untouched and cannot enter the active validation flow.
     ensure_namespace(ledger, "crown")
+    # v2 is a separate research namespace. Its creation and recomputation do
+    # not touch v1 bets, conditions, stats, or dedupe keys.
+    challenger_v2.ensure_namespace(ledger)
     stage = prediction.get("stage")
     if stage not in STAGES:
         return []
@@ -368,6 +372,7 @@ def sync_prediction(ledger: dict[str, Any], prediction: dict[str, Any], config: 
     # pre-kickoff T-5 may create a bet.  A later quote refresh can enrich the
     # prediction record but is a replay, never a second admission chance.
     if stage != "T-5" or existing is not None:
+        challenger_v2.recompute(ledger[challenger_v2.NAMESPACE], ledger)
         return []
     history = read_json(config.state_dir / "prediction_history.json", {})
     cached_ranking = (
@@ -383,6 +388,10 @@ def sync_prediction(ledger: dict[str, Any], prediction: dict[str, Any], config: 
     audit_rows.extend([{"match_id": match_id, **item} for item in audit])
     ledger["independent_validation"]["audit"] = audit_rows[-1600:]
     ledger["bets"].extend(created)
+    # The v2 challenger sees the same newly persisted native T-5 but records
+    # only isolated research rows. It does not append to ``ledger['bets']``.
+    challenger_v2.evaluate_new_t5(ledger, watch, snapshot)
+    challenger_v2.recompute(ledger[challenger_v2.NAMESPACE], ledger)
     if created:
         ledger.setdefault("log", []).extend([
             {"ts": bet["created_at"], "action": "獨立驗證注建立", "bet_id": bet["bet_id"],
@@ -457,6 +466,9 @@ def recompute_stats(ledger: dict[str, Any], config: Settings) -> dict[str, Any]:
     del config
     ledger.setdefault("bets", [])
     base = recompute_namespace(ledger, "crown")
+    challenger = ledger.get(challenger_v2.NAMESPACE)
+    if isinstance(challenger, dict):
+        challenger_v2.recompute(challenger, ledger)
     base["entry_rule"] = (
         "首次持久化原生賽前 T-5；歷史發現期 decided >=20、命中率 >60%；"
         "HK$250 每注、每場最多兩市場／HK$500"

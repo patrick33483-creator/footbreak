@@ -29,6 +29,7 @@ BANKROLL = STARTING_BANKROLL
 BET_STAGE = DECISION_STAGE
 MIN_BET_LEAD_SECONDS = 5   # 少過五秒，視為沒有可靠的賽前建立時間
 ACCURACY_HISTORY = os.path.join(HERE, "accuracy_history.json")
+GRANULAR_RANKING = os.path.join(HERE, "granular_condition_ranking.json")
 PREDICTION_ERA = "2026-08-10-market-learning-v2"
 PREDICTION_SCHEMA_VERSION = 2
 
@@ -386,12 +387,20 @@ def sync(preds_file="predictions.json", *, send_notifications=True):
                 )
             continue
         try:
-            history_payload = json.loads(Path(ACCURACY_HISTORY).read_text(encoding="utf-8"))
+            ranking_payload = json.loads(Path(GRANULAR_RANKING).read_text(encoding="utf-8"))
         except (OSError, ValueError):
-            history_payload = {}
+            ranking_payload = {}
+        # ``accuracy_history`` intentionally contains raw settled outcomes,
+        # not dashboard statistics.  Reading a dashboard-only path from it
+        # made every native T-5 look like a granular mismatch.  This dedicated
+        # artifact is written only by the settled accuracy pass; absence stays
+        # fail-closed.
         cached_ranking = (
-            ((history_payload.get("stats") or {}).get("granular_conditions") or {}).get("ranking")
-            if isinstance(history_payload, dict) else None
+            ranking_payload.get("ranking")
+            if isinstance(ranking_payload, dict)
+            and ranking_payload.get("system") == "footbreak"
+            and ranking_payload.get("schema_version") == 1
+            else None
         )
         created, audit = evaluate_new_t5(
             ledger, watch, history_path=Path(ACCURACY_HISTORY),
