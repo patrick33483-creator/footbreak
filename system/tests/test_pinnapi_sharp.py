@@ -1,6 +1,8 @@
 """Offline regression tests for Footbreak's PinnAPI sharp-provider adapter."""
 from __future__ import annotations
 
+import json
+
 import os
 import subprocess
 import sys
@@ -202,20 +204,18 @@ class FootbreakPinnapiSharpTests(unittest.TestCase):
                 run_predict.HERE = directory
                 run_predict.HK_SNAP = os.path.join(directory, "hk_snapshots.json")
                 target = Path(directory) / "predictions.json"
-                target.write_text('[{"match_id":"existing"}]', encoding="utf-8")
+                Path(directory, "sim_ledger.json").write_text(json.dumps({"watch": {
+                    "m1": {"kickoff": kickoff.isoformat(), "fixture_id": "p1", "stages": []}
+                }}), encoding="utf-8")
                 with patch.object(run_predict.H, "fetch_matches", return_value=[match]), \
                      patch.object(run_predict.H, "parse_kickoff", return_value=kickoff), \
                      patch.object(run_predict.S, "list_fixtures", return_value=[fixture]), \
                      patch.object(run_predict.S, "match_fixture", return_value=(fixture, 1.0)), \
                      patch.object(run_predict, "analyse_match", side_effect=sharp.ProviderError("PinnAPI down")):
                     results = run_predict.main(mode="due", horizon_min=90)
-                self.assertEqual(len(results), 1)
-                self.assertEqual(results[0]["match_id"], "m1")
-                self.assertIsNone(results[0]["pick"])
-                self.assertIn("即時數據分析失敗", results[0]["no_bet_reason"])
-                saved = target.read_text(encoding="utf-8")
-                self.assertIn('"match_id": "m1"', saved)
-                self.assertNotIn('"match_id":"existing"', saved)
+                self.assertEqual(results, [])
+                self.assertEqual(run_predict.pending_watch_match_ids(), ["m1"])
+                self.assertEqual(json.loads(target.read_text(encoding="utf-8")), [])
             finally:
                 run_predict.HERE, run_predict.HK_SNAP = previous_here, previous_snap
 
@@ -231,15 +231,17 @@ class FootbreakPinnapiSharpTests(unittest.TestCase):
             try:
                 run_predict.HERE = directory
                 run_predict.HK_SNAP = os.path.join(directory, "hk_snapshots.json")
+                Path(directory, "sim_ledger.json").write_text(json.dumps({"watch": {
+                    "m1": {"kickoff": kickoff.isoformat(), "fixture_id": "p1", "stages": []}
+                }}), encoding="utf-8")
                 with patch.object(run_predict.H, "fetch_matches", return_value=[match]), \
                      patch.object(run_predict.H, "parse_kickoff", return_value=kickoff), \
                      patch.object(run_predict.S, "list_fixtures", return_value=[fixture]), \
                      patch.object(run_predict.S, "match_fixture", return_value=(fixture, 1.0)), \
                      patch.object(run_predict, "analyse_match", return_value={"skip": "no full-match lines"}):
                     results = run_predict.main(mode="due", horizon_min=90)
-                self.assertEqual(len(results), 1)
-                self.assertIsNone(results[0]["pick"])
-                self.assertIn("無可用模型", results[0]["no_bet_reason"])
+                self.assertEqual(results, [])
+                self.assertEqual(run_predict.pending_watch_match_ids(), ["m1"])
             finally:
                 run_predict.HERE, run_predict.HK_SNAP = previous_here, previous_snap
 

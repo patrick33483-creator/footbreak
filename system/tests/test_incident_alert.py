@@ -125,7 +125,7 @@ class IncidentAlertTests(unittest.TestCase):
         findings = alerts_module._operational_findings(
             [{
                 "kickoff": (NOW + timedelta(minutes=2)).isoformat(),
-                "stages": [{"stage": "T-5", "source": "pinnapi", "pick": None, "verdict": "觀望"}],
+                "stages": [{"stage": "T-5", "source": "pinnapi", "status": "WILSON_REJECTED", "pick": None, "verdict": "觀望"}],
             }],
             [], NOW, NOW + timedelta(minutes=3),
         )

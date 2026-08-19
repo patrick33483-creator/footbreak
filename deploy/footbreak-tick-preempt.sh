@@ -18,32 +18,29 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 path = Path(sys.argv[1])
-if not path.is_file():
-    raise SystemExit(2)
 try:
     ledger = json.loads(path.read_text(encoding="utf-8"))
+    watch = ledger.get("watch")
+    if not isinstance(watch, dict):
+        raise ValueError("watch")
 except (OSError, ValueError, TypeError):
+    # A slow job must never be admitted on an unknown schedule.
     raise SystemExit(2)
 
 hkt = timezone(timedelta(hours=8))
 now = datetime.now(hkt)
-for watch in (ledger.get("watch") or {}).values():
-    raw = watch.get("kickoff")
+for row in watch.values():
+    if not isinstance(row, dict):
+        continue
     try:
-        kickoff = datetime.strptime(raw, "%Y-%m-%d %H:%M").replace(tzinfo=hkt)
+        kickoff = datetime.fromisoformat(str(row.get("kickoff") or "").replace("Z", "+00:00"))
+        kickoff = kickoff.replace(tzinfo=hkt) if kickoff.tzinfo is None else kickoff.astimezone(hkt)
     except (TypeError, ValueError):
+        # Legacy malformed rows are tolerated; they cannot suppress a valid row.
         continue
     minutes = (kickoff - now).total_seconds() / 60.0
-    stages = {
-        str(stage.get("stage"))
-        for stage in (watch.get("stages") or [])
-        if isinstance(stage, dict)
-    }
-    t30_due = 5.0 < minutes <= 30.5 and "T-30" not in stages
-    # T-5 名稱保留，但操作窗口由開賽前 10 分鐘開始。立即搶佔慢任務，
-    # 唔好等到只剩 5 分鐘先啟動，否則 Telegram 到達時已無落注時間。
-    t5_due = 0.0 < minutes <= 10.5 and "T-5" not in stages
-    if t30_due or t5_due:
+    stages = {str(stage.get("stage")) for stage in (row.get("stages") or []) if isinstance(stage, dict)}
+    if (0.0 < minutes <= 10.5 and "T-5" not in stages) or (20.0 <= minutes <= 40.5 and "T-30" not in stages):
         raise SystemExit(0)
 raise SystemExit(1)
 PY
@@ -60,6 +57,12 @@ then
   echo "Footbreak urgent stage due; slow jobs preempted"
 else
   status=$?
+  # Do not emit an all-clear or admit unrelated work when authoritative state
+  # cannot be parsed.  This avoids hiding a real due native stage.
+  if [ "$status" -ne 1 ] && [ "$MODE" != "--yield-if-urgent" ]; then
+    echo "Footbreak urgent-stage state unavailable; tick failed closed" >&2
+    exit 2
+  fi
   if [ "$MODE" = "--yield-if-urgent" ]; then
     # Missing or unreadable schedule state must not admit a slow full-board
     # job: an urgent T-30/T-5 could otherwise be hidden in that state.

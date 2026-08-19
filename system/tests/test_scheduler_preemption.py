@@ -107,9 +107,10 @@ class SchedulerPreemptionTests(unittest.TestCase):
         preempt = unit.index("ExecStartPre=/opt/footbreak/deploy/footbreak-tick-preempt.sh")
         run = unit.index("ExecStart=/opt/footbreak/deploy/run.sh tick")
         self.assertLess(preempt, run)
-        self.assertIn("TimeoutStartSec=60", unit)
+        self.assertIn("TimeoutStartSec=55", unit)
         self.assertIn("TimeoutStopSec=3", unit)
-        self.assertIn("Environment=FOOTBREAK_TICK_LOCK_WAIT_SECONDS=5", unit)
+        self.assertIn("Environment=FOOTBREAK_TICK_LOCK_WAIT_SECONDS=2", unit)
+        self.assertIn("Environment=FOOTBREAK_TICK_DEADLINE_SECONDS=40", unit)
         self.assertIn("SuccessExitStatus=75", unit)
         self.assertIn("ExecStopPost=-/usr/bin/rm -f /run/footbreak-t5-priority", unit)
         for name in ("footbreak-t30.service", "footbreak-sweep.service", "footbreak-settle.service"):
@@ -120,8 +121,8 @@ class SchedulerPreemptionTests(unittest.TestCase):
             )
 
         helper = (ROOT / "deploy/footbreak-tick-preempt.sh").read_text(encoding="utf-8")
-        self.assertIn('t30_due = 5.0 < minutes <= 30.5 and "T-30" not in stages', helper)
-        self.assertIn('t5_due = 0.0 < minutes <= 10.5 and "T-5" not in stages', helper)
+        self.assertIn('0.0 < minutes <= 10.5 and "T-5" not in stages', helper)
+        self.assertIn('20.0 <= minutes <= 40.5 and "T-30" not in stages', helper)
         self.assertIn("/usr/bin/systemctl stop footbreak-sweep.service footbreak-settle.service", helper)
 
     def test_crown_tick_preempts_only_when_a_local_t5_is_due(self):
@@ -135,7 +136,8 @@ class SchedulerPreemptionTests(unittest.TestCase):
         self.assertIn("TimeoutStopSec=5", unit)
         self.assertIn("ExecStopPost=-/usr/bin/rm -f /run/crown-t5-priority", unit)
         helper = (ROOT / "deploy/crown-tick-preempt.sh").read_text(encoding="utf-8")
-        self.assertIn('if 0.0 < minutes <= 10.5 and not t5_complete:', helper)
+        self.assertIn('0.0 < minutes <= 10.5 and not complete("T-5")', helper)
+        self.assertIn('20.0 <= minutes <= 40.5 and not complete("T-30")', helper)
         self.assertIn(
             "/usr/bin/systemctl stop --no-block crown-sweep.service crown-settle.service",
             helper,
@@ -143,6 +145,44 @@ class SchedulerPreemptionTests(unittest.TestCase):
         for name in ("crown-sweep.service", "crown-settle.service"):
             slow = (ROOT / "deploy/systemd" / name).read_text(encoding="utf-8")
             self.assertIn("ConditionPathExists=!/run/crown-t5-priority", slow)
+
+    def test_crown_preemption_uses_ledger_without_dashboard_projection(self):
+        helper = ROOT / "deploy/crown-tick-preempt.sh"
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp)
+            now = dt.datetime.now(record_picks.HKT)
+            env = os.environ | {
+                "CROWN_STATE_DIR": str(state), "CROWN_PYTHON": sys.executable,
+                "CROWN_T5_PRIORITY_MARKER": str(state / "marker"),
+            }
+            # No predictions.json exists.  The due ledger row must still set
+            # the priority marker rather than emitting an all-clear.
+            (state / "ledger.json").write_text(json.dumps({"watch": {
+                "due": {"kickoff": (now + dt.timedelta(minutes=5)).isoformat(), "stages": []}
+            }}), encoding="utf-8")
+            due_without_projection = subprocess.run(["bash", str(helper)], env=env, text=True, capture_output=True)
+            self.assertTrue((state / "marker").exists())
+            self.assertNotIn("no missing urgent", due_without_projection.stdout)
+            (state / "marker").unlink()
+            (state / "ledger.json").write_text(json.dumps({"watch": {
+                "complete": {
+                    "kickoff": (now + dt.timedelta(minutes=5)).isoformat(),
+                    # A native no-pick/Wilson-rejected row is complete even when
+                    # the dashboard projection is missing or malformed.
+                    "stages": [{"stage": "T-5", "status": "WILSON_REJECTED", "pick": None}],
+                }
+            }}), encoding="utf-8")
+            missing_projection = subprocess.run(["bash", str(helper)], env=env, text=True, capture_output=True)
+            self.assertEqual(missing_projection.returncode, 0, missing_projection.stderr)
+            self.assertIn("no missing urgent", missing_projection.stdout)
+            (state / "predictions.json").write_text("not-json", encoding="utf-8")
+            malformed_projection = subprocess.run(["bash", str(helper)], env=env, text=True, capture_output=True)
+            self.assertEqual(malformed_projection.returncode, 0, malformed_projection.stderr)
+            self.assertIn("no missing urgent", malformed_projection.stdout)
+            (state / "ledger.json").write_text("not-json", encoding="utf-8")
+            unreadable = subprocess.run(["bash", str(helper)], env=env, text=True, capture_output=True)
+            self.assertEqual(unreadable.returncode, 2)
+            self.assertIn("state unavailable", unreadable.stderr)
 
     def test_slow_jobs_yield_when_t5_priority_marker_exists(self):
         wrapper = (ROOT / "deploy/run.sh").read_text(encoding="utf-8")

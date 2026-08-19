@@ -14,7 +14,7 @@ echo "═══ $(TZ=Asia/Hong_Kong date '+%F %H:%M') HKT · 模式 $MODE ══
 
 case "$MODE" in
   sweep)  python3 run_predict.py --sweep 2160 ;;
-  tick)   python3 run_predict.py 90 ;;
+  tick)   FOOTBREAK_REMOTE_TIMEOUT_SECONDS="${FOOTBREAK_REMOTE_TIMEOUT_SECONDS:-8}" python3 run_predict.py 90 ;;
   t30)    python3 run_predict.py --t30-only 90 ;;
   settle) ;;
   *)      echo "未知模式 $MODE"; exit 2 ;;
@@ -26,8 +26,12 @@ if [ "$MODE" != "settle" ]; then
   # Telegram side effect; timed tick remains the sole notification path.
   if [ "$MODE" = "sweep" ]; then
     python3 record_picks.py --no-notify
-  else
+  elif [ "$MODE" != "tick" ]; then
     python3 record_picks.py
+  else
+    # Timed stages are already atomically saved one fixture at a time.  Delivery
+    # is best-effort and hard-bounded; it can never delay that persistence.
+    timeout 5s python3 record_picks.py --notify-only || true
   fi
 
 fi
@@ -42,5 +46,9 @@ if [ "$MODE" = "settle" ]; then
   python3 accuracy.py
 fi
 
-echo "--- 產生前端資料 ---"
-python3 gen_app_data.py
+if [ "$MODE" != "tick" ]; then
+  echo "--- 產生前端資料 ---"
+  python3 gen_app_data.py
+else
+  echo "tick 已完成原子階段保存；儀表板由獨立 sweep 投影"
+fi

@@ -15,11 +15,13 @@ ExecStart=/opt/footbreak/deploy/run.sh tick
 ExecStopPost=-/usr/bin/rm -f /run/footbreak-t5-priority
 # Give a just-finishing state writer enough time to release the shared lock.
 # Exit 75 is deliberate duplicate/pre-emption rejection; the timer retries.
-Environment=FOOTBREAK_TICK_LOCK_WAIT_SECONDS=5
+Environment=FOOTBREAK_TICK_LOCK_WAIT_SECONDS=2
+Environment=FOOTBREAK_TICK_DEADLINE_SECONDS=40
+Environment=FOOTBREAK_REMOTE_TIMEOUT_SECONDS=8
 SuccessExitStatus=75
 # 同時開波批次需要完成所有 T-5，再補 T-30。60 秒硬上限仍保證
 # 下一輪可以在落注窗口內重新抓最新資料。
-TimeoutStartSec=60
+TimeoutStartSec=55
 TimeoutStopSec=3
 Nice=5
 

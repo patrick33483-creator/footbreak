@@ -506,6 +506,14 @@ def export_watch_csv(led, path=None):
 
 if __name__ == "__main__":
     import sys
+    if "--notify-only" in sys.argv[1:]:
+        led = load()
+        try:
+            import notify
+            notify.notify_pending_condition_bets(led)
+        except Exception as exc:
+            print(f"通知暫不可用（{type(exc).__name__}）；下一輪重試")
+        raise SystemExit(0)
     ch, notes, led = sync(send_notifications="--no-notify" not in sys.argv[1:])
     print("\n".join(notes) if notes else "無新階段預測")
     print()

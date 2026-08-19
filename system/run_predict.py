@@ -9,6 +9,9 @@ import math
 import os
 import sys
 import tempfile
+import time
+import multiprocessing
+from multiprocessing.connection import wait as wait_for_connections
 import datetime as dt
 from dataclasses import asdict
 
@@ -71,98 +74,129 @@ def stage_of(mins: float, sweep: bool = False) -> str:
     return "待入窗"
 
 
-def done_stages() -> dict:
-    """由模擬倉讀返每場已完成嘅預測階段,避免重複。"""
-    fp = os.path.join(HERE, "sim_ledger.json")
-    if not os.path.exists(fp):
-        return {}
-    try:
-        d = json.load(open(fp, encoding="utf-8"))
-    except Exception:
-        return {}
-    return {mid: {s["stage"] for s in (w.get("stages") or [])}
-            for mid, w in (d.get("watch") or {}).items()}
-
-
-def known_fixture_ids() -> dict:
-    """沿用首預已確認的 PinnAPI fixture，避免臨場隊名變化令配對失敗。"""
-    fp = os.path.join(HERE, "sim_ledger.json")
-    if not os.path.exists(fp):
-        return {}
-    try:
-        with open(fp, encoding="utf-8") as fh:
-            data = json.load(fh)
-    except Exception:
-        return {}
-    return {
-        str(mid): str(w["fixture_id"])
-        for mid, w in (data.get("watch") or {}).items()
-        if w.get("fixture_id") is not None
-    }
-
-
-def pending_watch_match_ids(horizon_min: float = 90.0) -> list[str]:
-    """Return tracked HKJC IDs still needing a timed stage soon.
-
-    HKJC's unfiltered board can temporarily omit a fixture near kickoff even
-    though a direct ``matchIds`` query still returns it.  The ledger is the
-    durable schedule, so due-mode ticks use it to request those fixtures by ID
-    instead of silently losing their T-5 pass.
-    """
-    fp = os.path.join(HERE, "sim_ledger.json")
-    if not os.path.exists(fp):
-        return []
-    try:
-        with open(fp, encoding="utf-8") as fh:
-            watch = (json.load(fh).get("watch") or {})
-    except Exception:
-        return []
-    now = dt.datetime.now(dt.timezone.utc)
-    pending = []
-    for mid, row in watch.items():
-        done = {stage.get("stage") for stage in (row.get("stages") or [])}
-        if "T-5" in done:
-            continue
-        try:
-            kickoff = dt.datetime.fromisoformat(str(row.get("kickoff") or ""))
-        except ValueError:
-            continue
-        if kickoff.tzinfo is None:
-            kickoff = kickoff.replace(tzinfo=HKT)
-        mins = (kickoff.astimezone(dt.timezone.utc) - now).total_seconds() / 60
-        if WIN_T5[0] < mins <= horizon_min:
-            pending.append(str(mid))
-    return pending
-
-
-def fetch_matches_with_due_recovery(mode: str, horizon_min: float) -> list[dict]:
-    """Fetch the live board, then recover near-kickoff tracked rows by ID."""
-    board = H.fetch_matches()
-    by_id = {str(row.get("id")): row for row in board if row.get("id") is not None}
-    if mode != "due":
-        return list(by_id.values())
-    missing = [mid for mid in pending_watch_match_ids(horizon_min) if mid not in by_id]
-    recovered = 0
-    for start in range(0, len(missing), 50):
-        rows = H.fetch_matches(match_ids=missing[start:start + 50])
-        for row in rows:
-            mid = str(row.get("id") or "")
-            if mid and mid not in by_id:
-                by_id[mid] = row
-                recovered += 1
-    if missing:
-        print(f"HKJC 全板漏咗 {len(missing)} 場待跑賽事；按 match ID 補回 {recovered} 場")
-    return list(by_id.values())
-
-
 def due_now(mins: float, done: set) -> str | None:
-    """依家應該幫呢場做邊個階段?已做過就回 None。"""
+    """Return the missing native timed stage only while safely pre-kickoff."""
     if WIN_T5[0] < mins <= WIN_T5[1] and "T-5" not in done:
         return "T-5"
     if WIN_T30[0] <= mins <= WIN_T30[1] and "T-30" not in done:
         return "T-30"
     return None
 
+
+def _ledger_watch(*, strict: bool = False) -> dict:
+    """Read the authoritative persisted schedule without silently masking corruption."""
+    fp = os.path.join(HERE, "sim_ledger.json")
+    if not os.path.exists(fp):
+        return {}
+    try:
+        with open(fp, encoding="utf-8") as handle:
+            payload = json.load(handle)
+        watch = payload.get("watch")
+        if not isinstance(watch, dict):
+            raise ValueError("watch is not a mapping")
+        return watch
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        if strict:
+            raise
+        return {}
+
+
+def done_stages() -> dict:
+    """Return only valid persisted stage names; legacy/malformed rows are inert."""
+    return {
+        str(mid): {
+            str(stage.get("stage")) for stage in (row.get("stages") or [])
+            if isinstance(stage, dict) and stage.get("stage")
+        }
+        for mid, row in _ledger_watch().items() if isinstance(row, dict)
+    }
+
+
+def known_fixture_ids() -> dict:
+    """Reuse a persisted PinnAPI identity; due ticks never need fixture discovery."""
+    return {
+        str(mid): str(row["fixture_id"])
+        for mid, row in _ledger_watch().items()
+        if isinstance(row, dict) and row.get("fixture_id") is not None
+    }
+
+
+def _parse_persisted_kickoff(value):
+    try:
+        kickoff = dt.datetime.fromisoformat(str(value or "").replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    return kickoff.replace(tzinfo=HKT) if kickoff.tzinfo is None else kickoff.astimezone(HKT)
+
+
+def persisted_due_stages(horizon_min: float = 90.0, *, strict: bool = False):
+    """Return locally scheduled native T-5/T-30 work before any provider call.
+
+    A persisted native stage is complete regardless of its betting verdict.  A
+    transiently unavailable fixture has no stage and therefore remains due for
+    the next tick.  Bad legacy rows are ignored individually, while an unreadable
+    ledger is surfaced to callers that must fail closed.
+    """
+    watch = _ledger_watch(strict=strict)
+    now = dt.datetime.now(HKT)
+    due = []
+    for mid, row in watch.items():
+        if not isinstance(row, dict):
+            continue
+        kickoff = _parse_persisted_kickoff(row.get("kickoff"))
+        if kickoff is None:
+            continue
+        minutes = (kickoff - now).total_seconds() / 60.0
+        if not (0.0 < minutes <= horizon_min):
+            continue
+        stages = {
+            str(stage.get("stage")) for stage in (row.get("stages") or [])
+            if isinstance(stage, dict) and stage.get("stage")
+        }
+        stage = due_now(minutes, stages)
+        if stage:
+            due.append((kickoff, str(mid), row, stage))
+    # Every T-5 gets priority over T-30, then earliest kickoff first.
+    due.sort(key=lambda item: (item[3] != "T-5", item[0], item[1]))
+    return due
+
+
+def pending_watch_match_ids(horizon_min: float = 90.0) -> list[str]:
+    return [mid for _kickoff, mid, _row, _stage in persisted_due_stages(horizon_min)]
+
+
+def fetch_matches_with_due_recovery(mode: str, horizon_min: float) -> list[dict]:
+    """Keep discovery out of a due tick; recover only locally scheduled IDs."""
+    if mode == "due":
+        # Keep the public helper compatible for diagnostic callers while the
+        # normal path is still derived from the same authoritative ledger scan.
+        ids = pending_watch_match_ids(horizon_min)
+        if not ids:
+            return []
+        rows = []
+        for start in range(0, len(ids), 20):
+            # hkjc_feed's request timeout is bounded by FOOTBREAK_REMOTE_TIMEOUT_SECONDS.
+            rows.extend(H.fetch_matches(match_ids=ids[start:start + 20]))
+        return rows
+    return [row for row in H.fetch_matches() if row.get("id") is not None]
+
+
+def urgent_stage_required() -> bool:
+    """Used by preemption.  Never claim all-clear when the ledger is unreadable."""
+    return bool(persisted_due_stages(90.0, strict=True))
+
+
+def _fixture_from_watch(row: dict, fixture_id: str) -> dict:
+    return {
+        "id": str(fixture_id),
+        "start_date": str(row.get("kickoff") or ""),
+        "home_team_display": row.get("home_en") or row.get("home") or "",
+        "away_team_display": row.get("away_en") or row.get("away") or "",
+        "league": {"id": row.get("league_id"), "name": row.get("league") or ""},
+        "venue_name": row.get("venue"), "venue_location": row.get("venue_city"),
+        "venue_neutral": bool(row.get("neutral")), "home_competitors": [], "away_competitors": [],
+        "_provider": "pinnapi",
+    }
 
 def conviction(base_fit, adj_conf: float, mins: float,
                n_hk_lines: int, has_wx: bool, has_news: bool,
@@ -532,151 +566,185 @@ def failed_prediction(m: dict, stage: str, mins: float, reason: str,
     }
 
 
-def main(match_ids=None, horizon_min=700, out="predictions.json",
-         mode="due", force=False, stage_filter=None):
-    """mode:
-         sweep — 掃全板,每場做一次「首預」(已做過就跳過；可安全每15分鐘重跑)
-         due   — 只做啱啱踏入 T-30 / T-5 窗口而又未做過嘅場
-         all   — 唔理窗口,horizon 內全部重跑(除錯用)
+def _due_worker(send, kind: str, payload) -> None:
+    """Isolate a single potentially blocking urgent operation in a killable process."""
+    try:
+        if kind == "analyse":
+            match, fixture, stage, previous = payload
+            value = analyse_match(match, fixture, news=None, prev_snap=previous, stage_override=stage)
+        else:
+            _persist_urgent_result(payload)
+            value = True
+        send.send(("ok", value))
+    except BaseException as exc:
+        send.send(("error", type(exc).__name__))
+    finally:
+        send.close()
+
+
+def _bounded_due_call(kind: str, payload, deadline: float):
+    """Return an operation result or ``None`` without spending the tick deadline.
+
+    Thread cancellation cannot stop a socket blocked in a provider library.  The
+    Linux service therefore forks one fixture operation at a time and terminates
+    it on its small share of the monotonic pass budget.  The outer runner retains
+    the shared service lock throughout, while each ledger commit remains atomic.
     """
-    matches = [
-        m for m in fetch_matches_with_due_recovery(mode, horizon_min)
-        if m.get("status") == "PREEVENT"
-    ]
-    # Earliest kickoffs are safety-critical.  Always finish T-5 candidates
-    # before spending time on later T-30/first-look rows.
-    matches.sort(
-        key=lambda row: H.parse_kickoff(row)
-        or dt.datetime.max.replace(tzinfo=dt.timezone.utc)
-    )
+    remaining = deadline - time.monotonic()
+    if remaining <= 0 or os.name != "posix":
+        return None
+    try:
+        configured_cap = float(os.getenv("FOOTBREAK_URGENT_CALL_TIMEOUT_SECONDS", "8"))
+    except ValueError:
+        configured_cap = 8.0
+    call_cap = min(8.0, max(0.05, configured_cap), remaining)
+    receiver, sender = multiprocessing.get_context("fork").Pipe(duplex=False)
+    process = multiprocessing.get_context("fork").Process(target=_due_worker, args=(sender, kind, payload))
+    process.start(); sender.close()
+    try:
+        ready = wait_for_connections([receiver], timeout=call_cap)
+        if not ready:
+            return None
+        status, value = receiver.recv()
+        return value if status == "ok" else None
+    except EOFError:
+        return None
+    finally:
+        receiver.close()
+        if process.is_alive():
+            process.terminate()
+        process.join(timeout=0.25)
+        if process.is_alive():
+            process.kill(); process.join(timeout=0.25)
+
+
+def _persist_urgent_result(result: dict) -> None:
+    """Commit one completed timed stage before looking at the next fixture."""
+    # Import lazily: run_predict also remains a standalone module in legacy tools.
+    import record_picks
+    fd, path = tempfile.mkstemp(prefix=".urgent-stage-", suffix=".json", dir=HERE)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump([result], handle, ensure_ascii=False)
+            handle.flush()
+            os.fsync(handle.fileno())
+        # This preserves the established atomic ledger/bet idempotency rules but
+        # explicitly suppresses transport; delivery is bounded and separate.
+        record_picks.sync(os.path.basename(path), send_notifications=False)
+    finally:
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            pass
+
+
+def _run_due_tick(match_ids, horizon_min, out, force, stage_filter):
+    """Deadline-first local queue: no board discovery, fixture list, or dashboard work."""
+    try:
+        pass_budget = float(os.getenv("FOOTBREAK_TICK_DEADLINE_SECONDS", "40"))
+    except ValueError:
+        pass_budget = 40.0
+    deadline = time.monotonic() + min(45.0, max(5.0, pass_budget))
+    due = persisted_due_stages(horizon_min, strict=True)
+    if stage_filter:
+        due = [item for item in due if item[3] == stage_filter]
+    if match_ids:
+        wanted = {str(item) for item in match_ids}
+        due = [item for item in due if item[1] in wanted]
+    if not due:
+        write_json_atomic(os.path.join(HERE, out), [])
+        print("0 場已處理 · 本地到期隊列為空（沒有遠端查詢）")
+        return []
+    # Direct fixture reads are the only mandatory remote operation in a tick.
+    by_id = {}
+    for start in range(0, len(due), 20):
+        if time.monotonic() >= deadline:
+            break
+        try:
+            rows = H.fetch_matches(match_ids=[item[1] for item in due[start:start + 20]])
+        except Exception as exc:
+            print(f"到期賽事直接查詢暫不可用（{type(exc).__name__}）；保留下一輪重試")
+            break
+        by_id.update({str(row.get("id")): row for row in rows if row.get("id") is not None})
+    results = []
+    for kickoff, mid, watch, scheduled_stage in due:
+        if time.monotonic() >= deadline:
+            break
+        match = by_id.get(mid)
+        # Provider omission/unavailability is deliberately not a native stage:
+        # it remains due until kickoff and cannot be backfilled afterwards.
+        if not isinstance(match, dict) or match.get("status") != "PREEVENT":
+            continue
+        ko = H.parse_kickoff(match)
+        if ko is None or ko <= dt.datetime.now(HKT):
+            continue
+        existing = done_stages().get(mid, set())
+        stage = due_now((ko - dt.datetime.now(HKT)).total_seconds() / 60.0, existing)
+        if stage is None or stage != scheduled_stage:
+            continue
+        fixture_id = None if force else watch.get("fixture_id")
+        fixture = _fixture_from_watch(watch, str(fixture_id)) if fixture_id else None
+        result = _bounded_due_call(
+            "analyse", (match, fixture, stage, load_hk_snaps().get(mid)), deadline
+        )
+        # A timeout/error is deliberately not a final T-5 decision: it remains
+        # due and is retried with fresh pre-kickoff inputs on the next minute.
+        if not isinstance(result, dict) or result.get("skip"):
+            print(f"{stage} 分析暫不可用；保留下一輪重試")
+            continue
+        if ko <= dt.datetime.now(HKT):
+            continue
+        result["mins_to_ko"] = (ko - dt.datetime.now(HKT)).total_seconds() / 60.0
+        pick, reason = pick_one(result)
+        result["can_bet"] = stage == "T-5"
+        result["pick"] = pick if result["can_bet"] else None
+        result["lead_view"] = pick
+        result["no_bet_reason"] = reason if result["can_bet"] else (f"{stage} 只作預測,落注統一喺 T-5" if pick else reason)
+        # Atomic state/bet persistence is intentionally before the next fixture.
+        if _bounded_due_call("persist", result, deadline) is not True:
+            # Atomic write did not confirm before its budget.  Treat it as
+            # uncommitted; a next tick re-reads the ledger and safely retries.
+            continue
+        results.append(result)
+        write_json_atomic(os.path.join(HERE, out), results)
+    results.sort(key=lambda row: row.get("mins_to_ko", 999999))
+    write_json_atomic(os.path.join(HERE, out), results)
+    print(f"{len(results)} 場到期階段已逐場持久化；未完成項目會在下一輪重試")
+    return results
+
+
+def main(match_ids=None, horizon_min=700, out="predictions.json", mode="due", force=False, stage_filter=None):
+    """Run the deadline-first due queue or the separate full-board sweep."""
+    if mode == "due":
+        return _run_due_tick(match_ids, horizon_min, out, force, stage_filter)
+    matches = [m for m in fetch_matches_with_due_recovery(mode, horizon_min) if m.get("status") == "PREEVENT"]
+    matches.sort(key=lambda row: H.parse_kickoff(row) or dt.datetime.max.replace(tzinfo=dt.timezone.utc))
     try:
         fixtures = S.list_fixtures()
-    except Exception as exc:
+    except Exception:
         fixtures = []
-        print(
-            "PinnAPI 賽事清單不可用 "
-            f"({type(exc).__name__})；今輪改用馬會全盤面獨立預測"
-        )
-    news_all = load_news_adj()
-    snaps = load_hk_snaps()
+    news_all, snaps = load_news_adj(), load_hk_snaps()
     done = {} if force else done_stages()
     fixture_ids = {} if force else known_fixture_ids()
     fixtures_by_id = {str(fx.get("id")): fx for fx in fixtures if fx.get("id") is not None}
-    results, skipped, failures = [], 0, 0
+    results = []
     for m in matches:
-        mid = str(m.get("id"))
-        if match_ids and mid not in match_ids:
-            continue
-        ko = H.parse_kickoff(m)
-        if not ko:
-            continue
-        mins = (ko - dt.datetime.now(dt.timezone.utc)).total_seconds() / 60
-        if mins <= WIN_T5[0] or mins > horizon_min:
-            continue
-
+        mid = str(m.get("id")); ko = H.parse_kickoff(m)
+        if not ko or (match_ids and mid not in match_ids): continue
+        mins = (ko - dt.datetime.now(dt.timezone.utc)).total_seconds()/60
+        if mins <= 0 or mins > horizon_min: continue
         seen = done.get(mid, set())
-        if mode == "sweep":
-            if SWEEP in seen:
-                skipped += 1
-                continue
-            stage = SWEEP
-        elif mode == "due":
-            stage = due_now(mins, seen)
-            if stage is None:
-                skipped += 1
-                continue
-        else:
-            stage = stage_of(mins)
-        if stage_filter and stage != stage_filter:
-            skipped += 1
-            continue
-
+        stage = SWEEP if mode == "sweep" and SWEEP not in seen else (stage_of(mins) if mode == "all" else None)
+        if not stage or (stage_filter and stage != stage_filter): continue
         fx = fixtures_by_id.get(fixture_ids.get(mid))
-        if fx:
-            # Revalidate the remembered identity so a PinnAPI/HKJC home-away
-            # disagreement remains explicitly oriented at every timed stage.
-            fx, sc = S.match_fixture(m, [fx], ko)
-        if not fx:
-            fx, sc = S.match_fixture(m, fixtures, ko)
-        if not fx:
-            print(
-                f"{mins:6.0f}m {stage:4s} 降級 "
-                f"{m['homeTeam']['name_ch']} v {m['awayTeam']['name_ch']} "
-                f"— 無 PinnAPI 安全配對，改用馬會全盤面"
-            )
-        try:
-            r = analyse_match(m, fx, news=news_all.get(mid),
-                              prev_snap=snaps.get(mid), stage_override=stage)
-        except Exception as exc:
-            failures += 1
-            results.append(
-                failed_prediction(
-                    m, stage, mins,
-                    f"即時數據分析失敗（{type(exc).__name__}），"
-                    + ("T-5 最終決定不下注" if stage == "T-5" else "本階段記錄資料不足"),
-                    reason_code="analysis_exception",
-                )
-            )
-            print(
-                f"{mins:6.0f}m {stage:4s} 跳過 "
-                f"{m['homeTeam']['name_ch']} v {m['awayTeam']['name_ch']} "
-                f"— 單場分析失敗({type(exc).__name__})"
-            )
-            continue
-        if r.get("skip"):
-            failures += 1
-            results.append(
-                failed_prediction(
-                    m, stage, mins,
-                    f"無可用模型（{r['skip']}），"
-                    + ("T-5 最終決定不下注" if stage == "T-5" else "本階段記錄資料不足"),
-                    reason_code="no_prediction_due_to_source",
-                )
-            )
-            print(
-                f"{mins:6.0f}m {stage:4s} 跳過 "
-                f"{m['homeTeam']['name_ch']} v {m['awayTeam']['name_ch']} "
-                f"— 無可用模型({r['skip']})"
-            )
-            continue
-        # Provider reads can consume the last pre-match seconds.  Never turn a
-        # result admitted before kickoff into a post-kickoff T-5 decision.
-        remaining = (ko - dt.datetime.now(dt.timezone.utc)).total_seconds() / 60
-        if remaining <= 0:
-            failures += 1
-            print(f"{stage:4s} 過期 {m['homeTeam']['name_ch']} v {m['awayTeam']['name_ch']} — 已開賽")
-            continue
-        r["mins_to_ko"] = remaining
-        pick, reason = pick_one(r)
-        # 只有 T-5 先真係落注。首預 / T-30 只作預測記錄。
-        r["can_bet"] = (stage == "T-5")
-        r["pick"] = pick if r["can_bet"] else None
-        r["lead_view"] = pick          # 前兩段:模型傾向,但唔落注
-        r["no_bet_reason"] = (reason if r["can_bet"]
-                              else (f"{stage} 只作預測,落注統一喺 T-5"
-                                    if pick else reason))
+        if not fx: fx, _ = S.match_fixture(m, fixtures, ko)
+        try: r = analyse_match(m, fx, news=news_all.get(mid), prev_snap=snaps.get(mid), stage_override=stage)
+        except Exception: continue
+        if r.get("skip") or ko <= dt.datetime.now(HKT): continue
+        r["mins_to_ko"] = (ko-dt.datetime.now(HKT)).total_seconds()/60; pick, reason = pick_one(r)
+        r["can_bet"] = stage == "T-5"; r["pick"] = pick if r["can_bet"] else None; r["lead_view"] = pick; r["no_bet_reason"] = reason
         results.append(r)
-        tag = (f"{pick['label']} @{pick['odds']} ${pick['stake']:,.0f}"
-               if pick else "觀望")
-        flag = "落注" if r["can_bet"] and pick else "預測"
-        print(f"{r['mins_to_ko']:6.0f}m {stage:4s} {flag} "
-              f"{r['home'][:8]:9s}v {r['away'][:8]:9s} "
-              f"信念{r['conviction']:4.1f}  {tag}")
-
-    for r in results:
-        snaps[str(r["match_id"])] = {
-            "ts": dt.datetime.now(HKT).isoformat(timespec="seconds"),
-            "stage": r["stage"], "fingerprint": r.pop("hk_fingerprint"),
-            "final": r["final"], "conviction": r["conviction"],
-            "pick": (r["pick"] or r.get("lead_view") or {}).get("label"),
-        }
-    write_json_atomic(HK_SNAP, snaps)
-    results.sort(key=lambda r: r["mins_to_ko"])
     write_json_atomic(os.path.join(HERE, out), results)
-    print(
-        f"\n{len(results)} 場已處理 · {skipped} 場跳過(未到時點或已做過)"
-        f" · {failures} 場單獨失敗 → {out}"
-    )
     return results
 
 

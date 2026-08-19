@@ -28,7 +28,11 @@ def _post(query, variables):
             "Referer": "https://bet.hkjc.com/",
         },
     )
-    with urllib.request.urlopen(req, timeout=45) as r:
+    try:
+        timeout = min(20.0, max(1.0, float(os.getenv("FOOTBREAK_REMOTE_TIMEOUT_SECONDS", "8"))))
+    except ValueError:
+        timeout = 8.0
+    with urllib.request.urlopen(req, timeout=timeout) as r:
         raw = r.read()
     if raw[:2] == b"\x1f\x8b":
         import gzip
