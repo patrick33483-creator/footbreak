@@ -588,7 +588,6 @@ function head(m, mm, st) {
       <span>場地 <strong>${venue}</strong></span>
       ${m.neutral ? '<span style="color:var(--warn)">中立場</span>' : ''}
       <span>皇冠盤快照 <strong class="num">${m.source_snapshot_at ? hkStamp(m.source_snapshot_at) : '—'}</strong></span>
-      <span>皇冠編號 <strong class="num">${esc(m.match_id)}</strong></span>
       ${m.book_odds?.hkjc ? '<span class="dual-badge">同場有 HKJC 盤</span>' : ''}
     </div></div>`;
 }
@@ -646,6 +645,18 @@ function oddsCompareCard(m) {
   </div>`;
 }
 
+function wilsonMatchText(item) {
+  const number = numeric(item.condition_number) == null ? '—' : String(Math.trunc(numeric(item.condition_number)));
+  const direction = publicText(item.selected_role || '—');
+  const line = numeric(item.selected_line) == null ? '—' : numeric(item.selected_line).toString();
+  const minimum = numeric(item.minimum_required_odds_display) == null
+    ? f2(item.minimum_required_odds) : String(item.minimum_required_odds_display);
+  const isBet = item.bet_status === 'BET';
+  return `<div class="condition-match"><b>合符條件 #${esc(number)}</b>
+    <span>${esc(marketLabel(item.market_label || item.market))} · ${esc(direction)} ${esc(line)} · 現時賠率 ${f2(item.odds)} · 最低賠率要求 ${esc(minimum)}</span>
+    <span class="${isBet ? 'good-txt' : 'bad-txt'}">${isBet ? '模擬投注' : '因賠率不足，不投注'}</span></div>`;
+}
+
 function verdictCard(m) {
   const c = m.conviction;
   const bar = `<div class="conv-wrap">
@@ -657,9 +668,16 @@ function verdictCard(m) {
   // create or display a simulation bet.  The condition portfolio is the only
   // source of a visible simulated position.
   const conditionBets = (LED.bets || []).filter((bet) =>
-    bet.match_id === m.match_id
-      && bet.portfolio === 'crown_wilson_test'
-      && bet.strategy === 'independent-validation-v1');
+    bet.match_id === m.match_id && bet.portfolio === 'crown_wilson_test');
+  const wilsonMatches = (m.wilson_matches || []).filter((item) => item && typeof item === 'object');
+  if (wilsonMatches.length) {
+    const hasBet = wilsonMatches.some((item) => item.bet_status === 'BET');
+    return `<div class="card verdict ${hasBet ? 'go' : 'wait'}">
+      <div class="vd-top"><span class="vd-badge ${hasBet ? 'go' : 'wait'}">${hasBet ? 'Wilson 模擬注' : 'Wilson 不投注'}</span></div>
+      <div class="condition-match-list">${wilsonMatches.map(wilsonMatchText).join('')}</div>
+      <p class="vd-note">${hasBet ? '已建立的市場為固定注碼模擬；每項以凍結 Wilson 原始入場算術為準。' : '已合符歷史 Wilson 條件；因賠率不足，不建立正式模擬注。'}</p>
+    </div>`;
+  }
   if (!conditionBets.length) {
     const hasT5 = (m.stages || []).some((x) => x.stage === 'T-5');
     const mm = minsLeft(m.kickoff_hkt);
@@ -1646,12 +1664,14 @@ function historyConsensusCards(stats) {
 
 function conditionMatchesCard(m) {
   const matches = m.condition_matches || [];
-  if (!matches.length) return '';
+  const wilsonMatches = m.wilson_matches || [];
+  if (!matches.length && !wilsonMatches.length) return '';
   return `<section class="card condition-match-card"><h2 class="card-h">條件觀察 <span class="sub">已保存 ${esc(m.stage || '')} 資料</span></h2>
-    <div class="condition-match-list">${matches.map((item) => {
+    ${wilsonMatches.length ? `<div class="condition-match-list">${wilsonMatches.map(wilsonMatchText).join('')}</div>` : ''}
+    ${matches.length ? `<div class="condition-match-list">${matches.map((item) => {
       const total = item.total || {};
       return `<div class="condition-match"><b>${esc(publicText(item.label || ''))}</b><span>${pc(total.accuracy, 1)} (${total.hits || 0}/${total.decided || 0}) · ${esc(item.odds_tier || '')} · ${esc(item.badge || '')}</span></div>`;
-    }).join('')}</div></section>`;
+    }).join('')}</div>` : ''}</section>`;
 }
 
 const HISTORY_STAGE_RANK = { '首預': 1, 'T-30': 2, 'T-5': 3 };
@@ -1882,7 +1902,8 @@ function betRow(b, i, prefix = 'condition') {
   const prospective = frozen.prospective || {};
   const evidence = b.frozen_historical_evidence || frozen.historical_evidence || {};
   const arithmetic = b.wilson_admission || frozen.admission_arithmetic || {};
-  const condition = `${publicText((b.frozen_condition_definition || {}).path || evidence.label || '凍結歷史條件')} · 命中 ${evidence.hits || 0}/${evidence.decided || 0}`;
+  const conditionNumber = numeric(b.condition_number) == null ? '—' : Math.trunc(numeric(b.condition_number));
+  const condition = `條件 #${conditionNumber} · ${publicText((b.frozen_condition_definition || {}).path || evidence.label || '凍結歷史條件')} · 命中 ${evidence.hits || 0}/${evidence.decided || 0}`;
   const validation = numeric(arithmetic.wilson95_lower_raw) == null
     ? '—'
     : `凍結命中率 ${pc(arithmetic.hit_rate_raw, 1)} · Wilson 下限 ${pc(arithmetic.wilson95_lower_raw, 1)} ≥ 所需 ${pc(arithmetic.required_rate_raw, 1)}<div class="cell-sub">最低可接受賠率 ${f2(arithmetic.minimum_acceptable_odds_raw)}；目前 ${f2(arithmetic.actual_decimal_odds_raw)}</div><div class="cell-sub">前瞻 ${pc(prospective.hit_rate, 1)} (${prospective.hits || 0}/${prospective.decided || 0}) · Wilson ${Array.isArray(prospective.wilson95) ? `${pc(prospective.wilson95[0], 1)}–${pc(prospective.wilson95[1], 1)}` : '—'} · ROI ${pc(prospective.roi, 2)}</div>`;

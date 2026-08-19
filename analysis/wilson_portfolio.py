@@ -8,7 +8,8 @@ from typing import Any, Callable, Iterable
 from .granular_conditions import MARKETS, _role, match_upcoming
 from .wilson_validation import (
     DECISION_STAGE, FIXED_STAKE, FIXTURE_MARKET_CAP, FIXTURE_STAKE_CAP,
-    commit_bet, ensure_namespace, choose_admission,
+    commit_bet, ensure_namespace, freeze_condition, matching_admissions,
+    record_match_observation,
 )
 
 
@@ -124,14 +125,39 @@ def evaluate(
         if selected is None:
             audit.append({"market": market, "status": "SKIPPED", "reason": reason})
             continue
-        admission, reason = choose_admission(system, market, selected, matched, stage_at=stage_at)
-        if admission is None:
+        admissions, reason = matching_admissions(system, market, selected, matched, stage_at=stage_at)
+        if not admissions:
             audit.append({"market": market, "status": "SKIPPED", "reason": reason})
             continue
         role, selected_line, label = _audit_selection(market, selected)
         if selected_line is None:
             audit.append({"market": market, "status": "SKIPPED", "reason": "selected_line_or_side_invalid"})
             continue
+        # Freeze every historical condition as it is first observed.  This
+        # assigns the durable condition number before any live ordering,
+        # portfolio cap, or browser filtering can affect presentation.
+        accepted = []
+        for admission in admissions:
+            frozen = freeze_condition(ledger, system, admission, now=now)
+            if admission["arithmetic"].get("passes"):
+                accepted.append(admission)
+                continue
+            observation = record_match_observation(
+                ledger, system, watch, market, selected, admission, now=now,
+                market_label=market_labels[market], selected_role=role,
+                selected_line=selected_line,
+            )
+            audit.append({
+                "market": market, "status": "MATCHED_NO_BET",
+                "reason": "wilson_gate_not_passed",
+                "condition_number": frozen.get("condition_number"),
+                "frozen_condition_signature": admission["signature"],
+                "wilson_admission": admission["arithmetic"],
+                "observation_id": observation.get("observation_id") if observation else None,
+            })
+        if not accepted:
+            continue
+        admission = accepted[0]
         proposed.append((market, selected, admission, role, selected_line, label))
     # One candidate per market was selected above. Fixture caps are defensive
     # only; all three supported markets may be admitted for HK$1,500.
@@ -156,6 +182,7 @@ def evaluate(
         created.append(bet)
         audit.append({"market": market, "status": "CREATED", "reason": "wilson_candidate_frozen",
                       "bet_id": bet["bet_id"], "frozen_condition_signature": bet["frozen_condition_signature"],
+                      "condition_number": bet.get("condition_number"),
                       "wilson_admission": bet["wilson_admission"]})
         # The caller owns one atomic ledger append after all markets pass.
     ns["audit"] = (ns.get("audit") or []) + [{"ts": now, "match_id": fixture, **row} for row in audit]

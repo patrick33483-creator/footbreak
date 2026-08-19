@@ -27,6 +27,29 @@ sync_crown_web_root() {
   find "$CROWN_WEB_ROOT" -type f -exec chmod 0644 {} +
 }
 
+bootstrap_footbreak_web_root() {
+  # Static sync deliberately excludes runtime payloads on every install.  On a
+  # fresh host, publish a provider-free minimal payload before nginx starts;
+  # upgrades keep their existing artifact untouched.  This mode does not read
+  # predictions/ledger state and cannot make a provider request.
+  if [ ! -f "$WEB_ROOT/data.json" ]; then
+    local dashboard_python="${FOOTBREAK_DASHBOARD_PYTHON:-$APP_DIR/.venv/bin/python3}"
+    echo "  首次建立 Footbreak 空白儀表板資料（毋須 state 或網絡）"
+    if [ ! -x "$dashboard_python" ]; then
+      echo "ERROR: Footbreak 儀表板 Python 不可用" >&2
+      return 1
+    fi
+    (cd "$APP_DIR" && "$dashboard_python" -m system.gen_app_data \
+      --bootstrap-empty --out "$WEB_ROOT/data.json")
+    if [ ! -f "$WEB_ROOT/data.json" ] || [ ! -f "$WEB_ROOT/history.json" ]; then
+      echo "ERROR: Footbreak 初始 data.json/history.json 未能建立" >&2
+      return 1
+    fi
+    chown root:www-data "$WEB_ROOT/data.json" "$WEB_ROOT/history.json"
+    chmod 0644 "$WEB_ROOT/data.json" "$WEB_ROOT/history.json"
+  fi
+}
+
 echo "▸ 1/7 安裝系統套件"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
@@ -123,7 +146,8 @@ if [ ! -f /etc/nginx/.htpasswd-crown ]; then
   printf '%s\n' "$CROWN_DASHBOARD_PASSWORD" > /root/crown-dashboard-password.txt
   chmod 600 /root/crown-dashboard-password.txt
 fi
-rsync -a "$APP_DIR/hkjc-dashboard/" "$WEB_ROOT/"
+rsync -a --exclude 'data.json' --exclude 'history.json' "$APP_DIR/hkjc-dashboard/" "$WEB_ROOT/"
+bootstrap_footbreak_web_root
 sync_crown_web_root
 # 建立安全的空白/現有 state 儀表板；這個指令完全不會呼叫網絡。
 (cd "$APP_DIR" && CROWN_STATE_DIR="$CROWN_STATE_DIR" CROWN_WEB_ROOT="$CROWN_WEB_ROOT" \
@@ -133,6 +157,12 @@ chown root:www-data "$CROWN_WEB_ROOT/data.json"
 chmod 0644 "$CROWN_WEB_ROOT/data.json"
 chown root:www-data "$CROWN_WEB_ROOT/history.json"
 chmod 0644 "$CROWN_WEB_ROOT/history.json"
+# Footbreak history sidecar is produced by the local publication path.  Keep
+# it across setup upgrades and ensure nginx can read an existing artifact.
+if [ -f "$WEB_ROOT/history.json" ]; then
+  chown root:www-data "$WEB_ROOT/history.json"
+  chmod 0644 "$WEB_ROOT/history.json"
+fi
 nginx -t
 systemctl enable nginx
 # Reload an existing nginx instance; on a first install reload is unavailable,

@@ -80,6 +80,11 @@ fi
 # Only a fully successful pass may replace the nginx dashboard artifact.
 if [ -f "$APP_DIR/hkjc-dashboard/data.json" ] && [ -d "$WEB_ROOT" ]; then
   install -m 0644 "$APP_DIR/hkjc-dashboard/data.json" "$WEB_ROOT/data.json"
+  # Full prediction rows are published atomically beside the light boot
+  # payload. Do not rebuild them here; this is a pure completed-pass copy.
+  if [ -f "$APP_DIR/hkjc-dashboard/history.json" ]; then
+    install -m 0644 "$APP_DIR/hkjc-dashboard/history.json" "$WEB_ROOT/history.json"
+  fi
 fi
 
 # Resolve only this service's prior incident after all of its durable output

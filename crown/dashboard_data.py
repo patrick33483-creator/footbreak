@@ -46,6 +46,20 @@ def _public_ledger(ledger: dict[str, Any]) -> tuple[dict[str, Any], list[dict[st
         "cutover_at": wilson.get("cutover_at"),
         "display_name": "Wilson 測試攻略",
         "conditions": wilson.get("conditions") or {},
+        "condition_order": wilson.get("condition_order") or [],
+        "observations": [
+            {
+                key: value for key, value in row.items()
+                if key in {
+                    "match_id", "league", "home", "away", "kickoff", "market", "market_label",
+                    "code", "side", "line", "selected_role", "selected_line", "odds", "stage",
+                    "created_at", "condition_number", "bet_status", "no_bet_reason",
+                    "frozen_condition_signature", "wilson_admission",
+                }
+            }
+            for row in (wilson.get("observations") or [])
+            if isinstance(row, dict) and row.get("formal_bet") is False
+        ],
         "retired_v1": wilson.get("retired_v1") or {},
         "historical_discovery_archive": wilson.get("retired_v1") or {},
         "audit": wilson.get("audit") or [],
@@ -59,6 +73,48 @@ def _public_ledger(ledger: dict[str, Any]) -> tuple[dict[str, Any], list[dict[st
     ):
         dashboard_ledger.pop(key, None)
     return dashboard_ledger, active_condition_bets
+
+
+def _wilson_match_projection(row: dict[str, Any], *, bet_status: str) -> dict[str, Any]:
+    """Expose raw frozen admission values rather than presentation-rounding them."""
+    arithmetic = row.get("wilson_admission") if isinstance(row.get("wilson_admission"), dict) else {}
+    display = arithmetic.get("display") if isinstance(arithmetic.get("display"), dict) else {}
+    return {
+        "condition_number": row.get("condition_number"),
+        "market": row.get("market") or row.get("code"),
+        "market_label": row.get("market_label"),
+        "selected_role": row.get("selected_role"),
+        "selected_line": row.get("selected_line", row.get("line")),
+        "odds": arithmetic.get("actual_decimal_odds_raw", row.get("odds")),
+        "minimum_required_odds": arithmetic.get("minimum_acceptable_odds_raw"),
+        "minimum_required_odds_display": display.get("minimum_acceptable_odds"),
+        "bet_status": bet_status,
+        "no_bet_reason": row.get("no_bet_reason") if bet_status != "BET" else None,
+    }
+
+
+def _attach_wilson_matches(matches: list[dict[str, Any]], ledger: dict[str, Any]) -> None:
+    """Attach every formal/rejected match to its current card, never by UI index."""
+    by_fixture: dict[str, list[dict[str, Any]]] = {}
+    for row in active_bets(ledger, "crown"):
+        match_id = str(row.get("match_id") or "")
+        if match_id:
+            by_fixture.setdefault(match_id, []).append(_wilson_match_projection(row, bet_status="BET"))
+    wilson = ledger.get("wilson_validation") if isinstance(ledger.get("wilson_validation"), dict) else {}
+    for row in wilson.get("observations") or []:
+        if not isinstance(row, dict) or row.get("formal_bet") is not False:
+            continue
+        match_id = str(row.get("match_id") or "")
+        if match_id:
+            by_fixture.setdefault(match_id, []).append(_wilson_match_projection(row, bet_status="NO_BET_LOW_ODDS"))
+    for values in by_fixture.values():
+        values.sort(key=lambda item: (
+            int(item.get("condition_number") or 10**9),
+            str(item.get("market") or ""), str(item.get("selected_role") or ""),
+        ))
+    for match in matches:
+        if isinstance(match, dict):
+            match["wilson_matches"] = by_fixture.get(str(match.get("match_id") or ""), [])
 
 
 def _summary(matches: list[dict[str, Any]], active_condition_bets: list[dict[str, Any]]) -> dict[str, int]:
@@ -109,6 +165,7 @@ def write_tick_dashboard_projection(
         for row in matches
     ]
     dashboard_ledger, active_condition_bets = _public_ledger(current_ledger)
+    _attach_wilson_matches(projected_matches, current_ledger)
     payload.update({
         "schema_version": "crown-dashboard-v2",
         "generated_at": iso_hkt(),
@@ -121,8 +178,10 @@ def write_tick_dashboard_projection(
         "prediction_history": (
             payload.get("prediction_history")
             if isinstance(payload.get("prediction_history"), dict)
-            else {"rows": [], "stats": {}}
+            else {"stats": {}}
         ),
+        "history_data_url": payload.get("history_data_url") or HISTORY_DATA_URL,
+        "history_data_version": payload.get("history_data_version"),
         "v2_challenger": (
             current_ledger.get("crown_v2_challenger")
             if isinstance(current_ledger.get("crown_v2_challenger"), dict)
@@ -311,6 +370,7 @@ def _build_payloads(config: Settings) -> tuple[dict[str, Any], dict[str, Any]]:
     # A newly seeded ledger has no calculated stats yet; emit the complete
     # dashboard contract even before the first remote Crown pass.
     recompute_stats(ledger, config)
+    _attach_wilson_matches(matches, ledger)
     stats = ledger.get("stats") or {}
     # Project a condition-portfolio-only ledger for the browser.  Retired
     # portfolio keys may survive in old state until an explicit reset, but

@@ -3,12 +3,14 @@
 唔會叫任何外部 API — 純粹由已有輸出重算分佈。
 """
 import json
+import hashlib
 import math
 import re
 import os
 import sys
 import datetime as dt
 import tempfile
+import argparse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -28,6 +30,8 @@ PROBABILITY_EVIDENCE_PATH = os.environ.get(
 )
 HKT = dt.timezone(dt.timedelta(hours=8))
 DONE_MIN = 130.0        # 開賽後幾分鐘當完場,同 settle.py 一致
+HISTORY_DATA_URL = "history.json"
+HISTORY_ARTIFACT_SCHEMA = "footbreak-history-v1"
 
 
 def probability_evidence_public() -> dict:
@@ -580,11 +584,66 @@ def _public_bet(bet):
         "simulation_only", "real_betting_enabled", "created_at", "condition_accuracy",
         "condition_hits", "condition_decided", "condition_badge", "condition_odds_tier",
         "code", "market", "side", "line", "condition", "strategy_name",
-        "frozen_condition_signature", "frozen_condition_definition",
+        "frozen_condition_signature", "condition_number", "frozen_condition_definition",
         "frozen_historical_evidence", "wilson_admission",
         "result", "pnl", "settled_at", "score", "settlement_source", "void_reason",
     }
     return {key: value for key, value in bet.items() if key in visible}
+
+
+def _public_observation(row):
+    """Project a non-bet Wilson match without exposing its provider payload."""
+    visible = {
+        "match_id", "league", "home", "away", "kickoff", "market", "market_label",
+        "code", "side", "line", "selected_role", "selected_line", "odds", "stage",
+        "created_at", "condition_number", "bet_status", "no_bet_reason",
+        "frozen_condition_signature", "wilson_admission",
+    }
+    return {key: value for key, value in row.items() if key in visible}
+
+
+def _wilson_match_projection(row, *, bet_status):
+    """Use persisted raw Wilson arithmetic; the dashboard must never rederive it."""
+    arithmetic = row.get("wilson_admission") if isinstance(row.get("wilson_admission"), dict) else {}
+    display = arithmetic.get("display") if isinstance(arithmetic.get("display"), dict) else {}
+    return {
+        "condition_number": row.get("condition_number"),
+        "market": row.get("market") or row.get("code"),
+        "market_label": row.get("market_label"),
+        "selected_role": row.get("selected_role"),
+        "selected_line": row.get("selected_line", row.get("line")),
+        "odds": arithmetic.get("actual_decimal_odds_raw", row.get("odds")),
+        "minimum_required_odds": arithmetic.get("minimum_acceptable_odds_raw"),
+        # Preserve both the unrounded admission value and its authoritative
+        # stored display form.  Browser code must not round/recompute a gate.
+        "minimum_required_odds_display": display.get("minimum_acceptable_odds"),
+        "bet_status": bet_status,
+        "no_bet_reason": row.get("no_bet_reason") if bet_status != "BET" else None,
+    }
+
+
+def _history_version(prediction_history):
+    encoded = json.dumps(
+        prediction_history, ensure_ascii=False, separators=(",", ":"), sort_keys=True,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()[:20]
+
+
+def _write_json_atomic(path, payload):
+    """Atomically replace a public JSON artifact and retain nginx readability."""
+    directory = os.path.dirname(path)
+    os.makedirs(directory, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix=".dashboard-data-", dir=directory)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, separators=(",", ":"))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        os.chmod(path, 0o644)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
 
 
 def _public_log_entries(rows):
@@ -600,10 +659,139 @@ def _public_log_entries(rows):
     return output[-30:]
 
 
-def main():
-    preds = json.load(open(os.path.join(HERE, "predictions.json"), encoding="utf-8"))
+def write_empty_bootstrap(out_path):
+    """Publish a provider-free first-install dashboard payload.
+
+    This deliberately does not inspect predictions, ledgers, archives, or
+    provider caches.  It is only the setup-time escape hatch for a new host
+    before its first manual/scheduled local pass.
+    """
+    generated_at = dt.datetime.now(HKT).isoformat(timespec="seconds")
+    prediction_history = {
+        "rows": [],
+        "stats": _prediction_history_stats([], include_granular=True),
+    }
+    history_version = _history_version(prediction_history)
+    ledger = {
+        "bankroll": STARTING_BANKROLL,
+        "bets": [],
+        "log": [],
+        "independent_validation": {
+            "schema_version": None,
+            "validation_started_at": None,
+            "activation_at": None,
+            "cutover_at": None,
+            "display_name": "Wilson 測試攻略",
+            "conditions": {},
+            "condition_order": [],
+            "observations": [],
+            "retired_v1": {},
+            "historical_discovery_archive": {},
+        },
+        "probability_research": {
+            "schema_version": None,
+            "activation_at": None,
+            "cutover_at": None,
+            "mode": None,
+            "stats": {},
+            "evidence_artifact": {
+                "available": False,
+                "reason": "not_yet_run",
+            },
+        },
+        "stats": {
+            "portfolio": PORTFOLIO,
+            "strategy": STRATEGY,
+            "starting_bankroll": STARTING_BANKROLL,
+            "fixed_stake": FIXED_STAKE,
+            "n_pending": 0,
+            "n_voided": 0,
+            "n_settled": 0,
+            "open_stake": 0,
+            "open_pct": 0,
+            "pnl": 0,
+            "turnover": 0,
+            "roi": None,
+            "n_won": 0,
+            "n_lost": 0,
+            "n_decided": 0,
+            "hits": 0,
+            "hit_rate": None,
+            "wilson95": None,
+            "pushes": 0,
+            "cash": STARTING_BANKROLL,
+            "equity": STARTING_BANKROLL,
+            "by_market": {},
+            "odds_tiers": {
+                "scope": "active_wilson_bets_and_results_only",
+                "system": "footbreak",
+                "tiers": [],
+                "excluded_diagnostics": {},
+            },
+            "curve": [],
+            "res_counts": {},
+            "notify": {
+                "last_sent": None,
+                "n_bets": 0,
+                "n_settled": 0,
+                "n_queue": 0,
+                "n_sweeps": 0,
+                "last_sweep": None,
+            },
+            "bet_stage": "T-5",
+            "rules": {
+                "stake": FIXED_STAKE,
+                "historical_hit_rate": "Wilson 95% 下限 ≥ 實際損益平衡率 +3pp",
+                "minimum_decided": 50,
+                "new_t5_only": True,
+                "fixture_stake_cap": 1500,
+                "fixture_market_cap": 3,
+            },
+            "n_watch": 0,
+            "n_stage_preds": 0,
+        },
+    }
+    history_artifact = {
+        "schema_version": HISTORY_ARTIFACT_SCHEMA,
+        "generated_at": generated_at,
+        "history_data_version": history_version,
+        "prediction_history": prediction_history,
+    }
+    payload = {
+        "generated_at": generated_at,
+        "n_hidden_ended": 0,
+        "matches": [],
+        "ledger": ledger,
+        "accuracy": None,
+        "prediction_history": {"stats": prediction_history["stats"]},
+        "history_data_url": HISTORY_DATA_URL,
+        "history_data_version": history_version,
+        "dashboard_status": {
+            "state": "not_yet_run",
+            "message": "系統尚未執行首次掃描；暫時未有賽事及預測紀錄。",
+        },
+    }
+    # Keep the sidecar/data ordering identical to normal publication so the
+    # browser can never see a bootstrap main payload without its referenced
+    # history artifact.
+    _write_json_atomic(
+        os.path.join(os.path.dirname(os.path.abspath(out_path)), HISTORY_DATA_URL),
+        history_artifact,
+    )
+    _write_json_atomic(out_path, payload)
+    return payload
+
+
+def main(out_path=None):
+    out_path = out_path or OUT
+    with open(os.path.join(HERE, "predictions.json"), encoding="utf-8") as handle:
+        preds = json.load(handle)
     lp = LEDGER_PATH
-    led = json.load(open(lp, encoding="utf-8")) if os.path.exists(lp) else {"bets": [], "log": []}
+    if os.path.exists(lp):
+        with open(lp, encoding="utf-8") as handle:
+            led = json.load(handle)
+    else:
+        led = {"bets": [], "log": []}
 
     for r in preds:
         try:
@@ -709,6 +897,14 @@ def main():
             "cutover_at": (led.get("wilson_validation") or {}).get("cutover_at"),
             "display_name": "Wilson 測試攻略",
             "conditions": (led.get("wilson_validation") or {}).get("conditions") or {},
+            "condition_order": (led.get("wilson_validation") or {}).get("condition_order") or [],
+            # These are matched-but-rejected observations, deliberately kept
+            # outside ``bets`` so they can never enter stakes or settlement.
+            "observations": [
+                _public_observation(row)
+                for row in ((led.get("wilson_validation") or {}).get("observations") or [])
+                if isinstance(row, dict) and row.get("formal_bet") is False
+            ],
             "retired_v1": (led.get("wilson_validation") or {}).get("retired_v1") or {},
             "historical_discovery_archive": (led.get("wilson_validation") or {}).get("retired_v1") or {},
         },
@@ -793,6 +989,26 @@ def main():
     prediction_history = build_prediction_history(
         sync_prediction_archive(watch), bets, acc_history
     )
+    # Match explanations come solely from the frozen T-5 admission decision.
+    # A below-minimum quote is a real Wilson match, but not a portfolio bet.
+    observations = [
+        row for row in ((led.get("wilson_validation") or {}).get("observations") or [])
+        if isinstance(row, dict) and row.get("formal_bet") is False
+    ]
+    by_fixture = {}
+    for bet in bets:
+        match_id = str(bet.get("match_id") or "")
+        if match_id:
+            by_fixture.setdefault(match_id, []).append(_wilson_match_projection(bet, bet_status="BET"))
+    for row in observations:
+        match_id = str(row.get("match_id") or "")
+        if match_id:
+            by_fixture.setdefault(match_id, []).append(_wilson_match_projection(row, bet_status="NO_BET_LOW_ODDS"))
+    for values in by_fixture.values():
+        values.sort(key=lambda item: (
+            int(item.get("condition_number") or 10**9),
+            str(item.get("market") or ""), str(item.get("selected_role") or ""),
+        ))
     # Upcoming cards receive only matches evaluated at their currently
     # persisted stage.  T-30 intentionally cannot observe a later T-5 row.
     from analysis.granular_conditions import match_upcoming
@@ -815,31 +1031,47 @@ def main():
         item["condition_matches"] = (
             matches_by_stage.get(stage, {}).get(str(item.get("match_id")), [])
         )
+        item["wilson_matches"] = by_fixture.get(str(item.get("match_id")), [])
 
+    history_version = _history_version(prediction_history)
+    history_artifact = {
+        "schema_version": HISTORY_ARTIFACT_SCHEMA,
+        "generated_at": dt.datetime.now(HKT).isoformat(timespec="seconds"),
+        "history_data_version": history_version,
+        "prediction_history": prediction_history,
+    }
     out = {
         "generated_at": dt.datetime.now(HKT).isoformat(timespec="seconds"),
         "n_hidden_ended": n_hidden,
         "matches": fix_hdc(preds),
         "ledger": fix_hdc(ledger),
         "accuracy": acc,
-        "prediction_history": prediction_history,
+        # Boot keeps aggregates only. Full records load only when the user
+        # opens 預測紀錄, avoiding a heavy JSON request on every refresh.
+        "prediction_history": {"stats": prediction_history.get("stats") or {}},
+        "history_data_url": HISTORY_DATA_URL,
+        "history_data_version": history_version,
     }
-    os.makedirs(os.path.dirname(OUT), exist_ok=True)
-    fd, temporary = tempfile.mkstemp(prefix=".dashboard-data-", dir=os.path.dirname(OUT))
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(out, handle, ensure_ascii=False, separators=(",", ":"))
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, OUT)
-    finally:
-        if os.path.exists(temporary):
-            os.unlink(temporary)
-    kb = os.path.getsize(OUT) / 1024
+    # Sidecar first, then data.json. The browser compares the content marker,
+    # so a brief two-file replacement cannot show mixed history generations.
+    _write_json_atomic(os.path.join(os.path.dirname(out_path), HISTORY_DATA_URL), history_artifact)
+    _write_json_atomic(out_path, out)
+    kb = os.path.getsize(out_path) / 1024
     _an = f" · 準繩度 {acc['n_matches']} 場" if acc else ""
     print(f"{len(preds)} 場(隱藏已完結 {n_hidden} 場) · 純預測 {n_fc} 場{_an} · "
-          f"{len(bets)} 注 → {OUT} ({kb:.0f} KB)")
+          f"{len(bets)} 注 → {out_path} ({kb:.0f} KB)")
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--bootstrap-empty",
+        action="store_true",
+        help="write a provider-free first-install empty dashboard payload",
+    )
+    parser.add_argument("--out", default=OUT, help="dashboard data.json output path")
+    args = parser.parse_args()
+    if args.bootstrap_empty:
+        write_empty_bootstrap(args.out)
+    else:
+        main(args.out)

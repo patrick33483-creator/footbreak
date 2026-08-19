@@ -193,12 +193,17 @@ for timer in footbreak-tick.timer footbreak-sweep.timer footbreak-settle.timer f
 done
 
 echo "▸ 更新儀表板靜態檔"
-# --exclude data.json:web root 嗰份係跑出嚟嘅實時資料,唔可以用 repo 嗰份覆蓋
-rsync -a --exclude 'data.json' "$APP_DIR/hkjc-dashboard/" "$WEB_ROOT/"
+# Runtime data/history are published atomically by local jobs.  A code update
+# must never replace either artifact with a repository copy.
+rsync -a --exclude 'data.json' --exclude 'history.json' "$APP_DIR/hkjc-dashboard/" "$WEB_ROOT/"
 install -d -o root -g www-data -m 0755 /var/www "$WEB_ROOT"
 chown -R root:www-data "$WEB_ROOT"
 find "$WEB_ROOT" -type d -exec chmod 0755 {} +
 find "$WEB_ROOT" -type f -exec chmod 0644 {} +
+if [ -f "$WEB_ROOT/history.json" ]; then
+  chown root:www-data "$WEB_ROOT/history.json"
+  chmod 0644 "$WEB_ROOT/history.json"
+fi
 install -d -o root -g root -m 0700 /var/lib/footbreak/crown /var/lib/footbreak/learning
 # Runtime dashboard data is deliberately excluded: a deploy never replaces
 # Crown's ledger/state-derived data with the recovered archive snapshot.

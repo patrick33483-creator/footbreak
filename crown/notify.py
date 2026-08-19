@@ -20,6 +20,7 @@ NOTIFICATION_STAGE_MAX_AGE = {
     "T-30": timedelta(minutes=45),
     "T-5": timedelta(minutes=15),
 }
+STATE_LIMIT = 1600
 
 
 def _public_condition_text(value: Any) -> str:
@@ -80,6 +81,38 @@ def _load(config: Settings) -> dict[str, Any]:
     state.setdefault("corner_t5", [])
     state.setdefault("signals", [])
     state.setdefault("wilson_bets", [])
+    state.setdefault("wilson_match_alerts", [])
+    return _seed_wilson_match_alerts(state)
+
+
+def _bounded_unique_ids(values: Any) -> list[str]:
+    """Keep the newest bounded acknowledgement IDs, retaining no duplicates."""
+    if not isinstance(values, (list, tuple)):
+        return []
+    kept: list[str] = []
+    seen: set[str] = set()
+    for value in reversed(values):
+        identity = str(value or "").strip()
+        if not identity or identity in seen:
+            continue
+        seen.add(identity)
+        kept.append(identity)
+        if len(kept) >= STATE_LIMIT:
+            break
+    kept.reverse()
+    return kept
+
+
+def _seed_wilson_match_alerts(state: dict[str, Any]) -> dict[str, Any]:
+    """Migrate legacy formal-bet acknowledgements into the Wilson outbox.
+
+    ``wilson_bets`` is the pre-upgrade formal simulated-bet acknowledgement
+    list.  It is deliberately never populated from low-odds observations.
+    """
+    formal_ids = _bounded_unique_ids(state.get("wilson_bets"))
+    current_ids = _bounded_unique_ids(state.get("wilson_match_alerts"))
+    state["wilson_bets"] = formal_ids
+    state["wilson_match_alerts"] = _bounded_unique_ids(formal_ids + current_ids)
     return state
 
 
@@ -94,35 +127,36 @@ def _wilson_message(bet: dict[str, Any]) -> str | None:
     try:
         kickoff = parse_time(bet.get("kickoff"))
         odds = float(bet.get("odds"))
-        hits, decided = int(history["hits"]), int(history["decided"])
-        lower = float(arithmetic["wilson95_lower_raw"])
-        break_even = float(arithmetic["break_even_rate_raw"])
-        required = float(arithmetic["required_rate_raw"])
         minimum = float(arithmetic["minimum_acceptable_odds_raw"])
         line = float(bet.get("selected_line"))
+        number = int(bet.get("condition_number"))
     except (KeyError, TypeError, ValueError):
         return None
-    if kickoff is None or kickoff <= now_hkt() or odds <= 1 or decided < 50 or lower < required:
+    if kickoff is None or kickoff <= now_hkt() or odds <= 1:
         return None
-    definition = bet.get("frozen_condition_definition") if isinstance(bet.get("frozen_condition_definition"), dict) else {}
-    wording = str(history.get("label") or definition.get("path") or "凍結歷史條件")
+    market = str(bet.get("market_label") or MARKET_LABELS.get(str(bet.get("market") or bet.get("code") or "").upper()) or "").strip()
+    if market not in set(MARKET_LABELS.values()):
+        return None
     return "\n".join([
-        "Wilson 測試攻略｜模擬注",
-        "系統：Crown",
-        f"開賽：{kickoff.astimezone(HKT).strftime('%d/%m %H:%M')} HKT",
-        f"對賽：{bet.get('home') or ''} vs {bet.get('away') or ''}",
-        f"市場：{bet.get('market_label') or MARKET_LABELS.get(bet.get('code'), '—')}",
-        f"選擇／盤口：{bet.get('selected_role') or '—'} {line:g}",
-        f"實際十進制賠率：{odds:.2f}",
-        "模擬注碼：HK$500",
-        f"凍結條件：{_public_condition_text(wording)}",
-        f"歷史：命中 {hits}/{decided} · {hits / decided * 100:.1f}%",
-        f"Wilson 95% 下限：{lower * 100:.1f}%",
-        f"損益平衡命中率：{break_even * 100:.1f}% + 3% = {required * 100:.1f}%",
-        f"PASS：Wilson下限 {lower * 100:.1f}% ≥ {required * 100:.1f}%",
-        f"最低可接受賠率 {minimum:.2f}；目前賠率 {odds:.2f}",
-        "此為獨立測試模擬，沒有任何保證，並非真實投注或投資建議。",
+        f"{kickoff.astimezone(HKT).strftime('%H:%M')} {bet.get('league') or ''}",
+        f"{bet.get('home') or ''} vs {bet.get('away') or ''}",
+        f"合符條件 #{number}",
+        f"投注 {market} · {bet.get('selected_role') or '—'} {line:g}（模擬）",
+        f"現時賠率：{odds:.2f} · 最低賠率要求：{minimum:.2f}",
     ])
+
+
+def _wilson_observation_message(row: dict[str, Any]) -> str | None:
+    if row.get("portfolio") != "crown_wilson_observations" or row.get("bet_status") != "NO_BET_LOW_ODDS":
+        return None
+    clone = dict(row)
+    clone["portfolio"] = "crown_wilson_test"
+    clone["strategy"] = "wilson-test-strategy-v1"
+    message = _wilson_message(clone)
+    if not message:
+        return None
+    # A rejected quote is an observation, never a simulated position.
+    return message.replace("投注 ", "不投注（賠率不足） ", 1).replace("（模擬）", "")
 
 
 def notify_wilson_pending(
@@ -132,14 +166,17 @@ def notify_wilson_pending(
     with notification_lock(config) as acquired:
         if not acquired:
             return 0
-        state = _load(config)
-        sent_ids = {str(value) for value in state.get("wilson_bets") or []}
+        state = _seed_wilson_match_alerts(_load(config))
+        sent_ids = {str(value) for value in state.get("wilson_match_alerts") or []}
         sent = attempted = 0
-        for bet in ledger.get("bets") or []:
-            bid = str(bet.get("bet_id") or "") if isinstance(bet, dict) else ""
-            if not bid or bid in sent_ids or bet.get("status") != "PENDING":
+        rows = list(ledger.get("bets") or []) + list(
+            (ledger.get("wilson_validation") or {}).get("observations") or []
+        )
+        for bet in rows:
+            bid = str(bet.get("bet_id") or bet.get("observation_id") or "") if isinstance(bet, dict) else ""
+            if not bid or bid in sent_ids or (bet.get("bet_id") and bet.get("status") != "PENDING"):
                 continue
-            message = _wilson_message(bet)
+            message = _wilson_message(bet) if bet.get("bet_id") else _wilson_observation_message(bet)
             if message is None:
                 continue
             if max_attempts is not None and attempted >= max(0, max_attempts):
@@ -147,8 +184,13 @@ def notify_wilson_pending(
             attempted += 1
             if _send(config, message) is False:
                 continue
-            state["wilson_bets"].append(bid)
-            state["wilson_bets"] = state["wilson_bets"][-1600:]
+            state["wilson_match_alerts"] = _bounded_unique_ids(
+                list(state.get("wilson_match_alerts") or []) + [bid]
+            )
+            if bet.get("bet_id"):
+                state["wilson_bets"] = _bounded_unique_ids(
+                    list(state.get("wilson_bets") or []) + [bid]
+                )
             sent_ids.add(bid)
             sent += 1
             state["updated_at"] = iso_hkt()

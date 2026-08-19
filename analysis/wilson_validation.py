@@ -148,6 +148,10 @@ def ensure_namespace(ledger: dict[str, Any], system: str, *, now: str | None = N
     ns.setdefault("minimum_decided", MIN_DECIDED)
     ns.setdefault("edge_buffer", EDGE_BUFFER)
     ns.setdefault("conditions", {})
+    # ``condition_order`` is the durable public identity order.  A condition
+    # number is assigned once when immutable historical evidence is frozen,
+    # never from a browser list position or a live ranking sort.
+    ns.setdefault("condition_order", [])
     ns.setdefault("audit", [])
     ns.setdefault("notifications", {"sent": []})
     # This one-time snapshot labels old v1 clearly without modifying a row,
@@ -157,7 +161,80 @@ def ensure_namespace(ledger: dict[str, Any], system: str, *, now: str | None = N
         raise ValueError("Wilson conditions must be an object")
     if not isinstance(ns["audit"], list):
         raise ValueError("Wilson audit must be an array")
+    if not isinstance(ns["condition_order"], list):
+        raise ValueError("Wilson condition order must be an array")
+    _ensure_condition_order(ns)
     return ns
+
+
+def _ensure_condition_order(ns: dict[str, Any]) -> list[str]:
+    """Repair old ledgers deterministically without renumbering a condition."""
+    conditions = ns.get("conditions") if isinstance(ns.get("conditions"), dict) else {}
+    existing = [
+        str(signature) for signature in (ns.get("condition_order") or [])
+        if str(signature) in conditions
+    ]
+    missing = sorted(
+        (str(signature) for signature in conditions if str(signature) not in existing),
+        key=lambda signature: (
+            str((conditions.get(signature) or {}).get("frozen_at") or ""),
+            signature,
+        ),
+    )
+    order = existing + missing
+    ns["condition_order"] = order
+    for index, signature in enumerate(order, start=1):
+        frozen = conditions.get(signature)
+        if isinstance(frozen, dict):
+            # Old records receive their first stable number exactly once.
+            frozen.setdefault("condition_number", index)
+    return order
+
+
+def condition_number(ns: dict[str, Any], signature: str) -> int | None:
+    """Return the persisted, never-render-derived Wilson condition number."""
+    conditions = ns.get("conditions") if isinstance(ns.get("conditions"), dict) else {}
+    frozen = conditions.get(str(signature))
+    if isinstance(frozen, dict):
+        try:
+            return int(frozen.get("condition_number"))
+        except (TypeError, ValueError):
+            pass
+    for index, value in enumerate(_ensure_condition_order(ns), start=1):
+        if value == str(signature):
+            return index
+    return None
+
+
+def freeze_condition(
+    ledger: dict[str, Any], system: str, admission: dict[str, Any], *, now: str,
+) -> dict[str, Any]:
+    """Freeze one matched historical condition even if its quote is too low.
+
+    This deliberately does not create a bet.  It captures the authoritative
+    raw admission arithmetic and gives the immutable condition its permanent
+    number, so rejected observations and accepted simulations identify the
+    same condition everywhere.
+    """
+    ns = ensure_namespace(ledger, system, now=now)
+    signature = str(admission["signature"])
+    frozen = ns["conditions"].get(signature)
+    if not isinstance(frozen, dict):
+        frozen = {
+            "signature": signature,
+            "frozen_at": now,
+            "definition": copy.deepcopy(admission["definition"]),
+            "historical_evidence": copy.deepcopy(admission["history"]),
+            "admission_arithmetic": copy.deepcopy(admission["arithmetic"]),
+            "prospective": {},
+        }
+        ns["conditions"][signature] = frozen
+    order = _ensure_condition_order(ns)
+    if signature not in order:
+        order.append(signature)
+        ns["condition_order"] = order
+    frozen.setdefault("condition_number", order.index(signature) + 1)
+    return frozen
 
 
 def condition_definition(system: str, candidate: dict[str, Any]) -> dict[str, Any]:
@@ -311,12 +388,29 @@ def choose_admission(
     ], *, stage_at: str,
 ) -> tuple[dict[str, Any] | None, str]:
     """Select one exact market condition by raw safety margin, fail closed."""
+    matches, reason = matching_admissions(system, market, selected, candidates, stage_at=stage_at)
+    eligible = [row for row in matches if row["arithmetic"].get("passes")]
+    if not eligible:
+        return None, reason
+    return eligible[0], "wilson_pass"
+
+
+def matching_admissions(
+    system: str, market: str, selected: dict[str, Any],
+    candidates: Iterable[dict[str, Any]], *, stage_at: str,
+) -> tuple[list[dict[str, Any]], str]:
+    """Return every exact historical condition plus its unrounded admission.
+
+    A quote below the raw Wilson minimum remains a real condition match.  The
+    caller can persist/display/notify it as an observation without converting
+    it into a formal simulation bet.
+    """
     selected_sig = _selection_signature(market, selected)
     odds = _number(selected.get("odds"))
     if selected_sig is None:
-        return None, "selected_line_or_side_invalid"
+        return [], "selected_line_or_side_invalid"
     if odds is None or odds <= 1:
-        return None, "selected_odds_invalid_or_missing"
+        return [], "selected_odds_invalid_or_missing"
     grouped: dict[str, list[tuple[dict[str, Any], dict[str, Any], dict[str, Any]]]] = {}
     for candidate in candidates:
         if str(candidate.get("market") or "") != market or _selection_signature(market, candidate) != selected_sig:
@@ -325,7 +419,7 @@ def choose_admission(
         history = _historical(candidate, definition, stage_at)
         if history is not None:
             grouped.setdefault(signature, []).append((candidate, definition, history))
-    eligible: list[dict[str, Any]] = []
+    matches: list[dict[str, Any]] = []
     for signature, rows in grouped.items():
         baseline = rows[0][2]
         # Duplicate discovery rows for one condition must agree exactly.  A
@@ -336,22 +430,87 @@ def choose_admission(
         ):
             continue
         arithmetic = admission_arithmetic(baseline["hits"], baseline["decided"], odds)
-        if arithmetic is None or not arithmetic["passes"]:
+        if arithmetic is None:
             continue
-        eligible.append({
+        matches.append({
             "signature": signature, "definition": rows[0][1], "history": baseline,
             "arithmetic": arithmetic, "candidate": rows[0][0],
             "safety_margin": arithmetic["wilson95_lower_raw"] - arithmetic["required_rate_raw"],
         })
     if not grouped:
-        return None, "no_frozen_historical_condition"
-    if not eligible:
-        return None, "wilson_gate_not_passed"
-    eligible.sort(key=lambda row: (
+        return [], "no_frozen_historical_condition"
+    matches.sort(key=lambda row: (
         -row["safety_margin"], -row["history"]["decided"],
         -row["arithmetic"]["wilson95_lower_raw"], row["signature"],
     ))
-    return eligible[0], "wilson_pass"
+    return matches, ("wilson_pass" if any(row["arithmetic"]["passes"] for row in matches)
+                     else "wilson_gate_not_passed")
+
+
+def record_match_observation(
+    ledger: dict[str, Any], system: str, watch: dict[str, Any], market: str,
+    selected: dict[str, Any], admission: dict[str, Any], *, now: str,
+    market_label: str, selected_role: str | None, selected_line: float,
+) -> dict[str, Any] | None:
+    """Persist a matched Wilson condition which did not become a formal bet.
+
+    Observations are explicitly segregated from ``bets``.  They are a durable
+    explanation/notification outbox only and therefore cannot alter stake,
+    bankroll, settlement, or any formal portfolio metric.
+    """
+    arithmetic = admission.get("arithmetic")
+    if not isinstance(arithmetic, dict) or arithmetic.get("passes"):
+        return None
+    fixture = str(watch.get("match_id") or "")
+    if not fixture:
+        return None
+    frozen = freeze_condition(ledger, system, admission, now=now)
+    signature = str(admission["signature"])
+    observation_id = f"{fixture}|{market}|{DECISION_STAGE}|{signature}|low-odds"
+    ns = ensure_namespace(ledger, system, now=now)
+    observations = ns.setdefault("observations", [])
+    if not isinstance(observations, list):
+        raise ValueError("Wilson observations must be an array")
+    prior = next(
+        (row for row in observations
+         if isinstance(row, dict) and row.get("observation_id") == observation_id),
+        None,
+    )
+    if prior is not None:
+        return prior
+    row = {
+        "observation_id": observation_id,
+        "portfolio": f"{system}_wilson_observations",
+        "strategy": STRATEGY,
+        "formal_bet": False,
+        "simulation_only": True,
+        "bet_status": "NO_BET_LOW_ODDS",
+        "no_bet_reason": "因賠率不足，不投注",
+        "match_id": fixture,
+        "league": watch.get("league"),
+        "home": watch.get("home"),
+        "away": watch.get("away"),
+        "kickoff": watch.get("kickoff") or watch.get("kickoff_hkt"),
+        "code": market,
+        "market": market,
+        "market_label": market_label,
+        "side": selected.get("side"),
+        "line": selected.get("line", selected.get("condition")),
+        "selected_side": selected.get("side"),
+        "selected_line": selected_line,
+        "selected_role": selected_role,
+        "odds": arithmetic.get("actual_decimal_odds_raw"),
+        "stage": DECISION_STAGE,
+        "created_at": now,
+        "frozen_condition_signature": signature,
+        "condition_number": frozen.get("condition_number"),
+        "frozen_condition_definition": copy.deepcopy(admission["definition"]),
+        "frozen_historical_evidence": copy.deepcopy(admission["history"]),
+        "wilson_admission": copy.deepcopy(arithmetic),
+    }
+    observations.append(row)
+    ns["observations"] = observations[-1600:]
+    return row
 
 
 def commit_bet(
@@ -370,14 +529,7 @@ def commit_bet(
     if len(fixture_rows) >= FIXTURE_MARKET_CAP or sum(_number(row.get("stake")) or 0 for row in fixture_rows) + FIXED_STAKE > FIXTURE_STAKE_CAP:
         return None
     signature = admission["signature"]
-    frozen = ns["conditions"].get(signature)
-    if frozen is None:
-        frozen = {
-            "signature": signature, "frozen_at": now, "definition": copy.deepcopy(admission["definition"]),
-            "historical_evidence": copy.deepcopy(admission["history"]),
-            "admission_arithmetic": copy.deepcopy(admission["arithmetic"]), "prospective": {},
-        }
-        ns["conditions"][signature] = frozen
+    frozen = freeze_condition(ledger, system, admission, now=now)
     bid = f"{fixture}|{market}|{DECISION_STAGE}|{STRATEGY}"
     if any(str(row.get("bet_id") or "") == bid for row in fixture_rows):
         return None
@@ -395,6 +547,7 @@ def commit_bet(
         "stage": DECISION_STAGE, "first_stage": DECISION_STAGE, "status": "PENDING",
         "simulation_only": True, "real_betting_enabled": False, "created_at": now,
         "admission_at": now, "frozen_condition_signature": signature,
+        "condition_number": frozen.get("condition_number"),
         "frozen_condition_definition": copy.deepcopy(admission["definition"]),
         "frozen_historical_evidence": copy.deepcopy(admission["history"]),
         "wilson_admission": arithmetic,

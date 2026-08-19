@@ -11,7 +11,8 @@ from pathlib import Path
 from analysis.wilson_validation import (
     DECISION_STAGE, EDGE_BUFFER, FIXED_STAKE, FIXTURE_STAKE_CAP, MIN_DECIDED,
     STARTING_BANKROLL, admission_arithmetic, choose_admission, commit_bet,
-    ensure_namespace, portfolio_name, recompute_namespace, wilson95,
+    condition_number, ensure_namespace, freeze_condition, matching_admissions,
+    portfolio_name, recompute_namespace, wilson95,
 )
 from analysis.migrate_wilson_strategy import migrate_file
 from analysis.wilson_portfolio import _native_t5, _selected
@@ -159,6 +160,38 @@ class WilsonPortfolioTest(unittest.TestCase):
                                      market_label="讓球", selected_label="客受讓", selected_role="客受讓", selected_line=.25))
         self.assertTrue(all(row["stake"] == FIXED_STAKE for row in ledger["bets"]))
         self.assertEqual(MIN_DECIDED, 50)
+
+    def test_frozen_condition_numbers_ignore_candidate_and_dictionary_order(self):
+        """Public numbers belong to frozen identities, never ranking/UI order."""
+        ledger = {"bets": []}
+        selected_row = selected()
+        first = candidate(key="alpha")
+        second = candidate(key="beta")
+        admissions, reason = matching_admissions(
+            "footbreak", "HDC", selected_row, [second, first],
+            stage_at="2026-08-19T22:55:00+08:00",
+        )
+        self.assertEqual(reason, "wilson_pass")
+        self.assertEqual(len(admissions), 2)
+        by_key = {row["candidate"]["key"][-1]: row for row in admissions}
+        frozen_first = freeze_condition(
+            ledger, "footbreak", by_key["alpha"], now="2026-08-19T23:00:00+08:00",
+        )
+        frozen_second = freeze_condition(
+            ledger, "footbreak", by_key["beta"], now="2026-08-19T23:01:00+08:00",
+        )
+        ns = ledger["wilson_validation"]
+        first_signature = by_key["alpha"]["signature"]
+        second_signature = by_key["beta"]["signature"]
+        self.assertEqual(frozen_first["condition_number"], 1)
+        self.assertEqual(frozen_second["condition_number"], 2)
+        # Simulate a different dashboard/ranking iteration order.
+        ns["conditions"] = dict(reversed(list(ns["conditions"].items())))
+        self.assertEqual(condition_number(ns, first_signature), 1)
+        self.assertEqual(condition_number(ns, second_signature), 2)
+        self.assertEqual(freeze_condition(
+            ledger, "footbreak", by_key["alpha"], now="2026-08-20T00:00:00+08:00",
+        )["condition_number"], 1)
 
     def test_file_migration_is_idempotent_and_non_destructive(self):
         original = {"bets": [{"bet_id": "old", "portfolio": "crown_independent_validation",

@@ -37,6 +37,17 @@ class ConditionSimulationUiTests(unittest.TestCase):
         self.assertIn("投注", (ROOT / "crown" / "notify.py").read_text(encoding="utf-8"))
         self.assertIn("投注", (ROOT / "system" / "notify.py").read_text(encoding="utf-8"))
 
+    def test_wilson_match_card_keeps_stable_number_and_low_odds_explanation(self) -> None:
+        for path in (ROOT / "crown" / "dashboard" / "app.js", ROOT / "hkjc-dashboard" / "app.js"):
+            source = path.read_text(encoding="utf-8")
+            with self.subTest(path=path):
+                self.assertIn("function wilsonMatchText", source)
+                self.assertIn("合符條件 #", source)
+                self.assertIn("minimum_required_odds_display", source)
+                self.assertIn("最低賠率要求", source)
+                self.assertIn("因賠率不足，不投注", source)
+                self.assertIn("wilsonMatches.map(wilsonMatchText)", source)
+
     def test_legacy_creation_paths_are_inactive_and_reset_is_manual(self) -> None:
         engine = (ROOT / "crown" / "engine.py").read_text(encoding="utf-8")
         retired = (ROOT / "crown" / "handicap_world.py").read_text(encoding="utf-8")

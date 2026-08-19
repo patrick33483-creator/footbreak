@@ -61,6 +61,42 @@ def _public_condition_text(value):
 
 
 # ─────────────────────────── 狀態 ───────────────────────────
+def _bounded_unique_ids(values):
+    """Return the newest bounded, non-empty string IDs without replays.
+
+    Notification state is durable across upgrades.  Iterate backwards so an
+    ID retained in the newer Wilson outbox keeps its newest position when a
+    legacy formal-bet list is merged into it.
+    """
+    if not isinstance(values, (list, tuple)):
+        return []
+    kept, seen = [], set()
+    for value in reversed(values):
+        identity = str(value or "").strip()
+        if not identity or identity in seen:
+            continue
+        seen.add(identity)
+        kept.append(identity)
+        if len(kept) >= STATE_LIMIT:
+            break
+    kept.reverse()
+    return kept
+
+
+def _seed_wilson_match_alerts(state):
+    """Preserve formal Wilson acknowledgements when the shared outbox appears.
+
+    ``condition_simulation_bets`` predates ``wilson_match_alerts`` and contains
+    only formal simulated-bet acknowledgements.  Seed the new shared outbox
+    from that list, but never put observations back into the legacy formal key.
+    """
+    formal_ids = _bounded_unique_ids(state.get("condition_simulation_bets"))
+    current_ids = _bounded_unique_ids(state.get("wilson_match_alerts"))
+    state["condition_simulation_bets"] = formal_ids
+    state["wilson_match_alerts"] = _bounded_unique_ids(formal_ids + current_ids)
+    return state
+
+
 def load_state():
     if os.path.exists(STATE):
         try:
@@ -75,16 +111,17 @@ def load_state():
             s.setdefault("signals", [])
             s.setdefault("granular_conditions", [])
             s.setdefault("condition_simulation_bets", [])
+            s.setdefault("wilson_match_alerts", [])
             for key, value in list(s.items()):
                 if isinstance(value, list):
                     s[key] = value[-STATE_LIMIT:]
-            return s
+            return _seed_wilson_match_alerts(s)
         except Exception:
             pass
     return {
         "bets": [], "settled": [], "queue": [], "sweeps": [], "watch": [],
         "reviews": [], "signals": [], "granular_conditions": [],
-        "condition_simulation_bets": [],
+        "condition_simulation_bets": [], "wilson_match_alerts": [],
     }
 
 
@@ -394,10 +431,10 @@ def _condition_prospective(ledger, bet):
 
 def _condition_bet_message(bet, prospective=None):
     """Return one safe Traditional-Chinese condition-bet message or ``None``."""
-    if bet.get("portfolio") != CONDITION_PORTFOLIO or bet.get("strategy") != CONDITION_STRATEGY:
+    observation = bet.get("portfolio") == "footbreak_wilson_observations"
+    if (bet.get("portfolio") != CONDITION_PORTFOLIO or bet.get("strategy") != CONDITION_STRATEGY) and not observation:
         return None
     arithmetic = bet.get("wilson_admission") if isinstance(bet.get("wilson_admission"), dict) else {}
-    historical = bet.get("frozen_historical_evidence") if isinstance(bet.get("frozen_historical_evidence"), dict) else {}
     league = str(bet.get("league") or "").strip()
     home, away = str(bet.get("home") or "").strip(), str(bet.get("away") or "").strip()
     kickoff = _future_kickoff(bet.get("kickoff"))
@@ -406,45 +443,36 @@ def _condition_bet_message(bet, prospective=None):
     odds = _finite_positive(bet.get("odds"))
     try:
         line = float(bet.get("selected_line"))
-        hits = int(historical.get("hits"))
-        decided = int(historical.get("decided"))
-        lower = float(arithmetic.get("wilson95_lower_raw"))
-        break_even = float(arithmetic.get("break_even_rate_raw"))
-        required = float(arithmetic.get("required_rate_raw"))
         minimum = float(arithmetic.get("minimum_acceptable_odds_raw"))
     except (TypeError, ValueError):
         return None
     if (
         not league or not home or not away or kickoff is None or market not in set(MARKET_LABELS.values())
         or not direction or odds is None or odds <= 1 or not math.isfinite(line)
-        or decided < 50 or hits < 0 or hits > decided or lower < required
     ):
         return None
-    definition = bet.get("frozen_condition_definition") if isinstance(bet.get("frozen_condition_definition"), dict) else {}
-    wording = str(historical.get("label") or definition.get("path") or "凍結歷史條件")
+    number = bet.get("condition_number")
+    try:
+        number = int(number)
+    except (TypeError, ValueError):
+        return None
     return "\n".join([
-        "<b>Wilson 測試攻略｜模擬注</b>",
-        "系統：Footbreak",
-        f"聯賽：{esc(league)}",
-        f"主隊：{esc(home)}",
-        f"客隊：{esc(away)}",
-        f"開賽：{kickoff.astimezone(HKT).strftime('%d/%m %H:%M')} HKT",
-        f"市場：{esc(market)}",
-        f"方向：{esc(direction)}",
-        f"盤口：{line:g}",
-        f"實際十進制賠率：{odds:.2f}",
-        "模擬注碼：HK$500",
-        f"凍結條件：{esc(wording)}",
-        f"歷史：命中 {hits}/{decided} · {hits / decided * 100:.1f}%",
-        f"Wilson 95% 下限：{lower * 100:.1f}%",
-        f"損益平衡命中率：{break_even * 100:.1f}% + 3% = {required * 100:.1f}%",
-        f"PASS：Wilson下限 {lower * 100:.1f}% ≥ {required * 100:.1f}%",
-        f"最低可接受賠率 {minimum:.2f}；目前賠率 {odds:.2f}",
-        "此為獨立測試模擬，沒有任何保證，並非真實投注或投資建議。",
+        f"{kickoff.astimezone(HKT).strftime('%H:%M')} {esc(league)}",
+        f"{esc(home)} vs {esc(away)}",
+        f"合符條件 #{number}",
+        f"{'不投注（賠率不足）' if observation else '投注'} {esc(market)} · {esc(direction)} {line:g}{'' if observation else '（模擬）'}",
+        f"現時賠率：{odds:.2f} · 最低賠率要求：{minimum:.2f}",
     ])
 
 
-def notify_pending_condition_bets(ledger, bet_ids=None):
+def _condition_observation_message(row):
+    """Concise no-bet alert for an exact Wilson match below the raw minimum."""
+    if row.get("portfolio") != "footbreak_wilson_observations" or row.get("bet_status") != "NO_BET_LOW_ODDS":
+        return None
+    return _condition_bet_message(row)
+
+
+def notify_pending_condition_bets(ledger, bet_ids=None, *, max_attempts=8):
     """Send committed condition bets that have not yet been acknowledged.
 
     ``bet_ids`` narrows the first attempt to newly-created bets.  Passing
@@ -461,23 +489,35 @@ def notify_pending_condition_bets(ledger, bet_ids=None):
     )
     if requested is not None and not requested:
         return 0
-    state = load_state()
-    sent_ids = set(map(str, state.get("condition_simulation_bets") or []))
-    sent_order = [str(value) for value in state.get("condition_simulation_bets") or []]
-    sent = 0
-    for bet in ledger.get("bets") or []:
+    state = _seed_wilson_match_alerts(load_state())
+    sent_ids = set(map(str, state.get("wilson_match_alerts") or []))
+    sent_order = [str(value) for value in state.get("wilson_match_alerts") or []]
+    rows = list(ledger.get("bets") or []) + list(
+        (ledger.get("wilson_validation") or {}).get("observations") or []
+    )
+    sent = attempted = 0
+    for bet in rows:
         if not isinstance(bet, dict):
             continue
-        bid = str(bet.get("bet_id") or "")
-        if (requested is not None and bid not in requested) or bid in sent_ids:
+        bid = str(bet.get("bet_id") or bet.get("observation_id") or "")
+        if not bid or (requested is not None and bid not in requested) or bid in sent_ids:
             continue
-        text = _condition_bet_message(bet, _condition_prospective(ledger, bet))
+        text = (_condition_bet_message(bet, _condition_prospective(ledger, bet))
+                if bet.get("bet_id") else _condition_observation_message(bet))
         if text is None:
             continue
+        if attempted >= max(0, max_attempts):
+            break
+        attempted += 1
         send(text)
         sent_ids.add(bid)
         sent_order.append(bid)
-        state["condition_simulation_bets"] = sent_order[-STATE_LIMIT:]
+        state["wilson_match_alerts"] = _bounded_unique_ids(sent_order)
+        # Preserve compatibility for operational views that count formal bets.
+        if bet.get("bet_id"):
+            state["condition_simulation_bets"] = _bounded_unique_ids(
+                list(state.get("condition_simulation_bets") or []) + [bid]
+            )
         state["last_sent"] = dt.datetime.now(HKT).isoformat(timespec="seconds")
         save_state(state)
         sent += 1

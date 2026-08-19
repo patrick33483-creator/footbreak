@@ -1,6 +1,7 @@
 """Regression tests for the Crown-style Footbreak prediction history payload."""
 from __future__ import annotations
 
+import json
 import sys
 import tempfile
 import unittest
@@ -12,6 +13,7 @@ if str(SYSTEM_DIR) not in sys.path:
 
 import gen_app_data
 from record_picks import PREDICTION_ERA
+from analysis.wilson_validation import admission_arithmetic
 
 ERA = PREDICTION_ERA
 
@@ -28,6 +30,44 @@ def market_prediction(code="HDC", condition="-0.5", side="H"):
 
 
 class PredictionHistoryPayloadTests(unittest.TestCase):
+    def test_offline_bootstrap_writes_light_main_and_empty_history_sidecar(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            out = Path(directory) / "data.json"
+            payload = gen_app_data.write_empty_bootstrap(str(out))
+            history = json.loads(
+                (Path(directory) / "history.json").read_text(encoding="utf-8")
+            )
+        self.assertEqual(payload["dashboard_status"]["state"], "not_yet_run")
+        self.assertEqual(payload["matches"], [])
+        self.assertEqual(payload["ledger"]["bets"], [])
+        self.assertNotIn("rows", payload["prediction_history"])
+        self.assertEqual(payload["history_data_url"], "history.json")
+        self.assertEqual(
+            payload["history_data_version"], history["history_data_version"]
+        )
+        self.assertEqual(history["schema_version"], "footbreak-history-v1")
+        self.assertEqual(history["prediction_history"]["rows"], [])
+
+    def test_wilson_match_projection_keeps_raw_and_authoritative_display_minimum(self) -> None:
+        arithmetic = admission_arithmetic(41, 59, 1.90)
+        assert arithmetic is not None
+        row = {
+            "condition_number": 9, "market": "HDC", "market_label": "讓球",
+            "selected_role": "主讓", "selected_line": -0.5, "odds": 9.99,
+            "wilson_admission": arithmetic,
+        }
+        projection = gen_app_data._wilson_match_projection(row, bet_status="BET")
+        self.assertEqual(projection["condition_number"], 9)
+        self.assertEqual(projection["odds"], arithmetic["actual_decimal_odds_raw"])
+        self.assertEqual(
+            projection["minimum_required_odds"],
+            arithmetic["minimum_acceptable_odds_raw"],
+        )
+        self.assertEqual(
+            projection["minimum_required_odds_display"],
+            arithmetic["display"]["minimum_acceptable_odds"],
+        )
+
     def test_all_stages_are_kept_and_results_are_joined(self) -> None:
         stage = {
             "prediction_era": ERA,

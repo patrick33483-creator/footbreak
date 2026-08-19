@@ -45,6 +45,10 @@ const oddsSourceLabel = (value) => ODDS_SOURCE_LABEL[value] || value || '未提�
 
 let DATA = null, LIST = [], LED = null, SEL = null, STAGE = 'all', Q = '', VIEW = 'pred';
 let HISTORY_STAGE = 'all';
+const HISTORY_PAGE_SIZE = 50;
+let HISTORY_VISIBLE = HISTORY_PAGE_SIZE;
+let HISTORY = { state: 'idle', payload: null, error: '', version: null, source: null, promise: null };
+let HISTORY_REQUEST_ID = 0;
 
 const kt = (s) => new Date(String(s).replace(' ', 'T') + (/[Z+]/.test(s) ? '' : '+08:00'));
 function hkClock(s) { return kt(s).toLocaleTimeString('zh-HK', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Hong_Kong' }); }
@@ -89,24 +93,98 @@ function heat(p, max) {
   const t = Math.pow(p / max, 0.55);
   return `oklch(${(20 + t * 52).toFixed(1)}% ${(0.012 + t * 0.135).toFixed(3)} 74)`;
 }
+function dashboardEmptyMessage() {
+  const status = DATA && DATA.dashboard_status;
+  if (status && status.state === 'not_yet_run') {
+    return publicText(status.message || '系統尚未執行首次掃描；暫時未有賽事及預測紀錄。');
+  }
+  return '冇符合條件嘅賽事';
+}
 
 /* ══════════════════════ 啟動 ══════════════════════ */
 const API_BASE = '/api';
-function applyData(raw) {
-  const history = raw && raw.prediction_history;
-  if (history && Array.isArray(history.rows)) {
-    history.rows = history.rows.flatMap((row) => {
-      if (!row || typeof row !== 'object') return [];
-      row.market_predictions = (row.market_predictions || []).filter((prediction) => {
+function historyVersion(raw = DATA) {
+  if (!raw || typeof raw !== 'object') return null;
+  return raw.history_data_version || raw.history_generated_at || raw.generated_at || null;
+}
+function sanitizeHistory(history) {
+  const source = history && typeof history === 'object' ? history : {};
+  return {
+    ...source,
+    rows: (source.rows || []).flatMap((sourceRow) => {
+      if (!sourceRow || typeof sourceRow !== 'object') return [];
+      const row = { ...sourceRow };
+      row.market_predictions = (sourceRow.market_predictions || []).filter((prediction) => {
         if (!prediction || !['HDC', 'HIL', 'CHL'].includes(prediction.code)) return false;
         if (!['H', 'A', 'L'].includes(prediction.side)) return false;
         const rawLine = prediction.line == null ? prediction.condition : prediction.line;
         const odds = Number(prediction.odds);
-        return rawLine !== '' && Number.isFinite(Number(rawLine))
-          && Number.isFinite(odds) && odds > 1;
+        return rawLine !== '' && Number.isFinite(Number(rawLine)) && Number.isFinite(odds) && odds > 1;
       });
       return row.market_predictions.length ? [row] : [];
-    });
+    }),
+  };
+}
+function historyPayloadFromArtifact(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  if (raw.prediction_history && typeof raw.prediction_history === 'object') return raw.prediction_history;
+  return Array.isArray(raw.rows) || raw.stats ? raw : null;
+}
+function historyRequestUrl() {
+  const rawUrl = DATA && DATA.history_data_url;
+  if (typeof rawUrl !== 'string' || !rawUrl.trim()) return null;
+  try {
+    const url = new URL(rawUrl, window.location.href);
+    if (url.origin !== window.location.origin) return null;
+    const version = historyVersion();
+    if (version) url.searchParams.set('v', version);
+    return url.toString();
+  } catch (_) { return null; }
+}
+async function loadHistory({ force = false } = {}) {
+  if (HISTORY.source === 'inline') return HISTORY.payload;
+  if (HISTORY.state === 'loading') return HISTORY.promise;
+  if (HISTORY.state === 'ready' && !force) return HISTORY.payload;
+  const url = historyRequestUrl();
+  if (!url) {
+    HISTORY = { state: 'error', payload: null, error: '歷史紀錄檔未提供，請重新載入儀表板後再試。', version: historyVersion(), source: null, promise: null };
+    if (VIEW === 'fc') renderFc();
+    return null;
+  }
+  const expectedVersion = historyVersion(), requestId = ++HISTORY_REQUEST_ID;
+  const request = (async () => {
+    let loaded = null;
+    try {
+      const response = await fetch(url, { cache: 'no-store' });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const artifact = await response.json();
+      const responseVersion = artifact && artifact.history_data_version;
+      if (expectedVersion && responseVersion !== expectedVersion) throw new Error('紀錄正在更新，請重新讀取。');
+      const payload = historyPayloadFromArtifact(artifact);
+      if (!payload || !Array.isArray(payload.rows)) throw new Error('紀錄檔格式無效');
+      if (requestId !== HISTORY_REQUEST_ID) return null;
+      HISTORY = { state: 'ready', payload: sanitizeHistory(payload), error: '', version: expectedVersion || responseVersion || null, source: 'remote', promise: null };
+      loaded = HISTORY.payload;
+    } catch (error) {
+      if (requestId === HISTORY_REQUEST_ID) HISTORY = { state: 'error', payload: null, error: error.message || '讀取失敗', version: expectedVersion, source: null, promise: null };
+    }
+    if (requestId === HISTORY_REQUEST_ID && VIEW === 'fc') renderFc();
+    return loaded;
+  })();
+  HISTORY = { state: 'loading', payload: HISTORY.payload, error: '', version: expectedVersion, source: HISTORY.source, promise: request };
+  if (VIEW === 'fc') renderFc();
+  return request;
+}
+function applyData(raw) {
+  const history = raw && raw.prediction_history;
+  const previousVersion = HISTORY.version;
+  if (history && Array.isArray(history.rows)) {
+    HISTORY = { state: 'ready', payload: sanitizeHistory(history), error: '', version: historyVersion(raw), source: 'inline', promise: null };
+  } else if (HISTORY.source === 'inline' || (
+    previousVersion && historyVersion(raw) && previousVersion !== historyVersion(raw)
+  )) {
+    HISTORY_REQUEST_ID += 1;
+    HISTORY = { state: 'idle', payload: null, error: '', version: historyVersion(raw), source: null, promise: null };
   }
   DATA = raw;
   LED = raw.ledger || { bets: [], stats: {}, log: [] };
@@ -162,9 +240,14 @@ async function refresh(silent) {
       if (!r.ok) throw new Error('HTTP ' + r.status);
       raw = await r.json();
     }
+    const oldHistoryVersion = historyVersion();
+    const historyWasOpen = VIEW === 'fc';
     const changed = raw.generated_at !== (DATA && DATA.generated_at);
     applyData(raw);
     render();
+    if (historyWasOpen && HISTORY.source !== 'inline' && (
+      oldHistoryVersion !== historyVersion() || HISTORY.state === 'error'
+    )) void loadHistory({ force: true });
     if (!silent) {
       flash(settlementBusy
         ? '結算程序運行中，已載入目前最新資料'
@@ -206,7 +289,7 @@ function render() {
       const f = LIST.find((m) => m.pick) || LIST[0];
       SEL = f ? f.match_id : null;
     }
-    if (SEL) renderDetail(SEL);
+    renderDetail(SEL);
   } else if (VIEW === 'fc') {
     renderKpis(); renderFc();
   } else if (VIEW === 'chal') {
@@ -215,7 +298,7 @@ function render() {
   } else if (VIEW === 'health') {
     renderHealth();
     if (HEALTH.state === 'idle') void loadHealth({});
-  } else if (VIEW === 'condition') {
+} else if (VIEW === 'condition') {
     renderCondition();
     if (CONDITION.state === 'idle') void loadCondition({});
   } else {
@@ -348,7 +431,7 @@ function renderList() {
             : `<span class="fx-pick wait">${nextStageText(m, mm)}</span>`}
         </div>
       </div></li>`;
-  }).join('') || '<li class="empty">冇符合條件嘅賽事</li>';
+  }).join('') || `<li class="empty">${esc(dashboardEmptyMessage())}</li>`;
   $$('#fixtures .fx').forEach((el) => {
     el.onclick = () => { SEL = el.dataset.id; renderList(); renderDetail(SEL); };
     el.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); el.onclick(); } };
@@ -359,7 +442,12 @@ function renderList() {
 function renderDetail(id) {
   const m = LIST.find((x) => x.match_id === id);
   const D = $('#detail');
-  if (!m) { D.innerHTML = '<div class="empty">請於左方揀一場賽事</div>'; return; }
+  if (!m) {
+    D.innerHTML = `<div class="empty">${esc(
+      LIST.length ? '請於左方揀一場賽事' : dashboardEmptyMessage(),
+    )}</div>`;
+    return;
+  }
   const mm = minsLeft(m.kickoff_hkt), st = stageOf(mm);
   let h = head(m, mm, st);
   h += verdictCard(m);
@@ -396,7 +484,6 @@ function head(m, mm, st) {
       <span>場地 <strong>${venue}</strong></span>
       ${m.neutral ? '<span style="color:var(--warn)">中立場</span>' : ''}
       <span>馬會盤開盤 <strong class="num">${m.hk_pool_opened ? hkStamp(m.hk_pool_opened) : '—'}</strong></span>
-      <span>馬會編號 <strong class="num">${esc(m.match_id)}</strong></span>
     </div></div>`;
 }
 
@@ -411,6 +498,32 @@ function shortPick(p) {
   return String(p.label || '').replace(/[（(]\s*馬會盤[^）)]*[）)]\s*$/, '').trim();
 }
 
+function wilsonMatchText(item) {
+  const number = numeric(item.condition_number) == null ? '—' : String(Math.trunc(numeric(item.condition_number)));
+  const direction = publicText(item.selected_role || '—');
+  const line = numeric(item.selected_line) == null ? '—' : numeric(item.selected_line).toString();
+  // Producer persists this alongside the raw admission value. Do not derive
+  // it from the UI quote or re-run Wilson arithmetic in the browser.
+  const minimum = numeric(item.minimum_required_odds_display) == null
+    ? f2(item.minimum_required_odds) : String(item.minimum_required_odds_display);
+  const isBet = item.bet_status === 'BET';
+  return `<div class="condition-match"><b>合符條件 #${esc(number)}</b>
+    <span>${esc(marketLabel(item.market_label || item.market))} · ${esc(direction)} ${esc(line)} · 現時賠率 ${f2(item.odds)} · 最低賠率要求 ${esc(minimum)}</span>
+    <span class="${isBet ? 'good-txt' : 'bad-txt'}">${isBet ? '模擬投注' : '因賠率不足，不投注'}</span></div>`;
+}
+
+function wilsonVerdictCard(m) {
+  const matches = (m.wilson_matches || []).filter((item) => item && typeof item === 'object');
+  if (!matches.length) return '';
+  const bets = matches.filter((item) => item.bet_status === 'BET');
+  const lowOdds = matches.filter((item) => item.bet_status !== 'BET');
+  return `<div class="card verdict ${bets.length ? 'go' : 'wait'}">
+    <div class="vd-top"><span class="vd-badge ${bets.length ? 'go' : 'wait'}">${bets.length ? 'Wilson 模擬注' : 'Wilson 不投注'}</span></div>
+    <div class="condition-match-list">${matches.map(wilsonMatchText).join('')}</div>
+    <p class="vd-note">${lowOdds.length ? '已合符歷史 Wilson 條件；低於凍結最低可接受賠率的市場不會建立正式模擬注。' : '所有顯示市場均以凍結 Wilson 條件及原始入場算術建立模擬注。'}</p>
+  </div>`;
+}
+
 function verdictCard(m) {
   const c = m.conviction;
   const bar = `<div class="conv-wrap">
@@ -418,6 +531,8 @@ function verdictCard(m) {
         <div class="conv-floor" style="left:${DATA.ledger.stats.conf_floor || 58}%"></div></div>
       <div class="conv-scale"><span>0</span><span>門檻 ${DATA.ledger.stats.conf_floor || 58}</span><span>100</span></div>
     </div>`;
+  const wilsonVerdict = wilsonVerdictCard(m);
+  if (wilsonVerdict) return wilsonVerdict;
   if (!m.pick) {
     const hasT5 = (m.stages || []).some((x) => x.stage === 'T-5');
     const mm = minsLeft(m.kickoff_hkt);
@@ -1331,17 +1446,20 @@ function historyConsensusCards(stats) {
 
 function conditionMatchesCard(m) {
   const matches = m.condition_matches || [];
-  if (!matches.length) return '';
+  const wilsonMatches = m.wilson_matches || [];
+  if (!matches.length && !wilsonMatches.length) return '';
   return `<section class="card condition-match-card"><h2 class="card-h">條件觀察 <span class="sub">已保存 ${esc(m.stage || '')} 資料</span></h2>
-    <div class="condition-match-list">${matches.map((item) => {
+    ${wilsonMatches.length ? `<div class="condition-match-list">${wilsonMatches.map(wilsonMatchText).join('')}</div>` : ''}
+    ${matches.length ? `<div class="condition-match-list">${matches.map((item) => {
       const total = item.total || {};
       return `<div class="condition-match"><b>${esc(publicText(item.label || ''))}</b><span>${pc(total.accuracy, 1)} (${total.hits || 0}/${total.decided || 0}) · ${esc(item.odds_tier || '')} · ${esc(item.badge || '')}</span></div>`;
-    }).join('')}</div></section>`;
+    }).join('')}</div>` : ''}</section>`;
 }
 
 function renderFc() {
   const V = $('#viewFc');
-  const payload = DATA.prediction_history || { rows: [], stats: {} };
+  const summaryPayload = DATA.prediction_history || { stats: {} };
+  const payload = HISTORY.payload || summaryPayload;
   const historyTime = (row) => {
     const kickoff = Date.parse(row.kickoff || '');
     const predicted = Date.parse(row.predicted_at || '');
@@ -1357,9 +1475,7 @@ function renderFc() {
     return b[0] - a[0] || b[1] - a[1];
     });
   const s = payload.stats || {};
-  const gradedRows = rows.filter((r) => r.result_status === '已核對');
-  const excludedRows = rows.filter((r) => r.result_status === '不計');
-  const pendingRows = rows.filter((r) => r.result_status === '待賽果');
+  const visibleRows = rows.slice(0, HISTORY_VISIBLE);
   const accuracy = s.wdl_accuracy == null ? '待賽果' : pc(s.wdl_accuracy, 1);
   const K = [
     ['記錄賽事', s.matches || 0, ''],
@@ -1421,6 +1537,15 @@ function renderFc() {
       `<button type="button" class="history-stage-filter ${HISTORY_STAGE === value ? 'is-on' : ''}"
         data-history-stage="${value}" aria-pressed="${HISTORY_STAGE === value}">${label}</button>`).join('')}
   </div>`;
+  const historyStatus = (() => {
+    if (HISTORY.state === 'loading') return '<div class="empty2" data-testid="history-loading">正在讀取完整預測紀錄…</div>';
+    if (HISTORY.state === 'error') return `<div class="empty2 bad-txt" data-testid="history-error">預測紀錄讀取失敗：${esc(HISTORY.error || '未知錯誤')}。 <button type="button" class="history-refresh-btn" data-history-refresh>重新讀取</button></div>`;
+    if (HISTORY.state !== 'ready') return '<div class="empty2" data-testid="history-not-loaded">開啟完整紀錄中…</div>';
+    return '';
+  })();
+  const more = rows.length > visibleRows.length
+    ? `<div class="history-more"><button type="button" class="history-more-btn" data-history-more>顯示更多</button><span>${visibleRows.length} / ${rows.length} 筆</span></div>`
+    : rows.length ? `<div class="history-more"><span>已顯示全部 ${rows.length} 筆</span></div>` : '';
 
   V.innerHTML = `<div class="ledger-head">
     <h1 class="pg-h">純預測紀錄 <span class="sub">有冇落注都照記 · 準確率與模擬倉分開</span></h1>
@@ -1436,18 +1561,18 @@ function renderFc() {
     <p class="mx-note">合併市場數字會計首預、T-30、T-5 每個獨立快照；下表則按階段分開。正式學習樣本為當時主線，走水不計入命中率分母；未完場或未取到賽果唔當輸。</p>
   </div>
   ${historyFilters}
-  <div class="card"><h2 class="card-h">已核對賽果 <span class="sub">${gradedRows.length} 筆 · 命中 ${s.hits || 0}</span></h2>
-    ${historyTable(gradedRows, '暫時未有已核對賽果。')}
-  </div>
-  <div class="card"><h2 class="card-h">待賽果 <span class="sub">${pendingRows.length} 筆</span></h2>
-    ${historyTable(pendingRows, '目前冇待核對紀錄。')}
-  </div>
-  <div class="card"><h2 class="card-h">不計入準確率 <span class="sub">${excludedRows.length} 筆</span></h2>
-    ${historyTable(excludedRows, '目前冇延期、取消或腰斬紀錄。')}
+  <div class="card"><h2 class="card-h">${HISTORY_STAGE === 'all' ? '全部紀錄' : `${HISTORY_STAGE} 紀錄`} <span class="sub">${rows.length} 筆 · 最新開賽時間優先</span></h2>
+    ${historyStatus || historyTable(visibleRows, '暫時未有預測紀錄。')}
+    ${historyStatus ? '' : more}
   </div>`;
   $$('#viewFc [data-history-stage]').forEach((button) => {
-    button.onclick = () => { HISTORY_STAGE = button.dataset.historyStage; renderFc(); };
+    button.onclick = () => { HISTORY_STAGE = button.dataset.historyStage; HISTORY_VISIBLE = HISTORY_PAGE_SIZE; renderFc(); };
   });
+  const retry = $('#viewFc [data-history-refresh]');
+  if (retry) retry.onclick = () => loadHistory({ force: true });
+  const showMore = $('#viewFc [data-history-more]');
+  if (showMore) showMore.onclick = () => { HISTORY_VISIBLE += HISTORY_PAGE_SIZE; renderFc(); };
+  if (HISTORY.state === 'idle') void loadHistory();
 }
 
 /* ══════════════════════ 模擬倉 ══════════════════════ */
@@ -1647,7 +1772,7 @@ function conditionBetRow(b) {
   return `<tr class="brow ${String(b.status || '').toLowerCase()}">
     <td class="mono nowrap">${hkDay(b.kickoff)} ${hkClock(b.kickoff)}</td>
     <td><b>${esc(b.home || '—')} <span class="dim">vs</span> ${esc(b.away || '—')}</b><div class="cell-sub">${esc(leagueDisplay(b.league || '—'))}</div></td>
-    <td class="lbl">${esc(marketLabel(b.market_label))}</td>
+    <td class="lbl">${esc(marketLabel(b.market_label))}<div class="cell-sub">條件 #${numeric(b.condition_number) == null ? '—' : Math.trunc(numeric(b.condition_number))}</div></td>
     <td><b>${esc(publicText(b.selected_role || '—'))}</b></td>
     <td class="mono">${numeric(b.selected_line) == null ? '—' : numeric(b.selected_line).toString()}</td>
     <td class="mono">${f2(b.odds)}</td>
