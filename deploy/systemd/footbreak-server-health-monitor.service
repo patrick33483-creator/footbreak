@@ -1,0 +1,22 @@
+[Unit]
+Description=Footbreak and Crown local half-hour health monitor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+WorkingDirectory=/opt/footbreak
+EnvironmentFile=-/etc/footbreak.env
+EnvironmentFile=-/etc/footbreak-crown.env
+Environment=PYTHONPATH=/opt/footbreak
+# Read-only local state/systemd checks only; it never contacts a provider.
+ExecStart=/opt/footbreak/.venv/bin/python3 /opt/footbreak/system/server_health_monitor.py
+TimeoutStartSec=20
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

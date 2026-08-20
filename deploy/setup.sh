@@ -125,6 +125,9 @@ systemctl disable --now footbreak-tick.timer footbreak-t30.timer footbreak-sweep
 systemctl disable --now crown-tick.timer crown-sweep.timer crown-settle.timer 2>/dev/null || true
 # 回測預設停用，需先成功建立基線再啟用。
 systemctl disable --now footbreak-backtest.timer 2>/dev/null || true
+# This monitor is local/read-only: unlike prediction timers it makes no
+# provider request, so it is safe and useful before the first live validation.
+systemctl enable --now footbreak-server-health-monitor.timer
 
 install -m 0644 "$APP_DIR/deploy/nginx-footbreak.conf" /etc/nginx/sites-available/footbreak
 ln -sf /etc/nginx/sites-available/footbreak /etc/nginx/sites-enabled/footbreak
@@ -179,7 +182,7 @@ cat <<'EOF'
   1. nano /etc/footbreak-crown.env ← 填 PinnAPI Edge 設定（唔會顯示或複製）
   2. nano /etc/footbreak.env       ← 填 TELEGRAM_BOT_TOKEN、TELEGRAM_CHAT_ID
   3. 手動試一次:  /opt/footbreak/deploy/run.sh tick
-  4. 驗證成功後:  systemctl enable --now footbreak-tick.timer footbreak-sweep.timer footbreak-settle.timer footbreak-result-reconcile.timer
+  4. 驗證成功後:  systemctl enable --now footbreak-tick.timer footbreak-sweep.timer footbreak-settle.timer footbreak-result-reconcile.timer footbreak-server-health-monitor.timer
   5. 睇 log:      journalctl -u footbreak-tick -f
 
 儀表板:  http://<你嘅-droplet-IP>:8081/

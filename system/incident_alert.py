@@ -271,6 +271,11 @@ class IncidentAlerts:
         descriptions = {
             "service_failure": "排程／服務執行失敗或逾時",
             "health_check_failure": "部署或健康檢查異常",
+            "missing_expected_stage": "預期 T-30/T-5 階段未持久化",
+            "repeated_timeout": "排程連續逾時",
+            "stuck_notification": "通知佇列或傳輸逾時",
+            "dashboard_sidecar_mismatch": "儀表板／歷史資料不同步",
+            "settlement_backlog": "模擬結算積壓逾時",
         }
         if kind_base == "ledger_digest":
             if not active:
@@ -322,6 +327,7 @@ class IncidentAlerts:
         positive_needed: int = 1,
         positive_window_seconds: int | None = None,
         healthy_needed: int = 1,
+        cooldown_seconds: int | None = None,
         observation_token: str | None = None,
         now: datetime | None = None,
     ) -> bool:
@@ -341,6 +347,9 @@ class IncidentAlerts:
         details = _safe_details(details)
         positive_needed = max(1, int(positive_needed))
         healthy_needed = max(1, int(healthy_needed))
+        cooldown_seconds = (
+            max(0, int(cooldown_seconds)) if cooldown_seconds is not None else None
+        )
         if kind.startswith("service_failure:"):
             positive_needed = max(positive_needed, SERVICE_FAILURE_OBSERVATIONS)
             healthy_needed = max(healthy_needed, SERVICE_HEALTHY_OBSERVATIONS)
@@ -356,6 +365,7 @@ class IncidentAlerts:
             incidents = state["incidents"]
             prior = incidents.get(key) if isinstance(incidents.get(key), dict) else {}
             was_active = bool(prior.get("active"))
+            alert_suppressed = bool(prior.get("alert_suppressed"))
             positive_streak = int(prior.get("positive_streak") or 0)
             healthy_streak = int(prior.get("healthy_streak") or 0)
             if observation_token and observation_token == prior.get("last_observation_digest"):
@@ -377,7 +387,29 @@ class IncidentAlerts:
                 current_active = was_active
                 if not was_active and positive_streak >= positive_needed:
                     current_active = True
+                    last_alert = _parse_time(prior.get("last_alert_at"))
+                    cooling_down = bool(
+                        cooldown_seconds
+                        and last_alert is not None
+                        and (_now(now) - last_alert).total_seconds() < cooldown_seconds
+                    )
+                    if not cooling_down:
+                        emit, event = True, "alert"
+                        alert_suppressed = False
+                    else:
+                        alert_suppressed = True
+                elif (
+                    was_active
+                    and alert_suppressed
+                    and cooldown_seconds
+                    and (last_alert := _parse_time(prior.get("last_alert_at"))) is not None
+                    and (_now(now) - last_alert).total_seconds() >= cooldown_seconds
+                ):
+                    # A brief clear/reopen inside cooldown is intentionally
+                    # quiet.  If it remains unhealthy past cooldown, emit one
+                    # delayed transition rather than leaving it invisible.
                     emit, event = True, "alert"
+                    alert_suppressed = False
             else:
                 positive_streak = 0
                 healthy_streak = min(9999, healthy_streak + 1)
@@ -385,6 +417,7 @@ class IncidentAlerts:
                 if was_active and healthy_streak >= healthy_needed:
                     current_active = False
                     emit, event = True, "recovery"
+                    alert_suppressed = False
             if emit:
                 sender = self.sender or telegram_sender(system)
                 delivered = bool(sender(self.message(system, kind, current_active, count, details)))
@@ -396,6 +429,10 @@ class IncidentAlerts:
                 "last_count": count,
                 "last_details": details,
                 "last_transition_at": observed_at if emit else prior.get("last_transition_at"),
+                "last_alert_at": (
+                    observed_at if emit and event == "alert" else prior.get("last_alert_at")
+                ),
+                "alert_suppressed": alert_suppressed,
                 "last_positive_at": observed_at if active else prior.get("last_positive_at"),
                 "last_observation_digest": observation_token,
             }

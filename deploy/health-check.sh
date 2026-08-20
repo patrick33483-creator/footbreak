@@ -41,7 +41,8 @@ echo "=== production health $(TZ=Asia/Hong_Kong date '+%F %T %Z') ==="
 
 for unit in \
   footbreak-tick.timer footbreak-sweep.timer footbreak-settle.timer footbreak-backtest.timer \
-  footbreak-result-reconcile.timer footbreak-dashboard-self-heal.timer; do
+  footbreak-result-reconcile.timer footbreak-dashboard-self-heal.timer \
+  footbreak-server-health-monitor.timer; do
   systemctl is-enabled --quiet "$unit" || {
     state="$(systemctl is-enabled "$unit" 2>&1 || true)"
     echo "FAIL timer $unit enabled_state=$state" >&2

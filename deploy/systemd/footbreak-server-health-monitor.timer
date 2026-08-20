@@ -1,0 +1,12 @@
+[Unit]
+Description=Run Footbreak and Crown local health monitor every 30 minutes
+
+[Timer]
+OnBootSec=7min
+OnUnitActiveSec=30min
+AccuracySec=1min
+Persistent=true
+Unit=footbreak-server-health-monitor.service
+
+[Install]
+WantedBy=timers.target
