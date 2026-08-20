@@ -2237,6 +2237,56 @@ class CrownSafetyTests(unittest.TestCase):
             self.assertEqual(payload["history_data_version"], "cached-history-version")
             self.assertNotEqual(payload["generated_at"], "2026-08-18T23:21:00+08:00")
 
+    def test_tick_postprocess_publishes_durable_t30_before_optional_archive(self) -> None:
+        """A slow/archive-failed history sidecar must not stale the live card."""
+        import crown.run as crown_run
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = replace(settings(), state_dir=root / "private-state", web_root=root / "web")
+            kickoff = (period_bounds()[0] + timedelta(hours=1)).isoformat()
+            stages = [
+                {"stage": "首預", "ts": kickoff},
+                {"stage": "T-30", "status": "PREDICTION_READY", "ts": kickoff},
+            ]
+            # This is the authoritative state already committed by the native
+            # T-30 path while the public card still exposes the old snapshot.
+            save_predictions(config, [{
+                "match_id": "durable-t30", "league": "League", "home": "Home", "away": "Away",
+                "kickoff_hkt": kickoff, "stage": "T-30", "status": "PREDICTION_READY",
+                "book_odds": {"crown": [{"market": "HDC", "odds": 1.91}]},
+                "stages": stages,
+            }])
+            ledger = load_ledger(config)
+            ledger["watch"] = {
+                "durable-t30": {
+                    "match_id": "durable-t30", "kickoff": kickoff, "stages": stages,
+                },
+            }
+            save_ledger(config, ledger)
+            config.web_root.mkdir(parents=True)
+            (config.web_root / "data.json").write_text(json.dumps({
+                "schema_version": "crown-dashboard-v2",
+                "generated_at": "2026-08-18T23:21:00+08:00",
+                "matches": [{"match_id": "durable-t30", "stage": "首預", "stages": [{"stage": "首預"}]}],
+                "prediction_history": {"stats": {"cached": True}},
+            }), encoding="utf-8")
+            sender = Mock()
+            with patch(
+                "crown.run.archive_watch_fast",
+                side_effect=OSError("history sidecar slow or unavailable"),
+            ):
+                crown_run._tick_postprocess_process(sender, config)
+            payload = json.loads((config.web_root / "data.json").read_text(encoding="utf-8"))
+            self.assertEqual(payload["matches"][0]["match_id"], "durable-t30")
+            self.assertEqual(payload["matches"][0]["stage"], "T-30")
+            self.assertEqual(
+                [row["stage"] for row in payload["matches"][0]["stages"]],
+                ["首預", "T-30"],
+            )
+            sender.send.assert_called_once_with(("history_error", "OSError"))
+            sender.close.assert_called_once_with()
+
     def test_dashboard_live_board_uses_verified_crown_prices_as_the_master_list(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -2918,7 +2968,12 @@ class CrownSafetyTests(unittest.TestCase):
                 side_effect=_runtime_tick_postprocess_hang,
             ):
                 status, detail = crown_run._run_tick_postprocess(
-                    replace(settings(), state_dir=Path(directory)), 0.10,
+                    replace(
+                        settings(),
+                        state_dir=Path(directory),
+                        web_root=Path(directory) / "web",
+                    ),
+                    0.10,
                 )
             elapsed = time.monotonic() - started
             self.assertEqual((status, detail), ("deferred", None))

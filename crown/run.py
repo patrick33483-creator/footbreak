@@ -175,7 +175,6 @@ def _tick_postprocess_process(send, config) -> None:
     """Run optional local tick publication outside the deadline-owning parent."""
     try:
         ledger = load_ledger(config)
-        archive_watch_fast(config, ledger)
     except BaseException as exc:
         send.send(("history_error", type(exc).__name__))
     else:
@@ -184,7 +183,19 @@ def _tick_postprocess_process(send, config) -> None:
         except BaseException as exc:
             send.send(("dashboard_error", type(exc).__name__))
         else:
-            send.send(("complete", None))
+            # The native T-30/T-5 snapshot is already durable before this
+            # child begins.  Publish that small projection first: archiving a
+            # large local history document is optional and must not leave the
+            # browser on an old card that falsely reports the stage missing.
+            # The parent may terminate a slow archive at its postprocess
+            # deadline, but the atomic dashboard replacement has already
+            # completed and never consumes Telegram's earlier reservation.
+            try:
+                archive_watch_fast(config, ledger)
+            except BaseException as exc:
+                send.send(("history_error", type(exc).__name__))
+            else:
+                send.send(("complete", None))
     finally:
         send.close()
 
