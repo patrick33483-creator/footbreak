@@ -56,20 +56,13 @@ run_reconciler() {
 }
 
 run_reconciler "Footbreak" "$APP_DIR/deploy/run.sh" settle
-if crown_is_enabled; then
-  run_reconciler "Crown" "$APP_DIR/deploy/crown-run.sh" settle
-else
-  # Crown's explicit validation gate intentionally makes crown.run return a
-  # non-zero result without touching a provider.  Do not turn that safe,
-  # operator-selected disabled state into a Footbreak reconciliation failure.
-  echo "Crown reconciliation skipped: CROWN_ENABLED is not enabled"
-fi
 
-# Crown's settlement/sweep may be deferred or still unwinding when this timer
-# reaches the verifier.  Independently normalize only the local immutable
-# history before verification; this module has no provider, ledger, bet,
-# dashboard, or Telegram path.  A busy state lock is retryable, but must not
-# let the verifier report/publish a history that was not safely normalized.
+# Normalize Crown's local immutable history before Crown settlement publishes
+# the full dashboard/history pair.  Publishing first and repairing afterwards
+# leaves the versioned public sidecar one generation behind the repaired source,
+# so the verifier correctly rejects the mixed projection.  This repair has no
+# provider, ledger, bet, dashboard, or Telegram path.  A busy state lock is
+# retryable and must not let a known-unsafe history reach the Crown publisher.
 CROWN_HISTORY_REPAIR_LOCK_TIMEOUT_SECONDS="${CROWN_HISTORY_REPAIR_LOCK_TIMEOUT_SECONDS:-2}"
 crown_history_shape_ready=1
 echo "=== $(TZ=Asia/Hong_Kong date '+%F %T') Crown local history-shape repair ==="
@@ -80,6 +73,23 @@ else
   crown_history_shape_ready=0
   reconciliation_failed=1
   echo "Crown local history-shape repair did not complete; automatic retry remains scheduled" >&2
+fi
+
+if crown_is_enabled; then
+  if [ "$crown_history_shape_ready" -eq 1 ]; then
+    # Crown settle's existing provider-bounded flow finishes by atomically
+    # publishing history-<version>.json before data.json.  Running it after the
+    # local repair keeps the persisted source, public sidecar, and boot pointer
+    # on the same canonical ordering without introducing another writer.
+    run_reconciler "Crown" "$APP_DIR/deploy/crown-run.sh" settle
+  else
+    echo "Crown reconciliation skipped: local history-shape repair is retryably unavailable" >&2
+  fi
+else
+  # Crown's explicit validation gate intentionally makes crown.run return a
+  # non-zero result without touching a provider.  Do not turn that safe,
+  # operator-selected disabled state into a Footbreak reconciliation failure.
+  echo "Crown reconciliation skipped: CROWN_ENABLED is not enabled"
 fi
 
 # The two settlement runners above actively retry unresolved outcomes through
