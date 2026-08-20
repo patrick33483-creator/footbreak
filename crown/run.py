@@ -20,11 +20,161 @@ _TICK_POSTPROCESS_MIN_SECONDS = 2.0
 _TICK_POSTPROCESS_MAX_SECONDS = 4.0
 _TICK_POSTPROCESS_TEARDOWN_MARGIN_SECONDS = 1.0
 _TICK_NOTIFICATION_MIN_SECONDS = 6.0
+_TICK_ENGINE_TEARDOWN_MARGIN_SECONDS = 0.25
 
 
-def _tick_postprocess_process(send, config, ledger) -> None:
+def _tick_notification_process(
+    send, config, fresh_predictions, notification_deadline: float,
+) -> None:
+    """Load the authoritative outbox and attempt one send within one deadline."""
+    try:
+        ledger = load_ledger(config)
+        remaining = max(0.0, notification_deadline - time.monotonic())
+        if remaining < 0.25:
+            send.send(("deferred", None))
+        else:
+            delivered = notify_new(
+                ledger,
+                config,
+                fresh_predictions,
+                max_attempts=1,
+                max_seconds=min(5.0, remaining),
+            )
+            send.send(("complete", int(delivered)))
+    except BaseException as exc:
+        send.send(("error", type(exc).__name__))
+    finally:
+        send.close()
+
+
+def _run_tick_notification(
+    config, fresh_predictions, max_seconds: float,
+) -> tuple[str, str | None]:
+    """Hard-bound the second ledger read and the Telegram transport together."""
+    if max_seconds <= 0.0:
+        return "deferred", None
+    if os.name != "posix":
+        try:
+            ledger = load_ledger(config)
+            notify_new(
+                ledger, config, fresh_predictions,
+                max_attempts=1, max_seconds=min(5.0, max_seconds),
+            )
+        except BaseException as exc:
+            return "error", type(exc).__name__
+        return "complete", None
+    context = multiprocessing.get_context("fork")
+    receiver, sender = context.Pipe(duplex=False)
+    deadline = time.monotonic() + max_seconds
+    process = context.Process(
+        target=_tick_notification_process,
+        args=(sender, config, fresh_predictions, deadline),
+    )
+    process.start()
+    sender.close()
+    try:
+        if not receiver.poll(max_seconds):
+            return "deferred", None
+        try:
+            status, detail = receiver.recv()
+        except EOFError:
+            return "error", "WorkerExited"
+        return str(status), str(detail) if detail is not None else None
+    finally:
+        receiver.close()
+        if process.is_alive():
+            process.terminate()
+        process.join(timeout=0.10)
+        if process.is_alive():
+            process.kill()
+            process.join(timeout=0.10)
+
+
+def _tick_engine_process(send, config, tick_deadline: float) -> None:
+    """Run all deadline-sensitive tick work behind a killable wall clock."""
+    try:
+        send.send(("complete", run(
+            "tick", config, tick_pass_deadline=tick_deadline,
+        )))
+    except BaseException as exc:
+        send.send(("error", {
+            "type": type(exc).__name__,
+            "origin": _exception_origin(exc),
+        }))
+    finally:
+        send.close()
+
+
+def _run_tick_engine(config, tick_deadline: float) -> dict[str, object]:
+    """Bound state reads, provider work and persistence before TG reserve.
+
+    Atomic state writes remain authoritative if the worker reaches a commit.
+    If any local read, provider call or lock stalls, the parent terminates the
+    worker at the provider cutoff and still has time to retry the durable
+    Wilson outbox.
+    """
+    provider_budget = _tick_pass_deadline_seconds()
+    from .engine import _tick_provider_deadline_seconds
+    reserve = max(0.0, provider_budget - _tick_provider_deadline_seconds())
+    provider_cutoff = tick_deadline - reserve
+    max_seconds = max(
+        0.0,
+        provider_cutoff - time.monotonic() - _TICK_ENGINE_TEARDOWN_MARGIN_SECONDS,
+    )
+    if max_seconds <= 0.0 or os.name != "posix":
+        return {
+            "ok": True,
+            "mode": "tick",
+            "engine_warning": "deferred_tick_deadline",
+            "predictions": 0,
+            "simulations_created": 0,
+        }
+    context = multiprocessing.get_context("fork")
+    receiver, sender = context.Pipe(duplex=False)
+    process = context.Process(
+        target=_tick_engine_process,
+        args=(sender, config, tick_deadline),
+    )
+    process.start()
+    sender.close()
+    try:
+        if not receiver.poll(max_seconds):
+            return {
+                "ok": True,
+                "mode": "tick",
+                "engine_warning": "deferred_tick_deadline",
+                "predictions": 0,
+                "simulations_created": 0,
+            }
+        try:
+            status, payload = receiver.recv()
+        except EOFError:
+            status, payload = "error", {
+                "type": "WorkerExited",
+                "origin": {"type": "WorkerExited"},
+            }
+        if status == "complete" and isinstance(payload, dict):
+            return payload
+        return {
+            "ok": False,
+            "mode": "tick",
+            "reason": f"upstream_{payload.get('type', 'WorkerError')}",
+            "exception_origin": payload.get("origin", {}),
+        }
+    finally:
+        receiver.close()
+        if process.is_alive():
+            process.terminate()
+        process.join(timeout=0.10)
+        if process.is_alive():
+            process.kill()
+            process.join(timeout=0.10)
+
+
+def _tick_postprocess_process(send, config) -> None:
     """Run optional local tick publication outside the deadline-owning parent."""
     try:
+        ledger = load_ledger(config)
         archive_watch_fast(config, ledger)
     except BaseException as exc:
         send.send(("history_error", type(exc).__name__))
@@ -39,7 +189,7 @@ def _tick_postprocess_process(send, config, ledger) -> None:
         send.close()
 
 
-def _run_tick_postprocess(config, ledger, max_seconds: float) -> tuple[str, str | None]:
+def _run_tick_postprocess(config, max_seconds: float) -> tuple[str, str | None]:
     """Hard-bound optional archive/projection and preserve parent teardown room.
 
     Tick persistence and outbox delivery are already complete by this point.
@@ -54,7 +204,7 @@ def _run_tick_postprocess(config, ledger, max_seconds: float) -> tuple[str, str 
     receiver, sender = context.Pipe(duplex=False)
     process = context.Process(
         target=_tick_postprocess_process,
-        args=(sender, config, ledger),
+        args=(sender, config),
     )
     process.start()
     sender.close()
@@ -124,7 +274,11 @@ def main() -> int:
         if args.mode == "tick" else None
     )
     try:
-        result = run(args.mode, config)
+        result = (
+            _run_tick_engine(config, tick_deadline)
+            if args.mode == "tick"
+            else run(args.mode, config)
+        )
     except Exception as exc:
         # Do not serialize an upstream response (which can contain unwanted
         # detail); a failed pass must be visible and must not create a bet.
@@ -145,7 +299,7 @@ def main() -> int:
         write_dashboard_data(config)
         print(result)
         return 0
-    ledger = load_ledger(config)
+    ledger = load_ledger(config) if args.mode != "tick" else None
     history_warning = None
     if args.mode == "tick":
         try:
@@ -156,13 +310,15 @@ def main() -> int:
             # projection can never starve its one bounded transport attempt.
             remaining = tick_deadline - time.monotonic()
             if remaining >= _TICK_NOTIFICATION_MIN_SECONDS:
-                notify_new(
-                    ledger,
+                status, detail = _run_tick_notification(
                     config,
                     result.get("fresh_condition_predictions") or [],
-                    max_attempts=1,
-                    max_seconds=min(5.0, remaining - 1.0),
+                    min(5.5, remaining - 1.0),
                 )
+                if status == "deferred":
+                    result["notification_warning"] = "telegram_deferred_tick_deadline"
+                elif status == "error":
+                    result["notification_warning"] = f"telegram_{detail or 'WorkerError'}"
             else:
                 result["notification_warning"] = "telegram_deferred_tick_deadline"
         except Exception as exc:
@@ -187,7 +343,7 @@ def main() -> int:
                     max(0.0, remaining - _TICK_POSTPROCESS_TEARDOWN_MARGIN_SECONDS),
                 )
                 status, detail = _run_tick_postprocess(
-                    config, ledger, postprocess_budget,
+                    config, postprocess_budget,
                 )
                 if status == "complete":
                     result["dashboard_projection"] = "post_tick_local_state"

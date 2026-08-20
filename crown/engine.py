@@ -1545,7 +1545,12 @@ def _run_local_bulk_t5(
     }
 
 
-def run(mode: str, config: Settings) -> dict[str, Any]:
+def run(
+    mode: str,
+    config: Settings,
+    *,
+    tick_pass_deadline: float | None = None,
+) -> dict[str, Any]:
     """Run a remote pass only when the explicit validation gate and PinnAPI key exist."""
     if mode not in {"tick", "sweep", "settle", "refresh"}:
         raise ValueError("mode must be tick, sweep, settle, or refresh")
@@ -1565,9 +1570,19 @@ def run(mode: str, config: Settings) -> dict[str, Any]:
     existing_predictions = load_predictions(config)
     if mode == "tick":
         # Provider/discovery work must never consume the final outbox window.
-        # `crown.run` owns the enclosing full tick deadline and delivers the
-        # persisted, unacknowledged Wilson opportunity before dashboard work.
-        tick_deadline = time.monotonic() + _tick_provider_deadline_seconds()
+        # `crown.run` owns the enclosing absolute deadline.  Do not start a
+        # fresh provider clock after local state reads: a slow JSON read would
+        # otherwise silently consume the reserved notification window.
+        provider_seconds = _tick_provider_deadline_seconds()
+        reserve_seconds = max(
+            0.0, _tick_pass_deadline_seconds() - provider_seconds,
+        )
+        local_provider_deadline = time.monotonic() + provider_seconds
+        tick_deadline = (
+            min(local_provider_deadline, tick_pass_deadline - reserve_seconds)
+            if tick_pass_deadline is not None
+            else local_provider_deadline
+        )
         titan_rows = _tick_rows_from_predictions(
             existing_predictions, ledger, datetime.now(HKT)
         )

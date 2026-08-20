@@ -168,6 +168,8 @@ class PredictionHistoryUiTests(unittest.TestCase):
             self.assertIn("細緻條件排名", app)
             self.assertIn("命中率嚴格高於 60%", app)
             self.assertIn("Wilson 95%", app)
+            self.assertIn("Wilson 最低要求賠率", app)
+            self.assertIn("歷史賠率層", app)
             self.assertIn("function conditionMatchesCard(m)", app)
             self.assertIn("m.condition_matches", app)
             self.assertIn(".granular-grid", css)

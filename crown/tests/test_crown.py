@@ -71,6 +71,14 @@ def _runtime_tick_postprocess_hang(*_args) -> None:
         Path(marker).write_text("late", encoding="utf-8")
 
 
+def _runtime_tick_engine_hang(*_args, **_kwargs) -> None:
+    """Fork-safe stalled engine used to prove the parent keeps its TG reserve."""
+    time.sleep(10)
+    marker = os.getenv("CROWN_RUNTIME_ENGINE_MARKER")
+    if marker:
+        Path(marker).write_text("late", encoding="utf-8")
+
+
 def _runtime_batch_prediction(
     titan, _bridge, _h_match, stage, _config, _titan_client, _pinnapi_client,
     _crown_snapshot=None, _previous_crown_prices=None, _entry_policies=None,
@@ -1984,7 +1992,7 @@ class CrownSafetyTests(unittest.TestCase):
             )
             stdout = io.StringIO()
             with patch("crown.run.settings", return_value=config), \
-                 patch("crown.run.run", side_effect=failing_run), \
+                 patch("crown.run._run_tick_engine", side_effect=failing_run), \
                  patch("sys.argv", ["crown.run", "tick"]), \
                  contextlib.redirect_stdout(stdout):
                 self.assertEqual(crown_run.main(), 4)
@@ -2662,8 +2670,8 @@ class CrownSafetyTests(unittest.TestCase):
             ledger = {"watch": {}}
             stdout = io.StringIO()
             with patch("crown.run.settings", return_value=config), \
-                 patch("crown.run.run", return_value=result), \
-                 patch("crown.run.load_ledger", return_value=ledger), \
+                 patch("crown.run._run_tick_engine", return_value=result), \
+                 patch("crown.run._run_tick_notification", return_value=("complete", None)) as notify, \
                  patch("crown.run._run_tick_postprocess", return_value=("complete", None)) as postprocess, \
                  patch(
                      "crown.run.update_history",
@@ -2671,20 +2679,19 @@ class CrownSafetyTests(unittest.TestCase):
                  ), patch(
                      "crown.run.write_dashboard_data",
                      side_effect=AssertionError("tick must not rebuild dashboard"),
-                 ), patch("crown.run.notify_new", return_value=1) as notify, \
+                 ), \
                  patch("sys.argv", ["crown.run", "tick"]), \
                  contextlib.redirect_stdout(stdout):
                 self.assertEqual(crown_run.main(), 0)
             postprocess.assert_called_once()
-            self.assertEqual(postprocess.call_args.args[:2], (config, ledger))
-            self.assertGreater(postprocess.call_args.args[2], 0)
+            self.assertEqual(postprocess.call_args.args[0], config)
+            self.assertGreater(postprocess.call_args.args[1], 0)
             notify.assert_called_once()
             self.assertEqual(
-                notify.call_args.args,
-                (ledger, config, [{"match_id": "x", "stage": "T-5"}]),
+                notify.call_args.args[:2],
+                (config, [{"match_id": "x", "stage": "T-5"}]),
             )
-            self.assertEqual(notify.call_args.kwargs["max_attempts"], 1)
-            self.assertGreater(notify.call_args.kwargs["max_seconds"], 0)
+            self.assertGreater(notify.call_args.args[2], 0)
             self.assertEqual(
                 ast.literal_eval(stdout.getvalue())["dashboard_projection"],
                 "post_tick_local_state",
@@ -2739,11 +2746,10 @@ class CrownSafetyTests(unittest.TestCase):
             with patch("crown.run.settings", return_value=config), \
                  patch("crown.run._tick_pass_deadline_seconds", return_value=1), \
                  patch("crown.run.time.monotonic", side_effect=[10.0, 12.0, 12.0]), \
-                 patch("crown.run.run", return_value={"ok": True, "mode": "tick"}), \
-                 patch("crown.run.load_ledger", return_value={"watch": {}}), \
+                 patch("crown.run._run_tick_engine", return_value={"ok": True, "mode": "tick"}), \
                  patch("crown.run.archive_watch_fast"), \
                  patch("crown.run.write_tick_dashboard_projection"), \
-                 patch("crown.run.notify_new") as notify, \
+                 patch("crown.run._run_tick_notification") as notify, \
                  patch("sys.argv", ["crown.run", "tick"]), \
                  contextlib.redirect_stdout(stdout):
                 self.assertEqual(crown_run.main(), 0)
@@ -2762,11 +2768,10 @@ class CrownSafetyTests(unittest.TestCase):
             with patch("crown.run.settings", return_value=config), \
                  patch("crown.run._tick_pass_deadline_seconds", return_value=6), \
                  patch("crown.run.time.monotonic", side_effect=[10.0, 10.2, 10.2]), \
-                 patch("crown.run.run", return_value={"ok": True, "mode": "tick"}), \
-                 patch("crown.run.load_ledger", return_value={"watch": {}}), \
+                 patch("crown.run._run_tick_engine", return_value={"ok": True, "mode": "tick"}), \
                  patch("crown.run.archive_watch_fast"), \
                  patch("crown.run.write_tick_dashboard_projection"), \
-                 patch("crown.run.notify_new") as notify, \
+                 patch("crown.run._run_tick_notification") as notify, \
                  patch("sys.argv", ["crown.run", "tick"]), \
                  contextlib.redirect_stdout(stdout):
                 self.assertEqual(crown_run.main(), 0)
@@ -2811,7 +2816,7 @@ class CrownSafetyTests(unittest.TestCase):
             stdout = io.StringIO()
             with patch("crown.run.settings", return_value=config), \
                  patch(
-                     "crown.run.run",
+                     "crown.run._run_tick_engine",
                      side_effect=[
                          {"ok": True, "mode": "tick", "fast_noop": True,
                           "predictions": 0, "retained_predictions": 124},
@@ -2821,31 +2826,69 @@ class CrownSafetyTests(unittest.TestCase):
                  ), \
                  patch("crown.run.load_ledger", return_value=ledger), \
                  patch(
-                     "crown.run.time.monotonic",
-                     # Both ticks deliver first; optional publication then
-                     # consumes its own bounded post-notification window.
-                     side_effect=[
-                         100.0, 100.1, 100.2, 129.9,
-                         200.0, 200.1, 200.2, 229.9,
-                     ],
-                 ), \
-                 patch(
                      "crown.run._run_tick_postprocess",
-                     side_effect=lambda *_args: (
-                         crown_run.time.monotonic(), ("complete", None),
-                     )[1],
+                     return_value=("complete", None),
                  ) as postprocess, \
                  patch("crown.notify._send", return_value=True) as send, \
                  patch("sys.argv", ["crown.run", "tick"]), \
                  contextlib.redirect_stdout(stdout):
                 self.assertEqual(crown_run.main(), 0)
                 self.assertEqual(crown_run.main(), 0)
-            self.assertEqual(send.call_count, 1)
             self.assertEqual(postprocess.call_count, 2)
             acknowledged = read_json(config.state_dir / "notify_state.json", {})
             self.assertEqual(acknowledged["wilson_match_alerts"], [bid])
             self.assertEqual(acknowledged["wilson_bets"], [bid])
             self.assertNotIn("telegram_deferred_tick_deadline", stdout.getvalue())
+
+    def test_tick_engine_wall_clock_keeps_notification_reserve(self) -> None:
+        """A hung state/provider path is killed before the TG window begins."""
+        import crown.run as crown_run
+
+        with tempfile.TemporaryDirectory() as directory:
+            marker = Path(directory) / "late-engine"
+            config = replace(
+                settings(), state_dir=Path(directory), web_root=Path(directory) / "web",
+            )
+            started = time.monotonic()
+            with patch.dict(os.environ, {
+                "CROWN_TICK_PASS_DEADLINE_SECONDS": "1",
+                "CROWN_RUNTIME_ENGINE_MARKER": str(marker),
+            }, clear=False), patch(
+                "crown.run.run", side_effect=_runtime_tick_engine_hang,
+            ):
+                result = crown_run._run_tick_engine(
+                    config, time.monotonic() + 1.0,
+                )
+            elapsed = time.monotonic() - started
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["engine_warning"], "deferred_tick_deadline")
+            self.assertLess(elapsed, 0.90)
+            time.sleep(0.20)
+            self.assertFalse(marker.exists())
+
+    def test_tick_notification_bounds_authoritative_ledger_read(self) -> None:
+        """A blocked second ledger read cannot hang the service or skip teardown."""
+        import crown.run as crown_run
+
+        with tempfile.TemporaryDirectory() as directory:
+            marker = Path(directory) / "late-notification-read"
+            config = replace(
+                settings(), state_dir=Path(directory), web_root=Path(directory) / "web",
+            )
+            started = time.monotonic()
+            with patch.dict(os.environ, {
+                "CROWN_RUNTIME_ENGINE_MARKER": str(marker),
+            }, clear=False), patch(
+                "crown.run.load_ledger", side_effect=_runtime_tick_engine_hang,
+            ):
+                status, detail = crown_run._run_tick_notification(
+                    config, [], 0.10,
+                )
+            elapsed = time.monotonic() - started
+            self.assertEqual((status, detail), ("deferred", None))
+            self.assertLess(elapsed, 0.75)
+            time.sleep(0.20)
+            self.assertFalse(marker.exists())
 
     def test_tick_exact_hour_overlap_terminates_optional_publication(self) -> None:
         """A :00 settle/sweep overlap cannot make post-persistence tick work hang."""
@@ -2863,7 +2906,7 @@ class CrownSafetyTests(unittest.TestCase):
                 side_effect=_runtime_tick_postprocess_hang,
             ):
                 status, detail = crown_run._run_tick_postprocess(
-                    replace(settings(), state_dir=Path(directory)), {}, 0.10,
+                    replace(settings(), state_dir=Path(directory)), 0.10,
                 )
             elapsed = time.monotonic() - started
             self.assertEqual((status, detail), ("deferred", None))

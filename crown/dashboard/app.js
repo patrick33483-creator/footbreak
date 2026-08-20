@@ -1684,11 +1684,15 @@ function historyConsensusCards(stats) {
     const total = item.total || {}, holdout = item.holdout || {};
     const ci = total.wilson95 || [];
     const lift = item.holdout_lift == null ? '—' : `${item.holdout_lift >= 0 ? '+' : ''}${pc(item.holdout_lift, 1)}`;
+    const lower = numeric(ci[0]);
+    const minimumOdds = lower != null && lower > 0.03
+      ? f2(1 / (lower - 0.03)) : '—';
     return `<article class="granular-rank-card">
       <div class="granular-rank-head"><span>#${index + 1}</span><span class="granular-badge">${esc(item.badge || '觀察')}</span></div>
       <b>${esc(publicText(item.label || ''))}</b><div class="granular-rate">${pc(total.accuracy, 1)}</div>
       <small>命中 ${total.hits || 0}/${total.decided || 0} · Wilson 95% ${ci.length ? `${pc(ci[0], 1)}–${pc(ci[1], 1)}` : '—'}</small>
-      <small>${esc(item.odds_tier || '—')} · 驗證 ${holdout.hits || 0}/${holdout.decided || 0} · lift ${lift}</small>
+      <small>Wilson 最低要求賠率 ${minimumOdds}</small>
+      <small>歷史賠率層 ${esc(item.odds_tier || '—')} · 驗證 ${holdout.hits || 0}/${holdout.decided || 0} · lift ${lift}</small>
     </article>`;
   }).join('');
   return `<section class="granular-block" aria-label="細緻條件排名">
