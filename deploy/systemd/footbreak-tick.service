@@ -18,6 +18,11 @@ ExecStopPost=-/usr/bin/rm -f /run/footbreak-t5-priority
 Environment=FOOTBREAK_TICK_LOCK_WAIT_SECONDS=2
 Environment=FOOTBREAK_TICK_DEADLINE_SECONDS=40
 Environment=FOOTBREAK_REMOTE_TIMEOUT_SECONDS=8
+Environment=FOOTBREAK_LEDGER_PATH=/opt/footbreak/system/sim_ledger.json
+Environment=FOOTBREAK_CROWN_EXECUTION_EVIDENCE_PATH=/var/lib/footbreak/crown/footbreak-execution-evidence.json
+# Crown owns the evidence artifact.  Footbreak can only read its complete
+# atomic replacements during T-5 evaluation.
+ReadOnlyPaths=/var/lib/footbreak/crown/footbreak-execution-evidence.json
 SuccessExitStatus=75
 # 同時開波批次需要完成所有 T-5，再補 T-30。60 秒硬上限仍保證
 # 下一輪可以在落注窗口內重新抓最新資料。

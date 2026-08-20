@@ -241,6 +241,10 @@ exec 8>&-
 chown root:www-data "$WEB_ROOT/data.json" "$WEB_ROOT/history.json"
 chmod 0644 "$WEB_ROOT/data.json" "$WEB_ROOT/history.json"
 install -d -o root -g root -m 0700 /var/lib/footbreak/crown /var/lib/footbreak/learning
+if [ -f "$APP_DIR/system/sim_ledger.json" ]; then
+  chown root:root "$APP_DIR/system/sim_ledger.json"
+  chmod 0600 "$APP_DIR/system/sim_ledger.json"
+fi
 # Runtime dashboard data is deliberately excluded: a deploy never replaces
 # Crown's ledger/state-derived data with the recovered archive snapshot.
 sync_crown_web_root

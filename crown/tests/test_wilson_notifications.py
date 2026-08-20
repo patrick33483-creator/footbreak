@@ -82,6 +82,71 @@ class CrownWilsonNotificationTest(unittest.TestCase):
                 self.assertEqual(notify.notify_wilson_pending(ledger, config), 0)
         self.assertEqual(sender.call_count, 3)
 
+    def test_shared_budget_prioritizes_wilson_over_reciprocal_outbox(self):
+        formal = bet()
+        reciprocal = {
+            "bet_id": "reciprocal|HIL|T-5", "portfolio": "crown_hkjc_execution_test",
+            "strategy": "crown-hkjc-execution-test-v1", "status": "PENDING",
+            "simulation_only": True, "real_betting_enabled": False, "league": "英超",
+            "home": "主", "away": "客", "kickoff": (now_hkt() + timedelta(hours=2)).isoformat(),
+            "market_label": "入球大細", "selected_role": "大", "selected_line": 2.5,
+            "stake": 500, "condition_number": 9, "crown_signal_odds": 1.66,
+            "crown_signal_source": "titan007-crown-id-3",
+            "crown_signal_observed_at": iso_hkt(),
+            "hkjc_execution_odds": 1.9, "hkjc_execution_source": "hkjc_public_board",
+            "hkjc_execution_observed_at": iso_hkt(), "decision_at": iso_hkt(),
+            "wilson_admission": admission_arithmetic(41, 59, 1.9),
+        }
+        state = {"wilson_bets": [], "wilson_match_alerts": [], "hkjc_execution_test_alerts": []}
+        with tempfile.TemporaryDirectory() as directory:
+            config = SimpleNamespace(state_dir=Path(directory))
+            with patch.object(notify, "notification_lock", return_value=nullcontext(True)), \
+                 patch.object(notify, "_load", return_value=state), \
+                 patch.object(notify, "_send", return_value=True) as sender, \
+                 patch.object(notify, "write_json_atomic"):
+                ledger = {"bets": [formal], "crown_hkjc_execution_test": {"bets": [reciprocal]}}
+                self.assertEqual(notify.notify_new(ledger, config, max_attempts=1, max_seconds=5), 1)
+                self.assertEqual(sender.call_count, 1)
+                self.assertIn("【皇冠 Wilson】", sender.call_args.args[1])
+                # The reciprocal alert stays unacknowledged and is retried on
+                # the next pass; it did not receive a second 5-second budget.
+                self.assertEqual(notify.notify_new(ledger, config, max_attempts=1, max_seconds=5), 1)
+                self.assertEqual(sender.call_count, 2)
+                self.assertIn("皇冠×馬會執行測試倉", sender.call_args.args[1])
+
+    def test_shared_wall_clock_budget_does_not_restart_for_reciprocal_outbox(self):
+        formal = bet()
+        reciprocal = {
+            "bet_id": "clock|HIL|T-5", "portfolio": "crown_hkjc_execution_test",
+            "strategy": "crown-hkjc-execution-test-v1", "status": "PENDING",
+            "simulation_only": True, "real_betting_enabled": False, "league": "英超",
+            "home": "主", "away": "客", "kickoff": (now_hkt() + timedelta(hours=2)).isoformat(),
+            "market_label": "入球大細", "selected_role": "大", "selected_line": 2.5,
+            "stake": 500, "condition_number": 9, "crown_signal_odds": 1.66,
+            "crown_signal_source": "titan007-crown-id-3",
+            "crown_signal_observed_at": iso_hkt(),
+            "hkjc_execution_odds": 1.9, "hkjc_execution_source": "hkjc_public_board",
+            "hkjc_execution_observed_at": iso_hkt(), "decision_at": iso_hkt(),
+            "wilson_admission": admission_arithmetic(41, 59, 1.9),
+        }
+        # First outbox consumes the whole 0.5s envelope.  The reciprocal
+        # outbox must not receive a fresh 0.5s deadline.
+        clock = iter([0.0, 0.0, 0.0, 1.0, 1.0])
+        state = {"wilson_bets": [], "wilson_match_alerts": [], "hkjc_execution_test_alerts": []}
+        with tempfile.TemporaryDirectory() as directory:
+            config = SimpleNamespace(state_dir=Path(directory))
+            with patch.object(notify, "notification_lock", return_value=nullcontext(True)), \
+                 patch.object(notify, "_load", return_value=state), \
+                 patch.object(notify, "_send", return_value=True) as sender, \
+                 patch.object(notify, "write_json_atomic"), \
+                 patch("crown.notify.time.monotonic", side_effect=lambda: next(clock)):
+                delivered = notify.notify_new(
+                    {"bets": [formal], "crown_hkjc_execution_test": {"bets": [reciprocal]}},
+                    config, max_attempts=2, max_seconds=.5,
+                )
+        self.assertEqual(delivered, 1)
+        self.assertEqual(sender.call_count, 1)
+
     def test_pre_upgrade_formal_ack_migrates_without_replay_and_low_odds_sends_once(self):
         formal = bet()
         low = low_odds_observation()

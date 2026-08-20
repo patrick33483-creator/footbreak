@@ -93,9 +93,19 @@ def notification_lock(config: Settings):
 
 
 def paths(config: Settings) -> dict[str, Path]:
-    return {"ledger": config.state_dir / "ledger.json", "predictions": config.state_dir / "predictions.json",
-            "notify": config.state_dir / "notify_state.json", "health": config.state_dir / "health.json",
-            "live": config.state_dir / "pinnapi_live.json"}
+    return {
+        "ledger": config.state_dir / "ledger.json",
+        "predictions": config.state_dir / "predictions.json",
+        # This is a deliberately narrow, local-only handoff for Footbreak's
+        # T-5 cross-book execution adapter.  It is not a dashboard payload and
+        # contains no provider response, credential, or unselected board data.
+        "footbreak_execution_evidence": (
+            config.state_dir / "footbreak-execution-evidence.json"
+        ),
+        "notify": config.state_dir / "notify_state.json",
+        "health": config.state_dir / "health.json",
+        "live": config.state_dir / "pinnapi_live.json",
+    }
 
 
 def default_ledger(bankroll: float) -> dict[str, Any]:
@@ -125,6 +135,67 @@ def load_predictions(config: Settings) -> list[dict[str, Any]]:
 
 def save_predictions(config: Settings, data: list[dict[str, Any]]) -> None:
     write_json_atomic(paths(config)["predictions"], data)
+    # Publish only after the native card persistence is durable.  The
+    # counterpart will either observe the complete former sidecar or this
+    # complete replacement; it never reads a copied/partially-written file.
+    write_json_atomic(
+        paths(config)["footbreak_execution_evidence"],
+        _footbreak_execution_evidence(data),
+    )
+
+
+def _footbreak_execution_evidence(data: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Project persisted Crown selected quotes into a bounded local handoff.
+
+    Keep duplicates intact: the Footbreak consumer must reject ambiguous
+    fixture identities rather than silently selecting a preferred card.  The
+    full Crown prediction card remains authoritative; this artifact is only a
+    local, exact-quote view for the reciprocal execution venue.
+    """
+    cards: list[dict[str, Any]] = []
+    quote_keys = (
+        "code", "line", "condition", "side", "odds", "odds_status", "reason",
+        "source", "provider", "observed_at", "observed_board_at",
+    )
+    for card in data:
+        if not isinstance(card, dict):
+            continue
+        hkjc_match_id = str(card.get("hkjc_match_id") or "").strip()
+        kickoff = card.get("kickoff_hkt") or card.get("kickoff")
+        if not hkjc_match_id or kickoff is None:
+            continue
+        # Cross-book execution is permitted only from Crown's immutable native
+        # T-5 snapshot, never from a later dashboard quote refresh.  The
+        # commit path attaches the just-persisted stage snapshots before
+        # `save_predictions()` is called.
+        t5_rows = [
+            row for row in (card.get("stages") or [])
+            if isinstance(row, dict) and row.get("stage") == "T-5"
+        ]
+        journal = (
+            t5_rows[0].get("selected_odds_journal")
+            if len(t5_rows) == 1 else None
+        )
+        rows = [
+            {key: row.get(key) for key in quote_keys if key in row}
+            for row in journal if isinstance(row, dict)
+        ] if isinstance(journal, list) else None
+        projected = {
+            "match_id": card.get("match_id") or card.get("titan_match_id"),
+            "hkjc_match_id": hkjc_match_id,
+            "kickoff_hkt": kickoff,
+        }
+        if rows is not None:
+            # The consumer's historical name remains for compatibility, but
+            # its values are exclusively the immutable Crown T-5 selection.
+            projected["current_selected_odds_journal"] = rows
+        cards.append(projected)
+        # The active-board prediction writer already retains only the current
+        # period.  A hard cap still bounds a damaged/unexpected local payload;
+        # omitted evidence fails closed at the reader.
+        if len(cards) >= 400:
+            break
+    return cards
 
 
 def _prediction_time(prediction: dict[str, Any]) -> datetime | None:

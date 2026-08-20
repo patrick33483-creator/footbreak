@@ -4,7 +4,9 @@ from __future__ import annotations
 import json
 import math
 import re
+import time
 import urllib.request
+from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
 
@@ -22,6 +24,38 @@ NOTIFICATION_STAGE_MAX_AGE = {
     "T-5": timedelta(minutes=15),
 }
 STATE_LIMIT = 1600
+
+
+@dataclass
+class _NotificationBudget:
+    """One pass-wide transport budget shared by all committed outboxes."""
+
+    max_attempts: int | None
+    deadline: float | None
+    attempted: int = 0
+
+    @classmethod
+    def create(cls, max_attempts: int | None, max_seconds: float | None) -> "_NotificationBudget":
+        deadline = (
+            time.monotonic() + max(0.0, max_seconds)
+            if max_seconds is not None else None
+        )
+        return cls(max_attempts=max_attempts, deadline=deadline)
+
+    def remaining(self) -> float | None:
+        return None if self.deadline is None else max(0.0, self.deadline - time.monotonic())
+
+    def can_attempt(self) -> bool:
+        if self.max_attempts is not None and self.attempted >= max(0, self.max_attempts):
+            return False
+        remaining = self.remaining()
+        return remaining is None or remaining > 0.0
+
+    def reserve_attempt(self) -> bool:
+        if not self.can_attempt():
+            return False
+        self.attempted += 1
+        return True
 
 
 def _public_condition_text(value: Any) -> str:
@@ -171,8 +205,10 @@ def notify_wilson_pending(
     *,
     max_attempts: int | None = None,
     max_seconds: float | None = None,
+    _budget: _NotificationBudget | None = None,
 ) -> int:
     """Durable retryable Crown Wilson outbox; old strategy entries are excluded."""
+    budget = _budget or _NotificationBudget.create(max_attempts, max_seconds)
     with notification_lock(config) as acquired:
         if not acquired:
             return 0
@@ -189,10 +225,11 @@ def notify_wilson_pending(
             message = _wilson_message(bet) if bet.get("bet_id") else _wilson_observation_message(bet)
             if message is None:
                 continue
-            if max_attempts is not None and attempted >= max(0, max_attempts):
+            if not budget.reserve_attempt():
                 break
+            remaining = budget.remaining()
             attempted += 1
-            if _send(config, message, max_seconds=max_seconds) is False:
+            if _send(config, message, max_seconds=remaining) is False:
                 continue
             state["wilson_match_alerts"] = _bounded_unique_ids(
                 list(state.get("wilson_match_alerts") or []) + [bid]
@@ -265,8 +302,10 @@ def _hkjc_execution_message(bet: dict[str, Any]) -> str | None:
 def notify_hkjc_execution_pending(
     ledger: dict[str, Any], config: Settings, *, max_attempts: int | None = None,
     max_seconds: float | None = None,
+    _budget: _NotificationBudget | None = None,
 ) -> int:
     """Durable retry outbox for committed reciprocal rows; no rejections."""
+    budget = _budget or _NotificationBudget.create(max_attempts, max_seconds)
     with notification_lock(config) as acquired:
         if not acquired:
             return 0
@@ -282,10 +321,11 @@ def notify_hkjc_execution_pending(
             message = _hkjc_execution_message(bet)
             if message is None:
                 continue
-            if max_attempts is not None and attempted >= max(0, max_attempts):
+            if not budget.reserve_attempt():
                 break
+            remaining = budget.remaining()
             attempted += 1
-            if _send(config, message, max_seconds=max_seconds) is False:
+            if _send(config, message, max_seconds=remaining) is False:
                 continue
             state["hkjc_execution_test_alerts"] = _bounded_unique_ids(
                 list(state.get("hkjc_execution_test_alerts") or []) + [bid]
@@ -647,14 +687,20 @@ def notify_new(
     # cutover.  `fresh_t5_predictions` stays accepted for API compatibility
     # but notification eligibility is the committed Wilson bet itself.
     del fresh_t5_predictions
+    # A tick grants one bounded Telegram opportunity, not one opportunity per
+    # outbox.  Wilson retains priority; the reciprocal row remains durable for
+    # the next pass if Wilson consumed the shared attempt or wall-clock budget.
+    budget = _NotificationBudget.create(max_attempts, max_seconds)
     delivered = notify_wilson_pending(
         ledger,
         config,
         max_attempts=max_attempts,
         max_seconds=max_seconds,
+        _budget=budget,
     )
     return delivered + notify_hkjc_execution_pending(
         ledger, config, max_attempts=max_attempts, max_seconds=max_seconds,
+        _budget=budget,
     )
 
     from analysis.granular_conditions import _role, notification_opportunities

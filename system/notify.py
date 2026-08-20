@@ -12,6 +12,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 
@@ -46,6 +47,30 @@ CONDITION_STRATEGY = "wilson-test-strategy-v1"
 CROWN_EXECUTION_PORTFOLIO = "footbreak_crown_execution_test"
 CROWN_EXECUTION_STRATEGY = "footbreak-crown-execution-test-v1"
 STATE_LIMIT = 1600
+
+
+class _NotificationBudget:
+    """Shared retry/clock envelope for Footbreak's committed-bet outboxes."""
+
+    def __init__(self, max_attempts, max_seconds=None):
+        self.max_attempts = max_attempts
+        self.attempted = 0
+        self.deadline = (
+            time.monotonic() + max(0.0, float(max_seconds))
+            if max_seconds is not None else None
+        )
+
+    def remaining(self):
+        return None if self.deadline is None else max(0.0, self.deadline - time.monotonic())
+
+    def reserve_attempt(self):
+        if self.max_attempts is not None and self.attempted >= max(0, self.max_attempts):
+            return False
+        remaining = self.remaining()
+        if remaining is not None and remaining <= 0:
+            return False
+        self.attempted += 1
+        return True
 
 SIDE_TXT = {"H": "主", "A": "客", "D": "和"}
 RESULT_TXT = {"Won": "贏 ✅", "Lost": "輸 ❌", "Refunded": "走水 ➖",
@@ -479,7 +504,8 @@ def _condition_observation_message(row):
     return _condition_bet_message(row)
 
 
-def notify_pending_condition_bets(ledger, bet_ids=None, *, max_attempts=8):
+def notify_pending_condition_bets(ledger, bet_ids=None, *, max_attempts=8,
+                                  max_seconds=None, _budget=None):
     """Send committed condition bets that have not yet been acknowledged.
 
     ``bet_ids`` narrows the first attempt to newly-created bets.  Passing
@@ -490,6 +516,7 @@ def notify_pending_condition_bets(ledger, bet_ids=None, *, max_attempts=8):
 
     Missing or malformed public fixture information continues to fail closed.
     """
+    budget = _budget or _NotificationBudget(max_attempts, max_seconds)
     requested = (
         {str(value) for value in bet_ids or [] if value}
         if bet_ids is not None else None
@@ -513,10 +540,11 @@ def notify_pending_condition_bets(ledger, bet_ids=None, *, max_attempts=8):
                 if bet.get("bet_id") else _condition_observation_message(bet))
         if text is None:
             continue
-        if attempted >= max(0, max_attempts):
+        if not budget.reserve_attempt():
             break
+        remaining = budget.remaining()
         attempted += 1
-        send(text)
+        send(text, max_seconds=remaining)
         sent_ids.add(bid)
         sent_order.append(bid)
         state["wilson_match_alerts"] = _bounded_unique_ids(sent_order)
@@ -606,13 +634,15 @@ def _parse_time(value):
     return parsed.replace(tzinfo=HKT) if parsed.tzinfo is None else parsed.astimezone(HKT)
 
 
-def notify_pending_crown_execution_bets(ledger, bet_ids=None, *, max_attempts=8):
+def notify_pending_crown_execution_bets(ledger, bet_ids=None, *, max_attempts=8,
+                                        max_seconds=None, _budget=None):
     """Send only committed, still-upcoming cross-book simulation entries.
 
     A transport exception happens before acknowledgement is persisted, allowing
     a later notify-only run to retry.  No rejection or uncommitted candidate is
     ever sent.
     """
+    budget = _budget or _NotificationBudget(max_attempts, max_seconds)
     requested = ({str(value) for value in bet_ids or [] if value}
                  if bet_ids is not None else None)
     if requested is not None and not requested:
@@ -632,10 +662,11 @@ def notify_pending_crown_execution_bets(ledger, bet_ids=None, *, max_attempts=8)
         text = _crown_execution_message(bet)
         if text is None:
             continue
-        if attempted >= max(0, max_attempts):
+        if not budget.reserve_attempt():
             break
+        remaining = budget.remaining()
         attempted += 1
-        send(text)
+        send(text, max_seconds=remaining)
         sent_ids.add(bid)
         sent_order.append(bid)
         state["crown_execution_test_alerts"] = _bounded_unique_ids(sent_order)
@@ -932,7 +963,22 @@ def review_msg(events, generated_at=None):
 
 
 # ─────────────────────────── 發送 ───────────────────────────
-def send(text):
+def notify_pending_committed_bets(ledger, *, max_attempts=8, max_seconds=None):
+    """Drain both Footbreak committed-entry outboxes under one shared budget."""
+    budget = _NotificationBudget(max_attempts, max_seconds)
+    return (
+        notify_pending_condition_bets(
+            ledger, max_attempts=max_attempts, max_seconds=max_seconds,
+            _budget=budget,
+        )
+        + notify_pending_crown_execution_bets(
+            ledger, max_attempts=max_attempts, max_seconds=max_seconds,
+            _budget=budget,
+        )
+    )
+
+
+def send(text, *, max_seconds=None):
     if not CHAT_ID:
         raise RuntimeError("TELEGRAM_CHAT_ID 未設定")
     if BOT_TOKEN:
@@ -949,7 +995,8 @@ def send(text):
             method="POST",
         )
         try:
-            with urllib.request.urlopen(request, timeout=20) as response:
+            timeout = 20 if max_seconds is None else min(20, max(0.1, max_seconds))
+            with urllib.request.urlopen(request, timeout=timeout) as response:
                 result = json.loads(response.read().decode("utf-8"))
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
             raise RuntimeError(f"Telegram 直接發送失敗:{type(exc).__name__}") from exc
@@ -964,8 +1011,10 @@ def send(text):
         "source_id": SOURCE_ID, "tool_name": TOOL,
         "arguments": {"chatId": CHAT_ID, "text": text, "parse_mode": "HTML"},
     }, ensure_ascii=False)
-    p = subprocess.run(["external-tool", "call", payload],
-                       capture_output=True, text=True)
+    p = subprocess.run(
+        ["external-tool", "call", payload], capture_output=True, text=True,
+        timeout=None if max_seconds is None else max(0.1, max_seconds),
+    )
     if p.returncode != 0:
         raise RuntimeError(f"Telegram 發送失敗:{p.stderr.strip()[:400]}")
     return p.stdout.strip()[:200]

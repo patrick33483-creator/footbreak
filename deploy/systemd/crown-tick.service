@@ -13,6 +13,9 @@ ExecStart=/opt/footbreak/deploy/crown-run.sh tick
 # overdue provider workers before this. Keep a 25-second envelope for bounded
 # state/dashboard/notification cleanup and runner incident bookkeeping.
 Environment=CROWN_TICK_PASS_DEADLINE_SECONDS=30
+Environment=CROWN_HKJC_EXECUTION_EVIDENCE_PATH=/opt/footbreak/system/sim_ledger.json
+# Footbreak owns this ledger; Crown's reciprocal adapter only reads it.
+ReadOnlyPaths=/opt/footbreak/system/sim_ledger.json
 TimeoutStartSec=55
 TimeoutStopSec=5
 KillMode=control-group

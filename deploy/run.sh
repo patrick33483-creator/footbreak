@@ -40,6 +40,11 @@ export TZ="Asia/Hong_Kong"
 export PYTHONPATH="$APP_DIR${PYTHONPATH:+:$PYTHONPATH}"
 export LEARNING_DB_PATH="${LEARNING_DB_PATH:-/var/lib/footbreak/learning/predictions.sqlite}"
 export FOOTBREAK_PREDICTION_ARCHIVE_PATH="${FOOTBREAK_PREDICTION_ARCHIVE_PATH:-/var/lib/footbreak/prediction_history_archive.json}"
+# Cross-book execution reads one already-persisted, atomically replaced Crown
+# sidecar.  Do not create/copy this path here: Crown remains its sole writer.
+export FOOTBREAK_LEDGER_PATH="${FOOTBREAK_LEDGER_PATH:-$APP_DIR/system/sim_ledger.json}"
+export CROWN_STATE_DIR="${CROWN_STATE_DIR:-/var/lib/footbreak/crown}"
+export FOOTBREAK_CROWN_EXECUTION_EVIDENCE_PATH="${FOOTBREAK_CROWN_EXECUTION_EVIDENCE_PATH:-$CROWN_STATE_DIR/footbreak-execution-evidence.json}"
 # Read-only reporting projection only.  The recovery workflow is the sole
 # writer and uses an explicit --apply confirmation.
 export ODDS_RECOVERY_SIDECAR="${ODDS_RECOVERY_SIDECAR:-/var/lib/footbreak/private/odds-recovery-overlay.json}"

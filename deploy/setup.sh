@@ -103,6 +103,12 @@ for f in sim_ledger.json notify_state.json predictions.json accuracy.json hk_sna
     echo "  帶入 $f"
   fi
 done
+# This ledger doubles as the bounded reciprocal HKJC evidence source.  The
+# service users are root-only; Crown receives a read-only systemd view.
+if [ -f "$APP_DIR/system/sim_ledger.json" ]; then
+  chown root:root "$APP_DIR/system/sim_ledger.json"
+  chmod 0600 "$APP_DIR/system/sim_ledger.json"
+fi
 mkdir -p "$APP_DIR/system/cache"
 
 # Crown 有完全獨立 state；seed 只帶入一次，更新或重裝都不覆蓋。

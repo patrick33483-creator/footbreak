@@ -28,7 +28,10 @@ from crown_execution_test import (
     recompute as recompute_crown_execution,
 )
 
-LEDGER = os.path.join(HERE, "sim_ledger.json")
+# Production keeps this root-only ledger at the application path.  An
+# explicit path is also injected for Crown's read-only reciprocal handoff;
+# tests may still replace this module variable without changing deployment.
+LEDGER = os.environ.get("FOOTBREAK_LEDGER_PATH", os.path.join(HERE, "sim_ledger.json"))
 HKT = dt.timezone(dt.timedelta(hours=8))
 
 BANKROLL = STARTING_BANKROLL
@@ -465,8 +468,13 @@ def sync(preds_file="predictions.json", *, send_notifications=True):
     if send_notifications:
         try:
             import notify
-            notify.notify_pending_condition_bets(ledger)
-            notify.notify_pending_crown_execution_bets(ledger)
+            # One post-commit delivery envelope covers both isolated
+            # portfolios.  A failed/slow Wilson retry cannot double the
+            # Footbreak tick's notification attempt budget via cross-book.
+            # This supersedes the former `notify_pending_condition_bets(ledger)`
+            # followed by a separate cross-book outbox call; both remain
+            # durable and retryable inside notify_pending_committed_bets().
+            notify.notify_pending_committed_bets(ledger, max_attempts=1, max_seconds=5)
         except Exception as exc:
             notes.append(
                 f"條件模擬注通知發送失敗（{type(exc).__name__}）；"

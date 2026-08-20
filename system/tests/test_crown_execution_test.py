@@ -20,6 +20,10 @@ if str(ROOT / "system") not in sys.path:
 import crown_execution_test as cross
 import notify
 from analysis.wilson_validation import admission_arithmetic, freeze_condition
+from crown import hkjc_execution_test as reciprocal
+from crown.config import settings as crown_settings
+from crown.state import paths as crown_paths, save_predictions
+import record_picks
 
 HKT = timezone(timedelta(hours=8))
 
@@ -107,6 +111,74 @@ class CrossEvidenceTests(unittest.TestCase):
         # The HKJC signal tier (1.66, i.e. <1.70) is not execution evidence.
         self.assertGreater(arithmetic["minimum_acceptable_odds_raw"], 1.50)
 
+    def test_native_crown_t5_persistence_produces_bounded_consumer_evidence(self):
+        kickoff, observed, stage_at = stamp(120), stamp(-1), stamp()
+        card = {
+            "match_id": "crown-fx", "hkjc_match_id": "fx", "kickoff_hkt": kickoff,
+            "raw_provider_payload": {"token": "never-export"},
+            "stages": [{"stage": "T-5", "selected_odds_journal": [{
+                "code": "HIL", "line": 2.5, "side": "H", "odds": 1.9,
+                "odds_status": "available", "source": "titan007-crown-id-3",
+                "provider": "Crown", "observed_at": observed,
+            }]}],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            base = crown_settings()
+            config = type(base)(**{**base.__dict__, "state_dir": Path(directory)})
+            save_predictions(config, [card])
+            sidecar = crown_paths(config)["footbreak_execution_evidence"]
+            projected = json.loads(sidecar.read_text(encoding="utf-8"))
+            self.assertEqual(projected[0]["hkjc_match_id"], "fx")
+            self.assertEqual(projected[0]["current_selected_odds_journal"][0]["odds"], 1.9)
+            self.assertNotIn("raw_provider_payload", json.dumps(projected))
+            with patch.dict(os.environ, {"CROWN_STATE_DIR": directory}, clear=False):
+                quote, reason = cross._crown_quote_for_exact_fixture(
+                    "fx", "HIL", "H", 2.5, cross._time(stage_at), cross._time(kickoff),
+                )
+            self.assertIsNone(reason)
+            self.assertEqual(quote["odds"], 1.9)
+
+    def test_native_footbreak_t5_persistence_carries_reciprocal_hkjc_evidence(self):
+        kickoff = datetime.now(HKT) + timedelta(minutes=20)
+        observed = datetime.now(HKT) - timedelta(seconds=30)
+        result = {
+            "match_id": "hkjc-native", "stage": "T-5", "kickoff_hkt": kickoff.isoformat(),
+            "league": "英超", "home": "主", "away": "客",
+            "selected_odds_observed_at": observed.isoformat(), "candidates": [{
+                "code": "HIL", "market": "入球大細", "line": 2.5, "condition": 2.5,
+                "side": "H", "label": "大", "odds": 1.9, "prob": .56, "push": .04,
+                "is_main": True, "source": "hkjc_public_board",
+                "observed_at": observed.isoformat(),
+            }],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "predictions.json").write_text(json.dumps([result]), encoding="utf-8")
+            ledger_path = root / "sim_ledger.json"
+            with patch.object(record_picks, "HERE", str(root)), \
+                 patch.object(record_picks, "LEDGER", str(ledger_path)), \
+                 patch.object(record_picks, "_record_learning_snapshot", return_value=None), \
+                 patch.object(record_picks, "evaluate_new_t5", return_value=([], [])), \
+                 patch.object(record_picks, "evaluate_probability_research", return_value=([], [])), \
+                 patch.object(record_picks, "evaluate_crown_execution_t5", return_value=([], [])), \
+                 patch.object(record_picks, "recompute", return_value=None), \
+                 patch.object(record_picks, "recompute_crown_execution", return_value=None):
+                _, _, ledger = record_picks.sync(send_notifications=False)
+            stored = ledger["watch"]["hkjc-native"]["stages"][0]["market_predictions"][0]
+            self.assertEqual(stored["odds"], 1.9)
+            self.assertEqual(stored["source"], "hkjc_public_board")
+            self.assertEqual(stored["observed_at"], observed.isoformat())
+            self.assertTrue(ledger_path.exists())
+            with patch.dict(os.environ, {"CROWN_HKJC_EXECUTION_EVIDENCE_PATH": str(ledger_path)}), \
+                 patch.object(reciprocal, "_native_t5", return_value=True):
+                quote, reason = reciprocal._exact_hkjc_quote(
+                    "hkjc-native", "HIL", "H", 2.5,
+                    reciprocal._time(datetime.now(HKT).isoformat()),
+                    reciprocal._time(kickoff.isoformat()),
+                )
+            self.assertIsNone(reason)
+            self.assertEqual(quote["odds"], 1.9)
+
 
 class CrossNotificationTests(unittest.TestCase):
     def _bet(self):
@@ -148,6 +220,17 @@ class CrossDashboardContractTests(unittest.TestCase):
         self.assertIn("執行最低賠率", app)
         self.assertIn("_public_crown_execution_bet", projection)
         self.assertNotIn('"crown_execution_source"', projection.split("def _public_crown_execution_bet", 1)[1].split("def _wilson", 1)[0])
+
+    def test_runtime_contract_uses_authoritative_paths_and_read_only_cross_access(self):
+        deploy = ROOT / "deploy"
+        crown_tick = (deploy / "systemd" / "crown-tick.service").read_text(encoding="utf-8")
+        footbreak_tick = (deploy / "systemd" / "footbreak-tick.service").read_text(encoding="utf-8")
+        self.assertIn("CROWN_HKJC_EXECUTION_EVIDENCE_PATH=/opt/footbreak/system/sim_ledger.json", crown_tick)
+        self.assertIn("ReadOnlyPaths=/opt/footbreak/system/sim_ledger.json", crown_tick)
+        self.assertIn("FOOTBREAK_CROWN_EXECUTION_EVIDENCE_PATH=/var/lib/footbreak/crown/footbreak-execution-evidence.json", footbreak_tick)
+        self.assertIn("ReadOnlyPaths=/var/lib/footbreak/crown/footbreak-execution-evidence.json", footbreak_tick)
+        self.assertIn('chmod 0600 "$APP_DIR/system/sim_ledger.json"', (deploy / "setup.sh").read_text(encoding="utf-8"))
+        self.assertIn('chmod 0600 "$APP_DIR/system/sim_ledger.json"', (deploy / "update.sh").read_text(encoding="utf-8"))
 
 
 class CrossSettlementTests(unittest.TestCase):

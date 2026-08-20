@@ -87,6 +87,70 @@ class FootbreakWilsonNotificationTest(unittest.TestCase):
             self.assertTrue(any("合符條件 #7" in text and "讓球" in text for text in messages))
             self.assertTrue(any("合符條件 #8" in text and "入球大細" in text and "不投注（賠率不足）" in text for text in messages))
 
+    def test_shared_budget_prioritizes_wilson_over_cross_book_outbox(self):
+        formal = bet()
+        cross = {
+            "bet_id": "cross|HIL|T-5", "portfolio": "footbreak_crown_execution_test",
+            "strategy": "footbreak-crown-execution-test-v1", "status": "PENDING",
+            "simulation_only": True, "real_betting_enabled": False, "league": "英超",
+            "home": "主", "away": "客",
+            "kickoff": (datetime.now(HKT) + timedelta(hours=2)).isoformat(),
+            "market_label": "入球大細", "selected_role": "大", "selected_line": 2.5,
+            "stake": 500, "condition_number": 9, "hkjc_signal_odds": 1.66,
+            "hkjc_signal_source": "hkjc_public_board",
+            "hkjc_signal_observed_at": datetime.now(HKT).isoformat(),
+            "crown_execution_odds": 1.9, "crown_execution_source": "titan007-crown-id-3",
+            "crown_execution_observed_at": datetime.now(HKT).isoformat(),
+            "decision_at": datetime.now(HKT).isoformat(),
+            "wilson_admission": admission_arithmetic(41, 59, 1.9),
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            state = str(Path(directory, "notify.json"))
+            with patch.object(notify, "STATE", state), patch.object(notify, "send") as sender:
+                ledger = {"bets": [formal], "footbreak_crown_execution_test": {"bets": [cross]}}
+                self.assertEqual(
+                    notify.notify_pending_committed_bets(ledger, max_attempts=1, max_seconds=5), 1,
+                )
+                self.assertEqual(sender.call_count, 1)
+                self.assertIn("【足破 Wilson】", sender.call_args.args[0])
+                self.assertEqual(
+                    notify.notify_pending_committed_bets(ledger, max_attempts=1, max_seconds=5), 1,
+                )
+                self.assertEqual(sender.call_count, 2)
+                self.assertIn("足破×皇冠執行測試倉", sender.call_args.args[0])
+
+    def test_shared_wall_clock_budget_does_not_restart_for_cross_book_outbox(self):
+        formal = bet()
+        cross = {
+            "bet_id": "clock|HIL|T-5", "portfolio": "footbreak_crown_execution_test",
+            "strategy": "footbreak-crown-execution-test-v1", "status": "PENDING",
+            "simulation_only": True, "real_betting_enabled": False, "league": "英超",
+            "home": "主", "away": "客",
+            "kickoff": (datetime.now(HKT) + timedelta(hours=2)).isoformat(),
+            "market_label": "入球大細", "selected_role": "大", "selected_line": 2.5,
+            "stake": 500, "condition_number": 9, "hkjc_signal_odds": 1.66,
+            "hkjc_signal_source": "hkjc_public_board",
+            "hkjc_signal_observed_at": datetime.now(HKT).isoformat(),
+            "crown_execution_odds": 1.9, "crown_execution_source": "titan007-crown-id-3",
+            "crown_execution_observed_at": datetime.now(HKT).isoformat(),
+            "decision_at": datetime.now(HKT).isoformat(),
+            "wilson_admission": admission_arithmetic(41, 59, 1.9),
+        }
+        # The first outbox consumes the one 0.5-second envelope.  The
+        # Footbreak×Crown row stays durable; it must not get a new deadline.
+        clock = iter([0.0, 0.0, 0.0, 1.0])
+        with tempfile.TemporaryDirectory() as directory:
+            state = str(Path(directory, "notify.json"))
+            with patch.object(notify, "STATE", state), \
+                 patch.object(notify, "send") as sender, \
+                 patch("notify.time.monotonic", side_effect=lambda: next(clock)):
+                delivered = notify.notify_pending_committed_bets(
+                    {"bets": [formal], "footbreak_crown_execution_test": {"bets": [cross]}},
+                    max_attempts=2, max_seconds=.5,
+                )
+        self.assertEqual(delivered, 1)
+        self.assertEqual(sender.call_count, 1)
+
     def test_pre_upgrade_formal_ack_migrates_without_replaying_or_promoting_observation(self):
         formal = bet()
         low = low_odds_observation()

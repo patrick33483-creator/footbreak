@@ -72,7 +72,7 @@ def evidence_path() -> Path:
     if explicit:
         return Path(explicit)
     state_dir = os.environ.get("CROWN_STATE_DIR", "/var/lib/footbreak/crown")
-    return Path(state_dir) / "predictions.json"
+    return Path(state_dir) / "footbreak-execution-evidence.json"
 
 
 def _load_local_crown_cards() -> tuple[list[dict[str, Any]], str | None]:

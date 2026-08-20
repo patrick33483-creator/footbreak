@@ -15,6 +15,9 @@ CROWN_LOCK_DIR="${CROWN_LOCK_DIR:-/var/lock}"
 if [ -f /etc/footbreak.env ]; then set -a; . /etc/footbreak.env; set +a; fi
 if [ -f /etc/footbreak-crown.env ]; then set -a; . /etc/footbreak-crown.env; set +a; fi
 export CROWN_APP_DIR CROWN_STATE_DIR CROWN_WEB_ROOT TZ=Asia/Hong_Kong
+# Crown's reciprocal T-5 reader consumes Footbreak's atomically persisted
+# ledger directly.  It is read-only in the Crown tick service.
+export CROWN_HKJC_EXECUTION_EVIDENCE_PATH="${CROWN_HKJC_EXECUTION_EVIDENCE_PATH:-$APP_DIR/system/sim_ledger.json}"
 ALERT_HELPER="$APP_DIR/system/incident_alert.py"
 SERVICE_UNIT="crown-${MODE}.service"
 ALERT_TIMEOUT_SECONDS="${CROWN_RUNNER_ALERT_TIMEOUT_SECONDS:-2}"
