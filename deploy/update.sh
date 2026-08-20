@@ -138,7 +138,18 @@ systemctl is-active --quiet footbreak-dashboard-self-heal.timer || {
   echo "ERROR: footbreak-dashboard-self-heal.timer did not restart" >&2
   exit 1
 }
+# Force-refresh the install symlink for this newly introduced timer.  Some
+# upgraded hosts can retain a loaded unit while reporting it disabled after
+# the unit file is first installed.
+systemctl unmask footbreak-server-health-monitor.timer 2>/dev/null || true
+systemctl reenable footbreak-server-health-monitor.timer
 systemctl restart footbreak-server-health-monitor.timer
+systemctl is-enabled --quiet footbreak-server-health-monitor.timer || {
+  systemctl show footbreak-server-health-monitor.timer \
+    -p LoadState -p ActiveState -p SubState -p UnitFileState -p Result
+  echo "ERROR: footbreak-server-health-monitor.timer did not become enabled" >&2
+  exit 1
+}
 systemctl is-active --quiet footbreak-server-health-monitor.timer || {
   systemctl show footbreak-server-health-monitor.timer \
     -p LoadState -p ActiveState -p SubState -p Result

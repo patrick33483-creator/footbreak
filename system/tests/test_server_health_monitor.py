@@ -202,6 +202,8 @@ class ServerHealthMonitorTests(unittest.TestCase):
         self.assertIn("server_health_monitor.py", service)
         self.assertIn("TimeoutStartSec=20", service)
         self.assertIn("footbreak-server-health-monitor.timer", update)
+        self.assertIn("reenable footbreak-server-health-monitor.timer", update)
+        self.assertIn("is-enabled --quiet footbreak-server-health-monitor.timer", update)
         self.assertIn("footbreak-server-health-monitor.timer", health)
         self.assertNotIn("Radar", service + timer)
         self.assertNotIn("health-check.sh", service)
