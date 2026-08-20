@@ -131,6 +131,7 @@ jobs:
           echo "=== Crown dashboard summary ==="
           /opt/footbreak/.venv/bin/python3 - <<'PY'
           import json
+          from datetime import datetime, timedelta, timezone
           from pathlib import Path
 
           data = json.loads(Path("/var/www/crown/data.json").read_text())
@@ -143,6 +144,29 @@ jobs:
               "actionable": summary.get("actionable"),
               "signal_data_missing": summary.get("signal_data_missing"),
           })
+          hkt = timezone(timedelta(hours=8))
+          now = datetime.now(hkt)
+          recent = []
+          for match in data.get("matches") or []:
+              if not isinstance(match, dict):
+                  continue
+              raw_kickoff = match.get("kickoff_hkt") or match.get("kickoff")
+              try:
+                  kickoff = datetime.fromisoformat(str(raw_kickoff).replace("Z", "+00:00")).astimezone(hkt)
+              except (TypeError, ValueError):
+                  continue
+              if now - timedelta(minutes=60) <= kickoff <= now + timedelta(minutes=60):
+                  recent.append({
+                      "home": match.get("home"),
+                      "away": match.get("away"),
+                      "kickoff_hkt": kickoff.isoformat(),
+                      "stages": [
+                          {"stage": row.get("stage"), "ts": row.get("ts")}
+                          for row in (match.get("stages") or [])
+                          if isinstance(row, dict)
+                      ],
+                  })
+          print({"recent_public_cards": recent})
           PY
           echo "=== Telegram configuration (presence only; no secrets) ==="
           /opt/footbreak/.venv/bin/python3 - <<'PY'
