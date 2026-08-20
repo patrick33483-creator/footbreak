@@ -2540,7 +2540,7 @@ class CrownSafetyTests(unittest.TestCase):
             encoding="utf-8",
         )
         self.assertIn("Number.isFinite(Number(rawLine))", app)
-        self.assertIn("20260814-condition-simulation-v1", index)
+        self.assertIn("20260820-dashboard-boot-recovery-v1", index)
 
     def test_crown_fixture_list_uses_stage_aware_pending_status(self) -> None:
         root = Path(__file__).parents[1] / "dashboard"
@@ -2557,13 +2557,20 @@ class CrownSafetyTests(unittest.TestCase):
         self.assertIn("暫不判定冇落注", app)
         self.assertIn("nextStageText(m, mm)", app)
         self.assertNotIn("? '○ 唔買' : '○ 等 T-5'", app)
-        self.assertIn("app.js?v=20260814-condition-simulation-v1", index)
+        self.assertIn("app.js?v=20260820-dashboard-boot-recovery-v1", index)
 
     def test_dashboard_freshness_status_smoke(self) -> None:
         node = shutil.which("node")
         if not node:
             self.skipTest("node is unavailable")
         smoke = Path(__file__).with_name("dashboard_freshness_smoke.mjs")
+        subprocess.run([node, str(smoke)], check=True)
+
+    def test_dashboard_boot_recovers_from_hung_or_invalid_payloads(self) -> None:
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("node is unavailable")
+        smoke = Path(__file__).with_name("dashboard_boot_resilience_smoke.mjs")
         subprocess.run([node, str(smoke)], check=True)
 
     def test_crown_history_orders_fixture_groups_and_stages(self) -> None:
@@ -3845,8 +3852,8 @@ class CrownSafetyTests(unittest.TestCase):
         self.assertIn("overflow-wrap: anywhere", styles)
         self.assertIn("font: 600 12px/1.6 var(--sans)", styles)
         index = (root / "index.html").read_text(encoding="utf-8")
-        self.assertIn("styles.css?v=20260814-condition-simulation-v1", index)
-        self.assertIn("app.js?v=20260814-condition-simulation-v1", index)
+        self.assertIn("styles.css?v=20260820-dashboard-boot-recovery-v1", index)
+        self.assertIn("app.js?v=20260820-dashboard-boot-recovery-v1", index)
         self.assertIn("const HISTORY_STAGE_RANK = { '首預': 1, 'T-30': 2, 'T-5': 3 };", app)
         self.assertIn("row.kickoff_hkt || row.kickoff", app)
         self.assertIn('id="scrollTop"', index)

@@ -28,6 +28,10 @@ const money = (x) => {
 };
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const DASHBOARD_FETCH_TIMEOUT_MS = Math.max(
+  250,
+  Math.min(15000, numeric(window.__CROWN_FETCH_TIMEOUT_MS__) || 6000),
+);
 
 const TAG = { 'T-5': 'tag-t5', 'T-30': 'tag-t30', '首預': 'tag-t60', '待入窗': 'tag-wait', '已開賽': 'tag-none' };
 const STAGE_DESC = {
@@ -149,22 +153,59 @@ function heat(p, max) {
 }
 
 /* ══════════════════════ 啟動 ══════════════════════ */
+async function fetchJsonWithTimeout(url, timeoutMs = DASHBOARD_FETCH_TIMEOUT_MS) {
+  const controller = typeof AbortController === 'function' ? new AbortController() : null;
+  let timer = null;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      if (controller) controller.abort();
+      reject(new Error('讀取逾時'));
+    }, timeoutMs);
+  });
+  try {
+    const response = await Promise.race([
+      fetch(url, {
+        cache: 'no-store',
+        credentials: 'same-origin',
+        ...(controller ? { signal: controller.signal } : {}),
+      }),
+      timeout,
+    ]);
+    if (!response.ok) throw new Error('HTTP ' + response.status);
+    const raw = await Promise.race([response.json(), timeout]);
+    if (!raw || typeof raw !== 'object' || !Array.isArray(raw.matches)) {
+      throw new Error('資料格式不完整');
+    }
+    return raw;
+  } catch (error) {
+    if (
+      controller && controller.signal.aborted
+      || (error && ['AbortError', 'TimeoutError'].includes(error.name))
+    ) {
+      throw new Error('讀取逾時');
+    }
+    throw error;
+  } finally {
+    if (timer != null) clearTimeout(timer);
+  }
+}
+
 async function fetchDashboardData() {
   // 先讀同一部署內嘅 JSON；本機 API 只作後備，兩者都由 Nginx
   // 同一個已認證來源提供。
   const sources = [`data.json?v=${Date.now()}`];
   if (API_BASE) sources.push(`${API_BASE}/data?v=${Date.now()}`);
+  const failures = [];
   for (const url of sources) {
     try {
-      const r = await fetch(url, { cache: 'no-store' });
-      if (!r.ok) throw new Error('HTTP ' + r.status);
-      return await r.json();
-    } catch (_) {
-      // 後端暫時不可用時，繼續讀靜態備份。
+      return await fetchJsonWithTimeout(url);
+    } catch (error) {
+      failures.push(error && error.message ? error.message : '讀取失敗');
+      // 靜態檔暫時不可用或吊住時，立即轉讀 API 後備。
     }
   }
   if (window.__CROWN_DATA__) return window.__CROWN_DATA__;
-  throw new Error('後端同靜態備份都無法讀取');
+  throw new Error(`靜態資料同後備 API 都無法讀取（${failures.join(' / ')}）`);
 }
 
 function historyVersion(raw = DATA) {
@@ -299,17 +340,54 @@ function applyData(raw) {
   $('#genAt').textContent = hkStamp(raw.generated_at) + ' HKT';
 }
 
+function renderBootState(state, message = '') {
+  const loading = state === 'loading';
+  const title = loading ? '正在載入皇冠賽事資料…' : '皇冠賽事資料暫時載入失敗';
+  const detail = loading
+    ? '正嘗試讀取最新資料；如果靜態檔案沒有回應，系統會自動轉用後備 API。'
+    : `${esc(message || '未知錯誤')}。可以重新載入，預測原始資料不受呢個畫面故障影響。`;
+  const kpis = $('#kpis');
+  const count = $('#railCount');
+  const fixtures = $('#fixtures');
+  const panel = $('#detail');
+  if (kpis) kpis.innerHTML = `<div class="kpi"><span class="kpi-lbl">皇冠資料</span><span class="kpi-val ${loading ? 'amber' : 'bad'}">${loading ? '載入中' : '失敗'}</span></div>`;
+  if (count) count.textContent = loading ? '正在載入賽事…' : '未能讀取賽事';
+  if (fixtures) fixtures.innerHTML = `<li class="empty">${title}</li>`;
+  if (panel) {
+    panel.innerHTML = `<div class="empty" data-testid="state-dashboard-${state}">
+      <b>${title}</b><br>${detail}
+      ${loading ? '' : '<br><button class="settle-btn" id="dashboardRetry" data-testid="button-dashboard-retry" type="button"><span>重新載入</span></button>'}
+    </div>`;
+  }
+  const retry = $('#dashboardRetry');
+  if (retry) retry.onclick = () => boot();
+}
+
+let UI_BOUND = false;
+let RENDER_TIMER = null;
+let REFRESH_TIMER = null;
+
 async function boot() {
+  renderBootState('loading');
   try {
     applyData(await fetchDashboardData());
   } catch (e) {
-    $('#detail').innerHTML = `<div class="empty">資料載入失敗:${esc(e.message)}</div>`;
+    renderBootState('error', e && e.message ? e.message : '未知錯誤');
     return;
   }
-  bindUI();
-  render();
-  setInterval(render, 30000);
-  setInterval(() => refresh(true), 5 * 60000);   // 每 5 分鐘自動攞一次新資料
+  try {
+    if (!UI_BOUND) {
+      bindUI();
+      UI_BOUND = true;
+    }
+    render();
+    if (RENDER_TIMER != null) clearInterval(RENDER_TIMER);
+    if (REFRESH_TIMER != null) clearInterval(REFRESH_TIMER);
+    RENDER_TIMER = setInterval(render, 30000);
+    REFRESH_TIMER = setInterval(() => refresh(true), 5 * 60000);   // 每 5 分鐘自動攞一次新資料
+  } catch (e) {
+    renderBootState('error', `畫面渲染失敗：${e && e.message ? e.message : '未知錯誤'}`);
+  }
 }
 
 let BUSY = false;
