@@ -170,6 +170,46 @@ jobs:
           PY
           echo "=== Result integrity verifier (read-only) ==="
           /opt/footbreak/.venv/bin/python3 deploy/verify-result-integrity.py || true
+          echo "=== Crown private history shape detail (read-only) ==="
+          /opt/footbreak/.venv/bin/python3 - <<'PY'
+          from collections import Counter
+          import importlib.util
+          from pathlib import Path
+
+          path = Path("deploy/verify-result-integrity.py")
+          spec = importlib.util.spec_from_file_location("result_integrity", path)
+          module = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(module)
+          history_rows = module.rows(module.load(module.CROWN_HISTORY))
+          keys = [
+              (str(row.get("match_id") or ""), str(row.get("stage") or ""))
+              for row in history_rows
+          ]
+          missing = [key for key in keys if not all(key)]
+          duplicates = [
+              {"key": key, "count": count}
+              for key, count in Counter(keys).items()
+              if count > 1
+          ]
+          actual = [module._sort_key(row) for row in history_rows]
+          first_inversion = None
+          for index in range(len(actual) - 1):
+              if actual[index] < actual[index + 1]:
+                  first_inversion = {
+                      "index": index,
+                      "left_key": keys[index],
+                      "left_sort": actual[index],
+                      "right_key": keys[index + 1],
+                      "right_sort": actual[index + 1],
+                  }
+                  break
+          print({
+              "rows": len(history_rows),
+              "missing": missing[:20],
+              "duplicates": duplicates[:20],
+              "first_inversion": first_inversion,
+          })
+          PY
           echo "=== Telegram configuration (presence only; no secrets) ==="
           /opt/footbreak/.venv/bin/python3 - <<'PY'
           import os
