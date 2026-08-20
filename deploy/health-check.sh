@@ -326,6 +326,33 @@ def load(path):
     return target, json.loads(target.read_text(encoding="utf-8"))
 
 
+def resolve_history(label, main_path, payload, expected_schema):
+    inline = payload.get("prediction_history")
+    if isinstance(inline, dict) and isinstance(inline.get("rows"), list):
+        return inline
+
+    data_url = str(payload.get("history_data_url") or "").strip()
+    if not data_url:
+        raise SystemExit(f"FAIL {label} history sidecar marker missing")
+    sidecar_path = (main_path.parent / data_url).resolve()
+    if sidecar_path.parent != main_path.parent.resolve():
+        raise SystemExit(f"FAIL {label} history sidecar must be a sibling file")
+    _, sidecar = load(sidecar_path)
+    if sidecar.get("schema_version") != expected_schema:
+        raise SystemExit(
+            f"FAIL {label} history sidecar schema mismatch: "
+            f"{sidecar.get('schema_version')}"
+        )
+    expected_version = payload.get("history_data_version")
+    actual_version = sidecar.get("history_data_version")
+    if not expected_version or expected_version != actual_version:
+        raise SystemExit(f"FAIL {label} dashboard/history sidecar version mismatch")
+    history = sidecar.get("prediction_history")
+    if not isinstance(history, dict) or not isinstance(history.get("rows"), list):
+        raise SystemExit(f"FAIL {label} history sidecar rows missing")
+    return history
+
+
 foot_path, foot = load(sys.argv[1])
 crown_path, crown = load(sys.argv[2])
 now = datetime.now(timezone.utc).timestamp()
@@ -390,7 +417,9 @@ def kickoff_timestamp(row):
     return value.timestamp()
 
 
-history = foot.get("prediction_history") or {}
+history = resolve_history(
+    "Footbreak", foot_path, foot, "footbreak-history-v1"
+)
 stats = history.get("stats") or {}
 rows = history.get("rows") or []
 foot_invalid = invalid_market_predictions(rows)
@@ -444,7 +473,9 @@ for missing in accuracy.get("missing_results") or []:
 
 crown_matches = crown.get("matches") or crown.get("predictions") or []
 print(f"OK Crown dashboard matches={len(crown_matches)}")
-crown_history = crown.get("prediction_history") or {}
+crown_history = resolve_history(
+    "Crown", crown_path, crown, "crown-history-v1"
+)
 crown_rows = crown_history.get("rows") or []
 crown_invalid = invalid_market_predictions(crown_rows)
 if crown_invalid:

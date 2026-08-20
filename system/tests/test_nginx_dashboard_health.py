@@ -11,6 +11,116 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class NginxDashboardHealthTests(unittest.TestCase):
+    @staticmethod
+    def _dashboard_health_python() -> str:
+        health = (ROOT / "deploy" / "health-check.sh").read_text(encoding="utf-8")
+        marker = (
+            '"$APP_DIR/.venv/bin/python3" - "$FOOTBREAK_DATA" '
+            '"$CROWN_DATA" <<\'PY\'\n'
+        )
+        start = health.index(marker) + len(marker)
+        return health[start:health.index("\nPY\n", start)]
+
+    @staticmethod
+    def _market_row() -> dict:
+        return {
+            "kickoff": "2026-08-20T01:00:00+08:00",
+            "actual": {"goals_home": 1, "goals_away": 0},
+            "score": {"HDC": "WON"},
+            "market_predictions": [
+                {"code": "HDC", "side": "H", "line": -0.25}
+            ],
+        }
+
+    def test_dashboard_health_reads_versioned_footbreak_and_crown_history_sidecars(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            foot_dir = root / "footbreak"
+            crown_dir = root / "crown"
+            foot_dir.mkdir()
+            crown_dir.mkdir()
+            row = self._market_row()
+            foot = {
+                "prediction_history": {"stats": {"graded": 1}},
+                "history_data_url": "history.json",
+                "history_data_version": "foot-v1",
+            }
+            crown = {
+                "matches": [],
+                "prediction_history": {"stats": {}},
+                "history_data_url": "history.json",
+                "history_data_version": "crown-v1",
+            }
+            (foot_dir / "data.json").write_text(json.dumps(foot), encoding="utf-8")
+            (crown_dir / "data.json").write_text(json.dumps(crown), encoding="utf-8")
+            (foot_dir / "history.json").write_text(json.dumps({
+                "schema_version": "footbreak-history-v1",
+                "history_data_version": "foot-v1",
+                "prediction_history": {"stats": {"graded": 1}, "rows": [row]},
+            }), encoding="utf-8")
+            (crown_dir / "history.json").write_text(json.dumps({
+                "schema_version": "crown-history-v1",
+                "history_data_version": "crown-v1",
+                "prediction_history": {"stats": {}, "rows": [row]},
+            }), encoding="utf-8")
+
+            result = subprocess.run(
+                [
+                    sys.executable, "-",
+                    str(foot_dir / "data.json"),
+                    str(crown_dir / "data.json"),
+                ],
+                input=self._dashboard_health_python(),
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Footbreak prediction history market rows=1", result.stdout)
+        self.assertIn("Crown prediction history market rows=1", result.stdout)
+
+    def test_dashboard_health_rejects_mixed_history_sidecar_generation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            foot_dir = root / "footbreak"
+            crown_dir = root / "crown"
+            foot_dir.mkdir()
+            crown_dir.mkdir()
+            for target, system, version in (
+                (foot_dir, "footbreak", "foot-v1"),
+                (crown_dir, "crown", "crown-v1"),
+            ):
+                (target / "data.json").write_text(json.dumps({
+                    "matches": [],
+                    "prediction_history": {"stats": {}},
+                    "history_data_url": "history.json",
+                    "history_data_version": version,
+                }), encoding="utf-8")
+                (target / "history.json").write_text(json.dumps({
+                    "schema_version": f"{system}-history-v1",
+                    "history_data_version": (
+                        "wrong-generation" if system == "footbreak" else version
+                    ),
+                    "prediction_history": {"stats": {}, "rows": []},
+                }), encoding="utf-8")
+
+            result = subprocess.run(
+                [
+                    sys.executable, "-",
+                    str(foot_dir / "data.json"),
+                    str(crown_dir / "data.json"),
+                ],
+                input=self._dashboard_health_python(),
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "Footbreak dashboard/history sidecar version mismatch",
+            result.stderr,
+        )
+
     def test_crown_history_sidecar_survives_static_sync_and_is_never_cached(self):
         nginx = (ROOT / "deploy" / "nginx-crown.conf").read_text(encoding="utf-8")
         setup = (ROOT / "deploy" / "setup.sh").read_text(encoding="utf-8")
