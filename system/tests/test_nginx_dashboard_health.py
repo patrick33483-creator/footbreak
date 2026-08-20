@@ -167,9 +167,18 @@ class NginxDashboardHealthTests(unittest.TestCase):
             'chown root:www-data "$WEB_ROOT/data.json" "$WEB_ROOT/history.json"',
             setup,
         )
-        # Update remains preservation-only: it cannot replace runtime data with
-        # a generated or repository copy.
-        self.assertNotIn("-m system.gen_app_data", update)
+        # Update preserves runtime artifacts during static sync, then repairs
+        # the versioned pair from persisted local state under the same lock as
+        # tick/sweep/settle.  This path is provider-free and publishes the
+        # history sidecar before the matching boot payload.
+        self.assertIn('exec 8>/var/lock/footbreak.lock', update)
+        self.assertIn('flock -w 60 8', update)
+        self.assertIn("-m system.gen_app_data", update)
+        self.assertIn('--out "$WEB_ROOT/data.json"', update)
+        self.assertIn(
+            'chown root:www-data "$WEB_ROOT/data.json" "$WEB_ROOT/history.json"',
+            update,
+        )
         self.assertNotIn(
             '"$APP_DIR/hkjc-dashboard/data.json" "$WEB_ROOT/data.json"',
             update,

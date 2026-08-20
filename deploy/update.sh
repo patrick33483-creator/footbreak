@@ -223,6 +223,23 @@ if [ -f "$WEB_ROOT/history.json" ]; then
   chown root:www-data "$WEB_ROOT/history.json"
   chmod 0644 "$WEB_ROOT/history.json"
 fi
+# A deploy can land between the sidecar-first and boot-payload-last writes of
+# a normal Footbreak publisher.  Rebuild the pair from persisted local state
+# while holding the same lock as tick/sweep/settle, so the health check and
+# browser can never observe mixed history generations after an upgrade.
+# gen_app_data is provider-free: it reads only existing local artifacts.
+echo "▸ 以共用鎖重建足破儀表板資料"
+exec 8>/var/lock/footbreak.lock
+if ! flock -w 60 8; then
+  echo "ERROR: timed out waiting for Footbreak state lock during dashboard publication" >&2
+  exit 1
+fi
+PYTHONPATH="$APP_DIR" FOOTBREAK_DASHBOARD_DATA="$WEB_ROOT/data.json" \
+  "$APP_DIR/.venv/bin/python3" -m system.gen_app_data --out "$WEB_ROOT/data.json"
+flock -u 8
+exec 8>&-
+chown root:www-data "$WEB_ROOT/data.json" "$WEB_ROOT/history.json"
+chmod 0644 "$WEB_ROOT/data.json" "$WEB_ROOT/history.json"
 install -d -o root -g root -m 0700 /var/lib/footbreak/crown /var/lib/footbreak/learning
 # Runtime dashboard data is deliberately excluded: a deploy never replaces
 # Crown's ledger/state-derived data with the recovered archive snapshot.
