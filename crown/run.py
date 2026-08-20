@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import multiprocessing
 import os
 import time
 from pathlib import Path
@@ -16,7 +17,66 @@ from .state import load_ledger
 
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 _TICK_POSTPROCESS_MIN_SECONDS = 2.0
+_TICK_POSTPROCESS_MAX_SECONDS = 4.0
+_TICK_POSTPROCESS_TEARDOWN_MARGIN_SECONDS = 1.0
 _TICK_NOTIFICATION_MIN_SECONDS = 6.0
+
+
+def _tick_postprocess_process(send, config, ledger) -> None:
+    """Run optional local tick publication outside the deadline-owning parent."""
+    try:
+        archive_watch_fast(config, ledger)
+    except BaseException as exc:
+        send.send(("history_error", type(exc).__name__))
+    else:
+        try:
+            write_tick_dashboard_projection(config, ledger)
+        except BaseException as exc:
+            send.send(("dashboard_error", type(exc).__name__))
+        else:
+            send.send(("complete", None))
+    finally:
+        send.close()
+
+
+def _run_tick_postprocess(config, ledger, max_seconds: float) -> tuple[str, str | None]:
+    """Hard-bound optional archive/projection and preserve parent teardown room.
+
+    Tick persistence and outbox delivery are already complete by this point.
+    History/card publication is therefore deliberately fail-closed: it can be
+    deferred to sweep rather than make the time-critical service wait through
+    concurrent settlement or filesystem work.  A process is required because
+    a blocked local write/serialization cannot be safely cancelled in a thread.
+    """
+    if max_seconds <= 0.0 or os.name != "posix":
+        return "deferred", None
+    context = multiprocessing.get_context("fork")
+    receiver, sender = context.Pipe(duplex=False)
+    process = context.Process(
+        target=_tick_postprocess_process,
+        args=(sender, config, ledger),
+    )
+    process.start()
+    sender.close()
+    try:
+        if not receiver.poll(max_seconds):
+            return "deferred", None
+        try:
+            status, detail = receiver.recv()
+        except EOFError:
+            return "history_error", "worker_exited"
+        return (
+            str(status),
+            str(detail) if detail is not None else None,
+        )
+    finally:
+        receiver.close()
+        if process.is_alive():
+            process.terminate()
+        process.join(timeout=0.05)
+        if process.is_alive():
+            process.kill()
+            process.join(timeout=0.05)
 
 
 def _exception_origin(exc: BaseException) -> dict[str, object]:
@@ -118,17 +178,27 @@ def main() -> int:
             # not falsely lag a native T-5 until the next full sweep.
             remaining = tick_deadline - time.monotonic()
             if remaining >= _TICK_POSTPROCESS_MIN_SECONDS:
-                archive_watch_fast(config, ledger)
-                try:
-                    write_tick_dashboard_projection(config, ledger)
+                # This work is local but not assumed to be instantaneous: at
+                # :00 it can overlap settlement and a still-running :50 sweep.
+                # Reserve a final parent teardown second even when the child
+                # must be SIGTERM/SIGKILLed after a blocked write.
+                postprocess_budget = min(
+                    _TICK_POSTPROCESS_MAX_SECONDS,
+                    max(0.0, remaining - _TICK_POSTPROCESS_TEARDOWN_MARGIN_SECONDS),
+                )
+                status, detail = _run_tick_postprocess(
+                    config, ledger, postprocess_budget,
+                )
+                if status == "complete":
                     result["dashboard_projection"] = "post_tick_local_state"
-                except Exception as exc:
-                    # The persisted stage remains the source of truth and will be
-                    # projected by the next sweep.  A display write must never
-                    # turn a successful deadline-bound prediction into a failure.
+                elif status == "dashboard_error":
                     result["dashboard_projection_warning"] = (
-                        f"dashboard_projection_{type(exc).__name__}"
+                        f"dashboard_projection_{detail or 'worker_error'}"
                     )
+                elif status == "history_error":
+                    history_warning = f"prediction_history_{detail or 'worker_error'}"
+                else:
+                    result["dashboard_projection_warning"] = "deferred_tick_deadline"
             else:
                 result["dashboard_projection_warning"] = "deferred_tick_deadline"
         elif args.mode == "sweep":

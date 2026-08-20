@@ -63,6 +63,14 @@ from crown.titan import (
 )
 
 
+def _runtime_tick_postprocess_hang(*_args) -> None:
+    """Fork-safe stalled local publication used by the exact-hour regression."""
+    time.sleep(10)
+    marker = os.getenv("CROWN_RUNTIME_POSTPROCESS_MARKER")
+    if marker:
+        Path(marker).write_text("late", encoding="utf-8")
+
+
 def _runtime_batch_prediction(
     titan, _bridge, _h_match, stage, _config, _titan_client, _pinnapi_client,
     _crown_snapshot=None, _previous_crown_prices=None, _entry_policies=None,
@@ -2656,21 +2664,20 @@ class CrownSafetyTests(unittest.TestCase):
             with patch("crown.run.settings", return_value=config), \
                  patch("crown.run.run", return_value=result), \
                  patch("crown.run.load_ledger", return_value=ledger), \
-                 patch("crown.run.archive_watch_fast") as archive, \
+                 patch("crown.run._run_tick_postprocess", return_value=("complete", None)) as postprocess, \
                  patch(
                      "crown.run.update_history",
                      side_effect=AssertionError("tick must not grade history"),
                  ), patch(
                      "crown.run.write_dashboard_data",
                      side_effect=AssertionError("tick must not rebuild dashboard"),
-                 ), patch(
-                     "crown.run.write_tick_dashboard_projection",
-                 ) as projection, patch("crown.run.notify_new", return_value=1) as notify, \
+                 ), patch("crown.run.notify_new", return_value=1) as notify, \
                  patch("sys.argv", ["crown.run", "tick"]), \
                  contextlib.redirect_stdout(stdout):
                 self.assertEqual(crown_run.main(), 0)
-            archive.assert_called_once_with(config, ledger)
-            projection.assert_called_once_with(config, ledger)
+            postprocess.assert_called_once()
+            self.assertEqual(postprocess.call_args.args[:2], (config, ledger))
+            self.assertGreater(postprocess.call_args.args[2], 0)
             notify.assert_called_once()
             self.assertEqual(
                 notify.call_args.args,
@@ -2815,30 +2822,55 @@ class CrownSafetyTests(unittest.TestCase):
                  patch("crown.run.load_ledger", return_value=ledger), \
                  patch(
                      "crown.run.time.monotonic",
-                     # Both ticks deliver first; archive then consumes the
-                     # old full post-notification window.
+                     # Both ticks deliver first; optional publication then
+                     # consumes its own bounded post-notification window.
                      side_effect=[
                          100.0, 100.1, 100.2, 129.9,
                          200.0, 200.1, 200.2, 229.9,
                      ],
                  ), \
                  patch(
-                     "crown.run.archive_watch_fast",
-                     side_effect=lambda *_args: crown_run.time.monotonic(),
-                 ) as archive, \
-                 patch("crown.run.write_tick_dashboard_projection") as projection, \
+                     "crown.run._run_tick_postprocess",
+                     side_effect=lambda *_args: (
+                         crown_run.time.monotonic(), ("complete", None),
+                     )[1],
+                 ) as postprocess, \
                  patch("crown.notify._send", return_value=True) as send, \
                  patch("sys.argv", ["crown.run", "tick"]), \
                  contextlib.redirect_stdout(stdout):
                 self.assertEqual(crown_run.main(), 0)
                 self.assertEqual(crown_run.main(), 0)
             self.assertEqual(send.call_count, 1)
-            self.assertEqual(archive.call_count, 2)
-            self.assertEqual(projection.call_count, 2)
+            self.assertEqual(postprocess.call_count, 2)
             acknowledged = read_json(config.state_dir / "notify_state.json", {})
             self.assertEqual(acknowledged["wilson_match_alerts"], [bid])
             self.assertEqual(acknowledged["wilson_bets"], [bid])
             self.assertNotIn("telegram_deferred_tick_deadline", stdout.getvalue())
+
+    def test_tick_exact_hour_overlap_terminates_optional_publication(self) -> None:
+        """A :00 settle/sweep overlap cannot make post-persistence tick work hang."""
+        import crown.run as crown_run
+
+        with tempfile.TemporaryDirectory() as directory:
+            marker = Path(directory) / "late-publication"
+            started = time.monotonic()
+            with patch.dict(
+                os.environ,
+                {"CROWN_RUNTIME_POSTPROCESS_MARKER": str(marker)},
+                clear=False,
+            ), patch(
+                "crown.run.archive_watch_fast",
+                side_effect=_runtime_tick_postprocess_hang,
+            ):
+                status, detail = crown_run._run_tick_postprocess(
+                    replace(settings(), state_dir=Path(directory)), {}, 0.10,
+                )
+            elapsed = time.monotonic() - started
+            self.assertEqual((status, detail), ("deferred", None))
+            # Includes a real child startup, deadline, SIGTERM and bounded join.
+            self.assertLess(elapsed, 0.75)
+            time.sleep(0.20)
+            self.assertFalse(marker.exists(), "terminated child resumed publication")
 
     def test_tick_commit_lock_contention_exits_before_deadline(self) -> None:
         """A settle/sweep final merge must not starve a T-5 commit."""
