@@ -101,6 +101,56 @@ def _tick_workers() -> int:
     return min(12, max(1, configured))
 
 
+def _deadline_remaining(deadline: float) -> float:
+    """Return the remaining monotonic pass budget without a negative timeout."""
+    return max(0.0, deadline - time.monotonic())
+
+
+_MIN_DEADLINE_CALL_SECONDS = 0.25
+
+
+def _tick_hkjc_fetch_process(send: Any) -> None:
+    """Keep the shared Footbreak HKJC reader out of Crown's deadline process."""
+    try:
+        send.send(("ok", fetch_matches()))
+    except BaseException as exc:
+        send.send(("error", type(exc).__name__))
+    finally:
+        send.close()
+
+
+def _fetch_tick_hkjc_matches(deadline: float) -> list[dict[str, Any]]:
+    """Fail closed if the legacy HKJC feed cannot finish inside this tick.
+
+    The shared reader does not expose a per-request budget.  Isolating only
+    this optional bridge feed preserves Footbreak's scheduling code while
+    allowing Crown to terminate a stuck request rather than overrun T-30/T-5.
+    """
+    remaining = _deadline_remaining(deadline)
+    if remaining < _MIN_DEADLINE_CALL_SECONDS or os.name != "posix":
+        return []
+    context = multiprocessing.get_context("fork")
+    receiver, sender = context.Pipe(duplex=False)
+    process = context.Process(target=_tick_hkjc_fetch_process, args=(sender,))
+    process.start()
+    sender.close()
+    try:
+        if not receiver.poll(remaining):
+            return []
+        status, value = receiver.recv()
+        return value if status == "ok" and isinstance(value, list) else []
+    except EOFError:
+        return []
+    finally:
+        receiver.close()
+        if process.is_alive():
+            process.terminate()
+        process.join(timeout=0.05)
+        if process.is_alive():
+            process.kill()
+            process.join(timeout=0.05)
+
+
 def _prediction_process(send: Any, payload: tuple[Any, ...]) -> None:
     """Run one provider-heavy prediction outside the tick process.
 
@@ -1405,6 +1455,7 @@ def _local_bulk_t5_prediction(
 def _run_local_bulk_t5(
     config: Settings,
     rows: list[dict[str, Any]],
+    deadline: float,
 ) -> dict[str, Any]:
     """Persist all eligible locally due T-5 cards without slow discovery.
 
@@ -1414,7 +1465,11 @@ def _run_local_bulk_t5(
     """
     titan_client = TitanClient(config)
     try:
-        snapshots = titan_client.crown_bulk_price_snapshots()
+        remaining = _deadline_remaining(deadline)
+        snapshots = (
+            titan_client.crown_bulk_price_snapshots(max_seconds=remaining)
+            if remaining >= _MIN_DEADLINE_CALL_SECONDS else {}
+        )
     except OSError:
         snapshots = {}
     if not isinstance(snapshots, dict):
@@ -1484,6 +1539,7 @@ def run(mode: str, config: Settings) -> dict[str, Any]:
     ledger = load_ledger(config)
     existing_predictions = load_predictions(config)
     if mode == "tick":
+        tick_deadline = time.monotonic() + _tick_pass_deadline_seconds()
         titan_rows = _tick_rows_from_predictions(
             existing_predictions, ledger, datetime.now(HKT)
         )
@@ -1501,11 +1557,10 @@ def run(mode: str, config: Settings) -> dict[str, Any]:
             # policy/model reads, fixture discovery, bridge mapping, and
             # per-fixture providers.  A stalled optional path cannot delay a
             # valid persisted T-5 Crown record.
-            return _run_local_bulk_t5(config, titan_rows)
+            return _run_local_bulk_t5(config, titan_rows, tick_deadline)
         # This is deliberately measured before any provider work.  The
         # systemd 55-second limit remains the final safeguard for an upstream
         # fixture-list call that cannot be interrupted in-process.
-        tick_deadline = time.monotonic() + _tick_pass_deadline_seconds()
     else:
         tick_deadline = None
     if not config.pinnapi_configured:
@@ -1523,7 +1578,11 @@ def run(mode: str, config: Settings) -> dict[str, Any]:
         # turn a transport/parser failure into a fabricated quote; the
         # per-fixture/cache paths below remain guarded fallbacks.
         try:
-            fetched_bulk = titan_client.crown_bulk_price_snapshots()
+            remaining = _deadline_remaining(tick_deadline)
+            fetched_bulk = (
+                titan_client.crown_bulk_price_snapshots(max_seconds=remaining)
+                if remaining >= _MIN_DEADLINE_CALL_SECONDS else {}
+            )
             bulk_crown_quotes = fetched_bulk if isinstance(fetched_bulk, dict) else {}
         except OSError:
             bulk_crown_quotes = {}
@@ -1536,14 +1595,24 @@ def run(mode: str, config: Settings) -> dict[str, Any]:
         )
     pinnapi_fixture_status = "available"
     try:
-        pinnapi_rows = pinnapi_client.fixtures()
+        if mode == "tick":
+            remaining = _deadline_remaining(tick_deadline)
+            pinnapi_rows = (
+                pinnapi_client.fixtures(max_seconds=remaining)
+                if remaining >= _MIN_DEADLINE_CALL_SECONDS else []
+            )
+        else:
+            pinnapi_rows = pinnapi_client.fixtures()
     except (OSError, ValueError, TypeError):
         # PinnAPI is an optional reference for bridge/EV work.  A transport
         # failure or malformed response must fail closed for that reference,
         # but must not abort Crown/Titan first-look discovery and persistence.
         pinnapi_rows = []
         pinnapi_fixture_status = "unavailable_fail_closed"
-    hkjc_rows = fetch_matches()
+    hkjc_rows = (
+        _fetch_tick_hkjc_matches(tick_deadline)
+        if mode == "tick" else fetch_matches()
+    )
     h_events = [(event_from_match(row), row) for row in hkjc_rows]
     h_events = [(event, row) for event, row in h_events if event]
     p_events = [_event_from_pinnapi(row) for row in pinnapi_rows]

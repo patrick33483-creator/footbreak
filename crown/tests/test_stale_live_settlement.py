@@ -80,6 +80,24 @@ class StaleLiveSettlementTests(unittest.TestCase):
         self.assertEqual(result["settled"], 1)
         self.assertEqual(cache["pin-1"]["live_refresh_failures"], 2)
 
+    def test_provider_deadline_fails_closed_without_result_calls(self) -> None:
+        ledger = {"bets": [self._bet()], "shadow_bets": [], "watch": {}, "stats": {}}
+        with tempfile.TemporaryDirectory() as directory, \
+             patch("crown.settle.load_ledger", return_value=ledger), \
+             patch("crown.settle._settlement_pass_deadline_seconds", return_value=0), \
+             patch("crown.settle.fetch_official_settlement_bundle") as official, \
+             patch("crown.settle.TitanClient.results") as titan_results, \
+             patch("crown.settle.save_ledger"):
+            result = settle.settle_due(self._config(directory))
+        self.assertEqual(result["settled"], 0)
+        self.assertEqual(ledger["bets"][0]["status"], "PENDING")
+        self.assertEqual(
+            ledger["bets"][0]["settlement_pending_reason"],
+            "settlement_provider_deadline_exhausted",
+        )
+        official.assert_not_called()
+        titan_results.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

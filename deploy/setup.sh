@@ -20,7 +20,7 @@ sync_crown_web_root() {
   # nginx's www-data worker needs x on every directory and r on static files.
   # Crown state remains under /var/lib/footbreak/crown at mode 0600.
   install -d -o root -g www-data -m 0755 /var/www "$CROWN_WEB_ROOT"
-  rsync -a --delete --exclude 'data.json' --exclude 'history.json' --chmod=Du=rwx,Dgo=rx,Fu=rw,Fgo=r \
+  rsync -a --delete --exclude 'data.json' --exclude 'history.json' --exclude 'history-*.json' --chmod=Du=rwx,Dgo=rx,Fu=rw,Fgo=r \
     "$APP_DIR/crown/dashboard/" "$CROWN_WEB_ROOT/"
   chown -R root:www-data "$CROWN_WEB_ROOT"
   find "$CROWN_WEB_ROOT" -type d -exec chmod 0755 {} +
@@ -156,8 +156,8 @@ sync_crown_web_root
 # dashboard_data atomically replaces data.json; reassert static readability.
 chown root:www-data "$CROWN_WEB_ROOT/data.json"
 chmod 0644 "$CROWN_WEB_ROOT/data.json"
-chown root:www-data "$CROWN_WEB_ROOT/history.json"
-chmod 0644 "$CROWN_WEB_ROOT/history.json"
+find "$CROWN_WEB_ROOT" -maxdepth 1 -type f -name 'history-*.json' -exec chown root:www-data {} +
+find "$CROWN_WEB_ROOT" -maxdepth 1 -type f -name 'history-*.json' -exec chmod 0644 {} +
 # Footbreak history sidecar is produced by the local publication path.  Keep
 # it across setup upgrades and ensure nginx can read an existing artifact.
 if [ -f "$WEB_ROOT/history.json" ]; then

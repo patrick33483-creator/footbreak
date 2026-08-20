@@ -3,12 +3,13 @@ from __future__ import annotations
 
 import argparse
 import os
+import time
 from pathlib import Path
 import traceback
 
 from .config import settings
 from .dashboard_data import write_dashboard_data, write_tick_dashboard_projection
-from .engine import run
+from .engine import _tick_pass_deadline_seconds, run
 from .notify import notify_new
 from .prediction_history import archive_watch_fast, update_history
 from .state import load_ledger
@@ -56,6 +57,10 @@ def main() -> int:
         print({"ok": True, "enabled": config.enabled, "pinnapi_configured": config.pinnapi_configured,
                "telegram_enabled": config.telegram_enabled, "real_betting_enabled": False})
         return 0
+    tick_deadline = (
+        time.monotonic() + _tick_pass_deadline_seconds()
+        if args.mode == "tick" else None
+    )
     try:
         result = run(args.mode, config)
     except Exception as exc:
@@ -98,20 +103,31 @@ def main() -> int:
                 result["dashboard_projection_warning"] = (
                     f"dashboard_projection_{type(exc).__name__}"
                 )
-        else:
+        elif args.mode == "sweep":
+            # Settlement already fetches one bounded, exact-ID provider
+            # snapshot.  Defer history grading to sweep rather than repeat
+            # Titan/HKJC result reads in the same settlement invocation.
             update_history(config, ledger)
     except Exception as exc:
         history_warning = f"prediction_history_{type(exc).__name__}"
     try:
-        notify_new(
-            ledger,
-            config,
-            result.get("fresh_condition_predictions") or [],
-            # Telegram is retryable from persisted live watch state.  A tick
-            # attempts at most one delivery so transport cannot consume the
-            # sub-minute prediction deadline.
-            max_attempts=1 if args.mode == "tick" else None,
+        # A notification is retryable from persisted state.  Do not start a
+        # five-second Telegram transport when the tick's shared pass budget
+        # has expired; this preserves the next T-30/T-5 timer slot.
+        remaining = (
+            tick_deadline - time.monotonic()
+            if tick_deadline is not None else None
         )
+        if remaining is None or remaining >= 0.25:
+            notify_new(
+                ledger,
+                config,
+                result.get("fresh_condition_predictions") or [],
+                max_attempts=1 if args.mode == "tick" else None,
+                max_seconds=remaining,
+            )
+        elif args.mode == "tick":
+            result["notification_warning"] = "telegram_deferred_tick_deadline"
     except Exception as exc:
         # Signals are notification-only.  A transport failure must never roll
         # back or corrupt the already committed live prediction state.

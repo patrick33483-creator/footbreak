@@ -35,7 +35,7 @@ class ResultIntegrityVerifierTests(unittest.TestCase):
                 "foot_history": root / "foot-history.json",
                 "crown_history": root / "crown-raw-history.json",
                 "crown_data": root / "crown-data.json",
-                "crown_public_history": root / "crown-public-history.json",
+                "crown_public_history": root / "history-crown-v1.json",
             }
             paths["foot_data"].write_text(json.dumps({
                 "prediction_history": {"stats": {"graded": 999}},
@@ -52,7 +52,7 @@ class ResultIntegrityVerifierTests(unittest.TestCase):
             )
             paths["crown_data"].write_text(json.dumps({
                 "prediction_history": {"stats": {}},
-                "history_data_url": "history.json",
+                "history_data_url": "history-crown-v1.json",
                 "history_data_version": "crown-v1",
             }), encoding="utf-8")
             paths["crown_public_history"].write_text(json.dumps({
@@ -71,9 +71,6 @@ class ResultIntegrityVerifierTests(unittest.TestCase):
                  ), \
                  patch.object(verify, "CROWN_HISTORY", paths["crown_history"]), \
                  patch.object(verify, "CROWN_DATA", paths["crown_data"]), \
-                 patch.object(
-                     verify, "CROWN_PUBLIC_HISTORY", paths["crown_public_history"]
-                 ), \
                  patch.object(verify, "run_integrity_check", side_effect=capture), \
                  patch.object(verify, "report_result_gaps"), \
                  patch.object(verify, "verify_known_crown_incident"):

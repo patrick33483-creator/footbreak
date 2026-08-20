@@ -11,6 +11,9 @@ WorkingDirectory=/opt/footbreak
 Environment=FOOTBREAK_LEDGER_PATH=/opt/footbreak/system/sim_ledger.json
 Environment=FOOTBREAK_RESULT_CACHE_DIR=/opt/footbreak/system/cache/results
 ExecStart=/opt/footbreak/deploy/crown-run.sh settle
+# One shared provider budget leaves this service's 15-minute cgroup timeout as
+# a last-resort backstop instead of allowing repeated provider fanout to use it.
+Environment=CROWN_SETTLE_PROVIDER_PASS_DEADLINE_SECONDS=120
 TimeoutStartSec=900
 # A timeout or urgent T-5 preemption must terminate Python and every provider
 # helper in this unit's cgroup. The runner lock is then released by its shell;

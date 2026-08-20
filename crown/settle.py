@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import copy
+import os
+import time
 from datetime import datetime
 from typing import Any
 
@@ -27,6 +29,27 @@ from .titan import TitanClient
 
 LIVE_CACHE_STALE_SECONDS = 30 * 60
 LIVE_CACHE_FAILURES_BEFORE_FALLBACK = 2
+_SETTLEMENT_PROVIDER_PASS_SECONDS = 120.0
+
+
+def _settlement_pass_deadline_seconds() -> float:
+    """Keep every result provider inside one retryable settlement budget."""
+    try:
+        configured = float(
+            os.getenv(
+                "CROWN_SETTLE_PROVIDER_PASS_DEADLINE_SECONDS",
+                str(_SETTLEMENT_PROVIDER_PASS_SECONDS),
+            )
+        )
+    except ValueError:
+        configured = _SETTLEMENT_PROVIDER_PASS_SECONDS
+    # Leave ample room under systemd's 15-minute safety backstop, while making
+    # a failed pass retryable before the next scheduled settlement slot.
+    return min(600.0, max(15.0, configured))
+
+
+def _remaining(deadline: float) -> float:
+    return max(0.0, deadline - time.monotonic())
 
 
 def _target(bet: dict[str, Any]) -> Event | None:
@@ -36,12 +59,16 @@ def _target(bet: dict[str, Any]) -> Event | None:
     return Event(str(bet.get("match_id")), str(bet.get("league") or ""), str(bet["home"]), str(bet["away"]), kickoff)
 
 
-def _refresh_live(config: Settings, due: list[dict[str, Any]]) -> dict[str, Any]:
+def _refresh_live(
+    config: Settings, due: list[dict[str, Any]], *, max_seconds: float | None = None,
+) -> dict[str, Any]:
     cache = read_json(paths(config)["live"], {})
     ids = {str(bet.get("pinnapi_event_id")) for bet in due if bet.get("pinnapi_event_id")}
     if not ids:
         return cache
-    snapshot = PinnapiClient(config).live_scores()
+    if max_seconds is not None and max_seconds <= 0:
+        return cache
+    snapshot = PinnapiClient(config).live_scores(max_seconds=max_seconds)
     for event_id in ids:
         record = cache.get(event_id, {})
         score = snapshot.get(event_id)
@@ -183,6 +210,8 @@ def _verified_titan_corner_score(
     official: dict[str, Any],
     titan_by_id: dict[str, dict[str, Any]],
     client: TitanClient,
+    *,
+    max_seconds: float | None = None,
 ) -> dict[str, Any] | None:
     """Use Titan corners only after exact ID, identity and official-score checks."""
     target = _target(bet)
@@ -218,7 +247,7 @@ def _verified_titan_corner_score(
     if titan_score != official_score:
         return None
     try:
-        detail = client.result_detail(titan_id)
+        detail = client.result_detail(titan_id, max_seconds=max_seconds)
         corners = int(detail["corners_total"]) if detail else None
     except (KeyError, TypeError, ValueError, OSError):
         return None
@@ -230,6 +259,8 @@ def _verified_titan_corner_score(
 def _verified_titan_detail_score(
     bet: dict[str, Any],
     client: TitanClient,
+    *,
+    max_seconds: float | None = None,
 ) -> dict[str, Any] | None:
     """Recover a completed exact-ID result omitted from Titan's result index."""
     target = _target(bet)
@@ -237,7 +268,7 @@ def _verified_titan_detail_score(
     if target is None or not titan_id:
         return None
     try:
-        detail = client.result_detail(titan_id)
+        detail = client.result_detail(titan_id, max_seconds=max_seconds)
     except (KeyError, TypeError, ValueError, OSError):
         return None
     kickoff = parse_time((detail or {}).get("kickoff"))
@@ -374,10 +405,13 @@ def _settle_due_locked(config: Settings) -> dict[str, Any]:
             save_ledger(config, current)
         return {"ok": True, "settled": 0, "voided": 0,
                 "pending": sum(b.get("status") == "PENDING" for b in official_bets + v2_bets)}
+    provider_deadline = time.monotonic() + _settlement_pass_deadline_seconds()
     cache: dict[str, Any] = {}
     standard_due = [bet for bet in due if bet.get("code") != "CHL"]
     try:
-        cache = _refresh_live(config, standard_due)
+        cache = _refresh_live(
+            config, standard_due, max_seconds=_remaining(provider_deadline),
+        )
     except Exception:
         # Preserve a bounded failure count.  Strict exact-ID official/Titan
         # fallback remains unavailable until a live observation is stale or
@@ -398,14 +432,14 @@ def _settle_due_locked(config: Settings) -> dict[str, Any]:
     hkjc_results: dict[str, dict[str, Any]] = {}
     hkjc_statuses: dict[str, dict[str, Any]] = {}
     result_lookup_due = fallback + corner_due
-    if result_lookup_due:
+    if result_lookup_due and _remaining(provider_deadline) > 0:
         dates = {parse_time(bet.get("kickoff")).strftime("%Y-%m-%d") for bet in result_lookup_due if parse_time(bet.get("kickoff"))}
         ids = {str(bet.get("hkjc_match_id")) for bet in result_lookup_due if bet.get("hkjc_match_id")}
         try:
             hkjc_results, hkjc_statuses = fetch_official_settlement_bundle(
                 ids,
                 dates,
-                max_seconds=60.0,
+                max_seconds=min(60.0, _remaining(provider_deadline)),
             )
         except Exception:
             hkjc_results, hkjc_statuses = {}, {}
@@ -429,9 +463,15 @@ def _settle_due_locked(config: Settings) -> dict[str, Any]:
     # per-pass fanout cap; unresolved bets remain pending for the next pass.
     titan_client.limit_result_detail_requests(3)
     titan_results: list[dict[str, Any]] = []
-    if any(needs_titan_result(bet) for bet in due):
+    if _remaining(provider_deadline) > 0 and any(needs_titan_result(bet) for bet in due):
         try:
-            titan_results = titan_client.results()
+            dates = {
+                parse_time(bet.get("kickoff")).strftime("%Y-%m-%d")
+                for bet in due if parse_time(bet.get("kickoff"))
+            }
+            titan_results = titan_client.results(
+                dates, max_seconds=_remaining(provider_deadline),
+            )
         except Exception:
             titan_results = []
     titan_by_id = {str(row.get("id") or ""): row for row in titan_results}
@@ -441,6 +481,12 @@ def _settle_due_locked(config: Settings) -> dict[str, Any]:
         counters[outcome] += 1
 
     for bet in due:
+        if _remaining(provider_deadline) <= 0:
+            # No provider result was verified before the shared deadline.
+            # Preserve PENDING status rather than guessing from stale/cache
+            # data; the next timed pass retries the exact same bet safely.
+            _pending_diagnostic(bet, "settlement_provider_deadline_exhausted")
+            continue
         hkjc_state = hkjc_statuses.get(str(bet.get("hkjc_match_id") or "")) or {}
         if is_non_result_terminal_status(
             hkjc_state.get("status"),
@@ -468,7 +514,11 @@ def _settle_due_locked(config: Settings) -> dict[str, Any]:
                 continue
             if official:
                 verified = _verified_titan_corner_score(
-                    bet, official, titan_by_id, titan_client
+                    bet,
+                    official,
+                    titan_by_id,
+                    titan_client,
+                    max_seconds=_remaining(provider_deadline),
                 )
                 if verified and _settle(
                     bet,
@@ -500,7 +550,9 @@ def _settle_due_locked(config: Settings) -> dict[str, Any]:
                 count("settled", bet)
                 continue
         if not titan:
-            detail_score = _verified_titan_detail_score(bet, titan_client)
+            detail_score = _verified_titan_detail_score(
+                bet, titan_client, max_seconds=_remaining(provider_deadline),
+            )
             if detail_score and _settle(
                 bet,
                 detail_score,

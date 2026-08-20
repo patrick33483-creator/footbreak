@@ -1683,6 +1683,18 @@ class CrownSafetyTests(unittest.TestCase):
             stages = load_ledger(config)["watch"]["hung"]["stages"]
             self.assertEqual([stage["stage"] for stage in stages].count("T-5"), 1)
 
+    def test_tick_hkjc_bridge_worker_cannot_outlive_pass_deadline(self) -> None:
+        """The shared Footbreak reader is optional, so Crown kills it at deadline."""
+        from crown import engine as crown_engine
+
+        started = time.monotonic()
+        with patch("crown.engine.fetch_matches", side_effect=lambda: time.sleep(3)):
+            rows = crown_engine._fetch_tick_hkjc_matches(
+                time.monotonic() + 0.10,
+            )
+        self.assertEqual(rows, [])
+        self.assertLess(time.monotonic() - started, 0.75)
+
     def test_same_kickoff_t5_batch_fetches_bulk_crown_once_not_fixture_pages(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             config = replace(settings(), state_dir=Path(directory), enabled=True, pinnapi_key="test")
@@ -1724,7 +1736,11 @@ class CrownSafetyTests(unittest.TestCase):
                  patch("crown.engine._prediction", new=_runtime_batch_prediction):
                 result = run("tick", config)
             self.assertEqual(result["predictions"], 2)
-            titan_client.crown_bulk_price_snapshots.assert_called_once_with()
+            titan_client.crown_bulk_price_snapshots.assert_called_once()
+            self.assertGreater(
+                titan_client.crown_bulk_price_snapshots.call_args.kwargs["max_seconds"],
+                0,
+            )
             titan_client.crown_price_snapshot.assert_not_called()
             titan_client.crown_prices.assert_not_called()
 
@@ -1818,7 +1834,11 @@ class CrownSafetyTests(unittest.TestCase):
 
             self.assertTrue(result["fast_t5_bulk"])
             self.assertEqual(result["predictions"], 2)
-            titan_client.crown_bulk_price_snapshots.assert_called_once_with()
+            titan_client.crown_bulk_price_snapshots.assert_called_once()
+            self.assertGreater(
+                titan_client.crown_bulk_price_snapshots.call_args.kwargs["max_seconds"],
+                0,
+            )
             titan_client.crown_prices.assert_not_called()
             stored = {row["match_id"]: row for row in load_predictions(config)}
             self.assertEqual(set(stored), {"fast-a", "fast-b"})
@@ -2188,7 +2208,9 @@ class CrownSafetyTests(unittest.TestCase):
             )
             payload = build(config)
             self.assertNotIn("rows", payload["prediction_history"])
-            self.assertEqual(payload["history_data_url"], "history.json")
+            self.assertRegex(
+                payload["history_data_url"], r"^history-[0-9a-f]{20}\.json$",
+            )
             self.assertTrue(payload["history_data_version"])
             # A persisted row without an immutable model-version tag remains
             # auditable, but cannot be attributed to the current scorecard.
@@ -2196,14 +2218,65 @@ class CrownSafetyTests(unittest.TestCase):
             self.assertEqual(stats["predictions"], 0)
             self.assertEqual(stats["all_history_audit"]["predictions"], 1)
             output = write_dashboard_data(config)
-            artifact = json.loads((output.parent / "history.json").read_text(encoding="utf-8"))
+            sidecar = output.parent / payload["history_data_url"]
+            artifact = json.loads(sidecar.read_text(encoding="utf-8"))
             self.assertEqual(artifact["schema_version"], "crown-history-v1")
             self.assertEqual(artifact["history_data_version"], payload["history_data_version"])
             self.assertEqual(
                 artifact["prediction_history"]["rows"][0]["match_id"],
                 "old",
             )
-            self.assertEqual(S_IMODE((output.parent / "history.json").stat().st_mode), 0o644)
+            self.assertEqual(S_IMODE(sidecar.stat().st_mode), 0o644)
+
+    def test_dashboard_publish_interruption_retains_a_matching_sidecar_generation(self) -> None:
+        from crown import dashboard_data
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = replace(settings(), state_dir=root / "private-state", web_root=root / "web")
+            config.state_dir.mkdir(parents=True)
+            history_path = config.state_dir / "prediction_history.json"
+            history_path.write_text('{"rows":[],"stats":{}}', encoding="utf-8")
+            output = write_dashboard_data(config)
+            old_payload = json.loads(output.read_text(encoding="utf-8"))
+            history_path.write_text(
+                '{"rows":[{"match_id":"new","stage":"T-5","kickoff":"2026-08-10T01:00:00+08:00",'
+                '"market_predictions":[{"code":"HDC","condition":-0.5,"side":"H"}]}],"stats":{}}',
+                encoding="utf-8",
+            )
+            original_write = dashboard_data.write_json_atomic
+
+            def fail_main(path, value):
+                if path == output:
+                    raise OSError("simulated interruption before data.json swap")
+                return original_write(path, value)
+
+            with patch("crown.dashboard_data.write_json_atomic", side_effect=fail_main):
+                with self.assertRaisesRegex(OSError, "simulated interruption"):
+                    write_dashboard_data(config)
+            retained = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(retained["history_data_url"], old_payload["history_data_url"])
+            retained_sidecar = json.loads(
+                (output.parent / retained["history_data_url"]).read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                retained["history_data_version"],
+                retained_sidecar["history_data_version"],
+            )
+
+    def test_tick_projection_keeps_full_publish_sidecar_generation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = replace(settings(), state_dir=root / "private-state", web_root=root / "web")
+            output = write_dashboard_data(config)
+            before = json.loads(output.read_text(encoding="utf-8"))
+            write_tick_dashboard_projection(config, load_ledger(config))
+            after = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(after["history_data_url"], before["history_data_url"])
+            sidecar = json.loads(
+                (output.parent / after["history_data_url"]).read_text(encoding="utf-8")
+            )
+            self.assertEqual(after["history_data_version"], sidecar["history_data_version"])
 
     def test_dashboard_projects_persisted_ledger_stage_missing_from_history(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -2248,7 +2321,9 @@ class CrownSafetyTests(unittest.TestCase):
 
             output = write_dashboard_data(config)
             payload = json.loads(output.read_text(encoding="utf-8"))
-            artifact = json.loads((output.parent / "history.json").read_text(encoding="utf-8"))
+            artifact = json.loads(
+                (output.parent / payload["history_data_url"]).read_text(encoding="utf-8")
+            )
             self.assertNotIn("rows", payload["prediction_history"])
             rows = artifact["prediction_history"]["rows"]
             self.assertEqual([(row["match_id"], row["stage"]) for row in rows], [
@@ -2552,12 +2627,13 @@ class CrownSafetyTests(unittest.TestCase):
                 self.assertEqual(crown_run.main(), 0)
             archive.assert_called_once_with(config, ledger)
             projection.assert_called_once_with(config, ledger)
-            notify.assert_called_once_with(
-                ledger,
-                config,
-                [{"match_id": "x", "stage": "T-5"}],
-                max_attempts=1,
+            notify.assert_called_once()
+            self.assertEqual(
+                notify.call_args.args,
+                (ledger, config, [{"match_id": "x", "stage": "T-5"}]),
             )
+            self.assertEqual(notify.call_args.kwargs["max_attempts"], 1)
+            self.assertGreater(notify.call_args.kwargs["max_seconds"], 0)
             self.assertEqual(
                 ast.literal_eval(stdout.getvalue())["dashboard_projection"],
                 "post_tick_local_state",
@@ -2585,6 +2661,45 @@ class CrownSafetyTests(unittest.TestCase):
             update.assert_called_once_with(config, ledger)
             dashboard.assert_called_once_with(config)
             archive.assert_not_called()
+
+    def test_settlement_does_not_repeat_history_result_providers(self) -> None:
+        import crown.run as crown_run
+
+        with tempfile.TemporaryDirectory() as directory:
+            config = replace(settings(), state_dir=Path(directory), web_root=Path(directory) / "web")
+            with patch("crown.run.settings", return_value=config), \
+                 patch("crown.run.run", return_value={"ok": True, "mode": "settle"}), \
+                 patch("crown.run.load_ledger", return_value={"watch": {}}), \
+                 patch("crown.run.update_history") as update, \
+                 patch("crown.run.write_dashboard_data") as dashboard, \
+                 patch("crown.run.notify_new", return_value=0), \
+                 patch("sys.argv", ["crown.run", "settle"]):
+                self.assertEqual(crown_run.main(), 0)
+            update.assert_not_called()
+            dashboard.assert_called_once_with(config)
+
+    def test_tick_skips_telegram_when_shared_deadline_is_exhausted(self) -> None:
+        import crown.run as crown_run
+
+        with tempfile.TemporaryDirectory() as directory:
+            config = replace(settings(), state_dir=Path(directory), web_root=Path(directory) / "web")
+            stdout = io.StringIO()
+            with patch("crown.run.settings", return_value=config), \
+                 patch("crown.run._tick_pass_deadline_seconds", return_value=1), \
+                 patch("crown.run.time.monotonic", side_effect=[10.0, 12.0]), \
+                 patch("crown.run.run", return_value={"ok": True, "mode": "tick"}), \
+                 patch("crown.run.load_ledger", return_value={"watch": {}}), \
+                 patch("crown.run.archive_watch_fast"), \
+                 patch("crown.run.write_tick_dashboard_projection"), \
+                 patch("crown.run.notify_new") as notify, \
+                 patch("sys.argv", ["crown.run", "tick"]), \
+                 contextlib.redirect_stdout(stdout):
+                self.assertEqual(crown_run.main(), 0)
+            notify.assert_not_called()
+            self.assertEqual(
+                ast.literal_eval(stdout.getvalue())["notification_warning"],
+                "telegram_deferred_tick_deadline",
+            )
 
     def test_prediction_history_advances_valid_learning_snapshot_reference(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

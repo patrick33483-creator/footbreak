@@ -402,14 +402,16 @@ class TitanClient:
                 continue
         return list({row["id"]: row for row in output}.values())
 
-    def crown_bulk_price_snapshots(self) -> dict[str, dict[str, Any]]:
+    def crown_bulk_price_snapshots(
+        self, *, max_seconds: float | None = None,
+    ) -> dict[str, dict[str, Any]]:
         """Fetch company-ID-3 bulk current odds once for an entire tick."""
         if self.config.titan_company_id != "3":
             return {}
         source = self._read(
             "https://livestatic.titan007.com/vbsxml/"
             f"goal{self.config.titan_company_id}.xml?r=007{int(time.time() * 1000)}",
-            timeout=8,
+            timeout=8.0 if max_seconds is None else min(8.0, max(0.1, max_seconds)),
             attempts=1,
         )
         return parse_crown_bulk_prices(source, observed_at=time.time())
@@ -488,7 +490,9 @@ class TitanClient:
                 continue
         return list({row["id"]: row for row in output}.values())
 
-    def result_detail(self, titan_id: str) -> dict[str, Any] | None:
+    def result_detail(
+        self, titan_id: str, *, max_seconds: float | None = None,
+    ) -> dict[str, Any] | None:
         """Return an exact-ID completed score and available full-time stats."""
         titan_id = str(titan_id)
         if not titan_id.isdigit():
@@ -499,12 +503,23 @@ class TitanClient:
             if self._result_detail_requests_remaining <= 0:
                 return None
             self._result_detail_requests_remaining -= 1
+        deadline = time.monotonic() + max_seconds if max_seconds is not None else None
+
+        def remaining() -> float:
+            return (
+                deadline - time.monotonic()
+                if deadline is not None else 8.0
+            )
+
+        header_budget = remaining()
+        if header_budget <= 0:
+            return None
         header = parse_match_header(
             self._read(
                 "https://livestatic.titan007.com/phone/txt/analysisheader/cn/"
                 f"{titan_id[0]}/{titan_id[1:3]}/{titan_id}.txt",
                 encoding="utf-8",
-                timeout=8,
+                timeout=max(0.1, min(8.0, header_budget)),
                 attempts=1,
             ),
             titan_id,
@@ -512,10 +527,14 @@ class TitanClient:
         if not header:
             self._result_detail_cache[titan_id] = None
             return None
+        stats_budget = remaining()
+        if stats_budget <= 0:
+            self._result_detail_cache[titan_id] = None
+            return None
         stats = parse_match_statistics(
             self._read(
                 f"https://live.titan007.com/detail/{titan_id}cn.htm",
-                timeout=8,
+                timeout=max(0.1, min(8.0, stats_budget)),
                 attempts=1,
             )
         ) or {}

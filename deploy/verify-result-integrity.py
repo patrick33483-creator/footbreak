@@ -16,7 +16,6 @@ FOOTBREAK_DATA = Path("/var/www/footbreak/data.json")
 FOOTBREAK_PUBLIC_HISTORY = Path("/var/www/footbreak/history.json")
 CROWN_HISTORY = Path("/var/lib/footbreak/crown/prediction_history.json")
 CROWN_DATA = Path("/var/www/crown/data.json")
-CROWN_PUBLIC_HISTORY = Path("/var/www/crown/history.json")
 STAGES = ("首預", "T-30", "T-5")
 MARKETS = ("HDC", "HIL", "CHL")
 HKT = timezone(timedelta(hours=8))
@@ -47,6 +46,19 @@ def published_history(
     assert isinstance(history, dict), f"{label} history sidecar payload missing"
     assert isinstance(history.get("rows"), list), f"{label} history sidecar rows missing"
     return history
+
+
+def sidecar_path(public_path: Path, payload: dict[str, Any], label: str) -> Path:
+    """Resolve a dashboard history sidecar without escaping its web root."""
+    data_url = str(payload.get("history_data_url") or "").strip()
+    assert data_url and data_url.endswith(".json"), (
+        f"{label} boot payload is missing the history sidecar marker"
+    )
+    path = (public_path.parent / data_url).resolve()
+    assert path.parent == public_path.parent.resolve(), (
+        f"{label} history sidecar must be a sibling file"
+    )
+    return path
 
 
 def rows(payload: Any) -> list[dict[str, Any]]:
@@ -363,7 +375,7 @@ def assert_crown_publication_matches(
         public_history = crown_public.get("prediction_history") or {}
     else:
         public_history = crown_public_history.get("prediction_history") or {}
-        assert crown_public.get("history_data_url") == "history.json", (
+        assert str(crown_public.get("history_data_url") or "").endswith(".json"), (
             "Crown boot payload is missing the history sidecar marker"
         )
         assert crown_public.get("history_data_version") == crown_public_history.get(
@@ -422,7 +434,7 @@ def main() -> None:
     footbreak_public_history = load(FOOTBREAK_PUBLIC_HISTORY)
     crown = load(CROWN_HISTORY)
     crown_public = load(CROWN_DATA)
-    crown_public_history = load(CROWN_PUBLIC_HISTORY)
+    crown_public_history = load(sidecar_path(CROWN_DATA, crown_public, "Crown"))
     footbreak_history = published_history(
         "Footbreak",
         footbreak,

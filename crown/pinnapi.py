@@ -295,7 +295,7 @@ class PinnapiClient:
     def __init__(self, config: Settings):
         self.config = config
 
-    def _get(self, path: str) -> Any:
+    def _get(self, path: str, *, max_seconds: float | None = None) -> Any:
         if not self.config.pinnapi_configured:
             raise RuntimeError("PinnAPI credentials are not configured")
         request = urllib.request.Request(
@@ -306,11 +306,14 @@ class PinnapiClient:
                 "x-api-key": str(self.config.pinnapi_key),
             },
         )
-        with urllib.request.urlopen(request, timeout=25) as response:
+        timeout = 25.0 if max_seconds is None else min(25.0, max(0.1, max_seconds))
+        with urllib.request.urlopen(request, timeout=timeout) as response:
             return json.loads(response.read().decode("utf-8"))
 
-    def fixtures(self) -> list[dict[str, Any]]:
-        return parse_fixtures(self._get("/kit/v1/prematch/fixtures?sport_id=1"))
+    def fixtures(self, *, max_seconds: float | None = None) -> list[dict[str, Any]]:
+        return parse_fixtures(
+            self._get("/kit/v1/prematch/fixtures?sport_id=1", max_seconds=max_seconds)
+        )
 
     def lines(self, event_id: str) -> dict[str, Any]:
         return parse_lines(self._get("/kit/v1/prematch/lines?event_id=" + urllib.parse.quote(event_id, safe="")), event_id)
@@ -322,5 +325,10 @@ class PinnapiClient:
         )
         return parse_corner_lines(payload, event_id)
 
-    def live_scores(self) -> dict[str, dict[str, Any]]:
-        return parse_live_scores(self._get("/kit/v1/markets?sport_id=1&event_type=live"))
+    def live_scores(self, *, max_seconds: float | None = None) -> dict[str, dict[str, Any]]:
+        return parse_live_scores(
+            self._get(
+                "/kit/v1/markets?sport_id=1&event_type=live",
+                max_seconds=max_seconds,
+            )
+        )

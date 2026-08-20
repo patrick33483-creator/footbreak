@@ -19,6 +19,9 @@ from .state import load_ledger, load_predictions, paths
 from analysis.wilson_validation import active_bets
 
 
+# A full publish writes an immutable, content-addressed sidecar before data.
+# If it is interrupted between those writes, the old data.json still points to
+# its old sidecar rather than a mutable file from the next generation.
 HISTORY_DATA_URL = "history.json"
 HISTORY_ARTIFACT_SCHEMA = "crown-history-v1"
 
@@ -313,6 +316,10 @@ def _history_version(prediction_history: dict[str, Any]) -> str:
     return hashlib.sha256(encoded).hexdigest()[:20]
 
 
+def _history_data_url(version: str) -> str:
+    return f"history-{version}.json"
+
+
 def _build_payloads(config: Settings) -> tuple[dict[str, Any], dict[str, Any]]:
     """Build the lightweight dashboard and its complete history sidecar.
 
@@ -379,6 +386,7 @@ def _build_payloads(config: Settings) -> tuple[dict[str, Any], dict[str, Any]]:
     challenger_v2 = ledger.get("crown_v2_challenger")
     generated_at = iso_hkt()
     history_version = _history_version(prediction_history)
+    history_data_url = _history_data_url(history_version)
     dashboard = {
         "schema_version": "crown-dashboard-v2", "generated_at": generated_at, "title": "足破 · 皇冠賽事預測終端",
         "summary": _summary(matches, active_condition_bets),
@@ -399,7 +407,7 @@ def _build_payloads(config: Settings) -> tuple[dict[str, Any], dict[str, Any]]:
         # deliberately absent; the History view asks for the sidecar on
         # demand, avoiding a download and browser walk of unbounded history.
         "prediction_history": {"stats": prediction_history["stats"]},
-        "history_data_url": HISTORY_DATA_URL,
+        "history_data_url": history_data_url,
         "history_data_version": history_version,
         "stage_completeness": stage_completeness(matches, ledger),
     }
@@ -422,7 +430,7 @@ def write_dashboard_data(config: Settings, out: Path | None = None) -> Path:
     """Atomically publish a lightweight dashboard and complete history sidecar."""
     destination = out or config.web_root / "data.json"
     dashboard, history_artifact = _build_payloads(config)
-    history_destination = destination.with_name(HISTORY_DATA_URL)
+    history_destination = destination.with_name(str(dashboard["history_data_url"]))
     # Publish the sidecar first.  The browser verifies the version marker
     # before using it, so it never renders a mixed-generation history during
     # the short two-file replacement window.

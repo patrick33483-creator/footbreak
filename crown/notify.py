@@ -165,7 +165,11 @@ def _wilson_observation_message(row: dict[str, Any]) -> str | None:
 
 
 def notify_wilson_pending(
-    ledger: dict[str, Any], config: Settings, *, max_attempts: int | None = None,
+    ledger: dict[str, Any],
+    config: Settings,
+    *,
+    max_attempts: int | None = None,
+    max_seconds: float | None = None,
 ) -> int:
     """Durable retryable Crown Wilson outbox; old strategy entries are excluded."""
     with notification_lock(config) as acquired:
@@ -187,7 +191,7 @@ def notify_wilson_pending(
             if max_attempts is not None and attempted >= max(0, max_attempts):
                 break
             attempted += 1
-            if _send(config, message) is False:
+            if _send(config, message, max_seconds=max_seconds) is False:
                 continue
             state["wilson_match_alerts"] = _bounded_unique_ids(
                 list(state.get("wilson_match_alerts") or []) + [bid]
@@ -205,7 +209,9 @@ def notify_wilson_pending(
         return sent
 
 
-def _send(config: Settings, text: str) -> bool:
+def _send(
+    config: Settings, text: str, *, max_seconds: float | None = None,
+) -> bool:
     if not (config.telegram_enabled and config.telegram_bot_token and config.telegram_chat_id):
         return False
     body = json.dumps({"chat_id": config.telegram_chat_id, "text": text}).encode()
@@ -213,7 +219,8 @@ def _send(config: Settings, text: str) -> bool:
                                      headers={"Content-Type": "application/json"})
     # Notification transport is retryable on the next tick.  Keep a failed
     # Telegram call well below the prediction service deadline.
-    with urllib.request.urlopen(request, timeout=5):
+    timeout = 5.0 if max_seconds is None else min(5.0, max(0.1, max_seconds))
+    with urllib.request.urlopen(request, timeout=timeout):
         pass
     return True
 
@@ -539,6 +546,7 @@ def notify_new(
     fresh_t5_predictions: list[Any] | None = None,
     *,
     max_attempts: int | None = None,
+    max_seconds: float | None = None,
 ) -> int:
     """Send committed Wilson simulations exactly once.
 
@@ -552,7 +560,12 @@ def notify_new(
     # cutover.  `fresh_t5_predictions` stays accepted for API compatibility
     # but notification eligibility is the committed Wilson bet itself.
     del fresh_t5_predictions
-    return notify_wilson_pending(ledger, config, max_attempts=max_attempts)
+    return notify_wilson_pending(
+        ledger,
+        config,
+        max_attempts=max_attempts,
+        max_seconds=max_seconds,
+    )
 
     from analysis.granular_conditions import _role, notification_opportunities
     with notification_lock(config) as acquired:
