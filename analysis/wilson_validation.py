@@ -13,7 +13,7 @@ import math
 from datetime import datetime, timezone
 from typing import Any, Iterable
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 NAMESPACE = "wilson_validation"
 STRATEGY = "wilson-test-strategy-v1"
 DISPLAY_NAME = "Wilson 測試攻略"
@@ -26,6 +26,11 @@ MIN_DECIDED = 50
 EDGE_BUFFER = 0.03
 Z_95 = 1.959963984540054
 LEGACY_STRATEGY = "independent-validation-v1"
+ROLLOVER_BATCH_SIZE = 20
+ROLLOVER_AUDIT_LIMIT = 64
+BINARY_HIT_RESULTS = {"Won", "Half Won"}
+BINARY_MISS_RESULTS = {"Lost", "Half Lost"}
+BINARY_DECIDED_RESULTS = BINARY_HIT_RESULTS | BINARY_MISS_RESULTS
 
 
 def _number(value: Any) -> float | None:
@@ -38,6 +43,27 @@ def _number(value: Any) -> float | None:
 
 def _now() -> str:
     return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+
+
+def _canonical_hash(value: Any) -> str:
+    """Return a deterministic irreversible digest suitable for public audit."""
+    raw = json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _time(value: Any) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(str(value or "").replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed.astimezone(timezone.utc)
+
+
+def _strictly_after(value: Any, boundary: Any) -> bool:
+    left, right = _time(value), _time(boundary)
+    return left is not None and right is not None and left > right
 
 
 def portfolio_name(system: str) -> str:
@@ -131,16 +157,24 @@ def ensure_namespace(ledger: dict[str, Any], system: str, *, now: str | None = N
         ledger[NAMESPACE] = ns
     if not isinstance(ns, dict):
         raise ValueError("Wilson namespace must be an object")
-    if ns.get("schema_version") not in (None, SCHEMA_VERSION):
+    if ns.get("schema_version") not in (None, 1, SCHEMA_VERSION):
         raise ValueError("unsupported Wilson namespace schema")
     if ns.get("system") not in (None, system):
         raise ValueError("Wilson namespace system mismatch")
     activation = now or _now()
-    ns.setdefault("schema_version", SCHEMA_VERSION)
+    # v1 had frozen discovery evidence but no prospective evidence-version
+    # ledger.  It is deliberately upgraded as a new baseline only: no legacy
+    # settled rows may be replayed into a rollover without explicit native
+    # provenance and an existing snapshot boundary.
+    legacy_rollover_upgrade = ns.get("schema_version") == 1
+    if ns.get("schema_version") in (None, 1):
+        ns["schema_version"] = SCHEMA_VERSION
     ns.setdefault("system", system)
     ns.setdefault("display_name", DISPLAY_NAME)
     ns.setdefault("activation_at", activation)
     ns.setdefault("cutover_at", ns["activation_at"])
+    if legacy_rollover_upgrade:
+        ns.setdefault("rollover_migration_at", activation)
     ns.setdefault("starting_bankroll", STARTING_BANKROLL)
     ns.setdefault("fixed_stake", FIXED_STAKE)
     ns.setdefault("fixture_stake_cap", FIXTURE_STAKE_CAP)
@@ -164,6 +198,12 @@ def ensure_namespace(ledger: dict[str, Any], system: str, *, now: str | None = N
     if not isinstance(ns["condition_order"], list):
         raise ValueError("Wilson condition order must be an array")
     _ensure_condition_order(ns)
+    migration_boundary = str(
+        ns.get("rollover_migration_at") or ns["activation_at"]
+    )
+    for frozen in ns["conditions"].values():
+        if isinstance(frozen, dict):
+            _ensure_evidence_versions(frozen, migration_boundary=migration_boundary)
     return ns
 
 
@@ -206,6 +246,198 @@ def condition_number(ns: dict[str, Any], signature: str) -> int | None:
     return None
 
 
+def _evidence_values(hits: int, decided: int) -> dict[str, Any]:
+    """Wilson evidence fields shared by immutable versions and the dashboard."""
+    interval = wilson95(hits, decided)
+    lower = interval[0] if interval else None
+    minimum = 1.0 / (lower - EDGE_BUFFER) if lower is not None and lower > EDGE_BUFFER else None
+    return {
+        "hits": hits,
+        "decided": decided,
+        "hit_rate_raw": hits / decided if decided else None,
+        "wilson95_lower_raw": lower,
+        "wilson95_upper_raw": interval[1] if interval else None,
+        "minimum_acceptable_odds_raw": minimum,
+        "display": {
+            "hit_rate_pct": round(100.0 * hits / decided, 1) if decided else None,
+            "wilson95_lower_pct": round(100.0 * lower, 1) if lower is not None else None,
+            "wilson95_upper_pct": round(100.0 * interval[1], 1) if interval else None,
+            "minimum_acceptable_odds": round(minimum, 2) if minimum is not None else None,
+        },
+    }
+
+
+def _version_hash(payload: dict[str, Any]) -> str:
+    """Hash only immutable evidence content, never raw fixture/provider ids."""
+    hashable = {
+        key: payload.get(key) for key in (
+            "condition_signature", "version", "prior_version",
+            "prior_evidence_hash", "batch_fixture_market_hashes", "batch_hits",
+            "batch_decided", "cumulative_hits", "cumulative_decided",
+            "wilson95_lower_raw", "minimum_acceptable_odds_raw",
+            "activation_boundary_at",
+        )
+    }
+    return _canonical_hash(hashable)
+
+
+def _initial_evidence_version(
+    frozen: dict[str, Any], *, migration_boundary: str,
+) -> dict[str, Any] | None:
+    history = frozen.get("historical_evidence")
+    if not isinstance(history, dict):
+        return None
+    try:
+        hits, decided = int(history.get("hits")), int(history.get("decided"))
+    except (TypeError, ValueError):
+        return None
+    if hits < 0 or decided < 0 or hits > decided:
+        return None
+    # The historical discovery artifact is the prior evidence snapshot. A new
+    # native T-5 that first freezes the condition is later than that snapshot
+    # and is eligible prospectively; using the write-time ``frozen_at`` would
+    # incorrectly exclude this first real validation decision.
+    artifact = history.get("artifact") if isinstance(history.get("artifact"), dict) else {}
+    boundary = str(
+        artifact.get("as_of") or frozen.get("frozen_at") or migration_boundary
+    )
+    values = _evidence_values(hits, decided)
+    version = {
+        "version": 1,
+        "condition_signature": str(frozen.get("signature") or ""),
+        "prior_version": None,
+        "prior_evidence_hash": None,
+        "batch_fixture_market_hashes": [],
+        "batch_hits": 0,
+        "batch_decided": 0,
+        "cumulative_hits": hits,
+        "cumulative_decided": decided,
+        "wilson95_lower_raw": values["wilson95_lower_raw"],
+        "minimum_acceptable_odds_raw": values["minimum_acceptable_odds_raw"],
+        "minimum_acceptable_odds_display": values["display"]["minimum_acceptable_odds"],
+        "activation_boundary_at": boundary,
+        "created_at": boundary,
+        "migration_baseline": True,
+    }
+    version["evidence_hash"] = _version_hash(version)
+    return version
+
+
+def _initial_migration_version(
+    frozen: dict[str, Any], baseline: dict[str, Any], *, migration_boundary: str,
+) -> dict[str, Any] | None:
+    """One-time upgrade of the already-completed validation cohort.
+
+    The pre-rollover release retained only aggregate prospective metrics, not
+    per-row provenance.  Product policy explicitly permits its *single*
+    aggregate merge during this migration.  It is never treated as 20-row
+    batches, and it establishes a fresh boundary for all future batches.
+    """
+    prospective = frozen.get("prospective")
+    if not isinstance(prospective, dict):
+        return None
+    try:
+        hits, decided = int(prospective.get("hits")), int(prospective.get("decided"))
+        base_hits, base_decided = (
+            int(baseline["cumulative_hits"]), int(baseline["cumulative_decided"]),
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
+    if hits < 0 or decided <= 0 or hits > decided:
+        return None
+    # Legacy aggregate prospective metrics may include pushes separately. The
+    # stated denominator is already decided, so only valid binary totals merge.
+    values = _evidence_values(base_hits + hits, base_decided + decided)
+    version = {
+        "version": 2,
+        "condition_signature": baseline.get("condition_signature"),
+        "prior_version": 1,
+        "prior_evidence_hash": baseline.get("evidence_hash"),
+        "batch_fixture_market_hashes": [],
+        "batch_fixture_market_ids_unavailable_from_legacy_aggregate": True,
+        "batch_hits": hits,
+        "batch_decided": decided,
+        "cumulative_hits": base_hits + hits,
+        "cumulative_decided": base_decided + decided,
+        "wilson95_lower_raw": values["wilson95_lower_raw"],
+        "minimum_acceptable_odds_raw": values["minimum_acceptable_odds_raw"],
+        "minimum_acceptable_odds_display": values["display"]["minimum_acceptable_odds"],
+        "activation_boundary_at": migration_boundary,
+        "created_at": migration_boundary,
+        "initial_migration_full_cohort": True,
+        "legacy_prospective_cohort": {
+            "hits": hits, "decided": decided,
+            "pushes": int(prospective.get("pushes") or 0),
+        },
+    }
+    version["evidence_hash"] = _version_hash(version)
+    return version
+
+
+def _ensure_evidence_versions(
+    frozen: dict[str, Any], *, migration_boundary: str,
+) -> list[dict[str, Any]]:
+    """Install a v1 baseline without treating historical rows as new evidence."""
+    versions = frozen.get("evidence_versions")
+    if not isinstance(versions, list):
+        versions = []
+        frozen["evidence_versions"] = versions
+    valid = [row for row in versions if isinstance(row, dict)]
+    if len(valid) != len(versions):
+        # A malformed version chain is ambiguous. Do not make it eligible for
+        # a rollover; retain only a visible fail-closed state.
+        frozen["evidence_versions"] = valid
+        frozen["rollover_status"] = "blocked_malformed_evidence_versions"
+        return valid
+    if not versions:
+        initial = _initial_evidence_version(
+            frozen, migration_boundary=migration_boundary,
+        )
+        if initial is None:
+            frozen["rollover_status"] = "blocked_invalid_historical_baseline"
+            return []
+        versions.append(initial)
+        migrated = _initial_migration_version(
+            frozen, initial, migration_boundary=migration_boundary,
+        )
+        if migrated is not None:
+            versions.append(migrated)
+            frozen["rollover_audit"] = [copy.deepcopy(migrated)]
+            # Do not fold the migration cohort again through the ordinary
+            # prospective display, which must restart at zero for the new
+            # 20-decision rollover cycle.
+            frozen["prospective_before_rollover_migration"] = copy.deepcopy(
+                frozen.get("prospective"),
+            )
+            frozen["prospective"] = {}
+            frozen["pending_rollover_progress"] = {
+                "eligible_decided": 0, "required": ROLLOVER_BATCH_SIZE,
+                "display": f"0/{ROLLOVER_BATCH_SIZE}",
+                "initial_migration_full_cohort": True,
+            }
+    active = versions[-1]
+    frozen["active_evidence_version"] = active.get("version")
+    frozen["active_evidence_hash"] = active.get("evidence_hash")
+    frozen["active_evidence"] = {
+        key: copy.deepcopy(active.get(key)) for key in (
+            "version", "cumulative_hits", "cumulative_decided",
+            "wilson95_lower_raw", "minimum_acceptable_odds_raw",
+            "minimum_acceptable_odds_display", "activation_boundary_at",
+            "created_at", "evidence_hash",
+        )
+    }
+    return versions
+
+
+def active_evidence_version(
+    frozen: dict[str, Any], *, migration_boundary: str,
+) -> dict[str, Any] | None:
+    versions = _ensure_evidence_versions(
+        frozen, migration_boundary=migration_boundary,
+    )
+    return versions[-1] if versions else None
+
+
 def freeze_condition(
     ledger: dict[str, Any], system: str, admission: dict[str, Any], *, now: str,
 ) -> dict[str, Any]:
@@ -234,6 +466,7 @@ def freeze_condition(
         order.append(signature)
         ns["condition_order"] = order
     frozen.setdefault("condition_number", order.index(signature) + 1)
+    active_evidence_version(frozen, migration_boundary=ns["activation_at"])
     return frozen
 
 
@@ -348,6 +581,257 @@ def _prospective(bets: Iterable[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _fixture_market_hash(system: str, fixture: str, market: str) -> str:
+    """Never expose provider fixture ids in rollover audit/public payloads."""
+    return _canonical_hash({
+        "system": system, "fixture": fixture, "market": market,
+    })
+
+
+def _rollover_marker(
+    system: str, fixture: str, market: str, signature: str, stage_at: str,
+    evidence_version: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "system": system,
+        "condition_signature": signature,
+        "native_pre_kickoff_t5": True,
+        "stage_at": stage_at,
+        "fixture_market_hash": _fixture_market_hash(system, fixture, market),
+        "admitted_evidence_version": evidence_version.get("version"),
+        "admitted_evidence_hash": evidence_version.get("evidence_hash"),
+    }
+
+
+def _eligible_rollover_rows(
+    bets: Iterable[dict[str, Any]], system: str, signature: str,
+    active: dict[str, Any],
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    """Return only independently auditable next-batch rows, fail closed.
+
+    Every acceptance condition is stored at admission time.  Legacy rows lack
+    this marker by design and cannot be reconstructed from a later settlement.
+    """
+    candidates: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    excluded = {
+        "missing_or_invalid_provenance": 0, "before_snapshot_boundary": 0,
+        "not_binary_decided": 0, "duplicate_or_conflicting_fixture_market": 0,
+    }
+    boundary = active.get("activation_boundary_at")
+    for row in bets:
+        if not isinstance(row, dict) or row.get("status") != "SETTLED":
+            continue
+        if str(row.get("frozen_condition_signature") or "") != signature:
+            continue
+        marker = row.get("rollover_provenance")
+        if not isinstance(marker, dict) or not (
+            marker.get("schema_version") == 1
+            and marker.get("system") == system
+            and marker.get("condition_signature") == signature
+            and marker.get("native_pre_kickoff_t5") is True
+            and row.get("stage") == DECISION_STAGE
+            and row.get("first_native_pre_kickoff_t5") is True
+            and not row.get("post_hoc_backfill")
+            and not row.get("exclude_from_simulation")
+        ):
+            excluded["missing_or_invalid_provenance"] += 1
+            continue
+        stage_at = marker.get("stage_at")
+        fixture_hash = marker.get("fixture_market_hash")
+        if (
+            not isinstance(fixture_hash, str) or len(fixture_hash) != 64
+            or _time(stage_at) is None
+        ):
+            excluded["missing_or_invalid_provenance"] += 1
+            continue
+        if not _strictly_after(stage_at, boundary):
+            excluded["before_snapshot_boundary"] += 1
+            continue
+        if row.get("result") not in BINARY_DECIDED_RESULTS:
+            # Refunded/push/void states are not binary decisions and are never
+            # silently converted into a miss.
+            excluded["not_binary_decided"] += 1
+            continue
+        candidates.append((row, marker))
+
+    by_fixture: dict[str, list[tuple[dict[str, Any], dict[str, Any]]]] = {}
+    for row, marker in candidates:
+        by_fixture.setdefault(str(marker["fixture_market_hash"]), []).append((row, marker))
+    eligible: list[dict[str, Any]] = []
+    for fixture_hash, rows in by_fixture.items():
+        if len(rows) != 1:
+            # Duplicate and conflicting rows both fail closed; one row cannot
+            # be chosen after the fact to improve the evidence.
+            excluded["duplicate_or_conflicting_fixture_market"] += len(rows)
+            continue
+        row, marker = rows[0]
+        eligible.append({
+            "row": row,
+            "fixture_market_hash": fixture_hash,
+            "stage_at": str(marker["stage_at"]),
+            "hit": row.get("result") in BINARY_HIT_RESULTS,
+        })
+    eligible.sort(key=lambda item: (
+        _time(item["stage_at"]), item["fixture_market_hash"],
+    ))
+    return eligible, excluded
+
+
+def _rollover_condition(
+    frozen: dict[str, Any], bets: Iterable[dict[str, Any]], system: str,
+    signature: str, *, now: str, migration_boundary: str,
+) -> None:
+    """Append deterministic 20-row evidence versions, never edit old ones."""
+    active = active_evidence_version(
+        frozen, migration_boundary=migration_boundary,
+    )
+    if active is None:
+        return
+    last_excluded: dict[str, int] = {}
+    created = 0
+    while True:
+        eligible, excluded = _eligible_rollover_rows(
+            bets, system, signature, active,
+        )
+        last_excluded = excluded
+        if len(eligible) < ROLLOVER_BATCH_SIZE:
+            frozen["pending_rollover_progress"] = {
+                "eligible_decided": len(eligible),
+                "required": ROLLOVER_BATCH_SIZE,
+                "display": f"{len(eligible)}/{ROLLOVER_BATCH_SIZE}",
+                "excluded": excluded,
+            }
+            break
+        batch = eligible[:ROLLOVER_BATCH_SIZE]
+        # A strict timestamp boundary cannot safely split an ambiguous group
+        # with the same native T-5 instant. Hold it pending instead of
+        # inventing an order which later allows equal-time rows through.
+        if (
+            len(eligible) > ROLLOVER_BATCH_SIZE
+            and batch[-1]["stage_at"] == eligible[ROLLOVER_BATCH_SIZE]["stage_at"]
+        ):
+            frozen["pending_rollover_progress"] = {
+                "eligible_decided": len(eligible),
+                "required": ROLLOVER_BATCH_SIZE,
+                "display": f"{len(eligible)}/{ROLLOVER_BATCH_SIZE}",
+                "excluded": excluded,
+                "blocked_reason": "ambiguous_equal_stage_boundary",
+            }
+            frozen["rollover_status"] = "blocked_ambiguous_equal_stage_boundary"
+            break
+        try:
+            prior_hits = int(active["cumulative_hits"])
+            prior_decided = int(active["cumulative_decided"])
+            prior_version = int(active["version"])
+        except (KeyError, TypeError, ValueError):
+            frozen["rollover_status"] = "blocked_invalid_active_evidence"
+            break
+        batch_hits = sum(item["hit"] for item in batch)
+        values = _evidence_values(
+            prior_hits + batch_hits, prior_decided + ROLLOVER_BATCH_SIZE,
+        )
+        next_version = {
+            "version": prior_version + 1,
+            "condition_signature": signature,
+            "prior_version": prior_version,
+            "prior_evidence_hash": active.get("evidence_hash"),
+            "batch_fixture_market_hashes": [
+                item["fixture_market_hash"] for item in batch
+            ],
+            "batch_hits": batch_hits,
+            "batch_decided": ROLLOVER_BATCH_SIZE,
+            "cumulative_hits": prior_hits + batch_hits,
+            "cumulative_decided": prior_decided + ROLLOVER_BATCH_SIZE,
+            "wilson95_lower_raw": values["wilson95_lower_raw"],
+            "minimum_acceptable_odds_raw": values["minimum_acceptable_odds_raw"],
+            "minimum_acceptable_odds_display": values["display"]["minimum_acceptable_odds"],
+            # This is intentionally the final native T-5 time in this
+            # immutable batch, not settlement time. It permits a genuinely
+            # later remainder (e.g. 26 => 20 + 6) to stay pending.
+            "activation_boundary_at": batch[-1]["stage_at"],
+            "created_at": now,
+        }
+        next_version["evidence_hash"] = _version_hash(next_version)
+        versions = frozen.get("evidence_versions")
+        if not isinstance(versions, list):
+            frozen["rollover_status"] = "blocked_malformed_evidence_versions"
+            break
+        versions.append(next_version)
+        active = next_version
+        frozen["active_evidence_version"] = next_version["version"]
+        frozen["active_evidence_hash"] = next_version["evidence_hash"]
+        frozen["active_evidence"] = {
+            key: copy.deepcopy(next_version.get(key)) for key in (
+                "version", "cumulative_hits", "cumulative_decided",
+                "wilson95_lower_raw", "minimum_acceptable_odds_raw",
+                "minimum_acceptable_odds_display", "activation_boundary_at",
+                "created_at", "evidence_hash",
+            )
+        }
+        audit = frozen.setdefault("rollover_audit", [])
+        if not isinstance(audit, list):
+            frozen["rollover_status"] = "blocked_malformed_rollover_audit"
+            break
+        audit.append(copy.deepcopy(next_version))
+        frozen["rollover_audit"] = audit[-ROLLOVER_AUDIT_LIMIT:]
+        frozen["rollover_status"] = "active"
+        created += 1
+    if created:
+        frozen["last_rollover_count"] = created
+    if created == 0 and "rollover_status" not in frozen:
+        frozen["rollover_status"] = "active"
+    if last_excluded:
+        frozen.setdefault("pending_rollover_progress", {}).setdefault(
+            "excluded", last_excluded,
+        )
+
+
+def apply_active_evidence(
+    ledger: dict[str, Any], system: str, admission: dict[str, Any], *,
+    stage_at: str, now: str,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Use only the active version for a new native T-5 decision.
+
+    The first observation freezes its discovery baseline. Afterwards, every
+    admission must be strictly later than the latest evidence boundary. This
+    prevents a late rerun from applying a newly learned threshold backward.
+    """
+    ns = ensure_namespace(ledger, system, now=now)
+    signature = str(admission["signature"])
+    existed = isinstance(ns["conditions"].get(signature), dict)
+    frozen = freeze_condition(ledger, system, admission, now=now)
+    active = active_evidence_version(
+        frozen, migration_boundary=ns["activation_at"],
+    )
+    if active is None:
+        return None, "active_evidence_unavailable"
+    if existed and not _strictly_after(stage_at, active.get("activation_boundary_at")):
+        return None, "stage_not_strictly_after_evidence_activation_boundary"
+    arithmetic = admission_arithmetic(
+        int(active["cumulative_hits"]), int(active["cumulative_decided"]),
+        admission["arithmetic"].get("actual_decimal_odds_raw"),
+    )
+    if arithmetic is None:
+        return None, "active_evidence_arithmetic_invalid"
+    updated = copy.deepcopy(admission)
+    updated["history"] = {
+        **copy.deepcopy(admission["history"]),
+        "hits": int(active["cumulative_hits"]),
+        "decided": int(active["cumulative_decided"]),
+        "evidence_version": active["version"],
+        "evidence_hash": active["evidence_hash"],
+    }
+    updated["arithmetic"] = arithmetic
+    updated["evidence_version"] = active["version"]
+    updated["evidence_hash"] = active["evidence_hash"]
+    updated["stage_at"] = stage_at
+    updated["safety_margin"] = (
+        arithmetic["wilson95_lower_raw"] - arithmetic["required_rate_raw"]
+    )
+    return updated, None
+
+
 def recompute_namespace(ledger: dict[str, Any], system: str) -> dict[str, Any]:
     ns = ensure_namespace(ledger, system)
     bets = active_bets(ledger, system)
@@ -356,6 +840,10 @@ def recompute_namespace(ledger: dict[str, Any], system: str) -> dict[str, Any]:
         grouped.setdefault(str(row.get("frozen_condition_signature") or ""), []).append(row)
     for signature, frozen in ns["conditions"].items():
         if isinstance(frozen, dict):
+            _rollover_condition(
+                frozen, bets, system, str(signature), now=_now(),
+                migration_boundary=ns["activation_at"],
+            )
             frozen["prospective"] = _prospective(grouped.get(signature, []))
     metrics = _prospective(bets)
     open_stake = sum(_number(row.get("stake")) or 0.0 for row in bets if row.get("status") == "PENDING")
@@ -507,6 +995,8 @@ def record_match_observation(
         "frozen_condition_definition": copy.deepcopy(admission["definition"]),
         "frozen_historical_evidence": copy.deepcopy(admission["history"]),
         "wilson_admission": copy.deepcopy(arithmetic),
+        "evidence_version": admission.get("evidence_version"),
+        "evidence_hash": admission.get("evidence_hash"),
     }
     observations.append(row)
     ns["observations"] = observations[-1600:]
@@ -534,6 +1024,16 @@ def commit_bet(
     if any(str(row.get("bet_id") or "") == bid for row in fixture_rows):
         return None
     arithmetic = copy.deepcopy(admission["arithmetic"])
+    # ``commit_bet`` remains usable by isolated unit/offline constructors.
+    # Production admission always supplies the persisted native T-5 timestamp
+    # via ``apply_active_evidence``; a direct caller receives no historical
+    # replay because it is still subject to the stored boundary/provenance.
+    stage_at = admission.get("stage_at") or now
+    evidence = active_evidence_version(
+        frozen, migration_boundary=ns["activation_at"],
+    )
+    if not isinstance(stage_at, str) or evidence is None:
+        return None
     return {
         "bet_id": bid, "portfolio": portfolio_name(system), "strategy": STRATEGY,
         "strategy_name": DISPLAY_NAME, "match_id": fixture, "league": watch.get("league"),
@@ -545,12 +1045,18 @@ def commit_bet(
         "selected_role": selected_role, "label": selected_label,
         "odds": arithmetic["actual_decimal_odds_raw"], "stake": FIXED_STAKE,
         "stage": DECISION_STAGE, "first_stage": DECISION_STAGE, "status": "PENDING",
+        "first_native_pre_kickoff_t5": True,
         "simulation_only": True, "real_betting_enabled": False, "created_at": now,
         "admission_at": now, "frozen_condition_signature": signature,
         "condition_number": frozen.get("condition_number"),
         "frozen_condition_definition": copy.deepcopy(admission["definition"]),
         "frozen_historical_evidence": copy.deepcopy(admission["history"]),
         "wilson_admission": arithmetic,
+        "evidence_version": admission.get("evidence_version"),
+        "evidence_hash": admission.get("evidence_hash"),
+        "rollover_provenance": _rollover_marker(
+            system, fixture, market, signature, stage_at, evidence,
+        ),
         "history": [{"ts": now, "stage": DECISION_STAGE, "action": "Wilson 模擬注建立",
                      "reason": "首次原生賽前 T-5；凍結歷史證據 Wilson 門檻通過"}],
     }

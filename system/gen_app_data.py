@@ -586,6 +586,7 @@ def _public_bet(bet):
         "code", "market", "side", "line", "condition", "strategy_name",
         "frozen_condition_signature", "condition_number", "frozen_condition_definition",
         "frozen_historical_evidence", "wilson_admission",
+        "evidence_version", "evidence_hash",
         "result", "pnl", "settled_at", "score", "settlement_source", "void_reason",
     }
     return {key: value for key, value in bet.items() if key in visible}
@@ -597,7 +598,7 @@ def _public_observation(row):
         "match_id", "league", "home", "away", "kickoff", "market", "market_label",
         "code", "side", "line", "selected_role", "selected_line", "odds", "stage",
         "created_at", "condition_number", "bet_status", "no_bet_reason",
-        "frozen_condition_signature", "wilson_admission",
+        "frozen_condition_signature", "wilson_admission", "evidence_version", "evidence_hash",
     }
     return {key: value for key, value in row.items() if key in visible}
 
@@ -617,6 +618,8 @@ def _wilson_match_projection(row, *, bet_status):
         # Preserve both the unrounded admission value and its authoritative
         # stored display form.  Browser code must not round/recompute a gate.
         "minimum_required_odds_display": display.get("minimum_acceptable_odds"),
+        "evidence_version": row.get("evidence_version"),
+        "evidence_hash": row.get("evidence_hash"),
         "bet_status": bet_status,
         "no_bet_reason": row.get("no_bet_reason") if bet_status != "BET" else None,
     }
@@ -898,6 +901,19 @@ def main(out_path=None):
             "display_name": "Wilson 測試攻略",
             "conditions": (led.get("wilson_validation") or {}).get("conditions") or {},
             "condition_order": (led.get("wilson_validation") or {}).get("condition_order") or [],
+            "rollover": {
+                "batch_size": 20,
+                "conditions": {
+                    signature: {
+                        "condition_number": row.get("condition_number"),
+                        "active_evidence": row.get("active_evidence") or {},
+                        "last_merged_batch": (row.get("rollover_audit") or [])[-1] if isinstance(row.get("rollover_audit"), list) and row.get("rollover_audit") else None,
+                        "pending_progress": row.get("pending_rollover_progress") or {"eligible_decided": 0, "required": 20, "display": "0/20"},
+                    }
+                    for signature, row in ((led.get("wilson_validation") or {}).get("conditions") or {}).items()
+                    if isinstance(row, dict)
+                },
+            },
             # These are matched-but-rejected observations, deliberately kept
             # outside ``bets`` so they can never enter stakes or settlement.
             "observations": [

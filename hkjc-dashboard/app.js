@@ -1736,6 +1736,7 @@ function renderLedger() {
       <div><b>資料證據</b><span>必須有有效方向、有限盤口、賠率大於 1，以及可證明在開賽前觀測的賠率。</span></div>
     </div>
   </div>`;
+  h += wilsonRolloverCard(validation);
   h += `<div class="card history-note"><h2 class="card-h">已封存／退役 previous strategy（v1） <span class="sub">唯讀；保留歷史、盈虧及待決結算，不混入 Wilson 前瞻成績</span></h2>
     <p class="mx-note">摘要：已保留舊注單 ${numeric(archive.legacy_bet_count) == null ? '—' : archive.legacy_bet_count} 筆；舊帳本本金 ${archive.legacy_bankroll == null ? '—' : money(archive.legacy_bankroll)}。凍結條件會顯示當時的「歷史發現 x/y」，其後的驗證結果不會回寫該基線。</p>
     ${Array.isArray(archive.legacy_bets) && archive.legacy_bets.length ? `<details><summary>查看已封存舊注單（唯讀）</summary><div class="tbl-wrap"><table class="t"><tr><th>賽事</th><th>市場</th><th>注碼</th><th>狀態</th><th>盈虧</th></tr>${archive.legacy_bets.map((b) => `<tr><td>${esc(b.home || '—')} vs ${esc(b.away || '—')}</td><td>${esc(marketLabel(b.market || b.code))}</td><td>${money(b.stake)}</td><td>${esc(b.status || '—')}</td><td>${b.pnl == null ? '—' : money(b.pnl)}</td></tr>`).join('')}</table></div></details>` : ''}</div>`;
@@ -1760,6 +1761,25 @@ function renderLedger() {
       </tr></thead><tbody>${bets.map(conditionBetRow).join('')}</tbody></table></div></div>`;
   }
   V.innerHTML = h;
+}
+
+function wilsonRolloverCard(validation) {
+  const rollover = validation?.rollover || {};
+  const rows = Object.values(rollover.conditions || {}).filter((row) => row && typeof row === 'object')
+    .sort((a, b) => (numeric(a.condition_number) || 999999) - (numeric(b.condition_number) || 999999));
+  if (!rows.length) return `<section class="card"><h2 class="card-h">Wilson 證據版本</h2><div class="empty2">尚未有已凍結條件；新結果不會以舊驗證紀錄追溯補入。</div></section>`;
+  return `<section class="card" data-testid="wilson-evidence-rollover"><h2 class="card-h">Wilson 證據版本 <span class="sub">每個完全相同條件獨立累積；20 個新已判定結果才建立新版本</span></h2>
+    <div class="tbl-wrap"><table class="t"><thead><tr><th>條件</th><th>有效證據</th><th>Wilson / 最低賠率</th><th>最近合併</th><th>下一批進度</th></tr></thead><tbody>${rows.map((row) => {
+      const active = row.active_evidence || {}, last = row.last_merged_batch || {}, pending = row.pending_progress || {};
+      const version = numeric(active.version) == null ? '—' : `v${Math.trunc(numeric(active.version))}`;
+      const total = `${numeric(active.cumulative_hits) || 0}/${numeric(active.cumulative_decided) || 0}`;
+      const lower = pc(active.wilson95_lower_raw, 1);
+      const minimum = numeric(active.minimum_acceptable_odds_display) == null ? f2(active.minimum_acceptable_odds_raw) : String(active.minimum_acceptable_odds_display);
+      const batch = numeric(last.batch_decided) ? `${numeric(last.batch_hits) || 0}/${numeric(last.batch_decided)}${last.initial_migration_full_cohort ? '（初始完整驗證 cohort）' : ''}` : '—';
+      const progress = pending.display || `${numeric(pending.eligible_decided) || 0}/${numeric(pending.required) || 20}`;
+      return `<tr><td>條件 #${numeric(row.condition_number) == null ? '—' : Math.trunc(numeric(row.condition_number))}</td><td>${esc(version)} · ${esc(total)}</td><td>下限 ${esc(lower)} · 最低 ${esc(minimum)}</td><td>${esc(batch)}</td><td><b>${esc(progress)}</b></td></tr>`;
+    }).join('')}</tbody></table></div>
+    <p class="mx-note">「命中 x/y」是已判定命中率，不是批次進度；批次只看最右欄 x/20。公開面板只顯示不可逆 fixture-market 摘要，不顯示供應商或賽事 ID。</p></section>`;
 }
 
 function probabilityResearchCard(research) {
@@ -1804,7 +1824,8 @@ function conditionBetRow(b) {
   const prospective = frozen.prospective || {};
   const evidence = b.frozen_historical_evidence || frozen.historical_evidence || {};
   const a = b.wilson_admission || frozen.admission_arithmetic || {};
-  const history = numeric(a.wilson95_lower_raw) == null ? '—' : `凍結歷史 ${evidence.hits ?? 0}/${evidence.decided ?? 0} · ${pc(a.hit_rate_raw, 1)}<div class="cell-sub">Wilson 95% 下限 ${pc(a.wilson95_lower_raw, 1)} ≥ 所需 ${pc(a.required_rate_raw, 1)}；最低可接受賠率 ${f2(a.minimum_acceptable_odds_raw)} · 目前 ${f2(a.actual_decimal_odds_raw)}</div><div class="cell-sub">前瞻 ${pc(prospective.hit_rate, 1)} (${prospective.hits ?? 0}/${prospective.decided ?? 0}) · Wilson ${prospective.wilson95 ? `${pc(prospective.wilson95[0], 1)}–${pc(prospective.wilson95[1], 1)}` : '—'} · ROI ${pc(prospective.roi, 2)}</div>`;
+  const active = frozen.active_evidence || {};
+  const history = numeric(a.wilson95_lower_raw) == null ? '—' : `凍結歷史 ${evidence.hits ?? 0}/${evidence.decided ?? 0} · ${pc(a.hit_rate_raw, 1)}<div class="cell-sub">入場版本 v${numeric(b.evidence_version) == null ? '—' : Math.trunc(numeric(b.evidence_version))}；最低可接受賠率 ${f2(a.minimum_acceptable_odds_raw)} · 目前 ${f2(a.actual_decimal_odds_raw)}</div><div class="cell-sub">有效 v${numeric(active.version) == null ? '—' : Math.trunc(numeric(active.version))} · ${active.cumulative_hits ?? 0}/${active.cumulative_decided ?? 0} · Wilson 下限 ${pc(active.wilson95_lower_raw, 1)} · 最低 ${numeric(active.minimum_acceptable_odds_display) == null ? f2(active.minimum_acceptable_odds_raw) : active.minimum_acceptable_odds_display}</div><div class="cell-sub">前瞻 ${pc(prospective.hit_rate, 1)} (${prospective.hits ?? 0}/${prospective.decided ?? 0}) · Wilson ${prospective.wilson95 ? `${pc(prospective.wilson95[0], 1)}–${pc(prospective.wilson95[1], 1)}` : '—'} · ROI ${pc(prospective.roi, 2)}</div>`;
   const status = `<span class="stpill ${String(b.status || '').toLowerCase()}">${ST_LBL[b.status] || b.status || '—'}</span>`;
   const pnl = b.pnl == null ? '—' : money(b.pnl);
   const tone = (b.pnl || 0) > 0 ? 'ev-p' : (b.pnl || 0) < 0 ? 'ev-n' : 'dim';

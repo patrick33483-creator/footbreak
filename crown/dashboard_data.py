@@ -50,6 +50,19 @@ def _public_ledger(ledger: dict[str, Any]) -> tuple[dict[str, Any], list[dict[st
         "display_name": "Wilson 測試攻略",
         "conditions": wilson.get("conditions") or {},
         "condition_order": wilson.get("condition_order") or [],
+        "rollover": {
+            "batch_size": 20,
+            "conditions": {
+                signature: {
+                    "condition_number": row.get("condition_number"),
+                    "active_evidence": row.get("active_evidence") or {},
+                    "last_merged_batch": (row.get("rollover_audit") or [])[-1] if isinstance(row.get("rollover_audit"), list) and row.get("rollover_audit") else None,
+                    "pending_progress": row.get("pending_rollover_progress") or {"eligible_decided": 0, "required": 20, "display": "0/20"},
+                }
+                for signature, row in (wilson.get("conditions") or {}).items()
+                if isinstance(row, dict)
+            },
+        },
         "observations": [
             {
                 key: value for key, value in row.items()
@@ -58,6 +71,7 @@ def _public_ledger(ledger: dict[str, Any]) -> tuple[dict[str, Any], list[dict[st
                     "code", "side", "line", "selected_role", "selected_line", "odds", "stage",
                     "created_at", "condition_number", "bet_status", "no_bet_reason",
                     "frozen_condition_signature", "wilson_admission",
+                    "evidence_version", "evidence_hash",
                 }
             }
             for row in (wilson.get("observations") or [])
@@ -91,6 +105,8 @@ def _wilson_match_projection(row: dict[str, Any], *, bet_status: str) -> dict[st
         "odds": arithmetic.get("actual_decimal_odds_raw", row.get("odds")),
         "minimum_required_odds": arithmetic.get("minimum_acceptable_odds_raw"),
         "minimum_required_odds_display": display.get("minimum_acceptable_odds"),
+        "evidence_version": row.get("evidence_version"),
+        "evidence_hash": row.get("evidence_hash"),
         "bet_status": bet_status,
         "no_bet_reason": row.get("no_bet_reason") if bet_status != "BET" else None,
     }

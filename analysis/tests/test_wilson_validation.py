@@ -11,8 +11,8 @@ from pathlib import Path
 from analysis.wilson_validation import (
     DECISION_STAGE, EDGE_BUFFER, FIXED_STAKE, FIXTURE_STAKE_CAP, MIN_DECIDED,
     STARTING_BANKROLL, admission_arithmetic, choose_admission, commit_bet,
-    condition_number, ensure_namespace, freeze_condition, matching_admissions,
-    portfolio_name, recompute_namespace, wilson95,
+    apply_active_evidence, condition_number, ensure_namespace, freeze_condition,
+    matching_admissions, portfolio_name, recompute_namespace, wilson95,
 )
 from analysis.migrate_wilson_strategy import migrate_file
 from analysis.wilson_portfolio import _native_t5, _selected
@@ -235,6 +235,218 @@ class WilsonPortfolioTest(unittest.TestCase):
             ["git", "diff", "--name-only"], cwd=root, text=True,
         ).lower()
         self.assertNotIn("radar", changed)
+
+
+class WilsonBatchRolloverTest(unittest.TestCase):
+    """Versioned evidence is intentionally tested independently of betting PnL."""
+
+    def _admission(self, system="footbreak"):
+        result, reason = choose_admission(
+            system, "HDC", selected(), [candidate()],
+            stage_at="2026-08-20T00:00:00+08:00",
+        )
+        self.assertEqual(reason, "wilson_pass")
+        assert result is not None
+        return result
+
+    def _settled(
+        self, ledger, index, *, result="Won", signature=None,
+        stage_at=None, system="footbreak",
+    ):
+        stage_at = stage_at or f"2026-08-20T{index // 60:02d}:{index % 60:02d}:00+08:00"
+        admission, reason = apply_active_evidence(
+            ledger, system, self._admission(system), stage_at=stage_at, now=stage_at,
+        )
+        self.assertIsNone(reason)
+        assert admission is not None
+        if signature is not None:
+            admission["signature"] = signature
+        watch = {
+            "match_id": f"fixture-{index}", "league": "測試", "home": "主",
+            "away": "客", "kickoff": "2026-08-21T00:00:00+08:00",
+        }
+        row = commit_bet(
+            ledger, system, watch, "HDC", selected(), admission, now=stage_at,
+            market_label="讓球", selected_label="讓球", selected_role="主讓",
+            selected_line=-.25,
+        )
+        self.assertIsNotNone(row)
+        row.update({
+            "status": "SETTLED", "result": result,
+            "pnl": 450 if result in {"Won", "Half Won"} else -500,
+            "settled_at": stage_at,
+        })
+        ledger["bets"].append(row)
+        return row
+
+    def _active(self, ledger):
+        frozen = next(iter(ledger["wilson_validation"]["conditions"].values()))
+        return frozen, frozen["active_evidence"]
+
+    def test_nineteen_stay_pending_and_twenty_rolls_once(self):
+        ledger = {"bets": []}
+        for index in range(1, 20):
+            self._settled(ledger, index, result="Won" if index % 2 else "Lost")
+        recompute_namespace(ledger, "footbreak")
+        frozen, active = self._active(ledger)
+        self.assertEqual(active["version"], 1)
+        self.assertEqual(frozen["pending_rollover_progress"]["display"], "19/20")
+        self._settled(ledger, 20, result="Won")
+        recompute_namespace(ledger, "footbreak")
+        frozen, active = self._active(ledger)
+        self.assertEqual(active["version"], 2)
+        self.assertEqual(active["cumulative_decided"], 79)
+        self.assertEqual(frozen["rollover_audit"][-1]["batch_decided"], 20)
+        self.assertEqual(frozen["pending_rollover_progress"]["display"], "0/20")
+
+    def test_forty_rolls_two_versions_and_twenty_six_leaves_six(self):
+        ledger = {"bets": []}
+        for index in range(1, 41):
+            self._settled(ledger, index, result="Won")
+        recompute_namespace(ledger, "footbreak")
+        frozen, active = self._active(ledger)
+        self.assertEqual(active["version"], 3)
+        self.assertEqual(active["cumulative_decided"], 99)
+        self.assertEqual(len(frozen["rollover_audit"]), 2)
+        self.assertEqual(frozen["pending_rollover_progress"]["display"], "0/20")
+
+        ledger = {"bets": []}
+        for index in range(1, 27):
+            self._settled(ledger, index, result="Won")
+        recompute_namespace(ledger, "footbreak")
+        frozen, active = self._active(ledger)
+        self.assertEqual(active["version"], 2)
+        self.assertEqual(active["cumulative_decided"], 79)
+        self.assertEqual(frozen["pending_rollover_progress"]["display"], "6/20")
+
+    def test_push_duplicate_conflict_and_activation_boundary_fail_closed(self):
+        ledger = {"bets": []}
+        for index in range(1, 19):
+            self._settled(ledger, index)
+        push = self._settled(ledger, 19, result="Refunded")
+        # A duplicate fixture-market provenance hash is ambiguous, including
+        # when its outcome conflicts. Neither copy is allowed in the batch.
+        duplicate = self._settled(ledger, 20, result="Lost")
+        duplicate["rollover_provenance"]["fixture_market_hash"] = (
+            ledger["bets"][0]["rollover_provenance"]["fixture_market_hash"]
+        )
+        duplicate["result"] = "Won"
+        recompute_namespace(ledger, "footbreak")
+        frozen, active = self._active(ledger)
+        self.assertEqual(active["version"], 1)
+        self.assertEqual(frozen["pending_rollover_progress"]["display"], "17/20")
+        self.assertGreater(
+            frozen["pending_rollover_progress"]["excluded"]["not_binary_decided"], 0,
+        )
+        self.assertGreater(
+            frozen["pending_rollover_progress"]["excluded"]["duplicate_or_conflicting_fixture_market"], 0,
+        )
+        # A row at the current activation boundary is not retrospectively
+        # eligible, even if otherwise fully settled and provenance-complete.
+        boundary = active["activation_boundary_at"]
+        ledger["bets"][1]["rollover_provenance"]["stage_at"] = boundary
+        recompute_namespace(ledger, "footbreak")
+        self.assertGreater(
+            frozen["pending_rollover_progress"]["excluded"]["before_snapshot_boundary"], 0,
+        )
+
+    def test_versions_are_immutable_and_recompute_is_idempotent(self):
+        ledger = {"bets": []}
+        for index in range(1, 21):
+            self._settled(ledger, index)
+        recompute_namespace(ledger, "footbreak")
+        frozen, active = self._active(ledger)
+        first = copy.deepcopy(frozen["evidence_versions"][0])
+        second = copy.deepcopy(frozen["evidence_versions"][1])
+        first_bet = copy.deepcopy(ledger["bets"][0])
+        recompute_namespace(ledger, "footbreak")
+        self.assertEqual(frozen["evidence_versions"][0], first)
+        self.assertEqual(frozen["evidence_versions"][1], second)
+        self.assertEqual(ledger["bets"][0], first_bet)
+        self.assertEqual(active["version"], 2)
+
+    def test_initial_migration_merges_full_existing_cohort_once_then_resets(self):
+        legacy = {
+            "bets": [],
+            "wilson_validation": {
+                "schema_version": 1,
+                "system": "footbreak",
+                "activation_at": "2026-08-20T10:00:00+08:00",
+                "conditions": {
+                    "exact-condition": {
+                        "signature": "exact-condition",
+                        "frozen_at": "2026-08-20T09:00:00+08:00",
+                        "condition_number": 2,
+                        "historical_evidence": {"hits": 141, "decided": 231},
+                        "prospective": {"hits": 44, "decided": 71, "pushes": 3},
+                    },
+                },
+            },
+        }
+        namespace = ensure_namespace(
+            legacy, "footbreak", now="2026-08-20T22:00:00+08:00",
+        )
+        frozen = namespace["conditions"]["exact-condition"]
+        active = frozen["active_evidence"]
+        self.assertEqual((active["cumulative_hits"], active["cumulative_decided"]), (185, 302))
+        self.assertEqual(active["version"], 2)
+        self.assertTrue(frozen["rollover_audit"][-1]["initial_migration_full_cohort"])
+        self.assertEqual(frozen["rollover_audit"][-1]["legacy_prospective_cohort"], {"hits": 44, "decided": 71, "pushes": 3})
+        self.assertEqual(frozen["pending_rollover_progress"]["display"], "0/20")
+        before = copy.deepcopy(frozen["evidence_versions"])
+        ensure_namespace(legacy, "footbreak", now="2026-08-21T00:00:00+08:00")
+        self.assertEqual(frozen["evidence_versions"], before)
+
+    def test_crown_uses_the_same_rollover_engine(self):
+        ledger = {"bets": []}
+        for index in range(1, 21):
+            self._settled(ledger, index, system="crown")
+        recompute_namespace(ledger, "crown")
+        frozen = next(iter(ledger["wilson_validation"]["conditions"].values()))
+        self.assertEqual(frozen["active_evidence"]["version"], 2)
+        self.assertEqual(frozen["pending_rollover_progress"]["display"], "0/20")
+
+    def test_dashboard_contract_exposes_active_version_and_hash_only_audit(self):
+        ledger = {"bets": []}
+        for index in range(1, 21):
+            self._settled(ledger, index)
+        recompute_namespace(ledger, "footbreak")
+        frozen, _ = self._active(ledger)
+        batch = frozen["rollover_audit"][-1]
+        self.assertEqual(len(batch["batch_fixture_market_hashes"]), 20)
+        self.assertTrue(all(len(value) == 64 for value in batch["batch_fixture_market_hashes"]))
+        self.assertNotIn("fixture-", json.dumps(batch, ensure_ascii=False))
+        root = Path(__file__).resolve().parents[2]
+        for path in (
+            root / "system" / "gen_app_data.py",
+            root / "crown" / "dashboard_data.py",
+            root / "hkjc-dashboard" / "app.js",
+            root / "crown" / "dashboard" / "app.js",
+        ):
+            source = path.read_text(encoding="utf-8")
+            self.assertIn("pending_progress", source)
+            self.assertIn("active_evidence", source)
+        for path in (
+            root / "hkjc-dashboard" / "app.js",
+            root / "crown" / "dashboard" / "app.js",
+        ):
+            self.assertIn("Wilson 證據版本", path.read_text(encoding="utf-8"))
+
+    def test_future_formal_odds_gate_uses_active_version_not_old_baseline(self):
+        ledger = {"bets": []}
+        for index in range(1, 21):
+            self._settled(ledger, index, result="Lost")
+        recompute_namespace(ledger, "footbreak")
+        admission, reason = apply_active_evidence(
+            ledger, "footbreak", self._admission(),
+            stage_at="2026-08-20T21:00:00+08:00",
+            now="2026-08-20T21:00:00+08:00",
+        )
+        self.assertIsNone(reason)
+        assert admission is not None
+        self.assertEqual(admission["evidence_version"], 2)
+        self.assertFalse(admission["arithmetic"]["passes"])
+        self.assertTrue(self._admission()["arithmetic"]["passes"])
 
 
 if __name__ == "__main__":

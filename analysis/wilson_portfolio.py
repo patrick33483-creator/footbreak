@@ -8,7 +8,7 @@ from typing import Any, Callable, Iterable
 from .granular_conditions import MARKETS, _role, match_upcoming
 from .wilson_validation import (
     DECISION_STAGE, FIXED_STAKE, FIXTURE_MARKET_CAP, FIXTURE_STAKE_CAP,
-    commit_bet, ensure_namespace, freeze_condition, matching_admissions,
+    apply_active_evidence, commit_bet, ensure_namespace, matching_admissions,
     record_match_observation,
 )
 
@@ -115,6 +115,12 @@ def evaluate(
     current_rows = [{"match_id": fixture, "stage": current.get("stage"), "kickoff": watch.get("kickoff") or watch.get("kickoff_hkt"),
                      "predicted_at": stage_at, "market_predictions": current.get("market_predictions") or []}]
     matched = match_upcoming(current_rows, list(ranking), system=system, decision_stage=DECISION_STAGE).get(fixture, [])
+    # A replay of an already committed T-5 must report its durable idempotency
+    # outcome before consulting a later evidence-version boundary. It neither
+    # creates a second bet nor re-evaluates old quote evidence.
+    existing = [row for row in ledger.get("bets") or []
+                if isinstance(row, dict) and row.get("portfolio") == f"{system}_wilson_test"
+                and str(row.get("match_id") or "") == fixture]
     proposed: list[tuple[str, dict[str, Any], dict[str, Any], str | None, float, str]] = []
     audit: list[dict[str, Any]] = []
     for market in MARKETS:
@@ -125,6 +131,12 @@ def evaluate(
         if selected is None:
             audit.append({"market": market, "status": "SKIPPED", "reason": reason})
             continue
+        if any(str(row.get("code") or "") == market for row in existing):
+            audit.append({
+                "market": market, "status": "SKIPPED",
+                "reason": "idempotent_existing_market",
+            })
+            continue
         admissions, reason = matching_admissions(system, market, selected, matched, stage_at=stage_at)
         if not admissions:
             audit.append({"market": market, "status": "SKIPPED", "reason": reason})
@@ -133,17 +145,25 @@ def evaluate(
         if selected_line is None:
             audit.append({"market": market, "status": "SKIPPED", "reason": "selected_line_or_side_invalid"})
             continue
-        # Freeze every historical condition as it is first observed.  This
-        # assigns the durable condition number before any live ordering,
-        # portfolio cap, or browser filtering can affect presentation.
         accepted = []
         for admission in admissions:
-            frozen = freeze_condition(ledger, system, admission, now=now)
-            if admission["arithmetic"].get("passes"):
-                accepted.append(admission)
+            adjusted, boundary_reason = apply_active_evidence(
+                ledger, system, admission, stage_at=stage_at, now=now,
+            )
+            frozen = ns["conditions"].get(str(admission["signature"])) or {}
+            if adjusted is None:
+                audit.append({
+                    "market": market, "status": "SKIPPED",
+                    "reason": boundary_reason or "active_evidence_unavailable",
+                    "condition_number": frozen.get("condition_number"),
+                    "frozen_condition_signature": admission["signature"],
+                })
+                continue
+            if adjusted["arithmetic"].get("passes"):
+                accepted.append(adjusted)
                 continue
             observation = record_match_observation(
-                ledger, system, watch, market, selected, admission, now=now,
+                ledger, system, watch, market, selected, adjusted, now=now,
                 market_label=market_labels[market], selected_role=role,
                 selected_line=selected_line,
             )
@@ -151,8 +171,9 @@ def evaluate(
                 "market": market, "status": "MATCHED_NO_BET",
                 "reason": "wilson_gate_not_passed",
                 "condition_number": frozen.get("condition_number"),
-                "frozen_condition_signature": admission["signature"],
-                "wilson_admission": admission["arithmetic"],
+                "frozen_condition_signature": adjusted["signature"],
+                "wilson_admission": adjusted["arithmetic"],
+                "evidence_version": adjusted.get("evidence_version"),
                 "observation_id": observation.get("observation_id") if observation else None,
             })
         if not accepted:
@@ -161,9 +182,6 @@ def evaluate(
         proposed.append((market, selected, admission, role, selected_line, label))
     # One candidate per market was selected above. Fixture caps are defensive
     # only; all three supported markets may be admitted for HK$1,500.
-    existing = [row for row in ledger.get("bets") or []
-                if isinstance(row, dict) and row.get("portfolio") == f"{system}_wilson_test"
-                and str(row.get("match_id") or "") == fixture]
     created: list[dict[str, Any]] = []
     for market, selected, admission, role, selected_line, label in proposed:
         if any(str(row.get("code") or "") == market for row in existing):
