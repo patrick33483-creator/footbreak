@@ -83,6 +83,7 @@ def _load(config: Settings) -> dict[str, Any]:
     state.setdefault("signals", [])
     state.setdefault("wilson_bets", [])
     state.setdefault("wilson_match_alerts", [])
+    state.setdefault("hkjc_execution_test_alerts", [])
     return _seed_wilson_match_alerts(state)
 
 
@@ -206,6 +207,92 @@ def notify_wilson_pending(
             write_json_atomic(paths(config)["notify"], state)
         state["updated_at"] = iso_hkt()
         write_json_atomic(paths(config)["notify"], state)
+        return sent
+
+
+def _hkjc_execution_message(bet: dict[str, Any]) -> str | None:
+    """Traditional-Chinese committed 皇冠×馬會 simulation notification only."""
+    if (
+        bet.get("portfolio") != "crown_hkjc_execution_test"
+        or bet.get("strategy") != "crown-hkjc-execution-test-v1"
+        or bet.get("status") != "PENDING"
+        or not bet.get("simulation_only")
+        or bet.get("real_betting_enabled") is not False
+    ):
+        return None
+    arithmetic = bet.get("wilson_admission") if isinstance(bet.get("wilson_admission"), dict) else {}
+    try:
+        kickoff = parse_time(bet.get("kickoff"))
+        decision_at = parse_time(bet.get("decision_at") or bet.get("created_at"))
+        crown_observed = parse_time(bet.get("crown_signal_observed_at"))
+        hkjc_observed = parse_time(bet.get("hkjc_execution_observed_at"))
+        crown_odds = float(bet.get("crown_signal_odds"))
+        hkjc_odds = float(bet.get("hkjc_execution_odds"))
+        minimum = float(arithmetic["minimum_acceptable_odds_raw"])
+        line, number = float(bet.get("selected_line")), int(bet.get("condition_number"))
+    except (KeyError, TypeError, ValueError):
+        return None
+    market = str(bet.get("market_label") or "").strip()
+    league = traditional_chinese_league(bet.get("league"))
+    crown_source = str(bet.get("crown_signal_source") or "").strip().lower()
+    hkjc_source = str(bet.get("hkjc_execution_source") or "").strip().lower()
+    if (
+        kickoff is None or kickoff <= now_hkt() or decision_at is None or crown_observed is None or hkjc_observed is None
+        or decision_at >= kickoff
+        or (now_hkt() - decision_at).total_seconds() > NOTIFICATION_STAGE_MAX_AGE["T-5"].total_seconds()
+        or crown_observed >= kickoff or hkjc_observed >= kickoff
+        or crown_observed > decision_at or hkjc_observed > decision_at
+        or crown_odds <= 1 or hkjc_odds + 1e-12 < minimum
+        or crown_source != "titan007-crown-id-3"
+        or hkjc_source not in {"hkjc_public_board", "hkjc-current-board"}
+        or not league or market not in set(MARKET_LABELS.values())
+    ):
+        return None
+    selection = f"{bet.get('selected_role') or '—'} {line:g}"
+    return "\n".join([
+        "【皇冠×馬會執行測試倉（模擬）】",
+        f"{kickoff.astimezone(HKT).strftime('%H:%M')} {league}",
+        f"{bet.get('home') or ''} vs {bet.get('away') or ''}",
+        f"合符條件 #{number}",
+        "投注平台：馬會",
+        f"皇冠訊號：{market} {selection} @{crown_odds:.2f}",
+        f"馬會模擬：{market} {selection} @{hkjc_odds:.2f}",
+        f"最低要求賠率：{minimum:.2f}",
+        f"模擬投注 HK${float(bet.get('stake') or 0):,.0f}",
+    ])
+
+
+def notify_hkjc_execution_pending(
+    ledger: dict[str, Any], config: Settings, *, max_attempts: int | None = None,
+    max_seconds: float | None = None,
+) -> int:
+    """Durable retry outbox for committed reciprocal rows; no rejections."""
+    with notification_lock(config) as acquired:
+        if not acquired:
+            return 0
+        state = _load(config)
+        sent_ids = set(map(str, state.get("hkjc_execution_test_alerts") or []))
+        namespace = ledger.get("crown_hkjc_execution_test") if isinstance(ledger, dict) else {}
+        rows = namespace.get("bets") if isinstance(namespace, dict) else []
+        sent = attempted = 0
+        for bet in rows or []:
+            bid = str(bet.get("bet_id") or "") if isinstance(bet, dict) else ""
+            if not bid or bid in sent_ids:
+                continue
+            message = _hkjc_execution_message(bet)
+            if message is None:
+                continue
+            if max_attempts is not None and attempted >= max(0, max_attempts):
+                break
+            attempted += 1
+            if _send(config, message, max_seconds=max_seconds) is False:
+                continue
+            state["hkjc_execution_test_alerts"] = _bounded_unique_ids(
+                list(state.get("hkjc_execution_test_alerts") or []) + [bid]
+            )
+            state["updated_at"] = iso_hkt()
+            write_json_atomic(paths(config)["notify"], state)
+            sent_ids.add(bid); sent += 1
         return sent
 
 
@@ -560,11 +647,14 @@ def notify_new(
     # cutover.  `fresh_t5_predictions` stays accepted for API compatibility
     # but notification eligibility is the committed Wilson bet itself.
     del fresh_t5_predictions
-    return notify_wilson_pending(
+    delivered = notify_wilson_pending(
         ledger,
         config,
         max_attempts=max_attempts,
         max_seconds=max_seconds,
+    )
+    return delivered + notify_hkjc_execution_pending(
+        ledger, config, max_attempts=max_attempts, max_seconds=max_seconds,
     )
 
     from analysis.granular_conditions import _role, notification_opportunities

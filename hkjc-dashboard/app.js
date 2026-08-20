@@ -1749,6 +1749,7 @@ function renderLedger() {
     </div>
   </div>`;
   h += wilsonRolloverCard(validation);
+  h += crownExecutionTestCard(LED.crown_execution_test || {});
   h += `<div class="card history-note"><h2 class="card-h">已封存／退役 previous strategy（v1） <span class="sub">唯讀；保留歷史、盈虧及待決結算，不混入 Wilson 前瞻成績</span></h2>
     <p class="mx-note">摘要：已保留舊注單 ${numeric(archive.legacy_bet_count) == null ? '—' : archive.legacy_bet_count} 筆；舊帳本本金 ${archive.legacy_bankroll == null ? '—' : money(archive.legacy_bankroll)}。凍結條件會顯示當時的「歷史發現 x/y」，其後的驗證結果不會回寫該基線。</p>
     ${Array.isArray(archive.legacy_bets) && archive.legacy_bets.length ? `<details><summary>查看已封存舊注單（唯讀）</summary><div class="tbl-wrap"><table class="t"><tr><th>賽事</th><th>市場</th><th>注碼</th><th>狀態</th><th>盈虧</th></tr>${archive.legacy_bets.map((b) => `<tr><td>${esc(b.home || '—')} vs ${esc(b.away || '—')}</td><td>${esc(marketLabel(b.market || b.code))}</td><td>${money(b.stake)}</td><td>${esc(b.status || '—')}</td><td>${b.pnl == null ? '—' : money(b.pnl)}</td></tr>`).join('')}</table></div></details>` : ''}</div>`;
@@ -1773,6 +1774,46 @@ function renderLedger() {
       </tr></thead><tbody>${bets.map(conditionBetRow).join('')}</tbody></table></div></div>`;
   }
   V.innerHTML = h;
+}
+
+function crownExecutionTestCard(portfolio) {
+  const s = portfolio.stats || {}, rows = (portfolio.bets || []).filter((b) =>
+    b && b.portfolio === 'footbreak_crown_execution_test'
+  );
+  const labels = {
+    crown_local_evidence_unavailable: '本機皇冠報價證據未可用',
+    crown_fixture_identity_missing_or_ambiguous: '跨書賽事身份缺失或不明確',
+    crown_fixture_kickoff_identity_mismatch: '跨書開賽時間身份不一致',
+    crown_exact_market_side_line_missing_or_ambiguous: '皇冠相同市場／方向／盤口未有唯一報價',
+    crown_execution_quote_stale_at_t5: '皇冠報價在 T-5 已過時',
+    crown_wilson_gate_not_passed: '皇冠執行賠率未達 Wilson 最低要求',
+    active_wilson_condition_unavailable: 'Wilson 凍結條件未可用',
+    fixture_cap_reached: '每場模擬注碼上限已達',
+  };
+  const diagnostics = Object.entries(portfolio.rejections || {}).filter(([, n]) => numeric(n) > 0)
+    .map(([reason, count]) => `<div><b>${esc(labels[reason] || '其他安全拒絕')}</b><span>${numeric(count) || 0} 次</span></div>`).join('');
+  const summary = [
+    ['本金／權益', `${money(s.starting_bankroll ?? 50000)} / ${money(s.equity ?? s.starting_bankroll ?? 50000)}`],
+    ['盈虧／ROI', `${money(s.pnl || 0)} / ${s.roi == null ? '—' : pc(s.roi, 2)}`],
+    ['待決／已結算', `${numeric(s.n_pending) || 0} / ${numeric(s.n_settled) || 0}`],
+    ['命中／走水', `${numeric(s.hits) || 0}/${numeric(s.n_decided) || 0} / ${numeric(s.pushes) || 0}`],
+  ];
+  const result = (b) => b.result ? `<span class="respill ${RES_CLS[b.result] || ''}">${RES_LBL[b.result] || esc(b.result)}</span>` : '—';
+  const status = (b) => `<span class="stpill ${String(b.status || '').toLowerCase()}">${ST_LBL[b.status] || esc(b.status || '—')}</span>`;
+  return `<section class="card" data-testid="footbreak-crown-execution-test">
+    <h2 class="card-h">足破×皇冠執行測試倉（模擬） <span class="sub">獨立帳本；不混入足破 Wilson、皇冠 Wilson 或 Radar</span></h2>
+    <p class="mx-note">「訊號賠率層」只用馬會原生 T-5 歷史條件分層；「執行最低賠率」只以同一市場、方向及亞洲盤口的皇冠實際執行賠率判定。例：馬會 &lt;1.70 而皇冠最低要求 1.80，必須皇冠報價 ≥1.80 才會建立模擬注。</p>
+    <div class="kpis wide">${summary.map(([l, v]) => `<div class="kpi"><span class="kpi-lbl">${l}</span><span class="kpi-val">${v}</span></div>`).join('')}</div>
+    ${rows.length ? `<div class="tbl-wrap"><table class="t bets"><thead><tr><th>開賽／對賽</th><th>市場／方向／盤口</th><th>訊號賠率層（馬會）</th><th>皇冠執行賠率</th><th>執行最低賠率</th><th>條件</th><th>注碼</th><th>狀態／結果／盈虧</th></tr></thead><tbody>${rows.map((b) => {
+      const admission = b.wilson_admission || {};
+      return `<tr><td class="mono nowrap">${hkDay(b.kickoff)} ${hkClock(b.kickoff)}<div class="cell-sub">${esc(b.home || '—')} vs ${esc(b.away || '—')} · ${esc(leagueDisplay(b.league || '—'))}</div></td>
+        <td>${esc(marketLabel(b.market_label || b.market))}<div class="cell-sub">${esc(publicText(b.selected_role || '—'))} ${numeric(b.selected_line) == null ? '—' : numeric(b.selected_line)}</div></td>
+        <td class="mono">${f2(b.hkjc_signal_odds)}</td><td class="mono">${f2(b.crown_execution_odds)}</td>
+        <td class="mono">${f2(admission.minimum_acceptable_odds_raw)}</td><td>條件 #${numeric(b.condition_number) == null ? '—' : Math.trunc(numeric(b.condition_number))}</td>
+        <td>${money(b.stake)}</td><td>${status(b)}<div class="cell-sub">${result(b)} · ${b.pnl == null ? '—' : money(b.pnl)}</div></td></tr>`;
+    }).join('')}</tbody></table></div>` : '<div class="empty2">尚未有已提交的足破×皇冠模擬注；缺少、新鮮度不足或身份不明確的本機證據會安全拒絕。</div>'}
+    <h3 class="sub-h">安全拒絕診斷（彙總）</h3>${diagnostics ? `<div class="rule-grid">${diagnostics}</div>` : '<div class="empty2">暫未有拒絕紀錄。</div>'}
+  </section>`;
 }
 
 function wilsonRolloverCard(validation) {

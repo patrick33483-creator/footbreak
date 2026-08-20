@@ -81,6 +81,25 @@ def _public_ledger(ledger: dict[str, Any]) -> tuple[dict[str, Any], list[dict[st
         "historical_discovery_archive": wilson.get("retired_v1") or {},
         "audit": wilson.get("audit") or [],
     }
+    cross = ledger.get("crown_hkjc_execution_test")
+    if isinstance(cross, dict):
+        visible = {
+            "bet_id", "portfolio", "strategy", "league", "home", "away", "kickoff",
+            "market", "market_label", "side", "line", "selected_role", "selected_line",
+            "crown_signal_odds", "crown_signal_observed_at", "hkjc_execution_odds",
+            "hkjc_execution_observed_at", "stake", "status", "condition_number",
+            "wilson_admission", "result", "pnl", "settled_at", "score",
+        }
+        dashboard_ledger["hkjc_execution_test"] = {
+            "display_name": "皇冠×馬會執行測試倉（模擬）",
+            "bets": [{key: value for key, value in row.items() if key in visible}
+                     for row in (cross.get("bets") or []) if isinstance(row, dict)],
+            "stats": cross.get("stats") or {},
+        }
+    # The stored namespace retains exact source/fixture evidence for settlement
+    # and audit.  Browser data must expose only the purpose-built safe
+    # projection above, never the raw cross-book ledger.
+    dashboard_ledger.pop("crown_hkjc_execution_test", None)
     for key in (
         "shadow_bets", "shadow_stats", "shadow_comparison",
         "handicap_world", "handicap_world_audit", "handicap_world_stats",

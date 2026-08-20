@@ -22,6 +22,11 @@ from condition_portfolio import (
 from probability_research import evaluate_new_t5 as evaluate_probability_research
 from analysis.wilson_validation import ensure_namespace, recompute_namespace
 from settle import condition_bets, recompute
+from crown_execution_test import (
+    DISPLAY_NAME as CROWN_EXECUTION_DISPLAY_NAME,
+    evaluate_new_t5 as evaluate_crown_execution_t5,
+    recompute as recompute_crown_execution,
+)
 
 LEDGER = os.path.join(HERE, "sim_ledger.json")
 HKT = dt.timezone(dt.timedelta(hours=8))
@@ -296,6 +301,19 @@ def _condition_change(bet):
     )
 
 
+def _crown_execution_change(bet):
+    """Public local log line for the separately funded cross-book simulation."""
+    line = bet.get("selected_line")
+    line_text = f" {float(line):g}" if isinstance(line, (int, float)) else ""
+    return (
+        f"{bet.get('home') or '—'} 對 {bet.get('away') or '—'} — "
+        f"{CROWN_EXECUTION_DISPLAY_NAME}：{bet.get('market_label') or '—'} "
+        f"{bet.get('selected_role') or '—'}{line_text}，"
+        f"馬會訊號 {float(bet.get('hkjc_signal_odds') or 0):.2f}／"
+        f"皇冠模擬 {float(bet.get('crown_execution_odds') or 0):.2f}"
+    )
+
+
 def sync(preds_file="predictions.json", *, send_notifications=True):
     """Persist prediction snapshots and evaluate only newly saved T-5 rows.
 
@@ -421,8 +439,19 @@ def sync(preds_file="predictions.json", *, send_notifications=True):
         if created:
             ledger["bets"].extend(created)
             changes.extend(_condition_change(bet) for bet in created)
+        # This local adapter reads only a bounded persisted Crown evidence
+        # artifact.  It deliberately has no engine/client import and cannot
+        # add remote/provider work to the urgent Footbreak T-5 process.
+        crown_created, _crown_audit = evaluate_crown_execution_t5(
+            ledger, watch,
+            ranking=cached_ranking if isinstance(cached_ranking, list) else None,
+            now=now,
+        )
+        if crown_created:
+            changes.extend(_crown_execution_change(bet) for bet in crown_created)
 
     recompute(ledger)
+    recompute_crown_execution(ledger)
     ledger["log"].append({
         "ts": now, "kind": "預測", "n_changes": len(changes),
         "changes": (changes or ["本次沒有建立條件模擬注"])[:LOG_LIMIT],
@@ -437,6 +466,7 @@ def sync(preds_file="predictions.json", *, send_notifications=True):
         try:
             import notify
             notify.notify_pending_condition_bets(ledger)
+            notify.notify_pending_crown_execution_bets(ledger)
         except Exception as exc:
             notes.append(
                 f"條件模擬注通知發送失敗（{type(exc).__name__}）；"
@@ -511,6 +541,7 @@ if __name__ == "__main__":
         try:
             import notify
             notify.notify_pending_condition_bets(led)
+            notify.notify_pending_crown_execution_bets(led)
         except Exception as exc:
             print(f"通知暫不可用（{type(exc).__name__}）；下一輪重試")
         raise SystemExit(0)

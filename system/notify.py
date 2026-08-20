@@ -43,6 +43,8 @@ DEFAULT_WINDOW_MIN = 45.0          # 只通知近期建立嘅注單,避免補發
 MARKET_LABELS = {"HDC": "讓球", "HIL": "入球大細", "CHL": "角球大細"}
 CONDITION_PORTFOLIO = "footbreak_wilson_test"
 CONDITION_STRATEGY = "wilson-test-strategy-v1"
+CROWN_EXECUTION_PORTFOLIO = "footbreak_crown_execution_test"
+CROWN_EXECUTION_STRATEGY = "footbreak-crown-execution-test-v1"
 STATE_LIMIT = 1600
 
 SIDE_TXT = {"H": "主", "A": "客", "D": "和"}
@@ -114,6 +116,7 @@ def load_state():
             s.setdefault("granular_conditions", [])
             s.setdefault("condition_simulation_bets", [])
             s.setdefault("wilson_match_alerts", [])
+            s.setdefault("crown_execution_test_alerts", [])
             for key, value in list(s.items()):
                 if isinstance(value, list):
                     s[key] = value[-STATE_LIMIT:]
@@ -124,6 +127,7 @@ def load_state():
         "bets": [], "settled": [], "queue": [], "sweeps": [], "watch": [],
         "reviews": [], "signals": [], "granular_conditions": [],
         "condition_simulation_bets": [], "wilson_match_alerts": [],
+        "crown_execution_test_alerts": [],
     }
 
 
@@ -530,6 +534,115 @@ def notify_pending_condition_bets(ledger, bet_ids=None, *, max_attempts=8):
 def notify_new_condition_bets(ledger, bet_ids):
     """Compatibility wrapper for the immediate first post-commit attempt."""
     return notify_pending_condition_bets(ledger, bet_ids)
+
+
+def _crown_execution_message(bet):
+    """Return a committed Footbreak × Crown simulation notice or ``None``.
+
+    This is deliberately an outbox formatter rather than a candidate notifier:
+    rows must already be committed by the isolated local-evidence evaluator.
+    Re-check the timing and execution gate here so an old/replayed row can
+    never produce a Telegram alert.
+    """
+    if (
+        bet.get("portfolio") != CROWN_EXECUTION_PORTFOLIO
+        or bet.get("strategy") != CROWN_EXECUTION_STRATEGY
+        or bet.get("status") != "PENDING"
+        or not bet.get("simulation_only")
+        or bet.get("real_betting_enabled") is not False
+    ):
+        return None
+    kickoff = _future_kickoff(bet.get("kickoff"))
+    decision_at = _parse_time(bet.get("decision_at") or bet.get("created_at"))
+    hkjc_observed = _parse_time(bet.get("hkjc_signal_observed_at"))
+    crown_observed = _parse_time(bet.get("crown_execution_observed_at"))
+    league = traditional_chinese_league(bet.get("league"))
+    home, away = str(bet.get("home") or "").strip(), str(bet.get("away") or "").strip()
+    market = str(bet.get("market_label") or "").strip()
+    direction = str(bet.get("selected_role") or "").strip()
+    hkjc_odds = _finite_positive(bet.get("hkjc_signal_odds"))
+    crown_odds = _finite_positive(bet.get("crown_execution_odds"))
+    admission = bet.get("wilson_admission") if isinstance(bet.get("wilson_admission"), dict) else {}
+    try:
+        line = float(bet.get("selected_line"))
+        minimum = float(admission.get("minimum_acceptable_odds_raw"))
+        number = int(bet.get("condition_number"))
+    except (TypeError, ValueError):
+        return None
+    if (
+        kickoff is None or decision_at is None or hkjc_observed is None or crown_observed is None
+        or decision_at >= kickoff
+        or (dt.datetime.now(HKT) - decision_at).total_seconds() > DEFAULT_WINDOW_MIN * 60
+        or hkjc_observed >= kickoff or crown_observed >= kickoff
+        or hkjc_observed > decision_at or crown_observed > decision_at
+        or str(bet.get("hkjc_signal_source") or "").strip().lower()
+           not in {"hkjc_public_board", "hkjc-current-board"}
+        or str(bet.get("crown_execution_source") or "").strip().lower()
+           != "titan007-crown-id-3"
+        or not league or not home or not away or market not in set(MARKET_LABELS.values())
+        or not direction or hkjc_odds is None or crown_odds is None
+        or crown_odds + 1e-12 < minimum or not math.isfinite(line)
+    ):
+        return None
+    selection = f"{direction} {line:g}"
+    return "\n".join([
+        "【足破×皇冠執行測試倉（模擬）】",
+        f"{kickoff.astimezone(HKT).strftime('%H:%M')} {esc(league)}",
+        f"{esc(home)} vs {esc(away)}",
+        f"合符條件 #{number}",
+        "投注平台：皇冠",
+        f"馬會訊號：{esc(market)} {esc(selection)} @{hkjc_odds:.2f}",
+        f"皇冠模擬：{esc(market)} {esc(selection)} @{crown_odds:.2f}",
+        f"最低要求賠率：{minimum:.2f}",
+        f"模擬投注 HK${float(bet.get('stake') or 0):,.0f}",
+    ])
+
+
+def _parse_time(value):
+    try:
+        parsed = dt.datetime.fromisoformat(str(value or "").replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed.replace(tzinfo=HKT) if parsed.tzinfo is None else parsed.astimezone(HKT)
+
+
+def notify_pending_crown_execution_bets(ledger, bet_ids=None, *, max_attempts=8):
+    """Send only committed, still-upcoming cross-book simulation entries.
+
+    A transport exception happens before acknowledgement is persisted, allowing
+    a later notify-only run to retry.  No rejection or uncommitted candidate is
+    ever sent.
+    """
+    requested = ({str(value) for value in bet_ids or [] if value}
+                 if bet_ids is not None else None)
+    if requested is not None and not requested:
+        return 0
+    state = load_state()
+    sent_ids = set(map(str, state.get("crown_execution_test_alerts") or []))
+    sent_order = [str(value) for value in state.get("crown_execution_test_alerts") or []]
+    namespace = ledger.get(CROWN_EXECUTION_PORTFOLIO) if isinstance(ledger, dict) else {}
+    rows = namespace.get("bets") if isinstance(namespace, dict) else []
+    sent = attempted = 0
+    for bet in rows or []:
+        if not isinstance(bet, dict):
+            continue
+        bid = str(bet.get("bet_id") or "")
+        if not bid or bid in sent_ids or (requested is not None and bid not in requested):
+            continue
+        text = _crown_execution_message(bet)
+        if text is None:
+            continue
+        if attempted >= max(0, max_attempts):
+            break
+        attempted += 1
+        send(text)
+        sent_ids.add(bid)
+        sent_order.append(bid)
+        state["crown_execution_test_alerts"] = _bounded_unique_ids(sent_order)
+        state["last_sent"] = dt.datetime.now(HKT).isoformat(timespec="seconds")
+        save_state(state)
+        sent += 1
+    return sent
 
 
 def load_ledger():

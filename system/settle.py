@@ -17,6 +17,7 @@ import tempfile
 
 from condition_portfolio import FIXED_STAKE, PORTFOLIO, STARTING_BANKROLL, STRATEGY
 from analysis.wilson_validation import all_settleable_bets, recompute_namespace
+from crown_execution_test import recompute as recompute_crown_execution
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -370,7 +371,7 @@ def run(force=False):
 
     now = datetime.now(HKT)
     due = []
-    for bet in condition_bets(led):
+    for bet in settlement_bets(led):
         if bet.get("status") != "PENDING":
             continue
         kickoff = parse_kickoff(bet.get("kickoff"))
@@ -404,7 +405,7 @@ def run(force=False):
             )
         except Exception:
             official_statuses = {}
-    for b in condition_bets(led):
+    for b in settlement_bets(led):
         if b.get("status") != "PENDING":
             continue
         ko = parse_kickoff(b.get("kickoff"))
@@ -507,11 +508,12 @@ def run(force=False):
                "Half Lost": "🟠", "Lost": "🔴"}.get(label, "•")
         cx = f" 角球 {b['score']['corners']}" if b["code"] == "CHL" and b["score"]["corners"] else ""
         changes.append(
-            f"{ico} {b['home']} v {b['away']} — {b['label']} → "
+            f"{ico} {b['home']} v {b['away']} — {b.get('label') or b.get('market_label') or b.get('code') or '市場'} → "
             f"{label} {pnl:+,.0f}(比分 {b['score']['goals']}{cx})"
         )
 
     stats = recompute(led)
+    recompute_crown_execution(led)
     if changes or unresolved:
         led["log"].insert(0, {
             "ts": now.isoformat(timespec="seconds"),
@@ -545,6 +547,23 @@ def run(force=False):
 def condition_bets(ledger):
     """Wilson rows plus retained pending/settleable v1 rows, never mixed in stats."""
     return all_settleable_bets(ledger, "footbreak")
+
+
+def crown_execution_bets(ledger):
+    """The cross-book test ledger is explicitly separate from Wilson rows."""
+    namespace = ledger.get("footbreak_crown_execution_test") if isinstance(ledger, dict) else {}
+    rows = namespace.get("bets") if isinstance(namespace, dict) else []
+    return [
+        row for row in rows or []
+        if isinstance(row, dict)
+        and row.get("portfolio") == "footbreak_crown_execution_test"
+        and row.get("strategy") == "footbreak-crown-execution-test-v1"
+    ]
+
+
+def settlement_bets(ledger):
+    """Use proven settlement rules without joining cross-book statistics."""
+    return condition_bets(ledger) + crown_execution_bets(ledger)
 
 
 def recompute(led):

@@ -603,6 +603,19 @@ def _public_observation(row):
     return {key: value for key, value in row.items() if key in visible}
 
 
+def _public_crown_execution_bet(row):
+    """Expose cross-book outcomes without fixture/provider identifiers."""
+    visible = {
+        "bet_id", "portfolio", "strategy", "league", "home", "away", "kickoff",
+        "market", "market_label", "side", "line", "selected_role", "selected_line",
+        "hkjc_signal_odds", "hkjc_signal_observed_at", "crown_execution_odds",
+        "crown_execution_observed_at", "stake", "status", "condition_number",
+        "evidence_version", "wilson_admission", "result", "pnl", "settled_at",
+        "score", "simulation_only",
+    }
+    return {key: value for key, value in row.items() if key in visible}
+
+
 def _wilson_match_projection(row, *, bet_status):
     """Use persisted raw Wilson arithmetic; the dashboard must never rederive it."""
     arithmetic = row.get("wilson_admission") if isinstance(row.get("wilson_admission"), dict) else {}
@@ -717,6 +730,10 @@ def write_empty_bootstrap(out_path):
                 "available": False,
                 "reason": "not_yet_run",
             },
+        },
+        "crown_execution_test": {
+            "display_name": "足破×皇冠執行測試倉（模擬）",
+            "bets": [], "stats": {}, "rejections": {},
         },
         "stats": {
             "portfolio": PORTFOLIO,
@@ -950,6 +967,24 @@ def main(out_path=None):
             "mode": (led.get("footbreak_probability_research") or {}).get("mode"),
             "stats": (led.get("footbreak_probability_research") or {}).get("stats") or {},
             "evidence_artifact": probability_evidence_public(),
+        },
+        "crown_execution_test": {
+            "display_name": "足破×皇冠執行測試倉（模擬）",
+            "bets": [
+                _public_crown_execution_bet(row)
+                for row in ((led.get("footbreak_crown_execution_test") or {}).get("bets") or [])
+                if isinstance(row, dict)
+                and row.get("portfolio") == "footbreak_crown_execution_test"
+            ],
+            "stats": {
+                key: value for key, value in
+                (((led.get("footbreak_crown_execution_test") or {}).get("stats") or {}).items())
+                if key not in {"fixture_identity", "source", "provider", "audit"}
+            },
+            "rejections": (
+                ((led.get("footbreak_crown_execution_test") or {}).get("stats") or {})
+                .get("rejections") or {}
+            ),
         },
         "stats": {
             "portfolio": PORTFOLIO,

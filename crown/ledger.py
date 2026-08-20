@@ -11,6 +11,7 @@ from analysis.learning_store import LearningStore
 from .common import HKT, iso_hkt, parse_time, read_json
 from .config import Settings
 from .condition_portfolio import FIXED_STAKE, STARTING_BANKROLL, STRATEGY, evaluate_new_t5
+from .hkjc_execution_test import evaluate_new_t5 as evaluate_hkjc_execution_t5, recompute as recompute_hkjc_execution
 from . import challenger_v2
 from analysis.wilson_validation import (
     ensure_namespace, portfolio_name, recompute_namespace, all_settleable_bets,
@@ -385,6 +386,14 @@ def sync_prediction(ledger: dict[str, Any], prediction: dict[str, Any], config: 
     # returned list in the snapshot is useful for this run, without duplicating
     # durable audit records.
     ledger["bets"].extend(created)
+    # Reciprocal cross-book simulation consumes only the persisted Footbreak
+    # local ledger artifact.  It has no provider/client dependency in this
+    # deadline-bound T-5 commit path and fails closed when unavailable.
+    evaluate_hkjc_execution_t5(
+        ledger, watch,
+        ranking=cached_ranking if isinstance(cached_ranking, list) else None,
+    )
+    recompute_hkjc_execution(ledger)
     # The v2 challenger sees the same newly persisted native T-5 but records
     # only isolated research rows. It does not append to ``ledger['bets']``.
     challenger_v2.evaluate_new_t5(ledger, watch, snapshot)
