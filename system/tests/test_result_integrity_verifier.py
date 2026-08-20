@@ -1,3 +1,4 @@
+import copy
 import importlib.util
 import json
 import os
@@ -234,6 +235,50 @@ class ResultIntegrityVerifierTests(unittest.TestCase):
             },
         }
         verify.assert_crown_publication_matches(raw, public)
+
+    def test_crown_publication_compares_the_active_wilson_ranking_projection(self):
+        raw = {"rows": [], "stats": {}}
+        calculated = calculate_stats([], comparable_era=PREDICTION_ERA)
+        self.assertIsInstance(calculated.get("granular_conditions"), dict)
+        projected_ranking = [{
+            "condition_signature": "frozen-signature",
+            "condition_number": 1,
+            "total": {"hits": 185, "decided": 302},
+            "active_evidence": {"version": 2, "evidence_hash": "frozen-hash"},
+        }]
+        public_stats = copy.deepcopy(calculated)
+        public_stats["granular_conditions"]["ranking"] = projected_ranking
+        public = {
+            "generated_at": "2026-08-21T03:00:00+08:00",
+            "ledger": {"wilson_validation": {"conditions": {}}},
+            "prediction_history": {"rows": [], "stats": public_stats},
+        }
+        with patch(
+            "analysis.wilson_validation.project_granular_ranking_evidence",
+            return_value=projected_ranking,
+        ) as projection:
+            verify.assert_crown_publication_matches(raw, public)
+            projection.assert_called_once()
+
+        tampered_ranking = copy.deepcopy(public)
+        tampered_ranking["prediction_history"]["stats"]["granular_conditions"][
+            "ranking"
+        ][0]["active_evidence"]["evidence_hash"] = "tampered"
+        with patch(
+            "analysis.wilson_validation.project_granular_ranking_evidence",
+            return_value=projected_ranking,
+        ), self.assertRaises(AssertionError):
+            verify.assert_crown_publication_matches(raw, tampered_ranking)
+
+        tampered_other_stat = copy.deepcopy(public)
+        tampered_other_stat["prediction_history"]["stats"]["by_stage"] = {
+            "T-5": {"accuracy": 1.0}
+        }
+        with patch(
+            "analysis.wilson_validation.project_granular_ranking_evidence",
+            return_value=projected_ranking,
+        ), self.assertRaises(AssertionError):
+            verify.assert_crown_publication_matches(raw, tampered_other_stat)
 
     def test_market_stats_respects_reported_model_version_scope(self):
         current = {

@@ -392,6 +392,24 @@ def assert_crown_publication_matches(
         projected_rows,
         comparable_era=PREDICTION_ERA,
     )
+    # The public dashboard deliberately replaces the freshly mined granular
+    # ranking's old discovery aggregates with the active, versioned Wilson
+    # evidence chain.  Rebuild that projection from the browser-safe ledger
+    # copy before comparing the complete statistics payload.  Without this
+    # step, byte-identical history rows are rejected solely because the
+    # verifier compares raw discovery evidence with the intended Wilson view.
+    # Work on a copy: verification must never mutate the published payload.
+    from analysis.wilson_validation import project_granular_ranking_evidence
+
+    granular = projected_stats.get("granular_conditions")
+    if isinstance(granular, dict):
+        raw_ranking = granular.get("ranking") or []
+        granular["ranking"] = project_granular_ranking_evidence(
+            copy.deepcopy(public_ledger),
+            "crown",
+            raw_ranking,
+            now=str(crown_public.get("generated_at") or ""),
+        )
     public_rows = rows(public_history)
     assert len(public_rows) == len(projected_rows), (
         "Crown public/projected prediction row count mismatch",
