@@ -67,9 +67,7 @@ jobs:
           fi
           systemctl start crown-tick.timer
           trap - EXIT
-          echo "=== Run normal result reconciliation service ==="
-          systemctl reset-failed footbreak-result-reconcile.service || true
-          systemctl start footbreak-result-reconcile.service || true
+          echo "=== Inspect normal result reconciliation service ==="
           systemctl show footbreak-result-reconcile.service --no-pager \
             -p ActiveState -p SubState -p Result -p ExecMainStatus \
             -p ExecMainStartTimestamp -p ExecMainExitTimestamp
