@@ -176,6 +176,90 @@ jobs:
           PY
           echo "=== Result integrity verifier (read-only) ==="
           /opt/footbreak/.venv/bin/python3 deploy/verify-result-integrity.py || true
+          echo "=== Crown publication projection delta (read-only, hashed) ==="
+          /opt/footbreak/.venv/bin/python3 - <<'PY'
+          import copy
+          import hashlib
+          import importlib.util
+          import json
+          from collections import Counter
+          from pathlib import Path
+
+          path = Path("deploy/verify-result-integrity.py")
+          spec = importlib.util.spec_from_file_location("result_integrity_delta", path)
+          module = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(module)
+
+          from analysis.odds_recovery import overlay_rows
+          from crown.ledger import PREDICTION_ERA
+          from crown.prediction_history import calculate_stats, normalize_history, project_watch_rows
+
+          source = module.load(module.CROWN_HISTORY)
+          public = module.load(module.CROWN_DATA)
+          sidecar = module.load(module.sidecar_path(module.CROWN_DATA, public, "Crown"))
+          source_copy = copy.deepcopy(source)
+          normalize_history(source_copy)
+          projected = overlay_rows(
+              project_watch_rows(module.rows(source_copy), public.get("ledger") or {}),
+              "crown",
+          )
+          published_history = sidecar.get("prediction_history") or {}
+          published = module.rows(published_history)
+
+          def key(row):
+              return (str(row.get("match_id") or ""), str(row.get("stage") or ""))
+
+          def hashed(value):
+              raw = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+              return hashlib.sha256(raw.encode()).hexdigest()[:16]
+
+          projected_by_key = {key(row): row for row in projected}
+          published_by_key = {key(row): row for row in published}
+          only_projected = sorted(set(projected_by_key) - set(published_by_key))
+          only_published = sorted(set(published_by_key) - set(projected_by_key))
+          shared_changed = [
+              item for item in sorted(set(projected_by_key) & set(published_by_key))
+              if projected_by_key[item] != published_by_key[item]
+          ]
+          first_order_mismatch = next(
+              (
+                  index for index, pair in enumerate(zip(map(key, projected), map(key, published)))
+                  if pair[0] != pair[1]
+              ),
+              None,
+          )
+          expected_stats = calculate_stats(projected, comparable_era=PREDICTION_ERA)
+          print({
+              "source_rows": len(module.rows(source_copy)),
+              "projected_rows": len(projected),
+              "published_rows": len(published),
+              "only_projected_count": len(only_projected),
+              "only_published_count": len(only_published),
+              "shared_changed_count": len(shared_changed),
+              "only_projected_hashes": [hashed(item) for item in only_projected[:12]],
+              "only_published_hashes": [hashed(item) for item in only_published[:12]],
+              "shared_changed_hashes": [hashed(item) for item in shared_changed[:12]],
+              "first_order_mismatch": first_order_mismatch,
+              "projected_keys_hash": hashed([key(row) for row in projected]),
+              "published_keys_hash": hashed([key(row) for row in published]),
+              "projected_rows_hash": hashed(projected),
+              "published_rows_hash": hashed(published),
+              "stats_equal": published_history.get("stats") == expected_stats,
+              "expected_stats_hash": hashed(expected_stats),
+              "published_stats_hash": hashed(published_history.get("stats") or {}),
+              "sidecar_version_matches_pointer": (
+                  public.get("history_data_version") == sidecar.get("history_data_version")
+              ),
+              "display_projection_counts": {
+                  "projected": Counter(
+                      str(row.get("display_projection") or "") for row in projected
+                  ).most_common(6),
+                  "published": Counter(
+                      str(row.get("display_projection") or "") for row in published
+                  ).most_common(6),
+              },
+          })
+          PY
           echo "=== Crown private history shape detail (read-only) ==="
           /opt/footbreak/.venv/bin/python3 - <<'PY'
           from collections import Counter
