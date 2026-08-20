@@ -13,6 +13,7 @@ from typing import Any
 
 
 FOOTBREAK_DATA = Path("/var/www/footbreak/data.json")
+FOOTBREAK_PUBLIC_HISTORY = Path("/var/www/footbreak/history.json")
 CROWN_HISTORY = Path("/var/lib/footbreak/crown/prediction_history.json")
 CROWN_DATA = Path("/var/www/crown/data.json")
 CROWN_PUBLIC_HISTORY = Path("/var/www/crown/history.json")
@@ -23,6 +24,29 @@ HKT = timezone(timedelta(hours=8))
 
 def load(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def published_history(
+    label: str,
+    public: dict[str, Any],
+    sidecar: dict[str, Any],
+    expected_schema: str,
+) -> dict[str, Any]:
+    assert public.get("history_data_url") == "history.json", (
+        f"{label} boot payload is missing the history sidecar marker"
+    )
+    assert sidecar.get("schema_version") == expected_schema, (
+        f"{label} history sidecar schema mismatch"
+    )
+    expected_version = public.get("history_data_version")
+    assert expected_version, f"{label} boot payload history version missing"
+    assert expected_version == sidecar.get("history_data_version"), (
+        f"{label} boot/history sidecar version mismatch"
+    )
+    history = sidecar.get("prediction_history")
+    assert isinstance(history, dict), f"{label} history sidecar payload missing"
+    assert isinstance(history.get("rows"), list), f"{label} history sidecar rows missing"
+    return history
 
 
 def rows(payload: Any) -> list[dict[str, Any]]:
@@ -395,10 +419,17 @@ def run_integrity_check(name: str, check: Any, *args: Any) -> None:
 
 def main() -> None:
     footbreak = load(FOOTBREAK_DATA)
+    footbreak_public_history = load(FOOTBREAK_PUBLIC_HISTORY)
     crown = load(CROWN_HISTORY)
     crown_public = load(CROWN_DATA)
     crown_public_history = load(CROWN_PUBLIC_HISTORY)
-    footbreak_rows = rows(footbreak.get("prediction_history") or {})
+    footbreak_history = published_history(
+        "Footbreak",
+        footbreak,
+        footbreak_public_history,
+        "footbreak-history-v1",
+    )
+    footbreak_rows = rows(footbreak_history)
     crown_rows = rows(crown)
     run_integrity_check(
         "footbreak_history_shape",
@@ -419,7 +450,7 @@ def main() -> None:
         assert_market_stats_consistent,
         "Footbreak",
         footbreak_rows,
-        (footbreak.get("prediction_history") or {}).get("stats") or {},
+        footbreak_history.get("stats") or {},
     )
     run_integrity_check(
         "crown_market_stats",

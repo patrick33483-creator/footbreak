@@ -18,6 +18,91 @@ SPEC.loader.exec_module(verify)
 
 
 class ResultIntegrityVerifierTests(unittest.TestCase):
+    def test_main_reads_footbreak_rows_from_versioned_history_sidecar(self):
+        row = {
+            "match_id": "foot-sidecar",
+            "stage": "T-5",
+            "kickoff": "2026-08-20T01:00:00+08:00",
+            "predicted_at": "2026-08-20T00:55:00+08:00",
+            "market_predictions": [
+                {"code": "HDC", "side": "H", "line": -0.25}
+            ],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            paths = {
+                "foot_data": root / "foot-data.json",
+                "foot_history": root / "foot-history.json",
+                "crown_history": root / "crown-raw-history.json",
+                "crown_data": root / "crown-data.json",
+                "crown_public_history": root / "crown-public-history.json",
+            }
+            paths["foot_data"].write_text(json.dumps({
+                "prediction_history": {"stats": {"graded": 999}},
+                "history_data_url": "history.json",
+                "history_data_version": "foot-v1",
+            }), encoding="utf-8")
+            paths["foot_history"].write_text(json.dumps({
+                "schema_version": "footbreak-history-v1",
+                "history_data_version": "foot-v1",
+                "prediction_history": {"stats": {}, "rows": [row]},
+            }), encoding="utf-8")
+            paths["crown_history"].write_text(
+                json.dumps({"rows": [], "stats": {}}), encoding="utf-8"
+            )
+            paths["crown_data"].write_text(json.dumps({
+                "prediction_history": {"stats": {}},
+                "history_data_url": "history.json",
+                "history_data_version": "crown-v1",
+            }), encoding="utf-8")
+            paths["crown_public_history"].write_text(json.dumps({
+                "schema_version": "crown-history-v1",
+                "history_data_version": "crown-v1",
+                "prediction_history": {"stats": {}, "rows": []},
+            }), encoding="utf-8")
+            calls = []
+
+            def capture(category, check, *args):
+                calls.append((category, args))
+
+            with patch.object(verify, "FOOTBREAK_DATA", paths["foot_data"]), \
+                 patch.object(
+                     verify, "FOOTBREAK_PUBLIC_HISTORY", paths["foot_history"]
+                 ), \
+                 patch.object(verify, "CROWN_HISTORY", paths["crown_history"]), \
+                 patch.object(verify, "CROWN_DATA", paths["crown_data"]), \
+                 patch.object(
+                     verify, "CROWN_PUBLIC_HISTORY", paths["crown_public_history"]
+                 ), \
+                 patch.object(verify, "run_integrity_check", side_effect=capture), \
+                 patch.object(verify, "report_result_gaps"), \
+                 patch.object(verify, "verify_known_crown_incident"):
+                verify.main()
+
+        foot_shape = next(args for category, args in calls
+                          if category == "footbreak_history_shape")
+        self.assertEqual(foot_shape[1][0]["match_id"], "foot-sidecar")
+        foot_stats = next(args for category, args in calls
+                          if category == "footbreak_market_stats")
+        self.assertEqual(foot_stats[2], {})
+
+    def test_published_history_rejects_mixed_generation(self):
+        public = {
+            "history_data_url": "history.json",
+            "history_data_version": "expected",
+        }
+        sidecar = {
+            "schema_version": "footbreak-history-v1",
+            "history_data_version": "other",
+            "prediction_history": {"rows": []},
+        }
+        with self.assertRaisesRegex(
+            AssertionError, "Footbreak boot/history sidecar version mismatch"
+        ):
+            verify.published_history(
+                "Footbreak", public, sidecar, "footbreak-history-v1"
+            )
+
     def test_top_level_check_failure_exposes_only_stable_category(self):
         def fail_with_sensitive_payload():
             raise AssertionError({"fixture_id": "secret-fixture"})
