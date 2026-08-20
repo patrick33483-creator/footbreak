@@ -67,9 +67,6 @@ jobs:
           fi
           systemctl start crown-tick.timer
           trap - EXIT
-          echo "=== Run bounded provider-free Crown history-shape repair ==="
-          PYTHONPATH=/opt/footbreak /opt/footbreak/.venv/bin/python3 \
-            -m crown.history_shape_repair --lock-timeout-seconds 30
           echo "=== Inspect normal result reconciliation service ==="
           systemctl show footbreak-result-reconcile.service --no-pager \
             -p ActiveState -p SubState -p Result -p ExecMainStatus \
