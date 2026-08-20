@@ -67,6 +67,15 @@ jobs:
           fi
           systemctl start crown-tick.timer
           trap - EXIT
+          echo "=== Run normal result reconciliation once ==="
+          systemctl reset-failed footbreak-result-reconcile.service || true
+          systemctl start --no-block footbreak-result-reconcile.service
+          for _ in $(seq 1 80); do
+            state="$(systemctl show footbreak-result-reconcile.service -p ActiveState --value)"
+            [ "$state" = "activating" ] || break
+            echo "$(date '+%F %T') result reconciliation is running"
+            sleep 15
+          done
           echo "=== Inspect normal result reconciliation service ==="
           systemctl show footbreak-result-reconcile.service --no-pager \
             -p ActiveState -p SubState -p Result -p ExecMainStatus \
