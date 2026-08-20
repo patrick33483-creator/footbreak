@@ -65,6 +65,23 @@ else
   echo "Crown reconciliation skipped: CROWN_ENABLED is not enabled"
 fi
 
+# Crown's settlement/sweep may be deferred or still unwinding when this timer
+# reaches the verifier.  Independently normalize only the local immutable
+# history before verification; this module has no provider, ledger, bet,
+# dashboard, or Telegram path.  A busy state lock is retryable, but must not
+# let the verifier report/publish a history that was not safely normalized.
+CROWN_HISTORY_REPAIR_LOCK_TIMEOUT_SECONDS="${CROWN_HISTORY_REPAIR_LOCK_TIMEOUT_SECONDS:-2}"
+crown_history_shape_ready=1
+echo "=== $(TZ=Asia/Hong_Kong date '+%F %T') Crown local history-shape repair ==="
+if PYTHONPATH="$APP_DIR" "$APP_DIR/.venv/bin/python3" -m crown.history_shape_repair \
+  --lock-timeout-seconds "$CROWN_HISTORY_REPAIR_LOCK_TIMEOUT_SECONDS"; then
+  echo "Crown local history-shape repair OK"
+else
+  crown_history_shape_ready=0
+  reconciliation_failed=1
+  echo "Crown local history-shape repair did not complete; automatic retry remains scheduled" >&2
+fi
+
 # The two settlement runners above actively retry unresolved outcomes through
 # their existing strict HKJC/Titan/exact-fixture paths.  Once they finish, make
 # the local immutable learning projection consistent before publishing health.
@@ -82,25 +99,29 @@ if [ -s "$LEARNING_DB" ]; then
   fi
 fi
 
-echo "=== $(TZ=Asia/Hong_Kong date '+%F %T') prediction-history integrity audit ==="
-integrity_rc=1
-for integrity_attempt in 1 2 3; do
-  PYTHONPATH="$APP_DIR" "$APP_DIR/.venv/bin/python3" \
-    "$APP_DIR/deploy/verify-result-integrity.py"
-  integrity_rc=$?
-  if [ "$integrity_rc" -eq 0 ]; then
-    break
+if [ "$crown_history_shape_ready" -eq 1 ]; then
+  echo "=== $(TZ=Asia/Hong_Kong date '+%F %T') prediction-history integrity audit ==="
+  integrity_rc=1
+  for integrity_attempt in 1 2 3; do
+    PYTHONPATH="$APP_DIR" "$APP_DIR/.venv/bin/python3" \
+      "$APP_DIR/deploy/verify-result-integrity.py"
+    integrity_rc=$?
+    if [ "$integrity_rc" -eq 0 ]; then
+      break
+    fi
+    if [ "$integrity_attempt" -lt 3 ]; then
+      echo "Prediction-history integrity audit transient failure; retrying attempt=$((integrity_attempt + 1))/3" >&2
+      sleep 2
+    fi
+  done
+  if [ "$integrity_rc" -ne 0 ]; then
+    echo "Prediction-history integrity audit failed rc=$integrity_rc" >&2
+    reconciliation_failed=1
+  else
+    echo "Prediction-history integrity audit OK"
   fi
-  if [ "$integrity_attempt" -lt 3 ]; then
-    echo "Prediction-history integrity audit transient failure; retrying attempt=$((integrity_attempt + 1))/3" >&2
-    sleep 2
-  fi
-done
-if [ "$integrity_rc" -ne 0 ]; then
-  echo "Prediction-history integrity audit failed rc=$integrity_rc" >&2
-  reconciliation_failed=1
 else
-  echo "Prediction-history integrity audit OK"
+  echo "Prediction-history integrity audit skipped: Crown local history-shape repair did not complete" >&2
 fi
 
 # 資料健康報告(唯讀診斷)。喺同一個 15 分鐘週期平價重生,完全唔會改
