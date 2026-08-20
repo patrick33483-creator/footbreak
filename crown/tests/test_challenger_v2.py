@@ -42,6 +42,7 @@ class CrownV2ChallengerTests(unittest.TestCase):
             "stats": {"pnl": -250, "roi": -1},
         }
         original = copy.deepcopy(ledger)
+        v2.ensure_namespace(ledger, now="2026-08-20T19:50:00+08:00")
         fixture, stage = watch()
         made, audit = v2.evaluate_new_t5(ledger, fixture, stage)
         self.assertEqual(len(made), 4)  # two permitted markets × ablation
@@ -67,6 +68,7 @@ class CrownV2ChallengerTests(unittest.TestCase):
     def test_candidate_lanes_native_provenance_and_cutover_fail_closed(self):
         fixture, stage = watch()
         ledger = {"bets": []}
+        v2.ensure_namespace(ledger, now="2026-08-20T19:50:00+08:00")
         stage["market_predictions"][1]["odds"] = 1.85
         made, audit = v2.evaluate_new_t5(ledger, fixture, stage)
         self.assertEqual(len(made), 2)
@@ -83,7 +85,9 @@ class CrownV2ChallengerTests(unittest.TestCase):
 
         bad_fixture, bad_stage = watch()
         bad_stage["market_predictions"][0].pop("quote_source")
-        made, audit = v2.evaluate_new_t5({"bets": []}, bad_fixture, bad_stage)
+        bad_ledger = {"bets": []}
+        v2.ensure_namespace(bad_ledger, now="2026-08-20T19:50:00+08:00")
+        made, audit = v2.evaluate_new_t5(bad_ledger, bad_fixture, bad_stage)
         self.assertEqual(len(made), 2)  # HDC lane survives; HIL fails closed.
         self.assertIn("missing_quote_provenance", {row["reason"] for row in audit})
 
@@ -120,7 +124,7 @@ class CrownV2ChallengerTests(unittest.TestCase):
     def test_league_shrinkage_ablation_unique_fixture_and_promotion_blocked(self):
         fixture, stage = watch()
         ledger = {"bets": []}
-        namespace = v2.ensure_namespace(ledger)
+        namespace = v2.ensure_namespace(ledger, now="2026-08-20T19:50:00+08:00")
         namespace["league_effect"] = {
             "status": "frozen_pre_cutover_ready",
             "frozen_at": "2026-08-19T19:00:00+08:00",
@@ -178,6 +182,7 @@ class CrownV2ChallengerTests(unittest.TestCase):
             "quote_source": selected["quote_source"], "observed_at": stage["kickoff_hkt"],
         }]
         ledger = {"bets": []}
+        v2.ensure_namespace(ledger, now="2026-08-20T19:50:00+08:00")
         made, _ = v2.evaluate_new_t5(ledger, fixture, stage)
         hil = next(row for row in made if row["market"] == "HIL" and row["variant"] == "no_league")
         self.assertTrue(hil["market_implied_available"])
@@ -187,6 +192,7 @@ class CrownV2ChallengerTests(unittest.TestCase):
         # A mismatched observed timestamp makes the two-sided baseline unavailable.
         stage["two_sided_quotes"][1]["observed_at"] = "2026-08-20T19:55:00+08:00"
         second = {"bets": []}
+        v2.ensure_namespace(second, now="2026-08-20T19:50:00+08:00")
         made, _ = v2.evaluate_new_t5(second, fixture, stage)
         self.assertFalse(next(row for row in made if row["market"] == "HIL")["market_implied_available"])
 
