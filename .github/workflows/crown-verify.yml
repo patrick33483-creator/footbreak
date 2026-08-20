@@ -67,6 +67,14 @@ jobs:
           fi
           systemctl start crown-tick.timer
           trap - EXIT
+          echo "=== Run normal result reconciliation service ==="
+          systemctl reset-failed footbreak-result-reconcile.service || true
+          systemctl start footbreak-result-reconcile.service || true
+          systemctl show footbreak-result-reconcile.service --no-pager \
+            -p ActiveState -p SubState -p Result -p ExecMainStatus \
+            -p ExecMainStartTimestamp -p ExecMainExitTimestamp
+          journalctl -u footbreak-result-reconcile.service -n 120 --no-pager \
+            -o short-iso || true
           echo "=== Crown live HKJC mapping diagnostic ==="
           /opt/footbreak/.venv/bin/python3 - <<'PY'
           from collections import Counter
