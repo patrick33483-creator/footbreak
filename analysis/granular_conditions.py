@@ -578,10 +578,19 @@ def match_upcoming(
     maximum = STAGE_ORDER.get(decision_stage)
     if maximum is None:
         return {}
+    # Preserve the public ranking identity before stage/system filtering.  The
+    # dashboard's history panel numbers the same persisted ranking from 1, so
+    # a match card can point back to the exact condition instead of presenting
+    # an unnumbered label that is difficult to find.
+    ranked_input = [
+        item | {"condition_rank": index}
+        for index, item in enumerate(ranking, start=1)
+        if isinstance(item, dict)
+    ]
     allowed = {
         tuple(item["key"]): item
         for item in canonical_ranking(
-            ranking, system=system, decision_stage=decision_stage,
+            ranked_input, system=system, decision_stage=decision_stage,
         )
     }
     matches: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -600,6 +609,7 @@ def match_upcoming(
                     matches[panel["fixture"]].append(candidate | {
                         "selected_side": path[-1]["side"],
                         "selected_line": path[-1]["selected_line"],
+                        "selected_odds": path[-1]["odds"],
                     })
     for fixture, values in matches.items():
         dedup = {tuple(item["key"]): item for item in values}

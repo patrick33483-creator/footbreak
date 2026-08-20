@@ -11,6 +11,7 @@ from typing import Any
 from .common import HKT, iso_hkt, now_hkt, parse_time, read_json, write_json_atomic
 from .config import Settings
 from .state import notification_lock, paths
+from analysis.league_display import traditional_chinese_league
 from analysis.three_stage_consensus import calculate_three_stage_consensus
 
 
@@ -137,8 +138,12 @@ def _wilson_message(bet: dict[str, Any]) -> str | None:
     market = str(bet.get("market_label") or MARKET_LABELS.get(str(bet.get("market") or bet.get("code") or "").upper()) or "").strip()
     if market not in set(MARKET_LABELS.values()):
         return None
+    league = traditional_chinese_league(bet.get("league"))
+    if not league:
+        return None
     return "\n".join([
-        f"{kickoff.astimezone(HKT).strftime('%H:%M')} {bet.get('league') or ''}",
+        "【皇冠 Wilson】",
+        f"{kickoff.astimezone(HKT).strftime('%H:%M')} {league}",
         f"{bet.get('home') or ''} vs {bet.get('away') or ''}",
         f"合符條件 #{number}",
         f"投注 {market} · {bet.get('selected_role') or '—'} {line:g}（模擬）",

@@ -42,11 +42,16 @@ class ConditionSimulationUiTests(unittest.TestCase):
             source = path.read_text(encoding="utf-8")
             with self.subTest(path=path):
                 self.assertIn("function wilsonMatchText", source)
+                self.assertIn("function historicalConditionMatchText", source)
                 self.assertIn("合符條件 #", source)
+                self.assertIn("條件 #${esc(number)}", source)
                 self.assertIn("minimum_required_odds_display", source)
                 self.assertIn("最低賠率要求", source)
                 self.assertIn("因賠率不足，不投注", source)
+                self.assertIn("樣本不足 50 場，不投注", source)
+                self.assertIn("仍須通過正式 Wilson 證據閘門", source)
                 self.assertIn("wilsonMatches.map(wilsonMatchText)", source)
+                self.assertIn("historicalMatches.map(historicalConditionMatchText)", source)
 
     def test_legacy_creation_paths_are_inactive_and_reset_is_manual(self) -> None:
         engine = (ROOT / "crown" / "engine.py").read_text(encoding="utf-8")

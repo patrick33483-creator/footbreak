@@ -127,6 +127,12 @@ class GranularConditionsTests(unittest.TestCase):
         t30 = match_upcoming(upcoming, ranking, system="crown", decision_stage="T-30")
         self.assertTrue(t30["future"])
         self.assertFalse(any("T-5" in match["observed_path"] for match in t30["future"]))
+        self.assertTrue(all(
+            isinstance(match.get("condition_rank"), int)
+            and match["condition_rank"] >= 1
+            and match.get("selected_odds") == 1.8
+            for match in t30["future"]
+        ))
         t5 = match_upcoming(upcoming, ranking, system="crown", decision_stage="T-5")
         self.assertNotIn("future", t5)
 

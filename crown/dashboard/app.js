@@ -657,6 +657,34 @@ function wilsonMatchText(item) {
     <span class="${isBet ? 'good-txt' : 'bad-txt'}">${isBet ? '模擬投注' : '因賠率不足，不投注'}</span></div>`;
 }
 
+function historicalConditionMatchText(item) {
+  const number = numeric(item.condition_rank) == null ? '—' : String(Math.trunc(numeric(item.condition_rank)));
+  const total = item.total || {};
+  const decided = numeric(total.decided) || 0;
+  const interval = Array.isArray(total.wilson95) ? total.wilson95 : [];
+  const lower = numeric(interval[0]);
+  const minimum = lower != null && lower > 0.03 ? 1 / (lower - 0.03) : null;
+  const actual = numeric(item.selected_odds);
+  const sampleReady = decided >= 50;
+  const lowOdds = sampleReady && minimum != null && actual != null && actual < minimum;
+  const isT5 = String(item.decision_stage || item.stage || '') === 'T-5';
+  let status = '只作條件觀察；T-5 先作正式投注決定';
+  let tone = '';
+  if (isT5 && !sampleReady) {
+    status = `合符條件 #${number}，但樣本不足 50 場，不投注`;
+    tone = 'bad-txt';
+  } else if (isT5 && lowOdds) {
+    status = `合符條件 #${number}，但賠率不足，不投注`;
+    tone = 'bad-txt';
+  } else if (isT5 && sampleReady && minimum != null && actual != null) {
+    status = `合符條件 #${number}，賠率達標；仍須通過正式 Wilson 證據閘門`;
+    tone = 'good-txt';
+  }
+  return `<div class="condition-match"><b>條件 #${esc(number)} · ${esc(publicText(item.label || ''))}</b>
+    <span>${pc(total.accuracy, 1)} (${total.hits || 0}/${total.decided || 0}) · 現時賠率 ${actual == null ? '—' : f2(actual)} · 最低賠率要求 ${minimum == null ? '未能計算' : f2(minimum)}</span>
+    <span class="${tone}">${esc(status)}</span></div>`;
+}
+
 function verdictCard(m) {
   const c = m.conviction;
   const bar = `<div class="conv-wrap">
@@ -678,8 +706,16 @@ function verdictCard(m) {
       <p class="vd-note">${hasBet ? '已建立的市場為固定注碼模擬；每項以凍結 Wilson 原始入場算術為準。' : '已合符歷史 Wilson 條件；因賠率不足，不建立正式模擬注。'}</p>
     </div>`;
   }
+  const historicalMatches = (m.condition_matches || []).filter((item) => item && typeof item === 'object');
+  const hasT5 = (m.stages || []).some((x) => x.stage === 'T-5');
+  if (hasT5 && historicalMatches.length) {
+    return `<div class="card verdict wait">
+      <div class="vd-top"><span class="vd-badge wait">Wilson 未建立模擬注</span></div>
+      <div class="condition-match-list">${historicalMatches.map(historicalConditionMatchText).join('')}</div>
+      <p class="vd-note">逐項列明條件、賠率門檻及不投注原因；正式模擬注仍以原生 T-5、來源證據及 Wilson 閘門為準。</p>
+    </div>`;
+  }
   if (!conditionBets.length) {
-    const hasT5 = (m.stages || []).some((x) => x.stage === 'T-5');
     const mm = minsLeft(m.kickoff_hkt);
     const missingT5 = missingT5Text(m, mm);
     const badge = hasT5 ? '觀望 · 唔買' : (mm > 0 ? '未到落注時點' : (
@@ -1669,8 +1705,7 @@ function conditionMatchesCard(m) {
   return `<section class="card condition-match-card"><h2 class="card-h">條件觀察 <span class="sub">已保存 ${esc(m.stage || '')} 資料</span></h2>
     ${wilsonMatches.length ? `<div class="condition-match-list">${wilsonMatches.map(wilsonMatchText).join('')}</div>` : ''}
     ${matches.length ? `<div class="condition-match-list">${matches.map((item) => {
-      const total = item.total || {};
-      return `<div class="condition-match"><b>${esc(publicText(item.label || ''))}</b><span>${pc(total.accuracy, 1)} (${total.hits || 0}/${total.decided || 0}) · ${esc(item.odds_tier || '')} · ${esc(item.badge || '')}</span></div>`;
+      return historicalConditionMatchText(item);
     }).join('')}</div>` : ''}</section>`;
 }
 

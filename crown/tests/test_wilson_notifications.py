@@ -17,7 +17,7 @@ from crown import notify
 def bet(strategy="wilson-test-strategy-v1", portfolio="crown_wilson_test", *, market="入球大細", number=3):
     return {
         "bet_id": "crown-fixture|HIL|T-5|wilson-test-strategy-v1", "portfolio": portfolio,
-        "strategy": strategy, "status": "PENDING", "league": "測試聯賽", "home": "主隊", "away": "客隊",
+        "strategy": strategy, "status": "PENDING", "league": "USA - Major League Soccer", "home": "主隊", "away": "客隊",
         "kickoff": (now_hkt() + timedelta(hours=2)).isoformat(), "market_label": market,
         "selected_role": "大", "selected_line": 2.5, "odds": 1.90, "stake": 500,
         "frozen_condition_definition": {"path": "首預→T-30→T-5 all 主讓"},
@@ -43,10 +43,11 @@ class CrownWilsonNotificationTest(unittest.TestCase):
         row = bet()
         message = notify._wilson_message(row)
         self.assertIsNotNone(message)
-        self.assertEqual(message.count("\n"), 4)
-        for text in ("測試聯賽", "合符條件 #3", "投注 入球大細 · 大 2.5（模擬）",
+        self.assertEqual(message.count("\n"), 5)
+        for text in ("【皇冠 Wilson】", "美國職業足球大聯盟", "合符條件 #3", "投注 入球大細 · 大 2.5（模擬）",
                      "現時賠率：1.90", "最低賠率要求："):
             self.assertIn(text, message)
+        self.assertNotIn("USA - Major League Soccer", message)
         self.assertNotIn("crown-fixture", message)
         state = {"wilson_bets": [], "wilson_match_alerts": []}
         with tempfile.TemporaryDirectory() as directory:

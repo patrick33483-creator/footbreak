@@ -25,6 +25,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
+from analysis.league_display import traditional_chinese_league
+
 LEDGER = os.path.join(HERE, "sim_ledger.json")
 STATE = os.path.join(HERE, "notify_state.json")
 ACCURACY_HISTORY = os.path.join(HERE, "accuracy_history.json")
@@ -435,7 +437,7 @@ def _condition_bet_message(bet, prospective=None):
     if (bet.get("portfolio") != CONDITION_PORTFOLIO or bet.get("strategy") != CONDITION_STRATEGY) and not observation:
         return None
     arithmetic = bet.get("wilson_admission") if isinstance(bet.get("wilson_admission"), dict) else {}
-    league = str(bet.get("league") or "").strip()
+    league = traditional_chinese_league(bet.get("league"))
     home, away = str(bet.get("home") or "").strip(), str(bet.get("away") or "").strip()
     kickoff = _future_kickoff(bet.get("kickoff"))
     market = str(bet.get("market_label") or "").strip()
@@ -457,6 +459,7 @@ def _condition_bet_message(bet, prospective=None):
     except (TypeError, ValueError):
         return None
     return "\n".join([
+        "【足破 Wilson】",
         f"{kickoff.astimezone(HKT).strftime('%H:%M')} {esc(league)}",
         f"{esc(home)} vs {esc(away)}",
         f"合符條件 #{number}",

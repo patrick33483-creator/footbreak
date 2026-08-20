@@ -22,7 +22,7 @@ def bet(strategy="wilson-test-strategy-v1", portfolio="footbreak_wilson_test", *
     arithmetic = admission_arithmetic(41, 59, 1.90)
     return {
         "bet_id": "fixture|HDC|T-5|wilson-test-strategy-v1", "portfolio": portfolio,
-        "strategy": strategy, "status": "PENDING", "league": "測試聯賽", "home": "主隊", "away": "客隊",
+        "strategy": strategy, "status": "PENDING", "league": "England - Premier League", "home": "主隊", "away": "客隊",
         "kickoff": (datetime.now(HKT) + timedelta(hours=2)).isoformat(), "market_label": market,
         "selected_role": "主讓", "selected_line": -.25, "odds": 1.90, "stake": 500,
         "frozen_condition_definition": {"path": "首預→T-30→T-5 all 主讓"},
@@ -50,10 +50,11 @@ class FootbreakWilsonNotificationTest(unittest.TestCase):
     def test_concise_chinese_bet_message_uses_raw_minimum_and_stable_number(self):
         message = notify._condition_bet_message(bet())
         self.assertIsNotNone(message)
-        self.assertEqual(message.count("\n"), 4)
-        for text in ("測試聯賽", "主隊 vs 客隊", "合符條件 #7", "投注 讓球 · 主讓 -0.25（模擬）",
+        self.assertEqual(message.count("\n"), 5)
+        for text in ("【足破 Wilson】", "英格蘭超級聯賽", "主隊 vs 客隊", "合符條件 #7", "投注 讓球 · 主讓 -0.25（模擬）",
                      "現時賠率：1.90", "最低賠率要求："):
             self.assertIn(text, message)
+        self.assertNotIn("England - Premier League", message)
         self.assertNotIn("fixture|", message)
         self.assertNotIn("Wilson 95%", message)
         self.assertIsNone(notify._condition_bet_message(bet(
