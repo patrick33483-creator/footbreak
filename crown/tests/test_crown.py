@@ -50,7 +50,10 @@ from crown.prediction_history import (
 )
 from analysis.learning_store import LearningStore
 from crown import settle as crown_settle
-from crown.state import load_ledger, load_predictions, merge_predictions, save_ledger, save_predictions
+from crown.state import (
+    load_ledger, load_predictions, merge_predictions, save_ledger,
+    save_predictions, state_lock,
+)
 from crown.titan import (
     crown_prices_from_pages, parse_crown_bulk_prices,
     parse_crown_fixture_ids,
@@ -1071,6 +1074,35 @@ class CrownSafetyTests(unittest.TestCase):
             "https://live.titan007.com/index2in1.aspx?id=3",
         )
         self.assertEqual(opener.call_args.kwargs["timeout"], 25)
+
+    @unittest.skipUnless(os.name == "posix", "bounded provider workers require fork")
+    def test_hung_provider_worker_is_terminated_at_wall_clock_deadline(self) -> None:
+        """A DNS/TLS-style stall cannot outlive the tick/settlement envelope."""
+        from crown.titan import TitanClient
+
+        with tempfile.TemporaryDirectory() as directory:
+            marker = Path(directory) / "provider-returned"
+
+            def hung_read(*_args, **_kwargs) -> str:
+                time.sleep(0.5)
+                marker.write_text("late", encoding="utf-8")
+                return "late"
+
+            started = time.monotonic()
+            with patch.object(TitanClient, "_read_direct", side_effect=hung_read):
+                with self.assertRaises(TimeoutError):
+                    TitanClient._read(
+                        "https://example.invalid/hung",
+                        encoding="utf-8",
+                        timeout=10,
+                        attempts=1,
+                        hard_deadline=0.10,
+                    )
+            self.assertLess(time.monotonic() - started, 0.40)
+            # A surviving child would write this after the deadline.  This
+            # confirms termination rather than merely a timed-out parent wait.
+            time.sleep(0.55)
+            self.assertFalse(marker.exists())
 
     def test_bulk_crown_request_uses_single_eight_second_attempt(self) -> None:
         from crown.titan import TitanClient
@@ -2672,11 +2704,12 @@ class CrownSafetyTests(unittest.TestCase):
                  patch("crown.run.load_ledger", return_value={"watch": {}}), \
                  patch("crown.run.update_history") as update, \
                  patch("crown.run.write_dashboard_data") as dashboard, \
-                 patch("crown.run.notify_new", return_value=0), \
+                 patch("crown.run.notify_new", return_value=0) as notify, \
                  patch("sys.argv", ["crown.run", "settle"]):
                 self.assertEqual(crown_run.main(), 0)
             update.assert_not_called()
             dashboard.assert_called_once_with(config)
+            notify.assert_not_called()
 
     def test_tick_skips_telegram_when_shared_deadline_is_exhausted(self) -> None:
         import crown.run as crown_run
@@ -2686,7 +2719,7 @@ class CrownSafetyTests(unittest.TestCase):
             stdout = io.StringIO()
             with patch("crown.run.settings", return_value=config), \
                  patch("crown.run._tick_pass_deadline_seconds", return_value=1), \
-                 patch("crown.run.time.monotonic", side_effect=[10.0, 12.0]), \
+                 patch("crown.run.time.monotonic", side_effect=[10.0, 12.0, 12.0]), \
                  patch("crown.run.run", return_value={"ok": True, "mode": "tick"}), \
                  patch("crown.run.load_ledger", return_value={"watch": {}}), \
                  patch("crown.run.archive_watch_fast"), \
@@ -2700,6 +2733,39 @@ class CrownSafetyTests(unittest.TestCase):
                 ast.literal_eval(stdout.getvalue())["notification_warning"],
                 "telegram_deferred_tick_deadline",
             )
+
+    def test_tick_does_not_start_telegram_without_transport_and_teardown_margin(self) -> None:
+        import crown.run as crown_run
+
+        with tempfile.TemporaryDirectory() as directory:
+            config = replace(settings(), state_dir=Path(directory), web_root=Path(directory) / "web")
+            stdout = io.StringIO()
+            with patch("crown.run.settings", return_value=config), \
+                 patch("crown.run._tick_pass_deadline_seconds", return_value=6), \
+                 patch("crown.run.time.monotonic", side_effect=[10.0, 10.2, 10.2]), \
+                 patch("crown.run.run", return_value={"ok": True, "mode": "tick"}), \
+                 patch("crown.run.load_ledger", return_value={"watch": {}}), \
+                 patch("crown.run.archive_watch_fast"), \
+                 patch("crown.run.write_tick_dashboard_projection"), \
+                 patch("crown.run.notify_new") as notify, \
+                 patch("sys.argv", ["crown.run", "tick"]), \
+                 contextlib.redirect_stdout(stdout):
+                self.assertEqual(crown_run.main(), 0)
+            notify.assert_not_called()
+            self.assertEqual(
+                ast.literal_eval(stdout.getvalue())["notification_warning"],
+                "telegram_deferred_tick_deadline",
+            )
+
+    def test_tick_commit_lock_contention_exits_before_deadline(self) -> None:
+        """A settle/sweep final merge must not starve a T-5 commit."""
+        with tempfile.TemporaryDirectory() as directory:
+            config = replace(settings(), state_dir=Path(directory))
+            with state_lock(config):
+                started = time.monotonic()
+                with state_lock(config, timeout_seconds=0.10) as acquired:
+                    self.assertFalse(acquired)
+                self.assertLess(time.monotonic() - started, 0.35)
 
     def test_prediction_history_advances_valid_learning_snapshot_reference(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -15,6 +15,8 @@ from .prediction_history import archive_watch_fast, update_history
 from .state import load_ledger
 
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+_TICK_POSTPROCESS_MIN_SECONDS = 2.0
+_TICK_NOTIFICATION_MIN_SECONDS = 6.0
 
 
 def _exception_origin(exc: BaseException) -> dict[str, object]:
@@ -92,17 +94,21 @@ def main() -> int:
             # stats, and granular mining to sweep/settle.  Publish only the
             # committed local card/ledger projection so the public board does
             # not falsely lag a native T-5 until the next full sweep.
-            archive_watch_fast(config, ledger)
-            try:
-                write_tick_dashboard_projection(config, ledger)
-                result["dashboard_projection"] = "post_tick_local_state"
-            except Exception as exc:
-                # The persisted stage remains the source of truth and will be
-                # projected by the next sweep.  A display write must never
-                # turn a successful deadline-bound prediction into a failure.
-                result["dashboard_projection_warning"] = (
-                    f"dashboard_projection_{type(exc).__name__}"
-                )
+            remaining = tick_deadline - time.monotonic()
+            if remaining >= _TICK_POSTPROCESS_MIN_SECONDS:
+                archive_watch_fast(config, ledger)
+                try:
+                    write_tick_dashboard_projection(config, ledger)
+                    result["dashboard_projection"] = "post_tick_local_state"
+                except Exception as exc:
+                    # The persisted stage remains the source of truth and will be
+                    # projected by the next sweep.  A display write must never
+                    # turn a successful deadline-bound prediction into a failure.
+                    result["dashboard_projection_warning"] = (
+                        f"dashboard_projection_{type(exc).__name__}"
+                    )
+            else:
+                result["dashboard_projection_warning"] = "deferred_tick_deadline"
         elif args.mode == "sweep":
             # Settlement already fetches one bounded, exact-ID provider
             # snapshot.  Defer history grading to sweep rather than repeat
@@ -111,20 +117,21 @@ def main() -> int:
     except Exception as exc:
         history_warning = f"prediction_history_{type(exc).__name__}"
     try:
-        # A notification is retryable from persisted state.  Do not start a
-        # five-second Telegram transport when the tick's shared pass budget
-        # has expired; this preserves the next T-30/T-5 timer slot.
+        # A notification is retryable from persisted state.  Only ticks create
+        # timely T-5 signals; settlement and sweep must not turn a large
+        # backlog into an unbounded sequence of five-second Telegram calls.
+        # Leave enough time for one bounded transport plus wrapper teardown.
         remaining = (
             tick_deadline - time.monotonic()
             if tick_deadline is not None else None
         )
-        if remaining is None or remaining >= 0.25:
+        if args.mode == "tick" and remaining is not None and remaining >= _TICK_NOTIFICATION_MIN_SECONDS:
             notify_new(
                 ledger,
                 config,
                 result.get("fresh_condition_predictions") or [],
-                max_attempts=1 if args.mode == "tick" else None,
-                max_seconds=remaining,
+                max_attempts=1,
+                max_seconds=min(5.0, remaining - 1.0),
             )
         elif args.mode == "tick":
             result["notification_warning"] = "telegram_deferred_tick_deadline"

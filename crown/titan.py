@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import html
+import multiprocessing
+import os
 import re
 import time
 import urllib.request
@@ -23,6 +25,27 @@ _TEAM_TV_STATS = re.compile(
     r"(?:var\s+)?teamTvStatisticData\s*=\s*['\"](?P<data>[^'\"]*)",
     re.I,
 )
+
+
+def _bounded_read_process(
+    send: Any,
+    url: str,
+    encoding: str,
+    timeout: float,
+    attempts: int,
+) -> None:
+    """Run one untrusted provider read outside the deadline owner process."""
+    try:
+        send.send((
+            "ok",
+            TitanClient._read_direct(
+                url, encoding=encoding, timeout=timeout, attempts=attempts,
+            ),
+        ))
+    except BaseException as exc:
+        send.send(("error", type(exc).__name__))
+    finally:
+        send.close()
 
 
 def _text(value: str) -> str:
@@ -302,7 +325,7 @@ class TitanClient:
         self._result_detail_requests_remaining = max(0, int(limit))
 
     @staticmethod
-    def _read(
+    def _read_direct(
         url: str,
         encoding: str = "gb18030",
         *,
@@ -364,6 +387,54 @@ class TitanClient:
         assert last_error is not None
         raise last_error
 
+    @staticmethod
+    def _read(
+        url: str,
+        encoding: str = "gb18030",
+        *,
+        timeout: float = 25,
+        attempts: int = 2,
+        hard_deadline: float | None = None,
+    ) -> str:
+        """Read Titan directly, or kill an uncooperative read at a hard deadline.
+
+        urllib's timeout does not cover every DNS/TLS/library stall.  Tick and
+        settlement callers supply ``hard_deadline`` so that a stuck provider
+        can never hold their owning process past its wall-clock budget.
+        """
+        if hard_deadline is None or os.name != "posix":
+            return TitanClient._read_direct(
+                url, encoding=encoding, timeout=timeout, attempts=attempts,
+            )
+        remaining = max(0.0, hard_deadline)
+        if remaining <= 0:
+            raise TimeoutError("titan_read_deadline_exhausted")
+        context = multiprocessing.get_context("fork")
+        receiver, sender = context.Pipe(duplex=False)
+        process = context.Process(
+            target=_bounded_read_process,
+            args=(sender, url, encoding, timeout, attempts),
+        )
+        process.start()
+        sender.close()
+        try:
+            if not receiver.poll(remaining):
+                raise TimeoutError("titan_read_deadline_exhausted")
+            status, value = receiver.recv()
+            if status == "ok" and isinstance(value, str):
+                return value
+            raise OSError(f"titan_read_{value}")
+        except EOFError as exc:
+            raise OSError("titan_read_worker_exited") from exc
+        finally:
+            receiver.close()
+            if process.is_alive():
+                process.terminate()
+            process.join(timeout=0.03)
+            if process.is_alive():
+                process.kill()
+                process.join(timeout=0.03)
+
     def fixtures(self, offsets: tuple[int, ...] = (0, 1)) -> list[dict[str, Any]]:
         try:
             source = self._read(
@@ -413,6 +484,7 @@ class TitanClient:
             f"goal{self.config.titan_company_id}.xml?r=007{int(time.time() * 1000)}",
             timeout=8.0 if max_seconds is None else min(8.0, max(0.1, max_seconds)),
             attempts=1,
+            hard_deadline=max_seconds,
         )
         return parse_crown_bulk_prices(source, observed_at=time.time())
 
@@ -483,6 +555,7 @@ class TitanClient:
                         f"{self.config.titan_bf_base}/Over_{day}.htm",
                         timeout=max(0.1, min(8.0, remaining)),
                         attempts=1,
+                        hard_deadline=remaining if max_seconds is not None else None,
                     ),
                     day,
                 ))
@@ -521,6 +594,7 @@ class TitanClient:
                 encoding="utf-8",
                 timeout=max(0.1, min(8.0, header_budget)),
                 attempts=1,
+                hard_deadline=header_budget if max_seconds is not None else None,
             ),
             titan_id,
         )
@@ -536,6 +610,7 @@ class TitanClient:
                 f"https://live.titan007.com/detail/{titan_id}cn.htm",
                 timeout=max(0.1, min(8.0, stats_budget)),
                 attempts=1,
+                hard_deadline=stats_budget if max_seconds is not None else None,
             )
         ) or {}
         result = {

@@ -13,6 +13,8 @@ class CrownRuntimeContractTests(unittest.TestCase):
         settle = (ROOT / "deploy/systemd/crown-settle.service").read_text(encoding="utf-8")
         self.assertIn("ExecStart=/opt/footbreak/deploy/crown-run.sh settle", settle)
         self.assertIn("TimeoutStartSec=900", settle)
+        self.assertIn("Environment=CROWN_SETTLE_PASS_DEADLINE_SECONDS=120", settle)
+        self.assertIn("Environment=CROWN_SETTLE_PROVIDER_PASS_DEADLINE_SECONDS=90", settle)
         self.assertIn("KillMode=control-group", settle)
         self.assertIn("TimeoutStopSec=30", settle)
         self.assertIn("SendSIGKILL=yes", settle)
@@ -41,6 +43,8 @@ class CrownRuntimeContractTests(unittest.TestCase):
         self.assertIn("exit 75", runner)
         self.assertIn('"$PYTHON" -m crown.run "$MODE" 9>&-', runner)
         self.assertNotIn('exec "$PYTHON" -m crown.run', runner)
+        self.assertIn('timeout "${ALERT_TIMEOUT_SECONDS}s"', runner)
+        self.assertIn("CROWN_RUNNER_ALERT_TIMEOUT_SECONDS", runner)
 
 
 if __name__ == "__main__":

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import fcntl
+import time
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
@@ -13,16 +14,38 @@ from .period import in_current_period
 
 
 @contextmanager
-def state_lock(config: Settings):
-    """Serialize only Crown state commits, never slow provider reads."""
+def state_lock(config: Settings, *, timeout_seconds: float | None = None):
+    """Serialize only Crown state commits, never slow provider reads.
+
+    Deadline-bound callers may request a finite wait.  Returning ``False``
+    means a concurrent short commit did not release the lock in time; callers
+    must leave their work retryable rather than letting a tick wait through
+    the service limit.
+    """
     config.state_dir.mkdir(parents=True, exist_ok=True)
     lock_path = config.state_dir / ".state.lock"
     with lock_path.open("a+", encoding="utf-8") as handle:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        acquired = False
+        if timeout_seconds is None:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            acquired = True
+        else:
+            deadline = time.monotonic() + max(0.0, timeout_seconds)
+            while True:
+                try:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    acquired = True
+                    break
+                except BlockingIOError:
+                    if time.monotonic() >= deadline:
+                        yield False
+                        return
+                    time.sleep(min(0.02, max(0.0, deadline - time.monotonic())))
         try:
-            yield
+            yield acquired
         finally:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            if acquired:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 @contextmanager

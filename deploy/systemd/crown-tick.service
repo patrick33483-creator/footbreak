@@ -10,9 +10,9 @@ WorkingDirectory=/opt/footbreak
 ExecStartPre=/opt/footbreak/deploy/crown-tick-preempt.sh
 ExecStart=/opt/footbreak/deploy/crown-run.sh tick
 # The engine persists completed fixture stages independently and terminates
-# overdue provider workers before this.  Keep a hard service backstop below a
-# minute so an upstream fixture-list call can never block the next timer tick.
-Environment=CROWN_TICK_PASS_DEADLINE_SECONDS=40
+# overdue provider workers before this. Keep a 25-second envelope for bounded
+# state/dashboard/notification cleanup and runner incident bookkeeping.
+Environment=CROWN_TICK_PASS_DEADLINE_SECONDS=30
 TimeoutStartSec=55
 TimeoutStopSec=5
 KillMode=control-group

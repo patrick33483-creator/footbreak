@@ -29,11 +29,28 @@ from .titan import TitanClient
 
 LIVE_CACHE_STALE_SECONDS = 30 * 60
 LIVE_CACHE_FAILURES_BEFORE_FALLBACK = 2
-_SETTLEMENT_PROVIDER_PASS_SECONDS = 120.0
+_SETTLEMENT_PASS_SECONDS = 120.0
+_SETTLEMENT_PROVIDER_PASS_SECONDS = 90.0
+_SETTLEMENT_COMMIT_RESERVE_SECONDS = 20.0
 
 
 def _settlement_pass_deadline_seconds() -> float:
-    """Keep every result provider inside one retryable settlement budget."""
+    """Bound the complete settlement pass, including final state serialization."""
+    try:
+        configured = float(
+            os.getenv(
+                "CROWN_SETTLE_PASS_DEADLINE_SECONDS",
+                str(_SETTLEMENT_PASS_SECONDS),
+            )
+        )
+    except ValueError:
+        configured = _SETTLEMENT_PASS_SECONDS
+    # Keep well below systemd's 15-minute backstop even when misconfigured.
+    return min(600.0, max(30.0, configured))
+
+
+def _settlement_provider_deadline_seconds() -> float:
+    """Reserve the end of the pass for lock acquisition and atomic writes."""
     try:
         configured = float(
             os.getenv(
@@ -43,9 +60,7 @@ def _settlement_pass_deadline_seconds() -> float:
         )
     except ValueError:
         configured = _SETTLEMENT_PROVIDER_PASS_SECONDS
-    # Leave ample room under systemd's 15-minute safety backstop, while making
-    # a failed pass retryable before the next scheduled settlement slot.
-    return min(600.0, max(15.0, configured))
+    return min(300.0, max(15.0, configured))
 
 
 def _remaining(deadline: float) -> float:
@@ -368,7 +383,9 @@ def _commit_settlement(
     save_ledger(config, current)
 
 
-def _settle_due_locked(config: Settings) -> dict[str, Any]:
+def _settle_due_locked(
+    config: Settings, *, pass_deadline: float,
+) -> dict[str, Any]:
     """Perform one settlement pass; caller holds settlement_lock only."""
     ledger = load_ledger(config)
     official_bets = condition_bets(ledger)
@@ -399,13 +416,22 @@ def _settle_due_locked(config: Settings) -> dict[str, Any]:
     if not due:
         # Retain the historical cheap statistics refresh, but do it as a
         # fresh short commit so a concurrently written T-5 is never lost.
-        with state_lock(config):
+        with state_lock(
+            config, timeout_seconds=_remaining(pass_deadline),
+        ) as acquired:
+            if not acquired:
+                return {"ok": True, "settled": 0, "voided": 0,
+                        "pending": sum(b.get("status") == "PENDING" for b in official_bets + v2_bets),
+                        "settlement_commit_deferred": True}
             current = load_ledger(config)
             recompute_stats(current, config)
             save_ledger(config, current)
         return {"ok": True, "settled": 0, "voided": 0,
                 "pending": sum(b.get("status") == "PENDING" for b in official_bets + v2_bets)}
-    provider_deadline = time.monotonic() + _settlement_pass_deadline_seconds()
+    provider_deadline = min(
+        pass_deadline - _SETTLEMENT_COMMIT_RESERVE_SECONDS,
+        time.monotonic() + _settlement_provider_deadline_seconds(),
+    )
     cache: dict[str, Any] = {}
     standard_due = [bet for bet in due if bet.get("code") != "CHL"]
     try:
@@ -569,15 +595,28 @@ def _settle_due_locked(config: Settings) -> dict[str, Any]:
     # Do not save the stale ledger loaded before provider reads.  A tick can
     # have created T-5 stages/bets while this pass was waiting on a result
     # source, so merge settlement-owned fields into the latest ledger only.
-    with state_lock(config):
+    with state_lock(
+        config, timeout_seconds=_remaining(pass_deadline),
+    ) as acquired:
+        if not acquired:
+            return {
+                "ok": True, "settled": 0, "voided": 0,
+                "pending": sum(b.get("status") == "PENDING" for b in official_bets + v2_bets),
+                "settlement_commit_deferred": True,
+            }
         _commit_settlement(config, before, ledger)
     return {"ok": True, "settled": counters["settled"], "voided": counters["voided"],
             "pending": sum(b.get("status") == "PENDING" for b in official_bets + v2_bets)}
 
 
-def settle_due(config: Settings) -> dict[str, Any]:
+def settle_due(
+    config: Settings, *, deadline: float | None = None,
+) -> dict[str, Any]:
     """Settle due rows without blocking time-critical prediction commits."""
+    pass_deadline = deadline or (
+        time.monotonic() + _settlement_pass_deadline_seconds()
+    )
     with settlement_lock(config) as acquired:
         if not acquired:
             return {"ok": False, "reason": "settlement_busy"}
-        return _settle_due_locked(config)
+        return _settle_due_locked(config, pass_deadline=pass_deadline)

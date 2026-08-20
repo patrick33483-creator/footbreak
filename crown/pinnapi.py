@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import multiprocessing
+import os
 import time
 import urllib.parse
 import urllib.request
@@ -9,6 +11,25 @@ from datetime import datetime, timezone
 from typing import Any
 
 from .config import Settings
+
+
+def _bounded_get_process(
+    send: Any,
+    base_url: str,
+    api_key: str,
+    path: str,
+    timeout: float,
+) -> None:
+    """Keep a hung HTTP stack out of a deadline-owning Crown process."""
+    try:
+        send.send((
+            "ok",
+            PinnapiClient._get_direct(base_url, api_key, path, timeout),
+        ))
+    except BaseException as exc:
+        send.send(("error", type(exc).__name__))
+    finally:
+        send.close()
 from .lines import is_quarter
 
 
@@ -295,20 +316,58 @@ class PinnapiClient:
     def __init__(self, config: Settings):
         self.config = config
 
-    def _get(self, path: str, *, max_seconds: float | None = None) -> Any:
-        if not self.config.pinnapi_configured:
-            raise RuntimeError("PinnAPI credentials are not configured")
+    @staticmethod
+    def _get_direct(base_url: str, api_key: str, path: str, timeout: float) -> Any:
         request = urllib.request.Request(
-            f"{self.config.pinnapi_base_url}{path}",
+            f"{base_url}{path}",
             headers={
                 "Accept": "application/json",
                 "User-Agent": "node",
-                "x-api-key": str(self.config.pinnapi_key),
+                "x-api-key": api_key,
             },
         )
-        timeout = 25.0 if max_seconds is None else min(25.0, max(0.1, max_seconds))
         with urllib.request.urlopen(request, timeout=timeout) as response:
             return json.loads(response.read().decode("utf-8"))
+
+    def _get(self, path: str, *, max_seconds: float | None = None) -> Any:
+        if not self.config.pinnapi_configured:
+            raise RuntimeError("PinnAPI credentials are not configured")
+        timeout = 25.0 if max_seconds is None else min(25.0, max(0.1, max_seconds))
+        if max_seconds is None or os.name != "posix":
+            return self._get_direct(
+                self.config.pinnapi_base_url, str(self.config.pinnapi_key), path, timeout,
+            )
+        context = multiprocessing.get_context("fork")
+        receiver, sender = context.Pipe(duplex=False)
+        process = context.Process(
+            target=_bounded_get_process,
+            args=(
+                sender,
+                self.config.pinnapi_base_url,
+                str(self.config.pinnapi_key),
+                path,
+                timeout,
+            ),
+        )
+        process.start()
+        sender.close()
+        try:
+            if not receiver.poll(max(0.0, max_seconds)):
+                raise TimeoutError("pinnapi_request_deadline_exhausted")
+            status, value = receiver.recv()
+            if status == "ok":
+                return value
+            raise OSError(f"pinnapi_request_{value}")
+        except EOFError as exc:
+            raise OSError("pinnapi_request_worker_exited") from exc
+        finally:
+            receiver.close()
+            if process.is_alive():
+                process.terminate()
+            process.join(timeout=0.03)
+            if process.is_alive():
+                process.kill()
+                process.join(timeout=0.03)
 
     def fixtures(self, *, max_seconds: float | None = None) -> list[dict[str, Any]]:
         return parse_fixtures(

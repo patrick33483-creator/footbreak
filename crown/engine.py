@@ -85,12 +85,12 @@ def _prioritize_tick_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def _tick_pass_deadline_seconds() -> float:
     """Return a bounded tick budget, leaving time for the service to stop cleanly."""
     try:
-        configured = float(os.getenv("CROWN_TICK_PASS_DEADLINE_SECONDS", "40"))
+        configured = float(os.getenv("CROWN_TICK_PASS_DEADLINE_SECONDS", "30"))
     except ValueError:
-        configured = 40.0
+        configured = 30.0
     # The systemd service is the final 55-second backstop.  Keep the in-process
     # budget meaningfully below it, including when an operator misconfigures it.
-    return min(50.0, max(1.0, configured))
+    return min(40.0, max(1.0, configured))
 
 
 def _tick_workers() -> int:
@@ -145,10 +145,10 @@ def _fetch_tick_hkjc_matches(deadline: float) -> list[dict[str, Any]]:
         receiver.close()
         if process.is_alive():
             process.terminate()
-        process.join(timeout=0.05)
+        process.join(timeout=0.03)
         if process.is_alive():
             process.kill()
-            process.join(timeout=0.05)
+            process.join(timeout=0.03)
 
 
 def _prediction_process(send: Any, payload: tuple[Any, ...]) -> None:
@@ -225,7 +225,7 @@ def _run_tick_predictions(
                 status, value = "error", "worker_exited"
             finally:
                 receiver.close()
-                process.join(timeout=0.05)
+                process.join(timeout=0.03)
             if status == "ok":
                 on_complete(value)
                 completed += 1
@@ -241,16 +241,16 @@ def _run_tick_predictions(
                 continue
             active.pop(receiver)
             receiver.close()
-            process.join(timeout=0.05)
+            process.join(timeout=0.03)
             failed += 1
 
     for receiver, (process, _payload) in active.items():
         if process.is_alive():
             process.terminate()
-        process.join(timeout=0.25)
+        process.join(timeout=0.05)
         if process.is_alive():
             process.kill()
-            process.join(timeout=0.25)
+            process.join(timeout=0.05)
         receiver.close()
     # Anything never submitted, plus forcibly terminated workers, remains due
     # because no stage was written.  The next minute will collect fresh,
@@ -1355,11 +1355,19 @@ def _commit_stage_predictions(
     config: Settings,
     mode: str,
     stage_predictions: list[dict[str, Any]],
+    *,
+    deadline: float | None = None,
 ) -> tuple[list[str], list[dict[str, str]], int]:
     """Commit a completed batch while holding the state lock only briefly."""
     if not stage_predictions:
         return [], [], len(load_predictions(config))
-    with state_lock(config):
+    lock_wait = _deadline_remaining(deadline) if deadline is not None else None
+    with state_lock(config, timeout_seconds=lock_wait) as acquired:
+        if not acquired:
+            # Another short state writer (normally sweep/settle final merge)
+            # is still committing.  Leave this native stage unpersisted so
+            # the next tick retries rather than waiting through its deadline.
+            return [], [], len(load_predictions(config))
         # Reload after every small batch: another mode can have committed
         # independently while this provider process was working.
         ledger = load_ledger(config)
@@ -1498,7 +1506,7 @@ def _run_local_bulk_t5(
     # avoids repeating ledger read/recompute/write work for same-kickoff
     # fixtures while retaining those per-prediction protections.
     emitted, fresh_condition_predictions, retained = _commit_stage_predictions(
-        config, "tick", stage_predictions
+        config, "tick", stage_predictions, deadline=deadline,
     )
     return {
         "ok": True,
@@ -1774,7 +1782,7 @@ def run(mode: str, config: Settings) -> dict[str, Any]:
         def commit_completed(prediction: dict[str, Any]) -> None:
             nonlocal retained
             created, fresh, retained = _commit_stage_predictions(
-                config, mode, [prediction]
+                config, mode, [prediction], deadline=tick_deadline,
             )
             emitted.extend(created)
             fresh_condition_predictions.extend(fresh)

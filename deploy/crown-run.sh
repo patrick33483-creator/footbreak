@@ -17,6 +17,13 @@ if [ -f /etc/footbreak-crown.env ]; then set -a; . /etc/footbreak-crown.env; set
 export CROWN_APP_DIR CROWN_STATE_DIR CROWN_WEB_ROOT TZ=Asia/Hong_Kong
 ALERT_HELPER="$APP_DIR/system/incident_alert.py"
 SERVICE_UNIT="crown-${MODE}.service"
+ALERT_TIMEOUT_SECONDS="${CROWN_RUNNER_ALERT_TIMEOUT_SECONDS:-2}"
+run_alert_helper() {
+  [ -f "$ALERT_HELPER" ] || return 0
+  # Incident bookkeeping is best-effort.  It may itself attempt Telegram, so
+  # it must never consume the tick's service shutdown margin.
+  timeout "${ALERT_TIMEOUT_SECONDS}s" "${PYTHON:-python3}" "$ALERT_HELPER" "$@" >/dev/null 2>&1 || true
+}
 report_runner_failure() {
   rc=$?
   case "${CROWN_ENABLED:-0}" in
@@ -24,8 +31,8 @@ report_runner_failure() {
     *) crown_alertable=false ;;
   esac
   if [ "$rc" -ne 0 ] && [ "$rc" -ne 75 ] && "$crown_alertable" && [ -f "$ALERT_HELPER" ]; then
-    python3 "$ALERT_HELPER" event --system crown \
-      --unit "$SERVICE_UNIT" --invocation "${INVOCATION_ID:-}" >/dev/null 2>&1 || true
+    run_alert_helper event --system crown \
+      --unit "$SERVICE_UNIT" --invocation "${INVOCATION_ID:-}"
   fi
 }
 trap report_runner_failure EXIT
@@ -57,7 +64,7 @@ cd "$APP_DIR"
 "$PYTHON" -m crown.run "$MODE" 9>&-
 
 if [ -f "$ALERT_HELPER" ]; then
-  python3 "$ALERT_HELPER" clear-service --system crown --unit "$SERVICE_UNIT" \
-    --invocation "${INVOCATION_ID:-}" >/dev/null 2>&1 || true
-  python3 "$ALERT_HELPER" check --system crown >/dev/null 2>&1 || true
+  run_alert_helper clear-service --system crown --unit "$SERVICE_UNIT" \
+    --invocation "${INVOCATION_ID:-}"
+  run_alert_helper check --system crown
 fi
