@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import json
 import os
@@ -11,7 +12,7 @@ from typing import Any
 
 from .common import HKT, iso_hkt, parse_time, read_json, write_json_atomic
 from .config import Settings, settings
-from .ledger import condition_bets, recompute_stats
+from .ledger import STAGES, condition_bets, recompute_stats
 from .period import in_current_period
 from .prediction_history import normalize_history, project_watch_rows
 from .ledger import PREDICTION_ERA
@@ -34,6 +35,127 @@ def _dashboard_matches(config: Settings) -> list[dict[str, Any]]:
         and in_current_period(kickoff)
         and bool((row.get("book_odds") or {}).get("crown"))
     ]
+
+
+def _native_watch_stages(
+    card: dict[str, Any],
+    watch: dict[str, Any],
+) -> dict[str, dict[str, Any]]:
+    """Return only verifiable native snapshots for one already-persisted card.
+
+    The watch ledger is authoritative for native stage completion, but it is
+    not a fixture discovery source.  A projection therefore needs an existing
+    Crown card with the same immutable identity and kickoff.  Timed stages
+    additionally need their persisted pre-kickoff timestamp and status.  Bad
+    state is ignored rather than repaired or replayed into the public board.
+    """
+    match_id = str(card.get("match_id") or "").strip()
+    if not match_id or str(watch.get("match_id") or "").strip() != match_id:
+        return {}
+    card_kickoff = parse_time(card.get("kickoff_hkt") or card.get("kickoff"))
+    watch_kickoff = parse_time(watch.get("kickoff_hkt") or watch.get("kickoff"))
+    if card_kickoff is None or watch_kickoff is None or card_kickoff != watch_kickoff:
+        return {}
+    rows = watch.get("stages")
+    if not isinstance(rows, list):
+        return {}
+    snapshots: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        stage = str(row.get("stage") or "")
+        if stage not in STAGES:
+            continue
+        # A native timed snapshot must carry the immutable observation facts
+        # established by ``sync_prediction``.  In particular, never publish a
+        # stage recorded after kickoff as if it had been a pre-kickoff decision.
+        if stage in {"T-30", "T-5"}:
+            observed_at = parse_time(row.get("ts"))
+            if (
+                observed_at is None
+                or observed_at >= card_kickoff
+                or not str(row.get("status") or "").strip()
+            ):
+                continue
+        # One identity can have only one native stage.  Ambiguous authoritative
+        # state fails closed instead of choosing a row or duplicating a card.
+        if stage in snapshots:
+            return {}
+        snapshots[stage] = copy.deepcopy(row)
+    return snapshots
+
+
+def _project_authoritative_watch_stages(
+    cards: list[dict[str, Any]],
+    ledger: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Overlay durable native stages onto stale cards without changing state.
+
+    ``predictions.json`` remains the card/discovery source while
+    ``ledger.watch`` is the source for committed stage snapshots.  This narrow,
+    pure projection closes the interval where their atomic writes were
+    interrupted or a fast-noop tick retained an older card.  It never creates
+    a card, stage, history row, bet, or provider request.
+    """
+    watches = ledger.get("watch") if isinstance(ledger, dict) else None
+    if not isinstance(watches, dict):
+        return [copy.deepcopy(card) for card in cards if isinstance(card, dict)]
+    projected: list[dict[str, Any]] = []
+    for card in cards:
+        if not isinstance(card, dict):
+            continue
+        output = copy.deepcopy(card)
+        match_id = str(output.get("match_id") or "").strip()
+        watch = watches.get(match_id)
+        snapshots = _native_watch_stages(output, watch) if isinstance(watch, dict) else {}
+        if not snapshots:
+            projected.append(output)
+            continue
+
+        # Preserve non-stage/dashboard fields and the existing order, but make
+        # every native identity unique.  The authoritative copy replaces a
+        # stale same-stage card row; missing stages are appended in native
+        # order.  No source document is mutated.
+        stages = output.get("stages")
+        merged_stages: list[dict[str, Any]] = []
+        native_positions: dict[str, int] = {}
+        for row in stages if isinstance(stages, list) else []:
+            if not isinstance(row, dict):
+                continue
+            stage = str(row.get("stage") or "")
+            if stage in STAGES:
+                if stage in native_positions:
+                    continue
+                native_positions[stage] = len(merged_stages)
+            merged_stages.append(copy.deepcopy(row))
+        for stage in STAGES:
+            snapshot = snapshots.get(stage)
+            if snapshot is None:
+                continue
+            position = native_positions.get(stage)
+            if position is None:
+                native_positions[stage] = len(merged_stages)
+                merged_stages.append(snapshot)
+            else:
+                merged_stages[position] = snapshot
+        merged_stages.sort(
+            key=lambda row: (
+                0 if str(row.get("stage") or "") in STAGES else 1,
+                STAGES.get(str(row.get("stage") or ""), len(STAGES) + 1),
+            )
+        )
+        output["stages"] = merged_stages
+        available = [
+            str(row.get("stage") or "")
+            for row in merged_stages
+            if str(row.get("stage") or "") in STAGES
+        ]
+        latest = max(available, key=STAGES.__getitem__)
+        if latest in snapshots and "status" in snapshots[latest]:
+            output["stage"] = latest
+            output["status"] = snapshots[latest]["status"]
+        projected.append(output)
+    return projected
 
 
 def _public_ledger(ledger: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
@@ -190,7 +312,9 @@ def write_tick_dashboard_projection(
         and previous.get("schema_version") == "crown-dashboard-v2"
     ) else {}
     current_ledger = ledger if isinstance(ledger, dict) else load_ledger(config)
-    matches = _dashboard_matches(config)
+    matches = _project_authoritative_watch_stages(
+        _dashboard_matches(config), current_ledger,
+    )
     old_matches = {
         str(row.get("match_id") or ""): row
         for row in (payload.get("matches") or [])
@@ -363,7 +487,9 @@ def _build_payloads(config: Settings) -> tuple[dict[str, Any], dict[str, Any]]:
     collection is moved to a separately fetched, versioned artifact.
     """
     ledger = load_ledger(config)
-    matches = _dashboard_matches(config)
+    matches = _project_authoritative_watch_stages(
+        _dashboard_matches(config), ledger,
+    )
     prediction_history = read_json(
         config.state_dir / "prediction_history.json",
         {"rows": [], "stats": {}},

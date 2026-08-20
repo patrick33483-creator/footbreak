@@ -116,6 +116,11 @@ def default_ledger(bankroll: float) -> dict[str, Any]:
 
 def load_ledger(config: Settings) -> dict[str, Any]:
     data = read_json(paths(config)["ledger"], default_ledger(config.bankroll))
+    # A parse failure already falls back through ``read_json``.  A syntactically
+    # valid but wrong-shaped document needs the same fail-closed behaviour:
+    # callers must never mistake a list/scalar for authoritative watch state.
+    if not isinstance(data, dict):
+        data = default_ledger(config.bankroll)
     data.setdefault("bankroll", config.bankroll)
     data.setdefault("bets", [])
     data.setdefault("watch", {})

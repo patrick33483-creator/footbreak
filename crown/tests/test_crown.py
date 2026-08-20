@@ -2287,6 +2287,136 @@ class CrownSafetyTests(unittest.TestCase):
             sender.send.assert_called_once_with(("history_error", "OSError"))
             sender.close.assert_called_once_with()
 
+    def test_fast_noop_projects_durable_t5_from_watch_when_archive_is_deferred(self) -> None:
+        """The public card must not depend on a fresh predictions.json write."""
+        import crown.run as crown_run
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = replace(
+                settings(), enabled=True, state_dir=root / "private-state", web_root=root / "web",
+            )
+            kickoff = "2026-08-21T01:45:00+08:00"
+            t5_at = "2026-08-21T01:35:56+08:00"
+            # This retained card is what the public board had before the
+            # independently durable native T-5 snapshot was observed.
+            card = {
+                "match_id": "paok-brann", "league": "歐霸盃",
+                "home": "塞薩洛尼基", "away": "布蘭", "kickoff_hkt": kickoff,
+                "stage": "T-30", "status": "PREDICTION_READY",
+                "book_odds": {"crown": [{"market": "HDC", "odds": 1.91}]},
+                "stages": [
+                    {"stage": "首預", "ts": "2026-08-20T18:00:00+08:00"},
+                    {"stage": "T-30", "status": "PREDICTION_READY",
+                     "ts": "2026-08-21T01:15:00+08:00"},
+                    # A damaged/stale public card must not turn into duplicate
+                    # native stages when the authoritative replacement lands.
+                    {"stage": "T-30", "status": "PREDICTION_READY",
+                     "ts": "2026-08-21T01:15:00+08:00"},
+                ],
+            }
+            watch_stages = [
+                {"stage": "首預", "ts": "2026-08-20T18:00:00+08:00"},
+                {"stage": "T-30", "status": "PREDICTION_READY",
+                 "ts": "2026-08-21T01:15:00+08:00"},
+                {"stage": "T-5", "status": "WILSON_REJECTED", "ts": t5_at,
+                 "market_predictions": [{"code": "HDC", "line": -0.25, "side": "H"}]},
+            ]
+            save_predictions(config, [card])
+            ledger = load_ledger(config)
+            ledger["watch"] = {
+                "paok-brann": {
+                    "match_id": "paok-brann", "kickoff": kickoff, "stages": watch_stages,
+                },
+            }
+            save_ledger(config, ledger)
+            prediction_before = (config.state_dir / "predictions.json").read_text(encoding="utf-8")
+            ledger_before = (config.state_dir / "ledger.json").read_text(encoding="utf-8")
+            config.web_root.mkdir(parents=True)
+            (config.web_root / "data.json").write_text(json.dumps({
+                "schema_version": "crown-dashboard-v2",
+                "matches": [card],
+                "prediction_history": {"stats": {"cached": True}},
+            }), encoding="utf-8")
+
+            # The tick itself has no local work due and so makes no provider
+            # request.  Publication still reads the same durable watch state.
+            with patch("crown.engine._tick_rows_from_predictions", return_value=[]):
+                result = run("tick", config)
+            self.assertTrue(result["fast_noop"])
+            sender = Mock()
+            with patch("crown.dashboard_data.in_current_period", return_value=True), patch(
+                "crown.run.archive_watch_fast", side_effect=OSError("optional archive deferred"),
+            ):
+                crown_run._tick_postprocess_process(sender, config)
+
+            published = json.loads((config.web_root / "data.json").read_text(encoding="utf-8"))
+            output = published["matches"][0]
+            self.assertEqual(output["stage"], "T-5")
+            self.assertEqual(output["status"], "WILSON_REJECTED")
+            self.assertEqual(
+                [(row["stage"], row.get("ts"), row.get("status")) for row in output["stages"]],
+                [
+                    ("首預", "2026-08-20T18:00:00+08:00", None),
+                    ("T-30", "2026-08-21T01:15:00+08:00", "PREDICTION_READY"),
+                    ("T-5", t5_at, "WILSON_REJECTED"),
+                ],
+            )
+            self.assertEqual((config.state_dir / "predictions.json").read_text(encoding="utf-8"), prediction_before)
+            self.assertEqual((config.state_dir / "ledger.json").read_text(encoding="utf-8"), ledger_before)
+            sender.send.assert_called_once_with(("history_error", "OSError"))
+
+    def test_tick_projection_fails_closed_for_unreadable_or_wrong_shaped_ledger(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = replace(settings(), state_dir=root / "private-state", web_root=root / "web")
+            card = {
+                "match_id": "baltika-makhachkala", "kickoff_hkt": "2026-08-21T01:45:00+08:00",
+                "stage": "T-30", "status": "PREDICTION_READY",
+                "book_odds": {"crown": [{"market": "HDC", "odds": 1.91}]},
+                "stages": [{"stage": "T-30", "status": "PREDICTION_READY",
+                            "ts": "2026-08-21T01:15:00+08:00"}],
+            }
+            save_predictions(config, [card])
+            config.web_root.mkdir(parents=True)
+            ledger_path = config.state_dir / "ledger.json"
+            for raw in ("not-json", "[]"):
+                ledger_path.write_text(raw, encoding="utf-8")
+                with patch("crown.dashboard_data.in_current_period", return_value=True):
+                    output = write_tick_dashboard_projection(config)
+                published = json.loads(output.read_text(encoding="utf-8"))["matches"][0]
+                self.assertEqual(published["stage"], "T-30")
+                self.assertEqual([row["stage"] for row in published["stages"]], ["T-30"])
+
+    def test_tick_projection_never_adds_a_post_kickoff_watch_stage(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = replace(settings(), state_dir=root / "private-state", web_root=root / "web")
+            kickoff = "2026-08-21T01:45:00+08:00"
+            card = {
+                "match_id": "post-kickoff", "kickoff_hkt": kickoff,
+                "stage": "T-30", "status": "PREDICTION_READY",
+                "book_odds": {"crown": [{"market": "HDC", "odds": 1.91}]},
+                "stages": [{"stage": "T-30", "status": "PREDICTION_READY",
+                            "ts": "2026-08-21T01:15:00+08:00"}],
+            }
+            save_predictions(config, [card])
+            ledger = load_ledger(config)
+            ledger["watch"] = {"post-kickoff": {
+                "match_id": "post-kickoff", "kickoff": kickoff,
+                "stages": [
+                    {"stage": "T-30", "status": "PREDICTION_READY",
+                     "ts": "2026-08-21T01:15:00+08:00"},
+                    {"stage": "T-5", "status": "PREDICTION_READY",
+                     "ts": "2026-08-21T01:45:01+08:00"},
+                ],
+            }}
+            with patch("crown.dashboard_data.in_current_period", return_value=True):
+                output = write_tick_dashboard_projection(config, ledger)
+            published = json.loads(output.read_text(encoding="utf-8"))["matches"][0]
+            self.assertEqual(published["stage"], "T-30")
+            self.assertEqual([row["stage"] for row in published["stages"]], ["T-30"])
+
     def test_dashboard_live_board_uses_verified_crown_prices_as_the_master_list(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
