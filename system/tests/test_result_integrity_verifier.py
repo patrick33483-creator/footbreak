@@ -300,6 +300,29 @@ class ResultIntegrityVerifierTests(unittest.TestCase):
         with self.assertRaises(AssertionError):
             verify.assert_unique_and_sorted("test", [latest, dict(latest)])
 
+    def test_crown_normalizer_uses_the_verifier_order_for_recovered_rows(self):
+        from crown.prediction_history import normalize_history
+
+        native = {
+            "match_id": "fixture", "stage": "T-5",
+            "kickoff": "2026-08-12T20:00:00+08:00",
+            "predicted_at": "2026-08-12T19:55:00+08:00",
+            "market_predictions": [{"code": "HDC", "line": -0.25, "side": "H"}],
+        }
+        recovered = {
+            "match_id": "fixture", "stage": "T-5（事後回補）",
+            "kickoff": "2026-08-12T20:00:00+08:00",
+            "predicted_at": "2026-08-12T19:55:00+08:00",
+            "post_hoc_backfill": True,
+            "market_predictions": [{"code": "HIL", "line": 2.5, "side": "L"}],
+        }
+        history = normalize_history({"rows": [recovered, native], "stats": {}})
+        self.assertEqual(
+            [row["stage"] for row in history["rows"]],
+            ["T-5", "T-5（事後回補）"],
+        )
+        verify.assert_unique_and_sorted("Crown", history["rows"])
+
     def test_accuracy_accepts_only_six_decimal_rounding(self):
         self.assertTrue(verify.same_accuracy(0.321429, 9 / 28))
         self.assertFalse(verify.same_accuracy(0.32143, 9 / 28))

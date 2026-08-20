@@ -2562,7 +2562,8 @@ class CrownSafetyTests(unittest.TestCase):
 
         history = normalize_history({
             "rows": [{
-                "match_id": "macarthur", "kickoff": "2026-08-11T19:00:00+08:00",
+                "match_id": "macarthur", "stage": "T-5",
+                "kickoff": "2026-08-11T19:00:00+08:00",
                 "market_predictions": [
                     {
                         "code": "HDC", "condition": "NaN", "side": "H",
@@ -2581,6 +2582,134 @@ class CrownSafetyTests(unittest.TestCase):
             [item["code"] for item in history["rows"][0]["market_predictions"]],
             ["HIL"],
         )
+
+    def test_history_shape_repair_deduplicates_exact_rows_and_orders_recovery_compatibly(self) -> None:
+        from crown.prediction_history import normalize_history
+
+        native = {
+            "match_id": "same-fixture", "stage": "T-5",
+            "kickoff": "2026-08-12T20:00:00+08:00",
+            "predicted_at": "2026-08-12T19:55:00+08:00",
+            "actual": "主勝", "score": "2-1", "result_status": "已核對",
+            "market_grades": [{"code": "HDC", "grade_status": "GRADED", "hit": True}],
+            "market_predictions": [{"code": "HDC", "line": -0.25, "side": "H"}],
+        }
+        recovered = {
+            "match_id": "same-fixture", "stage": "T-5（事後回補）",
+            "kickoff": "2026-08-12T20:00:00+08:00",
+            "predicted_at": "2026-08-12T19:55:00+08:00",
+            "post_hoc_backfill": True,
+            "market_predictions": [{"code": "HIL", "line": 2.5, "side": "L"}],
+        }
+        older = {
+            "match_id": "older-fixture", "stage": "T-5",
+            "kickoff": "2026-08-12T18:00:00+08:00",
+            "predicted_at": "2026-08-12T17:55:00+08:00",
+            "market_predictions": [{"code": "CHL", "line": 9.5, "side": "H"}],
+        }
+        history = normalize_history({
+            "rows": [recovered, copy.deepcopy(native), older, native],
+            "stats": {},
+        })
+        self.assertEqual(
+            [(row["match_id"], row["stage"]) for row in history["rows"]],
+            [
+                ("same-fixture", "T-5"),
+                ("same-fixture", "T-5（事後回補）"),
+                ("older-fixture", "T-5"),
+            ],
+        )
+        # Deduplication does not select or revise settlement evidence.
+        self.assertEqual(history["rows"][0]["score"], "2-1")
+        self.assertEqual(history["rows"][0]["result_status"], "已核對")
+        self.assertEqual(history["rows"][0]["market_grades"], native["market_grades"])
+        audit = history["history_shape_repair_audit"][-1]
+        self.assertEqual(audit["kind"], "exact_match_stage_deduplicated")
+        self.assertEqual(audit["removed_rows"], 1)
+        self.assertEqual(audit["identities"], [{
+            "match_id": "same-fixture", "stage": "T-5", "removed_duplicates": 1,
+        }])
+        # A repeated normalizer pass is idempotent and adds no second repair.
+        normalize_history(history)
+        self.assertEqual(len(history["history_shape_repair_audit"]), 1)
+
+    def test_history_shape_repair_refuses_conflicting_or_missing_identity_without_write(self) -> None:
+        from crown.prediction_history import (
+            HistoryShapeConflict,
+            HistoryShapeMissingIdentity,
+            archive_watch_fast,
+            normalize_history,
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            config = replace(settings(), state_dir=Path(directory))
+            path = config.state_dir / "prediction_history.json"
+            conflicting = {
+                "rows": [
+                    {
+                        "match_id": "conflict", "stage": "T-5",
+                        "kickoff": "2026-08-12T20:00:00+08:00",
+                        "market_predictions": [{"code": "HDC", "line": -0.25, "side": "H"}],
+                    },
+                    {
+                        "match_id": "conflict", "stage": "T-5",
+                        "kickoff": "2026-08-12T20:00:00+08:00",
+                        "market_predictions": [{"code": "HDC", "line": -0.5, "side": "H"}],
+                    },
+                ],
+                "stats": {"cached": True},
+            }
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(conflicting), encoding="utf-8")
+            original = path.read_text(encoding="utf-8")
+            with self.assertRaises(HistoryShapeConflict):
+                archive_watch_fast(config, {"watch": {}})
+            self.assertEqual(path.read_text(encoding="utf-8"), original)
+        with self.assertRaises(HistoryShapeMissingIdentity):
+            normalize_history({
+                "rows": [{
+                    "match_id": "", "stage": "T-5",
+                    "market_predictions": [{"code": "HDC", "line": -0.25, "side": "H"}],
+                }],
+            })
+
+    def test_history_shape_repair_keeps_published_sidecar_aligned(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = replace(settings(), state_dir=root / "private-state", web_root=root / "web")
+            source = {
+                "rows": [
+                    {
+                        "match_id": "repair-publication", "stage": "T-5",
+                        "kickoff": "2026-08-12T20:00:00+08:00",
+                        "predicted_at": "2026-08-12T19:55:00+08:00",
+                        "market_predictions": [{"code": "HDC", "line": -0.25, "side": "H"}],
+                    },
+                    {
+                        "match_id": "repair-publication", "stage": "T-5",
+                        "kickoff": "2026-08-12T20:00:00+08:00",
+                        "predicted_at": "2026-08-12T19:55:00+08:00",
+                        "market_predictions": [{"code": "HDC", "line": -0.25, "side": "H"}],
+                    },
+                ],
+                "stats": {},
+            }
+            path = config.state_dir / "prediction_history.json"
+            path.parent.mkdir(parents=True)
+            path.write_text(json.dumps(source), encoding="utf-8")
+            archive_watch(config, {"watch": {}})
+            dashboard_path = write_dashboard_data(config)
+            dashboard = json.loads(dashboard_path.read_text(encoding="utf-8"))
+            sidecar = json.loads(
+                (dashboard_path.parent / dashboard["history_data_url"]).read_text(
+                    encoding="utf-8"
+                )
+            )
+            persisted = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                sidecar["prediction_history"]["rows"], persisted["rows"],
+            )
+            self.assertEqual(len(persisted["rows"]), 1)
 
     def test_crown_frontend_filters_non_finite_history_lines_before_render(self) -> None:
         app = (Path(__file__).parents[1] / "dashboard" / "app.js").read_text(

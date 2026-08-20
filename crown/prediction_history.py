@@ -9,6 +9,7 @@ from __future__ import annotations
 import math
 import os
 import copy
+import json
 from collections import Counter
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -55,6 +56,111 @@ _TERMINAL_RESULT_SOURCES = {
     "hkjc_official_exact_id_terminal_status",
     "titan_exact_id_terminal_status",
 }
+
+
+class HistoryShapeConflict(ValueError):
+    """Refuse an ambiguous match/stage history repair without changing rows."""
+
+
+class HistoryShapeMissingIdentity(ValueError):
+    """Refuse to invent a missing persisted history identity."""
+
+
+def _history_identity(row: dict[str, Any]) -> tuple[str, str]:
+    return (
+        str(row.get("match_id") or "").strip(),
+        str(row.get("stage") or "").strip(),
+    )
+
+
+def _history_fingerprint(row: dict[str, Any]) -> str:
+    return json.dumps(
+        row, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str,
+    )
+
+
+def _history_sort_key(row: dict[str, Any]) -> tuple[float, str, int, str, str, str]:
+    """Use the verifier's newest-kickoff-first order with deterministic ties."""
+    kickoff = parse_time(row.get("kickoff_hkt") or row.get("kickoff"))
+    match_id, stage = _history_identity(row)
+    # The integrity verifier intentionally ranks audit-only recovered stages
+    # below native stages at the same kickoff.  Keep this writer identical:
+    # otherwise a normal Crown save can create a history-order alert by itself.
+    stage_rank = STAGES.get(stage, -1)
+    return (
+        kickoff.timestamp() if kickoff else float("-inf"),
+        str(row.get("predicted_at") or ""),
+        stage_rank,
+        match_id,
+        stage,
+        _history_fingerprint(row),
+    )
+
+
+def repair_history_shape(history: dict[str, Any]) -> dict[str, Any]:
+    """Locally repair only exact duplicate history rows and canonical ordering.
+
+    Rows are identified solely by the immutable ``match_id``/``stage`` pair.
+    Identical repeated payloads are a legacy storage defect and collapse to one
+    row with a private audit entry.  Any missing identity or conflicting
+    payload under one identity is ambiguous, so this raises before an atomic
+    writer can replace the source history.  In particular, no result, score,
+    grade, or settlement value is selected or rewritten by this repair.
+    """
+    raw_rows = history.get("rows")
+    if not isinstance(raw_rows, list):
+        raw_rows = []
+    kept: list[dict[str, Any]] = []
+    seen: dict[tuple[str, str], str] = {}
+    duplicate_counts: Counter[tuple[str, str]] = Counter()
+    for row in raw_rows:
+        if not isinstance(row, dict):
+            continue
+        identity = _history_identity(row)
+        if not all(identity):
+            raise HistoryShapeMissingIdentity(
+                "crown_history_shape_missing_match_or_stage"
+            )
+        fingerprint = _history_fingerprint(row)
+        prior = seen.get(identity)
+        if prior is None:
+            seen[identity] = fingerprint
+            kept.append(row)
+        elif prior == fingerprint:
+            duplicate_counts[identity] += 1
+        else:
+            raise HistoryShapeConflict(
+                "crown_history_shape_conflicting_match_stage"
+            )
+
+    kept.sort(key=_history_sort_key, reverse=True)
+    history["rows"] = kept
+    if duplicate_counts:
+        audit = history.get("history_shape_repair_audit")
+        if not isinstance(audit, list):
+            audit = []
+        audit.append({
+            "kind": "exact_match_stage_deduplicated",
+            "repaired_at": iso_hkt(),
+            "removed_rows": sum(duplicate_counts.values()),
+            "identities": [
+                {
+                    "match_id": match_id,
+                    "stage": stage,
+                    "removed_duplicates": count,
+                }
+                for (match_id, stage), count in sorted(duplicate_counts.items())
+            ],
+            "policy": (
+                "exact payload duplicates only; conflicting or missing "
+                "match/stage identities are not rewritten"
+            ),
+        })
+        # This is an operational audit, not prediction evidence.  Bound it so
+        # repeated historical imports cannot turn routine local writes into an
+        # unbounded history-growth path.
+        history["history_shape_repair_audit"] = audit[-64:]
+    return history
 
 
 def _valid_market_prediction(prediction: Any) -> bool:
@@ -147,6 +253,9 @@ def normalize_history(history: dict[str, Any]) -> dict[str, Any]:
         ]
         if _has_scoreable_market_prediction(row):
             rows.append(row)
+    history["rows"] = rows
+    repair_history_shape(history)
+    rows = history["rows"]
     for row in rows:
         if row.get("result_status") == "已核實":
             row["result_status"] = "已核對"
@@ -173,15 +282,7 @@ def normalize_history(history: dict[str, Any]) -> dict[str, Any]:
                 "result_missing_reason": "retry_after_invalid_terminal_classification",
             })
 
-    def sort_key(row: dict[str, Any]) -> tuple[float, str, int]:
-        kickoff = parse_time(row.get("kickoff"))
-        return (
-            kickoff.timestamp() if kickoff else float("-inf"),
-            str(row.get("predicted_at") or ""),
-            STAGES.get(str(row.get("stage") or ""), 4 if _is_recovered_audit_row(row) else 0),
-        )
-
-    rows.sort(key=sort_key, reverse=True)
+    rows.sort(key=_history_sort_key, reverse=True)
     history["rows"] = rows
     # Keep old model-era rows in the immutable history file, while publishing
     # a current-era scorecard that is comparable to data-health's DB scope.
@@ -317,11 +418,17 @@ def _archive_watch_rows(history: dict[str, Any], ledger: dict[str, Any]) -> None
     """Merge persisted native watch stages without grading or statistics work."""
     rows = history["rows"]
     generated = {
-        str(row.get("history_key")): row
+        identity: row
         for row in rows
         if isinstance(row, dict)
         and row.get("_origin") == "crown_ledger_v1"
-        and row.get("history_key")
+        if all(identity := _history_identity(row))
+    }
+    existing = {
+        identity: row
+        for row in rows
+        if isinstance(row, dict)
+        if all(identity := _history_identity(row))
     }
     for watch in (ledger.get("watch") or {}).values():
         if not isinstance(watch, dict):
@@ -334,10 +441,26 @@ def _archive_watch_rows(history: dict[str, Any], ledger: dict[str, Any]) -> None
             row = _history_row(watch, stage)
             if not _has_scoreable_market_prediction(row):
                 continue
-            old = generated.get(row["history_key"])
-            if old is None:
+            identity = _history_identity(row)
+            if not all(identity):
+                raise HistoryShapeMissingIdentity(
+                    "crown_history_shape_missing_match_or_stage"
+                )
+            old = generated.get(identity)
+            prior = existing.get(identity)
+            if old is None and prior is None:
                 rows.append(row)
-                generated[row["history_key"]] = row
+                generated[identity] = row
+                existing[identity] = row
+            elif old is None:
+                # A history record from another/legacy writer occupies this
+                # exact identity.  Never choose between its evidence and the
+                # native stage: exact copies are already represented; divergent
+                # copies require operator review rather than silent replacement.
+                if _history_fingerprint(prior) != _history_fingerprint(row):
+                    raise HistoryShapeConflict(
+                        "crown_history_shape_conflicting_match_stage"
+                    )
             else:
                 result_fields = {
                     key: old.get(key)
@@ -368,7 +491,12 @@ def archive_watch_fast(config: Settings, ledger: dict[str, Any]) -> dict[str, An
     sweep and settle remain responsible for reconciliation and recomputation.
     """
     history = _history_document(config)
+    # The T-30/T-5 path deliberately avoids statistics and grading, but it
+    # must still leave a verifier-compatible source document for the next
+    # reconciliation pass.  This is local-only and refuses ambiguity.
+    repair_history_shape(history)
     _archive_watch_rows(history, ledger)
+    repair_history_shape(history)
     write_json_atomic(_path(config), history)
     return history
 
