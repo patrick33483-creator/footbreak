@@ -107,6 +107,23 @@ def _deadline_remaining(deadline: float) -> float:
 
 
 _MIN_DEADLINE_CALL_SECONDS = 0.25
+_TICK_NOTIFICATION_RESERVE_SECONDS = 8.0
+
+
+def _tick_provider_deadline_seconds() -> float:
+    """Leave a bounded post-persistence window for one outbox delivery.
+
+    The tick owns discovery and provider work only until this sub-deadline.
+    The caller retains the remainder for the durable Telegram outbox before
+    any optional local dashboard projection.  Scale the reserve for small
+    test/operator budgets without making the provider deadline negative.
+    """
+    budget = _tick_pass_deadline_seconds()
+    reserve = min(
+        _TICK_NOTIFICATION_RESERVE_SECONDS,
+        max(_MIN_DEADLINE_CALL_SECONDS, budget * 0.25),
+    )
+    return max(0.0, budget - reserve)
 
 
 def _tick_hkjc_fetch_process(send: Any) -> None:
@@ -1547,7 +1564,10 @@ def run(mode: str, config: Settings) -> dict[str, Any]:
     ledger = load_ledger(config)
     existing_predictions = load_predictions(config)
     if mode == "tick":
-        tick_deadline = time.monotonic() + _tick_pass_deadline_seconds()
+        # Provider/discovery work must never consume the final outbox window.
+        # `crown.run` owns the enclosing full tick deadline and delivers the
+        # persisted, unacknowledged Wilson opportunity before dashboard work.
+        tick_deadline = time.monotonic() + _tick_provider_deadline_seconds()
         titan_rows = _tick_rows_from_predictions(
             existing_predictions, ledger, datetime.now(HKT)
         )

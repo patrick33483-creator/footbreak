@@ -87,6 +87,28 @@ def main() -> int:
         return 0
     ledger = load_ledger(config)
     history_warning = None
+    if args.mode == "tick":
+        try:
+            # The durable outbox is persistence-first and performs its own
+            # pre-kickoff/staleness/idempotency checks. Deliver it before any
+            # optional archive or dashboard work: a fast no-op still retries
+            # an unacknowledged Wilson T-30/T-5 opportunity, and a slow local
+            # projection can never starve its one bounded transport attempt.
+            remaining = tick_deadline - time.monotonic()
+            if remaining >= _TICK_NOTIFICATION_MIN_SECONDS:
+                notify_new(
+                    ledger,
+                    config,
+                    result.get("fresh_condition_predictions") or [],
+                    max_attempts=1,
+                    max_seconds=min(5.0, remaining - 1.0),
+                )
+            else:
+                result["notification_warning"] = "telegram_deferred_tick_deadline"
+        except Exception as exc:
+            # Signals are notification-only. A transport failure leaves the
+            # durable outbox unacknowledged for the next safe tick.
+            result["notification_warning"] = f"telegram_{type(exc).__name__}"
     try:
         if args.mode == "tick":
             # Tick has a sub-minute service cap.  Archive its committed stage
@@ -116,29 +138,6 @@ def main() -> int:
             update_history(config, ledger)
     except Exception as exc:
         history_warning = f"prediction_history_{type(exc).__name__}"
-    try:
-        # A notification is retryable from persisted state.  Only ticks create
-        # timely T-5 signals; settlement and sweep must not turn a large
-        # backlog into an unbounded sequence of five-second Telegram calls.
-        # Leave enough time for one bounded transport plus wrapper teardown.
-        remaining = (
-            tick_deadline - time.monotonic()
-            if tick_deadline is not None else None
-        )
-        if args.mode == "tick" and remaining is not None and remaining >= _TICK_NOTIFICATION_MIN_SECONDS:
-            notify_new(
-                ledger,
-                config,
-                result.get("fresh_condition_predictions") or [],
-                max_attempts=1,
-                max_seconds=min(5.0, remaining - 1.0),
-            )
-        elif args.mode == "tick":
-            result["notification_warning"] = "telegram_deferred_tick_deadline"
-    except Exception as exc:
-        # Signals are notification-only.  A transport failure must never roll
-        # back or corrupt the already committed live prediction state.
-        result["notification_warning"] = f"telegram_{type(exc).__name__}"
     if args.mode != "tick":
         write_dashboard_data(config)
     if history_warning:

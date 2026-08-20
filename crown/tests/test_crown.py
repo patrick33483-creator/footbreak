@@ -1727,6 +1727,18 @@ class CrownSafetyTests(unittest.TestCase):
         self.assertEqual(rows, [])
         self.assertLess(time.monotonic() - started, 0.75)
 
+    def test_tick_provider_subdeadline_reserves_notification_delivery_window(self) -> None:
+        from crown import engine as crown_engine
+
+        with patch.dict(
+            os.environ, {"CROWN_TICK_PASS_DEADLINE_SECONDS": "30"}, clear=False,
+        ):
+            total = crown_engine._tick_pass_deadline_seconds()
+            provider = crown_engine._tick_provider_deadline_seconds()
+        self.assertEqual(total, 30.0)
+        self.assertEqual(provider, 22.5)
+        self.assertGreaterEqual(total - provider, 6.0)
+
     def test_same_kickoff_t5_batch_fetches_bulk_crown_once_not_fixture_pages(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             config = replace(settings(), state_dir=Path(directory), enabled=True, pinnapi_key="test")
@@ -2756,6 +2768,77 @@ class CrownSafetyTests(unittest.TestCase):
                 ast.literal_eval(stdout.getvalue())["notification_warning"],
                 "telegram_deferred_tick_deadline",
             )
+
+    def test_repeated_fast_noop_ticks_ack_one_fresh_wilson_outbox_before_dashboard(self) -> None:
+        """A slow prior projection cannot starve the next fast-noop retry."""
+        import crown.run as crown_run
+        from crown.common import HKT, read_json
+
+        with tempfile.TemporaryDirectory() as directory:
+            config = replace(
+                settings(), state_dir=Path(directory), web_root=Path(directory) / "web",
+            )
+            bid = "fixture-19:00|HIL|T-30|wilson-test-strategy-v1"
+            ledger = {
+                "watch": {},
+                "bets": [{
+                    "bet_id": bid,
+                    "portfolio": "crown_wilson_test",
+                    "strategy": "wilson-test-strategy-v1",
+                    "status": "PENDING",
+                    "league": "League",
+                    "home": "Home",
+                    "away": "Away",
+                    "kickoff": (datetime.now(HKT) + timedelta(hours=1)).isoformat(),
+                    "market_label": "入球大細",
+                    "selected_role": "大",
+                    "selected_line": 2.5,
+                    "odds": 1.90,
+                    "frozen_historical_evidence": {"hits": 41, "decided": 59},
+                    "wilson_admission": {
+                        "minimum_acceptable_odds_raw": 1.70,
+                    },
+                    "condition_number": 3,
+                }],
+            }
+            stdout = io.StringIO()
+            with patch("crown.run.settings", return_value=config), \
+                 patch(
+                     "crown.run.run",
+                     side_effect=[
+                         {"ok": True, "mode": "tick", "fast_noop": True,
+                          "predictions": 0, "retained_predictions": 124},
+                         {"ok": True, "mode": "tick", "fast_noop": True,
+                          "predictions": 0, "retained_predictions": 124},
+                     ],
+                 ), \
+                 patch("crown.run.load_ledger", return_value=ledger), \
+                 patch(
+                     "crown.run.time.monotonic",
+                     # Both ticks deliver first; archive then consumes the
+                     # old full post-notification window.
+                     side_effect=[
+                         100.0, 100.1, 100.2, 129.9,
+                         200.0, 200.1, 200.2, 229.9,
+                     ],
+                 ), \
+                 patch(
+                     "crown.run.archive_watch_fast",
+                     side_effect=lambda *_args: crown_run.time.monotonic(),
+                 ) as archive, \
+                 patch("crown.run.write_tick_dashboard_projection") as projection, \
+                 patch("crown.notify._send", return_value=True) as send, \
+                 patch("sys.argv", ["crown.run", "tick"]), \
+                 contextlib.redirect_stdout(stdout):
+                self.assertEqual(crown_run.main(), 0)
+                self.assertEqual(crown_run.main(), 0)
+            self.assertEqual(send.call_count, 1)
+            self.assertEqual(archive.call_count, 2)
+            self.assertEqual(projection.call_count, 2)
+            acknowledged = read_json(config.state_dir / "notify_state.json", {})
+            self.assertEqual(acknowledged["wilson_match_alerts"], [bid])
+            self.assertEqual(acknowledged["wilson_bets"], [bid])
+            self.assertNotIn("telegram_deferred_tick_deadline", stdout.getvalue())
 
     def test_tick_commit_lock_contention_exits_before_deadline(self) -> None:
         """A settle/sweep final merge must not starve a T-5 commit."""
