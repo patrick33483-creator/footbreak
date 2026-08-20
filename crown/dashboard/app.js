@@ -1779,18 +1779,30 @@ function historyConsensusCards(stats) {
   const report = stats.granular_conditions || {};
   const items = report.ranking || [];
   const cards = items.map((item, index) => {
-    const total = item.total || {}, holdout = item.holdout || {};
+    const total = item.total || {};
+    const active = item.active_evidence || {};
+    const progress = item.validation_progress || item.pending_progress || {};
+    const lastBatch = item.last_merged_batch || {};
     const ci = total.wilson95 || [];
-    const lift = item.holdout_lift == null ? '—' : `${item.holdout_lift >= 0 ? '+' : ''}${pc(item.holdout_lift, 1)}`;
     const lower = numeric(ci[0]);
     const minimumOdds = lower != null && lower > 0.03
       ? f2(1 / (lower - 0.03)) : '—';
+    const conditionNumber = Number.isInteger(Number(item.condition_number))
+      ? Number(item.condition_number) : index + 1;
+    const pending = progress.display || `${Number(progress.pending_decided || 0)}/${Number(progress.required || 20)}`;
+    const batchText = lastBatch.version
+      ? (lastBatch.initial_migration_full_cohort
+        ? `初始完整驗證已合併 ${lastBatch.batch_hits || 0}/${lastBatch.batch_decided || 0}`
+        : `最近合併 ${lastBatch.batch_hits || 0}/${lastBatch.batch_decided || 0}（v${lastBatch.version}）`)
+      : '尚未有新批次合併';
     return `<article class="granular-rank-card">
-      <div class="granular-rank-head"><span>#${index + 1}</span><span class="granular-badge">${esc(item.badge || '觀察')}</span></div>
+      <div class="granular-rank-head"><span>#${conditionNumber}</span><span class="granular-badge">${esc(item.badge || '觀察')}</span></div>
       <b>${esc(publicText(item.label || ''))}</b><div class="granular-rate">${pc(total.accuracy, 1)}</div>
       <small>命中 ${total.hits || 0}/${total.decided || 0} · Wilson 95% ${ci.length ? `${pc(ci[0], 1)}–${pc(ci[1], 1)}` : '—'}</small>
       <small>Wilson 最低要求賠率 ${minimumOdds}</small>
-      <small>歷史賠率層 ${esc(item.odds_tier || '—')} · 驗證 ${holdout.hits || 0}/${holdout.decided || 0} · lift ${lift}</small>
+      <small>活躍證據 v${active.version || '—'} · ${batchText}</small>
+      <small>新前瞻待合併 ${esc(String(pending))}（已判定結果數，非命中率）</small>
+      <small>歷史賠率層 ${esc(item.odds_tier || '—')} · 只使用活躍版本作日後 T-5 Wilson 閘門</small>
     </article>`;
   }).join('');
   return `<section class="granular-block" aria-label="細緻條件排名">

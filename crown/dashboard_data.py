@@ -15,7 +15,7 @@ from .ledger import condition_bets, recompute_stats
 from .period import in_current_period
 from .prediction_history import normalize_history, project_watch_rows
 from .ledger import PREDICTION_ERA
-from .state import load_ledger, load_predictions, paths
+from .state import load_ledger, load_predictions, paths, save_ledger
 from analysis.wilson_validation import active_bets
 
 
@@ -364,6 +364,22 @@ def _build_payloads(config: Settings) -> tuple[dict[str, Any], dict[str, Any]]:
     prediction_history["stats"] = calculate_stats(
         prediction_history["rows"], comparable_era=PREDICTION_ERA,
     )
+    # The browser's granular cards are discovery views, but the Wilson
+    # threshold must use the separately persisted active evidence version.
+    # Keep the raw rows untouched and replace only this dashboard projection.
+    from analysis.wilson_validation import project_granular_ranking_evidence
+    raw_ranking = (
+        prediction_history["stats"].get("granular_conditions", {}).get("ranking") or []
+    )
+    projected_ranking = project_granular_ranking_evidence(
+        ledger, "crown", raw_ranking, now=iso_hkt(),
+    )
+    # The initial full-cohort merge is a ledger migration, not a browser-only
+    # presentation calculation. Persist it atomically with no provider work;
+    # later dashboard reruns remain idempotent.
+    save_ledger(config, ledger)
+    if isinstance(prediction_history["stats"].get("granular_conditions"), dict):
+        prediction_history["stats"]["granular_conditions"]["ranking"] = projected_ranking
     # Card-level matches are derived from persisted immutable snapshots, not
     # from a live quote refresh.  T-30 is limited inside ``match_upcoming`` to
     # first/T-30 paths and therefore cannot borrow a future T-5 observation.
@@ -379,9 +395,7 @@ def _build_payloads(config: Settings) -> tuple[dict[str, Any], dict[str, Any]]:
         for match in matches if isinstance(match, dict)
         for stage in (match.get("stages") or []) if isinstance(stage, dict)
     ]
-    ranking = (
-        prediction_history["stats"].get("granular_conditions", {}).get("ranking") or []
-    )
+    ranking = projected_ranking
     by_stage = {
         stage: match_upcoming(current_rows, ranking, system="crown", decision_stage=stage)
         for stage in ("T-30", "T-5")

@@ -67,7 +67,9 @@ class IndependentValidationTests(unittest.TestCase):
         self.assertEqual(len(made), 1); bet = made[0]
         self.assertEqual(bet['stake'], WILSON_FIXED_STAKE)
         self.assertLessEqual(sum(row['stake'] for row in made), WILSON_FIXTURE_STAKE_CAP)
-        self.assertEqual(bet['frozen_historical_evidence']['decided'], 59)
+        # The first ranking migration absorbs its already-completed holdout
+        # once, so future T-5 uses the active cumulative evidence.
+        self.assertEqual(bet['frozen_historical_evidence']['decided'], 77)
         frozen = ledger['wilson_validation']['conditions'][bet['frozen_condition_signature']]['historical_evidence'].copy()
         ledger['bets'].extend(made)
         repeated, _ = footbreak.evaluate_new_t5(ledger, watch(), None, history_rows=historical)
@@ -227,7 +229,7 @@ class IndependentValidationTests(unittest.TestCase):
         made, audit = footbreak.evaluate_new_t5(ledger, watch(), None, history_rows=mismatched)
         self.assertEqual(len(made), 1)
         self.assertEqual(next(row for row in audit if row['status'] == 'CREATED')['reason'], 'wilson_candidate_frozen')
-        self.assertEqual(made[0]['frozen_historical_evidence']['decided'], 59)
+        self.assertEqual(made[0]['frozen_historical_evidence']['decided'], 77)
 
     def test_real_persisted_ranking_and_native_t5_match_exactly_once(self):
         """Regression for the raw-history/dashboard cache schema split."""

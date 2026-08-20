@@ -13,6 +13,7 @@ from analysis.wilson_portfolio import evaluate
 from analysis.wilson_validation import (
     DECISION_STAGE, DISPLAY_NAME, FIXED_STAKE, FIXTURE_MARKET_CAP,
     FIXTURE_STAKE_CAP, STARTING_BANKROLL, STRATEGY, portfolio_name,
+    project_granular_ranking_evidence,
 )
 
 SYSTEM = "footbreak"
@@ -87,5 +88,14 @@ def evaluate_new_t5(
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     if ranking is None and history_rows is not None:
         ranking = mine(list(history_rows), system=SYSTEM).get("ranking")
+    now = iso_hkt()
+    if ranking is not None:
+        # The persisted granular card is the discovery source for Wilson
+        # admission.  Decorate it from immutable active evidence before the
+        # exact matcher runs; this prevents the old discovery total from
+        # silently winning after the initial completed holdout was merged.
+        ranking = project_granular_ranking_evidence(
+            ledger, SYSTEM, ranking, now=now,
+        )
     return evaluate(ledger, watch, system=SYSTEM, market_labels=MARKET_LABELS,
-                    parse_time=parse_time, now=iso_hkt(), ranking=ranking)
+                    parse_time=parse_time, now=now, ranking=ranking)

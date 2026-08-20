@@ -12,7 +12,8 @@ from analysis.wilson_validation import (
     DECISION_STAGE, EDGE_BUFFER, FIXED_STAKE, FIXTURE_STAKE_CAP, MIN_DECIDED,
     STARTING_BANKROLL, admission_arithmetic, choose_admission, commit_bet,
     apply_active_evidence, condition_number, ensure_namespace, freeze_condition,
-    matching_admissions, portfolio_name, recompute_namespace, wilson95,
+    matching_admissions, portfolio_name, project_granular_ranking_evidence,
+    recompute_namespace, wilson95,
 )
 from analysis.migrate_wilson_strategy import migrate_file
 from analysis.wilson_portfolio import _native_t5, _selected
@@ -397,6 +398,89 @@ class WilsonBatchRolloverTest(unittest.TestCase):
         ensure_namespace(legacy, "footbreak", now="2026-08-21T00:00:00+08:00")
         self.assertEqual(frozen["evidence_versions"], before)
 
+    def test_granular_card_initial_migration_is_active_evidence_for_both_systems(self):
+        """The screenshot card and Wilson admission share one exact identity."""
+        for system in ("footbreak", "crown"):
+            ranking = [candidate(hits=141, decided=231, key="condition-2")]
+            ranking[0]["key"] = [
+                f"system={system}", "market=HDC", "path=首預→T-30→T-5",
+                "decision=T-5", "tier=≥1.70", "direction=A→A→A",
+                "role=主讓", "bucket=0.25–0.5", "movement=不變",
+            ]
+            ranking[0]["system"] = system
+            ranking[0]["observed_path"] = "首預→T-30→T-5"
+            ranking[0]["decision_stage"] = "T-5"
+            ranking[0]["holdout"] = {
+                "hits": 44, "decided": 71, "pushes": 0, "accuracy": 44 / 71,
+            }
+            ledger = {"bets": []}
+            # A namespace may have been installed before the granular history
+            # is ready; its old cutover timestamp must not admit a backfill.
+            ensure_namespace(ledger, system, now="2026-08-20T10:00:00+08:00")
+            projected = project_granular_ranking_evidence(
+                ledger, system, ranking, now="2026-08-20T22:00:00+08:00",
+            )
+            self.assertEqual(len(projected), 1)
+            card = projected[0]
+            self.assertEqual((card["total"]["hits"], card["total"]["decided"]), (185, 302))
+            self.assertEqual(card["active_evidence"]["version"], 2)
+            self.assertAlmostEqual(card["active_evidence"]["wilson95_lower_raw"], .557, places=3)
+            self.assertAlmostEqual(card["active_evidence"]["minimum_acceptable_odds_raw"], 1.90, places=2)
+            self.assertEqual(card["validation_progress"]["display"], "0/20")
+            self.assertEqual(
+                card["active_evidence"]["activation_boundary_at"],
+                "2026-08-20T22:00:00+08:00",
+            )
+            # The current validation field is reset; the old 44/71 is only in
+            # immutable migration audit, never reused as a progress display.
+            self.assertEqual(card["holdout"]["decided"], 0)
+            frozen = next(iter(ledger["wilson_validation"]["conditions"].values()))
+            self.assertEqual(
+                frozen["rollover_audit"][-1]["legacy_prospective_cohort"],
+                {"hits": 44, "decided": 71, "pushes": 0},
+            )
+            # A candidate supplied by this displayed card enters through the
+            # active version, rather than falling back to its old 141/231.
+            admission, reason = apply_active_evidence(
+                ledger, system,
+                matching_admissions(system, "HDC", selected(), [card],
+                                    stage_at="2026-08-20T22:01:00+08:00")[0][0],
+                stage_at="2026-08-20T22:01:00+08:00",
+                now="2026-08-20T22:01:00+08:00",
+            )
+            self.assertIsNone(reason)
+            assert admission is not None
+            self.assertEqual(
+                (admission["history"]["hits"], admission["history"]["decided"]),
+                (185, 302),
+            )
+
+    def test_granular_card_numbers_survive_a_later_ranking_reorder(self):
+        def row(key, hits):
+            item = candidate(hits=hits, decided=231, key=key)
+            item.update({
+                "key": [
+                    "system=footbreak", "market=HDC", "path=首預→T-30→T-5",
+                    "decision=T-5", "tier=≥1.70", f"direction={key}",
+                    "role=主讓", "bucket=0.25–0.5",
+                ],
+                "system": "footbreak", "observed_path": "首預→T-30→T-5",
+                "decision_stage": "T-5",
+                "holdout": {"hits": 44, "decided": 71, "pushes": 0},
+            })
+            return item
+        ledger = {"bets": []}
+        first = project_granular_ranking_evidence(
+            ledger, "footbreak", [row("A→A→A", 141), row("A→B→A", 142)],
+            now="2026-08-20T22:00:00+08:00",
+        )
+        self.assertEqual([item["condition_number"] for item in first], [1, 2])
+        second = project_granular_ranking_evidence(
+            ledger, "footbreak", [row("A→B→A", 142), row("A→A→A", 141)],
+            now="2026-08-21T22:00:00+08:00",
+        )
+        self.assertEqual([item["condition_number"] for item in second], [2, 1])
+
     def test_crown_uses_the_same_rollover_engine(self):
         ledger = {"bets": []}
         for index in range(1, 21):
@@ -420,17 +504,19 @@ class WilsonBatchRolloverTest(unittest.TestCase):
         for path in (
             root / "system" / "gen_app_data.py",
             root / "crown" / "dashboard_data.py",
-            root / "hkjc-dashboard" / "app.js",
-            root / "crown" / "dashboard" / "app.js",
         ):
             source = path.read_text(encoding="utf-8")
             self.assertIn("pending_progress", source)
             self.assertIn("active_evidence", source)
+            self.assertIn("project_granular_ranking_evidence", source)
         for path in (
             root / "hkjc-dashboard" / "app.js",
             root / "crown" / "dashboard" / "app.js",
         ):
-            self.assertIn("Wilson 證據版本", path.read_text(encoding="utf-8"))
+            source = path.read_text(encoding="utf-8")
+            self.assertIn("Wilson 證據版本", source)
+            self.assertIn("新前瞻待合併", source)
+            self.assertIn("活躍證據 v", source)
 
     def test_future_formal_odds_gate_uses_active_version_not_old_baseline(self):
         ledger = {"bets": []}

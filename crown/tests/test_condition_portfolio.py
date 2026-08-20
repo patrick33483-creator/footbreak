@@ -100,7 +100,10 @@ class ConditionPortfolioTests(unittest.TestCase):
         self.assertEqual((bet["selected_role"], bet["selected_line"]), ("主讓", -.25))
         self.assertEqual(bet["label"], "讓球 · 主讓 -0.25")
         self.assertNotRegex(bet["label"], r"\b(?:HDC|HIL|CHL|A|B|C)\b")
-        self.assertEqual((bet["frozen_historical_evidence"]["hits"], bet["frozen_historical_evidence"]["decided"]), (50, 59))
+        # First migration deliberately merges the one completed discovery
+        # holdout cohort as one immutable aggregate, then starts 0/20 anew.
+        self.assertEqual((bet["frozen_historical_evidence"]["hits"], bet["frozen_historical_evidence"]["decided"]), (59, 77))
+        self.assertEqual(bet["evidence_version"], 2)
         self.assertTrue(bet["wilson_admission"]["passes"])
         created_audit = next(item for item in audit if item["status"] == "CREATED")
         self.assertEqual(created_audit["wilson_admission"]["actual_decimal_odds_raw"], 1.83)

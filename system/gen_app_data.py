@@ -649,6 +649,22 @@ def _write_json_atomic(path, payload):
             os.unlink(temporary)
 
 
+def _write_ledger_atomic(path, payload):
+    """Persist a local evidence migration without exposing it as dashboard data."""
+    directory = os.path.dirname(path) or "."
+    os.makedirs(directory, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix=".sim-ledger-", dir=directory)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, separators=(",", ":"))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
 def _public_log_entries(rows):
     """Never leak retained legacy/shadow state while reset is pending."""
     output = []
@@ -1005,6 +1021,22 @@ def main(out_path=None):
     prediction_history = build_prediction_history(
         sync_prediction_archive(watch), bets, acc_history
     )
+    # The historical miner deliberately stays pure and may rerank its output
+    # on every run.  Overlay each card with its persisted, exact-condition
+    # Wilson evidence so the displayed total and downstream matcher cannot
+    # fall back to the pre-migration discovery counts.
+    from analysis.wilson_validation import project_granular_ranking_evidence
+    raw_ranking = (
+        (prediction_history.get("stats") or {})
+        .get("granular_conditions", {}).get("ranking") or []
+    )
+    projected_ranking = project_granular_ranking_evidence(
+        led, "footbreak", raw_ranking,
+        now=dt.datetime.now(HKT).isoformat(timespec="seconds"),
+    )
+    _write_ledger_atomic(lp, led)
+    if isinstance((prediction_history.get("stats") or {}).get("granular_conditions"), dict):
+        prediction_history["stats"]["granular_conditions"]["ranking"] = projected_ranking
     # Match explanations come solely from the frozen T-5 admission decision.
     # A below-minimum quote is a real Wilson match, but not a portfolio bet.
     observations = [
@@ -1037,7 +1069,7 @@ def main(out_path=None):
         for mid, item in watch.items() if isinstance(item, dict)
         for stage in (item.get("stages") or []) if isinstance(stage, dict)
     ]
-    ranking = (prediction_history.get("stats") or {}).get("granular_conditions", {}).get("ranking") or []
+    ranking = projected_ranking
     matches_by_stage = {
         stage: match_upcoming(watch_rows, ranking, system="footbreak", decision_stage=stage)
         for stage in ("T-30", "T-5")

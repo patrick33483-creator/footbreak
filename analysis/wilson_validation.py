@@ -471,20 +471,49 @@ def freeze_condition(
 
 
 def condition_definition(system: str, candidate: dict[str, Any]) -> dict[str, Any]:
-    """Canonical immutable definition, preserving all supplied matcher axes."""
+    """Canonical immutable definition, preserving all supplied matcher axes.
+
+    A granular-ranking row normally carries its exact identity in ``key``.
+    A matched upcoming row also carries *the live selected side*; that is
+    useful for quote validation but must not change the historical condition
+    signature.  Reading the canonical key first keeps discovery, dashboard,
+    and admission attached to the same immutable condition.
+    """
     key = candidate.get("key")
+    axes: dict[str, str] = {}
+    aliases = {
+        "decision_stage": "stage", "decision": "stage",
+        "observed_path": "path", "tier": "odds_tier",
+        "bucket": "line_bucket", "tier_path": "odds_trajectory",
+    }
+    if isinstance(key, list):
+        for raw in key:
+            if not isinstance(raw, str) or "=" not in raw:
+                continue
+            name, value = raw.split("=", 1)
+            name, value = aliases.get(name.strip(), name.strip()), value.strip()
+            if name and value and (name not in axes or axes[name] == value):
+                axes[name] = value
+    def value(axis: str, *sources: str, default: str = "") -> str:
+        if axes.get(axis):
+            return axes[axis]
+        for source in sources:
+            raw = candidate.get(source)
+            if raw not in (None, ""):
+                return str(raw)
+        return default
     return {
-        "system": system,
+        "system": value("system", default=system),
         "version": str(candidate.get("version") or candidate.get("condition_version") or "granular-condition-v1"),
-        "market": str(candidate.get("market") or ""),
-        "stage": str(candidate.get("decision_stage") or candidate.get("stage") or DECISION_STAGE),
-        "path": str(candidate.get("observed_path") or candidate.get("path") or ""),
-        "direction": str(candidate.get("direction") or candidate.get("selected_side") or candidate.get("side") or ""),
-        "role": str(candidate.get("role") or candidate.get("selected_role") or ""),
-        "line_bucket": str(candidate.get("line_bucket") or candidate.get("bucket") or ""),
-        "odds_tier": str(candidate.get("odds_tier") or ""),
-        "movement": str(candidate.get("movement") or ""),
-        "odds_trajectory": str(candidate.get("odds_trajectory") or candidate.get("tier_path") or ""),
+        "market": value("market", "market"),
+        "stage": value("stage", "decision_stage", "stage", default=DECISION_STAGE),
+        "path": value("path", "observed_path", "path"),
+        "direction": value("direction", "direction"),
+        "role": value("role", "role", "selected_role"),
+        "line_bucket": value("line_bucket", "line_bucket", "bucket"),
+        "odds_tier": value("odds_tier", "odds_tier"),
+        "movement": value("movement", "movement"),
+        "odds_trajectory": value("odds_trajectory", "odds_trajectory", "tier_path"),
         "miner_key": [str(v) for v in key] if isinstance(key, list) else [str(key or "")],
     }
 
@@ -538,6 +567,196 @@ def _historical(candidate: dict[str, Any], definition: dict[str, Any], stage_at:
         "artifact": _artifact(candidate, definition, stage_at),
         "label": candidate.get("label") or "凍結歷史條件",
     }
+
+
+def _ranking_holdout(candidate: dict[str, Any]) -> dict[str, int] | None:
+    """Validate the completed discovery holdout before the one-time merge."""
+    holdout = candidate.get("holdout")
+    if not isinstance(holdout, dict):
+        return None
+    try:
+        hits, decided = int(holdout.get("hits")), int(holdout.get("decided"))
+        pushes = int(holdout.get("pushes") or 0)
+    except (TypeError, ValueError):
+        return None
+    if hits < 0 or decided <= 0 or hits > decided or pushes < 0:
+        return None
+    return {"hits": hits, "decided": decided, "pushes": pushes}
+
+
+def sync_granular_ranking_evidence(
+    ledger: dict[str, Any], system: str, ranking: Iterable[dict[str, Any]], *,
+    now: str,
+) -> list[dict[str, Any]]:
+    """Persist the ranking conditions which the history cards actually show.
+
+    The historical ranking is recomputed from raw settled rows and therefore
+    cannot own mutable prospective state.  This adapter gives each exact
+    ranking key a stable Wilson condition identity in the ledger, merges the
+    pre-cutover completed holdout exactly once, and later leaves that evidence
+    untouched while a fresh ranking is regenerated.
+
+    ``granular_ranking_initial_migration_completed_at`` is intentionally a
+    namespace-wide one-time latch.  A condition discovered after the migration
+    must not retrospectively treat an arbitrary regenerated holdout as native
+    prospective evidence.
+    """
+    ns = ensure_namespace(ledger, system, now=now)
+    initial = not bool(ns.get("granular_ranking_initial_migration_completed_at"))
+    candidates = [row for row in ranking if isinstance(row, dict)]
+    registered: list[dict[str, Any]] = []
+    pending_order: list[str] = []
+    for candidate in candidates:
+        definition = condition_definition(system, candidate)
+        # A malformed/cross-system ranking cannot become evidence.
+        if definition["system"] != system or not definition["market"]:
+            continue
+        signature, definition = condition_signature(system, candidate)
+        history = _historical(candidate, definition, now)
+        if history is None:
+            continue
+        frozen = ns["conditions"].get(signature)
+        if not isinstance(frozen, dict):
+            frozen = {
+                "signature": signature,
+                "frozen_at": now,
+                "definition": copy.deepcopy(definition),
+                "historical_evidence": copy.deepcopy(history),
+                # This raw discovery snapshot is retained only as immutable
+                # migration audit.  The public card is projected from active
+                # evidence and never reuses it as its current validation line.
+                "ranking_discovery_snapshot": {
+                    "total": copy.deepcopy(candidate.get("total") or {}),
+                    "holdout": copy.deepcopy(candidate.get("holdout") or {}),
+                    "label": candidate.get("label"),
+                },
+                "prospective": (
+                    _ranking_holdout(candidate) if initial else {}
+                ) or {},
+            }
+            ns["conditions"][signature] = frozen
+            pending_order.append(signature)
+        elif initial and not frozen.get("evidence_versions") and not frozen.get(
+            "ranking_discovery_snapshot"
+        ):
+            # A pre-rollover condition may already have been frozen by an
+            # early T-5 before the dashboard migration ran. It still has no
+            # evidence chain, so the explicitly authorised completed cohort
+            # can be attached once; a later rerun may never replace it.
+            frozen["ranking_discovery_snapshot"] = {
+                "total": copy.deepcopy(candidate.get("total") or {}),
+                "holdout": copy.deepcopy(candidate.get("holdout") or {}),
+                "label": candidate.get("label"),
+            }
+            frozen["prospective"] = _ranking_holdout(candidate) or {}
+            pending_order.append(signature)
+        # Do not replace definitions, historical counts, or a completed
+        # migration from a later ranking rebuild.  Existing state wins.
+        registered.append({
+            "signature": signature,
+            "condition_number": frozen.get("condition_number"),
+        })
+
+    # Preserve the current card numbering at migration, then never derive it
+    # from later ranking sort order. Existing (already frozen) identities keep
+    # their original positions.
+    order = [
+        str(signature) for signature in ns.get("condition_order") or []
+        if str(signature) in ns["conditions"]
+    ]
+    for signature in pending_order:
+        if signature not in order:
+            order.append(signature)
+    ns["condition_order"] = order
+    for index, signature in enumerate(order, start=1):
+        frozen = ns["conditions"].get(signature)
+        if isinstance(frozen, dict):
+            frozen.setdefault("condition_number", index)
+
+    for signature in pending_order:
+        frozen = ns["conditions"].get(signature)
+        if isinstance(frozen, dict):
+            _ensure_evidence_versions(
+                # The granular ranking may first become available after the
+                # Wilson namespace itself was installed. Its full-cohort
+                # merge activates *now*, never at an earlier namespace
+                # cutover, so no historical/backfilled row can pass through
+                # as new prospective evidence.
+                frozen, migration_boundary=now,
+            )
+    # Do not consume the one-time migration before a ranking is actually
+    # available. An empty/stale dashboard build must leave the next valid
+    # completed cohort eligible for its required initial merge.
+    if initial and registered:
+        ns["granular_ranking_initial_migration_completed_at"] = now
+        ns["granular_ranking_initial_migration_version"] = 1
+    # Fill numbers after ordering/migration so a caller can project directly.
+    for item in registered:
+        frozen = ns["conditions"].get(item["signature"])
+        if isinstance(frozen, dict):
+            item["condition_number"] = frozen.get("condition_number")
+    return registered
+
+
+def project_granular_ranking_evidence(
+    ledger: dict[str, Any], system: str, ranking: Iterable[dict[str, Any]], *,
+    now: str,
+) -> list[dict[str, Any]]:
+    """Return browser/candidate ranking rows backed by active evidence only."""
+    sync_granular_ranking_evidence(ledger, system, ranking, now=now)
+    ns = ensure_namespace(ledger, system, now=now)
+    output: list[dict[str, Any]] = []
+    for candidate in ranking:
+        if not isinstance(candidate, dict):
+            continue
+        signature, _definition = condition_signature(system, candidate)
+        frozen = ns["conditions"].get(signature)
+        if not isinstance(frozen, dict):
+            continue
+        active = active_evidence_version(
+            frozen, migration_boundary=ns["activation_at"],
+        )
+        if active is None:
+            continue
+        hits, decided = int(active["cumulative_hits"]), int(active["cumulative_decided"])
+        interval = wilson95(hits, decided)
+        pending = frozen.get("pending_rollover_progress")
+        if not isinstance(pending, dict):
+            pending = {
+                "eligible_decided": 0, "required": ROLLOVER_BATCH_SIZE,
+                "display": f"0/{ROLLOVER_BATCH_SIZE}",
+            }
+        last_batch = (frozen.get("rollover_audit") or [])[-1] if isinstance(
+            frozen.get("rollover_audit"), list
+        ) and frozen.get("rollover_audit") else None
+        current = copy.deepcopy(candidate)
+        current["condition_signature"] = signature
+        current["condition_number"] = frozen.get("condition_number")
+        current["total"] = {
+            "hits": hits, "decided": decided,
+            "accuracy": hits / decided if decided else None,
+            "wilson95": list(interval) if interval else None,
+        }
+        current["active_evidence"] = copy.deepcopy(active)
+        current["last_merged_batch"] = copy.deepcopy(last_batch) if isinstance(last_batch, dict) else None
+        current["pending_progress"] = copy.deepcopy(pending)
+        # The old holdout stays in immutable migration audit; no current card
+        # may call it a progress counter or blend it into new prospective work.
+        current["validation_progress"] = {
+            "pending_decided": int(pending.get("eligible_decided") or 0),
+            "required": int(pending.get("required") or ROLLOVER_BATCH_SIZE),
+            "display": str(pending.get("display") or f"0/{ROLLOVER_BATCH_SIZE}"),
+        }
+        # This payload is the active prospective counter after migration, not
+        # the old completed holdout. The old aggregate exists only in the
+        # immutable evidence version/audit inside the local ledger.
+        current["holdout"] = {
+            "hits": 0, "decided": 0, "pushes": 0, "accuracy": None,
+            "wilson95": None,
+        }
+        current["holdout_lift"] = None
+        output.append(current)
+    return output
 
 
 def _selection_signature(market: str, item: dict[str, Any]) -> tuple[str, float] | None:

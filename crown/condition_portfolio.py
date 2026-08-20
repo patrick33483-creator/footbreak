@@ -8,6 +8,7 @@ from analysis.wilson_portfolio import evaluate
 from analysis.wilson_validation import (
     DECISION_STAGE, DISPLAY_NAME, FIXED_STAKE, FIXTURE_MARKET_CAP,
     FIXTURE_STAKE_CAP, STARTING_BANKROLL, STRATEGY, portfolio_name,
+    project_granular_ranking_evidence,
 )
 from .common import iso_hkt, parse_time
 from .config import Settings
@@ -25,5 +26,10 @@ def evaluate_new_t5(
     del config
     if ranking is None and history_rows is not None:
         ranking = mine(list(history_rows), system=SYSTEM).get("ranking")
+    now = iso_hkt()
+    if ranking is not None:
+        ranking = project_granular_ranking_evidence(
+            ledger, SYSTEM, ranking, now=now,
+        )
     return evaluate(ledger, watch, system=SYSTEM, market_labels=MARKET_LABELS,
-                    parse_time=parse_time, now=iso_hkt(), ranking=ranking)
+                    parse_time=parse_time, now=now, ranking=ranking)
