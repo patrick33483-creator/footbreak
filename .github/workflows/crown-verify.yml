@@ -168,6 +168,8 @@ jobs:
                   })
           print({"recent_public_cards": recent})
           PY
+          echo "=== Result integrity verifier (read-only) ==="
+          /opt/footbreak/.venv/bin/python3 deploy/verify-result-integrity.py || true
           echo "=== Telegram configuration (presence only; no secrets) ==="
           /opt/footbreak/.venv/bin/python3 - <<'PY'
           import os
