@@ -55,7 +55,10 @@ class ChallengerDashboardUiTests(unittest.TestCase):
                     " void loadChallenger({ quiet: silent });"
                 )
                 self.assertIn(refresh_hook, app)
-                finally_block = app.split("  } finally {", 1)[1][:400]
+                refresh_block = app.split(
+                    "async function refresh(silent)", 1
+                )[1].split("function bindUI()", 1)[0]
+                finally_block = refresh_block.split("  } finally {", 1)[1][:400]
                 self.assertIn(refresh_hook, finally_block)
                 self.assertIn("id=\"challengerReload\"", app)
 

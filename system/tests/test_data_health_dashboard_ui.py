@@ -60,7 +60,10 @@ class DataHealthDashboardUiTests(unittest.TestCase):
                     " void loadHealth({ quiet: silent });"
                 )
                 self.assertIn(refresh_hook, app)
-                finally_block = app.split("  } finally {", 1)[1][:600]
+                refresh_block = app.split(
+                    "async function refresh(silent)", 1
+                )[1].split("function bindUI()", 1)[0]
+                finally_block = refresh_block.split("  } finally {", 1)[1][:600]
                 self.assertIn(refresh_hook, finally_block)
                 self.assertIn('id="healthReload"', app)
 
@@ -184,6 +187,7 @@ class DataHealthDashboardUiTests(unittest.TestCase):
                     self.assertIn("condition-research", versions[0])
                 else:
                     self.assertIn("condition-simulation", versions[0])
+                    self.assertIn("dashboard-boot-recovery", versions[0])
 
     def test_node_syntax_and_render_smoke(self) -> None:
         node = shutil.which("node")
