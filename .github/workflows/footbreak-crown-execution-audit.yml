@@ -1,22 +1,15 @@
-name: Audit Footbreak to Crown execution handoff
+name: Footbreak to Crown execution handoff
 
 on:
   workflow_dispatch:
 
-concurrency:
-  group: production-maintenance
-  cancel-in-progress: false
-
 permissions:
   contents: read
-  checks: write
 
 jobs:
   audit:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
-
       - name: Configure SSH
         env:
           DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
@@ -27,69 +20,129 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
 
-      - name: Read only production cross-book audit
+      - name: Read persisted Footbreak due-stage evidence only
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
-          PRODUCTION_HEAD: ${{ github.sha }}
         run: |
-          set -euo pipefail
           ssh -o BatchMode=yes -o ConnectTimeout=20 \
-            -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
-            "$DEPLOY_USER@$DEPLOY_HOST" \
-            "sudo env PRODUCTION_HEAD='$PRODUCTION_HEAD' bash -s" <<'REMOTE' | tee footbreak-crown-execution-audit.json
-          set -euo pipefail
-          cd /opt/footbreak
-          PYTHONPATH=/opt/footbreak /opt/footbreak/.venv/bin/python3 \
-            deploy/audit-footbreak-crown-execution.py \
-            --production-head "$PRODUCTION_HEAD"
-          REMOTE
-
-      - name: Upload audit evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: footbreak-crown-execution-audit-${{ github.run_id }}
-          path: footbreak-crown-execution-audit.json
-          if-no-files-found: warn
-          retention-days: 7
-
-      - name: Publish audit evidence to the commit checks
-        if: always() && hashFiles('footbreak-crown-execution-audit.json') != ''
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-          JOB_STATUS: ${{ job.status }}
-        run: |
-          python3 - <<'PY'
+            "$DEPLOY_USER@$DEPLOY_HOST" 'sudo env PYTHONPATH=/opt/footbreak /opt/footbreak/.venv/bin/python3 -' \
+            > footbreak-due-incident.json <<'PY'
           import json
-          import os
-          import urllib.request
+          import subprocess
+          from datetime import datetime, timedelta, timezone
           from pathlib import Path
 
-          evidence = Path("footbreak-crown-execution-audit.json").read_text(encoding="utf-8")
-          evidence = json.dumps(json.loads(evidence), ensure_ascii=False, indent=2, sort_keys=True)
-          conclusion = "success" if os.environ.get("JOB_STATUS") == "success" else "failure"
-          payload = {
-              "name": "Footbreak to Crown execution audit evidence",
-              "head_sha": os.environ["GITHUB_SHA"],
-              "status": "completed",
-              "conclusion": conclusion,
-              "output": {
-                  "title": f"Cross-book audit: {conclusion}",
-                  "summary": "```json\n" + evidence[:60000] + "\n```",
-              },
-          }
-          request = urllib.request.Request(
-              f"https://api.github.com/repos/{os.environ['GITHUB_REPOSITORY']}/check-runs",
-              data=json.dumps(payload).encode("utf-8"),
-              headers={
-                  "Accept": "application/vnd.github+json",
-                  "Authorization": f"Bearer {os.environ['GITHUB_TOKEN']}",
-                  "Content-Type": "application/json",
-              },
-              method="POST",
-          )
-          with urllib.request.urlopen(request, timeout=20) as response:
-              created = json.load(response)
-          print(f"evidence_check_url={created['html_url']}")
+          HKT = timezone(timedelta(hours=8))
+          now = datetime.now(HKT)
+          since = now.replace(hour=5, minute=30, second=0, microsecond=0)
+          if since > now:
+              since -= timedelta(days=1)
+
+          def load(path, default):
+              try:
+                  return json.loads(Path(path).read_text(encoding="utf-8"))
+              except Exception:
+                  return default
+          def parse(value):
+              try:
+                  text = str(value or "").replace("Z", "+00:00")
+                  item = datetime.fromisoformat(text)
+                  if item.tzinfo is None:
+                      item = item.replace(tzinfo=HKT)
+                  return item.astimezone(HKT)
+              except Exception:
+                  return None
+          def safe(row, keys):
+              return {key: row.get(key) for key in keys} if isinstance(row, dict) else {}
+          def command(*args):
+              try:
+                  return subprocess.run(args, text=True, capture_output=True, timeout=12, check=False).stdout[-8000:]
+              except Exception as exc:
+                  return type(exc).__name__
+
+          ledger = load('/opt/footbreak/system/sim_ledger.json', {})
+          notify = load('/opt/footbreak/system/notify_state.json', {})
+          cards = load('/var/lib/footbreak/crown/footbreak-execution-evidence.json', [])
+          cards_by_hkjc = {}
+          for card in cards if isinstance(cards, list) else []:
+              if isinstance(card, dict):
+                  cards_by_hkjc.setdefault(str(card.get('hkjc_match_id') or ''), []).append(card)
+          watches = ledger.get('watch') if isinstance(ledger, dict) else {}
+          watches = watches if isinstance(watches, dict) else {}
+          normal = ledger.get('wilson_validation') if isinstance(ledger, dict) else {}
+          normal = normal if isinstance(normal, dict) else {}
+          cross = ledger.get('footbreak_crown_execution_test') if isinstance(ledger, dict) else {}
+          cross = cross if isinstance(cross, dict) else {}
+          bilateral = ledger.get('bilateral_decision') if isinstance(ledger, dict) else {}
+          bilateral = bilateral if isinstance(bilateral, dict) else {}
+          rows = []
+          for match_id, watch in watches.items():
+              if not isinstance(watch, dict):
+                  continue
+              kickoff = parse(watch.get('kickoff'))
+              stages = [row for row in (watch.get('stages') or []) if isinstance(row, dict)]
+              stage_times = [parse(row.get('ts')) for row in stages]
+              relevant = (
+                  kickoff is not None and since <= kickoff <= now + timedelta(minutes=30)
+              ) or any(item is not None and item >= since for item in stage_times)
+              if not relevant:
+                  continue
+              identity = str(watch.get('match_id') or match_id)
+              crown_rows = cards_by_hkjc.get(identity, [])
+              crown_cards = []
+              for card in crown_rows[:3]:
+                  crown_cards.append({
+                      **safe(card, ['match_id','hkjc_match_id','kickoff_hkt','kickoff','league','home','away']),
+                      't30_journal': [safe(x, ['code','side','line','condition','odds_status','source','observed_at'])
+                                      for x in ((card.get('native_stage_journals') or {}).get('T-30') or []) if isinstance(x, dict)],
+                      'current_quotes': [safe(x, ['code','side','line','condition','odds','odds_status','source','observed_at'])
+                                         for x in (card.get('current_selected_odds_journal') or []) if isinstance(x, dict)],
+                  })
+              normal_audit = [safe(x, ['ts','match_id','market','status','reason','condition_number','bet_id'])
+                              for x in (normal.get('audit') or [])
+                              if isinstance(x, dict) and str(x.get('match_id') or '') == identity]
+              cross_audit = [safe(x, ['ts','match_id','market','status','reason','condition_number','bet_id'])
+                             for x in (cross.get('audit') or [])
+                             if isinstance(x, dict) and str(x.get('match_id') or '') == identity]
+              bilateral_rows = []
+              for key in ('decisions','decision_outbox','counterpart_attempts'):
+                  bilateral_rows.extend([{'collection':key, **safe(x, ['ts','created_at','match_id','market','status','reason','delivery','acknowledged_at','outbox_id','decision_id'])}
+                                         for x in (bilateral.get(key) or [])
+                                         if isinstance(x, dict) and str(x.get('match_id') or '') == identity])
+              rows.append({
+                  'match_id': identity,
+                  'fixture': safe(watch, ['league','home','away','kickoff','fixture_id','league_id']),
+                  'minutes_to_kickoff': None if kickoff is None else round((kickoff-now).total_seconds()/60, 2),
+                  'native_stages': [safe(x, ['stage','ts','source_snapshot_at','can_bet','verdict','no_bet_reason','odds_status','odds_reason','t30_data_complete','market_predictions','selected_odds_journal']) for x in stages],
+                  'counterpart_bridge': ((watch.get('counterpart_bridges') or {}).get('crown') or {}),
+                  'crown_persisted_cards': crown_cards,
+                  'wilson_audit': normal_audit[-30:],
+                  'cross_book_audit': cross_audit[-30:],
+                  'bilateral_rows': bilateral_rows[-40:],
+              })
+          rows.sort(key=lambda x: (x['fixture'].get('kickoff') or '', x['match_id']))
+          units = ['footbreak-tick.timer','footbreak-tick.service','footbreak-sweep.timer','footbreak-sweep.service','footbreak-server-health-monitor.timer','footbreak-server-health-monitor.service','crown-tick.timer','crown-tick.service']
+          unit_state = {unit: command('systemctl','show',unit,'-p','ActiveState','-p','SubState','-p','Result','-p','ExecMainStatus','-p','NRestarts','-p','LastTriggerUSec','-p','NextElapseUSecRealtime') for unit in units}
+          print(json.dumps({
+              'read_only': True, 'providers_called': False, 'now_hkt': now.isoformat(), 'since_hkt': since.isoformat(),
+              'production_head': command('git','-C','/opt/footbreak','rev-parse','HEAD').strip(),
+              'fixtures': rows,
+              'cross_book_summary': {'bets': len(cross.get('bets') or []), 'audit': len(cross.get('audit') or [])},
+              'wilson_summary': {'bets': len(ledger.get('bets') or []), 'audit': len(normal.get('audit') or [])},
+              'notify_keys': sorted(notify.keys()) if isinstance(notify, dict) else [],
+              'notify_state': {key: len(value) if isinstance(value, list) else type(value).__name__ for key,value in notify.items()} if isinstance(notify, dict) else {},
+              'unit_state': unit_state,
+              'locks': {'footbreak': command('fuser','-v','/var/lock/footbreak.lock'), 'priority': command('ls','-la','/run/footbreak-t5-priority')},
+              'monitor_repairs': load('/var/lib/footbreak/server-health-repairs.json', {}),
+              'tick_journal': command('journalctl','-u','footbreak-tick.service','--since','2026-08-22 05:30:00','--no-pager','-o','short-iso'),
+              'monitor_journal': command('journalctl','-u','footbreak-server-health-monitor.service','--since','2026-08-22 05:30:00','--no-pager','-o','short-iso'),
+          }, ensure_ascii=False))
           PY
+
+      - name: Upload immutable evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: footbreak-due-incident-audit
+          path: footbreak-due-incident.json
+          retention-days: 14
