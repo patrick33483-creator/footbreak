@@ -42,6 +42,21 @@ def crown_card(*, odds=1.9, line=2.5, side="H", observed=None, duplicate=False):
     return [card, copy.deepcopy(card)] if duplicate else [card]
 
 
+def authoritative_betis_card(*, kickoff, observed=None, duplicate=False):
+    row = {
+        "code": "HIL", "side": "H", "line": 2.5, "odds": 1.91,
+        "source": "titan007-crown-id-3", "odds_status": "available",
+        "observed_at": observed or stamp(-1),
+    }
+    card = {
+        "match_id": "crown-betis", "hkjc_match_id": "fx", "kickoff_hkt": kickoff,
+        "league": "Spain - La Liga", "home": "皇家贝蒂斯", "away": "皇家社会",
+        "native_stage_journals": {"T-30": [copy.deepcopy(row)]},
+        "current_selected_odds_journal": [copy.deepcopy(row)],
+    }
+    return [card, copy.deepcopy(card)] if duplicate else [card]
+
+
 class CrossEvidenceTests(unittest.TestCase):
     def _quote(self, cards, *, side="H", line=2.5):
         with tempfile.TemporaryDirectory() as directory:
@@ -140,6 +155,135 @@ class CrossEvidenceTests(unittest.TestCase):
         self.assertEqual(first["crown_match_id"], "crown-betis")
         self.assertLessEqual(first["kickoff_delta_seconds"], 120)
         self.assertEqual(t30["market_mappings"]["HIL"]["status"], "AVAILABLE")
+
+    def test_t30_bootstraps_existing_card_without_fabricating_first_look(self):
+        kickoff, at = stamp(120), stamp()
+        watch = {
+            "match_id": "fx", "kickoff": kickoff, "league": "Spain - La Liga",
+            "home": "貝迪斯", "away": "皇家蘇斯達",
+            "stages": [{"stage": "T-30", "ts": at, "market_predictions": [
+                {"code": "HIL", "side": "H", "line": 2.5},
+            ]}],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            evidence = Path(directory, "cards.json")
+            evidence.write_text(json.dumps(authoritative_betis_card(kickoff=kickoff)), encoding="utf-8")
+            with patch.dict(os.environ, {"FOOTBREAK_CROWN_EXECUTION_EVIDENCE_PATH": str(evidence)}):
+                t30 = cross.prefetch_bridge(watch, stage="T-30", now=at)
+                repeated = cross.prefetch_bridge(watch, stage="T-30", now=at)
+        self.assertEqual(t30["status"], "RESOLVED")
+        self.assertEqual(t30["origin"], "t30_bootstrap_existing_card")
+        self.assertFalse(t30["first_look_recorded"])
+        self.assertEqual(t30["market_mappings"]["HIL"]["status"], "AVAILABLE")
+        self.assertEqual(repeated, t30)  # No duplicate stage or changing identity.
+        bridge = watch["counterpart_bridges"]["crown"]
+        self.assertNotIn("first_look", bridge)
+        self.assertEqual(bridge["t30"], t30)
+        self.assertEqual(watch["stages"][0]["stage"], "T-30")  # Native record remains immutable.
+
+    def test_t30_bootstrap_persists_authoritative_failure_without_fake_first_look(self):
+        kickoff, at = stamp(120), stamp()
+        watch = {
+            "match_id": "fx", "kickoff": kickoff, "league": "Spain - La Liga",
+            "home": "貝迪斯", "away": "皇家蘇斯達",
+            "stages": [{"stage": "T-30", "ts": at, "market_predictions": []}],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            evidence = Path(directory, "cards.json")
+            evidence.write_text(
+                json.dumps(authoritative_betis_card(kickoff=kickoff, duplicate=True)),
+                encoding="utf-8",
+            )
+            with patch.dict(os.environ, {"FOOTBREAK_CROWN_EXECUTION_EVIDENCE_PATH": str(evidence)}):
+                t30 = cross.prefetch_bridge(watch, stage="T-30", now=at)
+        self.assertEqual(t30["status"], "UNAVAILABLE")
+        self.assertEqual(t30["reason"], "crown_fixture_identity_ambiguous")
+        self.assertEqual(t30["origin"], "t30_bootstrap_existing_card")
+        self.assertNotIn("first_look", watch["counterpart_bridges"]["crown"])
+
+    def test_t30_bootstrap_requires_a_durable_native_t30_and_rejects_post_kickoff(self):
+        kickoff, at = stamp(120), stamp()
+        watch = {
+            "match_id": "fx", "kickoff": kickoff, "league": "Spain - La Liga",
+            "home": "貝迪斯", "away": "皇家蘇斯達", "stages": [],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            evidence = Path(directory, "cards.json")
+            evidence.write_text(json.dumps(authoritative_betis_card(kickoff=kickoff)), encoding="utf-8")
+            with patch.dict(os.environ, {"FOOTBREAK_CROWN_EXECUTION_EVIDENCE_PATH": str(evidence)}):
+                missing = cross.prefetch_bridge(watch, stage="T-30", now=at)
+                watch["stages"].append({"stage": "T-30", "ts": at, "market_predictions": []})
+                late = cross.prefetch_bridge(
+                    watch, stage="T-30",
+                    now=(cross._time(kickoff) + timedelta(seconds=1)).isoformat(),
+                )
+        self.assertEqual(missing["reason"], "crown_t30_bootstrap_native_stage_missing")
+        self.assertEqual(late["reason"], "crown_bridge_post_kickoff_rejected")
+        self.assertEqual(late["origin"], "t30_bootstrap_existing_card")
+        self.assertNotIn("first_look", watch["counterpart_bridges"]["crown"])
+
+    def test_t5_consumes_only_a_verified_t30_bootstrap(self):
+        kickoff, stage_at = stamp(120), stamp()
+        watch = {
+            "match_id": "fx", "kickoff": kickoff, "league": "Spain - La Liga",
+            "home": "貝迪斯", "away": "皇家蘇斯達",
+            "stages": [
+                {"stage": "T-30", "ts": stage_at, "market_predictions": [
+                    {"code": "HIL", "side": "H", "line": 2.5},
+                ]},
+                {"stage": "T-5", "ts": stage_at, "market_predictions": []},
+            ],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            evidence = Path(directory, "cards.json")
+            evidence.write_text(
+                json.dumps(authoritative_betis_card(kickoff=kickoff, observed=stamp(-1))),
+                encoding="utf-8",
+            )
+            with patch.dict(os.environ, {"FOOTBREAK_CROWN_EXECUTION_EVIDENCE_PATH": str(evidence)}):
+                t30 = cross.prefetch_bridge(watch, stage="T-30", now=stage_at)
+                quote, reason = cross._crown_quote_for_verified_bridge(
+                    watch, "HIL", "H", 2.5, cross._time(stage_at), cross._time(kickoff),
+                )
+        self.assertEqual(t30["origin"], "t30_bootstrap_existing_card")
+        self.assertIsNone(reason)
+        self.assertEqual(quote["odds"], 1.91)
+        # An unverified marker alone cannot bypass the absent first-look guard.
+        watch["counterpart_bridges"]["crown"]["t30"]["bridge_id"] = "forged"
+        quote, reason = cross._crown_quote_for_verified_bridge(
+            watch, "HIL", "H", 2.5, cross._time(stage_at), cross._time(kickoff),
+        )
+        self.assertIsNone(quote)
+        self.assertEqual(reason, "crown_t30_bootstrap_unverified")
+
+    def test_native_t30_continues_and_persists_bootstrap_for_existing_card(self):
+        kickoff = stamp(120)
+        result = {
+            "match_id": "fx", "stage": "T-30", "kickoff_hkt": kickoff,
+            "league": "Spain - La Liga", "home": "貝迪斯", "away": "皇家蘇斯達",
+            "candidates": [], "selected_odds_observed_at": stamp(-1),
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "predictions.json").write_text(json.dumps([result]), encoding="utf-8")
+            evidence = root / "cards.json"
+            evidence.write_text(json.dumps(authoritative_betis_card(kickoff=kickoff)), encoding="utf-8")
+            ledger_path = root / "sim_ledger.json"
+            with patch.dict(os.environ, {"FOOTBREAK_CROWN_EXECUTION_EVIDENCE_PATH": str(evidence)}), \
+                 patch.object(record_picks, "HERE", str(root)), \
+                 patch.object(record_picks, "LEDGER", str(ledger_path)), \
+                 patch.object(record_picks, "_record_learning_snapshot", return_value=None), \
+                 patch.object(record_picks, "recompute", return_value=None), \
+                 patch.object(record_picks, "recompute_crown_execution", return_value=None):
+                _, notes, ledger = record_picks.sync(send_notifications=False)
+        stored = ledger["watch"]["fx"]
+        self.assertEqual(stored["stages"][0]["stage"], "T-30")
+        self.assertEqual(
+            stored["counterpart_bridges"]["crown"]["t30"]["origin"],
+            "t30_bootstrap_existing_card",
+        )
+        self.assertNotIn("first_look", stored["counterpart_bridges"]["crown"])
+        self.assertTrue(notes)  # Native stage completed; counterpart was optional.
 
     def test_first_look_distinguishes_collector_no_fixture_and_ambiguous_identity(self):
         watch = {

@@ -35,6 +35,7 @@ FRESHNESS_SECONDS = 120.0
 HKT = timezone(timedelta(hours=8))
 BRIDGE_KICKOFF_TOLERANCE_SECONDS = 10 * 60
 T30_KICKOFF_REVERIFY_TOLERANCE_SECONDS = 1
+T30_BOOTSTRAP_ORIGIN = "t30_bootstrap_existing_card"
 
 # These are reviewed display aliases, not a discovery mechanism.  They are
 # used only to validate a card which already carries the same authoritative
@@ -296,8 +297,59 @@ def _t30_market_mappings(watch: dict[str, Any], card: dict[str, Any]) -> dict[st
     return output
 
 
+def _has_native_stage(watch: dict[str, Any], stage: str) -> bool:
+    """Whether Footbreak has durably committed the named native stage."""
+    return any(
+        isinstance(row, dict) and str(row.get("stage") or "") == stage
+        for row in (watch.get("stages") or [])
+    )
+
+
+def _verified_t30_bootstrap(
+    watch: dict[str, Any], t30: dict[str, Any],
+) -> bool:
+    """Validate the narrowly allowed existing-card T-30 bridge.
+
+    This rejects an arbitrary ``t30`` object labelled as a bootstrap.  The
+    persisted record must contain the same fully authoritative identity that
+    normal first-look resolution would have written, including the canonical
+    bridge hash and validated display context.  It is intentionally not a
+    substitute for a normal first-look record on newly created cards.
+    """
+    if (
+        t30.get("status") != "RESOLVED"
+        or t30.get("origin") != T30_BOOTSTRAP_ORIGIN
+        or str(t30.get("hkjc_match_id") or "") != str(watch.get("match_id") or "")
+        or not str(t30.get("crown_match_id") or "").strip()
+        or t30.get("identity_confidence") != "authoritative_hkjc_id_unique"
+    ):
+        return False
+    footbreak_kickoff = _time(watch.get("kickoff"))
+    crown_kickoff = _time(t30.get("crown_kickoff"))
+    if footbreak_kickoff is None or crown_kickoff is None:
+        return False
+    expected = hashlib.sha256(_canonical_bridge_identity(
+        str(watch.get("match_id") or ""),
+        str(t30.get("crown_match_id") or ""),
+        footbreak_kickoff,
+        crown_kickoff,
+    ).encode("utf-8")).hexdigest()
+    context = t30.get("identity_context")
+    return (
+        t30.get("bridge_id") == expected
+        and isinstance(context, dict)
+        and context.get("status") == "VALIDATED"
+    )
+
+
 def prefetch_bridge(watch: dict[str, Any], *, stage: str = "T-30", now: str | None = None) -> dict[str, Any]:
-    """Persist first-look identity and T-30 exact-market evidence, locally only."""
+    """Persist first-look identity and T-30 exact-market evidence, locally only.
+
+    A T-30 call may bootstrap *only* a card that was durably created before
+    this bridge existed and has no first-look object.  That bounded transition
+    keeps the historical fact intact: it never manufactures a ``first_look``
+    stage, only records an independently authoritative T-30 identity.
+    """
     now = now or _iso_now()
     now_time = _time(now)
     kickoff = _time(watch.get("kickoff"))
@@ -317,9 +369,28 @@ def prefetch_bridge(watch: dict[str, Any], *, stage: str = "T-30", now: str | No
         root["first_look"] = value
         return value
     first = root.get("first_look") if isinstance(root.get("first_look"), dict) else {}
+    bootstrap = not isinstance(root.get("first_look"), dict)
+    if bootstrap and not _has_native_stage(watch, "T-30"):
+        # This function is normally called immediately after record_picks has
+        # atomically stored a genuine native T-30.  Do not make it usable as a
+        # generic pre-kickoff bulk/backfill tool.
+        value = {
+            "at": now, "status": "UNAVAILABLE",
+            "reason": "crown_t30_bootstrap_native_stage_missing",
+            "origin": T30_BOOTSTRAP_ORIGIN,
+        }
+    elif bootstrap:
+        # The identity resolver above still enforces authoritative HKJC id,
+        # unique Crown card, kickoff, team, and league checks.  This explicit
+        # provenance is what allows T-5 to distinguish the safe transition
+        # path from a missing or fabricated first-look stage.
+        value = value | {
+            "origin": T30_BOOTSTRAP_ORIGIN,
+            "first_look_recorded": False,
+        }
     # T-30 must re-verify precisely the ID/card chosen at first look.  Never
     # replace a prior bridge with a later fuzzy/name-only candidate.
-    if value.get("status") == "RESOLVED" and (
+    if not bootstrap and value.get("status") == "RESOLVED" and (
         first.get("status") != "RESOLVED"
         or first.get("crown_match_id") != value.get("crown_match_id")
         or first.get("bridge_id") != value.get("bridge_id")
@@ -440,15 +511,20 @@ def _crown_quote_for_verified_bridge(
     watch: dict[str, Any], market: str, side: str, line: float,
     stage_at: datetime, kickoff: datetime,
 ) -> tuple[dict[str, Any] | None, str | None]:
-    """Use only the previously durable first-look and T-30 bridge."""
+    """Use a normal first-look bridge or one verified existing-card bootstrap."""
     bridge = ((watch.get("counterpart_bridges") or {}).get("crown") or {})
     first = bridge.get("first_look") if isinstance(bridge, dict) else None
     t30 = bridge.get("t30") if isinstance(bridge, dict) else None
-    if not isinstance(first, dict) or first.get("status") != "RESOLVED":
+    bootstrap = not isinstance(first, dict) and isinstance(t30, dict) and (
+        t30.get("origin") == T30_BOOTSTRAP_ORIGIN
+    )
+    if bootstrap and not _verified_t30_bootstrap(watch, t30):
+        return None, "crown_t30_bootstrap_unverified"
+    if not bootstrap and (not isinstance(first, dict) or first.get("status") != "RESOLVED"):
         return None, "crown_first_look_bridge_missing_or_unresolved"
     if not isinstance(t30, dict) or t30.get("status") != "RESOLVED":
         return None, "crown_t30_bridge_missing_or_unresolved"
-    if first.get("crown_match_id") != t30.get("crown_match_id"):
+    if not bootstrap and first.get("crown_match_id") != t30.get("crown_match_id"):
         return None, "crown_t30_bridge_changed"
     mapping = (t30.get("market_mappings") or {}).get(market)
     if not isinstance(mapping, dict) or mapping.get("status") != "AVAILABLE":

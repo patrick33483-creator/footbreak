@@ -200,9 +200,15 @@ def _bridge_stage_state(bridge: dict[str, Any], name: str) -> dict[str, Any]:
     value = bridge.get(name)
     if not isinstance(value, dict):
         return {"status": "MISSING", "reason": "bridge_stage_not_persisted"}
+    origin = value.get("origin")
+    if not origin:
+        origin = "first_look" if name == "first_look" else (
+            "first_look_reverified" if name == "t30" else "t5_capture"
+        )
     return {
         "status": str(value.get("status") or "UNKNOWN"),
         "reason": value.get("reason"),
+        "origin": str(origin),
     }
 
 
@@ -211,7 +217,7 @@ def _bridge_summary(watches: Any, now: datetime) -> dict[str, Any]:
     names = ("first_look", "t30", "t5")
     totals = {
         name: {"recorded": 0, "missing": 0, "resolved": 0, "unavailable": 0,
-               "other": 0, "reasons": {}}
+               "other": 0, "reasons": {}, "origins": {}}
         for name in names
     }
     upcoming: list[dict[str, Any]] = []
@@ -240,6 +246,9 @@ def _bridge_summary(watches: Any, now: datetime) -> dict[str, Any]:
             reason = str(state.get("reason") or "")
             if reason:
                 bucket["reasons"][reason] = bucket["reasons"].get(reason, 0) + 1
+            origin = str(state.get("origin") or "")
+            if origin:
+                bucket["origins"][origin] = bucket["origins"].get(origin, 0) + 1
         upcoming.append({
             "match_id": watch.get("match_id"),
             "kickoff": _stamp(watch.get("kickoff")),

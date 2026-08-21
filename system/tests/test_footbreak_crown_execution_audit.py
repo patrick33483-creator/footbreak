@@ -49,7 +49,8 @@ class CrossBookAuditTests(unittest.TestCase):
                     "counterpart_bridges": {"crown": {
                         "first_look": {"status": "RESOLVED"},
                         "t30": {"status": "UNAVAILABLE",
-                                "reason": "crown_t30_exact_line_unavailable"},
+                                "reason": "crown_t30_exact_line_unavailable",
+                                "origin": "t30_bootstrap_existing_card"},
                     }},
                 },
             }}), encoding="utf-8")
@@ -96,6 +97,10 @@ class CrossBookAuditTests(unittest.TestCase):
         self.assertEqual(bridges["stage_counts"]["t30"]["unavailable"], 1)
         self.assertEqual(
             bridges["stage_counts"]["t30"]["reasons"]["crown_t30_exact_line_unavailable"],
+            1,
+        )
+        self.assertEqual(
+            bridges["stage_counts"]["t30"]["origins"]["t30_bootstrap_existing_card"],
             1,
         )
         self.assertEqual(bridges["stage_counts"]["t5"]["missing"], 1)

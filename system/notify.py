@@ -479,6 +479,8 @@ _CROWN_COMPARISON_REASONS = {
     "crown_first_look_bridge_missing_or_changed": "首預同場身分變更",
     "crown_t30_bridge_missing_or_unresolved": "T-30 同場身分未覆核",
     "crown_t30_bridge_changed": "T-30 同場身分變更",
+    "crown_t30_bootstrap_unverified": "T-30 過渡同場身分未驗證",
+    "crown_t30_bootstrap_native_stage_missing": "T-30 原生階段未保存",
     "crown_t30_exact_market_side_line_missing_or_ambiguous": "T-30 盤口未能對應",
     "crown_t30_exact_market_side_line_ambiguous": "T-30 同線盤口不唯一",
     "crown_t30_native_market_stage_missing": "T-30 皇冠原生盤口未收集",
