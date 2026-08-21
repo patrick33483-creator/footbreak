@@ -15,12 +15,12 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from analysis import bilateral_decision as bilateral
-from analysis.granular_conditions import MARKET_LABELS, MARKETS, match_upcoming
+from analysis.granular_conditions import MARKET_LABELS, MARKETS
 from analysis.wilson_portfolio import _audit_selection, _native_t5, _selected
 from analysis.wilson_validation import (
     DECISION_STAGE, FIXED_STAKE, FIXTURE_MARKET_CAP, FIXTURE_STAKE_CAP,
     STARTING_BANKROLL, admission_arithmetic,
-    matching_admissions,
+    matching_admissions, formal_registry_candidates, match_formal_registry,
 )
 from .common import iso_hkt, parse_time
 
@@ -215,7 +215,7 @@ def evaluate_new_t5(
     decision_at = iso_hkt()
     decision_time = _time(decision_at)
     if (
-        not fixture or ranking is None or current is None
+        not fixture or current is None
         or not _native_t5(watch, current, _time)
         or not kickoff or not stage_at or stage_at >= kickoff
         or decision_time is None or decision_time >= kickoff
@@ -224,7 +224,12 @@ def evaluate_new_t5(
     hkjc_id = str(watch.get("hkjc_match_id") or "")
     stage_rows = [{"match_id": fixture, "stage": DECISION_STAGE, "kickoff": watch.get("kickoff"),
                    "predicted_at": current.get("ts"), "market_predictions": current.get("market_predictions") or []}]
-    matched = match_upcoming(stage_rows, list(ranking), system="crown", decision_stage=DECISION_STAGE).get(fixture, [])
+    formal_candidates = formal_registry_candidates(ledger, "crown", now=decision_at)
+    if not formal_candidates:
+        _audit(ns, fixture, "*", "formal_condition_registry_unavailable"); return [], ns["audit"][-1:]
+    matched = match_formal_registry(
+        stage_rows, formal_candidates, system="crown", decision_stage=DECISION_STAGE,
+    ).get(fixture, [])
     conditions = (ledger.get("wilson_validation") or {}).get("conditions") or {}
     for market in MARKETS:
         signal, reason = _native_crown_signal(current, market, watch, stage_at)

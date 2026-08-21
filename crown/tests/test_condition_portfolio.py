@@ -109,6 +109,34 @@ class ConditionPortfolioTests(unittest.TestCase):
         self.assertEqual(created_audit["wilson_admission"]["actual_decimal_odds_raw"], 1.83)
         self.assertTrue(created_audit["wilson_admission"]["passes"])
 
+    def test_frozen_registry_admits_native_low_odds_without_live_research_card(self) -> None:
+        """A frozen formal condition survives an empty/re-ranked research list."""
+        rows = [
+            historical_row(f"registry-{i}", "HDC", hit=i < 50,
+                           kickoff=datetime(2026, 3, 1, 20, tzinfo=HKT) + timedelta(days=i))
+            for i in range(59)
+        ]
+        ledger = {"bets": []}
+        # First call freezes the formal condition.  Its sub-minimum native
+        # price is still a condition observation, never a paper bet.
+        created, audit = evaluate_new_t5(
+            ledger, watch(fixture="registry-first", odds=1.50), self.config,
+            history_rows=rows,
+        )
+        self.assertEqual(created, [])
+        self.assertTrue(any(item["status"] == "MATCHED_NO_BET" for item in audit))
+        self.assertEqual(len(ledger["wilson_validation"]["observations"]), 1)
+        self.assertEqual(ledger["bets"], [])
+        # The mutable research ranking is now empty.  Existing frozen formal
+        # registry identity still matches the next exact native T-5.
+        created, audit = evaluate_new_t5(
+            ledger, watch(fixture="registry-second", odds=1.50), self.config,
+            ranking=[],
+        )
+        self.assertEqual(created, [])
+        self.assertTrue(any(item["status"] == "MATCHED_NO_BET" for item in audit))
+        self.assertEqual(len(ledger["wilson_validation"]["observations"]), 2)
+
     def test_all_three_markets_can_be_bought_once_for_one_fixture(self) -> None:
         rows = []
         for index in range(59):

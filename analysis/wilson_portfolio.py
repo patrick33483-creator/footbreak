@@ -5,11 +5,11 @@ import math
 from datetime import datetime, timezone
 from typing import Any, Callable, Iterable
 
-from .granular_conditions import MARKETS, _role, match_upcoming
+from .granular_conditions import MARKETS, _role
 from .wilson_validation import (
     DECISION_STAGE, FIXED_STAKE, FIXTURE_MARKET_CAP, FIXTURE_STAKE_CAP,
     apply_active_evidence, commit_bet, ensure_namespace, matching_admissions,
-    record_match_observation,
+    record_match_observation, formal_registry_candidates, match_formal_registry,
 )
 
 
@@ -107,20 +107,36 @@ def evaluate(
         return rejected("not_first_native_pre_kickoff_t5")
     if not all(str(watch.get(field) or "").strip() for field in ("league", "home", "away")):
         return rejected("missing_fixture_context_for_public_condition_bet")
-    if ranking is None:
-        return rejected("frozen_discovery_snapshot_unavailable")
     stage_at = str(current.get("ts") or current.get("source_snapshot_at") or now)
-    # Match only conditions that the frozen discovery snapshot mapped to the
-    # exact persisted line/side; no prospective result is ever an input here.
+    # Formal admission is projected from the immutable condition registry,
+    # not the mutable/re-ranked granular research cards.  ``ranking`` remains
+    # an input for the one-time freeze performed by the caller, but can never
+    # decide whether an already frozen condition exists.
+    formal_candidates = formal_registry_candidates(ledger, system, now=now)
+    if not formal_candidates:
+        # Keep the historic reason stable for callers which supplied an
+        # initial discovery snapshot that yielded no valid formal condition.
+        return rejected(
+            "no_frozen_historical_condition"
+            if ranking is not None else "formal_condition_registry_unavailable"
+        )
+    # The matcher derives the exact current native side/line from this saved
+    # T-5.  The condition identity remains the registry's original key.
     current_rows = [{"match_id": fixture, "stage": current.get("stage"), "kickoff": watch.get("kickoff") or watch.get("kickoff_hkt"),
                      "predicted_at": stage_at, "market_predictions": current.get("market_predictions") or []}]
-    matched = match_upcoming(current_rows, list(ranking), system=system, decision_stage=DECISION_STAGE).get(fixture, [])
+    matched = match_formal_registry(
+        current_rows, formal_candidates, system=system, decision_stage=DECISION_STAGE,
+    ).get(fixture, [])
     # A replay of an already committed T-5 must report its durable idempotency
     # outcome before consulting a later evidence-version boundary. It neither
     # creates a second bet nor re-evaluates old quote evidence.
     existing = [row for row in ledger.get("bets") or []
                 if isinstance(row, dict) and row.get("portfolio") == f"{system}_wilson_test"
                 and str(row.get("match_id") or "") == fixture]
+    existing_observations = [
+        row for row in ((ns.get("observations") or []))
+        if isinstance(row, dict) and str(row.get("match_id") or "") == fixture
+    ]
     proposed: list[tuple[str, dict[str, Any], dict[str, Any], str | None, float, str]] = []
     audit: list[dict[str, Any]] = []
     for market in MARKETS:
@@ -131,7 +147,10 @@ def evaluate(
         if selected is None:
             audit.append({"market": market, "status": "SKIPPED", "reason": reason})
             continue
-        if any(str(row.get("code") or "") == market for row in existing):
+        if any(str(row.get("code") or "") == market for row in existing) or any(
+            str(row.get("code") or row.get("market") or "") == market
+            for row in existing_observations
+        ):
             audit.append({
                 "market": market, "status": "SKIPPED",
                 "reason": "idempotent_existing_market",

@@ -101,7 +101,8 @@ class ReciprocalEvidenceTests(unittest.TestCase):
             with patch.dict(os.environ, {"CROWN_HKJC_EXECUTION_EVIDENCE_PATH": str(path)}), \
                  patch.object(reciprocal, "_native_t5", return_value=True), \
                  patch.object(reciprocal, "_native_crown_signal", return_value=(signal, None)), \
-                 patch.object(reciprocal, "match_upcoming", return_value={"crown-1": [{}]}), \
+                 patch.object(reciprocal, "formal_registry_candidates", return_value=[{}]), \
+                 patch.object(reciprocal, "match_formal_registry", return_value={"crown-1": [{}]}), \
                  patch.object(reciprocal, "matching_admissions", return_value=([admission], "wilson_pass")):
                 created, _ = reciprocal.evaluate_new_t5(ledger, watch, ranking=[{}])
                 repeated, _ = reciprocal.evaluate_new_t5(ledger, watch, ranking=[{}])

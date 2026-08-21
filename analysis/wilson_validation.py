@@ -617,6 +617,12 @@ def sync_granular_ranking_evidence(
             continue
         frozen = ns["conditions"].get(signature)
         if not isinstance(frozen, dict):
+            # A regenerated ranking is a research view, not a formal
+            # condition factory.  Only the one initial frozen discovery
+            # snapshot may introduce a condition identity.  Thereafter the
+            # immutable registry is authoritative for admission.
+            if not initial:
+                continue
             frozen = {
                 "signature": signature,
                 "frozen_at": now,
@@ -696,6 +702,132 @@ def sync_granular_ranking_evidence(
         if isinstance(frozen, dict):
             item["condition_number"] = frozen.get("condition_number")
     return registered
+
+
+def formal_registry_candidates(
+    ledger: dict[str, Any], system: str, *, now: str | None = None,
+) -> list[dict[str, Any]]:
+    """Project *only* validated frozen formal conditions for native matching.
+
+    The public granular ranking is deliberately mutable research.  It may be
+    empty, re-sorted, or contain new R# cards without changing prospective
+    admission.  A formal condition is instead the persisted immutable
+    definition and historical evidence which were frozen before any native
+    decision.  The projection restores the matcher input shape without
+    silently creating, rewriting, or promoting an identity.
+    """
+    ns = ensure_namespace(ledger, system, now=now)
+    output: list[dict[str, Any]] = []
+    for raw_signature, frozen in (ns.get("conditions") or {}).items():
+        if not isinstance(frozen, dict):
+            continue
+        signature = str(raw_signature)
+        definition = frozen.get("definition")
+        history = frozen.get("historical_evidence")
+        if not isinstance(definition, dict) or not isinstance(history, dict):
+            continue
+        if str(definition.get("system") or "") != system:
+            continue
+        key = definition.get("miner_key")
+        if not isinstance(key, list) or not key:
+            continue
+        # Recompute from immutable stored axes.  A stale namespace/signature
+        # migration must fail closed rather than accidentally matching a
+        # similarly named live ranking card.
+        candidate = {
+            **copy.deepcopy(definition),
+            "key": copy.deepcopy(key),
+            "source_artifact": copy.deepcopy(history.get("artifact") or {}),
+            "total": {
+                "hits": history.get("hits"),
+                "decided": history.get("decided"),
+                "pushes": history.get("pushes") or 0,
+            },
+            "__formal_frozen_signature": signature,
+            "__formal_frozen_definition": copy.deepcopy(definition),
+            "__formal_frozen_history": copy.deepcopy(history),
+        }
+        rebuilt, _rebuilt_definition = condition_signature(system, candidate)
+        if rebuilt != signature:
+            continue
+        if _historical(candidate, _rebuilt_definition, str(now or ns["activation_at"])) is None:
+            continue
+        output.append(candidate)
+    return output
+
+
+def match_formal_registry(
+    rows: Iterable[dict[str, Any]], registry: Iterable[dict[str, Any]], *, system: str,
+    decision_stage: str = DECISION_STAGE,
+) -> dict[str, list[dict[str, Any]]]:
+    """Match immutable formal axes while deliberately excluding quote-price axes.
+
+    ``tier``/``tier_path`` describe the observed quote price and are useful
+    historical research labels, but cannot decide whether a formal condition
+    observation exists: the native current price is evaluated afterwards by
+    the Wilson execution gate.  Every other frozen structural axis is exact.
+    """
+    from .granular_conditions import _descriptor, _paths, canonical_panels
+
+    required = {"system", "market", "path", "decision", "direction", "role", "bucket"}
+
+    def axes(candidate: dict[str, Any]) -> dict[str, str] | None:
+        result: dict[str, str] = {}
+        aliases = {
+            "stage": "decision", "decision_stage": "decision",
+            "observed_path": "path", "odds_tier": "tier",
+            "line_bucket": "bucket", "tier_path": "tier_path",
+            "odds_trajectory": "tier_path",
+        }
+        for raw in candidate.get("key") or []:
+            if not isinstance(raw, str) or "=" not in raw:
+                return None
+            key, value = raw.split("=", 1)
+            key, value = aliases.get(key.strip(), key.strip()), value.strip()
+            if not key or not value or (key in result and result[key] != value):
+                return None
+            result[key] = value
+        if not required.issubset(result) or result["system"] != system:
+            return None
+        if result["decision"] != decision_stage or result["path"].split("→")[-1] != decision_stage:
+            return None
+        return result
+
+    candidates = [
+        (candidate, axes(candidate)) for candidate in registry
+        if isinstance(candidate, dict) and isinstance(candidate.get("__formal_frozen_signature"), str)
+    ]
+    candidates = [(candidate, key) for candidate, key in candidates if key is not None]
+    output: dict[str, list[dict[str, Any]]] = {}
+    for panel in canonical_panels(rows, settled_only=False):
+        fixture = str(panel.get("fixture") or "")
+        matches: list[dict[str, Any]] = []
+        for path in _paths(panel, decision_stage):
+            if path[-1]["stage"] != decision_stage:
+                continue
+            for level in range(4):
+                descriptor, _label, _specificity = _descriptor(system, path, level)
+                live = dict(piece.split("=", 1) for piece in descriptor)
+                for candidate, frozen_axes in candidates:
+                    if all(
+                        live.get(axis) == value
+                        for axis, value in frozen_axes.items()
+                        if axis not in {"tier", "tier_path"}
+                    ):
+                        matches.append(candidate | {
+                            "selected_side": path[-1]["side"],
+                            "selected_line": path[-1]["selected_line"],
+                            "selected_odds": path[-1]["odds"],
+                        })
+        if matches:
+            dedup = {str(item.get("__formal_frozen_signature") or repr(item.get("key"))): item for item in matches}
+            existing = {
+                str(item.get("__formal_frozen_signature") or repr(item.get("key"))): item
+                for item in output.get(fixture, [])
+            }
+            existing.update(dedup)
+            output[fixture] = list(existing.values())
+    return output
 
 
 def project_granular_ranking_evidence(
@@ -1201,7 +1333,34 @@ def matching_admissions(
         if str(candidate.get("market") or "") != market or _selection_signature(market, candidate) != selected_sig:
             continue
         signature, definition = condition_signature(system, candidate)
-        history = _historical(candidate, definition, stage_at)
+        formal_signature = candidate.get("__formal_frozen_signature")
+        formal_definition = candidate.get("__formal_frozen_definition")
+        formal_history = candidate.get("__formal_frozen_history")
+        if formal_signature is not None:
+            # Registry candidates must survive a round-trip exactly.  Never
+            # trust a caller-provided frozen payload when its signature no
+            # longer describes the stored immutable axes.
+            if (
+                str(formal_signature) != signature
+                or not isinstance(formal_definition, dict)
+                or formal_definition != definition
+                or not isinstance(formal_history, dict)
+            ):
+                continue
+            history = copy.deepcopy(formal_history)
+            try:
+                valid_history = (
+                    int(history.get("hits")) >= 0
+                    and int(history.get("decided")) >= MIN_DECIDED
+                    and int(history.get("hits")) <= int(history.get("decided"))
+                    and isinstance(history.get("artifact"), dict)
+                )
+            except (TypeError, ValueError):
+                valid_history = False
+            if not valid_history:
+                continue
+        else:
+            history = _historical(candidate, definition, stage_at)
         if history is not None:
             grouped.setdefault(signature, []).append((candidate, definition, history))
     matches: list[dict[str, Any]] = []

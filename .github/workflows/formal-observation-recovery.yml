@@ -1,0 +1,94 @@
+name: Proof-gated formal low-odds recovery
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: audit is read-only; apply reconstructs only individually proven lifecycle fields
+        required: true
+        default: audit
+        type: choice
+        options: [audit, apply]
+      confirmation:
+        description: "Required only for apply: APPLY_PROOF_GATED_FORMAL_RECOVERY"
+        required: false
+        type: string
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  recover:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: Audit or apply bounded formal observation recovery
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          MODE: ${{ inputs.mode }}
+          CONFIRMATION: ${{ inputs.confirmation }}
+        run: |
+          set -euo pipefail
+          if [ "$MODE" = apply ] && [ "$CONFIRMATION" != APPLY_PROOF_GATED_FORMAL_RECOVERY ]; then
+            echo "apply requires the exact confirmation token" >&2
+            exit 2
+          fi
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=8 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "sudo env MODE='$MODE' CONFIRMATION='$CONFIRMATION' bash -s" <<'REMOTE' | tee formal-observation-recovery.json
+          set -euo pipefail
+          cd /opt/footbreak
+          python=/opt/footbreak/.venv/bin/python3
+          [ -x "$python" ] || python=python3
+          apply=()
+          if [ "$MODE" = apply ]; then
+            # Stop only writers while the two atomic ledgers are changed.
+            # Timers are restarted even if a proof check fails.
+            restart() {
+              systemctl start footbreak-tick.timer footbreak-sweep.timer footbreak-settle.timer crown-settle.timer || true
+            }
+            trap restart EXIT
+            systemctl stop footbreak-tick.timer footbreak-sweep.timer footbreak-settle.timer \
+              footbreak-tick.service footbreak-sweep.service footbreak-settle.service || true
+            systemctl stop crown-settle.timer crown-settle.service || true
+            for i in $(seq 1 24); do flock -n /var/lock/footbreak.lock true && break; sleep 5; done
+            flock -n /var/lock/footbreak.lock true
+            apply=(--apply)
+          fi
+          PYTHONPATH=/opt/footbreak "$python" analysis/recover_formal_observations.py \
+            --system footbreak --ledger system/sim_ledger.json \
+            --history system/accuracy_history.json "${apply[@]}"
+          PYTHONPATH=/opt/footbreak "$python" analysis/recover_formal_observations.py \
+            --system crown --ledger /var/lib/footbreak/crown/ledger.json \
+            --history /var/lib/footbreak/crown/prediction_history.json "${apply[@]}"
+          if [ "$MODE" = apply ]; then
+            # These standard settle paths rebuild both published dashboards and
+            # re-check result evidence.  No execution/bet path is invoked.
+            /opt/footbreak/deploy/run.sh settle
+            /opt/footbreak/deploy/crown-run.sh settle
+          fi
+          REMOTE
+
+      - name: Upload migration audit
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: formal-observation-recovery-${{ github.run_id }}
+          path: formal-observation-recovery.json
+          if-no-files-found: warn
+          retention-days: 30
