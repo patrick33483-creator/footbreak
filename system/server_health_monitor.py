@@ -97,6 +97,10 @@ def _stage_names(watch: dict[str, Any]) -> set[str]:
         str(row.get("stage") or "")
         for row in (watch.get("stages") or [])
         if isinstance(row, dict)
+        # A durable data-unavailable attempt is useful incident evidence, but
+        # is deliberately retryable and must not suppress the missing-stage
+        # repair/alert path for a still pre-kickoff T-30 or T-5.
+        and row.get("status") != "DATA_MISSING"
     }
 
 

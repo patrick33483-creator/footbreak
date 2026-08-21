@@ -71,15 +71,44 @@ def _tick_rows_from_predictions(
             "_due_stage": stage,
         })
         seen.add(match_id)
+    # The durable watch is authoritative for a scheduled native stage.  A
+    # projection/merge delay must not make a known T-30 disappear from the
+    # time-critical local queue just because its dashboard card is absent.
+    for key, watch in (ledger.get("watch") or {}).items():
+        if not isinstance(watch, dict):
+            continue
+        match_id = str(watch.get("match_id") or key or "")
+        kickoff = parse_time(watch.get("kickoff_hkt") or watch.get("kickoff"))
+        if not match_id or match_id in seen or kickoff is None:
+            continue
+        minutes = (kickoff - now).total_seconds() / 60
+        done = completed_stages(watch, MATCHING_VERSION, PREDICTION_ERA)
+        stage = stage_for(minutes, False, done)
+        if not stage:
+            continue
+        rows.append({
+            "id": match_id,
+            "league": watch.get("league") or "",
+            "home": watch.get("home") or "",
+            "away": watch.get("away") or "",
+            "kickoff": kickoff,
+            "_due_stage": stage,
+        })
+        seen.add(match_id)
     rows.sort(key=lambda row: row["kickoff"])
     return rows
 
 
 def _prioritize_tick_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Give all due T-5 work exclusive use of the current tick."""
-    if any(row.get("_due_stage") == "T-5" for row in rows):
-        return [row for row in rows if row.get("_due_stage") == "T-5"]
-    return rows
+    """Put native deadlines ahead of first-look work without starving T-30."""
+    rank = {"T-5": 0, "T-30": 1, "首預": 2}
+    return sorted(
+        rows,
+        key=lambda row: (
+            rank.get(str(row.get("_due_stage") or ""), 3),
+            row.get("kickoff") or datetime.max.replace(tzinfo=HKT),
+        ),
+    )
 
 
 def _tick_pass_deadline_seconds() -> float:
@@ -1412,7 +1441,7 @@ def _commit_stage_predictions(
                 ledger["watch"].get(match_id, {}).get("stages") or []
             )
             committed_predictions.append(prediction)
-            if stage in {"T-30", "T-5"} and (
+            if stage in {"T-30", "T-5"} and prediction.get("status") != "DATA_MISSING" and (
                 not prior_stage or (stage == "T-5" and bool(created))
             ) and any(
                 row.get("stage") == stage for row in prediction["stages"]
@@ -1430,31 +1459,32 @@ def _commit_stage_predictions(
     return emitted, fresh_condition_predictions, len(retained)
 
 
-def _local_bulk_t5_prediction(
+def _local_bulk_stage_prediction(
     titan: dict[str, Any],
     config: Settings,
     crown_snapshot: dict[str, Any],
+    stage: str,
 ) -> dict[str, Any]:
-    """Build a T-5 card from a persisted identity and current bulk Crown odds.
+    """Build a timed card from a persisted identity and current Crown odds.
 
     This deliberately supplies no HKJC/PinnAPI bridge.  A validated current
-    ID-3 bulk board makes the existing T-5 branch return before any optional
-    reference provider is read.  The empty bridge is diagnostic only; it must
-    never trigger fixture discovery or matching for this deadline-bound path.
+    ID-3 board is sufficient to durably record the native Crown observation.
+    The empty bridge is diagnostic only; it must never trigger fixture
+    discovery or matching for this deadline-bound path.
     """
     no_provider_match = Match(
-        None, False, 0.0, "deferred_for_local_bulk_t5"
+        None, False, 0.0, f"deferred_for_local_bulk_{stage.lower()}"
     )
     prediction = _prediction(
         titan,
         BridgeMatch(
             no_provider_match,
             no_provider_match,
-            "local_bulk_t5",
-            "optional_providers_deferred_for_t5",
+            f"local_bulk_{stage.lower()}",
+            f"optional_providers_deferred_for_{stage.lower()}",
         ),
         None,
-        "T-5",
+        stage,
         config,
         None,  # Valid bulk evidence prevents the existing direct-page branch.
         None,  # Valid bulk evidence prevents the existing PinnAPI branch.
@@ -1477,18 +1507,59 @@ def _local_bulk_t5_prediction(
     return prediction
 
 
-def _run_local_bulk_t5(
+def _unavailable_timed_stage_prediction(
+    titan: dict[str, Any],
+    stage: str,
+    reason: str,
+) -> dict[str, Any]:
+    """Create a retryable, pre-kickoff audit record without inventing a quote."""
+    kickoff = parse_time(titan.get("kickoff"))
+    return {
+        "schema_version": "crown-prediction-v2",
+        "matching_version": MATCHING_VERSION,
+        "generated_at": iso_hkt(),
+        "match_id": str(titan.get("id") or ""),
+        "league": titan.get("league") or "",
+        "home": titan.get("home") or "",
+        "away": titan.get("away") or "",
+        "kickoff_hkt": iso_hkt(kickoff) if kickoff else "",
+        "discovered_at": iso_hkt(),
+        "stage": stage,
+        "titan_match_id": str(titan.get("id") or ""),
+        "status": "DATA_MISSING",
+        "verdict": "資料未能取得",
+        "no_bet_reason": "皇冠原生計時盤暫不可用；未建立模擬注。",
+        "candidates": [],
+        "forecast_candidates": [],
+        "market_sources": {
+            "HDC": "titan007-crown-id-3",
+            "HIL": "titan007-crown-id-3",
+        },
+        "source_status": "crown_id3_unavailable",
+        # This record is atomically saved with the stage snapshot.  It is not a
+        # completed stage: completed_stages() deliberately leaves it due for a
+        # bounded retry, and no post-kickoff caller may create it.
+        "collection_attempt": {
+            "at": iso_hkt(),
+            "status": "DATA_MISSING",
+            "reason": reason,
+            "source": "titan007-crown-id-3",
+        },
+    }
+
+
+def _run_local_bulk_timed_stages(
     config: Settings,
     rows: list[dict[str, Any]],
     deadline: float,
 ) -> dict[str, Any]:
-    """Persist locally due T-5 cards before kickoff without optional providers.
+    """Persist due T-30/T-5 cards before kickoff without optional providers.
 
     A current Crown ID-3 bulk row is preferred.  A missing or malformed bulk
     row gets one bounded, parallel direct-page fallback, because the bulk feed
-    can omit an otherwise live Crown market.  Anything unavailable, malformed,
-    or returned after kickoff remains due for the next tick rather than being
-    fabricated or reconstructed.
+    can omit an otherwise live Crown market.  A T-30 that remains unavailable
+    gets one durable DATA_MISSING attempt under the same state lock; it stays
+    due for repair and is never reconstructed after kickoff.
     """
     titan_client = TitanClient(config)
     try:
@@ -1558,11 +1629,22 @@ def _run_local_bulk_t5(
     stage_predictions: list[dict[str, Any]] = []
     retained = len(load_predictions(config))
     for titan in rows:
+        stage = str(titan.get("_due_stage") or "")
         snapshot = usable_snapshots.get(str(titan.get("id") or ""))
         if snapshot is None:
+            # Keep T-5's established retry semantics unchanged.  T-30 now
+            # persists an explicit native collection attempt so monitor/repair
+            # can distinguish data unavailability from a silently skipped
+            # deadline.
+            if stage == "T-30":
+                stage_predictions.append(_unavailable_timed_stage_prediction(
+                    titan,
+                    stage,
+                    "bulk_and_bounded_direct_id3_unavailable",
+                ))
             continue
         stage_predictions.append(
-            _local_bulk_t5_prediction(titan, config, snapshot)
+            _local_bulk_stage_prediction(titan, config, snapshot, stage)
         )
     unavailable = len(rows) - len(stage_predictions)
 
@@ -1576,7 +1658,8 @@ def _run_local_bulk_t5(
     return {
         "ok": True,
         "mode": "tick",
-        "fast_t5_bulk": True,
+        "fast_t5_bulk": any(row.get("_due_stage") == "T-5" for row in rows),
+        "fast_timed_stage_bulk": True,
         "predictions": len(stage_predictions),
         "retained_predictions": retained,
         "simulations_created": len(emitted),
@@ -1593,7 +1676,11 @@ def _run_local_bulk_t5(
         ),
         "pinnapi_fixtures": 0,
         "hkjc_fixtures": 0,
-        "deferred_predictions": unavailable,
+        "deferred_predictions": sum(
+            row.get("_due_stage") != "T-30"
+            and str(row.get("id") or "") not in usable_snapshots
+            for row in rows
+        ),
         "failed_predictions": 0,
     }
 
@@ -1645,15 +1732,17 @@ def run(
                 "predictions": 0, "retained_predictions": len(existing_predictions),
                 "simulations_created": 0,
             }
-        # A due T-5 owns this tick.  Deferring recoverable T-30/first-look
-        # work by one minute is safe; making a T-5 wait behind it is not.
         titan_rows = _prioritize_tick_rows(titan_rows)
-        if any(row.get("_due_stage") == "T-5" for row in titan_rows):
-            # This return is intentionally before PinnAPI credentials,
-            # policy/model reads, fixture discovery, bridge mapping, and
-            # per-fixture providers.  A stalled optional path cannot delay a
-            # valid persisted T-5 Crown record.
-            return _run_local_bulk_t5(config, titan_rows, tick_deadline)
+        timed_rows = [
+            row for row in titan_rows
+            if row.get("_due_stage") in {"T-30", "T-5"}
+        ]
+        if timed_rows:
+            # This return is intentionally before PinnAPI credentials, policy
+            # reads, fixture discovery and bridge mapping.  T-5 stays first,
+            # but T-30 receives the same bounded direct-ID=3 path instead of
+            # being starved behind a continuous T-5 queue or slow references.
+            return _run_local_bulk_timed_stages(config, timed_rows, tick_deadline)
         # This is deliberately measured before any provider work.  The
         # systemd 55-second limit remains the final safeguard for an upstream
         # fixture-list call that cannot be interrupted in-process.

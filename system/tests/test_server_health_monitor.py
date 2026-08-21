@@ -83,6 +83,18 @@ class ServerHealthMonitorTests(unittest.TestCase):
         health["engine_warning"] = ""
         self.assertEqual(monitor.tick_internal_deadline(ledger, health, NOW), 0)
 
+    def test_data_missing_t30_remains_an_actionable_repair_failure(self) -> None:
+        ledger = {"watch": {"due": {
+            "kickoff": (NOW + timedelta(minutes=30)).isoformat(),
+            "discovered_at": (NOW - timedelta(hours=1)).isoformat(),
+            "stages": [{
+                "stage": "T-30", "status": "DATA_MISSING",
+                "collection_attempts": [{"reason": "bulk_and_bounded_direct_id3_unavailable"}],
+            }],
+        }}}
+        self.assertEqual(monitor.missing_native_stages(ledger, NOW), 1)
+        self.assertTrue(monitor._due_unfinished_stage("crown", ledger, NOW))
+
     def test_absence_of_telegram_or_wilson_candidate_is_not_healthy_by_assumption(self) -> None:
         # There is no message/event to inspect, but the native timed stage is
         # persisted.  A sample gate that created no eligible Wilson row must

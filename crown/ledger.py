@@ -237,6 +237,7 @@ def _snapshot(prediction: dict[str, Any], stage: str) -> dict[str, Any]:
         "pinnapi_corner_event_id", "pinnapi_corner_source_at", "pinnapi_corner_timestamp_inferred",
         "matching_version", "crown_quote_cached_forecast_only", "crown_cached_source_at",
         "crown_quote_source", "crown_quote_status", "crown_cached_t5_fallback",
+        "collection_attempt",
     )} | {
         "prediction_era": PREDICTION_ERA,
         "schema_version": PREDICTION_SCHEMA_VERSION,
@@ -346,6 +347,13 @@ def sync_prediction(ledger: dict[str, Any], prediction: dict[str, Any], config: 
         if isinstance(row, dict) and row.get("stage") == stage
     ), None)
     snapshot = _snapshot(prediction, stage)
+    attempt = snapshot.pop("collection_attempt", None)
+    if isinstance(attempt, dict):
+        prior_attempts = (
+            list(existing.get("collection_attempts") or [])
+            if isinstance(existing, dict) else []
+        )
+        snapshot["collection_attempts"] = (prior_attempts + [attempt])[-8:]
     learning = _record_learning_snapshot(prediction, snapshot)
     if learning:
         snapshot.update({

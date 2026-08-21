@@ -1612,7 +1612,7 @@ class CrownSafetyTests(unittest.TestCase):
         rows = _tick_rows_from_predictions(predictions, ledger, self.now)
         self.assertEqual([row["id"] for row in rows], ["t5"])
 
-    def test_t5_exclusively_owns_tick_when_t30_is_also_due(self) -> None:
+    def test_timed_stages_stay_ahead_of_first_look_without_starving_t30(self) -> None:
         rows = [
             {"id": "t30", "_due_stage": "T-30"},
             {"id": "t5-a", "_due_stage": "T-5"},
@@ -1621,7 +1621,7 @@ class CrownSafetyTests(unittest.TestCase):
         ]
         self.assertEqual(
             [row["id"] for row in _prioritize_tick_rows(rows)],
-            ["t5-a", "t5-b"],
+            ["t5-a", "t5-b", "t30", "first"],
         )
 
     def test_tick_fast_noop_avoids_local_policy_and_provider_clients(self) -> None:
@@ -1870,6 +1870,93 @@ class CrownSafetyTests(unittest.TestCase):
             stored = load_predictions(config)[0]
             self.assertEqual(stored["crown_quote_source"], "titan007-crown-id-3")
             self.assertEqual(stored["crown_quote_status"], "direct_current")
+
+    def test_due_t30_bulk_persists_without_optional_provider_or_bridge(self) -> None:
+        """T-30 uses the same deadline-first native-ID=3 path as T-5."""
+        with tempfile.TemporaryDirectory() as directory:
+            config = replace(
+                settings(), state_dir=Path(directory), enabled=True, pinnapi_key="test",
+            )
+            now = datetime.now(__import__("crown.common", fromlist=["HKT"]).HKT)
+            card = {
+                "match_id": "t30-fast", "league": "L", "home": "Home", "away": "Away",
+                "kickoff_hkt": (now + timedelta(minutes=30)).isoformat(),
+            }
+            save_predictions(config, [card])
+            save_ledger(config, {
+                "bankroll": 50000, "bets": [], "log": [], "stats": {},
+                "watch": {"t30-fast": {
+                    "matching_version": MATCHING_VERSION, "prediction_era": PREDICTION_ERA,
+                    "stages": [{"stage": "首預", "status": "PREDICTION_READY"}],
+                }},
+            })
+            titan_client = Mock()
+            titan_client.crown_bulk_price_snapshots.return_value = {
+                "t30-fast": {
+                    "prices": [
+                        {"market": "HDC", "line": -0.25, "selection": side,
+                         "odds": odds, "source_at": now.timestamp()}
+                        for side, odds in (("H", 1.91), ("A", 1.99))
+                    ],
+                    "quote_source": "titan007-crown-id-3-bulk-current",
+                },
+            }
+            with patch("crown.engine.TitanClient", return_value=titan_client), \
+                 patch("crown.engine.PinnapiClient", side_effect=AssertionError(
+                     "T-30 must not wait for PinnAPI"
+                 )), \
+                 patch("crown.engine.fetch_matches", side_effect=AssertionError(
+                     "T-30 must not wait for HKJC discovery"
+                 )):
+                result = run("tick", config)
+            self.assertTrue(result["fast_timed_stage_bulk"])
+            self.assertEqual(result["predictions"], 1)
+            stages = load_ledger(config)["watch"]["t30-fast"]["stages"]
+            stored = next(row for row in stages if row["stage"] == "T-30")
+            self.assertEqual(stored["status"], "PREDICTION_READY")
+            self.assertEqual(stored["crown_quote_source"], "titan007-crown-id-3-bulk-current")
+
+    def test_due_t30_unavailable_is_durably_audited_and_remains_retryable(self) -> None:
+        """A failed native read is evidence, not a completed or fabricated stage."""
+        with tempfile.TemporaryDirectory() as directory:
+            config = replace(
+                settings(), state_dir=Path(directory), enabled=True, pinnapi_key="test",
+            )
+            now = datetime.now(__import__("crown.common", fromlist=["HKT"]).HKT)
+            card = {
+                "match_id": "t30-unavailable", "league": "L", "home": "Home", "away": "Away",
+                "kickoff_hkt": (now + timedelta(minutes=30)).isoformat(),
+            }
+            save_predictions(config, [card])
+            save_ledger(config, {
+                "bankroll": 50000, "bets": [], "log": [], "stats": {},
+                "watch": {"t30-unavailable": {
+                    "matching_version": MATCHING_VERSION, "prediction_era": PREDICTION_ERA,
+                    "stages": [{"stage": "首預", "status": "PREDICTION_READY"}],
+                }},
+            })
+            titan_client = Mock()
+            titan_client.crown_bulk_price_snapshots.return_value = {}
+            titan_client.crown_price_snapshot.return_value = {
+                "prices": [], "quote_source": "titan007-crown-id-3",
+            }
+            with patch("crown.engine.TitanClient", return_value=titan_client):
+                result = run("tick", config)
+            self.assertEqual(result["predictions"], 1)
+            stages = load_ledger(config)["watch"]["t30-unavailable"]["stages"]
+            stored = next(row for row in stages if row["stage"] == "T-30")
+            self.assertEqual(stored["status"], "DATA_MISSING")
+            self.assertEqual(
+                stored["collection_attempts"][-1]["reason"],
+                "bulk_and_bounded_direct_id3_unavailable",
+            )
+            self.assertNotIn(
+                "T-30",
+                completed_stages(
+                    load_ledger(config)["watch"]["t30-unavailable"],
+                    MATCHING_VERSION, PREDICTION_ERA,
+                ),
+            )
 
     def test_persisted_due_t5_bulk_commit_bypasses_hung_discovery_and_providers(self) -> None:
         """A valid local T-5 must commit without entering optional slow paths."""
