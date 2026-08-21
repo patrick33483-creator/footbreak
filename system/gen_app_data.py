@@ -616,6 +616,12 @@ def _public_crown_execution_bet(row):
     return {key: value for key, value in row.items() if key in visible}
 
 
+def _public_bilateral_decisions(namespace):
+    from analysis.bilateral_decision import public_decision
+    return [public_decision(row) for row in (namespace.get("decisions") or [])
+            if isinstance(row, dict)]
+
+
 def _wilson_match_projection(row, *, bet_status):
     """Use persisted raw Wilson arithmetic; the dashboard must never rederive it."""
     arithmetic = row.get("wilson_admission") if isinstance(row.get("wilson_admission"), dict) else {}
@@ -989,6 +995,9 @@ def main(out_path=None):
             "rejections": (
                 ((led.get("footbreak_crown_execution_test") or {}).get("stats") or {})
                 .get("rejections") or {}
+            ),
+            "decisions": _public_bilateral_decisions(
+                (led.get("footbreak_crown_execution_test") or {})
             ),
         },
         "stats": {

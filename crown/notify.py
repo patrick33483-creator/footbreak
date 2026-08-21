@@ -284,6 +284,74 @@ def _wilson_message(bet: dict[str, Any]) -> str | None:
     ])
 
 
+def _bilateral_decision_message(row: dict[str, Any]) -> str | None:
+    """Render only a persisted reciprocal fan-in decision; no ledger reread."""
+    try:
+        kickoff = parse_time(str(row.get("kickoff") or ""))
+        signal = float(row.get("signal_quote"))
+        minimum = float(row.get("minimum_odds"))
+        line = float(row.get("line"))
+        number = int(row.get("condition_number"))
+    except (TypeError, ValueError):
+        return None
+    if kickoff is None or kickoff <= now_hkt():
+        return None
+    market = MARKET_LABELS.get(str(row.get("market") or "").upper())
+    if not market:
+        return None
+    counterpart = row.get("counterpart_quote")
+    comparison = (f"馬會對照：@{float(counterpart):.2f}" if counterpart is not None
+                  else f"馬會對照：未能確認（{row.get('counterpart_reason') or '收集不可用'}）")
+    decision = {"PAPER_SIMULATION": "模擬投注",
+                "NO_BET_LOW_ODDS": "不投注：賠率不足",
+                "COUNTERPART_UNAVAILABLE": "對照收集失敗；保留原生訊號決定"}.get(
+                    str(row.get("decision")), "不投注")
+    platform = {"crown": "皇冠", "hkjc": "馬會"}.get(
+        str(row.get("chosen_execution_book") or ""), "—")
+    return "\n".join([
+        "【皇冠 Wilson】", f"{kickoff.astimezone(HKT).strftime('%H:%M')} bilateral T-5",
+        f"合符 皇冠 Wilson 條件 #{number}",
+        f"皇冠訊號：{market} · {row.get('side') or ''} {line:g} @{signal:.2f}",
+        comparison, f"最低賠率要求：{minimum:.2f}", f"決定：{decision}",
+        f"投注平台：{platform}",
+    ])
+
+
+def notify_bilateral_decisions(
+    ledger: dict[str, Any], config: Settings, *, max_attempts: int | None = None,
+    max_seconds: float | None = None, _budget: _NotificationBudget | None = None,
+) -> int:
+    """Durable decision outbox; acknowledge only after `_send` confirms ok."""
+    budget = _budget or _NotificationBudget.create(max_attempts, max_seconds)
+    ns = ledger.get("crown_hkjc_execution_test") or {}
+    decisions = {str(row.get("decision_id")): row for row in ns.get("decisions") or []
+                 if isinstance(row, dict)}
+    with notification_lock(config) as acquired:
+        if not acquired:
+            return 0
+        state = _load(config)
+        sent_ids = {str(value) for value in state.get("bilateral_decision_alerts") or []}
+        sent = 0
+        for outbox in ns.get("decision_outbox") or []:
+            if not isinstance(outbox, dict) or not outbox.get("notification_required"):
+                continue
+            did = str(outbox.get("decision_id") or "")
+            if not did or did in sent_ids:
+                continue
+            message = _bilateral_decision_message(decisions.get(did) or {})
+            if message is None or not budget.reserve_attempt():
+                continue
+            if _send(config, message, max_seconds=budget.remaining()) is False:
+                continue
+            state["bilateral_decision_alerts"] = _bounded_unique_ids(
+                list(state.get("bilateral_decision_alerts") or []) + [did]
+            )
+            state["updated_at"] = iso_hkt()
+            write_json_atomic(paths(config)["notify"], state)
+            sent_ids.add(did); sent += 1
+    return sent
+
+
 def _wilson_observation_message(row: dict[str, Any]) -> str | None:
     if row.get("portfolio") != "crown_wilson_observations" or row.get("bet_status") != "NO_BET_LOW_ODDS":
         return None
@@ -395,6 +463,14 @@ def notify_wilson_pending(
                 continue
             bid = str(bet.get("bet_id") or "")
             if not bid or bid in sent_ids or bet.get("status") != "PENDING":
+                continue
+            try:
+                from analysis.bilateral_decision import decision_for_bet
+                if decision_for_bet(
+                    ledger.get("crown_hkjc_execution_test") or {}, bet, "crown"
+                ):
+                    continue
+            except Exception:
                 continue
             message = _wilson_message(bet)
             if message is None:
@@ -514,6 +590,8 @@ def notify_hkjc_execution_pending(
         for bet in rows or []:
             bid = str(bet.get("bet_id") or "") if isinstance(bet, dict) else ""
             if not bid or bid in sent_ids:
+                continue
+            if bet.get("bilateral_decision_id"):
                 continue
             message = _hkjc_execution_message(bet)
             if message is None:
@@ -908,6 +986,10 @@ def notify_new(
         config,
         max_attempts=max_attempts,
         max_seconds=max_seconds,
+        _budget=budget,
+    )
+    delivered += notify_bilateral_decisions(
+        ledger, config, max_attempts=max_attempts, max_seconds=max_seconds,
         _budget=budget,
     )
     return delivered + notify_hkjc_execution_pending(

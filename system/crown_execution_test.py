@@ -14,6 +14,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
+from analysis import bilateral_decision as bilateral
 from analysis.granular_conditions import MARKET_LABELS, MARKETS, _role, match_upcoming
 from analysis.wilson_portfolio import _audit_selection, _native_t5, _selected
 from analysis.wilson_validation import (
@@ -87,6 +88,28 @@ def _load_local_crown_cards() -> tuple[list[dict[str, Any]], str | None]:
     if not isinstance(payload, list):
         return [], "crown_local_evidence_invalid"
     return [row for row in payload if isinstance(row, dict)], None
+
+
+def prefetch_bridge(watch: dict[str, Any], *, now: str | None = None) -> dict[str, Any]:
+    """Persist a bounded exact identity bridge at T-30, never a provider read."""
+    fixture = str(watch.get("match_id") or "")
+    kickoff = _time(watch.get("kickoff"))
+    cards, error = _load_local_crown_cards()
+    exact = [row for row in cards if str(row.get("hkjc_match_id") or "") == fixture]
+    status, reason = "RESOLVED", None
+    if error:
+        status, reason = "UNAVAILABLE", error
+    elif not fixture or kickoff is None or len(exact) != 1:
+        status, reason = "UNAVAILABLE", "crown_fixture_identity_missing_or_ambiguous"
+    elif _time(exact[0].get("kickoff_hkt") or exact[0].get("kickoff")) != kickoff:
+        status, reason = "UNAVAILABLE", "crown_fixture_kickoff_identity_mismatch"
+    bridge = {
+        "at": now or _iso_now(), "status": status, "reason": reason,
+        "counterpart_book": "crown", "hkjc_match_id": fixture,
+        "kickoff": watch.get("kickoff"),
+    }
+    watch.setdefault("counterpart_bridges", {})["crown"] = bridge
+    return bridge
 
 
 def ensure_namespace(ledger: dict[str, Any], *, now: str | None = None) -> dict[str, Any]:
@@ -247,6 +270,7 @@ def evaluate_new_t5(
     """Commit only exact, fresh cross-book simulations after a native Footbreak T-5."""
     now = now or _iso_now()
     ns = ensure_namespace(ledger, now=now)
+    bilateral.ensure_namespace(ns)
     fixture = str(watch.get("match_id") or "")
     audit: list[dict[str, Any]] = []
     if not fixture or ranking is None:
@@ -282,9 +306,9 @@ def evaluate_new_t5(
         admissions, reason = matching_admissions("footbreak", market, hkjc, matched, stage_at=str(current.get("ts") or now))
         if not admissions:
             audit.append({"market": market, "status": "SKIPPED", "reason": reason}); continue
-        quote, reason = _crown_quote_for_exact_fixture(fixture, market, side, line, stage_at, kickoff)
-        if quote is None:
-            audit.append({"market": market, "status": "SKIPPED", "reason": reason}); continue
+        quote, quote_reason = _crown_quote_for_exact_fixture(
+            fixture, market, side, line, stage_at, kickoff,
+        )
         for admission in admissions:
             signature = str(admission["signature"])
             # The normal Footbreak Wilson evaluator owns freezing/versioning of
@@ -294,6 +318,71 @@ def evaluate_new_t5(
             if not isinstance(frozen_conditions.get(signature), dict):
                 audit.append({"market": market, "status": "SKIPPED",
                               "reason": "active_wilson_condition_unavailable"})
+                continue
+            frozen = frozen_conditions[signature]
+            # The native HKJC quote fixes condition identity and its immutable
+            # Wilson minimum.  The counterpart is collected independently and
+            # is never allowed to prevent this durable fan-in record.
+            native_adjusted, native_reason = _active_existing_admission(
+                ledger, admission, _num(hkjc.get("odds")) or 0,
+            )
+            if native_adjusted is None:
+                audit.append({"market": market, "status": "SKIPPED",
+                              "reason": native_reason or "active_evidence_unavailable"})
+                continue
+            counterpart_status = "AVAILABLE" if quote is not None else "UNAVAILABLE"
+            bilateral.append_counterpart_attempt(ns, {
+                "system": "footbreak", "match_id": fixture, "market": market,
+                "side": side, "line": line, "stage_at": stage_at.isoformat(),
+                "counterpart_book": "crown", "counterpart_status": counterpart_status,
+                "counterpart_reason": quote_reason,
+                "counterpart_quote": quote.get("odds") if quote else None,
+                "counterpart_observed_at": quote.get("observed_at") if quote else None,
+            })
+            native_odds = _num(hkjc.get("odds")) or 0.0
+            counterpart_odds = _num(quote.get("odds")) if quote else None
+            chosen_odds = max(native_odds, counterpart_odds or 0.0)
+            minimum = _num((native_adjusted.get("arithmetic") or {}).get(
+                "minimum_acceptable_odds_raw",
+            ))
+            qualifies = minimum is not None and chosen_odds + 1e-12 >= minimum
+            if quote is None:
+                decision = "COUNTERPART_UNAVAILABLE"
+                chosen_book = "hkjc" if qualifies else None
+            elif qualifies:
+                decision = "PAPER_SIMULATION"
+                chosen_book = "crown" if counterpart_odds and counterpart_odds > native_odds else "hkjc"
+            else:
+                decision = "NO_BET_LOW_ODDS"
+                chosen_book = None
+            did = bilateral.decision_id(
+                system="footbreak", fixture=fixture, market=market, side=side,
+                line=line, condition_signature=signature,
+                evidence_version=native_adjusted.get("evidence_version"),
+            )
+            decision_row, _ = bilateral.persist_decision(ns, {
+                "decision_id": did, "system": "footbreak", "fixture": fixture,
+                "market": market, "side": side, "line": line,
+                "condition_signature": signature,
+                "condition_number": frozen.get("condition_number"),
+                "evidence_version": native_adjusted.get("evidence_version"),
+                "evidence_hash": native_adjusted.get("evidence_hash"),
+                "signal_book": "hkjc", "signal_quote": native_odds,
+                "signal_observed_at": hkjc.get("observed_at"),
+                "counterpart_book": "crown", "counterpart_status": counterpart_status,
+                "counterpart_quote": counterpart_odds,
+                "counterpart_observed_at": quote.get("observed_at") if quote else None,
+                "counterpart_reason": quote_reason,
+                "minimum_odds": minimum, "chosen_execution_book": chosen_book,
+                "chosen_execution_odds": chosen_odds if chosen_book else None,
+                "decision": decision, "created_at": now,
+                "stage_at": stage_at.isoformat(), "kickoff": watch.get("kickoff"),
+                "league": watch.get("league"), "home": watch.get("home"), "away": watch.get("away"),
+                "freshness_seconds": _freshness_seconds(),
+            })
+            audit.append({"market": market, "status": "DECISION",
+                          "reason": decision, "decision_id": decision_row["decision_id"]})
+            if quote is None:
                 continue
             if _same_market_existing(ns["bets"], fixture, market, side, line, signature):
                 audit.append({"market": market, "status": "SKIPPED", "reason": "idempotent_existing_exact_entry", "condition_number": (ledger.get("wilson_validation") or {}).get("conditions", {}).get(signature, {}).get("condition_number")})
@@ -305,7 +394,7 @@ def evaluate_new_t5(
                 audit.append({"market": market, "status": "SKIPPED", "reason": reason or "active_evidence_unavailable"}); continue
             if not adjusted["arithmetic"].get("passes"):
                 audit.append({"market": market, "status": "MATCHED_NO_BET", "reason": "crown_wilson_gate_not_passed", "condition_number": (ledger.get("wilson_validation") or {}).get("conditions", {}).get(signature, {}).get("condition_number"), "wilson_admission": adjusted["arithmetic"]}); continue
-            proposed.append({"market": market, "hkjc": hkjc, "quote": quote, "admission": adjusted, "line": line, "side": side})
+            proposed.append({"market": market, "hkjc": hkjc, "quote": quote, "admission": adjusted, "line": line, "side": side, "decision_id": did})
             break
     created: list[dict[str, Any]] = []
     for item in proposed:
@@ -324,6 +413,7 @@ def evaluate_new_t5(
             "crown_execution_odds": item["quote"]["odds"], "crown_execution_source": item["quote"]["source"], "crown_execution_observed_at": item["quote"]["observed_at"], "odds": item["quote"]["odds"],
             "stake": FIXED_STAKE, "stage": DECISION_STAGE, "status": "PENDING", "simulation_only": True, "real_betting_enabled": False, "first_native_pre_kickoff_t5": True, "created_at": now, "decision_at": now,
             "frozen_condition_signature": admission["signature"], "condition_number": frozen.get("condition_number"), "evidence_version": admission.get("evidence_version"), "evidence_hash": admission.get("evidence_hash"), "frozen_historical_evidence": copy.deepcopy(admission.get("history")), "wilson_admission": copy.deepcopy(admission["arithmetic"]),
+            "bilateral_decision_id": item.get("decision_id"),
             "history": [{"ts": now, "stage": DECISION_STAGE, "action": "足破×皇冠模擬注建立", "reason": "原生 HKJC T-5 訊號、皇冠相同盤口新鮮報價及 Wilson 閘門通過"}],
         }
         ns["bets"].append(bet); created.append(bet)

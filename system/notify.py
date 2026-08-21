@@ -574,6 +574,71 @@ def _condition_bet_message(bet, prospective=None):
     ])
 
 
+def _bilateral_decision_message(row):
+    """Presentation only: consumes the immutable fan-in record, never evidence."""
+    try:
+        kickoff = _future_kickoff(row.get("kickoff"))
+        minimum = float(row.get("minimum_odds"))
+        signal = float(row.get("signal_quote"))
+        line = float(row.get("line"))
+        number = int(row.get("condition_number"))
+    except (TypeError, ValueError):
+        return None
+    if kickoff is None:
+        return None
+    market = MARKET_LABELS.get(str(row.get("market") or "").upper())
+    if not market:
+        return None
+    counterpart = row.get("counterpart_quote")
+    counterpart_line = (
+        f"皇冠對照：@{float(counterpart):.2f}"
+        if counterpart is not None else
+        f"皇冠對照：未能確認（{esc(str(row.get('counterpart_reason') or '收集不可用'))}）"
+    )
+    decision = {"PAPER_SIMULATION": "模擬投注",
+                "NO_BET_LOW_ODDS": "不投注：賠率不足",
+                "COUNTERPART_UNAVAILABLE": "對照收集失敗；保留原生訊號決定"}.get(
+                    str(row.get("decision")), "不投注")
+    platform = {"hkjc": "馬會", "crown": "皇冠"}.get(
+        str(row.get("chosen_execution_book") or ""), "—")
+    return "\n".join([
+        "【足破 Wilson】", f"{kickoff.astimezone(HKT).strftime('%H:%M')} bilateral T-5",
+        f"合符 足破 Wilson 條件 #{number}",
+        f"馬會訊號：{esc(market)} · {esc(str(row.get('side') or ''))} {line:g} @{signal:.2f}",
+        counterpart_line, f"最低賠率要求：{minimum:.2f}",
+        f"決定：{decision}", f"投注平台：{platform}",
+    ])
+
+
+def notify_pending_bilateral_decisions(ledger, *, max_attempts=8, max_seconds=None, _budget=None):
+    """Retry immutable decision outbox rows; acknowledgement follows `ok:true` only."""
+    from analysis.bilateral_decision import decision_for_bet
+    del decision_for_bet
+    budget = _budget or _NotificationBudget(max_attempts, max_seconds)
+    ns = ledger.get("footbreak_crown_execution_test") or {}
+    decisions = {str(row.get("decision_id")): row for row in ns.get("decisions") or []
+                 if isinstance(row, dict)}
+    state = load_state()
+    sent = set(map(str, state.get("bilateral_decision_alerts") or []))
+    order = list(state.get("bilateral_decision_alerts") or [])
+    count = 0
+    for outbox in ns.get("decision_outbox") or []:
+        if not isinstance(outbox, dict) or not outbox.get("notification_required"):
+            continue
+        ident = str(outbox.get("decision_id") or "")
+        if not ident or ident in sent:
+            continue
+        text = _bilateral_decision_message(decisions.get(ident) or {})
+        if text is None or not budget.reserve_attempt():
+            continue
+        send(text, max_seconds=budget.remaining())  # raises unless JSON ok:true
+        sent.add(ident); order.append(ident)
+        state["bilateral_decision_alerts"] = _bounded_unique_ids(order)
+        state["last_sent"] = dt.datetime.now(HKT).isoformat(timespec="seconds")
+        save_state(state); count += 1
+    return count
+
+
 def _condition_observation_message(row):
     """Concise no-bet alert for an exact Wilson match below the raw minimum."""
     if row.get("portfolio") != "footbreak_wilson_observations" or row.get("bet_status") != "NO_BET_LOW_ODDS":
@@ -612,6 +677,16 @@ def notify_pending_condition_bets(ledger, bet_ids=None, *, max_attempts=8,
             continue
         bid = str(bet.get("bet_id") or bet.get("observation_id") or "")
         if not bid or (requested is not None and bid not in requested) or bid in sent_ids:
+            continue
+        # New bilateral T-5s have a dedicated immutable decision outbox; do
+        # not let this legacy formatter re-read or recompute a counterpart.
+        try:
+            from analysis.bilateral_decision import decision_for_bet
+            if bet.get("bet_id") and decision_for_bet(
+                ledger.get("footbreak_crown_execution_test") or {}, bet, "footbreak"
+            ):
+                continue
+        except Exception:
             continue
         text = (_condition_bet_message(bet, _condition_prospective(ledger, bet))
                 if bet.get("bet_id") else _condition_observation_message(bet))
@@ -737,6 +812,8 @@ def notify_pending_crown_execution_bets(ledger, bet_ids=None, *, max_attempts=8,
             continue
         bid = str(bet.get("bet_id") or "")
         if not bid or bid in sent_ids or (requested is not None and bid not in requested):
+            continue
+        if bet.get("bilateral_decision_id"):
             continue
         text = _crown_execution_message(bet)
         if text is None:
@@ -1046,6 +1123,11 @@ def notify_pending_committed_bets(ledger, *, max_attempts=8, max_seconds=None):
     """Drain both Footbreak committed-entry outboxes under one shared budget."""
     budget = _NotificationBudget(max_attempts, max_seconds)
     return (
+        notify_pending_bilateral_decisions(
+            ledger, max_attempts=max_attempts, max_seconds=max_seconds,
+            _budget=budget,
+        )
+        +
         notify_pending_condition_bets(
             ledger, max_attempts=max_attempts, max_seconds=max_seconds,
             _budget=budget,

@@ -25,6 +25,7 @@ from settle import condition_bets, recompute
 from crown_execution_test import (
     DISPLAY_NAME as CROWN_EXECUTION_DISPLAY_NAME,
     evaluate_new_t5 as evaluate_crown_execution_t5,
+    prefetch_bridge as prefetch_crown_bridge,
     recompute as recompute_crown_execution,
 )
 
@@ -397,6 +398,10 @@ def sync(preds_file="predictions.json", *, send_notifications=True):
         notes.append(f"{result.get('home') or '—'} v {result.get('away') or '—'} — {stage} {snapshot['verdict']}：{label}")
         if stage == "T-30":
             fresh_t30_events.append({"match_id": match_id, "stage": stage})
+            # T-30 is the earliest safe existing scheduler point to persist an
+            # identity-only Crown bridge.  It has no provider call and cannot
+            # crowd out either native deadline.
+            prefetch_crown_bridge(watch, now=now)
 
         # Only this branch is allowed to create active bets: a fresh, persisted
         # T-5 snapshot. T-30, historical backfill, and replay paths never call

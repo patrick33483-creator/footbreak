@@ -11,7 +11,11 @@ from analysis.learning_store import LearningStore
 from .common import HKT, iso_hkt, parse_time, read_json
 from .config import Settings
 from .condition_portfolio import FIXED_STAKE, STARTING_BANKROLL, STRATEGY, evaluate_new_t5
-from .hkjc_execution_test import evaluate_new_t5 as evaluate_hkjc_execution_t5, recompute as recompute_hkjc_execution
+from .hkjc_execution_test import (
+    evaluate_new_t5 as evaluate_hkjc_execution_t5,
+    prefetch_bridge as prefetch_hkjc_bridge,
+    recompute as recompute_hkjc_execution,
+)
 from . import challenger_v2
 from analysis.wilson_validation import (
     ensure_namespace, portfolio_name, recompute_namespace, all_settleable_bets,
@@ -374,6 +378,10 @@ def sync_prediction(ledger: dict[str, Any], prediction: dict[str, Any], config: 
         ))
     else:
         existing.update(snapshot)
+    if stage == "T-30":
+        # Identity-only local prefetch; never provider work in the deadline
+        # stage and never a source of native stage success/failure.
+        prefetch_hkjc_bridge(watch)
     # Validation admission is singular: only the very first persisted native
     # pre-kickoff T-5 may create a bet.  A later quote refresh can enrich the
     # prediction record but is a replay, never a second admission chance.

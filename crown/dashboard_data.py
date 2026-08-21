@@ -214,6 +214,7 @@ def _public_ledger(ledger: dict[str, Any]) -> tuple[dict[str, Any], list[dict[st
     }
     cross = ledger.get("crown_hkjc_execution_test")
     if isinstance(cross, dict):
+        from analysis.bilateral_decision import public_decision
         visible = {
             "bet_id", "portfolio", "strategy", "league", "home", "away", "kickoff",
             "market", "market_label", "side", "line", "selected_role", "selected_line",
@@ -226,6 +227,8 @@ def _public_ledger(ledger: dict[str, Any]) -> tuple[dict[str, Any], list[dict[st
             "bets": [{key: value for key, value in row.items() if key in visible}
                      for row in (cross.get("bets") or []) if isinstance(row, dict)],
             "stats": cross.get("stats") or {},
+            "decisions": [public_decision(row) for row in (cross.get("decisions") or [])
+                          if isinstance(row, dict)],
         }
     return dashboard_ledger, active_condition_bets
 
