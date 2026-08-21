@@ -24,6 +24,7 @@ from analysis.wilson_validation import ensure_namespace, recompute_namespace
 from settle import condition_bets, recompute
 from crown_execution_test import (
     DISPLAY_NAME as CROWN_EXECUTION_DISPLAY_NAME,
+    capture_t5_counterparts,
     evaluate_new_t5 as evaluate_crown_execution_t5,
     prefetch_bridge as prefetch_crown_bridge,
     recompute as recompute_crown_execution,
@@ -318,6 +319,23 @@ def _crown_execution_change(bet):
     )
 
 
+def _attach_persisted_crown_counterpart(ledger, watch, rows):
+    """Copy same-decision optional counterpart evidence into alert rows only."""
+    evidence = (((watch.get("counterpart_bridges") or {}).get("crown") or {})
+                .get("t5") or {}).get("markets") or {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        market = str(row.get("code") or row.get("market") or "").upper()
+        value = evidence.get(market)
+        if isinstance(value, dict):
+            row["crown_counterpart"] = {
+                key: copy for key, copy in value.items()
+                if key in {"status", "reason", "market", "side", "line",
+                           "hkjc_observed_at", "crown_quote", "captured_at"}
+            }
+
+
 def sync(preds_file="predictions.json", *, send_notifications=True):
     """Persist prediction snapshots and evaluate only newly saved T-5 rows.
 
@@ -396,12 +414,27 @@ def sync(preds_file="predictions.json", *, send_notifications=True):
         watch["stages"].sort(key=lambda row: STAGE_ORDER.get(row.get("stage"), 9))
         label = (snapshot.get("pick") or {}).get("label") or "無明顯傾向"
         notes.append(f"{result.get('home') or '—'} v {result.get('away') or '—'} — {stage} {snapshot['verdict']}：{label}")
-        if stage == "T-30":
+        if stage == "首預":
+            # First-look identity resolution is an optional local sidecar read.
+            # It cannot delay or alter any native Footbreak stage.
+            try:
+                prefetch_crown_bridge(watch, stage="首預", now=now)
+            except Exception as exc:
+                watch.setdefault("counterpart_bridges", {}).setdefault("crown", {})["first_look"] = {
+                    "at": now, "status": "UNAVAILABLE",
+                    "reason": f"crown_sidecar_local_error:{type(exc).__name__}",
+                }
+        elif stage == "T-30":
             fresh_t30_events.append({"match_id": match_id, "stage": stage})
-            # T-30 is the earliest safe existing scheduler point to persist an
-            # identity-only Crown bridge.  It has no provider call and cannot
-            # crowd out either native deadline.
-            prefetch_crown_bridge(watch, now=now)
+            # Re-verify the already selected identity and persist exact
+            # market/side/Asian-line availability.  No provider call occurs.
+            try:
+                prefetch_crown_bridge(watch, stage="T-30", now=now)
+            except Exception as exc:
+                watch.setdefault("counterpart_bridges", {}).setdefault("crown", {})["t30"] = {
+                    "at": now, "status": "UNAVAILABLE",
+                    "reason": f"crown_sidecar_local_error:{type(exc).__name__}",
+                }
 
         # Only this branch is allowed to create active bets: a fresh, persisted
         # T-5 snapshot. T-30, historical backfill, and replay paths never call
@@ -413,6 +446,15 @@ def sync(preds_file="predictions.json", *, send_notifications=True):
                     "status": "SKIPPED", "reason": "t5_safe_lead_not_met",
                 })
             continue
+        # Capture the optional Crown counterpart from the already verified
+        # local bridge before formal evaluation.  It is never a prerequisite
+        # for native Wilson admission, low-odds observation, or Telegram.
+        try:
+            capture_t5_counterparts(watch, now=now)
+        except Exception as exc:
+            watch.setdefault("counterpart_bridges", {}).setdefault("crown", {})["t5"] = {
+                "at": now, "markets": {}, "reason": f"crown_sidecar_local_error:{type(exc).__name__}",
+            }
         try:
             ranking_payload = json.loads(Path(GRANULAR_RANKING).read_text(encoding="utf-8"))
         except (OSError, ValueError):
@@ -433,6 +475,16 @@ def sync(preds_file="predictions.json", *, send_notifications=True):
             ledger, watch, history_path=Path(ACCURACY_HISTORY),
             ranking=cached_ranking if isinstance(cached_ranking, list) else None,
         )
+        # The native evaluator owns condition identity.  Attach only the
+        # independently persisted execution/presentation evidence afterwards;
+        # this neither changes signatures nor gates low-odds observations.
+        observation_rows = [
+            row for row in ((ledger.get("wilson_validation") or {}).get("observations") or [])
+            if isinstance(row, dict) and str(row.get("match_id") or "") == match_id
+            and str(row.get("stage") or "") == BET_STAGE
+            and str(row.get("created_at") or "") == str(snapshot.get("ts") or "")
+        ]
+        _attach_persisted_crown_counterpart(ledger, watch, list(created) + observation_rows)
         # This is intentionally a second, isolated append-only evaluation.
         # It receives the same first native T-5 and frozen ranking but never
         # appends a v1 bet, changes notification eligibility, or supplies a
@@ -450,11 +502,18 @@ def sync(preds_file="predictions.json", *, send_notifications=True):
         # This local adapter reads only a bounded persisted Crown evidence
         # artifact.  It deliberately has no engine/client import and cannot
         # add remote/provider work to the urgent Footbreak T-5 process.
-        crown_created, _crown_audit = evaluate_crown_execution_t5(
-            ledger, watch,
-            ranking=cached_ranking if isinstance(cached_ranking, list) else None,
-            now=now,
-        )
+        try:
+            crown_created, _crown_audit = evaluate_crown_execution_t5(
+                ledger, watch,
+                ranking=cached_ranking if isinstance(cached_ranking, list) else None,
+                now=now,
+            )
+        except Exception as exc:
+            crown_created, _crown_audit = [], []
+            (ledger.get("wilson_validation") or {}).setdefault("audit", []).append({
+                "ts": now, "match_id": match_id, "market": "*", "status": "SKIPPED",
+                "reason": f"crown_execution_sidecar_local_error:{type(exc).__name__}",
+            })
         if crown_created:
             changes.extend(_crown_execution_change(bet) for bet in crown_created)
 

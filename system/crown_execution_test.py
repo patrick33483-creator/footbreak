@@ -30,6 +30,7 @@ CROWN_SOURCE = "titan007-crown-id-3"
 AUDIT_LIMIT = 1600
 FRESHNESS_SECONDS = 120.0
 HKT = timezone(timedelta(hours=8))
+BRIDGE_KICKOFF_TOLERANCE_SECONDS = 10 * 60
 
 
 def _num(value: Any) -> float | None:
@@ -90,26 +91,100 @@ def _load_local_crown_cards() -> tuple[list[dict[str, Any]], str | None]:
     return [row for row in payload if isinstance(row, dict)], None
 
 
-def prefetch_bridge(watch: dict[str, Any], *, now: str | None = None) -> dict[str, Any]:
-    """Persist a bounded exact identity bridge at T-30, never a provider read."""
+def _bridge_identity(watch: dict[str, Any], cards: list[dict[str, Any]], *, now: str) -> dict[str, Any]:
+    """Resolve an execution bridge only through an authoritative HKJC fixture ID.
+
+    Native names are retained for audit.  They can be translated aliases, so
+    they never substitute for the ID.  A bounded kickoff tolerance is allowed
+    only after the same authoritative ID has selected one unique Crown card.
+    """
     fixture = str(watch.get("match_id") or "")
     kickoff = _time(watch.get("kickoff"))
-    cards, error = _load_local_crown_cards()
     exact = [row for row in cards if str(row.get("hkjc_match_id") or "") == fixture]
-    status, reason = "RESOLVED", None
-    if error:
-        status, reason = "UNAVAILABLE", error
-    elif not fixture or kickoff is None or len(exact) != 1:
-        status, reason = "UNAVAILABLE", "crown_fixture_identity_missing_or_ambiguous"
-    elif _time(exact[0].get("kickoff_hkt") or exact[0].get("kickoff")) != kickoff:
-        status, reason = "UNAVAILABLE", "crown_fixture_kickoff_identity_mismatch"
     bridge = {
-        "at": now or _iso_now(), "status": status, "reason": reason,
-        "counterpart_book": "crown", "hkjc_match_id": fixture,
-        "kickoff": watch.get("kickoff"),
+        "at": now, "counterpart_book": "crown", "hkjc_match_id": fixture,
+        "footbreak_kickoff": watch.get("kickoff"),
+        "footbreak_fixture": {
+            key: watch.get(key) for key in ("league", "home", "away")
+        },
     }
-    watch.setdefault("counterpart_bridges", {})["crown"] = bridge
-    return bridge
+    if not fixture or kickoff is None or len(exact) != 1:
+        return bridge | {"status": "UNAVAILABLE",
+                         "reason": "crown_fixture_identity_missing_or_ambiguous"}
+    card = exact[0]
+    crown_kickoff = _time(card.get("kickoff_hkt") or card.get("kickoff"))
+    if crown_kickoff is None or abs((crown_kickoff - kickoff).total_seconds()) > BRIDGE_KICKOFF_TOLERANCE_SECONDS:
+        return bridge | {"status": "UNAVAILABLE",
+                         "reason": "crown_fixture_kickoff_identity_mismatch"}
+    return bridge | {
+        "status": "RESOLVED", "reason": None,
+        "crown_match_id": str(card.get("match_id") or ""),
+        "crown_kickoff": card.get("kickoff_hkt") or card.get("kickoff"),
+        "crown_fixture": {key: card.get(key) for key in ("league", "home", "away")},
+        "mapping": copy.deepcopy(card.get("mapping") or {}),
+        "identity_confidence": "authoritative_hkjc_id_unique",
+        "kickoff_delta_seconds": round(abs((crown_kickoff - kickoff).total_seconds()), 3),
+    }
+
+
+def _t30_market_mappings(watch: dict[str, Any], card: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    current = next((row for row in watch.get("stages") or []
+                    if isinstance(row, dict) and row.get("stage") == "T-30"), {})
+    journal = ((card.get("native_stage_journals") or {}).get("T-30")
+               if isinstance(card.get("native_stage_journals"), dict) else None)
+    output: dict[str, dict[str, Any]] = {}
+    for signal in current.get("market_predictions") or []:
+        if not isinstance(signal, dict):
+            continue
+        market = str(signal.get("code") or "").upper()
+        side = str(signal.get("side") or "").upper()
+        line = _num(signal.get("line", signal.get("condition")))
+        if market not in MARKETS or line is None or not _valid_side(market, side):
+            continue
+        exact = [row for row in journal or [] if isinstance(row, dict)
+                 and str(row.get("code") or "").upper() == market
+                 and str(row.get("side") or "").upper() == side
+                 and _num(row.get("line", row.get("condition"))) is not None
+                 and abs(float(_num(row.get("line", row.get("condition"))) - line)) <= 1e-8]
+        output[market] = {
+            "side": side, "line": line,
+            "status": "AVAILABLE" if len(exact) == 1 else "UNAVAILABLE",
+            "reason": None if len(exact) == 1 else (
+                "crown_t30_exact_market_side_line_missing_or_ambiguous"
+                if isinstance(journal, list) else "crown_t30_native_market_stage_missing"
+            ),
+        }
+    return output
+
+
+def prefetch_bridge(watch: dict[str, Any], *, stage: str = "T-30", now: str | None = None) -> dict[str, Any]:
+    """Persist first-look identity and T-30 exact-market evidence, locally only."""
+    now = now or _iso_now()
+    cards, error = _load_local_crown_cards()
+    root = watch.setdefault("counterpart_bridges", {}).setdefault(
+        "crown", {"schema_version": 2, "counterpart_book": "crown"},
+    )
+    if error:
+        value = {"at": now, "status": "UNAVAILABLE", "reason": error}
+    else:
+        value = _bridge_identity(watch, cards, now=now)
+    if stage == "首預":
+        root["first_look"] = value
+        return value
+    first = root.get("first_look") if isinstance(root.get("first_look"), dict) else {}
+    # T-30 must re-verify precisely the ID/card chosen at first look.  Never
+    # replace a prior bridge with a later fuzzy/name-only candidate.
+    if value.get("status") == "RESOLVED" and (
+        first.get("status") != "RESOLVED"
+        or first.get("crown_match_id") != value.get("crown_match_id")
+    ):
+        value = value | {"status": "UNAVAILABLE",
+                         "reason": "crown_first_look_bridge_missing_or_changed"}
+    if value.get("status") == "RESOLVED":
+        card = next((row for row in cards if str(row.get("match_id") or "") == value["crown_match_id"]), {})
+        value["market_mappings"] = _t30_market_mappings(watch, card)
+    root["t30"] = value
+    return value
 
 
 def ensure_namespace(ledger: dict[str, Any], *, now: str | None = None) -> dict[str, Any]:
@@ -205,6 +280,65 @@ def _crown_quote_for_exact_fixture(
         "line": quote.get("line", quote.get("condition")), "side": side,
         "fixture_identity": {"hkjc_match_id": fixture, "crown_hkjc_match_id": fixture},
     }, None
+
+
+def _crown_quote_for_verified_bridge(
+    watch: dict[str, Any], market: str, side: str, line: float,
+    stage_at: datetime, kickoff: datetime,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Use only the previously durable first-look and T-30 bridge."""
+    bridge = ((watch.get("counterpart_bridges") or {}).get("crown") or {})
+    first = bridge.get("first_look") if isinstance(bridge, dict) else None
+    t30 = bridge.get("t30") if isinstance(bridge, dict) else None
+    if not isinstance(first, dict) or first.get("status") != "RESOLVED":
+        return None, "crown_first_look_bridge_missing_or_unresolved"
+    if not isinstance(t30, dict) or t30.get("status") != "RESOLVED":
+        return None, "crown_t30_bridge_missing_or_unresolved"
+    if first.get("crown_match_id") != t30.get("crown_match_id"):
+        return None, "crown_t30_bridge_changed"
+    mapping = (t30.get("market_mappings") or {}).get(market)
+    if not isinstance(mapping, dict) or mapping.get("status") != "AVAILABLE":
+        return None, str((mapping or {}).get("reason") or "crown_t30_exact_market_side_line_missing_or_ambiguous")
+    return _crown_quote_for_exact_fixture(
+        str(watch.get("match_id") or ""), market, side, line, stage_at, kickoff,
+    )
+
+
+def capture_t5_counterparts(watch: dict[str, Any], *, now: str | None = None) -> dict[str, dict[str, Any]]:
+    """Persist T-5 comparison evidence independently of formal admission.
+
+    It is an execution/presentation artifact only: neither a missing bridge
+    nor an unavailable Crown quote can block native Footbreak observation,
+    Wilson rollover, or durable Telegram outbox creation.
+    """
+    current = next((row for row in watch.get("stages") or []
+                    if isinstance(row, dict) and row.get("stage") == DECISION_STAGE), None)
+    kickoff = _time(watch.get("kickoff"))
+    stage_at = _time((current or {}).get("ts") or (current or {}).get("source_snapshot_at"))
+    output: dict[str, dict[str, Any]] = {}
+    if not isinstance(current, dict) or kickoff is None or stage_at is None or stage_at >= kickoff:
+        return output
+    for market in MARKETS:
+        signal, reason = _hkjc_selected(current, market, watch)
+        if signal is None:
+            output[market] = {"status": "UNAVAILABLE", "reason": reason}
+            continue
+        side = str(signal.get("side") or "").upper()
+        line = _num(signal.get("line", signal.get("condition")))
+        if line is None or not _valid_side(market, side):
+            output[market] = {"status": "UNAVAILABLE", "reason": "hkjc_signal_line_or_side_invalid"}
+            continue
+        quote, reason = _crown_quote_for_verified_bridge(watch, market, side, line, stage_at, kickoff)
+        output[market] = {
+            "status": "AVAILABLE" if quote else "UNAVAILABLE",
+            "reason": reason, "market": market, "side": side, "line": line,
+            "hkjc_observed_at": signal.get("observed_at"),
+            "crown_quote": copy.deepcopy(quote) if quote else None,
+            "captured_at": now or _iso_now(),
+        }
+    bridge = watch.setdefault("counterpart_bridges", {}).setdefault("crown", {"schema_version": 2})
+    bridge["t5"] = {"at": now or _iso_now(), "markets": output}
+    return output
 
 
 def _hkjc_selected(current: dict[str, Any], market: str, watch: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
@@ -306,8 +440,8 @@ def evaluate_new_t5(
         admissions, reason = matching_admissions("footbreak", market, hkjc, matched, stage_at=str(current.get("ts") or now))
         if not admissions:
             audit.append({"market": market, "status": "SKIPPED", "reason": reason}); continue
-        quote, quote_reason = _crown_quote_for_exact_fixture(
-            fixture, market, side, line, stage_at, kickoff,
+        quote, quote_reason = _crown_quote_for_verified_bridge(
+            watch, market, side, line, stage_at, kickoff,
         )
         for admission in admissions:
             signature = str(admission["signature"])

@@ -167,7 +167,8 @@ def _footbreak_execution_evidence(data: list[dict[str, Any]]) -> list[dict[str, 
             continue
         hkjc_match_id = str(card.get("hkjc_match_id") or "").strip()
         kickoff = card.get("kickoff_hkt") or card.get("kickoff")
-        if not hkjc_match_id or kickoff is None:
+        match_id = str(card.get("match_id") or card.get("titan_match_id") or "").strip()
+        if not match_id or kickoff is None:
             continue
         # Cross-book execution is permitted only from Crown's immutable native
         # T-5 snapshot, never from a later dashboard quote refresh.  The
@@ -185,11 +186,38 @@ def _footbreak_execution_evidence(data: list[dict[str, Any]]) -> list[dict[str, 
             {key: row.get(key) for key in quote_keys if key in row}
             for row in journal if isinstance(row, dict)
         ] if isinstance(journal, list) else None
+        # Publish identity-only cards from the native Crown first look onward.
+        # A missing HKJC identity remains explicitly unresolved; Footbreak may
+        # record it as a diagnostic candidate but must never treat it as an
+        # executable bridge.  This keeps Crown's native T-5 path independent
+        # of HKJC while giving the Footbreak→Crown sidecar enough durable
+        # first-look evidence to distinguish "not collected" from "not listed".
         projected = {
-            "match_id": card.get("match_id") or card.get("titan_match_id"),
-            "hkjc_match_id": hkjc_match_id,
+            "schema_version": 2,
+            "match_id": match_id,
+            "hkjc_match_id": hkjc_match_id or None,
             "kickoff_hkt": kickoff,
+            "league": card.get("league"),
+            "home": card.get("home"),
+            "away": card.get("away"),
+            "matching_version": card.get("matching_version"),
+            "mapping": {
+                key: value for key, value in (card.get("mapping") or {}).items()
+                if key in {"path", "reason", "titan_to_hkjc_score",
+                           "titan_to_hkjc_reason", "orientation"}
+            },
         }
+        stage_journals = {}
+        for stage in ("首預", "T-30", "T-5"):
+            snapshots = [row for row in (card.get("stages") or [])
+                         if isinstance(row, dict) and row.get("stage") == stage]
+            if len(snapshots) == 1 and isinstance(snapshots[0].get("selected_odds_journal"), list):
+                stage_journals[stage] = [
+                    {key: row.get(key) for key in quote_keys if key in row}
+                    for row in snapshots[0]["selected_odds_journal"] if isinstance(row, dict)
+                ]
+        if stage_journals:
+            projected["native_stage_journals"] = stage_journals
         if rows is not None:
             # The consumer's historical name remains for compatibility, but
             # its values are exclusively the immutable Crown T-5 selection.

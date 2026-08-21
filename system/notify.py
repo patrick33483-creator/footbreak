@@ -461,8 +461,17 @@ def _condition_prospective(ledger, bet):
 
 
 _CROWN_COMPARISON_REASONS = {
-    "crown_fixture_identity_missing_or_ambiguous": "無同場盤",
+    # A missing bridge cannot prove Crown did not list the fixture.  Reserve
+    # "no same fixture" for future authoritative evidence, and make local
+    # identity/collection gaps explicit to avoid a misleading alert.
+    "crown_fixture_identity_missing_or_ambiguous": "皇冠同場身分未驗證",
     "crown_fixture_kickoff_identity_mismatch": "開賽時間不一致",
+    "crown_first_look_bridge_missing_or_unresolved": "首預同場身分未驗證",
+    "crown_first_look_bridge_missing_or_changed": "首預同場身分變更",
+    "crown_t30_bridge_missing_or_unresolved": "T-30 同場身分未覆核",
+    "crown_t30_bridge_changed": "T-30 同場身分變更",
+    "crown_t30_exact_market_side_line_missing_or_ambiguous": "T-30 盤口未能對應",
+    "crown_t30_native_market_stage_missing": "T-30 皇冠原生盤口未收集",
     "crown_exact_market_side_line_missing_or_ambiguous": "盤口不一致",
     "crown_execution_quote_stale_at_t5": "非新鮮T-5",
     "crown_execution_odds_invalid_or_missing": "賠率未能確認",
@@ -489,6 +498,22 @@ def _crown_counterpart(bet):
     calls a provider, never uses a quote captured after this Footbreak decision,
     and does not affect the Footbreak Wilson decision or notification dedupe.
     """
+    persisted = bet.get("crown_counterpart")
+    if isinstance(persisted, dict):
+        quote = persisted.get("crown_quote") if isinstance(persisted.get("crown_quote"), dict) else None
+        reason = persisted.get("reason")
+        if quote is None:
+            return None, f"皇冠對照：未能確認（{_CROWN_COMPARISON_REASONS.get(reason, '未能確認')}）"
+        odds = _finite_positive(quote.get("odds"))
+        if odds is None:
+            return None, "皇冠對照：未能確認（賠率未能確認）"
+        market = str(bet.get("code") or bet.get("market") or "").upper()
+        role = str(bet.get("selected_role") or "").strip()
+        try:
+            line = float(bet.get("line", bet.get("selected_line")))
+        except (TypeError, ValueError):
+            return None, "皇冠對照：未能確認（資料不足）"
+        return odds, f"皇冠對照：{esc(MARKET_LABELS.get(market, market))} · {esc(role)} {line:g} @{odds:.2f}"
     fixture = str(bet.get("match_id") or "").strip()
     market = str(bet.get("code") or bet.get("market") or "").strip().upper()
     side = str(bet.get("selected_side") or bet.get("side") or "").strip().upper()

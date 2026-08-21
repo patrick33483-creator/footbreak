@@ -75,7 +75,12 @@ class CrossEvidenceTests(unittest.TestCase):
     def test_cross_entry_uses_crown_gate_and_isolated_idempotent_cap(self):
         kickoff, stage = stamp(120), stamp()
         current = {"stage": "T-5", "ts": stage, "market_predictions": []}
-        watch = {"match_id": "fx", "kickoff": kickoff, "league": "英超", "home": "主", "away": "客", "stages": [current]}
+        watch = {"match_id": "fx", "kickoff": kickoff, "league": "英超", "home": "主", "away": "客", "stages": [current],
+                 "counterpart_bridges": {"crown": {
+                     "first_look": {"status": "RESOLVED", "crown_match_id": "crown-fx"},
+                     "t30": {"status": "RESOLVED", "crown_match_id": "crown-fx",
+                             "market_mappings": {"HIL": {"status": "AVAILABLE", "side": "H", "line": 2.5}}},
+                 }}}
         admission = {"signature": "sig", "history": {"hits": 41, "decided": 59},
                      "arithmetic": admission_arithmetic(41, 59, 1.9)}
         ledger = {"bets": [{"bet_id": "normal"}], "wilson_validation": {"conditions": {
@@ -110,6 +115,39 @@ class CrossEvidenceTests(unittest.TestCase):
         self.assertFalse(arithmetic["passes"])
         # The HKJC signal tier (1.66, i.e. <1.70) is not execution evidence.
         self.assertGreater(arithmetic["minimum_acceptable_odds_raw"], 1.50)
+
+    def test_first_look_authoritative_id_accepts_translated_alias_and_t30_persists_exact_mapping(self):
+        kickoff = stamp(120)
+        cards = [{"match_id": "crown-betis", "hkjc_match_id": "fx",
+                  "kickoff_hkt": stamp(121), "league": "Spain - La Liga",
+                  "home": "皇家贝蒂斯", "away": "皇家社会",
+                  "native_stage_journals": {"T-30": [{
+                      "code": "HIL", "side": "H", "line": 2.5,
+                      "source": "titan007-crown-id-3", "odds": 1.91,
+                      "observed_at": stamp(-1), "odds_status": "available",
+                  }]}}]
+        watch = {"match_id": "fx", "kickoff": kickoff, "league": "Spain - La Liga",
+                 "home": "貝迪斯", "away": "皇家蘇斯達",
+                 "stages": [{"stage": "T-30", "market_predictions": [{
+                     "code": "HIL", "side": "H", "line": 2.5}]}]}
+        with tempfile.TemporaryDirectory() as directory:
+            evidence = Path(directory, "cards.json")
+            evidence.write_text(json.dumps(cards), encoding="utf-8")
+            with patch.dict(os.environ, {"FOOTBREAK_CROWN_EXECUTION_EVIDENCE_PATH": str(evidence)}):
+                first = cross.prefetch_bridge(watch, stage="首預", now=stamp())
+                t30 = cross.prefetch_bridge(watch, stage="T-30", now=stamp())
+        self.assertEqual(first["status"], "RESOLVED")
+        self.assertEqual(first["crown_match_id"], "crown-betis")
+        self.assertLessEqual(first["kickoff_delta_seconds"], 120)
+        self.assertEqual(t30["market_mappings"]["HIL"]["status"], "AVAILABLE")
+
+    def test_t5_requires_durable_first_and_t30_bridge(self):
+        watch = {"match_id": "fx", "kickoff": stamp(120), "stages": []}
+        quote, reason = cross._crown_quote_for_verified_bridge(
+            watch, "HIL", "H", 2.5, cross._time(stamp()), cross._time(stamp(120)),
+        )
+        self.assertIsNone(quote)
+        self.assertEqual(reason, "crown_first_look_bridge_missing_or_unresolved")
 
     def test_native_crown_t5_persistence_produces_bounded_consumer_evidence(self):
         kickoff, observed, stage_at = stamp(120), stamp(-1), stamp()
@@ -178,6 +216,29 @@ class CrossEvidenceTests(unittest.TestCase):
                 )
             self.assertIsNone(reason)
             self.assertEqual(quote["odds"], 1.9)
+
+    def test_crown_sidecar_failure_cannot_block_native_footbreak_t5_commit(self):
+        kickoff = datetime.now(HKT) + timedelta(minutes=20)
+        result = {
+            "match_id": "native-survives", "stage": "T-5", "kickoff_hkt": kickoff.isoformat(),
+            "league": "英超", "home": "主", "away": "客", "candidates": [],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "predictions.json").write_text(json.dumps([result]), encoding="utf-8")
+            ledger_path = root / "sim_ledger.json"
+            with patch.object(record_picks, "HERE", str(root)), \
+                 patch.object(record_picks, "LEDGER", str(ledger_path)), \
+                 patch.object(record_picks, "_record_learning_snapshot", return_value=None), \
+                 patch.object(record_picks, "evaluate_new_t5", return_value=([], [])), \
+                 patch.object(record_picks, "evaluate_probability_research", return_value=([], [])), \
+                 patch.object(record_picks, "capture_t5_counterparts", side_effect=RuntimeError("malformed")), \
+                 patch.object(record_picks, "evaluate_crown_execution_t5", side_effect=RuntimeError("malformed")), \
+                 patch.object(record_picks, "recompute", return_value=None), \
+                 patch.object(record_picks, "recompute_crown_execution", return_value=None):
+                _, _, ledger = record_picks.sync(send_notifications=False)
+            self.assertEqual(ledger["watch"]["native-survives"]["stages"][0]["stage"], "T-5")
+            self.assertTrue(ledger_path.exists())
 
 
 class CrossNotificationTests(unittest.TestCase):
