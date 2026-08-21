@@ -7,6 +7,7 @@ OnFailure=footbreak-incident-alert@%n.service
 [Service]
 Type=oneshot
 WorkingDirectory=/opt/footbreak
+ExecStartPre=/opt/footbreak/.venv/bin/python3 /opt/footbreak/system/disk_guard.py --preflight
 ExecStartPre=/opt/footbreak/deploy/crown-tick-preempt.sh
 ExecStart=/opt/footbreak/deploy/crown-run.sh tick
 # The engine persists completed fixture stages independently and terminates

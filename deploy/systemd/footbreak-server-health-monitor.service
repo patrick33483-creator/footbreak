@@ -13,7 +13,7 @@ EnvironmentFile=-/etc/footbreak-crown.env
 Environment=PYTHONPATH=/opt/footbreak
 # Read-only local state/systemd checks only; it never contacts a provider.
 ExecStart=/opt/footbreak/.venv/bin/python3 /opt/footbreak/system/server_health_monitor.py
-TimeoutStartSec=20
+TimeoutStartSec=120
 UMask=0077
 NoNewPrivileges=true
 PrivateTmp=true

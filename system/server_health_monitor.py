@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from incident_alert import IncidentAlerts, _parse_time, _positive_int, _now
+from disk_guard import run_maintenance, warning_free_bytes
 
 
 MONITOR_WINDOW_SECONDS = 30 * 60
@@ -309,6 +310,7 @@ def run(
 ) -> dict[str, list[Finding]]:
     current = _now(now)
     alerts = alerts or IncidentAlerts()
+    maintenance = run_maintenance()
     active = {system: assess(system, current, runner) for system in SYSTEMS}
     kinds = (
         "missing_expected_stage", "repeated_timeout", "stuck_notification",
@@ -326,6 +328,16 @@ def run(
                 positive_needed=2 if kind == "repeated_timeout" else 1,
                 cooldown_seconds=cooldown, now=current,
             )
+    alerts.report(
+        system="server",
+        kind="disk_pressure",
+        active=maintenance.status.free < warning_free_bytes(),
+        count=0,
+        positive_needed=1,
+        healthy_needed=2,
+        cooldown_seconds=cooldown,
+        now=current,
+    )
     return active
 
 

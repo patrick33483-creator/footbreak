@@ -68,6 +68,10 @@ if [ "$REPO_DIR" != "$APP_DIR" ]; then
   rsync -a --delete --exclude '.git' "$REPO_DIR/" "$APP_DIR/"
 fi
 
+# Establish the bounded local cleanup/reserve contract on a new host. This is
+# provider-free and cannot delete any authoritative prediction/state artifact.
+/usr/bin/python3 "$APP_DIR/system/disk_guard.py"
+
 echo "▸ 4/7 安裝 Python 依賴"
 python3 -m venv "$APP_DIR/.venv"
 "$APP_DIR/.venv/bin/pip" install -q --upgrade pip

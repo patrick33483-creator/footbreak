@@ -615,6 +615,11 @@ def write_dashboard_data(config: Settings, out: Path | None = None) -> Path:
     # A root-owned runner replaces the file atomically; retain nginx readability
     # on every pass, not just setup/update.
     os.chmod(destination, 0o644)
+    # Keep a short overlap window for browsers that loaded the previous boot
+    # payload, while bounding derived immutable sidecars. The authoritative
+    # prediction_history.json is never a cleanup target.
+    from system.disk_guard import prune_crown_history_sidecars
+    prune_crown_history_sidecars(destination.parent)
     return destination
 
 

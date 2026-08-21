@@ -181,7 +181,9 @@ class ServerHealthMonitorTests(unittest.TestCase):
                     )
                 return successful_systemctl()
 
-            with patch.dict(os.environ, environment, clear=False):
+            healthy_disk = SimpleNamespace(status=SimpleNamespace(free=10 * 1024**3))
+            with patch.dict(os.environ, environment, clear=False), \
+                 patch.object(monitor, "run_maintenance", return_value=healthy_disk):
                 monitor.run(NOW, alerts=alerts, runner=timeout_runner)
                 monitor.run(NOW + timedelta(minutes=30), alerts=alerts, runner=timeout_runner)
                 monitor.run(NOW + timedelta(minutes=60), alerts=alerts, runner=successful_systemctl)
@@ -193,6 +195,36 @@ class ServerHealthMonitorTests(unittest.TestCase):
         self.assertIn("連續健康並恢復", delivered[1])
         self.assertNotIn("private-fixture", json.dumps(payload, ensure_ascii=False))
 
+    def test_disk_pressure_uses_one_server_alert_and_two_healthy_recoveries(self) -> None:
+        delivered: list[str] = []
+        active: list[bool] = []
+        alerts = incident_alert.IncidentAlerts(
+            Path(tempfile.mkdtemp()) / "state.json",
+            sender=lambda text: delivered.append(text) or True,
+        )
+        original_report = alerts.report
+
+        def capture(**kwargs):
+            if kwargs["kind"] == "disk_pressure":
+                active.append(kwargs["active"])
+            return original_report(**kwargs)
+
+        alerts.report = capture
+        empty = {"footbreak": [], "crown": []}
+        low = SimpleNamespace(status=SimpleNamespace(free=100))
+        high = SimpleNamespace(status=SimpleNamespace(free=10 * 1024**3))
+        with patch.object(monitor, "assess", side_effect=lambda system, *_args: empty[system]), \
+             patch.object(monitor, "warning_free_bytes", return_value=1000), \
+             patch.object(monitor, "run_maintenance", side_effect=[low, high, high]):
+            monitor.run(NOW, alerts=alerts, runner=successful_systemctl)
+            monitor.run(NOW + timedelta(minutes=30), alerts=alerts, runner=successful_systemctl)
+            monitor.run(NOW + timedelta(minutes=60), alerts=alerts, runner=successful_systemctl)
+        self.assertEqual(active, [True, False, False])
+        self.assertEqual(len(delivered), 2)
+        self.assertIn("運作警報：伺服器", delivered[0])
+        self.assertIn("磁碟", delivered[0])
+        self.assertIn("運作恢復：伺服器", delivered[1])
+
     def test_systemd_and_deploy_contracts_install_only_local_monitor(self) -> None:
         service = (ROOT / "deploy/systemd/footbreak-server-health-monitor.service").read_text(encoding="utf-8")
         timer = (ROOT / "deploy/systemd/footbreak-server-health-monitor.timer").read_text(encoding="utf-8")
@@ -200,7 +232,7 @@ class ServerHealthMonitorTests(unittest.TestCase):
         health = (ROOT / "deploy/health-check.sh").read_text(encoding="utf-8")
         self.assertIn("OnUnitActiveSec=30min", timer)
         self.assertIn("server_health_monitor.py", service)
-        self.assertIn("TimeoutStartSec=20", service)
+        self.assertIn("TimeoutStartSec=120", service)
         self.assertIn("footbreak-server-health-monitor.timer", update)
         self.assertIn("reenable footbreak-server-health-monitor.timer", update)
         self.assertIn("is-enabled --quiet footbreak-server-health-monitor.timer", update)

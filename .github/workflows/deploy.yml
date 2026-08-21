@@ -76,6 +76,13 @@ jobs:
               available_kb=$(df -Pk / | awk "NR == 2 {print \$4}")
               echo "deployment_preflight_available_kb=$available_kb"
               if [ "$available_kb" -lt 524288 ]; then
+                # Release the deliberately reserved emergency block before any
+                # package/git write. Prune only old Docker build cache; running
+                # containers, images and volumes are outside this command.
+                rm -f /var/lib/footbreak/.disk-reserve
+                if command -v docker >/dev/null 2>&1; then
+                  timeout 90s docker builder prune -af --filter until=168h >/dev/null 2>&1 || true
+                fi
                 apt-get clean
                 rm -rf /var/lib/apt/lists/*
                 journalctl --vacuum-size=100M >/dev/null 2>&1 || true

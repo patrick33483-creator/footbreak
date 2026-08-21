@@ -266,7 +266,11 @@ class IncidentAlerts:
         count: int = 0,
         details: Mapping[str, Any] | None = None,
     ) -> str:
-        system_label = "皇冠" if system == "crown" else "足破"
+        system_label = (
+            "伺服器" if system == "server"
+            else "皇冠" if system == "crown"
+            else "足破"
+        )
         kind_base = kind.split(":", 1)[0]
         descriptions = {
             "service_failure": "排程／服務執行失敗或逾時",
@@ -276,6 +280,7 @@ class IncidentAlerts:
             "stuck_notification": "通知佇列或傳輸逾時",
             "dashboard_sidecar_mismatch": "儀表板／歷史資料不同步",
             "settlement_backlog": "模擬結算積壓逾時",
+            "disk_pressure": "磁碟可用空間低於安全門檻",
         }
         if kind_base == "ledger_digest":
             if not active:
@@ -339,7 +344,7 @@ class IncidentAlerts:
         """
         if not self.enabled:
             return False
-        system = "crown" if system == "crown" else "footbreak"
+        system = system if system in {"crown", "server"} else "footbreak"
         kind = _safe_token(kind)
         key = f"{system}:{kind}"
         observed_at = _iso(now)

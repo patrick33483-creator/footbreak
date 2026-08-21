@@ -7,6 +7,7 @@ OnFailure=footbreak-incident-alert@%n.service
 [Service]
 Type=oneshot
 WorkingDirectory=/opt/footbreak/system
+ExecStartPre=/opt/footbreak/.venv/bin/python3 /opt/footbreak/system/disk_guard.py --preflight
 # 單一到期隊列同時處理 T-5 及 T-30，程式內已按最近開賽優先。
 # 只在真係欠一個到期 T-30 / T-5 階段時先中止慢任務。空 tick 或已
 # 完成 T-30 嘅等待期唔可以反覆殺死賽果結算。

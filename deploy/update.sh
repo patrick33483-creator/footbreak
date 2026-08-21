@@ -69,6 +69,9 @@ if [ -f requirements.txt ] && [ -x .venv/bin/pip ]; then
   .venv/bin/pip install -q -r requirements.txt
 fi
 
+echo "▸ 執行本機磁碟防護及安全衍生檔清理"
+/usr/bin/python3 "$APP_DIR/system/disk_guard.py"
+
 echo "▸ 更新 external-tool 相容層"
 install -m 0755 "$APP_DIR/bin/external-tool" /usr/local/bin/external-tool
 
