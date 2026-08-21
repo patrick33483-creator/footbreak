@@ -111,9 +111,26 @@ class CrownGranularNotificationTests(unittest.TestCase):
             )
             response = unittest.mock.MagicMock()
             response.__enter__.return_value = response
+            response.read.return_value = b'{"ok": true, "result": {"message_id": 123}}'
             with patch("crown.notify.urllib.request.urlopen", return_value=response) as opener:
                 self.assertTrue(_send(config, "測試"))
             self.assertEqual(opener.call_args.kwargs["timeout"], 5)
+
+    def test_telegram_transport_rejects_non_ok_json_response(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = replace(
+                settings(),
+                state_dir=Path(directory),
+                telegram_enabled=True,
+                telegram_bot_token="test-token",
+                telegram_chat_id="test-chat",
+            )
+            response = unittest.mock.MagicMock()
+            response.__enter__.return_value = response
+            response.read.return_value = b'{"ok": false, "description": "chat not found"}'
+            with patch("crown.notify.urllib.request.urlopen", return_value=response):
+                with self.assertRaisesRegex(RuntimeError, "chat not found"):
+                    _send(config, "測試")
 
     def test_notification_lock_is_independent_from_prediction_state_lock(self):
         with tempfile.TemporaryDirectory() as directory:

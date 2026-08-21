@@ -5,6 +5,7 @@ import json
 import math
 import re
 import time
+import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from datetime import timedelta
@@ -356,7 +357,8 @@ def notify_hkjc_execution_pending(
 
 def _send(
     config: Settings, text: str, *, max_seconds: float | None = None,
-) -> bool:
+    return_response: bool = False,
+) -> bool | dict[str, Any]:
     if not (config.telegram_enabled and config.telegram_bot_token and config.telegram_chat_id):
         return False
     body = json.dumps({"chat_id": config.telegram_chat_id, "text": text}).encode()
@@ -365,8 +367,22 @@ def _send(
     # Notification transport is retryable on the next tick.  Keep a failed
     # Telegram call well below the prediction service deadline.
     timeout = 5.0 if max_seconds is None else min(5.0, max(0.1, max_seconds))
-    with urllib.request.urlopen(request, timeout=timeout):
-        pass
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            raw = response.read().decode("utf-8")
+        result = json.loads(raw)
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"Telegram 直接發送失敗:{type(exc).__name__}") from exc
+    if not isinstance(result, dict) or not result.get("ok"):
+        description = result.get("description", "unknown") if isinstance(result, dict) else "invalid_response"
+        raise RuntimeError(f"Telegram 直接發送失敗:{description}")
+    if return_response:
+        message = result.get("result")
+        return {
+            "transport": "telegram_bot_api",
+            "ok": True,
+            "message_id": message.get("message_id") if isinstance(message, dict) else None,
+        }
     return True
 
 
