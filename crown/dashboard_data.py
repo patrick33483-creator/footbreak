@@ -17,7 +17,7 @@ from .period import in_current_period
 from .prediction_history import normalize_history, project_watch_rows
 from .ledger import PREDICTION_ERA
 from .state import load_ledger, load_predictions, paths, save_ledger
-from analysis.wilson_validation import active_bets
+from analysis.wilson_validation import active_bets, project_dashboard_research_matches
 
 
 # A full publish writes an immutable, content-addressed sidecar before data.
@@ -235,6 +235,12 @@ def _wilson_match_projection(row: dict[str, Any], *, bet_status: str) -> dict[st
     arithmetic = row.get("wilson_admission") if isinstance(row.get("wilson_admission"), dict) else {}
     display = arithmetic.get("display") if isinstance(arithmetic.get("display"), dict) else {}
     return {
+        # This is the only dashboard match shape that has passed the native
+        # exact-side/line/source/frozen-evidence admission and is therefore
+        # allowed to use the formal condition number in the UI or Telegram.
+        "match_class": "authoritative_admission",
+        "authoritative": True,
+        "notification_eligible": True,
         "condition_number": row.get("condition_number"),
         "market": row.get("market") or row.get("code"),
         "market_label": row.get("market_label"),
@@ -317,14 +323,21 @@ def write_tick_dashboard_projection(
         for row in (payload.get("matches") or [])
         if isinstance(row, dict) and row.get("match_id")
     }
-    # Preserve dashboard-only fields such as the last condition-ranking match,
-    # then replace every persisted stage/card field with the committed state.
-    projected_matches = [
-        (dict(old_matches.get(str(row.get("match_id") or ""), {})) | row)
-        for row in matches
-    ]
+    # Preserve dashboard-only fields, then replace every persisted stage/card
+    # field with committed state.  A fast tick intentionally cannot rebuild
+    # discovery rankings, so discard old research matches rather than
+    # presenting a stale row as the just-committed native T-5 decision.
+    projected_matches = []
+    for row in matches:
+        old = dict(old_matches.get(str(row.get("match_id") or ""), {}))
+        old.pop("condition_matches", None)
+        old.pop("research_matches", None)
+        projected_matches.append(old | row)
     dashboard_ledger, active_condition_bets = _public_ledger(current_ledger)
     _attach_wilson_matches(projected_matches, current_ledger)
+    for row in projected_matches:
+        if isinstance(row, dict):
+            row["condition_matches"] = []
     payload.update({
         "schema_version": "crown-dashboard-v2",
         "generated_at": iso_hkt(),
@@ -543,8 +556,11 @@ def _build_payloads(config: Settings) -> tuple[dict[str, Any], dict[str, Any]]:
         for stage in ("T-30", "T-5")
     }
     for match in matches:
-        match["condition_matches"] = (
-            by_stage.get(str(match.get("stage") or ""), {}).get(str(match.get("match_id") or ""), [])
+        match["condition_matches"] = project_dashboard_research_matches(
+            by_stage.get(
+                str(match.get("stage") or ""),
+                {},
+            ).get(str(match.get("match_id") or ""), [])
         )
     # A newly seeded ledger has no calculated stats yet; emit the complete
     # dashboard contract even before the first remote Crown pass.

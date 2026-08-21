@@ -759,6 +759,48 @@ def project_granular_ranking_evidence(
     return output
 
 
+def project_dashboard_research_matches(
+    matches: Iterable[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Mark structural ranking matches as research, never as an admission.
+
+    ``match_upcoming`` deliberately answers a broader question than the native
+    T-5 evaluator: it explains which historical path/range resembles a saved
+    card.  It does not prove the exact current side/Asian line, frozen
+    evidence version, source observation, and raw Wilson arithmetic required
+    by ``matching_admissions``.  Keeping that useful discovery view is fine,
+    but a dashboard must not call it a qualified Wilson condition or make it
+    notification-eligible.
+
+    The formal card and Telegram projection instead comes only from the
+    persisted formal bet or NO_BET_LOW_ODDS observation emitted by the native
+    evaluator.  Do not leak a frozen condition number here: the ranking index
+    is a research reference and can never stand in for a native admission.
+    """
+    output: list[dict[str, Any]] = []
+    for match in matches:
+        if not isinstance(match, dict):
+            continue
+        item = copy.deepcopy(match)
+        item.pop("condition_number", None)
+        item["match_class"] = "research_only"
+        item["authoritative"] = False
+        item["notification_eligible"] = False
+        item["display_label"] = "研究吻合／未納入正式 Wilson"
+        item["research_rank"] = item.get("condition_rank")
+        item["research_identity"] = {
+            key: copy.deepcopy(item.get(key))
+            for key in (
+                "key", "path", "direction", "movement", "market",
+                "selected_side", "selected_line", "line_bucket", "odds_tier",
+                "source_artifact",
+            )
+            if item.get(key) is not None
+        }
+        output.append(item)
+    return output
+
+
 def _selection_signature(market: str, item: dict[str, Any]) -> tuple[str, float] | None:
     side = str(item.get("selected_side") or item.get("side") or "").upper()
     line = _number(item.get("selected_line", item.get("line", item.get("condition"))))

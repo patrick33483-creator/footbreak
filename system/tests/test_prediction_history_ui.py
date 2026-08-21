@@ -176,6 +176,17 @@ class PredictionHistoryUiTests(unittest.TestCase):
             self.assertIn(".condition-match-card", css)
             self.assertIn("@media (max-width: 620px) { .granular-grid { grid-template-columns: 1fr; }", css)
 
+    def test_discovery_cards_are_visibly_research_only_on_both_dashboards(self) -> None:
+        for dashboard in ("hkjc-dashboard", "crown/dashboard"):
+            app = (ROOT / dashboard / "app.js").read_text(encoding="utf-8")
+            history = app[
+                app.index("function historicalConditionMatchText"):
+                app.index("function historicalConditionMatchText") + 1800
+            ]
+            self.assertIn("研究吻合／未納入正式 Wilson", history)
+            self.assertIn("不建立投注或 Telegram 通知", history)
+            self.assertNotIn("合符條件 #", history)
+
     def test_crown_dashboard_renders_stage_completeness_monitor(self) -> None:
         root = ROOT / "crown" / "dashboard"
         app = (root / "app.js").read_text(encoding="utf-8")

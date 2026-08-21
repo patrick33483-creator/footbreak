@@ -44,12 +44,16 @@ class ConditionSimulationUiTests(unittest.TestCase):
                 self.assertIn("function wilsonMatchText", source)
                 self.assertIn("function historicalConditionMatchText", source)
                 self.assertIn("合符條件 #", source)
-                self.assertIn("條件 #${esc(number)}", source)
+                history = source[
+                    source.index("function historicalConditionMatchText"):
+                    source.index("function historicalConditionMatchText") + 1800
+                ]
+                self.assertIn("研究條件 #${esc(number)}", history)
+                self.assertIn("研究吻合／未納入正式 Wilson", history)
+                self.assertNotIn("合符條件 #", history)
                 self.assertIn("minimum_required_odds_display", source)
                 self.assertIn("最低賠率要求", source)
-                self.assertIn("因賠率不足，不投注", source)
-                self.assertIn("樣本不足 50 場，不投注", source)
-                self.assertIn("仍須通過正式 Wilson 證據閘門", source)
+                self.assertIn("因賠率不足，不投注", source)  # authoritative only
                 self.assertIn("wilsonMatches.map(wilsonMatchText)", source)
                 self.assertIn("historicalMatches.map(historicalConditionMatchText)", source)
 

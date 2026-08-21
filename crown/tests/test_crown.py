@@ -2207,7 +2207,11 @@ class CrownSafetyTests(unittest.TestCase):
                 "schema_version": "crown-dashboard-v2",
                 "generated_at": "2026-08-18T23:21:00+08:00",
                 "matches": [{"match_id": "native-t5", "stage": "T-30",
-                             "stages": [{"stage": "T-30"}]}],
+                             "stages": [{"stage": "T-30"}],
+                             # A fast T-5 publish must not retain this old
+                             # discovery card as though it were the just
+                             # committed native decision.
+                             "condition_matches": [{"condition_number": 8}]}],
                 "prediction_history": {"stats": {"cached": True}},
                 "history_data_url": "history.json",
                 "history_data_version": "cached-history-version",
@@ -2236,6 +2240,7 @@ class CrownSafetyTests(unittest.TestCase):
             self.assertEqual(payload["history_data_url"], "history.json")
             self.assertEqual(payload["history_data_version"], "cached-history-version")
             self.assertNotEqual(payload["generated_at"], "2026-08-18T23:21:00+08:00")
+            self.assertEqual(payload["matches"][0]["condition_matches"], [])
 
     def test_tick_postprocess_publishes_durable_t30_before_optional_archive(self) -> None:
         """A slow/archive-failed history sidecar must not stale the live card."""

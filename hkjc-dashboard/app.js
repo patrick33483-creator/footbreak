@@ -513,31 +513,16 @@ function wilsonMatchText(item) {
 }
 
 function historicalConditionMatchText(item) {
-  const number = numeric(item.condition_rank) == null ? '—' : String(Math.trunc(numeric(item.condition_rank)));
+  const rank = item.research_rank == null ? item.condition_rank : item.research_rank;
+  const number = numeric(rank) == null ? '—' : String(Math.trunc(numeric(rank)));
   const total = item.total || {};
-  const decided = numeric(total.decided) || 0;
   const interval = Array.isArray(total.wilson95) ? total.wilson95 : [];
   const lower = numeric(interval[0]);
   const minimum = lower != null && lower > 0.03 ? 1 / (lower - 0.03) : null;
   const actual = numeric(item.selected_odds);
-  const sampleReady = decided >= 50;
-  const lowOdds = sampleReady && minimum != null && actual != null && actual < minimum;
-  const isT5 = String(item.decision_stage || item.stage || '') === 'T-5';
-  let status = '只作條件觀察；T-5 先作正式投注決定';
-  let tone = '';
-  if (isT5 && !sampleReady) {
-    status = `合符條件 #${number}，但樣本不足 50 場，不投注`;
-    tone = 'bad-txt';
-  } else if (isT5 && lowOdds) {
-    status = `合符條件 #${number}，但賠率不足，不投注`;
-    tone = 'bad-txt';
-  } else if (isT5 && sampleReady && minimum != null && actual != null) {
-    status = `合符條件 #${number}，賠率達標；仍須通過正式 Wilson 證據閘門`;
-    tone = 'good-txt';
-  }
-  return `<div class="condition-match"><b>條件 #${esc(number)} · ${esc(publicText(item.label || ''))}</b>
-    <span>${pc(total.accuracy, 1)} (${total.hits || 0}/${total.decided || 0}) · 現時賠率 ${actual == null ? '—' : f2(actual)} · 最低賠率要求 ${minimum == null ? '未能計算' : f2(minimum)}</span>
-    <span class="${tone}">${esc(status)}</span></div>`;
+  return `<div class="condition-match"><b>研究條件 #${esc(number)} · ${esc(publicText(item.label || ''))}</b>
+    <span>${pc(total.accuracy, 1)} (${total.hits || 0}/${total.decided || 0}) · 現時賠率 ${actual == null ? '—' : f2(actual)} · 研究參考門檻 ${minimum == null ? '未能計算' : f2(minimum)}</span>
+    <span>研究吻合／未納入正式 Wilson；不建立投注或 Telegram 通知。</span></div>`;
 }
 
 function wilsonVerdictCard(m) {
@@ -565,9 +550,9 @@ function verdictCard(m) {
   const hasT5 = (m.stages || []).some((x) => x.stage === 'T-5');
   if (hasT5 && historicalMatches.length) {
     return `<div class="card verdict wait">
-      <div class="vd-top"><span class="vd-badge wait">Wilson 未建立模擬注</span></div>
+      <div class="vd-top"><span class="vd-badge wait">研究吻合／未納入正式 Wilson</span></div>
       <div class="condition-match-list">${historicalMatches.map(historicalConditionMatchText).join('')}</div>
-      <p class="vd-note">逐項列明條件、賠率門檻及不投注原因；正式模擬注仍以原生 T-5、來源證據及 Wilson 閘門為準。</p>
+      <p class="vd-note">這些是研究路徑參考，不代表符合正式 Wilson 條件；正式結果只會來自原生 T-5 的持久化入場或低賠率觀察記錄。</p>
     </div>`;
   }
   if (!m.pick) {

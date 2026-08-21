@@ -13,7 +13,7 @@ from analysis.wilson_validation import (
     STARTING_BANKROLL, admission_arithmetic, choose_admission, commit_bet,
     apply_active_evidence, condition_number, ensure_namespace, freeze_condition,
     matching_admissions, portfolio_name, project_granular_ranking_evidence,
-    recompute_namespace, wilson95,
+    project_dashboard_research_matches, recompute_namespace, wilson95,
 )
 from analysis.migrate_wilson_strategy import migrate_file
 from analysis.wilson_portfolio import _native_t5, _selected
@@ -36,6 +36,33 @@ def selected(market="HDC", side="H", line=-0.25, odds=1.90):
 
 
 class WilsonAdmissionTest(unittest.TestCase):
+    def test_kashiwa_style_discovery_matches_are_not_admissions(self):
+        """Two research hits must not impersonate the native #8/#9 outcome."""
+        rows = [
+            {
+                **candidate("HIL", "H", 2.75, key=f"kashiwa-{number}"),
+                "condition_number": number,
+                "condition_rank": number,
+                "line_bucket": "2.75–3.0",
+                "odds_tier": "≥1.70",
+                "selected_odds": 1.84,
+                "label": f"Japan HIL research condition {number}",
+            }
+            for number in (8, 9)
+        ]
+        projected = project_dashboard_research_matches(rows)
+        self.assertEqual(len(projected), 2)
+        for index, row in enumerate(projected, start=8):
+            self.assertEqual(row["match_class"], "research_only")
+            self.assertFalse(row["authoritative"])
+            self.assertFalse(row["notification_eligible"])
+            self.assertEqual(row["display_label"], "研究吻合／未納入正式 Wilson")
+            self.assertEqual(row["research_rank"], index)
+            self.assertNotIn("condition_number", row)
+            self.assertEqual(row["research_identity"]["selected_line"], 2.75)
+            self.assertEqual(row["research_identity"]["line_bucket"], "2.75–3.0")
+            self.assertEqual(row["research_identity"]["odds_tier"], "≥1.70")
+
     def test_worked_example_formula_and_raw_pass(self):
         arithmetic = admission_arithmetic(41, 59, 1.90)
         self.assertIsNotNone(arithmetic)

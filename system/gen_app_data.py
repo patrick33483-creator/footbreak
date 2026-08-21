@@ -621,6 +621,11 @@ def _wilson_match_projection(row, *, bet_status):
     arithmetic = row.get("wilson_admission") if isinstance(row.get("wilson_admission"), dict) else {}
     display = arithmetic.get("display") if isinstance(arithmetic.get("display"), dict) else {}
     return {
+        # Formal dashboard/TG labels must be backed by a persisted native
+        # admission, never by a structural discovery-card resemblance.
+        "match_class": "authoritative_admission",
+        "authoritative": True,
+        "notification_eligible": True,
         "condition_number": row.get("condition_number"),
         "market": row.get("market") or row.get("code"),
         "market_label": row.get("market_label"),
@@ -1060,7 +1065,10 @@ def main(out_path=None):
     # on every run.  Overlay each card with its persisted, exact-condition
     # Wilson evidence so the displayed total and downstream matcher cannot
     # fall back to the pre-migration discovery counts.
-    from analysis.wilson_validation import project_granular_ranking_evidence
+    from analysis.wilson_validation import (
+        project_dashboard_research_matches,
+        project_granular_ranking_evidence,
+    )
     raw_ranking = (
         (prediction_history.get("stats") or {})
         .get("granular_conditions", {}).get("ranking") or []
@@ -1111,7 +1119,7 @@ def main(out_path=None):
     }
     for item in preds:
         stage = str(item.get("stage") or "")
-        item["condition_matches"] = (
+        item["condition_matches"] = project_dashboard_research_matches(
             matches_by_stage.get(stage, {}).get(str(item.get("match_id")), [])
         )
         item["wilson_matches"] = by_fixture.get(str(item.get("match_id")), [])

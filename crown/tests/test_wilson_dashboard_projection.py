@@ -22,6 +22,9 @@ class CrownWilsonDashboardProjectionTests(unittest.TestCase):
             "wilson_admission": arithmetic,
         }
         actual = _wilson_match_projection(source, bet_status="NO_BET_LOW_ODDS")
+        self.assertEqual(actual["match_class"], "authoritative_admission")
+        self.assertTrue(actual["authoritative"])
+        self.assertTrue(actual["notification_eligible"])
         self.assertEqual(actual["condition_number"], 4)
         self.assertEqual(actual["odds"], arithmetic["actual_decimal_odds_raw"])
         self.assertEqual(actual["minimum_required_odds"], arithmetic["minimum_acceptable_odds_raw"])

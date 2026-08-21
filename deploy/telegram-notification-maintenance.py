@@ -40,6 +40,87 @@ def _ids(value: Any) -> set[str]:
     return {str(item) for item in value or [] if str(item)}
 
 
+def _dashboard_authority_parity(
+    payload_path: Path,
+    ledger: dict[str, Any],
+) -> dict[str, Any]:
+    """Audit the public card contract against durable native Wilson state.
+
+    This remains strictly local and provider-free.  A research-card match is
+    permitted only when explicitly labelled as such; only a persisted formal
+    bet or low-odds observation may carry a formal condition number and be
+    notification eligible.
+    """
+    payload = read_json(payload_path, {})
+    if not isinstance(payload, dict):
+        return {"available": False, "reason": "dashboard_missing_or_malformed"}
+    matches = payload.get("matches")
+    if not isinstance(matches, list):
+        return {"available": False, "reason": "dashboard_matches_missing"}
+    durable = list(ledger.get("bets") or []) + list(
+        (ledger.get("wilson_validation") or {}).get("observations") or []
+    )
+    durable_keys = {
+        (
+            str(row.get("match_id") or ""),
+            str(row.get("condition_number") or ""),
+            str(row.get("market") or row.get("code") or ""),
+            str(row.get("selected_role") or ""),
+            str(row.get("selected_line", row.get("line"))),
+        )
+        for row in durable
+        if isinstance(row, dict)
+        and (
+            str(row.get("portfolio") or "").endswith("_wilson_test")
+            or row.get("formal_bet") is False
+        )
+    }
+    research = authoritative = 0
+    violations: list[str] = []
+    for card in matches:
+        if not isinstance(card, dict):
+            continue
+        match_id = str(card.get("match_id") or "")
+        for row in card.get("condition_matches") or []:
+            if not isinstance(row, dict):
+                continue
+            research += 1
+            if (
+                row.get("match_class") != "research_only"
+                or row.get("authoritative") is not False
+                or row.get("notification_eligible") is not False
+                or row.get("condition_number") is not None
+            ):
+                violations.append("research_card_not_explicitly_non_authoritative")
+        for row in card.get("wilson_matches") or []:
+            if not isinstance(row, dict):
+                continue
+            authoritative += 1
+            key = (
+                match_id,
+                str(row.get("condition_number") or ""),
+                str(row.get("market") or row.get("code") or ""),
+                str(row.get("selected_role") or ""),
+                str(row.get("selected_line", row.get("line"))),
+            )
+            if (
+                row.get("match_class") != "authoritative_admission"
+                or row.get("authoritative") is not True
+                or row.get("notification_eligible") is not True
+                or not str(row.get("condition_number") or "")
+                or key not in durable_keys
+            ):
+                violations.append("authoritative_card_missing_durable_native_admission")
+    return {
+        "available": True,
+        "dashboard_generated_at": payload.get("generated_at"),
+        "research_card_matches": research,
+        "authoritative_card_matches": authoritative,
+        "violations": sorted(set(violations)),
+        "healthy": not violations,
+    }
+
+
 def _footbreak_audit() -> dict[str, Any]:
     ledger = footbreak_notify.load_ledger()
     state = footbreak_notify.load_state()
@@ -85,6 +166,9 @@ def _footbreak_audit() -> dict[str, Any]:
         },
         "state_last_sent": state.get("last_sent"),
         "transport_tests": len((state.get("transport_tests") or {})),
+        "dashboard_authority_parity": _dashboard_authority_parity(
+            Path(footbreak_notify.DASHBOARD_DATA), ledger,
+        ),
     }
 
 
@@ -239,6 +323,9 @@ def _crown_audit() -> dict[str, Any]:
         # durable Wilson outcome. It permits post-kickoff diagnosis without
         # invoking a provider or reviving a normal alert.
         "recent_native_t5_wilson_outcomes": recent_native_t5[:48],
+        "dashboard_authority_parity": _dashboard_authority_parity(
+            config.web_root / "data.json", ledger,
+        ),
     }
 
 
