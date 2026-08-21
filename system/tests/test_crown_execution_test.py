@@ -37,7 +37,7 @@ def crown_card(*, odds=1.9, line=2.5, side="H", observed=None, duplicate=False):
     row = {"code": "HIL", "side": side, "line": line, "odds": odds,
            "source": "titan007-crown-id-3", "odds_status": "available",
            "observed_at": observed or stamp(-1)}
-    card = {"hkjc_match_id": "fx", "kickoff_hkt": kickoff,
+    card = {"match_id": "crown-fx", "hkjc_match_id": "fx", "kickoff_hkt": kickoff,
             "current_selected_odds_journal": [row]}
     return [card, copy.deepcopy(card)] if duplicate else [card]
 
@@ -140,6 +140,128 @@ class CrossEvidenceTests(unittest.TestCase):
         self.assertEqual(first["crown_match_id"], "crown-betis")
         self.assertLessEqual(first["kickoff_delta_seconds"], 120)
         self.assertEqual(t30["market_mappings"]["HIL"]["status"], "AVAILABLE")
+
+    def test_first_look_distinguishes_collector_no_fixture_and_ambiguous_identity(self):
+        watch = {
+            "match_id": "fx", "kickoff": stamp(120), "league": "Spain - La Liga",
+            "home": "貝迪斯", "away": "皇家蘇斯達", "stages": [],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            evidence = Path(directory, "cards.json")
+            with patch.dict(os.environ, {"FOOTBREAK_CROWN_EXECUTION_EVIDENCE_PATH": str(evidence)}):
+                evidence.write_text("[]", encoding="utf-8")
+                self.assertEqual(
+                    cross.prefetch_bridge(watch, stage="首預", now=stamp())["reason"],
+                    "crown_collector_unavailable",
+                )
+                evidence.write_text(json.dumps([{
+                    "match_id": "other", "hkjc_match_id": "not-fx",
+                    "kickoff_hkt": stamp(120),
+                }]), encoding="utf-8")
+                self.assertEqual(
+                    cross.prefetch_bridge(watch, stage="首預", now=stamp())["reason"],
+                    "crown_fixture_not_listed",
+                )
+                evidence.write_text(json.dumps(crown_card(duplicate=True)), encoding="utf-8")
+                self.assertEqual(
+                    cross.prefetch_bridge(watch, stage="首預", now=stamp())["reason"],
+                    "crown_fixture_identity_ambiguous",
+                )
+
+    def test_first_look_requires_complete_team_league_context_after_authoritative_id(self):
+        watch = {
+            "match_id": "fx", "kickoff": stamp(120), "league": "Spain - La Liga",
+            "home": "貝迪斯", "away": "皇家蘇斯達", "stages": [],
+        }
+        card = {
+            "match_id": "crown-betis", "hkjc_match_id": "fx",
+            "kickoff_hkt": stamp(120),
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            evidence = Path(directory, "cards.json")
+            with patch.dict(os.environ, {"FOOTBREAK_CROWN_EXECUTION_EVIDENCE_PATH": str(evidence)}):
+                evidence.write_text(json.dumps([card]), encoding="utf-8")
+                self.assertEqual(
+                    cross.prefetch_bridge(watch, stage="首預", now=stamp())["reason"],
+                    "crown_fixture_identity_incomplete",
+                )
+                evidence.write_text(json.dumps([card | {
+                    "league": "Spain - La Liga", "home": "錯隊", "away": "皇家蘇斯達",
+                }]), encoding="utf-8")
+                self.assertEqual(
+                    cross.prefetch_bridge(watch, stage="首預", now=stamp())["reason"],
+                    "crown_fixture_team_or_league_identity_mismatch",
+                )
+
+    def test_t30_persists_market_unavailable_and_exact_line_unavailable_separately(self):
+        kickoff = stamp(120)
+        watch = {
+            "match_id": "fx", "kickoff": kickoff, "stages": [{
+                "stage": "T-30", "market_predictions": [
+                    {"code": "HIL", "side": "H", "line": 2.5},
+                    {"code": "CHL", "side": "H", "line": 9.5},
+                ],
+            }],
+        }
+        card = crown_card(line=2.75)[0]
+        watch["counterpart_bridges"] = {"crown": {
+            "first_look": {
+                "status": "RESOLVED", "crown_match_id": "crown-fx",
+                "bridge_id": "old", "crown_kickoff": kickoff,
+            },
+        }}
+        # Call the mapping component directly: market availability is T-30
+        # structural evidence and deliberately contains no odds gate.
+        mapping = cross._t30_market_mappings(watch, {
+            **card,
+            "native_stage_journals": {"T-30": [{
+                "code": "HIL", "side": "H", "line": 2.75,
+            }]},
+        })
+        self.assertEqual(mapping["HIL"]["reason"], "crown_t30_exact_line_unavailable")
+        self.assertEqual(mapping["CHL"]["reason"], "crown_t30_market_unavailable")
+
+    def test_t5_rejects_a_changed_crown_id_or_post_kickoff_capture_without_native_replay(self):
+        kickoff, stage = stamp(120), stamp()
+        watch = {
+            "match_id": "fx", "kickoff": kickoff,
+            "stages": [{"stage": "T-5", "ts": stage, "market_predictions": []}],
+            "counterpart_bridges": {"crown": {
+                "first_look": {"status": "RESOLVED", "crown_match_id": "crown-old"},
+                "t30": {"status": "RESOLVED", "crown_match_id": "crown-old",
+                        "market_mappings": {"HIL": {"status": "AVAILABLE", "side": "H", "line": 2.5}}},
+            }},
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            evidence = Path(directory, "cards.json")
+            evidence.write_text(json.dumps(crown_card()), encoding="utf-8")
+            with patch.dict(os.environ, {"FOOTBREAK_CROWN_EXECUTION_EVIDENCE_PATH": str(evidence)}):
+                quote, reason = cross._crown_quote_for_verified_bridge(
+                    watch, "HIL", "H", 2.5, cross._time(stage), cross._time(kickoff),
+                )
+        self.assertIsNone(quote)
+        self.assertEqual(reason, "crown_t5_bridge_changed")
+        with patch.object(cross, "_hkjc_selected", return_value=(
+            {"code": "HIL", "side": "H", "line": 2.5, "observed_at": stage}, None,
+        )):
+            captured = cross.capture_t5_counterparts(
+                watch, now=(cross._time(kickoff) + timedelta(seconds=1)).isoformat(),
+            )
+        self.assertEqual(captured["HIL"]["reason"], "crown_t5_post_kickoff_capture_rejected")
+        self.assertEqual(watch["stages"][0]["stage"], "T-5")
+
+    def test_post_kickoff_prefetch_never_backfills_a_bridge(self):
+        kickoff = stamp(1)
+        watch = {"match_id": "fx", "kickoff": kickoff, "stages": []}
+        with tempfile.TemporaryDirectory() as directory:
+            evidence = Path(directory, "cards.json")
+            evidence.write_text(json.dumps(crown_card()), encoding="utf-8")
+            with patch.dict(os.environ, {"FOOTBREAK_CROWN_EXECUTION_EVIDENCE_PATH": str(evidence)}):
+                result = cross.prefetch_bridge(
+                    watch, stage="首預",
+                    now=(cross._time(kickoff) + timedelta(seconds=1)).isoformat(),
+                )
+        self.assertEqual(result["reason"], "crown_bridge_post_kickoff_rejected")
 
     def test_t5_requires_durable_first_and_t30_bridge(self):
         watch = {"match_id": "fx", "kickoff": stamp(120), "stages": []}

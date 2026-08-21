@@ -284,6 +284,9 @@ class IncidentAlerts:
             "settlement_backlog": "模擬結算積壓逾時",
             "cross_book_counterpart_evidence": "足破×皇冠 T-5 對手證據缺失或過期",
             "cross_book_unevaluated_t5": "足破×皇冠 T-5 未持久化評估結果",
+            "cross_book_first_look_bridge": "足破×皇冠 首預同場身分橋未持久化",
+            "cross_book_t30_bridge": "足破×皇冠 T-30 同場／盤口橋未持久化",
+            "cross_book_t5_capture": "足破×皇冠 T-5 對照擷取未持久化",
             "disk_pressure": "磁碟可用空間低於安全門檻",
         }
         if kind_base == "ledger_digest":

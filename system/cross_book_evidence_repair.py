@@ -75,6 +75,11 @@ def rebuild(
         kickoff = parse_time(card.get("kickoff_hkt") or card.get("kickoff"))
         if kickoff is not None and kickoff > current:
             upcoming.append(card)
+    # Never use a repair call to rewrite the sidecar after all candidates have
+    # kicked off.  A past fixture must remain a forensic artifact, not a new
+    # bridge/quote source for a replayed Footbreak decision.
+    if not upcoming:
+        return False
     with _repair_lock(evidence_path) as acquired:
         if not acquired:
             return False

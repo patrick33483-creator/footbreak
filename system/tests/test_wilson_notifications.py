@@ -122,6 +122,20 @@ class FootbreakWilsonNotificationTest(unittest.TestCase):
         self.assertIn("皇冠對照：未能確認（系統未取得原生T-5）", message)
         self.assertNotIn("皇冠對照：未能確認（無同場盤）", message)
 
+    def test_persisted_counterpart_reason_distinguishes_no_fixture_from_exact_line(self):
+        row = low_odds_observation(market="入球大細")
+        row.update({"code": "HIL", "market": "HIL", "side": "H", "selected_side": "H",
+                    "line": 2.5, "selected_line": 2.5, "selected_role": "大"})
+        row["crown_counterpart"] = {
+            "status": "UNAVAILABLE", "reason": "crown_fixture_not_listed",
+            "market": "HIL", "side": "H", "line": 2.5,
+        }
+        _, text = notify._crown_counterpart(row)
+        self.assertIn("皇冠未列出同場賽事", text)
+        row["crown_counterpart"]["reason"] = "crown_t30_exact_line_unavailable"
+        _, text = notify._crown_counterpart(row)
+        self.assertIn("相同亞洲盤線", text)
+
     def test_durable_dedupe_retry_and_bounded_multiple_market_outbox(self):
         row = bet()
         low = low_odds_observation(market="入球大細", number=8)

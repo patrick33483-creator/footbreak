@@ -8,7 +8,7 @@ import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 
 SYSTEM = Path(__file__).resolve().parents[1]
@@ -192,6 +192,49 @@ class ServerHealthMonitorTests(unittest.TestCase):
                     monitor.cross_book_t5_findings(ledger, NOW),
                     [monitor.Finding("footbreak", "cross_book_counterpart_evidence", 1)],
                 )
+
+    def test_counterpart_stage_monitor_is_pre_kickoff_only_and_distinguishes_each_stage(self) -> None:
+        kickoff = NOW + timedelta(minutes=15)
+        ledger = {
+            "watch": {
+                "one": {
+                    "match_id": "one", "kickoff": kickoff.isoformat(),
+                    "stages": [
+                        {"stage": "首預", "ts": (NOW - timedelta(minutes=2)).isoformat()},
+                        {"stage": "T-30", "ts": (NOW - timedelta(minutes=1)).isoformat()},
+                        {"stage": "T-5", "ts": NOW.isoformat()},
+                    ],
+                    "counterpart_bridges": {"crown": {}},
+                },
+            },
+        }
+        self.assertEqual(
+            monitor.counterpart_bridge_stage_findings(ledger, NOW),
+            [
+                monitor.Finding("footbreak", "cross_book_first_look_bridge", 1),
+                monitor.Finding("footbreak", "cross_book_t30_bridge", 1),
+                monitor.Finding("footbreak", "cross_book_t5_capture", 1),
+            ],
+        )
+        ledger["watch"]["one"]["kickoff"] = (NOW - timedelta(seconds=1)).isoformat()
+        self.assertEqual(monitor.counterpart_bridge_stage_findings(ledger, NOW), [])
+
+    def test_counterpart_repair_does_not_run_after_kickoff(self) -> None:
+        ledger = {
+            "watch": {"one": {"kickoff": (NOW - timedelta(seconds=1)).isoformat()}},
+        }
+        rebuilder = Mock(return_value=True)
+        controller = monitor.RepairController(
+            state_path=Path(tempfile.mkdtemp()) / "repair.json",
+            evidence_rebuilder=rebuilder,
+        )
+        action = controller.attempt(
+            monitor.Finding("footbreak", "cross_book_counterpart_evidence", 1),
+            ledgers={"footbreak": ledger}, now=NOW,
+        )
+        self.assertEqual(action.action, "pre_kickoff_only")
+        self.assertFalse(action.attempted)
+        rebuilder.assert_not_called()
 
     def test_cross_book_health_alert_is_deduped_by_existing_local_incident_state(self) -> None:
         delivered: list[str] = []

@@ -230,6 +230,62 @@ def cross_book_t5_findings(ledger: dict[str, Any], now: datetime) -> list[Findin
     return findings
 
 
+def counterpart_bridge_stage_findings(ledger: dict[str, Any], now: datetime) -> list[Finding]:
+    """Detect missing counterpart state-machine records while repair is safe.
+
+    The monitor never reconstructs a stage from a later quote.  It merely
+    notices that a Footbreak stage already committed without its bounded local
+    bridge result, and only while that fixture is still pre-kickoff.  A sidecar
+    projection rebuild may then make the next normal pre-kickoff tick useful;
+    no repair is attempted after kickoff.
+    """
+    watches = ledger.get("watch") if isinstance(ledger, dict) else {}
+    if not isinstance(watches, dict):
+        return []
+    start = now - timedelta(seconds=MONITOR_WINDOW_SECONDS + STAGE_GRACE_SECONDS)
+    first_missing = t30_missing = t5_missing = 0
+    for watch in watches.values():
+        if not isinstance(watch, dict):
+            continue
+        kickoff = _watch_kickoff(watch)
+        if kickoff is None or now >= kickoff:
+            continue
+        bridge = ((watch.get("counterpart_bridges") or {}).get("crown") or {})
+        if not isinstance(bridge, dict):
+            bridge = {}
+        stages = {
+            str(row.get("stage") or ""): row
+            for row in (watch.get("stages") or [])
+            if isinstance(row, dict)
+            and (recorded := _parse_time(row.get("ts"))) is not None
+            and start <= recorded <= now
+        }
+        if "首預" in stages and not isinstance(bridge.get("first_look"), dict):
+            first_missing += 1
+        if "T-30" in stages and not isinstance(bridge.get("t30"), dict):
+            t30_missing += 1
+        if "T-5" in stages and not isinstance(bridge.get("t5"), dict):
+            t5_missing += 1
+    findings: list[Finding] = []
+    if first_missing:
+        findings.append(Finding("footbreak", "cross_book_first_look_bridge", first_missing))
+    if t30_missing:
+        findings.append(Finding("footbreak", "cross_book_t30_bridge", t30_missing))
+    if t5_missing:
+        findings.append(Finding("footbreak", "cross_book_t5_capture", t5_missing))
+    return findings
+
+
+def _has_pre_kickoff_counterpart_work(ledger: dict[str, Any], now: datetime) -> bool:
+    watches = ledger.get("watch") if isinstance(ledger, dict) else {}
+    return any(
+        isinstance(watch, dict)
+        and (kickoff := _watch_kickoff(watch)) is not None
+        and now < kickoff
+        for watch in (watches or {}).values()
+    ) if isinstance(watches, dict) else False
+
+
 def _expected_stage_missing(
     watch: dict[str, Any], stage: str, now: datetime, window_start: datetime,
 ) -> bool:
@@ -693,7 +749,12 @@ class RepairController:
         if finding.kind == "dashboard_sidecar_mismatch":
             action = "dashboard_self_heal"
             succeeded = self._run(["systemctl", "start", "footbreak-dashboard-self-heal.service"], timeout=50)
-        elif finding.kind == "cross_book_counterpart_evidence":
+        elif finding.kind in {
+            "cross_book_counterpart_evidence", "cross_book_first_look_bridge",
+            "cross_book_t30_bridge", "cross_book_t5_capture",
+        }:
+            if not _has_pre_kickoff_counterpart_work(ledgers.get("footbreak", {}), now):
+                return RepairAction(finding.system, finding.kind, "pre_kickoff_only", False, False)
             action = "rebuild_cross_book_evidence"
             succeeded = bool(self.evidence_rebuilder(now=now))
         elif finding.kind in {"missing_expected_stage", "tick_internal_deadline", "health_check_failure", "repeated_timeout"}:
@@ -734,6 +795,7 @@ def assess(system: str, now: datetime, runner: Callable[..., Any] = subprocess.r
     findings = [finding for finding in findings if finding.count > 0] + local_service_findings(system, runner)
     if system == "footbreak":
         findings.extend(cross_book_t5_findings(ledger, now))
+        findings.extend(counterpart_bridge_stage_findings(ledger, now))
     return findings
 
 
@@ -775,6 +837,7 @@ def run(
         "missing_expected_stage", "tick_internal_deadline", "repeated_timeout", "stuck_notification",
         "dashboard_sidecar_mismatch", "settlement_backlog", "health_check_failure",
         "cross_book_counterpart_evidence", "cross_book_unevaluated_t5",
+        "cross_book_first_look_bridge", "cross_book_t30_bridge", "cross_book_t5_capture",
     )
     cooldown = _positive_int(
         "SERVER_HEALTH_ALERT_COOLDOWN_SECONDS", ALERT_COOLDOWN_SECONDS, 7 * 24 * 60 * 60,
