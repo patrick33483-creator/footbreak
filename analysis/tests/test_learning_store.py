@@ -5,6 +5,7 @@ import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from analysis.learning_store import LATEST_SCHEMA_VERSION, LearningStore
 
@@ -20,6 +21,49 @@ class LearningStoreTest(unittest.TestCase):
         self.addCleanup(store.close)
         self.addCleanup(directory.cleanup)
         return directory, store
+
+    def test_reopen_existing_wal_store_does_not_reissue_journal_mode_write(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "learning.sqlite3"
+            with LearningStore(path):
+                pass
+
+            original_connect = sqlite3.connect
+            journal_writes: list[str] = []
+
+            class ConnectionProxy:
+                def __init__(self, connection):
+                    object.__setattr__(self, "_connection", connection)
+
+                def __getattr__(self, name):
+                    return getattr(self._connection, name)
+
+                def __setattr__(self, name, value):
+                    setattr(self._connection, name, value)
+
+                def execute(self, sql, *args, **kwargs):
+                    normalized = " ".join(str(sql).upper().split())
+                    if normalized.startswith("PRAGMA JOURNAL_MODE ="):
+                        journal_writes.append(normalized)
+                        raise sqlite3.OperationalError("database is locked")
+                    return self._connection.execute(sql, *args, **kwargs)
+
+            def guarded_connect(*args, **kwargs):
+                return ConnectionProxy(original_connect(*args, **kwargs))
+
+            with mock.patch(
+                "analysis.learning_store.sqlite3.connect",
+                side_effect=guarded_connect,
+            ):
+                with LearningStore(path) as reopened:
+                    self.assertEqual(
+                        reopened._connection.execute(
+                            "PRAGMA journal_mode"
+                        ).fetchone()[0].lower(),
+                        "wal",
+                    )
+
+            self.assertEqual(journal_writes, [])
 
     def test_snapshot_changed_pre_kickoff_replay_is_suppressed_and_audited(self) -> None:
         _, store = self._store()

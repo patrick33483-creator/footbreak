@@ -49,7 +49,16 @@ class LearningStore:
         self._connection.row_factory = sqlite3.Row
         self._connection.execute("PRAGMA foreign_keys = ON")
         self._connection.execute("PRAGMA busy_timeout = 30000")
-        self._connection.execute("PRAGMA journal_mode = WAL")
+        # Setting ``journal_mode`` is a write-like operation.  Reissuing it on
+        # every short-lived Crown/Footbreak process can fail with
+        # ``database is locked`` while settlement or reconciliation is using
+        # the same, already-WAL database.  Read the persistent mode first and
+        # only change it for a genuinely new/non-WAL file.
+        current_journal_mode = str(
+            self._connection.execute("PRAGMA journal_mode").fetchone()[0]
+        ).lower()
+        if self.path != ":memory:" and current_journal_mode != "wal":
+            self._connection.execute("PRAGMA journal_mode = WAL")
         self._connection.execute("PRAGMA synchronous = NORMAL")
         self._migrate()
 
