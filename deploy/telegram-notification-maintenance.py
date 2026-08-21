@@ -163,6 +163,52 @@ def _crown_audit() -> dict[str, Any]:
             "acknowledged": bool(ident and ident in observation_acknowledged),
         })
     unacknowledged_groups = _observation_groups(observations, observation_acknowledged)
+    watch = ledger.get("watch") if isinstance(ledger.get("watch"), dict) else {}
+    raw_audit_rows = raw_audit if isinstance(raw_audit, list) else []
+    recent_native_t5: list[dict[str, Any]] = []
+    for fixture in watch.values():
+        if not isinstance(fixture, dict):
+            continue
+        stages = fixture.get("stages") if isinstance(fixture.get("stages"), list) else []
+        t5 = next((
+            row for row in stages
+            if isinstance(row, dict) and row.get("stage") == "T-5"
+        ), None)
+        if not isinstance(t5, dict):
+            continue
+        match_id = str(fixture.get("match_id") or "")
+        decisions = [
+            {
+                "market": row.get("market"),
+                "status": row.get("status"),
+                "reason": row.get("reason"),
+                "condition_number": row.get("condition_number"),
+                "observation_id": row.get("observation_id"),
+            }
+            for row in raw_audit_rows
+            if isinstance(row, dict)
+            and str(row.get("match_id") or "") == match_id
+            and str(row.get("ts") or "") == str(t5.get("ts") or t5.get("source_snapshot_at") or "")
+        ]
+        recent_native_t5.append({
+            "match_id": match_id,
+            "home": fixture.get("home"),
+            "away": fixture.get("away"),
+            "kickoff": fixture.get("kickoff") or fixture.get("kickoff_hkt"),
+            "stage_at": t5.get("ts") or t5.get("source_snapshot_at"),
+            "markets": [
+                {
+                    "code": row.get("code"),
+                    "side": row.get("side"),
+                    "line": row.get("line"),
+                    "odds": row.get("odds"),
+                }
+                for row in (t5.get("market_predictions") or [])
+                if isinstance(row, dict)
+            ],
+            "wilson_decisions": decisions,
+        })
+    recent_native_t5.sort(key=lambda row: str(row.get("stage_at") or ""), reverse=True)
     return {
         "telegram_enabled": config.telegram_enabled,
         "bot_token_configured": bool(config.telegram_bot_token),
@@ -189,6 +235,10 @@ def _crown_audit() -> dict[str, Any]:
         "unacknowledged_low_odds_group_sizes": [
             len(group) for group in unacknowledged_groups
         ],
+        # A bounded local view links every recent native T-5 card to its
+        # durable Wilson outcome. It permits post-kickoff diagnosis without
+        # invoking a provider or reviving a normal alert.
+        "recent_native_t5_wilson_outcomes": recent_native_t5[:48],
     }
 
 
