@@ -13,7 +13,7 @@ jobs:
       - name: Extract next persisted Crown candidate without provider reads
         env: {DEPLOY_HOST: '${{ secrets.DEPLOY_HOST }}', DEPLOY_USER: '${{ secrets.DEPLOY_USER }}'}
         run: |
-          ssh -o BatchMode=yes "$DEPLOY_USER@$DEPLOY_HOST" 'sudo /opt/footbreak/.venv/bin/python3 -' > next-crown-t5.json <<'PY'
+          ssh -o BatchMode=yes "$DEPLOY_USER@$DEPLOY_HOST" 'sudo env PYTHONPATH=/opt/footbreak /opt/footbreak/.venv/bin/python3 -' > next-crown-t5.json <<'PY'
           import json
           from datetime import datetime, timedelta
           from pathlib import Path
