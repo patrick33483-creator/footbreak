@@ -11,6 +11,8 @@ from unittest.mock import patch
 
 from analysis.wilson_validation import admission_arithmetic
 from crown import hkjc_execution_test as reciprocal
+from crown import ledger as crown_ledger
+from crown import engine as crown_engine
 from crown import notify
 from crown import settle
 from crown.config import Settings
@@ -31,6 +33,14 @@ def footbreak(*, line=2.5, side="H", observed=None):
 
 
 class ReciprocalEvidenceTests(unittest.TestCase):
+    def test_native_t5_critical_path_never_calls_reciprocal_experiment(self):
+        source = Path(crown_ledger.__file__).read_text(encoding="utf-8")
+        self.assertNotIn("evaluate_hkjc_execution_t5", source)
+        self.assertNotIn("prefetch_hkjc_bridge", source)
+        self.assertNotIn("recompute_hkjc_execution", source)
+        engine_source = Path(crown_engine.__file__).read_text(encoding="utf-8")
+        self.assertIn('hkjc_rows = [] if mode == "tick"', engine_source)
+
     def _quote(self, source, *, side="H", line=2.5):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory, "footbreak.json"); path.write_text(json.dumps(source), encoding="utf-8")

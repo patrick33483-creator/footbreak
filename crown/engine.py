@@ -1794,10 +1794,10 @@ def run(
         # but must not abort Crown/Titan first-look discovery and persistence.
         pinnapi_rows = []
         pinnapi_fixture_status = "unavailable_fail_closed"
-    hkjc_rows = (
-        _fetch_tick_hkjc_matches(tick_deadline)
-        if mode == "tick" else fetch_matches()
-    )
+    # A deadline-bound Crown tick is native-Crown only.  Do not spend the
+    # urgent scheduler budget on the optional Footbreak/HKJC bridge; sweep may
+    # still retain its noncritical research/mapping collection separately.
+    hkjc_rows = [] if mode == "tick" else fetch_matches()
     h_events = [(event_from_match(row), row) for row in hkjc_rows]
     h_events = [(event, row) for event, row in h_events if event]
     p_events = [_event_from_pinnapi(row) for row in pinnapi_rows]

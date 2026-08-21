@@ -19,7 +19,6 @@ from .common import (
 from .config import Settings
 from .hkjc import fetch_official_settlement_bundle
 from .ledger import condition_bets, condition_observations, recompute_stats
-from .hkjc_execution_test import NAMESPACE as HKJC_EXECUTION_NAMESPACE, recompute as recompute_hkjc_execution
 from .challenger_v2 import NAMESPACE as V2_NAMESPACE, research_bets
 from .lines import pnl, settle_handicap, settle_total
 from .matching import Event, canonical_league_key, canonical_team_key, match_event
@@ -36,14 +35,9 @@ _SETTLEMENT_COMMIT_RESERVE_SECONDS = 20.0
 
 
 def reciprocal_bets(ledger: dict[str, Any]) -> list[dict[str, Any]]:
-    """Exact HKJC-execution simulation rows; never part of Crown Wilson stats."""
-    namespace = ledger.get(HKJC_EXECUTION_NAMESPACE) if isinstance(ledger, dict) else {}
-    return [
-        row for row in ((namespace or {}).get("bets") or [])
-        if isinstance(row, dict)
-        and row.get("portfolio") == HKJC_EXECUTION_NAMESPACE
-        and row.get("strategy") == "crown-hkjc-execution-test-v1"
-    ]
+    """Historical reciprocal rows are deliberately excluded from settlement."""
+    del ledger
+    return []
 
 
 def _settlement_pass_deadline_seconds() -> float:
@@ -367,12 +361,6 @@ def _commit_settlement(
         for row in ((current_wilson or {}).get("observations") or [])
         if isinstance(row, dict)
     } if isinstance(current_wilson, dict) else {}
-    current_cross = current.get(HKJC_EXECUTION_NAMESPACE)
-    current_cross_by_id = {
-        str(bet.get("bet_id") or ""): bet
-        for bet in ((current_cross or {}).get("bets") or [])
-        if isinstance(bet, dict)
-    } if isinstance(current_cross, dict) else {}
     current_v2 = current.get(V2_NAMESPACE)
     current_v2_by_id = {
         str(bet.get("research_id") or ""): bet
@@ -409,18 +397,6 @@ def _commit_settlement(
                 current_row[key] = staged_row[key]
             else:
                 current_row.pop(key, None)
-    for staged_bet in reciprocal_bets(staged):
-        bet_id = str(staged_bet.get("bet_id") or "")
-        original, current_bet = before.get(bet_id), current_cross_by_id.get(bet_id)
-        if not original or not current_bet or current_bet.get("status") != "PENDING":
-            continue
-        if all(staged_bet.get(key) == original.get(key) for key in owned):
-            continue
-        for key in owned:
-            if key in staged_bet:
-                current_bet[key] = staged_bet[key]
-            else:
-                current_bet.pop(key, None)
     # v2 research rows use their own namespace and own dedupe IDs.  Apply the
     # same verified result only to the matching shadow row; v1 rows and stats
     # remain untouched by this branch.
@@ -438,7 +414,6 @@ def _commit_settlement(
             else:
                 current_bet.pop(key, None)
     recompute_stats(current, config)
-    recompute_hkjc_execution(current)
     save_ledger(config, current)
 
 
@@ -449,7 +424,6 @@ def _settle_due_locked(
     ledger = load_ledger(config)
     official_bets = (
         condition_bets(ledger) + condition_observations(ledger)
-        + reciprocal_bets(ledger)
     )
     v2_bets = research_bets(ledger)
     before = {
@@ -491,7 +465,6 @@ def _settle_due_locked(
                         "settlement_commit_deferred": True}
             current = load_ledger(config)
             recompute_stats(current, config)
-            recompute_hkjc_execution(current)
             save_ledger(config, current)
         return {"ok": True, "settled": 0, "voided": 0,
                 "pending": sum(b.get("status") == "PENDING" for b in official_bets + v2_bets)}

@@ -171,41 +171,6 @@ _HKJC_COMPARISON_REASONS = {
 }
 
 
-def _hkjc_counterpart(bet: dict[str, Any]) -> tuple[float | None, str]:
-    """Read one exact, pre-decision native HKJC T-5 counterpart, locally only."""
-    fixture = str(bet.get("hkjc_match_id") or "").strip()
-    market = str(bet.get("code") or bet.get("market") or "").strip().upper()
-    side = str(bet.get("selected_side") or bet.get("side") or "").strip().upper()
-    kickoff = parse_time(bet.get("kickoff"))
-    stage_at = parse_time(bet.get("admission_at") or bet.get("created_at"))
-    try:
-        line = float(bet.get("line", bet.get("selected_line")))
-    except (TypeError, ValueError):
-        line = None
-    if (
-        not fixture or market not in MARKET_LABELS or not side or line is None
-        or not math.isfinite(line) or kickoff is None or stage_at is None
-        or stage_at >= kickoff or str(bet.get("stage") or "") != "T-5"
-    ):
-        return None, "馬會對照：未能確認（資料不足）"
-    try:
-        from .hkjc_execution_test import _exact_hkjc_quote
-        quote, reason = _exact_hkjc_quote(
-            fixture, market, side, line, stage_at, kickoff,
-        )
-    except Exception:
-        quote, reason = None, "hkjc_local_evidence_unavailable"
-    if quote is None:
-        return None, f"馬會對照：未能確認（{_HKJC_COMPARISON_REASONS.get(reason, '未能確認')}）"
-    try:
-        odds = float(quote["odds"])
-    except (KeyError, TypeError, ValueError):
-        return None, "馬會對照：未能確認（賠率未能確認）"
-    if not math.isfinite(odds) or odds <= 1:
-        return None, "馬會對照：未能確認（賠率未能確認）"
-    return odds, f"馬會對照：{odds:.2f}"
-
-
 def _wilson_message(bet: dict[str, Any]) -> str | None:
     """Traditional-Chinese committed Wilson simulation notification only."""
     if bet.get("portfolio") != "crown_wilson_test" or bet.get("strategy") != "wilson-test-strategy-v1":
@@ -231,14 +196,10 @@ def _wilson_message(bet: dict[str, Any]) -> str | None:
     if not league:
         return None
     selection = f"{market} · {bet.get('selected_role') or '—'} {line:g}"
-    hkjc_odds, hkjc_line = _hkjc_counterpart(bet)
-    # The frozen Crown Wilson minimum never changes here.  Crown selected the
-    # condition/tier; this read-only counterpart can only choose the better
-    # exact execution price for the same condition.
-    selected_odds, platform = odds, "皇冠"
-    if hkjc_odds is not None and hkjc_odds > selected_odds:
-        selected_odds, platform = hkjc_odds, "馬會"
-    qualifies = selected_odds + 1e-12 >= minimum
+    # Crown's native T-5 quote is the only condition, alert, and paper-price
+    # input.  Reciprocal HKJC evidence is historical/experimental only and
+    # never participates in this deadline-bound outbox path.
+    qualifies = odds + 1e-12 >= minimum
     is_observation = (
         bet.get("portfolio") == "crown_wilson_observations"
         or (bet.get("formal_bet") is False and bet.get("bet_status") == "NO_BET_LOW_ODDS")
@@ -277,10 +238,9 @@ def _wilson_message(bet: dict[str, Any]) -> str | None:
         "",
         f"合符 {condition_line}",
         f"皇冠訊號：{selection} @{odds:.2f}",
-        hkjc_line,
         minimum_line,
         f"決定：{decision}",
-        f"投注平台：{platform}",
+        "投注平台：皇冠",
     ])
 
 
@@ -388,9 +348,8 @@ def _observation_group_key(row: dict[str, Any]) -> tuple[str, ...] | None:
         row.get("stage"),
         row.get("kickoff"),
         row.get("created_at"),
-        row.get("hkjc_match_id"),
     )
-    if not all(str(value or "").strip() for value in values[:-1]):
+    if not all(str(value or "").strip() for value in values):
         return None
     return tuple(str(value).strip() for value in values) + (f"{line:.8f}", f"{odds:.8f}")
 
@@ -463,14 +422,6 @@ def notify_wilson_pending(
                 continue
             bid = str(bet.get("bet_id") or "")
             if not bid or bid in sent_ids or bet.get("status") != "PENDING":
-                continue
-            try:
-                from analysis.bilateral_decision import decision_for_bet
-                if decision_for_bet(
-                    ledger.get("crown_hkjc_execution_test") or {}, bet, "crown"
-                ):
-                    continue
-            except Exception:
                 continue
             message = _wilson_message(bet)
             if message is None:
@@ -977,24 +928,13 @@ def notify_new(
     # cutover.  `fresh_t5_predictions` stays accepted for API compatibility
     # but notification eligibility is the committed Wilson bet itself.
     del fresh_t5_predictions
-    # A tick grants one bounded Telegram opportunity, not one opportunity per
-    # outbox.  Wilson retains priority; the reciprocal row remains durable for
-    # the next pass if Wilson consumed the shared attempt or wall-clock budget.
-    budget = _NotificationBudget.create(max_attempts, max_seconds)
-    delivered = notify_wilson_pending(
+    # Native Crown Wilson evidence owns the critical notification path.
+    # Historical reciprocal queues are intentionally not read or replayed.
+    return notify_wilson_pending(
         ledger,
         config,
         max_attempts=max_attempts,
         max_seconds=max_seconds,
-        _budget=budget,
-    )
-    delivered += notify_bilateral_decisions(
-        ledger, config, max_attempts=max_attempts, max_seconds=max_seconds,
-        _budget=budget,
-    )
-    return delivered + notify_hkjc_execution_pending(
-        ledger, config, max_attempts=max_attempts, max_seconds=max_seconds,
-        _budget=budget,
     )
 
     from analysis.granular_conditions import _role, notification_opportunities
