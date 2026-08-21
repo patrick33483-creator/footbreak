@@ -515,9 +515,17 @@ def _crown_quote_for_verified_bridge(
     bridge = ((watch.get("counterpart_bridges") or {}).get("crown") or {})
     first = bridge.get("first_look") if isinstance(bridge, dict) else None
     t30 = bridge.get("t30") if isinstance(bridge, dict) else None
-    bootstrap = not isinstance(first, dict) and isinstance(t30, dict) and (
+    bootstrap_marked = not isinstance(first, dict) and isinstance(t30, dict) and (
         t30.get("origin") == T30_BOOTSTRAP_ORIGIN
     )
+    # A genuine T-30 bootstrap can itself fail closed (no fixture, ambiguous
+    # identity, kickoff mismatch, etc.).  Retain that already-persisted fact
+    # at T-5; do not mislabel a valid UNAVAILABLE bootstrap record as a forged
+    # bridge.  Only a claimed *resolved* bootstrap needs the extra integrity
+    # verification below.
+    if bootstrap_marked and t30.get("status") != "RESOLVED":
+        return None, str(t30.get("reason") or "crown_t30_bridge_missing_or_unresolved")
+    bootstrap = bootstrap_marked and t30.get("status") == "RESOLVED"
     if bootstrap and not _verified_t30_bootstrap(watch, t30):
         return None, "crown_t30_bootstrap_unverified"
     if not bootstrap and (not isinstance(first, dict) or first.get("status") != "RESOLVED"):

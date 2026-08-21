@@ -256,6 +256,20 @@ class CrossEvidenceTests(unittest.TestCase):
         self.assertIsNone(quote)
         self.assertEqual(reason, "crown_t30_bootstrap_unverified")
 
+    def test_t5_preserves_the_exact_failed_t30_bootstrap_reason(self):
+        watch = {
+            "match_id": "fx", "kickoff": stamp(120), "stages": [],
+            "counterpart_bridges": {"crown": {"t30": {
+                "status": "UNAVAILABLE", "origin": "t30_bootstrap_existing_card",
+                "reason": "crown_fixture_not_listed",
+            }}},
+        }
+        quote, reason = cross._crown_quote_for_verified_bridge(
+            watch, "HIL", "L", 2.5, cross._time(stamp()), cross._time(watch["kickoff"]),
+        )
+        self.assertIsNone(quote)
+        self.assertEqual(reason, "crown_fixture_not_listed")
+
     def test_native_t30_continues_and_persists_bootstrap_for_existing_card(self):
         kickoff = stamp(120)
         result = {
