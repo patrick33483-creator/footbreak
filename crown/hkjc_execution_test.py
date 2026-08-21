@@ -21,6 +21,7 @@ from analysis.wilson_validation import (
     DECISION_STAGE, FIXED_STAKE, FIXTURE_MARKET_CAP, FIXTURE_STAKE_CAP,
     STARTING_BANKROLL, admission_arithmetic,
     matching_admissions, formal_registry_candidates, match_formal_registry,
+    record_match_observation,
 )
 from .common import iso_hkt, parse_time
 
@@ -108,10 +109,13 @@ def ensure_namespace(ledger: dict[str, Any]) -> dict[str, Any]:
     return ns
 
 
-def _audit(ns: dict[str, Any], fixture: str, market: str, reason: str, *, status="SKIPPED") -> None:
+def _audit(
+    ns: dict[str, Any], fixture: str, market: str, reason: str, *, status="SKIPPED",
+    **evidence: Any,
+) -> None:
     ns["audit"] = (ns.get("audit") or []) + [{
         "ts": iso_hkt(), "match_id": fixture, "market": market,
-        "status": status, "reason": reason,
+        "status": status, "reason": reason, **evidence,
     }]
     ns["audit"] = ns["audit"][-1600:]
 
@@ -252,6 +256,27 @@ def evaluate_new_t5(
             )
             if native_adjusted is None:
                 _audit(ns, fixture, market, native_reason or "active_evidence_unavailable"); continue
+            # Crown's formal-condition identity and validation evidence are
+            # determined by its own native T-5 signal.  A better exact HKJC
+            # counterpart may permit a *separate* paper execution, but it
+            # must not erase the native low-odds observation (or its durable
+            # Wilson notification opportunity).
+            role, selected_line, _ = _audit_selection(market, signal)
+            if selected_line is None:
+                _audit(ns, fixture, market, "crown_signal_line_invalid"); continue
+            native_adjusted["stage_at"] = stage_at.isoformat()
+            native_observation = None
+            if not native_adjusted["arithmetic"].get("passes"):
+                native_observation = record_match_observation(
+                    ledger, "crown", watch, market, signal, native_adjusted,
+                    now=stage_at.isoformat(), market_label=MARKET_LABELS[market],
+                    selected_role=role, selected_line=selected_line,
+                )
+                _audit(
+                    ns, fixture, market, "native_wilson_observation_low_odds",
+                    status="OBSERVED",
+                    observation_id=(native_observation or {}).get("observation_id"),
+                )
             counterpart_status = "AVAILABLE" if quote is not None else "UNAVAILABLE"
             bilateral.append_counterpart_attempt(ns, {
                 "system": "crown", "match_id": fixture, "hkjc_match_id": hkjc_id,
@@ -311,7 +336,6 @@ def evaluate_new_t5(
             fixture_rows = [row for row in ns["bets"] if str(row.get("match_id") or "") == fixture]
             if len(fixture_rows) >= FIXTURE_MARKET_CAP or sum(float(row.get("stake") or 0) for row in fixture_rows) + FIXED_STAKE > FIXTURE_STAKE_CAP:
                 _audit(ns, fixture, market, "fixture_cap_reached"); continue
-            role, selected_line, _ = _audit_selection(market, signal)
             bet = {"bet_id": bid, "portfolio": PORTFOLIO, "strategy": STRATEGY, "strategy_name": DISPLAY_NAME,
                    "match_id": fixture, "hkjc_match_id": hkjc_id, "league": watch.get("league"), "home": watch.get("home"), "away": watch.get("away"), "kickoff": watch.get("kickoff"),
                    "code": market, "market": market, "market_label": MARKET_LABELS[market], "side": side, "line": line, "condition": line, "selected_role": role, "selected_line": selected_line,

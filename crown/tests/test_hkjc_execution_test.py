@@ -85,6 +85,7 @@ class ReciprocalEvidenceTests(unittest.TestCase):
         }
         admission = {
             "signature": "sig", "history": {"hits": 41, "decided": 59},
+            "definition": {"system": "crown", "market": "HIL", "stage": "T-5"},
             "arithmetic": admission_arithmetic(41, 59, 1.66),
         }
         ledger = {
@@ -100,7 +101,13 @@ class ReciprocalEvidenceTests(unittest.TestCase):
             path = Path(directory, "footbreak.json"); path.write_text(json.dumps(source), encoding="utf-8")
             with patch.dict(os.environ, {"CROWN_HKJC_EXECUTION_EVIDENCE_PATH": str(path)}), \
                  patch.object(reciprocal, "_native_t5", return_value=True), \
-                 patch.object(reciprocal, "_native_crown_signal", return_value=(signal, None)), \
+                 patch.object(
+                     reciprocal, "_native_crown_signal",
+                     side_effect=lambda _current, market, _watch, _stage_at: (
+                         (signal, None) if market == "HIL"
+                         else (None, "crown_signal_missing")
+                     ),
+                 ), \
                  patch.object(reciprocal, "formal_registry_candidates", return_value=[{}]), \
                  patch.object(reciprocal, "match_formal_registry", return_value={"crown-1": [{}]}), \
                  patch.object(reciprocal, "matching_admissions", return_value=([admission], "wilson_pass")):
@@ -109,6 +116,15 @@ class ReciprocalEvidenceTests(unittest.TestCase):
         self.assertEqual(len(created), 1)
         self.assertEqual(repeated, [])
         self.assertEqual(len(ledger["bets"]), 1)
+        observations = ledger["wilson_validation"]["observations"]
+        self.assertEqual(len(observations), 1)
+        observation = observations[0]
+        self.assertEqual(observation["bet_status"], "NO_BET_LOW_ODDS")
+        self.assertEqual(observation["odds"], 1.66)
+        self.assertEqual(observation["condition_number"], 8)
+        self.assertEqual(observation["selected_line"], 2.5)
+        self.assertTrue(observation["first_native_pre_kickoff_t5"])
+        self.assertEqual(observation["rollover_provenance"]["system"], "crown")
         bet = ledger[reciprocal.NAMESPACE]["bets"][0]
         self.assertEqual((bet["crown_signal_odds"], bet["hkjc_execution_odds"]), (1.66, 1.9))
         self.assertEqual(bet["condition_number"], 8)
