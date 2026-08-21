@@ -1,0 +1,40 @@
+name: Next Crown T-5 read-only evidence
+on: {workflow_dispatch: {}}
+permissions: {contents: read}
+jobs:
+  evidence:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Configure SSH
+        env: {DEPLOY_SSH_KEY: '${{ secrets.DEPLOY_SSH_KEY }}', DEPLOY_HOST: '${{ secrets.DEPLOY_HOST }}'}
+        run: |
+          install -m 700 -d ~/.ssh; printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519; chmod 600 ~/.ssh/id_ed25519; ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - name: Extract next persisted Crown candidate without provider reads
+        env: {DEPLOY_HOST: '${{ secrets.DEPLOY_HOST }}', DEPLOY_USER: '${{ secrets.DEPLOY_USER }}'}
+        run: |
+          ssh -o BatchMode=yes "$DEPLOY_USER@$DEPLOY_HOST" 'sudo /opt/footbreak/.venv/bin/python3 -' > next-crown-t5.json <<'PY'
+          import json
+          from datetime import datetime, timedelta
+          from pathlib import Path
+          from crown.common import HKT, parse_time
+          now=datetime.now(HKT)
+          ledger=json.loads(Path('/var/lib/footbreak/crown/ledger.json').read_text())
+          cards=json.loads(Path('/var/lib/footbreak/crown/predictions.json').read_text())
+          evidence=json.loads(Path('/var/lib/footbreak/crown/footbreak-execution-evidence.json').read_text()) if Path('/var/lib/footbreak/crown/footbreak-execution-evidence.json').exists() else []
+          by_id={str(r.get('match_id')):r for r in cards if isinstance(r,dict)}
+          rows=[]
+          for key,w in (ledger.get('watch') or {}).items():
+            if not isinstance(w,dict): continue
+            k=parse_time(w.get('kickoff_hkt') or w.get('kickoff'))
+            if not k or not (now < k <= now+timedelta(hours=24)): continue
+            stages=[x for x in w.get('stages',[]) if isinstance(x,dict)]
+            if any(x.get('stage')=='T-5' for x in stages): continue
+            row={'match_id':str(w.get('match_id') or key),'home':w.get('home'),'away':w.get('away'),'league':w.get('league'),'kickoff_hkt':k.isoformat(),'minutes_to_t5':round((k-now).total_seconds()/60-5,1),'stages':[{'stage':x.get('stage'),'status':x.get('status'),'ts':x.get('ts')} for x in stages]}
+            card=by_id.get(row['match_id'],{}); row['card_status']=card.get('status'); row['card_reason']=card.get('no_bet_reason')
+            rows.append(row)
+          rows.sort(key=lambda x:x['kickoff_hkt'])
+          print(json.dumps({'at_hkt':now.isoformat(),'next':rows[:8],'evidence_rows':len(evidence)},ensure_ascii=False))
+          PY
+      - uses: actions/upload-artifact@v4
+        with: {name: next-crown-t5-evidence, path: next-crown-t5.json}
