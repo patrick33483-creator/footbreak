@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -41,7 +42,17 @@ class CrossBookAuditTests(unittest.TestCase):
                 "bets": [], "audit": [{"ts": now.isoformat(), "status": "SKIPPED",
                                         "reason": "no_live_candidate"}],
                 "stats": {"n_pending": 0, "rejections": {"no_live_candidate": 1}},
-            }, "watch": {}}), encoding="utf-8")
+            }, "watch": {
+                "fixture-1": {
+                    "match_id": "fixture-1",
+                    "kickoff": (now + timedelta(minutes=30)).isoformat(),
+                    "counterpart_bridges": {"crown": {
+                        "first_look": {"status": "RESOLVED"},
+                        "t30": {"status": "UNAVAILABLE",
+                                "reason": "crown_t30_exact_line_unavailable"},
+                    }},
+                },
+            }}), encoding="utf-8")
             notify_state = root / "notify.json"
             notify_state.write_text("{}", encoding="utf-8")
             dashboard = root / "dashboard.json"
@@ -60,8 +71,17 @@ class CrossBookAuditTests(unittest.TestCase):
                 ledger_path=str(ledger), notify_state_path=str(notify_state),
                 dashboard_path=str(dashboard), unit_path=str(unit),
             )
-            with patch.object(audit_tool, "_recent_journal", return_value={"available": True, "recent_errors": []}):
+            with patch.dict(
+                os.environ,
+                {"FOOTBREAK_CROWN_EXECUTION_EVIDENCE_PATH": "unchanged-after-audit"},
+            ), patch.object(
+                audit_tool, "_recent_journal", return_value={"available": True, "recent_errors": []},
+            ):
                 result = audit_tool.audit(args)
+                self.assertEqual(
+                    os.environ["FOOTBREAK_CROWN_EXECUTION_EVIDENCE_PATH"],
+                    "unchanged-after-audit",
+                )
         self.assertTrue(result["safe_read_only"])
         self.assertFalse(result["providers_called"])
         self.assertTrue(result["sidecar"]["readable_by_footbreak_adapter"])
@@ -70,4 +90,12 @@ class CrossBookAuditTests(unittest.TestCase):
         self.assertTrue(witness["mismatched_line_rejected"])
         self.assertTrue(result["service_contract"]["read_only_path_present"])
         self.assertTrue(result["dashboard"]["platform_crown_label_present"])
-
+        bridges = result["ledger"]["counterpart_bridge_summary"]
+        self.assertEqual(bridges["upcoming_fixture_count"], 1)
+        self.assertEqual(bridges["stage_counts"]["first_look"]["resolved"], 1)
+        self.assertEqual(bridges["stage_counts"]["t30"]["unavailable"], 1)
+        self.assertEqual(
+            bridges["stage_counts"]["t30"]["reasons"]["crown_t30_exact_line_unavailable"],
+            1,
+        )
+        self.assertEqual(bridges["stage_counts"]["t5"]["missing"], 1)

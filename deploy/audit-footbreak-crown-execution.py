@@ -196,6 +196,64 @@ def _safe_audit(rows: Any) -> list[dict[str, Any]]:
     return output
 
 
+def _bridge_stage_state(bridge: dict[str, Any], name: str) -> dict[str, Any]:
+    value = bridge.get(name)
+    if not isinstance(value, dict):
+        return {"status": "MISSING", "reason": "bridge_stage_not_persisted"}
+    return {
+        "status": str(value.get("status") or "UNKNOWN"),
+        "reason": value.get("reason"),
+    }
+
+
+def _bridge_summary(watches: Any, now: datetime) -> dict[str, Any]:
+    """Count only already-persisted counterpart state; never collect or repair."""
+    names = ("first_look", "t30", "t5")
+    totals = {
+        name: {"recorded": 0, "missing": 0, "resolved": 0, "unavailable": 0,
+               "other": 0, "reasons": {}}
+        for name in names
+    }
+    upcoming: list[dict[str, Any]] = []
+    for watch in (watches or {}).values() if isinstance(watches, dict) else []:
+        if not isinstance(watch, dict):
+            continue
+        kickoff = _time(watch.get("kickoff"))
+        if kickoff is None or now >= kickoff:
+            continue
+        crown = ((watch.get("counterpart_bridges") or {}).get("crown") or {})
+        crown = crown if isinstance(crown, dict) else {}
+        stages = {name: _bridge_stage_state(crown, name) for name in names}
+        for name, state in stages.items():
+            bucket = totals[name]
+            status = state["status"]
+            if status == "MISSING":
+                bucket["missing"] += 1
+            else:
+                bucket["recorded"] += 1
+                if status == "RESOLVED":
+                    bucket["resolved"] += 1
+                elif status == "UNAVAILABLE":
+                    bucket["unavailable"] += 1
+                else:
+                    bucket["other"] += 1
+            reason = str(state.get("reason") or "")
+            if reason:
+                bucket["reasons"][reason] = bucket["reasons"].get(reason, 0) + 1
+        upcoming.append({
+            "match_id": watch.get("match_id"),
+            "kickoff": _stamp(watch.get("kickoff")),
+            "stages": stages,
+        })
+    return {
+        "upcoming_fixture_count": len(upcoming),
+        "stage_counts": totals,
+        "upcoming_fixture_statuses": sorted(
+            upcoming, key=lambda row: row["kickoff"] or "",
+        )[:30],
+    }
+
+
 def _ledger_report(ledger_path: Path, notify_state_path: Path, now: datetime) -> dict[str, Any]:
     ledger = _json(ledger_path, {})
     namespace = ledger.get(NAMESPACE) if isinstance(ledger, dict) else {}
@@ -296,6 +354,9 @@ def _ledger_report(ledger_path: Path, notify_state_path: Path, now: datetime) ->
             row for row in recent_t5 if not row["cross_book_outcome_persisted"]
         ][-20:],
         "upcoming_fixtures": sorted(upcoming, key=lambda row: row["kickoff"] or "")[:30],
+        "counterpart_bridge_summary": _bridge_summary(
+            ledger.get("watch") if isinstance(ledger, dict) else {}, now,
+        ),
     }
 
 
@@ -335,8 +396,19 @@ def _static_policy_contract() -> dict[str, bool]:
 def audit(args: argparse.Namespace) -> dict[str, Any]:
     now = datetime.now(timezone.utc)
     evidence_path = Path(args.evidence_path)
-    os.environ["FOOTBREAK_CROWN_EXECUTION_EVIDENCE_PATH"] = str(evidence_path)
-    sidecar = _sidecar_report(evidence_path, now)
+    # The consumer intentionally uses its configured sidecar reader.  Scope
+    # this test-path override to the audit call so an imported diagnostic can
+    # never redirect later Footbreak work in the same Python process.
+    environment_key = "FOOTBREAK_CROWN_EXECUTION_EVIDENCE_PATH"
+    previous_path = os.environ.get(environment_key)
+    os.environ[environment_key] = str(evidence_path)
+    try:
+        sidecar = _sidecar_report(evidence_path, now)
+    finally:
+        if previous_path is None:
+            os.environ.pop(environment_key, None)
+        else:
+            os.environ[environment_key] = previous_path
     ledger = _ledger_report(Path(args.ledger_path), Path(args.notify_state_path), now)
     return {
         "generated_at": now.astimezone(HKT).isoformat(timespec="seconds"),
