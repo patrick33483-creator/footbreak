@@ -124,6 +124,13 @@ class FormalObservationRecoveryTest(unittest.TestCase):
         audit = recover_system(ledger, [grade_only], "footbreak", apply=False)
         self.assertEqual((audit["accepted"], audit["rejected"]), (1, 0))
 
+    def test_stage_timestamp_proves_legacy_native_quote_without_item_timestamp(self):
+        ledger = self._ledger()
+        retained = history()
+        retained[0]["market_predictions"][0].pop("observed_at")
+        audit = recover_system(ledger, retained, "footbreak", apply=False)
+        self.assertEqual((audit["accepted"], audit["rejected"]), (1, 0))
+
     def test_registry_matcher_rejects_research_and_mismatched_native_rows(self):
         ledger = self._ledger()
         registry = formal_registry_candidates(ledger, "footbreak")

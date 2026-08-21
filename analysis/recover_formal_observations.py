@@ -176,7 +176,7 @@ def _native_t5_proof(
     kickoff = _time(row.get("kickoff"))
     if not fixture or created_at is None or kickoff is None or created_at >= kickoff:
         return None, "legacy_row_not_provably_pre_kickoff"
-    choices: list[tuple[dict[str, Any], dict[str, Any], str, str]] = []
+    choices: dict[tuple[str, str, str, str, str, str, str, str], tuple[dict[str, Any], dict[str, Any], str, str]] = {}
     for stage in history:
         if str(stage.get("match_id") or "") != fixture or str(stage.get("stage") or "") != DECISION_STAGE:
             continue
@@ -193,12 +193,25 @@ def _native_t5_proof(
         source = str(item.get("quote_source") or item.get("source") or "").strip().lower()
         if not source or source in {"none", "fallback", "model_only", "model-only", "unavailable"}:
             continue
-        if _time(item.get("observed_at")) is None or _time(item.get("observed_at")) >= _time(stage_kickoff):
+        # Old persisted native snapshots do not all carry an item-level
+        # observed_at.  Their own immutable T-5 stage timestamp is sufficient
+        # pre-kickoff proof; where an item timestamp exists it must agree.
+        observed_at = _time(item.get("observed_at"))
+        if observed_at is not None and observed_at >= _time(stage_kickoff):
             continue
-        choices.append((stage, item, stage_at, stage_kickoff))
+        identity = (
+            fixture, stage_at, stage_kickoff, str(item.get("code") or "").upper(),
+            str(item.get("side") or "").upper(),
+            f"{_number(item.get('line', item.get('condition'))):.8g}",
+            f"{_number(item.get('odds')):.8g}", source,
+        )
+        # A raw watch and its settled accuracy record may preserve the exact
+        # same native snapshot twice.  It is corroboration, not a second
+        # candidate; only materially distinct facts remain ambiguous.
+        choices.setdefault(identity, (stage, item, stage_at, stage_kickoff))
     if len(choices) != 1:
         return None, "native_t5_missing_or_ambiguous"
-    stage, item, stage_at, stage_kickoff = choices[0]
+    stage, item, stage_at, stage_kickoff = next(iter(choices.values()))
     return {
         "stage": stage, "item": item, "stage_at": stage_at,
         "kickoff": stage_kickoff,
