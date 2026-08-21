@@ -46,23 +46,23 @@ jobs:
               --write-out '%{http_code}' "$url" || true)"
             content_type="$(awk 'BEGIN{IGNORECASE=1} /^Content-Type:/{value=$0} END{sub(/\r$/, "", value); sub(/^[^:]+:[[:space:]]*/, "", value); print value}' "$headers")"
             kind="$(python3 - "$body" <<'PY'
-import json
-import pathlib
-import sys
+          import json
+          import pathlib
+          import sys
 
-raw = pathlib.Path(sys.argv[1]).read_bytes()
-try:
-    payload = json.loads(raw)
-except Exception:
-    prefix = raw.lstrip()[:32].lower()
-    print("html" if prefix.startswith((b"<!doctype", b"<html")) else "other")
-else:
-    if isinstance(payload, dict):
-        print("json:" + str(payload.get("schema_version") or "object"))
-    else:
-        print("json:" + type(payload).__name__)
-PY
-)"
+          raw = pathlib.Path(sys.argv[1]).read_bytes()
+          try:
+              payload = json.loads(raw)
+          except Exception:
+              prefix = raw.lstrip()[:32].lower()
+              print("html" if prefix.startswith((b"<!doctype", b"<html")) else "other")
+          else:
+              if isinstance(payload, dict):
+                  print("json:" + str(payload.get("schema_version") or "object"))
+              else:
+                  print("json:" + type(payload).__name__)
+          PY
+          )"
             printf '%s status=%s content_type=%s kind=%s bytes=%s\n' \
               "$url" "${status:-unreachable}" "${content_type:-missing}" "$kind" \
               "$(wc -c < "$body")"
