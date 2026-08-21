@@ -1,0 +1,97 @@
+name: 診斷公開 Dashboard 路由
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    name: Diagnose authenticated port 80 dashboard routes
+    runs-on: ubuntu-24.04
+    steps:
+      - name: 設定 SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: 只讀檢查公開 Crown 路徑
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'sudo /bin/sh -s' <<'REMOTE'
+          set -eu
+
+          password_file=/root/crown-dashboard-password.txt
+          test -s "$password_file"
+          IFS= read -r dashboard_password < "$password_file"
+          test -n "$dashboard_password"
+
+          check_url() {
+            url="$1"
+            body="$(mktemp)"
+            headers="$(mktemp)"
+            trap 'rm -f "$body" "$headers"' EXIT HUP INT TERM
+            status="$(curl --silent --show-error --max-time 8 \
+              --user "crown:${dashboard_password}" \
+              --dump-header "$headers" --output "$body" \
+              --write-out '%{http_code}' "$url" || true)"
+            content_type="$(awk 'BEGIN{IGNORECASE=1} /^Content-Type:/{value=$0} END{sub(/\r$/, "", value); sub(/^[^:]+:[[:space:]]*/, "", value); print value}' "$headers")"
+            kind="$(python3 - "$body" <<'PY'
+import json
+import pathlib
+import sys
+
+raw = pathlib.Path(sys.argv[1]).read_bytes()
+try:
+    payload = json.loads(raw)
+except Exception:
+    prefix = raw.lstrip()[:32].lower()
+    print("html" if prefix.startswith((b"<!doctype", b"<html")) else "other")
+else:
+    if isinstance(payload, dict):
+        print("json:" + str(payload.get("schema_version") or "object"))
+    else:
+        print("json:" + type(payload).__name__)
+PY
+)"
+            printf '%s status=%s content_type=%s kind=%s bytes=%s\n' \
+              "$url" "${status:-unreachable}" "${content_type:-missing}" "$kind" \
+              "$(wc -c < "$body")"
+            rm -f "$body" "$headers"
+            trap - EXIT HUP INT TERM
+          }
+
+          check_url http://127.0.0.1/crown/
+          check_url http://127.0.0.1/crown/data.json
+          check_url http://127.0.0.1/crown/api/data
+          check_url http://127.0.0.1/api/data
+          check_url http://127.0.0.1:8082/data.json
+          check_url http://127.0.0.1:8082/api/data
+          unset dashboard_password
+
+          echo "--- sanitized Crown route directives ---"
+          nginx -T 2>/dev/null \
+            | awk '
+                /configuration file / { file=$0 }
+                /listen[[:space:]]+80([[:space:]]|;)/ ||
+                /server_name/ ||
+                /location[[:space:]].*crown/ ||
+                /proxy_pass[[:space:]].*8082/ ||
+                /alias[[:space:]].*crown/ ||
+                /root[[:space:]].*crown/ ||
+                /try_files.*crown/ {
+                  print file
+                  print
+                }
+              ' \
+            | sed -E 's#(auth_basic_user_file[[:space:]]+)[^;]+#\1[redacted]#g'
+          REMOTE
