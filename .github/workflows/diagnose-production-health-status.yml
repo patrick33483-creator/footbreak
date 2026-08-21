@@ -21,6 +21,37 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
 
+      - name: 唯讀磁碟用量歸因
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          set -u
+          echo "=== filesystem ==="
+          df -h /
+          df -i /
+          echo "=== journal ==="
+          journalctl --disk-usage || true
+          echo "=== root directories ==="
+          timeout 45s du -x -h --max-depth=1 / 2>/dev/null | sort -h | tail -n 20 || true
+          echo "=== var directories ==="
+          timeout 45s du -x -h --max-depth=2 /var 2>/dev/null | sort -h | tail -n 40 || true
+          echo "=== opt directories ==="
+          timeout 45s du -x -h --max-depth=3 /opt/footbreak 2>/dev/null | sort -h | tail -n 50 || true
+          echo "=== git storage ==="
+          du -sh /opt/footbreak/.git 2>/dev/null || true
+          git -C /opt/footbreak count-objects -vH 2>/dev/null || true
+          echo "=== runtime file size leaders ==="
+          find /var/lib/footbreak /var/www/footbreak /var/www/crown \
+            -xdev -type f -printf '%s %p\n' 2>/dev/null \
+            | sort -nr | head -n 50 || true
+          echo "=== deleted open files ==="
+          lsof -nP +L1 2>/dev/null \
+            | awk 'NR == 1 || $7 ~ /^[0-9]+$/' \
+            | sort -k7,7nr | head -n 30 || true
+          REMOTE
+
       - name: 執行唯讀健康檢查並發布安全摘要
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
