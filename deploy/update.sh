@@ -147,6 +147,11 @@ systemctl is-active --quiet footbreak-dashboard-self-heal.timer || {
 systemctl unmask footbreak-server-health-monitor.timer 2>/dev/null || true
 systemctl reenable footbreak-server-health-monitor.timer
 systemctl restart footbreak-server-health-monitor.timer
+# The monitor is safe to invoke once after a reviewed deployment: it reads
+# durable local state and repairs only bounded, documented faults.  This makes
+# a just-deployed service/timer regression observable (and repairable) now,
+# rather than waiting for its next half-hour cadence.
+systemctl start footbreak-server-health-monitor.service
 systemctl is-enabled --quiet footbreak-server-health-monitor.timer || {
   systemctl show footbreak-server-health-monitor.timer \
     -p LoadState -p ActiveState -p SubState -p UnitFileState -p Result
