@@ -73,7 +73,7 @@ class FootbreakWilsonNotificationTest(unittest.TestCase):
         message = self._message_with_counterpart(bet(), odds=1.89)
         self.assertIsNotNone(message)
         self.assertLess(len(message), 500)
-        for text in ("【足破 Wilson】", "英格蘭超級聯賽", "主隊 vs 客隊", "合符條件 #7",
+        for text in ("【足破 Wilson】", "英格蘭超級聯賽", "主隊 vs 客隊", "合符 足破 Wilson 條件 #7",
                      "馬會訊號：讓球 · 主讓 -0.25 @1.90",
                      "皇冠對照：讓球 · 主讓 -0.25 @1.89", "最低賠率要求：",
                      "決定：投注", "投注平台：馬會"):
@@ -88,7 +88,7 @@ class FootbreakWilsonNotificationTest(unittest.TestCase):
         row = low_odds_observation()
         message = self._message_with_counterpart(row, odds=1.58)
         self.assertIsNotNone(message)
-        for text in ("合符條件 #7", "馬會訊號：讓球 · 主讓 -0.25 @1.50",
+        for text in ("合符 足破 Wilson 條件 #7", "馬會訊號：讓球 · 主讓 -0.25 @1.50",
                      "皇冠對照：讓球 · 主讓 -0.25 @1.58", "最低賠率要求：",
                      "決定：不投注：賠率不足", "投注平台：皇冠"):
             self.assertIn(text, message)
@@ -137,8 +137,8 @@ class FootbreakWilsonNotificationTest(unittest.TestCase):
                 self.assertEqual(notify.notify_pending_condition_bets(ledger), 0)
             self.assertEqual(send.call_count, 2)
             messages = [call.args[0] for call in send.call_args_list]
-            self.assertTrue(any("合符條件 #7" in text and "讓球" in text for text in messages))
-            self.assertTrue(any("合符條件 #8" in text and "入球大細" in text and "不投注：賠率不足" in text for text in messages))
+            self.assertTrue(any("合符 足破 Wilson 條件 #7" in text and "讓球" in text for text in messages))
+            self.assertTrue(any("合符 足破 Wilson 條件 #8" in text and "入球大細" in text and "不投注：賠率不足" in text for text in messages))
 
     def test_shared_budget_prioritizes_wilson_over_cross_book_outbox(self):
         formal = bet()

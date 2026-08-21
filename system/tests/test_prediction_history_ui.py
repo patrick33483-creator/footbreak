@@ -209,7 +209,7 @@ class PredictionHistoryUiTests(unittest.TestCase):
             with self.subTest(dashboard=dashboard):
                 self.assertIn(f"const WILSON_CONDITION_SCOPE = '{scope}'", app)
                 self.assertIn("function wilsonConditionLabel", app)
-                self.assertIn("研究排名 #${index + 1}（未凍結；不計前瞻）", cards)
+                self.assertIn("研究 R#${index + 1}（未凍結；不計前瞻）", cards)
                 self.assertIn("研究卡未有凍結 Wilson 身份", cards)
                 self.assertNotIn("? Number(item.condition_number) : index + 1", cards)
 

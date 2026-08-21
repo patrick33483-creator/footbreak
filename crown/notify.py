@@ -261,7 +261,7 @@ def _wilson_message(bet: dict[str, Any]) -> str | None:
         numbers = [number]
     if not numbers:
         return None
-    condition_line = "、".join(f"#{value}" for value in numbers)
+    condition_line = "、".join(f"皇冠 Wilson 條件 #{value}" for value in numbers)
     minimums = bet.get("minimum_odds_by_condition")
     if isinstance(minimums, (list, tuple)) and minimums:
         minimum_line = "最低賠率要求：" + "；".join(
@@ -275,7 +275,7 @@ def _wilson_message(bet: dict[str, Any]) -> str | None:
         f"{kickoff.astimezone(HKT).strftime('%H:%M')} {league}",
         f"{bet.get('home') or ''} vs {bet.get('away') or ''}",
         "",
-        f"合符條件 {condition_line}",
+        f"合符 {condition_line}",
         f"皇冠訊號：{selection} @{odds:.2f}",
         hkjc_line,
         minimum_line,
@@ -486,7 +486,7 @@ def _hkjc_execution_message(bet: dict[str, Any]) -> str | None:
         f"{kickoff.astimezone(HKT).strftime('%H:%M')} {league}",
         f"{bet.get('home') or ''} vs {bet.get('away') or ''}",
         "",
-        f"合符條件 #{number}",
+        f"合符 皇冠 Wilson 條件 #{number}",
         f"投注：{selection}",
         f"投注平台：{platform}",
         "",

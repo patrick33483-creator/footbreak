@@ -528,7 +528,7 @@ function historicalConditionMatchText(item) {
   const lower = numeric(interval[0]);
   const minimum = lower != null && lower > 0.03 ? 1 / (lower - 0.03) : null;
   const actual = numeric(item.selected_odds);
-  return `<div class="condition-match"><b>研究排名 #${esc(number)} · ${esc(publicText(item.label || ''))}</b>
+  return `<div class="condition-match"><b>研究 R#${esc(number)} · ${esc(publicText(item.label || ''))}</b>
     <span>${pc(total.accuracy, 1)} (${total.hits || 0}/${total.decided || 0}) · 現時賠率 ${actual == null ? '—' : f2(actual)} · 研究參考門檻 ${minimum == null ? '未能計算' : f2(minimum)}</span>
     <span>研究吻合／未納入正式 Wilson；不建立投注或 Telegram 通知。</span></div>`;
 }
@@ -1328,7 +1328,7 @@ function legacyHistoryConsensusCards(stats) {
       : '<div class="consensus-odds-audit unavailable">賠率資料不足，未能檢查熱門盤偏差</div>';
     return `<article class="consensus-rank-card">
       <div class="consensus-rank-head">
-        <span class="consensus-rank-number">研究排名 #${index + 1}</span>
+        <span class="consensus-rank-number">研究 R#${index + 1}</span>
         <span class="consensus-sample ${qualified ? 'enough' : ''}">${qualified ? '樣本達標' : '只作觀察'}</span>
       </div>
       <b>${esc(marketLabel(item.market_label || item.market))} · ${esc(publicText(item.condition_label || ''))}</b>
@@ -1466,7 +1466,7 @@ function historyConsensusCards(stats) {
     const hasFrozenCondition = Number.isInteger(Number(item.condition_number));
     const conditionLabel = hasFrozenCondition
       ? wilsonConditionLabel(item.condition_number)
-      : `研究排名 #${index + 1}（未凍結；不計前瞻）`;
+      : `研究 R#${index + 1}（未凍結；不計前瞻）`;
     const pending = progress.display || `${Number(progress.pending_decided || 0)}/${Number(progress.required || 20)}`;
     const batchText = lastBatch.version
       ? (lastBatch.initial_migration_full_cohort

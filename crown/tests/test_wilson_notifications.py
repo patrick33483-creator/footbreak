@@ -71,7 +71,7 @@ class CrownWilsonNotificationTest(unittest.TestCase):
         message = self._message_with_hkjc(row, odds=1.89)
         self.assertIsNotNone(message)
         self.assertLess(len(message), 500)
-        for text in ("【皇冠 Wilson】", "美國職業足球大聯盟", "合符條件 #3",
+        for text in ("【皇冠 Wilson】", "美國職業足球大聯盟", "合符 皇冠 Wilson 條件 #3",
                      "皇冠訊號：入球大細 · 大 2.5 @1.90",
                      "馬會對照：1.89", "最低賠率要求：",
                      "決定：投注", "投注平台：皇冠"):
@@ -95,7 +95,7 @@ class CrownWilsonNotificationTest(unittest.TestCase):
         low = low_odds_observation()
         message = self._message_with_hkjc(low, odds=1.58)
         self.assertIsNotNone(message)
-        self.assertIn("合符條件 #4", message)
+        self.assertIn("合符 皇冠 Wilson 條件 #4", message)
         self.assertIn("皇冠訊號：角球大細 · 大 2.5 @1.50", message)
         self.assertIn("馬會對照：1.58", message)
         self.assertIn("決定：不投注：賠率不足", message)
@@ -142,7 +142,7 @@ class CrownWilsonNotificationTest(unittest.TestCase):
                     notify.notify_wilson_pending(ledger, config, max_attempts=1), 0,
                 )
         message = sender.call_args.args[1]
-        self.assertIn("合符條件 #8、#9", message)
+        self.assertIn("合符 皇冠 Wilson 條件 #8、皇冠 Wilson 條件 #9", message)
         self.assertIn("最低賠率要求：#8 ", message)
         self.assertIn("#9 ", message)
         self.assertIn("決定：不投注：賠率不足", message)

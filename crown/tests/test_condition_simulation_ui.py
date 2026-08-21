@@ -53,7 +53,7 @@ class ConditionSimulationUiTests(unittest.TestCase):
                     source.index("function historicalConditionMatchText"):
                     source.index("function historicalConditionMatchText") + 1800
                 ]
-                self.assertIn("研究排名 #${esc(number)}", history)
+                self.assertIn("研究 R#${esc(number)}", history)
                 self.assertIn("研究吻合／未納入正式 Wilson", history)
                 self.assertNotIn("合符 ${esc(wilsonConditionLabel", history)
                 self.assertIn("minimum_required_odds_display", source)
@@ -71,7 +71,7 @@ class ConditionSimulationUiTests(unittest.TestCase):
             ]
             with self.subTest(path=path):
                 self.assertIn("const hasFrozenCondition", cards)
-                self.assertIn("研究排名 #${index + 1}（未凍結；不計前瞻）", cards)
+                self.assertIn("研究 R#${index + 1}（未凍結；不計前瞻）", cards)
                 self.assertNotIn("? Number(item.condition_number) : index + 1", cards)
                 self.assertIn("研究卡未有凍結 Wilson 身份", cards)
 
