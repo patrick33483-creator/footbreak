@@ -1482,11 +1482,13 @@ def _run_local_bulk_t5(
     rows: list[dict[str, Any]],
     deadline: float,
 ) -> dict[str, Any]:
-    """Persist all eligible locally due T-5 cards without slow discovery.
+    """Persist locally due T-5 cards before kickoff without optional providers.
 
-    Each usable fixture is committed before the next is processed.  Missing,
-    malformed, or post-kickoff bulk rows remain due for a later tick; this
-    path never falls through to per-fixture pages or optional providers.
+    A current Crown ID-3 bulk row is preferred.  A missing or malformed bulk
+    row gets one bounded, parallel direct-page fallback, because the bulk feed
+    can omit an otherwise live Crown market.  Anything unavailable, malformed,
+    or returned after kickoff remains due for the next tick rather than being
+    fabricated or reconstructed.
     """
     titan_client = TitanClient(config)
     try:
@@ -1500,23 +1502,69 @@ def _run_local_bulk_t5(
     if not isinstance(snapshots, dict):
         snapshots = {}
 
+    usable_snapshots: dict[str, dict[str, Any]] = {}
+    fallback_rows: list[dict[str, Any]] = []
+    for titan in rows:
+        match_id = str(titan.get("id") or "")
+        kickoff = parse_time(titan.get("kickoff"))
+        snapshot = snapshots.get(match_id)
+        if (
+            kickoff is not None
+            and snapshot
+            and snapshot.get("quote_source") == _CROWN_BULK_ID3_SOURCE
+            and _valid_pre_kickoff_bulk_snapshot(snapshot, kickoff)
+        ):
+            usable_snapshots[match_id] = snapshot
+        else:
+            fallback_rows.append(titan)
+
+    # Direct page reads are deliberately bounded and concurrent.  Reserve a
+    # small commit window, and never start a fallback when doing so could
+    # crowd out the pre-kickoff persistence guard.
+    direct_attempted = 0
+    if fallback_rows:
+        remaining = _deadline_remaining(deadline)
+        fallback_budget = min(8.0, max(0.0, remaining - 3.0))
+        if fallback_budget >= _MIN_DEADLINE_CALL_SECONDS:
+            direct_attempted = len(fallback_rows)
+            with ThreadPoolExecutor(
+                max_workers=min(_tick_workers(), len(fallback_rows)),
+            ) as pool:
+                futures = {
+                    pool.submit(
+                        titan_client.crown_price_snapshot,
+                        str(row.get("id") or ""),
+                        max_seconds=fallback_budget,
+                    ): row
+                    for row in fallback_rows
+                }
+                for future in as_completed(futures):
+                    titan = futures[future]
+                    match_id = str(titan.get("id") or "")
+                    kickoff = parse_time(titan.get("kickoff"))
+                    try:
+                        snapshot = future.result()
+                    except (OSError, TimeoutError):
+                        continue
+                    if (
+                        kickoff is not None
+                        and snapshot
+                        and snapshot.get("quote_source") == _CROWN_ID3_SOURCE
+                        and _valid_pre_kickoff_bulk_snapshot(snapshot, kickoff)
+                        and snapshot.get("prices")
+                    ):
+                        usable_snapshots[match_id] = snapshot
+
     stage_predictions: list[dict[str, Any]] = []
     retained = len(load_predictions(config))
-    unavailable = 0
     for titan in rows:
-        kickoff = parse_time(titan.get("kickoff"))
-        snapshot = snapshots.get(str(titan.get("id") or ""))
-        if (
-            kickoff is None
-            or not _valid_pre_kickoff_bulk_snapshot(snapshot, kickoff)
-            or not snapshot
-            or snapshot.get("quote_source") != _CROWN_BULK_ID3_SOURCE
-        ):
-            unavailable += 1
+        snapshot = usable_snapshots.get(str(titan.get("id") or ""))
+        if snapshot is None:
             continue
         stage_predictions.append(
             _local_bulk_t5_prediction(titan, config, snapshot)
         )
+    unavailable = len(rows) - len(stage_predictions)
 
     # The commit helper already rejects a prediction that has crossed kickoff,
     # preserves stage idempotency, and evaluates each T-5 once. One batch
@@ -1538,6 +1586,11 @@ def _run_local_bulk_t5(
             if item["stage"] == "T-5"
         ],
         "bulk_unavailable_predictions": unavailable,
+        "direct_fallback_attempted": direct_attempted,
+        "direct_fallback_predictions": sum(
+            snapshot.get("quote_source") == _CROWN_ID3_SOURCE
+            for snapshot in usable_snapshots.values()
+        ),
         "pinnapi_fixtures": 0,
         "hkjc_fixtures": 0,
         "deferred_predictions": unavailable,

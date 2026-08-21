@@ -491,7 +491,9 @@ class TitanClient:
     def crown_prices(self, titan_id: str) -> list[dict[str, Any]]:
         return self.crown_price_snapshot(titan_id)["prices"]
 
-    def crown_price_snapshot(self, titan_id: str) -> dict[str, Any]:
+    def crown_price_snapshot(
+        self, titan_id: str, *, max_seconds: float | None = None,
+    ) -> dict[str, Any]:
         """Return prices plus per-market fetch status.
 
         An empty successful page means Crown no longer has that market.  A
@@ -505,13 +507,31 @@ class TitanClient:
             return {"prices": [], "asian_ok": False, "total_ok": False}
         asian = total = None
         asian_ok = total_ok = False
+        # The T-5 fallback supplies a hard per-fixture budget.  Split it
+        # across the independent handicap and total pages so either stalled
+        # page cannot consume the whole tick.  Existing callers keep the
+        # established direct-read behaviour when no budget is supplied.
+        page_budget = (
+            max(0.1, float(max_seconds) / 2.0)
+            if max_seconds is not None else None
+        )
         try:
-            asian = self._read(f"{self.config.titan_vip_base}/AsianOdds_n.aspx?id={titan_id}")
+            asian = self._read(
+                f"{self.config.titan_vip_base}/AsianOdds_n.aspx?id={titan_id}",
+                timeout=min(8.0, page_budget) if page_budget is not None else 25.0,
+                attempts=1 if page_budget is not None else 2,
+                hard_deadline=page_budget,
+            )
             asian_ok = True
         except OSError:
             pass
         try:
-            total = self._read(f"{self.config.titan_vip_base}/OverDown_n.aspx?id={titan_id}")
+            total = self._read(
+                f"{self.config.titan_vip_base}/OverDown_n.aspx?id={titan_id}",
+                timeout=min(8.0, page_budget) if page_budget is not None else 25.0,
+                attempts=1 if page_budget is not None else 2,
+                hard_deadline=page_budget,
+            )
             total_ok = True
         except OSError:
             pass
@@ -519,6 +539,7 @@ class TitanClient:
             "prices": crown_prices_from_pages(asian, total, self.config.titan_company_id),
             "asian_ok": asian_ok,
             "total_ok": total_ok,
+            "quote_source": "titan007-crown-id-3",
         }
 
     def results(

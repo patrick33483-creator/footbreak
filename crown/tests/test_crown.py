@@ -1131,6 +1131,17 @@ class CrownSafetyTests(unittest.TestCase):
         self.assertEqual(read.call_args.kwargs["attempts"], 1)
         self.assertIn("livestatic.titan007.com/vbsxml/goal3.xml", read.call_args.args[0])
 
+    def test_direct_crown_snapshot_accepts_a_hard_t5_budget_and_keeps_provenance(self) -> None:
+        from crown.titan import TitanClient
+
+        client = TitanClient(replace(settings(), titan_company_id="3"))
+        with patch.object(client, "_read", return_value="") as read:
+            snapshot = client.crown_price_snapshot("fixture", max_seconds=4.0)
+        self.assertEqual(snapshot["quote_source"], "titan007-crown-id-3")
+        self.assertEqual(read.call_count, 2)
+        self.assertTrue(all(call.kwargs["attempts"] == 1 for call in read.call_args_list))
+        self.assertTrue(all(call.kwargs["hard_deadline"] == 2.0 for call in read.call_args_list))
+
     def test_result_reads_are_bounded_and_detail_fanout_has_a_pass_budget(self) -> None:
         from crown.titan import TitanClient
 
@@ -1803,6 +1814,62 @@ class CrownSafetyTests(unittest.TestCase):
             )
             titan_client.crown_price_snapshot.assert_not_called()
             titan_client.crown_prices.assert_not_called()
+
+    def test_missing_bulk_t5_row_uses_bounded_direct_current_crown_fallback(self) -> None:
+        """A live direct Crown page must not be discarded when bulk omits it."""
+        with tempfile.TemporaryDirectory() as directory:
+            config = replace(
+                settings(), state_dir=Path(directory), enabled=True, pinnapi_key="test",
+            )
+            now = datetime.now(__import__("crown.common", fromlist=["HKT"]).HKT)
+            card = {
+                "match_id": "direct-fallback", "league": "L",
+                "home": "Home", "away": "Away",
+                "kickoff_hkt": (now + timedelta(minutes=5)).isoformat(),
+            }
+            save_predictions(config, [card])
+            save_ledger(config, {
+                "bankroll": 50000, "bets": [], "log": [], "stats": {},
+                "watch": {"direct-fallback": {
+                    "matching_version": MATCHING_VERSION, "prediction_era": PREDICTION_ERA,
+                    "stages": [{"stage": "首預"}, {"stage": "T-30"}],
+                }},
+            })
+            titan_client = Mock()
+            titan_client.crown_bulk_price_snapshots.return_value = {}
+            titan_client.crown_price_snapshot.return_value = {
+                "prices": [
+                    {"market": "HDC", "line": -0.25, "selection": "H",
+                     "odds": 1.91, "source_at": now.timestamp()},
+                    {"market": "HDC", "line": -0.25, "selection": "A",
+                     "odds": 1.99, "source_at": now.timestamp()},
+                    {"market": "HIL", "line": 2.5, "selection": "H",
+                     "odds": 1.95, "source_at": now.timestamp()},
+                    {"market": "HIL", "line": 2.5, "selection": "L",
+                     "odds": 1.95, "source_at": now.timestamp()},
+                ],
+                "asian_ok": True, "total_ok": True,
+                "quote_source": "titan007-crown-id-3",
+            }
+            with patch("crown.engine.TitanClient", return_value=titan_client):
+                result = run("tick", config)
+
+            self.assertEqual(result["predictions"], 1)
+            self.assertEqual(result["direct_fallback_attempted"], 1)
+            self.assertEqual(result["direct_fallback_predictions"], 1)
+            titan_client.crown_bulk_price_snapshots.assert_called_once()
+            titan_client.crown_price_snapshot.assert_called_once()
+            self.assertGreater(
+                titan_client.crown_price_snapshot.call_args.kwargs["max_seconds"], 0,
+            )
+            stages = load_ledger(config)["watch"]["direct-fallback"]["stages"]
+            self.assertEqual(
+                sum(row.get("stage") == "T-5" for row in stages if isinstance(row, dict)),
+                1,
+            )
+            stored = load_predictions(config)[0]
+            self.assertEqual(stored["crown_quote_source"], "titan007-crown-id-3")
+            self.assertEqual(stored["crown_quote_status"], "direct_current")
 
     def test_persisted_due_t5_bulk_commit_bypasses_hung_discovery_and_providers(self) -> None:
         """A valid local T-5 must commit without entering optional slow paths."""

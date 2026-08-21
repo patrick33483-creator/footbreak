@@ -756,6 +756,12 @@ function historicalConditionMatchText(item) {
     <span>研究吻合／未納入正式 Wilson；不建立投注或 Telegram 通知。</span></div>`;
 }
 
+function currentExactQuoteUnavailable(m) {
+  const rows = m.current_selected_odds_journal || [];
+  return m.current_odds_status === 'missing' || rows.some((row) =>
+    row && (row.odds_status === 'missing' || !(Number(row.odds) > 1)));
+}
+
 function verdictCard(m) {
   const c = m.conviction;
   const bar = `<div class="conv-wrap">
@@ -789,11 +795,21 @@ function verdictCard(m) {
   if (!conditionBets.length) {
     const mm = minsLeft(m.kickoff_hkt);
     const missingT5 = missingT5Text(m, mm);
-    const badge = hasT5 ? '觀望 · 唔買' : (mm > 0 ? '未到落注時點' : (
-      missingT5.startsWith('本場') ? '無落注' : '狀態待同步'
-    ));
-    const why = hasT5
-      ? (m.no_bet_reason || '未達條件模擬倉入場規則')
+    const quoteUnavailable = currentExactQuoteUnavailable(m);
+    const badge = mm <= 0
+      ? '已開賽 · 不重做'
+      : hasT5 && quoteUnavailable
+        ? '賽前賠率資料不可用'
+        : hasT5 ? '觀望 · 唔買'
+        : '未到落注時點';
+    const why = mm <= 0
+      ? (hasT5
+        ? '已開賽，現時賽前同盤賠率不可用；只保留已持久化的原生 T-5 歷史，不會以現時或賽中盤重做比較。'
+        : missingT5)
+      : hasT5 && quoteUnavailable
+        ? '賽前所選同盤口賠率未能由供應商／解析器確認；此為資料不可用，不是 Wilson 條件失敗、低賠率或可執行比較。'
+        : hasT5
+          ? (m.no_bet_reason || '未達條件模擬倉入場規則')
       : (mm > 0
         ? `最終投注決定統一喺<b>開賽前約 10 分鐘起</b>處理。依家係${esc(stageOf(mm))}，只做預測記錄。距開賽 ${cdText(mm)}。`
         : missingT5);
@@ -825,6 +841,13 @@ function verdictCard(m) {
 function currentOddsCard(m) {
   const rows = m.current_selected_odds_journal || [];
   if (!rows.length && !m.current_odds_status) return '';
+  if (minsLeft(m.kickoff_hkt) <= 0) {
+    return `<div class="card current-odds">
+      <h2 class="card-h">目前已選賠率 <span class="sub">原生首預／T-30／T-5 歷史不會改寫</span></h2>
+      <div class="current-odds-row missing">已開賽，現時賽前同盤賠率不可用</div>
+      <p class="current-odds-note">不使用現時或賽中板重建比較；請查看下方已保存的原生階段證據。</p>
+    </div>`;
+  }
   const side = (row) => row.code === 'HDC'
     ? ({ H: '主', A: '客' }[row.side] || row.side || '—')
     : ({ H: '大', L: '細' }[row.side] || row.side || '—');

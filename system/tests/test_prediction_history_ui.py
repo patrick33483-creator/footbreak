@@ -79,6 +79,14 @@ class PredictionHistoryUiTests(unittest.TestCase):
         self.assertIn("未有平博同方向盤口，未計預期價值", app)
         self.assertNotIn("未有 Pinnacle 同路盤，未計 EV", app)
 
+    def test_crown_missing_current_quote_is_not_rendered_as_a_wilson_rejection(self) -> None:
+        app = (ROOT / "crown" / "dashboard" / "app.js").read_text(encoding="utf-8")
+        self.assertIn("function currentExactQuoteUnavailable(m)", app)
+        self.assertIn("賽前賠率資料不可用", app)
+        self.assertIn("此為資料不可用，不是 Wilson 條件失敗、低賠率或可執行比較", app)
+        self.assertIn("已開賽，現時賽前同盤賠率不可用", app)
+        self.assertIn("不使用現時或賽中板重建比較", app)
+
     def test_both_dashboards_include_top_and_bottom_shortcuts(self) -> None:
         for dashboard in ("hkjc-dashboard", "crown/dashboard"):
             root = ROOT / dashboard
