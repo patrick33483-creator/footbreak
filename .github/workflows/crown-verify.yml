@@ -311,7 +311,11 @@ jobs:
           PY
           echo "=== Telegram configuration (presence only; no secrets) ==="
           /opt/footbreak/.venv/bin/python3 - <<'PY'
+          import datetime as dt
+          import json
           import os
+          import urllib.parse
+          import urllib.request
           from pathlib import Path
 
           def present(value):
@@ -351,7 +355,144 @@ jobs:
                   "chat_id": present(radar_chat),
               },
           })
+
+          HKT = dt.timezone(dt.timedelta(hours=8))
+          now = dt.datetime.now(HKT)
+
+          def telegram_probe(label, token, chat_id):
+              result = {"getMe": "not_configured", "getChat": "not_configured"}
+              if present(token) and present(chat_id):
+                  for method, query in (
+                      ("getMe", ""),
+                      ("getChat", "?" + urllib.parse.urlencode({"chat_id": chat_id})),
+                  ):
+                      try:
+                          request = urllib.request.Request(
+                              f"https://api.telegram.org/bot{token}/{method}{query}",
+                              headers={"User-Agent": "footbreak-read-only-health/1"},
+                          )
+                          with urllib.request.urlopen(request, timeout=8) as response:
+                              payload = json.loads(response.read().decode("utf-8"))
+                          result[method] = "ok" if payload.get("ok") is True else "api_not_ok"
+                      except Exception as exc:
+                          result[method] = type(exc).__name__
+              print(label, result)
+
+          def read(path):
+              try:
+                  value = json.loads(Path(path).read_text(encoding="utf-8"))
+                  return value if isinstance(value, dict) else {}
+              except Exception:
+                  return {}
+
+          def parse(value):
+              try:
+                  parsed = dt.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+                  if parsed.tzinfo is None:
+                      parsed = parsed.replace(tzinfo=HKT)
+                  return parsed.astimezone(HKT)
+              except Exception:
+                  return None
+
+          def row_id(row):
+              return str(row.get("bet_id") or row.get("observation_id") or "").strip()
+
+          def summarize(label, ledger_path, notify_path, system):
+              ledger, notify = read(ledger_path), read(notify_path)
+              legacy_key = "condition_simulation_bets" if system == "footbreak" else "wilson_bets"
+              ack = {
+                  str(value) for value in (
+                      notify.get("wilson_match_alerts") or notify.get(legacy_key) or []
+                  ) if present(value)
+              }
+              rows = [
+                  row for row in (ledger.get("bets") or [])
+                  if isinstance(row, dict)
+                  and str(row.get("portfolio") or "").startswith(f"{system}_wilson_")
+              ]
+              validation = ledger.get("wilson_validation") or {}
+              rows.extend(
+                  row for row in (validation.get("observations") or [])
+                  if isinstance(row, dict)
+                  and str(row.get("portfolio") or "").startswith(f"{system}_wilson_")
+              )
+              cross_name = (
+                  "footbreak_crown_execution_test"
+                  if system == "footbreak" else "crown_hkjc_execution_test"
+              )
+              cross_rows = [
+                  row for row in ((ledger.get(cross_name) or {}).get("bets") or [])
+                  if isinstance(row, dict)
+              ]
+              cross_ack_key = (
+                  "crown_execution_test_alerts"
+                  if system == "footbreak" else "hkjc_execution_test_alerts"
+              )
+              cross_ack = {
+                  str(value) for value in (notify.get(cross_ack_key) or [])
+                  if present(value)
+              }
+
+              def counts(items, acknowledged):
+                  valid, future_unacked, expired_unacked, newest = 0, 0, 0, None
+                  for row in items:
+                      identity = row_id(row)
+                      stamp = next((
+                          parsed for field in ("created_at", "ts", "recorded_at")
+                          if (parsed := parse(row.get(field))) is not None
+                      ), None)
+                      if not identity or stamp is None:
+                          continue
+                      valid += 1
+                      newest = stamp if newest is None or stamp > newest else newest
+                      if identity in acknowledged:
+                          continue
+                      kickoff = parse(row.get("kickoff") or row.get("kickoff_hkt"))
+                      if kickoff is not None and kickoff <= now:
+                          expired_unacked += 1
+                      else:
+                          future_unacked += 1
+                  return {
+                      "candidates": valid,
+                      "acks": len(acknowledged),
+                      "future_unacked": future_unacked,
+                      "expired_unacked": expired_unacked,
+                      "newest_at": newest.isoformat() if newest else None,
+                  }
+
+              print(label, {
+                  "wilson": counts(rows, ack),
+                  "cross_book": counts(cross_rows, cross_ack),
+              })
+
+          telegram_probe(
+              "Footbreak bot probe",
+              os.getenv("TELEGRAM_BOT_TOKEN", ""),
+              os.getenv("TELEGRAM_CHAT_ID", ""),
+          )
+          telegram_probe(
+              "Crown bot probe",
+              os.getenv("CROWN_TELEGRAM_BOT_TOKEN") or os.getenv("TELEGRAM_BOT_TOKEN", ""),
+              os.getenv("CROWN_TELEGRAM_CHAT_ID") or os.getenv("TELEGRAM_CHAT_ID", ""),
+          )
+          summarize(
+              "Footbreak notification state",
+              "/opt/footbreak/system/sim_ledger.json",
+              "/opt/footbreak/system/notify_state.json",
+              "footbreak",
+          )
+          summarize(
+              "Crown notification state",
+              "/var/lib/footbreak/crown/ledger.json",
+              "/var/lib/footbreak/crown/notify_state.json",
+              "crown",
+          )
           PY
+          echo "=== Telegram warnings since midnight HKT ==="
+          journalctl -u footbreak-tick.service -u crown-tick.service \
+            --since "today 00:00" --no-pager -o cat \
+            | grep -E "telegram_|通知暫不可用|notification_warning" \
+            | tail -n 120 || true
           echo "=== Crown timers ==="
           systemctl is-active crown-tick.timer
           systemctl is-enabled crown-tick.timer
