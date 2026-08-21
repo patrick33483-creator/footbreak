@@ -18,7 +18,7 @@ from .hkjc_execution_test import (
 )
 from . import challenger_v2
 from analysis.wilson_validation import (
-    ensure_namespace, portfolio_name, recompute_namespace, all_settleable_bets,
+    active_observations, ensure_namespace, portfolio_name, recompute_namespace, all_settleable_bets,
 )
 
 STAGES = {"首預": 1, "T-30": 2, "T-5": 3}
@@ -291,6 +291,10 @@ def condition_bets(ledger: dict[str, Any]) -> list[dict[str, Any]]:
     must not appear in the new portfolio's statistics or settlement queue.
     """
     return all_settleable_bets(ledger, "crown")
+
+def condition_observations(ledger: dict[str, Any]) -> list[dict[str, Any]]:
+    """Formal native T-5 no-bet rows are validation evidence, not simulations."""
+    return active_observations(ledger, "crown")
 
 
 def _record_learning_snapshot(

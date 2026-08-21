@@ -824,6 +824,30 @@ def all_settleable_bets(ledger: dict[str, Any], system: str) -> list[dict[str, A
     return _legacy_rows(ledger, system) + active_bets(ledger, system)
 
 
+def active_observations(ledger: dict[str, Any], system: str) -> list[dict[str, Any]]:
+    """Return only new native formal-condition observations, never research rows.
+
+    They are intentionally separate from ``bets``: outcome grading may feed the
+    immutable condition-evidence chain, but must never create stake, PnL, ROI,
+    or a simulated execution row.  The admission-time provenance requirement is
+    intentional: an old explanatory NO_BET row without it is not promoted by a
+    later deployment or settlement retry into formal evidence.
+    """
+    ns = ensure_namespace(ledger, system)
+    rows = ns.get("observations") or []
+    return [
+        row for row in rows
+        if isinstance(row, dict)
+        and row.get("portfolio") == f"{system}_wilson_observations"
+        and row.get("strategy") == STRATEGY
+        and row.get("formal_bet") is False
+        and row.get("stage") == DECISION_STAGE
+        and row.get("first_native_pre_kickoff_t5") is True
+        and isinstance(row.get("rollover_provenance"), dict)
+        and row.get("status") in {"PENDING", "SETTLED", "VOIDED"}
+    ]
+
+
 def _prospective(bets: Iterable[dict[str, Any]]) -> dict[str, Any]:
     rows = list(bets)
     settled = [row for row in rows if row.get("status") == "SETTLED"]
@@ -1096,16 +1120,28 @@ def apply_active_evidence(
 def recompute_namespace(ledger: dict[str, Any], system: str) -> dict[str, Any]:
     ns = ensure_namespace(ledger, system)
     bets = active_bets(ledger, system)
+    observations = active_observations(ledger, system)
+    evidence_rows = bets + observations
     grouped: dict[str, list[dict[str, Any]]] = {}
-    for row in bets:
+    observation_grouped: dict[str, list[dict[str, Any]]] = {}
+    for row in evidence_rows:
         grouped.setdefault(str(row.get("frozen_condition_signature") or ""), []).append(row)
+    for row in observations:
+        observation_grouped.setdefault(
+            str(row.get("frozen_condition_signature") or ""), []
+        ).append(row)
     for signature, frozen in ns["conditions"].items():
         if isinstance(frozen, dict):
             _rollover_condition(
-                frozen, bets, system, str(signature), now=_now(),
+                frozen, grouped.get(str(signature), []), system, str(signature), now=_now(),
                 migration_boundary=ns["activation_at"],
             )
             frozen["prospective"] = _prospective(grouped.get(signature, []))
+            # Deliberately named separately so any presentation can distinguish
+            # evidence observations from the isolated paper-bet/PnL stream.
+            frozen["prospective_observations"] = _prospective(
+                observation_grouped.get(signature, [])
+            )
     metrics = _prospective(bets)
     open_stake = sum(_number(row.get("stake")) or 0.0 for row in bets if row.get("status") == "PENDING")
     metrics.update({
@@ -1203,9 +1239,10 @@ def record_match_observation(
 ) -> dict[str, Any] | None:
     """Persist a matched Wilson condition which did not become a formal bet.
 
-    Observations are explicitly segregated from ``bets``.  They are a durable
-    explanation/notification outbox only and therefore cannot alter stake,
-    bankroll, settlement, or any formal portfolio metric.
+    Observations are explicitly segregated from ``bets``. They are settled as
+    condition-validation evidence only: never stake, bankroll, PnL, ROI, or
+    execution. A frozen native T-5 match remains an observation even when the
+    exact execution price is below its admission minimum.
     """
     arithmetic = admission.get("arithmetic")
     if not isinstance(arithmetic, dict) or arithmetic.get("passes"):
@@ -1252,7 +1289,10 @@ def record_match_observation(
         "selected_line": selected_line,
         "selected_role": selected_role,
         "odds": arithmetic.get("actual_decimal_odds_raw"),
+        "condition": selected.get("line", selected.get("condition")),
         "stage": DECISION_STAGE,
+        "status": "PENDING",
+        "first_native_pre_kickoff_t5": True,
         "created_at": now,
         "frozen_condition_signature": signature,
         "condition_number": frozen.get("condition_number"),
@@ -1261,6 +1301,15 @@ def record_match_observation(
         "wilson_admission": copy.deepcopy(arithmetic),
         "evidence_version": admission.get("evidence_version"),
         "evidence_hash": admission.get("evidence_hash"),
+        "rollover_provenance": _rollover_marker(
+            system, fixture, market, signature, str(admission.get("stage_at") or now),
+            active_evidence_version(frozen, migration_boundary=ns["activation_at"]) or {},
+        ),
+        "history": [{
+            "ts": now, "stage": DECISION_STAGE,
+            "action": "Wilson 正式條件驗證觀察建立（低賠率不投注）",
+            "bet_status": "NO_BET_LOW_ODDS",
+        }],
     }
     observations.append(row)
     ns["observations"] = observations[-1600:]

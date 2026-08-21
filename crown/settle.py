@@ -18,7 +18,7 @@ from .common import (
 )
 from .config import Settings
 from .hkjc import fetch_official_settlement_bundle
-from .ledger import condition_bets, recompute_stats
+from .ledger import condition_bets, condition_observations, recompute_stats
 from .hkjc_execution_test import NAMESPACE as HKJC_EXECUTION_NAMESPACE, recompute as recompute_hkjc_execution
 from .challenger_v2 import NAMESPACE as V2_NAMESPACE, research_bets
 from .lines import pnl, settle_handicap, settle_total
@@ -169,11 +169,17 @@ def _settle(bet: dict[str, Any], score: dict[str, Any], source: str) -> bool:
             result_score = {"goals": f"{home}-{away}", "goals_total": home + away}
     except (KeyError, TypeError, ValueError):
         return False
-    bet.update({"status": "SETTLED", "result": result, "pnl": pnl(result, float(bet["stake"]), float(bet["odds"])),
-                "score": result_score, "settled_at": iso_hkt(),
-                "settlement_source": source})
+    bet.update({"status": "SETTLED", "result": result, "score": result_score,
+                "settled_at": iso_hkt(), "settlement_source": source})
+    if bet.get("formal_bet") is False:
+        bet.pop("pnl", None)
+    else:
+        bet["pnl"] = pnl(result, float(bet["stake"]), float(bet["odds"]))
     bet.pop("settlement_pending_reason", None)
-    action = "模擬結算"
+    action = (
+        "正式條件驗證結算（不計 PnL）"
+        if bet.get("formal_bet") is False else "模擬結算"
+    )
     bet.setdefault("history", []).append({"ts": iso_hkt(), "stage": "結算", "action": action,
                                            "result": result, "source": source})
     return True
@@ -183,11 +189,14 @@ def _void(bet: dict[str, Any], status: str, source: str) -> None:
     bet.update({
         "status": "VOIDED",
         "result": "Refunded",
-        "pnl": 0.0,
         "void_reason": f"fixture_not_played:{status}",
         "settled_at": iso_hkt(),
         "settlement_source": source,
     })
+    if bet.get("formal_bet") is False:
+        bet.pop("pnl", None)
+    else:
+        bet["pnl"] = 0.0
     bet.pop("settlement_pending_reason", None)
     bet.setdefault("history", []).append({
         "ts": iso_hkt(),
@@ -352,6 +361,12 @@ def _commit_settlement(
         for bet in current.get("bets") or []
         if isinstance(bet, dict)
     }
+    current_wilson = current.get("wilson_validation")
+    current_observation_by_id = {
+        str(row.get("observation_id") or ""): row
+        for row in ((current_wilson or {}).get("observations") or [])
+        if isinstance(row, dict)
+    } if isinstance(current_wilson, dict) else {}
     current_cross = current.get(HKJC_EXECUTION_NAMESPACE)
     current_cross_by_id = {
         str(bet.get("bet_id") or ""): bet
@@ -381,6 +396,19 @@ def _commit_settlement(
                 current_bet[key] = staged_bet[key]
             else:
                 current_bet.pop(key, None)
+    for staged_row in condition_observations(staged):
+        observation_id = str(staged_row.get("observation_id") or "")
+        original = before.get(observation_id)
+        current_row = current_observation_by_id.get(observation_id)
+        if not original or not current_row or current_row.get("status") != "PENDING":
+            continue
+        if all(staged_row.get(key) == original.get(key) for key in owned):
+            continue
+        for key in owned:
+            if key in staged_row:
+                current_row[key] = staged_row[key]
+            else:
+                current_row.pop(key, None)
     for staged_bet in reciprocal_bets(staged):
         bet_id = str(staged_bet.get("bet_id") or "")
         original, current_bet = before.get(bet_id), current_cross_by_id.get(bet_id)
@@ -419,13 +447,20 @@ def _settle_due_locked(
 ) -> dict[str, Any]:
     """Perform one settlement pass; caller holds settlement_lock only."""
     ledger = load_ledger(config)
-    official_bets = condition_bets(ledger) + reciprocal_bets(ledger)
+    official_bets = (
+        condition_bets(ledger) + condition_observations(ledger)
+        + reciprocal_bets(ledger)
+    )
     v2_bets = research_bets(ledger)
     before = {
         str(bet.get("bet_id") or ""): copy.deepcopy(bet)
         for bet in official_bets
         if bet.get("bet_id")
     }
+    before.update({
+        str(row.get("observation_id") or ""): copy.deepcopy(row)
+        for row in condition_observations(ledger) if row.get("observation_id")
+    })
     before.update({
         str(bet.get("research_id") or ""): copy.deepcopy(bet)
         for bet in v2_bets if bet.get("research_id")

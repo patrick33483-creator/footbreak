@@ -194,6 +194,8 @@ def _public_ledger(ledger: dict[str, Any]) -> tuple[dict[str, Any], list[dict[st
                 if isinstance(row, dict)
             },
         },
+        # No-bet condition observations are evidence-only: outcome status is
+        # visible, but they never enter the isolated simulation PnL ledger.
         "observations": [
             {
                 key: value for key, value in row.items()
@@ -203,6 +205,9 @@ def _public_ledger(ledger: dict[str, Any]) -> tuple[dict[str, Any], list[dict[st
                     "created_at", "condition_number", "bet_status", "no_bet_reason",
                     "frozen_condition_signature", "wilson_admission",
                     "evidence_version", "evidence_hash",
+                    # Evidence-only settlement is public/auditable while
+                    # remaining entirely outside bets, stake, and PnL.
+                    "status", "result", "settled_at", "settlement_source", "void_reason",
                 }
             }
             for row in (wilson.get("observations") or [])

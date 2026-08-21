@@ -9,11 +9,12 @@ import subprocess
 from pathlib import Path
 
 from analysis.wilson_validation import (
-    DECISION_STAGE, EDGE_BUFFER, FIXED_STAKE, FIXTURE_STAKE_CAP, MIN_DECIDED,
+    DECISION_STAGE, EDGE_BUFFER, FIXED_STAKE, FIXTURE_STAKE_CAP, MIN_DECIDED, STRATEGY,
     STARTING_BANKROLL, admission_arithmetic, choose_admission, commit_bet,
     apply_active_evidence, condition_number, ensure_namespace, freeze_condition,
-    matching_admissions, portfolio_name, project_granular_ranking_evidence,
-    project_dashboard_research_matches, recompute_namespace, wilson95,
+    matching_admissions, portfolio_name, active_observations, project_granular_ranking_evidence,
+    project_dashboard_research_matches, record_match_observation,
+    recompute_namespace, wilson95,
 )
 from analysis.migrate_wilson_strategy import migrate_file
 from analysis.wilson_portfolio import _native_t5, _selected
@@ -326,6 +327,71 @@ class WilsonBatchRolloverTest(unittest.TestCase):
         self.assertEqual(active["cumulative_decided"], 79)
         self.assertEqual(frozen["rollover_audit"][-1]["batch_decided"], 20)
         self.assertEqual(frozen["pending_rollover_progress"]["display"], "0/20")
+
+    def test_low_odds_formal_observation_settles_into_evidence_not_pnl_for_both_systems(self):
+        """A native condition match is evidence even when execution is no-bet."""
+        for system in ("footbreak", "crown"):
+            ledger = {"bets": []}
+            stage_at = "2026-08-20T00:01:00+08:00"
+            admission, reason = apply_active_evidence(
+                ledger, system, self._admission(system), stage_at=stage_at, now=stage_at,
+            )
+            self.assertIsNone(reason)
+            assert admission is not None
+            # A price below this condition's Wilson minimum is explicitly
+            # matched but cannot create a formal paper execution.
+            admission["arithmetic"]["passes"] = False
+            admission["arithmetic"]["actual_decimal_odds_raw"] = 1.20
+            watch = {
+                "match_id": f"{system}-low-odds", "league": "測試",
+                "home": "主", "away": "客", "kickoff": "2026-08-21T00:00:00+08:00",
+            }
+            observation = record_match_observation(
+                ledger, system, watch, "HDC", selected(odds=1.20), admission,
+                now=stage_at, market_label="讓球", selected_role="主讓",
+                selected_line=-.25,
+            )
+            self.assertIsNotNone(observation)
+            assert observation is not None
+            self.assertEqual(observation["status"], "PENDING")
+            self.assertFalse(observation["formal_bet"])
+            self.assertNotIn("stake", observation)
+            self.assertEqual(ledger["bets"], [])
+            # The native T-5 identity is idempotent: a retry cannot create a
+            # duplicate evidence row, even when a counterpart execution later
+            # succeeds on the same formal condition.
+            self.assertIs(
+                observation,
+                record_match_observation(
+                    ledger, system, watch, "HDC", selected(odds=1.20), admission,
+                    now=stage_at, market_label="讓球", selected_role="主讓",
+                    selected_line=-.25,
+                ),
+            )
+            self.assertEqual(len(active_observations(ledger, system)), 1)
+            # A research/non-frozen row cannot be upgraded by the same
+            # settlement/recompute path.
+            ensure_namespace(ledger, system)["observations"].append({
+                "portfolio": f"{system}_wilson_observations", "strategy": STRATEGY,
+                "formal_bet": False, "stage": DECISION_STAGE, "status": "PENDING",
+                "match_id": "research-only",
+            })
+            self.assertEqual(len(active_observations(ledger, system)), 1)
+            # This models the result workflow's verified official settlement;
+            # it must affect the evidence denominator exactly once and never
+            # add a PnL/stake row.
+            observation.update({"status": "SETTLED", "result": "Won", "settled_at": "2026-08-21T02:00:00+08:00"})
+            recompute_namespace(ledger, system)
+            frozen, active = self._active(ledger)
+            self.assertEqual(frozen["pending_rollover_progress"]["display"], "1/20")
+            self.assertEqual(frozen["prospective"]["decided"], 1)
+            self.assertEqual(frozen["prospective"]["pnl"], 0.0)
+            self.assertEqual(frozen["prospective"]["turnover"], 0.0)
+            self.assertEqual(ledger["wilson_validation"]["stats"]["pnl"], 0.0)
+            self.assertEqual(ledger["wilson_validation"]["stats"]["turnover"], 0.0)
+            # Recompute/retry remains idempotent.
+            recompute_namespace(ledger, system)
+            self.assertEqual(frozen["pending_rollover_progress"]["display"], "1/20")
 
     def test_forty_rolls_two_versions_and_twenty_six_leaves_six(self):
         ledger = {"bets": []}

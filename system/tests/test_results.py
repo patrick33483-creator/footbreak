@@ -145,6 +145,57 @@ class ResultSourceTests(unittest.TestCase):
         self.assertEqual(saved["bets"][0]["status"], "PENDING")
         self.assertIsNotNone(datetime.fromisoformat(saved["bets"][0]["last_settlement_attempt_at"]))
 
+    def test_low_odds_formal_observation_settles_without_creating_pnl(self) -> None:
+        """Formal validation evidence is settled, but is never a paper bet."""
+        with tempfile.TemporaryDirectory() as directory:
+            ledger_path = Path(directory, "sim_ledger.json")
+            observation = {
+                "observation_id": "50073037|HIL|T-5|formal-7|low-odds",
+                "portfolio": "footbreak_wilson_observations",
+                "strategy": settle.STRATEGY, "formal_bet": False,
+                "bet_status": "NO_BET_LOW_ODDS", "status": "PENDING",
+                "match_id": "50073037", "home": "FC東京", "away": "千葉市原",
+                "kickoff": "2026-08-21T18:30:00+08:00",
+                "market": "入球大細", "code": "HIL", "condition": 2.5,
+                "line": 2.5, "side": "H", "odds": 1.50, "stage": "T-5",
+                "first_native_pre_kickoff_t5": True,
+                "frozen_condition_signature": "formal-7",
+                "rollover_provenance": {
+                    "schema_version": 1, "system": "footbreak",
+                    "condition_signature": "formal-7",
+                    "native_pre_kickoff_t5": True,
+                    "stage_at": "2026-08-21T18:21:23+08:00",
+                    "fixture_market_hash": "a" * 64,
+                },
+            }
+            ledger_path.write_text(json.dumps({
+                "bankroll": 50000, "bets": [], "watch": {}, "log": [],
+                "stats": {}, "wilson_validation": {
+                    "schema_version": 1, "system": "footbreak",
+                    "activation_at": "2026-08-20T00:00:00+08:00",
+                    "conditions": {}, "observations": [observation],
+                },
+            }), encoding="utf-8")
+            result = {
+                "50073037": {
+                    "goals_home": 2, "goals_away": 1, "goals_total": 3,
+                    "corners_home": None, "corners_away": None,
+                    "corners_total": None, "source": "hkjc_official",
+                },
+            }
+            with patch.object(settle, "LEDGER", str(ledger_path)), \
+                 patch.object(settle, "fetch_hkjc_results", return_value=result), \
+                 patch.object(settle, "fetch_hkjc_statuses", return_value={}):
+                settle.run(force=True)
+            saved = json.loads(ledger_path.read_text(encoding="utf-8"))
+        row = saved["wilson_validation"]["observations"][0]
+        self.assertEqual(row["status"], "SETTLED")
+        self.assertEqual(row["result"], "Won")
+        self.assertEqual(row["settlement_source"], "hkjc_official")
+        self.assertNotIn("pnl", row)
+        self.assertNotIn("stake", row)
+        self.assertEqual(saved["bets"], [])
+
     def test_terminal_footbreak_exclusion_is_persisted_to_learning_store(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "learning.sqlite"

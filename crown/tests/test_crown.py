@@ -1476,6 +1476,24 @@ class CrownSafetyTests(unittest.TestCase):
             self.assertEqual(by_id["old|HDC|T-5|independent-validation-v1"]["status"], "SETTLED")
             self.assertEqual(by_id["new|HIL|T-5|independent-validation-v1"]["status"], "PENDING")
 
+    def test_low_odds_formal_observation_settles_without_pnl(self) -> None:
+        """Crown's native formal match feeds evidence but never execution PnL."""
+        row = {
+            "observation_id": "crown-low-odds", "portfolio": "crown_wilson_observations",
+            "strategy": "independent-validation-v1", "formal_bet": False,
+            "bet_status": "NO_BET_LOW_ODDS", "status": "PENDING",
+            "code": "HIL", "condition": 2.5, "side": "H", "odds": 1.50,
+            "stage": "T-5", "first_native_pre_kickoff_t5": True,
+        }
+        self.assertTrue(crown_settle._settle(
+            row, {"home_score": 2, "away_score": 1},
+            "hkjc_official_exact_id",
+        ))
+        self.assertEqual(row["status"], "SETTLED")
+        self.assertEqual(row["result"], "Won")
+        self.assertNotIn("pnl", row)
+        self.assertIn("正式條件驗證結算（不計 PnL）", row["history"][-1]["action"])
+
     def test_prediction_era_refreshes_only_first_look(self) -> None:
         first_only = {
             "matching_version": "same",

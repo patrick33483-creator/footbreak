@@ -599,6 +599,9 @@ def _public_observation(row):
         "code", "side", "line", "selected_role", "selected_line", "odds", "stage",
         "created_at", "condition_number", "bet_status", "no_bet_reason",
         "frozen_condition_signature", "wilson_admission", "evidence_version", "evidence_hash",
+        # Evidence-only rows must still expose their own auditable settlement
+        # state; these values never belong to the simulated bet/PnL stream.
+        "status", "result", "settled_at", "settlement_source", "void_reason",
     }
     return {key: value for key, value in row.items() if key in visible}
 
@@ -958,8 +961,9 @@ def main(out_path=None):
                     if isinstance(row, dict)
                 },
             },
-            # These are matched-but-rejected observations, deliberately kept
-            # outside ``bets`` so they can never enter stakes or settlement.
+            # These matched no-bet rows remain outside ``bets``: they never
+            # enter stake/PnL/ROI, while their separately settled outcome can
+            # advance only the frozen condition-evidence rollover.
             "observations": [
                 _public_observation(row)
                 for row in ((led.get("wilson_validation") or {}).get("observations") or [])

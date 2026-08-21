@@ -16,7 +16,7 @@ import sys
 import tempfile
 
 from condition_portfolio import FIXED_STAKE, PORTFOLIO, STARTING_BANKROLL, STRATEGY
-from analysis.wilson_validation import all_settleable_bets, recompute_namespace
+from analysis.wilson_validation import active_observations, all_settleable_bets, recompute_namespace
 from crown_execution_test import recompute as recompute_crown_execution
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -272,8 +272,8 @@ def settle_bet(bet, res):
     outs = [leg_outcome(bet["code"], bet["side"], L, res) for L in legs]
     if any(o is None for o in outs):
         return None, None
-    stake_leg = bet["stake"] / len(legs)
-    dec = float(bet["odds"])
+    stake_leg = float(bet.get("stake") or 0.0) / len(legs)
+    dec = float(bet.get("odds") or 1.0)
     pnl = 0.0
     score = 0.0
     for o in outs:
@@ -427,7 +427,8 @@ def run(force=False):
             terminal = str(state.get("status") or "REFUNDED")
             b["status"] = "VOIDED"
             b["result"] = "Refunded"
-            b["pnl"] = 0.0
+            if not b.get("formal_bet") is False:
+                b["pnl"] = 0.0
             b["void_reason"] = f"fixture_not_played:{terminal}"
             b["settled_at"] = now.isoformat(timespec="seconds")
             b["settlement_source"] = "hkjc_official_exact_id_terminal_status"
@@ -486,7 +487,8 @@ def run(force=False):
             continue
         b["status"] = "SETTLED"
         b["result"] = label
-        b["pnl"] = pnl
+        if not b.get("formal_bet") is False:
+            b["pnl"] = pnl
         b["settled_at"] = now.isoformat(timespec="seconds")
         b["settlement_source"] = res.get("source") or "opticodds"
         corners_display = None
@@ -500,16 +502,19 @@ def run(force=False):
                       "corners_total": res["corners_total"]}
         b.setdefault("history", []).append({
             "ts": now.isoformat(timespec="seconds"), "stage": "結算",
-            "action": "結算", "result": label, "pnl": pnl,
+            "action": ("正式條件驗證結算（不計 PnL）"
+                       if b.get("formal_bet") is False else "結算"),
+            "result": label, **({} if b.get("formal_bet") is False else {"pnl": pnl}),
             "score": b["score"],
         })
         b["history"] = b["history"][-20:]
         ico = {"Won": "🟢", "Half Won": "🟡", "Refunded": "⚪",
                "Half Lost": "🟠", "Lost": "🔴"}.get(label, "•")
         cx = f" 角球 {b['score']['corners']}" if b["code"] == "CHL" and b["score"]["corners"] else ""
+        amount = "（正式條件驗證，不計 PnL）" if b.get("formal_bet") is False else f"{pnl:+,.0f}"
         changes.append(
             f"{ico} {b['home']} v {b['away']} — {b.get('label') or b.get('market_label') or b.get('code') or '市場'} → "
-            f"{label} {pnl:+,.0f}(比分 {b['score']['goals']}{cx})"
+            f"{label} {amount}(比分 {b['score']['goals']}{cx})"
         )
 
     stats = recompute(led)
@@ -548,6 +553,10 @@ def condition_bets(ledger):
     """Wilson rows plus retained pending/settleable v1 rows, never mixed in stats."""
     return all_settleable_bets(ledger, "footbreak")
 
+def condition_observations(ledger):
+    """Formal native T-5 no-bet rows settle only into evidence rollover."""
+    return active_observations(ledger, "footbreak")
+
 
 def crown_execution_bets(ledger):
     """The cross-book test ledger is explicitly separate from Wilson rows."""
@@ -563,7 +572,7 @@ def crown_execution_bets(ledger):
 
 def settlement_bets(ledger):
     """Use proven settlement rules without joining cross-book statistics."""
-    return condition_bets(ledger) + crown_execution_bets(ledger)
+    return condition_bets(ledger) + condition_observations(ledger) + crown_execution_bets(ledger)
 
 
 def recompute(led):
