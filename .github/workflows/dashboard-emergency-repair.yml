@@ -92,4 +92,37 @@ jobs:
             fi
             echo "$name entrypoint healthy"
           done
+
+          validate_dashboard_json() {
+            dashboard_user="$1"
+            dashboard_port="$2"
+            password_file="$3"
+            expected_schema="$4"
+            IFS= read -r dashboard_password < "$password_file"
+            curl --silent --show-error --fail --max-time 8 \
+              --user "${dashboard_user}:${dashboard_password}" \
+              "http://127.0.0.1:${dashboard_port}/data.json?health=$(date +%s)" \
+              | python3 -c 'import json,sys; p=json.load(sys.stdin); c=sys.argv[1]; assert (c=="crown-dashboard-v2" and p.get("schema_version")==c) or (c=="footbreak-dashboard" and isinstance(p.get("matches"),list) and isinstance(p.get("ledger"),dict) and bool(p.get("generated_at")))' "$expected_schema" \
+              >/dev/null
+            unset dashboard_password
+          }
+
+          if ! validate_dashboard_json \
+              footbreak 8081 /root/footbreak-dashboard-password.txt footbreak-dashboard; then
+            /opt/footbreak/.venv/bin/python3 -m system.gen_app_data \
+              --out /var/www/footbreak/data.json
+            chown root:www-data /var/www/footbreak/data.json
+            chmod 0644 /var/www/footbreak/data.json
+          fi
+          if ! validate_dashboard_json \
+              crown 8082 /root/crown-dashboard-password.txt crown-dashboard-v2; then
+            /opt/footbreak/.venv/bin/python3 -m crown.dashboard_data \
+              --out /var/www/crown/data.json
+            chown root:www-data /var/www/crown/data.json
+            chmod 0644 /var/www/crown/data.json
+          fi
+          validate_dashboard_json \
+            footbreak 8081 /root/footbreak-dashboard-password.txt footbreak-dashboard
+          validate_dashboard_json \
+            crown 8082 /root/crown-dashboard-password.txt crown-dashboard-v2
           REMOTE

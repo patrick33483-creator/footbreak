@@ -312,6 +312,24 @@ class NginxDashboardHealthTests(unittest.TestCase):
         self.assertIn("/etc/nginx/.htpasswd-crown:crown", health)
         self.assertIn('grep -q "^${expected_user}:" "$auth_file"', health)
 
+    def test_dashboard_guards_validate_authenticated_static_json(self):
+        health = (ROOT / "deploy" / "health-check.sh").read_text(encoding="utf-8")
+        self_heal = (ROOT / "deploy" / "dashboard-self-heal.sh").read_text(
+            encoding="utf-8"
+        )
+        emergency = (
+            ROOT / ".github" / "workflows" / "dashboard-emergency-repair.yml"
+        ).read_text(encoding="utf-8")
+
+        for script in (health, self_heal, emergency):
+            self.assertIn("/data.json?health=", script)
+            self.assertIn("footbreak-dashboard", script)
+            self.assertIn("crown-dashboard-v2", script)
+            self.assertIn("/root/footbreak-dashboard-password.txt", script)
+            self.assertIn("/root/crown-dashboard-password.txt", script)
+        self.assertIn("republish_dashboard_json crown", self_heal)
+        self.assertIn("-m crown.dashboard_data", emergency)
+
     def test_dashboard_data_health_check_retries_transient_timeouts(self):
         health = (ROOT / "deploy" / "health-check.sh").read_text(encoding="utf-8")
 

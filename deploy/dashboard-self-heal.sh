@@ -29,6 +29,43 @@ nginx_status() {
     --write-out '%{http_code}' --max-time 5 "http://127.0.0.1:${port}/" || true
 }
 
+dashboard_json_is_healthy() {
+  local port="$1" user="$2" password_file="$3" contract="$4" dashboard_password
+  [ -s "$password_file" ] || return 1
+  IFS= read -r dashboard_password < "$password_file"
+  [ -n "$dashboard_password" ] || return 1
+  if ! curl --silent --show-error --fail --max-time 8 \
+      --user "${user}:${dashboard_password}" \
+      "http://127.0.0.1:${port}/data.json?health=$(date +%s)" \
+      | python3 -c 'import json,sys; p=json.load(sys.stdin); c=sys.argv[1]; assert (c=="crown-dashboard-v2" and p.get("schema_version")==c) or (c=="footbreak-dashboard" and isinstance(p.get("matches"),list) and isinstance(p.get("ledger"),dict) and bool(p.get("generated_at")))' "$contract" \
+      >/dev/null 2>&1; then
+    unset dashboard_password
+    return 1
+  fi
+  unset dashboard_password
+}
+
+republish_dashboard_json() {
+  local system="$1"
+  case "$system" in
+    footbreak)
+      /opt/footbreak/.venv/bin/python3 -m system.gen_app_data \
+        --out /var/www/footbreak/data.json
+      chown root:www-data /var/www/footbreak/data.json
+      chmod 0644 /var/www/footbreak/data.json
+      ;;
+    crown)
+      /opt/footbreak/.venv/bin/python3 -m crown.dashboard_data \
+        --out /var/www/crown/data.json
+      chown root:www-data /var/www/crown/data.json
+      chmod 0644 /var/www/crown/data.json
+      ;;
+    *)
+      return 2
+      ;;
+  esac
+}
+
 repair_static_tree() {
   local root="$1"
   [ -d "$root" ] || return 1
@@ -107,6 +144,21 @@ if [ "$footbreak_status" != 401 ] || [ "$crown_status" != 401 ]; then
   log "Dashboard self-heal failed: footbreak_http=$footbreak_status crown_http=$crown_status"
   failed=1
 fi
+
+if ! dashboard_json_is_healthy \
+    8081 footbreak /root/footbreak-dashboard-password.txt footbreak-dashboard; then
+  log "Footbreak /data.json is not valid JSON; republishing from persisted state"
+  republish_dashboard_json footbreak || failed=1
+fi
+if ! dashboard_json_is_healthy \
+    8082 crown /root/crown-dashboard-password.txt crown-dashboard-v2; then
+  log "Crown /data.json is not valid JSON; republishing from persisted state"
+  republish_dashboard_json crown || failed=1
+fi
+dashboard_json_is_healthy \
+  8081 footbreak /root/footbreak-dashboard-password.txt footbreak-dashboard || failed=1
+dashboard_json_is_healthy \
+  8082 crown /root/crown-dashboard-password.txt crown-dashboard-v2 || failed=1
 
 if [ "$failed" != 0 ]; then
   exit 1

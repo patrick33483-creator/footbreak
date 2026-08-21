@@ -207,6 +207,29 @@ for dashboard in footbreak:8081 crown:8082; do
   echo "OK nginx $name entrypoint HTTP 401 auth challenge"
 done
 
+for dashboard_spec in \
+  "footbreak:8081:/root/footbreak-dashboard-password.txt:footbreak-dashboard" \
+  "crown:8082:/root/crown-dashboard-password.txt:crown-dashboard-v2"; do
+  IFS=: read -r dashboard_user dashboard_port password_file expected_schema \
+    <<< "$dashboard_spec"
+  if [ ! -s "$password_file" ]; then
+    echo "FAIL dashboard password backup missing for $dashboard_user" >&2
+    exit 1
+  fi
+  IFS= read -r dashboard_password < "$password_file"
+  if ! curl --silent --show-error --fail --max-time 8 \
+      --user "${dashboard_user}:${dashboard_password}" \
+      "http://127.0.0.1:${dashboard_port}/data.json?health=$(date +%s)" \
+      | python3 -c 'import json,sys; p=json.load(sys.stdin); c=sys.argv[1]; assert (c=="crown-dashboard-v2" and p.get("schema_version")==c) or (c=="footbreak-dashboard" and isinstance(p.get("matches"),list) and isinstance(p.get("ledger"),dict) and bool(p.get("generated_at")))' "$expected_schema" \
+      >/dev/null; then
+    unset dashboard_password
+    echo "FAIL nginx $dashboard_user /data.json is not valid dashboard JSON" >&2
+    exit 1
+  fi
+  unset dashboard_password
+  echo "OK nginx $dashboard_user /data.json valid JSON schema=$expected_schema"
+done
+
 python3 - <<'PY'
 import json
 from pathlib import Path
