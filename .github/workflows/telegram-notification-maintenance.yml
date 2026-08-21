@@ -61,7 +61,7 @@ jobs:
           ssh -o BatchMode=yes -o ConnectTimeout=20 \
             -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
             "$DEPLOY_USER@$DEPLOY_HOST" \
-            "sudo env ACTION='$ACTION' TEST_ID='$TEST_ID' ENABLE_CROWN_TELEGRAM='$ENABLE_CROWN_TELEGRAM' bash -s" <<'REMOTE'
+            "sudo env ACTION='$ACTION' TEST_ID='$TEST_ID' ENABLE_CROWN_TELEGRAM='$ENABLE_CROWN_TELEGRAM' bash -s" <<'REMOTE' | tee telegram-notification-maintenance.json
           set -euo pipefail
           if [ "$ENABLE_CROWN_TELEGRAM" = true ]; then
             file=/etc/footbreak-crown.env
@@ -83,3 +83,12 @@ jobs:
           PYTHONPATH=/opt/footbreak /opt/footbreak/.venv/bin/python3 \
             deploy/telegram-notification-maintenance.py "${args[@]}"
           REMOTE
+
+      - name: Upload maintenance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: telegram-notification-maintenance-${{ github.run_id }}
+          path: telegram-notification-maintenance.json
+          if-no-files-found: warn
+          retention-days: 7
