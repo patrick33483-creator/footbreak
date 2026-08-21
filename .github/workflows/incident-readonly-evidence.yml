@@ -40,7 +40,7 @@ jobs:
           import subprocess
           import urllib.request
           from collections import Counter
-          from datetime import datetime
+          from datetime import datetime, timedelta
           from pathlib import Path
 
           from crown.common import HKT, parse_time
@@ -111,6 +111,26 @@ jobs:
                   "card_reason": str(card.get("no_bet_reason") or "")[:180],
               })
           incident.sort(key=lambda row: row["fixture"])
+          upcoming = []
+          for match_id, item in watch.items():
+              if not isinstance(item, dict):
+                  continue
+              merged = dict(item)
+              card = cards_by_id.get(str(match_id), {})
+              merged.update({k: v for k, v in card.items() if v is not None})
+              kickoff = parse_time(merged.get("kickoff_hkt") or merged.get("kickoff"))
+              stages = item.get("stages") if isinstance(item.get("stages"), list) else []
+              if (kickoff is None or kickoff <= now or kickoff > now + timedelta(hours=24)
+                      or any(isinstance(stage, dict) and stage.get("stage") == "T-5" for stage in stages)):
+                  continue
+              upcoming.append({
+                  "match_id": str(match_id), "fixture": f"{merged.get('home', '')} vs {merged.get('away', '')}",
+                  "league": str(merged.get("league") or ""), "kickoff_hkt": kickoff.astimezone(HKT).isoformat(),
+                  "minutes_to_t5": round((kickoff - now).total_seconds() / 60.0 - 5.0, 1),
+                  "stages": [{"stage": str(stage.get("stage") or ""), "status": str(stage.get("status") or ""),
+                              "ts": str(stage.get("ts") or "")} for stage in stages if isinstance(stage, dict)],
+              })
+          upcoming.sort(key=lambda row: row["kickoff_hkt"])
 
           def radar_dashboard():
               values = {}
@@ -164,6 +184,7 @@ jobs:
               "read_only": True,
               "provider_requests": False,
               "crown_incident_fixtures": incident,
+              "upcoming_crown_t5": upcoming[:8],
               "crown_runtime": {
                   "units": run("systemctl", "show", "crown-tick.timer", "crown-tick.service",
                                "footbreak-server-health-monitor.timer",
