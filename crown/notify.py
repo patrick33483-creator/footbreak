@@ -249,15 +249,34 @@ def _wilson_message(bet: dict[str, Any]) -> str | None:
         decision = "不投注：賠率不足"
     else:
         decision = "投注"
+    condition_numbers = bet.get("condition_numbers")
+    if isinstance(condition_numbers, (list, tuple)):
+        numbers = sorted({
+            int(value) for value in condition_numbers
+            if isinstance(value, int) or str(value).strip().isdigit()
+        })
+    else:
+        numbers = [number]
+    if not numbers:
+        return None
+    condition_line = "、".join(f"#{value}" for value in numbers)
+    minimums = bet.get("minimum_odds_by_condition")
+    if isinstance(minimums, (list, tuple)) and minimums:
+        minimum_line = "最低賠率要求：" + "；".join(
+            f"#{int(number)} {float(value):.2f}"
+            for number, value in minimums
+        )
+    else:
+        minimum_line = f"最低賠率要求：{minimum:.2f}"
     return "\n".join([
         "【皇冠 Wilson】",
         f"{kickoff.astimezone(HKT).strftime('%H:%M')} {league}",
         f"{bet.get('home') or ''} vs {bet.get('away') or ''}",
         "",
-        f"合符條件 #{number}",
+        f"合符條件 {condition_line}",
         f"皇冠訊號：{selection} @{odds:.2f}",
         hkjc_line,
-        f"最低賠率要求：{minimum:.2f}",
+        minimum_line,
         f"決定：{decision}",
         f"投注平台：{platform}",
     ])
@@ -270,6 +289,83 @@ def _wilson_observation_message(row: dict[str, Any]) -> str | None:
     clone["portfolio"] = "crown_wilson_test"
     clone["strategy"] = "wilson-test-strategy-v1"
     return _wilson_message(clone)
+
+
+def _observation_group_key(row: dict[str, Any]) -> tuple[str, ...] | None:
+    """Return the one native T-5 signal identity shared by its condition rows.
+
+    Matching conditions have independent frozen evidence and therefore
+    independent observation IDs.  Their selected native quote is nevertheless
+    one atomic alert opportunity; grouping it prevents a per-row loop from
+    dropping #9 when the bounded tick has only one Telegram attempt.
+    """
+    if (
+        row.get("portfolio") != "crown_wilson_observations"
+        or row.get("bet_status") != "NO_BET_LOW_ODDS"
+    ):
+        return None
+    try:
+        line = float(row.get("selected_line", row.get("line")))
+        odds = float(row.get("odds"))
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(line) or not math.isfinite(odds):
+        return None
+    values = (
+        row.get("match_id"),
+        row.get("code", row.get("market")),
+        row.get("selected_side", row.get("side")),
+        row.get("stage"),
+        row.get("kickoff"),
+        row.get("created_at"),
+        row.get("hkjc_match_id"),
+    )
+    if not all(str(value or "").strip() for value in values[:-1]):
+        return None
+    return tuple(str(value).strip() for value in values) + (f"{line:.8f}", f"{odds:.8f}")
+
+
+def _observation_groups(
+    rows: list[dict[str, Any]], sent_ids: set[str],
+) -> list[list[dict[str, Any]]]:
+    """Group unacknowledged low-odds rows by exact native T-5 selection."""
+    groups: dict[tuple[str, ...], list[dict[str, Any]]] = {}
+    for row in rows:
+        ident = str(row.get("observation_id") or "")
+        key = _observation_group_key(row)
+        if not ident or ident in sent_ids or key is None:
+            continue
+        groups.setdefault(key, []).append(row)
+    return list(groups.values())
+
+
+def _wilson_observation_group_message(rows: list[dict[str, Any]]) -> str | None:
+    """Render one concise no-bet alert for all exact matching conditions."""
+    if not rows:
+        return None
+    base = dict(rows[0])
+    if any(_observation_group_key(row) != _observation_group_key(base) for row in rows):
+        return None
+    pairs: list[tuple[int, float]] = []
+    for row in rows:
+        arithmetic = row.get("wilson_admission")
+        try:
+            number = int(row.get("condition_number"))
+            minimum = float((arithmetic or {})["minimum_acceptable_odds_raw"])
+        except (KeyError, TypeError, ValueError):
+            return None
+        if not math.isfinite(minimum) or minimum <= 1:
+            return None
+        pairs.append((number, minimum))
+    pairs.sort()
+    base["condition_number"] = pairs[0][0]
+    base["condition_numbers"] = [number for number, _ in pairs]
+    base["minimum_odds_by_condition"] = pairs
+    base["wilson_admission"] = dict(base.get("wilson_admission") or {})
+    base["wilson_admission"]["minimum_acceptable_odds_raw"] = min(
+        minimum for _, minimum in pairs
+    )
+    return _wilson_observation_message(base)
 
 
 def notify_wilson_pending(
@@ -288,14 +384,17 @@ def notify_wilson_pending(
         state = _seed_wilson_match_alerts(_load(config))
         sent_ids = {str(value) for value in state.get("wilson_match_alerts") or []}
         sent = attempted = 0
-        rows = list(ledger.get("bets") or []) + list(
+        formal_rows = list(ledger.get("bets") or [])
+        observation_rows = list(
             (ledger.get("wilson_validation") or {}).get("observations") or []
         )
-        for bet in rows:
-            bid = str(bet.get("bet_id") or bet.get("observation_id") or "") if isinstance(bet, dict) else ""
-            if not bid or bid in sent_ids or (bet.get("bet_id") and bet.get("status") != "PENDING"):
+        for bet in formal_rows:
+            if not isinstance(bet, dict):
                 continue
-            message = _wilson_message(bet) if bet.get("bet_id") else _wilson_observation_message(bet)
+            bid = str(bet.get("bet_id") or "")
+            if not bid or bid in sent_ids or bet.get("status") != "PENDING":
+                continue
+            message = _wilson_message(bet)
             if message is None:
                 continue
             if not budget.reserve_attempt():
@@ -312,6 +411,26 @@ def notify_wilson_pending(
                     list(state.get("wilson_bets") or []) + [bid]
                 )
             sent_ids.add(bid)
+            sent += 1
+            state["updated_at"] = iso_hkt()
+            write_json_atomic(paths(config)["notify"], state)
+        for group in _observation_groups(
+            [row for row in observation_rows if isinstance(row, dict)], sent_ids,
+        ):
+            ids = [str(row.get("observation_id") or "") for row in group]
+            message = _wilson_observation_group_message(group)
+            if not all(ids) or message is None:
+                continue
+            if not budget.reserve_attempt():
+                break
+            remaining = budget.remaining()
+            attempted += 1
+            if _send(config, message, max_seconds=remaining) is False:
+                continue
+            state["wilson_match_alerts"] = _bounded_unique_ids(
+                list(state.get("wilson_match_alerts") or []) + ids
+            )
+            sent_ids.update(ids)
             sent += 1
             state["updated_at"] = iso_hkt()
             write_json_atomic(paths(config)["notify"], state)

@@ -26,6 +26,7 @@ if str(SYSTEM) not in sys.path:
 import notify as footbreak_notify  # noqa: E402
 from crown.config import settings  # noqa: E402
 from crown.notify import (  # noqa: E402
+    _observation_groups,
     _hkjc_execution_message,
     _send as crown_send,
     _wilson_message,
@@ -140,6 +141,28 @@ def _crown_audit() -> dict[str, Any]:
         })
         if len(latest_decisions) >= 12:
             break
+    observations = [
+        row for row in (wilson_namespace.get("observations") or [])
+        if isinstance(row, dict)
+    ]
+    observation_acknowledged = _ids(state.get("wilson_match_alerts"))
+    recent_observations: list[dict[str, Any]] = []
+    for row in reversed(observations[-128:]):
+        admission = row.get("wilson_admission") if isinstance(row.get("wilson_admission"), dict) else {}
+        ident = str(row.get("observation_id") or "")
+        recent_observations.append({
+            "observation_id": ident,
+            "match_id": row.get("match_id"),
+            "market": row.get("market") or row.get("code"),
+            "stage": row.get("stage"),
+            "created_at": row.get("created_at"),
+            "kickoff": row.get("kickoff"),
+            "condition_number": row.get("condition_number"),
+            "actual_odds": admission.get("actual_decimal_odds_raw"),
+            "minimum_odds": admission.get("minimum_acceptable_odds_raw"),
+            "acknowledged": bool(ident and ident in observation_acknowledged),
+        })
+    unacknowledged_groups = _observation_groups(observations, observation_acknowledged)
     return {
         "telegram_enabled": config.telegram_enabled,
         "bot_token_configured": bool(config.telegram_bot_token),
@@ -160,6 +183,12 @@ def _crown_audit() -> dict[str, Any]:
         # from a matched condition whose price is below its raw Wilson floor.
         # No team/odds-board payload is read and no provider is contacted.
         "latest_wilson_decisions": latest_decisions,
+        # Persisted low-odds rows remain visible after kickoff for forensic
+        # diagnosis, while their normal Telegram eligibility still fails closed.
+        "recent_low_odds_observations": recent_observations,
+        "unacknowledged_low_odds_group_sizes": [
+            len(group) for group in unacknowledged_groups
+        ],
     }
 
 

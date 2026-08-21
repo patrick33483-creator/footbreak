@@ -113,6 +113,67 @@ class CrownWilsonNotificationTest(unittest.TestCase):
                 self.assertEqual(notify.notify_wilson_pending(ledger, config), 0)
         self.assertEqual(sender.call_count, 3)
 
+    def test_multiple_matching_low_odds_conditions_share_one_durable_alert(self):
+        first = low_odds_observation(market="入球大細", number=8)
+        second = low_odds_observation(market="入球大細", number=9)
+        first["observation_id"] = "crown-fixture|HIL|T-5|condition-8|low-odds"
+        second["observation_id"] = "crown-fixture|HIL|T-5|condition-9|low-odds"
+        first["wilson_admission"] = admission_arithmetic(33, 50, 1.84)
+        second["wilson_admission"] = admission_arithmetic(34, 52, 1.84)
+        # Preserve the exact same native snapshot/selection: only frozen
+        # historical evidence and the condition identity differ.
+        for row in (first, second):
+            row["odds"] = 1.84
+            row["created_at"] = first["created_at"]
+            row["kickoff"] = first["kickoff"]
+            row["hkjc_match_id"] = first["hkjc_match_id"]
+        state = {"wilson_bets": [], "wilson_match_alerts": []}
+        with tempfile.TemporaryDirectory() as directory:
+            config = SimpleNamespace(state_dir=Path(directory))
+            with patch.object(notify, "notification_lock", return_value=nullcontext(True)), \
+                 patch.object(notify, "_load", return_value=state), \
+                 patch.object(notify, "_send", return_value=True) as sender, \
+                 patch.object(notify, "write_json_atomic"):
+                ledger = {"wilson_validation": {"observations": [first, second]}}
+                self.assertEqual(
+                    notify.notify_wilson_pending(ledger, config, max_attempts=1), 1,
+                )
+                self.assertEqual(
+                    notify.notify_wilson_pending(ledger, config, max_attempts=1), 0,
+                )
+        message = sender.call_args.args[1]
+        self.assertIn("合符條件 #8、#9", message)
+        self.assertIn("最低賠率要求：#8 ", message)
+        self.assertIn("#9 ", message)
+        self.assertIn("決定：不投注：賠率不足", message)
+        self.assertEqual(
+            state["wilson_match_alerts"],
+            [first["observation_id"], second["observation_id"]],
+        )
+
+    def test_multi_condition_transport_failure_keeps_every_row_for_retry(self):
+        first = low_odds_observation(market="入球大細", number=8)
+        second = low_odds_observation(market="入球大細", number=9)
+        first["observation_id"] = "crown-fixture|HIL|T-5|condition-8|low-odds"
+        second["observation_id"] = "crown-fixture|HIL|T-5|condition-9|low-odds"
+        second["created_at"] = first["created_at"]
+        second["kickoff"] = first["kickoff"]
+        second["hkjc_match_id"] = first["hkjc_match_id"]
+        state = {"wilson_bets": [], "wilson_match_alerts": []}
+        with tempfile.TemporaryDirectory() as directory:
+            config = SimpleNamespace(state_dir=Path(directory))
+            with patch.object(notify, "notification_lock", return_value=nullcontext(True)), \
+                 patch.object(notify, "_load", return_value=state), \
+                 patch.object(notify, "_send", side_effect=[False, True]), \
+                 patch.object(notify, "write_json_atomic"):
+                ledger = {"wilson_validation": {"observations": [first, second]}}
+                self.assertEqual(notify.notify_wilson_pending(ledger, config), 0)
+                self.assertEqual(notify.notify_wilson_pending(ledger, config), 1)
+        self.assertEqual(
+            state["wilson_match_alerts"],
+            [first["observation_id"], second["observation_id"]],
+        )
+
     def test_higher_exact_hkjc_quote_selects_hkjc_without_changing_crown_minimum(self):
         row = bet()
         message = self._message_with_hkjc(row, odds=1.95)
