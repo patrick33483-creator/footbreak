@@ -105,6 +105,25 @@ class FormalObservationRecoveryTest(unittest.TestCase):
         self.assertEqual(conflict["accepted"], 0)
         self.assertEqual(conflict["reasons"]["duplicate_or_conflicting_observation"], 2)
 
+    def test_native_stage_under_immutable_watch_wrapper_is_accepted(self):
+        ledger = self._ledger()
+        native = history()[0]
+        nested_watch = {
+            "50073037": {
+                "match_id": "50073037",
+                "kickoff": KICKOFF,
+                "stages": [{
+                    key: value for key, value in native.items()
+                    if key not in {"match_id", "kickoff", "market_grades"}
+                }],
+            },
+        }
+        ledger["watch"] = nested_watch
+        grade_only = copy.deepcopy(native)
+        grade_only.pop("market_predictions")
+        audit = recover_system(ledger, [grade_only], "footbreak", apply=False)
+        self.assertEqual((audit["accepted"], audit["rejected"]), (1, 0))
+
     def test_registry_matcher_rejects_research_and_mismatched_native_rows(self):
         ledger = self._ledger()
         registry = formal_registry_candidates(ledger, "footbreak")

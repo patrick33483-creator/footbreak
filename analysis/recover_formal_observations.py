@@ -63,23 +63,36 @@ def _kickoff(row: dict[str, Any]) -> str | None:
 
 
 def _history_rows(value: Any) -> list[dict[str, Any]]:
-    """Return every persisted stage-shaped row without inventing a schema."""
+    """Return persisted stage rows, retaining fixture context from a watch wrapper.
+
+    Historical ledgers store certain native stages as ``watch[fixture].stages``:
+    the immutable fixture id and kickoff live on the wrapper rather than the
+    stage child.  This is a deterministic projection of those existing fields,
+    not a generated match or a guessed timestamp.
+    """
     found: list[dict[str, Any]] = []
     seen: set[int] = set()
 
-    def visit(item: Any) -> None:
+    def visit(item: Any, inherited: dict[str, Any] | None = None) -> None:
         if isinstance(item, dict):
             marker = id(item)
             if marker in seen:
                 return
             seen.add(marker)
-            if item.get("match_id") is not None and item.get("stage") is not None:
-                found.append(item)
+            context = {
+                key: item[key]
+                for key in ("match_id", "kickoff", "kickoff_hkt")
+                if item.get(key) is not None
+            }
+            if inherited:
+                context = {**inherited, **context}
+            if item.get("stage") is not None and context.get("match_id") is not None:
+                found.append({**context, **item})
             for child in item.values():
-                visit(child)
+                visit(child, context)
         elif isinstance(item, list):
             for child in item:
-                visit(child)
+                visit(child, inherited)
 
     visit(value)
     return found
@@ -128,12 +141,15 @@ def _frozen_proof(
     # content.  A namespace rewrite is never repaired by guessing aliases.
     candidate = {**copy.deepcopy(definition), "key": copy.deepcopy(definition.get("miner_key"))}
     rebuilt, rebuilt_definition = condition_signature(system, candidate)
+    frozen_at = _time(frozen.get("frozen_at"))
+    native_stage_at = _time(stage_at)
     if (
         rebuilt != signature
         or rebuilt_definition != definition
         or str(definition.get("system") or "") != system
-        or _time(frozen.get("frozen_at")) is None
-        or _time(frozen.get("frozen_at")) > _time(stage_at)
+        or frozen_at is None
+        or native_stage_at is None
+        or frozen_at > native_stage_at
     ):
         return None, "frozen_condition_signature_or_time_unproven"
     try:
@@ -268,7 +284,14 @@ def recover_system(
     ns["__recovery_root_bets"] = [
         row for row in ledger.get("bets") or [] if isinstance(row, dict)
     ]
-    history = _history_rows(history_document)
+    # The accuracy history supplies normal grades; the persisted validation
+    # ledger's watch records can independently supply the native pre-kickoff
+    # stage.  Each source remains immutable and neither is used to fabricate
+    # evidence missing from the other.
+    history = _history_rows({
+        "accuracy_history": history_document,
+        "validation_watch": ledger.get("watch"),
+    })
     report: dict[str, Any] = {
         "system": system, "mode": "apply" if apply else "audit",
         "accepted": 0, "rejected": 0, "skipped": 0, "reasons": Counter(),
@@ -292,7 +315,10 @@ def recover_system(
             continue
         conflict = _conflict_reason(ns, row)
         native, native_reason = _native_t5_proof(history, system, row)
-        frozen, frozen_reason = _frozen_proof(ledger, system, row, (native or {}).get("stage_at") or "")
+        frozen, frozen_reason = (
+            _frozen_proof(ledger, system, row, native["stage_at"])
+            if native is not None else (None, None)
+        )
         # Admission proof never reads grade/result data.
         reason = conflict or native_reason or frozen_reason
         grade = None
