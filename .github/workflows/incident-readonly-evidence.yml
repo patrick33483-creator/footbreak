@@ -131,6 +131,23 @@ jobs:
                               "ts": str(stage.get("ts") or "")} for stage in stages if isinstance(stage, dict)],
               })
           upcoming.sort(key=lambda row: row["kickoff_hkt"])
+          validation_ids = {"2952553", "3049304", "3064095", "3069328"}
+          validation = []
+          for match_id in validation_ids:
+              item = watch.get(match_id, {})
+              card = cards_by_id.get(match_id, {})
+              if not isinstance(item, dict):
+                  continue
+              validation.append({
+                  "match_id": match_id, "fixture": f"{item.get('home', '')} vs {item.get('away', '')}",
+                  "kickoff_hkt": str(item.get("kickoff_hkt") or item.get("kickoff") or ""),
+                  "stages": [{"stage": str(stage.get("stage") or ""), "status": str(stage.get("status") or ""),
+                              "ts": str(stage.get("ts") or ""), "odds_status": str(stage.get("odds_status") or "")}
+                             for stage in item.get("stages", []) if isinstance(stage, dict)],
+                  "card_status": str(card.get("status") or ""),
+                  "card_selected_quote": card.get("selected_odds_journal") or card.get("current_selected_odds_journal") or [],
+              })
+          validation.sort(key=lambda row: row["match_id"])
 
           def radar_dashboard():
               values = {}
@@ -185,6 +202,7 @@ jobs:
               "provider_requests": False,
               "crown_incident_fixtures": incident,
               "upcoming_crown_t5": upcoming[:8],
+              "validation_crown_t5": validation,
               "crown_runtime": {
                   "units": run("systemctl", "show", "crown-tick.timer", "crown-tick.service",
                                "footbreak-server-health-monitor.timer",
