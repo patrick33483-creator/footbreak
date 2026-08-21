@@ -172,6 +172,23 @@ class ReciprocalNotificationTests(unittest.TestCase):
                 self.assertEqual(notify.notify_hkjc_execution_pending(ledger, config), 0)
             self.assertEqual(sender.call_count, 2)
 
+    def test_message_selects_higher_qualifying_crown_price(self):
+        bet = {
+            "bet_id": "r-higher-crown", "portfolio": reciprocal.NAMESPACE, "strategy": reciprocal.STRATEGY,
+            "status": "PENDING", "simulation_only": True, "real_betting_enabled": False,
+            "league": "英超", "home": "主", "away": "客", "kickoff": now(120),
+            "market_label": "入球大細", "selected_role": "大", "selected_line": 2.5,
+            "condition_number": 2, "crown_signal_odds": 1.95, "crown_signal_observed_at": now(-1),
+            "crown_signal_source": "titan007-crown-id-3",
+            "hkjc_execution_odds": 1.90, "hkjc_execution_observed_at": now(-1),
+            "hkjc_execution_source": "hkjc_public_board", "decision_at": now(),
+            "wilson_admission": admission_arithmetic(41, 59, 1.90),
+        }
+        text = notify._hkjc_execution_message(bet)
+        self.assertIn("皇冠訊號賠率：1.95", text)
+        self.assertIn("馬會執行賠率：1.90", text)
+        self.assertIn("投注平台：皇冠", text)
+
 
 class ReciprocalSettlementTests(unittest.TestCase):
     def test_push_settlement_updates_only_reciprocal_stats(self):

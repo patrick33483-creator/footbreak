@@ -153,6 +153,57 @@ def _seed_wilson_match_alerts(state: dict[str, Any]) -> dict[str, Any]:
     return state
 
 
+_HKJC_COMPARISON_REASONS = {
+    "hkjc_fixture_identity_missing_or_ambiguous": "無同場盤",
+    "hkjc_fixture_kickoff_identity_mismatch": "開賽時間不一致",
+    "hkjc_exact_native_t5_missing": "非原生T-5",
+    "hkjc_exact_market_side_line_missing_or_ambiguous": "盤口不一致",
+    "hkjc_execution_quote_stale_at_t5": "非新鮮T-5",
+    "hkjc_execution_odds_invalid_or_missing": "賠率未能確認",
+    "hkjc_execution_source_invalid_or_missing": "非原生馬會報價",
+    "hkjc_execution_timestamp_missing": "報價時間缺失",
+    "hkjc_execution_post_kickoff_or_post_decision": "賽後或決策後報價",
+    "hkjc_local_evidence_unavailable": "馬會資料未能讀取",
+    "hkjc_local_evidence_invalid": "馬會資料無效",
+    "hkjc_local_evidence_too_large": "馬會資料異常",
+}
+
+
+def _hkjc_counterpart(bet: dict[str, Any]) -> tuple[float | None, str]:
+    """Read one exact, pre-decision native HKJC T-5 counterpart, locally only."""
+    fixture = str(bet.get("hkjc_match_id") or "").strip()
+    market = str(bet.get("code") or bet.get("market") or "").strip().upper()
+    side = str(bet.get("selected_side") or bet.get("side") or "").strip().upper()
+    kickoff = parse_time(bet.get("kickoff"))
+    stage_at = parse_time(bet.get("admission_at") or bet.get("created_at"))
+    try:
+        line = float(bet.get("line", bet.get("selected_line")))
+    except (TypeError, ValueError):
+        line = None
+    if (
+        not fixture or market not in MARKET_LABELS or not side or line is None
+        or not math.isfinite(line) or kickoff is None or stage_at is None
+        or stage_at >= kickoff or str(bet.get("stage") or "") != "T-5"
+    ):
+        return None, "馬會對照：未能確認（資料不足）"
+    try:
+        from .hkjc_execution_test import _exact_hkjc_quote
+        quote, reason = _exact_hkjc_quote(
+            fixture, market, side, line, stage_at, kickoff,
+        )
+    except Exception:
+        quote, reason = None, "hkjc_local_evidence_unavailable"
+    if quote is None:
+        return None, f"馬會對照：未能確認（{_HKJC_COMPARISON_REASONS.get(reason, '未能確認')}）"
+    try:
+        odds = float(quote["odds"])
+    except (KeyError, TypeError, ValueError):
+        return None, "馬會對照：未能確認（賠率未能確認）"
+    if not math.isfinite(odds) or odds <= 1:
+        return None, "馬會對照：未能確認（賠率未能確認）"
+    return odds, f"馬會對照：{odds:.2f}"
+
+
 def _wilson_message(bet: dict[str, Any]) -> str | None:
     """Traditional-Chinese committed Wilson simulation notification only."""
     if bet.get("portfolio") != "crown_wilson_test" or bet.get("strategy") != "wilson-test-strategy-v1":
@@ -178,17 +229,37 @@ def _wilson_message(bet: dict[str, Any]) -> str | None:
     if not league:
         return None
     selection = f"{market} · {bet.get('selected_role') or '—'} {line:g}"
+    hkjc_odds, hkjc_line = _hkjc_counterpart(bet)
+    # The frozen Crown Wilson minimum never changes here.  Crown selected the
+    # condition/tier; this read-only counterpart can only choose the better
+    # exact execution price for the same condition.
+    selected_odds, platform = odds, "皇冠"
+    if hkjc_odds is not None and hkjc_odds > selected_odds:
+        selected_odds, platform = hkjc_odds, "馬會"
+    qualifies = selected_odds + 1e-12 >= minimum
+    is_observation = (
+        bet.get("portfolio") == "crown_wilson_observations"
+        or (bet.get("formal_bet") is False and bet.get("bet_status") == "NO_BET_LOW_ODDS")
+    )
+    if is_observation and not qualifies:
+        decision = "不投注：賠率不足"
+    elif not qualifies:
+        # A malformed legacy formal row cannot become a recommendation merely
+        # because it was previously persisted.
+        decision = "不投注：賠率不足"
+    else:
+        decision = "投注"
     return "\n".join([
         "【皇冠 Wilson】",
         f"{kickoff.astimezone(HKT).strftime('%H:%M')} {league}",
         f"{bet.get('home') or ''} vs {bet.get('away') or ''}",
         "",
         f"合符條件 #{number}",
-        f"投注：{selection}",
-        "投注平台：皇冠",
-        "",
-        f"現時賠率：{odds:.2f}",
+        f"皇冠訊號：{selection} @{odds:.2f}",
+        hkjc_line,
         f"最低賠率要求：{minimum:.2f}",
+        f"決定：{decision}",
+        f"投注平台：{platform}",
     ])
 
 
@@ -198,22 +269,7 @@ def _wilson_observation_message(row: dict[str, Any]) -> str | None:
     clone = dict(row)
     clone["portfolio"] = "crown_wilson_test"
     clone["strategy"] = "wilson-test-strategy-v1"
-    message = _wilson_message(clone)
-    if not message:
-        return None
-    # A rejected quote is an observation, never a simulated position.
-    lines = message.splitlines()
-    try:
-        action_index = next(index for index, line in enumerate(lines) if line.startswith("投注："))
-        platform_index = lines.index("投注平台：皇冠")
-    except (StopIteration, ValueError):
-        return None
-    selection = lines[action_index].removeprefix("投注：")
-    lines[action_index:platform_index + 1] = [
-        "不投注：賠率不足",
-        f"選擇：{selection}",
-    ]
-    return "\n".join(lines)
+    return _wilson_message(clone)
 
 
 def notify_wilson_pending(
@@ -303,6 +359,7 @@ def _hkjc_execution_message(bet: dict[str, Any]) -> str | None:
     ):
         return None
     selection = f"{market} · {bet.get('selected_role') or '—'} {line:g}"
+    platform = "皇冠" if crown_odds > hkjc_odds else "馬會"
     return "\n".join([
         "【皇冠×馬會執行測試倉（模擬）】",
         f"{kickoff.astimezone(HKT).strftime('%H:%M')} {league}",
@@ -310,7 +367,7 @@ def _hkjc_execution_message(bet: dict[str, Any]) -> str | None:
         "",
         f"合符條件 #{number}",
         f"投注：{selection}",
-        "投注平台：馬會",
+        f"投注平台：{platform}",
         "",
         f"皇冠訊號賠率：{crown_odds:.2f}",
         f"馬會執行賠率：{hkjc_odds:.2f}",

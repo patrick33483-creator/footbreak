@@ -460,6 +460,66 @@ def _condition_prospective(ledger, bet):
     return prospective if isinstance(prospective, dict) else {}
 
 
+_CROWN_COMPARISON_REASONS = {
+    "crown_fixture_identity_missing_or_ambiguous": "無同場盤",
+    "crown_fixture_kickoff_identity_mismatch": "開賽時間不一致",
+    "crown_exact_market_side_line_missing_or_ambiguous": "盤口不一致",
+    "crown_execution_quote_stale_at_t5": "非新鮮T-5",
+    "crown_execution_odds_invalid_or_missing": "賠率未能確認",
+    "crown_execution_source_invalid_or_missing": "非原生皇冠報價",
+    "crown_execution_timestamp_missing": "報價時間缺失",
+    "crown_execution_post_kickoff_or_post_decision": "賽後或決策後報價",
+    "crown_execution_quote_not_available": "報價不可用",
+    "crown_local_evidence_unavailable": "皇冠資料未能讀取",
+    "crown_local_evidence_invalid": "皇冠資料無效",
+    "crown_local_evidence_too_large": "皇冠資料異常",
+    "crown_exact_quote_journal_missing": "無原生T-5報價",
+}
+
+
+def _crown_counterpart(bet):
+    """Return one local, exact-only Crown comparison for a Wilson alert.
+
+    This deliberately reads the narrow native Crown sidecar through the same
+    fail-closed matcher used by the isolated Crown execution test.  It never
+    calls a provider, never uses a quote captured after this Footbreak decision,
+    and does not affect the Footbreak Wilson decision or notification dedupe.
+    """
+    fixture = str(bet.get("match_id") or "").strip()
+    market = str(bet.get("code") or bet.get("market") or "").strip().upper()
+    side = str(bet.get("selected_side") or bet.get("side") or "").strip().upper()
+    kickoff = _parse_time(bet.get("kickoff"))
+    stage_at = _parse_time(bet.get("admission_at") or bet.get("created_at"))
+    try:
+        line = float(bet.get("line", bet.get("selected_line")))
+    except (TypeError, ValueError):
+        line = None
+    if (
+        not fixture or market not in MARKET_LABELS or not side
+        or line is None or not math.isfinite(line) or kickoff is None
+        or stage_at is None or stage_at >= kickoff
+        or str(bet.get("stage") or "") != "T-5"
+    ):
+        return None, "皇冠對照：未能確認（資料不足）"
+    try:
+        from crown_execution_test import _crown_quote_for_exact_fixture
+        quote, reason = _crown_quote_for_exact_fixture(
+            fixture, market, side, line, stage_at, kickoff,
+        )
+    except Exception:
+        # A formatter must never break a durable Wilson outbox because an
+        # optional local comparison reader is unavailable.
+        quote, reason = None, "crown_local_evidence_unavailable"
+    if quote is None:
+        return None, f"皇冠對照：未能確認（{_CROWN_COMPARISON_REASONS.get(reason, '未能確認')}）"
+    odds = _finite_positive(quote.get("odds"))
+    if odds is None:
+        return None, "皇冠對照：未能確認（賠率未能確認）"
+    market_label = MARKET_LABELS[market]
+    role = str(bet.get("selected_role") or "").strip()
+    return odds, f"皇冠對照：{esc(market_label)} · {esc(role)} {line:g} @{odds:.2f}"
+
+
 def _condition_bet_message(bet, prospective=None):
     """Return one safe Traditional-Chinese condition-bet message or ``None``."""
     observation = bet.get("portfolio") == "footbreak_wilson_observations"
@@ -488,21 +548,25 @@ def _condition_bet_message(bet, prospective=None):
     except (TypeError, ValueError):
         return None
     selection = f"{esc(market)} · {esc(direction)} {line:g}"
-    action_lines = (
-        [f"不投注：賠率不足", f"選擇：{selection}"]
-        if observation
-        else [f"投注：{selection}", "投注平台：馬會"]
-    )
+    crown_odds, crown_line = _crown_counterpart(bet)
+    selected_odds, platform = odds, "馬會"
+    if crown_odds is not None and crown_odds > selected_odds:
+        selected_odds, platform = crown_odds, "皇冠"
+    if selected_odds + 1e-12 >= minimum:
+        decision = "投注"
+    else:
+        decision = "不投注：賠率不足"
     return "\n".join([
         "【足破 Wilson】",
         f"{kickoff.astimezone(HKT).strftime('%H:%M')} {esc(league)}",
         f"{esc(home)} vs {esc(away)}",
         "",
         f"合符條件 #{number}",
-        *action_lines,
-        "",
-        f"現時賠率：{odds:.2f}",
+        f"馬會訊號：{selection} @{odds:.2f}",
+        crown_line,
         f"最低賠率要求：{minimum:.2f}",
+        f"決定：{decision}",
+        f"投注平台：{platform}",
     ])
 
 

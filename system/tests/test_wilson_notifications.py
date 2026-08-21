@@ -20,10 +20,13 @@ HKT = timezone(timedelta(hours=8))
 
 def bet(strategy="wilson-test-strategy-v1", portfolio="footbreak_wilson_test", *, market="讓球"):
     arithmetic = admission_arithmetic(41, 59, 1.90)
+    created = datetime.now(HKT)
     return {
         "bet_id": "fixture|HDC|T-5|wilson-test-strategy-v1", "portfolio": portfolio,
         "strategy": strategy, "status": "PENDING", "league": "England - Premier League", "home": "主隊", "away": "客隊",
         "kickoff": (datetime.now(HKT) + timedelta(hours=2)).isoformat(), "market_label": market,
+        "match_id": "fixture", "code": "HDC", "side": "H", "selected_side": "H",
+        "line": -.25, "stage": "T-5", "created_at": created.isoformat(),
         "selected_role": "主讓", "selected_line": -.25, "odds": 1.90, "stake": 500,
         "frozen_condition_definition": {"path": "首預→T-30→T-5 all 主讓"},
         "frozen_historical_evidence": {"hits": 41, "decided": 59, "label": "凍結條件"},
@@ -47,13 +50,33 @@ def low_odds_observation(*, market="讓球", number=7):
 
 
 class FootbreakWilsonNotificationTest(unittest.TestCase):
+    def _counterpart(self, row, *, odds=1.93, side=None, line=None, observed_seconds_ago=20):
+        created = datetime.fromisoformat(row["created_at"])
+        quote = {
+            "code": row["code"], "side": side or row["side"], "line": row["line"] if line is None else line,
+            "odds": odds, "source": "titan007-crown-id-3", "odds_status": "available",
+            "observed_at": (created - timedelta(seconds=observed_seconds_ago)).isoformat(),
+        }
+        return [{
+            "hkjc_match_id": row["match_id"], "kickoff_hkt": row["kickoff"],
+            "current_selected_odds_journal": [quote],
+        }]
+
+    def _message_with_counterpart(self, row, **kwargs):
+        with tempfile.TemporaryDirectory() as directory:
+            evidence = Path(directory, "footbreak-execution-evidence.json")
+            evidence.write_text(json.dumps(self._counterpart(row, **kwargs)), encoding="utf-8")
+            with patch.dict("os.environ", {"FOOTBREAK_CROWN_EXECUTION_EVIDENCE_PATH": str(evidence)}):
+                return notify._condition_bet_message(row)
+
     def test_concise_chinese_bet_message_uses_raw_minimum_and_stable_number(self):
-        message = notify._condition_bet_message(bet())
+        message = self._message_with_counterpart(bet(), odds=1.89)
         self.assertIsNotNone(message)
-        self.assertEqual(message.count("\n"), 9)
+        self.assertLess(len(message), 500)
         for text in ("【足破 Wilson】", "英格蘭超級聯賽", "主隊 vs 客隊", "合符條件 #7",
-                     "投注：讓球 · 主讓 -0.25", "投注平台：馬會",
-                     "現時賠率：1.90", "最低賠率要求："):
+                     "馬會訊號：讓球 · 主讓 -0.25 @1.90",
+                     "皇冠對照：讓球 · 主讓 -0.25 @1.89", "最低賠率要求：",
+                     "決定：投注", "投注平台：馬會"):
             self.assertIn(text, message)
         self.assertNotIn("England - Premier League", message)
         self.assertNotIn("fixture|", message)
@@ -63,13 +86,29 @@ class FootbreakWilsonNotificationTest(unittest.TestCase):
 
     def test_low_odds_match_alert_is_explicit_and_never_a_formal_bet(self):
         row = low_odds_observation()
-        message = notify._condition_observation_message(row)
+        message = self._message_with_counterpart(row, odds=1.58)
         self.assertIsNotNone(message)
-        for text in ("合符條件 #7", "不投注：賠率不足", "選擇：讓球 · 主讓 -0.25",
-                     "現時賠率：1.50", "最低賠率要求："):
+        for text in ("合符條件 #7", "馬會訊號：讓球 · 主讓 -0.25 @1.50",
+                     "皇冠對照：讓球 · 主讓 -0.25 @1.58", "最低賠率要求：",
+                     "決定：不投注：賠率不足", "投注平台：皇冠"):
             self.assertIn(text, message)
-        self.assertNotIn("投注平台：", message)
         self.assertFalse(row["formal_bet"])
+
+    def test_crown_comparison_is_explicit_when_exact_fresh_quote_is_unavailable(self):
+        row = low_odds_observation(market="入球大細", number=8)
+        row.update({"code": "HIL", "market": "HIL", "side": "H", "selected_side": "H",
+                    "line": 2.5, "selected_line": 2.5, "selected_role": "大"})
+        message = self._message_with_counterpart(row, side="L")
+        self.assertIn("皇冠對照：未能確認（盤口不一致）", message)
+        self.assertIn("決定：不投注：賠率不足", message)
+        self.assertIn("投注平台：馬會", message)
+
+    def test_crown_stale_t5_comparison_is_never_presented_as_current(self):
+        row = low_odds_observation(market="入球大細")
+        row.update({"code": "HIL", "market": "HIL", "side": "H", "selected_side": "H",
+                    "line": 2.5, "selected_line": 2.5, "selected_role": "大"})
+        message = self._message_with_counterpart(row, observed_seconds_ago=121)
+        self.assertIn("皇冠對照：未能確認（非新鮮T-5）", message)
 
     def test_durable_dedupe_retry_and_bounded_multiple_market_outbox(self):
         row = bet()

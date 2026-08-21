@@ -224,6 +224,23 @@ def _ledger_report(ledger_path: Path, notify_state_path: Path, now: datetime) ->
         ((ledger.get("wilson_validation") or {}).get("audit") or [])
         if isinstance(ledger, dict) else []
     )
+    normal_rows = [
+        row for row in list(ledger.get("bets") or []) + list(
+            ((ledger.get("wilson_validation") or {}).get("observations") or [])
+        )
+        if isinstance(row, dict)
+        and str(row.get("portfolio") or "").startswith("footbreak_wilson_")
+    ] if isinstance(ledger, dict) else []
+    recent_condition_events = []
+    for row in normal_rows[-40:]:
+        recent_condition_events.append({
+            key: row.get(key) for key in (
+                "observation_id", "bet_id", "portfolio", "bet_status", "status",
+                "match_id", "hkjc_match_id", "league", "home", "away", "kickoff",
+                "stage", "created_at", "admission_at", "code", "side", "line",
+                "selected_role", "selected_line", "odds", "condition_number",
+            )
+        })
     normal_by_match: dict[str, list[str]] = {}
     for row in normal_audit:
         if not isinstance(row, dict):
@@ -273,6 +290,7 @@ def _ledger_report(ledger_path: Path, notify_state_path: Path, now: datetime) ->
         "invalid_bet_contract_rows": missing_contract[:10],
         "stats": namespace.get("stats") if isinstance(namespace.get("stats"), dict) else {},
         "recent_evaluations": _safe_audit(namespace.get("audit")),
+        "recent_footbreak_condition_events": recent_condition_events,
         "recent_native_t5": recent_t5[-20:],
         "recent_native_t5_without_persisted_cross_outcome": [
             row for row in recent_t5 if not row["cross_book_outcome_persisted"]

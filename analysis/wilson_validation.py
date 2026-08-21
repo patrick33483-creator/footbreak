@@ -1194,6 +1194,9 @@ def record_match_observation(
         "bet_status": "NO_BET_LOW_ODDS",
         "no_bet_reason": "因賠率不足，不投注",
         "match_id": fixture,
+        # Crown's exact reciprocal HKJC comparison is allowed only through
+        # this persisted identity bridge; no title/team matching is permitted.
+        "hkjc_match_id": watch.get("hkjc_match_id"),
         "league": watch.get("league"),
         "home": watch.get("home"),
         "away": watch.get("away"),
@@ -1256,6 +1259,7 @@ def commit_bet(
     return {
         "bet_id": bid, "portfolio": portfolio_name(system), "strategy": STRATEGY,
         "strategy_name": DISPLAY_NAME, "match_id": fixture, "league": watch.get("league"),
+        "hkjc_match_id": watch.get("hkjc_match_id"),
         "home": watch.get("home"), "away": watch.get("away"),
         "kickoff": watch.get("kickoff") or watch.get("kickoff_hkt"),
         "code": market, "market": market, "market_label": market_label, "side": selected.get("side"),
