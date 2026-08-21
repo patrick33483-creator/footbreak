@@ -28,6 +28,8 @@ STAGE_GRACE_SECONDS = 2 * 60
 NOTIFICATION_GRACE_SECONDS = 12 * 60
 SETTLEMENT_GRACE_SECONDS = 4 * 60 * 60
 ALERT_COOLDOWN_SECONDS = 6 * 60 * 60
+CROSS_BOOK_AUDIT_GRACE_SECONDS = 2 * 60
+CROSS_BOOK_FRESHNESS_SECONDS = 120
 SYSTEMS = ("footbreak", "crown")
 EXPECTED_STAGES = ("T-30", "T-5")
 
@@ -89,6 +91,121 @@ def _watch_known_at(watch: dict[str, Any], fallback: datetime) -> datetime:
     # stage was missed.  Legacy rows without discovery time remain observable,
     # but only after the monitor's initial grace.
     return _parse_time(watch.get("discovered_at")) or fallback
+
+
+def _cross_book_evidence_path() -> Path:
+    explicit = os.environ.get("FOOTBREAK_CROWN_EXECUTION_EVIDENCE_PATH")
+    if explicit:
+        return Path(explicit)
+    state = _env_path("CROWN_STATE_DIR", "/var/lib/footbreak/crown")
+    return state / "footbreak-execution-evidence.json"
+
+
+def _cross_book_freshness_seconds() -> int:
+    return _positive_int(
+        "FOOTBREAK_CROWN_EXECUTION_MAX_AGE_SECONDS",
+        CROSS_BOOK_FRESHNESS_SECONDS,
+        600,
+    )
+
+
+def _same_kickoff(left: datetime | None, right: datetime | None) -> bool:
+    return bool(left and right and abs((left - right).total_seconds()) <= 1)
+
+
+def _due_t5_stages(ledger: dict[str, Any], now: datetime) -> list[tuple[str, datetime, datetime]]:
+    """Return only persisted T-5 decisions that became due this monitor period.
+
+    The monitor must not alert merely because the sidecar has no active cards.
+    A counterpart check is meaningful only after Footbreak has durably recorded
+    a native T-5 stage, and the short bounded window prevents stale historical
+    cards from being mistaken for a current incident.
+    """
+    watches = ledger.get("watch") if isinstance(ledger, dict) else {}
+    if not isinstance(watches, dict):
+        return []
+    start = now - timedelta(seconds=MONITOR_WINDOW_SECONDS + STAGE_GRACE_SECONDS)
+    due: list[tuple[str, datetime, datetime]] = []
+    for key, watch in watches.items():
+        if not isinstance(watch, dict):
+            continue
+        fixture = str(watch.get("match_id") or key or "").strip()
+        kickoff = _watch_kickoff(watch)
+        if not fixture or kickoff is None:
+            continue
+        for stage in watch.get("stages") or []:
+            if not isinstance(stage, dict) or stage.get("stage") != "T-5":
+                continue
+            recorded = _parse_time(stage.get("ts"))
+            if recorded is not None and start <= recorded <= now:
+                due.append((fixture, kickoff, recorded))
+    return due
+
+
+def _cross_book_has_fresh_quote(
+    cards: list[dict[str, Any]],
+    fixture: str,
+    kickoff: datetime,
+    decision_at: datetime,
+) -> bool:
+    exact_cards = [
+        card for card in cards
+        if str(card.get("hkjc_match_id") or "").strip() == fixture
+        and _same_kickoff(_parse_time(card.get("kickoff_hkt") or card.get("kickoff")), kickoff)
+    ]
+    # The execution reader refuses a missing or ambiguous identity.  Apply the
+    # same fail-closed rule in health coverage, without interpreting odds or
+    # contacting Crown.
+    if len(exact_cards) != 1:
+        return False
+    journal = exact_cards[0].get("current_selected_odds_journal")
+    if not isinstance(journal, list):
+        return False
+    freshness = _cross_book_freshness_seconds()
+    return any(
+        isinstance(quote, dict)
+        and str(quote.get("odds_status") or "available") == "available"
+        and (observed := _parse_time(quote.get("observed_at"))) is not None
+        and observed <= decision_at
+        and (decision_at - observed).total_seconds() <= freshness
+        for quote in journal
+    )
+
+
+def cross_book_t5_findings(ledger: dict[str, Any], now: datetime) -> list[Finding]:
+    """Audit only due Footbreak T-5 handoffs using local persisted records.
+
+    Each due T-5 must have (1) one exact Crown sidecar card with at least one
+    fresh native quote at that decision time and (2) a persisted cross-book
+    outcome.  The outcome can be an entry, no-bet, or explicit rejection; it is
+    the durable evidence that a candidate was not silently dropped.
+    """
+    due = _due_t5_stages(ledger, now)
+    if not due:
+        return []
+    evidence = _json(_cross_book_evidence_path(), [])
+    cards = [card for card in evidence if isinstance(card, dict)] if isinstance(evidence, list) else []
+    namespace = ledger.get("footbreak_crown_execution_test") if isinstance(ledger, dict) else {}
+    audit = namespace.get("audit") if isinstance(namespace, dict) else []
+    audit = [row for row in audit if isinstance(row, dict)] if isinstance(audit, list) else []
+    missing_evidence = unevaluated = 0
+    for fixture, kickoff, decision_at in due:
+        if not _cross_book_has_fresh_quote(cards, fixture, kickoff, decision_at):
+            missing_evidence += 1
+        outcome_start = decision_at - timedelta(seconds=CROSS_BOOK_AUDIT_GRACE_SECONDS)
+        if not any(
+            str(row.get("match_id") or "") == fixture
+            and (recorded := _parse_time(row.get("ts"))) is not None
+            and outcome_start <= recorded <= now
+            for row in audit
+        ):
+            unevaluated += 1
+    findings: list[Finding] = []
+    if missing_evidence:
+        findings.append(Finding("footbreak", "cross_book_counterpart_evidence", missing_evidence))
+    if unevaluated:
+        findings.append(Finding("footbreak", "cross_book_unevaluated_t5", unevaluated))
+    return findings
 
 
 def _expected_stage_missing(
@@ -299,7 +416,10 @@ def assess(system: str, now: datetime, runner: Callable[..., Any] = subprocess.r
         Finding(system, "dashboard_sidecar_mismatch", dashboard_sidecar_mismatch(system, paths.dashboard)),
         Finding(system, "settlement_backlog", settlement_backlog(ledger, now)),
     ]
-    return [finding for finding in findings if finding.count > 0] + local_service_findings(system, runner)
+    findings = [finding for finding in findings if finding.count > 0] + local_service_findings(system, runner)
+    if system == "footbreak":
+        findings.extend(cross_book_t5_findings(ledger, now))
+    return findings
 
 
 def run(
@@ -315,6 +435,7 @@ def run(
     kinds = (
         "missing_expected_stage", "repeated_timeout", "stuck_notification",
         "dashboard_sidecar_mismatch", "settlement_backlog", "health_check_failure",
+        "cross_book_counterpart_evidence", "cross_book_unevaluated_t5",
     )
     cooldown = _positive_int(
         "SERVER_HEALTH_ALERT_COOLDOWN_SECONDS", ALERT_COOLDOWN_SECONDS, 7 * 24 * 60 * 60,

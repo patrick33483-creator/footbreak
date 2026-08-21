@@ -88,6 +88,102 @@ class ServerHealthMonitorTests(unittest.TestCase):
         self.assertEqual(monitor.missing_native_stages(ledger, NOW), 0)
         self.assertEqual(monitor.stuck_notifications("footbreak", ledger, {}, NOW), 0)
 
+    def test_cross_book_monitor_only_checks_due_t5_and_requires_evidence_and_outcome(self) -> None:
+        """No due T-5 means no sidecar alert; a due T-5 needs both records."""
+        with tempfile.TemporaryDirectory() as directory:
+            evidence = Path(directory) / "evidence.json"
+            stage_at = NOW - timedelta(minutes=4)
+            kickoff = NOW + timedelta(minutes=1)
+            ledger = {
+                "watch": {
+                    "fixture-1": {
+                        "match_id": "fixture-1",
+                        "kickoff": kickoff.isoformat(),
+                        "stages": [{"stage": "T-5", "ts": stage_at.isoformat()}],
+                    },
+                },
+                "footbreak_crown_execution_test": {
+                    "audit": [{
+                        "match_id": "fixture-1",
+                        "ts": (stage_at + timedelta(seconds=1)).isoformat(),
+                        "status": "MATCHED_NO_BET",
+                        "reason": "crown_wilson_gate_not_passed",
+                    }],
+                },
+            }
+            evidence.write_text(json.dumps([{
+                "hkjc_match_id": "fixture-1",
+                "kickoff_hkt": kickoff.isoformat(),
+                "current_selected_odds_journal": [{
+                    "observed_at": (stage_at - timedelta(seconds=10)).isoformat(),
+                    "odds_status": "available",
+                }],
+            }]), encoding="utf-8")
+            with patch.dict(
+                os.environ,
+                {"FOOTBREAK_CROWN_EXECUTION_EVIDENCE_PATH": str(evidence)},
+                clear=False,
+            ):
+                self.assertEqual(monitor.cross_book_t5_findings(ledger, NOW), [])
+                ledger["footbreak_crown_execution_test"]["audit"] = []
+                self.assertEqual(
+                    monitor.cross_book_t5_findings(ledger, NOW),
+                    [monitor.Finding("footbreak", "cross_book_unevaluated_t5", 1)],
+                )
+                ledger["watch"]["fixture-1"]["stages"] = []
+                self.assertEqual(monitor.cross_book_t5_findings(ledger, NOW), [])
+
+    def test_cross_book_monitor_alerts_on_due_missing_or_stale_counterpart_only(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            evidence = Path(directory) / "evidence.json"
+            stage_at = NOW - timedelta(minutes=4)
+            kickoff = NOW + timedelta(minutes=1)
+            ledger = {
+                "watch": {"fixture-1": {
+                    "match_id": "fixture-1", "kickoff": kickoff.isoformat(),
+                    "stages": [{"stage": "T-5", "ts": stage_at.isoformat()}],
+                }},
+                "footbreak_crown_execution_test": {"audit": [{
+                    "match_id": "fixture-1",
+                    "ts": stage_at.isoformat(), "status": "SKIPPED",
+                    "reason": "crown_execution_quote_stale_at_t5",
+                }]},
+            }
+            evidence.write_text(json.dumps([{
+                "hkjc_match_id": "fixture-1", "kickoff_hkt": kickoff.isoformat(),
+                "current_selected_odds_journal": [{
+                    "observed_at": (stage_at - timedelta(minutes=3)).isoformat(),
+                    "odds_status": "available",
+                }],
+            }]), encoding="utf-8")
+            with patch.dict(
+                os.environ,
+                {"FOOTBREAK_CROWN_EXECUTION_EVIDENCE_PATH": str(evidence)},
+                clear=False,
+            ):
+                self.assertEqual(
+                    monitor.cross_book_t5_findings(ledger, NOW),
+                    [monitor.Finding("footbreak", "cross_book_counterpart_evidence", 1)],
+                )
+
+    def test_cross_book_health_alert_is_deduped_by_existing_local_incident_state(self) -> None:
+        delivered: list[str] = []
+        alerts = incident_alert.IncidentAlerts(
+            Path(tempfile.mkdtemp()) / "state.json",
+            sender=lambda text: delivered.append(text) or True,
+        )
+        health = {
+            "footbreak": [monitor.Finding("footbreak", "cross_book_counterpart_evidence", 1)],
+            "crown": [],
+        }
+        healthy_disk = SimpleNamespace(status=SimpleNamespace(free=10 * 1024**3))
+        with patch.object(monitor, "assess", side_effect=lambda system, *_args: health[system]), \
+             patch.object(monitor, "run_maintenance", return_value=healthy_disk):
+            monitor.run(NOW, alerts=alerts, runner=successful_systemctl)
+            monitor.run(NOW + timedelta(minutes=30), alerts=alerts, runner=successful_systemctl)
+        self.assertEqual(len(delivered), 1)
+        self.assertIn("足破×皇冠 T-5 對手證據缺失或過期", delivered[0])
+
     def test_only_qualified_unacknowledged_wilson_event_is_stuck(self) -> None:
         row = {
             "bet_id": "private-fixture-id",

@@ -280,6 +280,8 @@ class IncidentAlerts:
             "stuck_notification": "通知佇列或傳輸逾時",
             "dashboard_sidecar_mismatch": "儀表板／歷史資料不同步",
             "settlement_backlog": "模擬結算積壓逾時",
+            "cross_book_counterpart_evidence": "足破×皇冠 T-5 對手證據缺失或過期",
+            "cross_book_unevaluated_t5": "足破×皇冠 T-5 未持久化評估結果",
             "disk_pressure": "磁碟可用空間低於安全門檻",
         }
         if kind_base == "ledger_digest":
