@@ -50,6 +50,22 @@ jobs:
           lsof -nP +L1 2>/dev/null \
             | awk 'NR == 1 || $7 ~ /^[0-9]+$/' \
             | sort -k7,7nr | head -n 30 || true
+          echo "=== container runtime inventory (read only) ==="
+          systemctl is-active docker containerd 2>/dev/null || true
+          systemctl is-enabled docker containerd 2>/dev/null || true
+          if command -v docker >/dev/null 2>&1; then
+            docker ps -a --format 'container={{.ID}} status={{.Status}} image={{.Image}}' 2>/dev/null || true
+            docker system df 2>/dev/null || true
+          fi
+          if command -v ctr >/dev/null 2>&1; then
+            ctr namespaces list 2>/dev/null || true
+            for namespace in $(ctr namespaces list -q 2>/dev/null); do
+              echo "namespace=$namespace"
+              ctr -n "$namespace" containers list 2>/dev/null || true
+              ctr -n "$namespace" images list -q 2>/dev/null | wc -l || true
+              ctr -n "$namespace" snapshots list 2>/dev/null | sed -n '1,30p' || true
+            done
+          fi
           REMOTE
 
       - name: 執行唯讀健康檢查並發布安全摘要
