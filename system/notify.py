@@ -989,7 +989,7 @@ def notify_pending_committed_bets(ledger, *, max_attempts=8, max_seconds=None):
     )
 
 
-def send(text, *, max_seconds=None):
+def send(text, *, max_seconds=None, return_response=False):
     if not CHAT_ID:
         raise RuntimeError("TELEGRAM_CHAT_ID 未設定")
     if BOT_TOKEN:
@@ -1013,6 +1013,16 @@ def send(text, *, max_seconds=None):
             raise RuntimeError(f"Telegram 直接發送失敗:{type(exc).__name__}") from exc
         if not result.get("ok"):
             raise RuntimeError(f"Telegram 直接發送失敗:{result.get('description', 'unknown')}")
+        if return_response:
+            message = result.get("result")
+            return {
+                "transport": "telegram_bot_api",
+                "ok": True,
+                "message_id": (
+                    message.get("message_id")
+                    if isinstance(message, dict) else None
+                ),
+            }
         return "telegram_bot_api_ok"
 
     # Backward-compatible local fallback only. Production should always use
@@ -1028,6 +1038,13 @@ def send(text, *, max_seconds=None):
     )
     if p.returncode != 0:
         raise RuntimeError(f"Telegram 發送失敗:{p.stderr.strip()[:400]}")
+    if return_response:
+        return {
+            "transport": "external_tool_fallback",
+            "ok": True,
+            # The compatibility tool does not promise a Telegram message ID.
+            "message_id": None,
+        }
     return p.stdout.strip()[:200]
 
 
