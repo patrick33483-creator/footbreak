@@ -151,7 +151,7 @@ class ReciprocalNotificationTests(unittest.TestCase):
             "wilson_admission": admission_arithmetic(41, 59, 1.9),
         }
         text = notify._hkjc_execution_message(bet)
-        for field in ("皇冠×馬會", "合符條件 #2", "投注：入球大細 · 大 2.5",
+        for field in ("皇冠×馬會", "合符 皇冠 Wilson 條件 #2", "投注：入球大細 · 大 2.5",
                       "投注平台：馬會", "皇冠訊號賠率：1.66",
                       "馬會執行賠率：1.90", "最低賠率要求："):
             self.assertIn(field, text)
