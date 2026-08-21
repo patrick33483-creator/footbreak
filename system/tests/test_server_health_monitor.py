@@ -18,6 +18,7 @@ if str(SYSTEM) not in sys.path:
 
 import incident_alert
 import server_health_monitor as monitor
+import cross_book_evidence_repair as evidence_repair
 
 
 NOW = datetime(2026, 8, 20, 20, 0, tzinfo=incident_alert.HKT)
@@ -179,8 +180,8 @@ class ServerHealthMonitorTests(unittest.TestCase):
         healthy_disk = SimpleNamespace(status=SimpleNamespace(free=10 * 1024**3))
         with patch.object(monitor, "assess", side_effect=lambda system, *_args: health[system]), \
              patch.object(monitor, "run_maintenance", return_value=healthy_disk):
-            monitor.run(NOW, alerts=alerts, runner=successful_systemctl)
-            monitor.run(NOW + timedelta(minutes=30), alerts=alerts, runner=successful_systemctl)
+            monitor.run(NOW, alerts=alerts, runner=successful_systemctl, repair_enabled=False)
+            monitor.run(NOW + timedelta(minutes=30), alerts=alerts, runner=successful_systemctl, repair_enabled=False)
         self.assertEqual(len(delivered), 1)
         self.assertIn("足破×皇冠 T-5 對手證據缺失或過期", delivered[0])
 
@@ -280,10 +281,10 @@ class ServerHealthMonitorTests(unittest.TestCase):
             healthy_disk = SimpleNamespace(status=SimpleNamespace(free=10 * 1024**3))
             with patch.dict(os.environ, environment, clear=False), \
                  patch.object(monitor, "run_maintenance", return_value=healthy_disk):
-                monitor.run(NOW, alerts=alerts, runner=timeout_runner)
-                monitor.run(NOW + timedelta(minutes=30), alerts=alerts, runner=timeout_runner)
-                monitor.run(NOW + timedelta(minutes=60), alerts=alerts, runner=successful_systemctl)
-                monitor.run(NOW + timedelta(minutes=90), alerts=alerts, runner=successful_systemctl)
+                monitor.run(NOW, alerts=alerts, runner=timeout_runner, repair_enabled=False)
+                monitor.run(NOW + timedelta(minutes=30), alerts=alerts, runner=timeout_runner, repair_enabled=False)
+                monitor.run(NOW + timedelta(minutes=60), alerts=alerts, runner=successful_systemctl, repair_enabled=False)
+                monitor.run(NOW + timedelta(minutes=90), alerts=alerts, runner=successful_systemctl, repair_enabled=False)
 
             payload = json.loads((root / "private-state.json").read_text(encoding="utf-8"))
         self.assertEqual(len(delivered), 2)
@@ -312,14 +313,138 @@ class ServerHealthMonitorTests(unittest.TestCase):
         with patch.object(monitor, "assess", side_effect=lambda system, *_args: empty[system]), \
              patch.object(monitor, "warning_free_bytes", return_value=1000), \
              patch.object(monitor, "run_maintenance", side_effect=[low, high, high]):
-            monitor.run(NOW, alerts=alerts, runner=successful_systemctl)
-            monitor.run(NOW + timedelta(minutes=30), alerts=alerts, runner=successful_systemctl)
-            monitor.run(NOW + timedelta(minutes=60), alerts=alerts, runner=successful_systemctl)
+            monitor.run(NOW, alerts=alerts, runner=successful_systemctl, repair_enabled=False)
+            monitor.run(NOW + timedelta(minutes=30), alerts=alerts, runner=successful_systemctl, repair_enabled=False)
+            monitor.run(NOW + timedelta(minutes=60), alerts=alerts, runner=successful_systemctl, repair_enabled=False)
         self.assertEqual(active, [True, False, False])
         self.assertEqual(len(delivered), 2)
         self.assertIn("運作警報：伺服器", delivered[0])
         self.assertIn("磁碟", delivered[0])
         self.assertIn("運作恢復：伺服器", delivered[1])
+
+    def test_evidence_projection_repair_is_upcoming_only_and_never_replays_post_kickoff(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            predictions = root / "predictions.json"
+            evidence = root / "evidence.json"
+            write_json(predictions, [{
+                "match_id": "crown-future", "hkjc_match_id": "hkjc-future",
+                "kickoff_hkt": (NOW + timedelta(minutes=5)).isoformat(),
+                "stages": [{"stage": "T-5", "selected_odds_journal": [{
+                    "code": "AH", "odds": 1.91, "odds_status": "available",
+                    "observed_at": (NOW - timedelta(minutes=1)).isoformat(),
+                }]}],
+            }, {
+                "match_id": "crown-past", "hkjc_match_id": "hkjc-past",
+                "kickoff_hkt": (NOW - timedelta(minutes=1)).isoformat(),
+                "stages": [{"stage": "T-5", "selected_odds_journal": []}],
+            }])
+            self.assertTrue(evidence_repair.rebuild(
+                predictions_path=predictions, evidence_path=evidence, now=NOW,
+            ))
+            payload = json.loads(evidence.read_text(encoding="utf-8"))
+        self.assertEqual([row["hkjc_match_id"] for row in payload], ["hkjc-future"])
+        self.assertEqual(payload[0]["current_selected_odds_journal"][0]["odds"], 1.91)
+
+    def test_repair_success_reaudits_and_sends_one_recovery_not_alert(self) -> None:
+        delivered: list[str] = []
+        commands: list[list[str]] = []
+        healthy_disk = SimpleNamespace(status=SimpleNamespace(free=10 * 1024**3))
+        initial = {
+            "footbreak": [monitor.Finding("footbreak", "dashboard_sidecar_mismatch", 1)],
+            "crown": [],
+        }
+        repaired = {"footbreak": [], "crown": []}
+
+        def runner(command, **_kwargs):
+            commands.append(command)
+            return successful_systemctl()
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            alerts = incident_alert.IncidentAlerts(
+                root / "alerts.json", sender=lambda text: delivered.append(text) or True,
+            )
+            controller = monitor.RepairController(state_path=root / "repairs.json", runner=runner)
+            with patch.object(monitor, "assess", side_effect=[
+                initial["footbreak"], initial["crown"], repaired["footbreak"], repaired["crown"],
+            ]), patch.object(monitor, "run_maintenance", return_value=healthy_disk):
+                output = monitor.run(NOW, alerts=alerts, runner=runner, repairs=controller)
+        self.assertEqual(output, repaired)
+        self.assertIn(["systemctl", "start", "footbreak-dashboard-self-heal.service"], commands)
+        self.assertEqual(len(delivered), 1)
+        self.assertIn("系統自動修復", delivered[0])
+        self.assertIn("通過複核", delivered[0])
+
+    def test_repair_failure_is_reaudited_then_alerted(self) -> None:
+        delivered: list[str] = []
+        finding = monitor.Finding("footbreak", "dashboard_sidecar_mismatch", 1)
+        healthy_disk = SimpleNamespace(status=SimpleNamespace(free=10 * 1024**3))
+
+        def failed_start(command, **_kwargs):
+            return SimpleNamespace(stdout="", returncode=1)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            alerts = incident_alert.IncidentAlerts(
+                root / "alerts.json", sender=lambda text: delivered.append(text) or True,
+            )
+            controller = monitor.RepairController(state_path=root / "repairs.json", runner=failed_start)
+            with patch.object(monitor, "assess", side_effect=[[finding], [], [finding], []]), \
+                 patch.object(monitor, "run_maintenance", return_value=healthy_disk):
+                monitor.run(NOW, alerts=alerts, runner=failed_start, repairs=controller)
+        self.assertEqual(len(delivered), 1)
+        self.assertIn("儀表板／歷史資料不同步", delivered[0])
+        self.assertNotIn("系統自動修復", delivered[0])
+
+    def test_repair_no_fixture_post_kickoff_and_live_lock_are_noops(self) -> None:
+        commands: list[list[str]] = []
+
+        def runner(command, **_kwargs):
+            commands.append(command)
+            if command[:3] == ["systemctl", "show", "footbreak-tick.service"]:
+                return SimpleNamespace(
+                    stdout="Result=success\nExecMainStatus=0\nActiveState=active\n", returncode=0,
+                )
+            return successful_systemctl()
+
+        with tempfile.TemporaryDirectory() as directory:
+            controller = monitor.RepairController(state_path=Path(directory) / "repair.json", runner=runner)
+            finding = monitor.Finding("footbreak", "missing_expected_stage", 1)
+            self.assertFalse(controller.attempt(finding, ledgers={"footbreak": {"watch": {}}}, now=NOW).attempted)
+            post_kickoff = {"watch": {"x": {"kickoff": (NOW - timedelta(seconds=1)).isoformat(), "stages": []}}}
+            self.assertFalse(controller.attempt(finding, ledgers={"footbreak": post_kickoff}, now=NOW).attempted)
+            due = {"watch": {"x": {"kickoff": (NOW + timedelta(minutes=5)).isoformat(), "stages": []}}}
+            action = controller.attempt(finding, ledgers={"footbreak": due}, now=NOW)
+        self.assertFalse(action.attempted)
+        self.assertFalse(action.succeeded)
+        self.assertNotIn(["systemctl", "start", "footbreak-tick.service"], commands)
+
+    def test_repair_cooldown_and_attempt_cap_prevent_restart_storm(self) -> None:
+        commands: list[list[str]] = []
+
+        def runner(command, **_kwargs):
+            commands.append(command)
+            # Simulate a disabled timer that repairs successfully.
+            if command[:2] == ["systemctl", "is-enabled"]:
+                return SimpleNamespace(stdout="", returncode=1)
+            if command[:2] == ["systemctl", "is-failed"]:
+                return SimpleNamespace(stdout="", returncode=1)
+            return successful_systemctl()
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            controller = monitor.RepairController(state_path=root / "repair.json", runner=runner)
+            finding = monitor.Finding("crown", "health_check_failure", 1)
+            first = controller.attempt(finding, ledgers={"crown": {"watch": {}}}, now=NOW)
+            count_after_first = len([row for row in commands if row[:2] == ["systemctl", "restart"]])
+            second = controller.attempt(
+                finding, ledgers={"crown": {"watch": {}}}, now=NOW + timedelta(minutes=1),
+            )
+        self.assertTrue(first.attempted)
+        self.assertFalse(second.attempted)
+        self.assertEqual(count_after_first, 3)
+        self.assertEqual(len([row for row in commands if row[:2] == ["systemctl", "restart"]]), count_after_first)
 
     def test_systemd_and_deploy_contracts_install_only_local_monitor(self) -> None:
         service = (ROOT / "deploy/systemd/footbreak-server-health-monitor.service").read_text(encoding="utf-8")

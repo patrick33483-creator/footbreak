@@ -1,19 +1,20 @@
 #!/usr/bin/env python3
-"""Read-only, local-only half-hour health monitoring for Footbreak and Crown.
+"""Bounded local half-hour health monitoring and repair for Footbreak and Crown.
 
-This monitor intentionally reads only persisted state, dashboard artifacts and
-systemd's local unit metadata.  It makes no provider request and does not
-invoke any prediction, Radar, reconciliation or Telegram recommendation path.
-Operational delivery is delegated to the existing ``incident_alert`` helper so
-both systems retain their established, separate Telegram configuration and
-private atomic incident state.
+The normal path reads persisted state, dashboard artifacts and systemd metadata.
+For a detected fault it makes at most one safe local repair, then re-audits
+before alerting.  A normal bounded tick may be started only for a genuinely due,
+pre-kickoff native stage; all other repairs are provider-free.  It never
+backfills stages, touches settled evidence, places bets, or removes lock files.
 """
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import os
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -21,6 +22,7 @@ from typing import Any, Callable
 
 from incident_alert import IncidentAlerts, _parse_time, _positive_int, _now
 from disk_guard import run_maintenance, warning_free_bytes
+from cross_book_evidence_repair import rebuild as rebuild_cross_book_evidence
 
 
 MONITOR_WINDOW_SECONDS = 30 * 60
@@ -30,6 +32,11 @@ SETTLEMENT_GRACE_SECONDS = 4 * 60 * 60
 ALERT_COOLDOWN_SECONDS = 6 * 60 * 60
 CROSS_BOOK_AUDIT_GRACE_SECONDS = 2 * 60
 CROSS_BOOK_FRESHNESS_SECONDS = 120
+REPAIR_COOLDOWN_SECONDS = 30 * 60
+REPAIR_MAX_ATTEMPTS = 2
+REPAIR_WINDOW_SECONDS = 6 * 60 * 60
+REPAIR_TICK_TIMEOUT_SECONDS = 60
+REPAIR_AUDIT_LIMIT = 128
 SYSTEMS = ("footbreak", "crown")
 EXPECTED_STAGES = ("T-30", "T-5")
 
@@ -46,6 +53,15 @@ class Paths:
     ledger: Path
     notify: Path
     dashboard: Path
+
+
+@dataclass(frozen=True)
+class RepairAction:
+    system: str
+    kind: str
+    action: str
+    attempted: bool
+    succeeded: bool
 
 
 def _json(path: Path, fallback: Any) -> Any:
@@ -406,6 +422,277 @@ def local_service_findings(system: str, runner: Callable[..., Any] = subprocess.
     return findings
 
 
+def _repair_state_path() -> Path:
+    return Path(os.environ.get(
+        "SERVER_HEALTH_REPAIR_STATE_PATH",
+        "/var/lib/footbreak/server-health-repairs.json",
+    ))
+
+
+def _repair_state_default() -> dict[str, Any]:
+    return {"version": 1, "incidents": {}, "audit": []}
+
+
+def _repair_state_load(path: Path) -> dict[str, Any]:
+    value = _json(path, _repair_state_default())
+    if not isinstance(value, dict):
+        return _repair_state_default()
+    incidents = value.get("incidents") if isinstance(value.get("incidents"), dict) else {}
+    audit = value.get("audit") if isinstance(value.get("audit"), list) else []
+    return {"version": 1, "incidents": incidents, "audit": [row for row in audit if isinstance(row, dict)]}
+
+
+def _repair_state_write(path: Path, value: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix=".server-health-repair-", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(value, handle, ensure_ascii=False, sort_keys=True)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, path)
+        os.chmod(path, 0o600)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def _repair_state_update(
+    path: Path,
+    *,
+    system: str,
+    kind: str,
+    action: str,
+    succeeded: bool,
+    now: datetime,
+) -> None:
+    lock = path.with_suffix(path.suffix + ".lock")
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    with lock.open("a+", encoding="utf-8") as handle:
+        os.chmod(lock, 0o600)
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            state = _repair_state_load(path)
+            key = f"{system}:{kind}"
+            prior = state["incidents"].get(key) if isinstance(state["incidents"].get(key), dict) else {}
+            previous = _parse_time(prior.get("last_attempt_at"))
+            window = _positive_int(
+                "SERVER_HEALTH_REPAIR_WINDOW_SECONDS", REPAIR_WINDOW_SECONDS, 7 * 24 * 60 * 60,
+            )
+            attempts = (
+                max(0, min(int(prior.get("attempts") or 0), 9999))
+                if previous is not None and (_now(now) - previous).total_seconds() <= window
+                else 0
+            )
+            state["incidents"][key] = {
+                "attempts": attempts + 1,
+                "last_attempt_at": _now(now).isoformat(timespec="seconds"),
+                "last_action": action,
+                "last_succeeded": bool(succeeded),
+            }
+            state["audit"].append({
+                "at": _now(now).isoformat(timespec="seconds"),
+                "incident": key,
+                "action": action,
+                "succeeded": bool(succeeded),
+            })
+            state["audit"] = state["audit"][-REPAIR_AUDIT_LIMIT:]
+            _repair_state_write(path, state)
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def _repair_allowed(path: Path, system: str, kind: str, now: datetime) -> bool:
+    state = _repair_state_load(path)
+    prior = state.get("incidents", {}).get(f"{system}:{kind}")
+    if not isinstance(prior, dict):
+        return True
+    last = _parse_time(prior.get("last_attempt_at"))
+    if last is None:
+        return True
+    current = _now(now)
+    cooldown = _positive_int(
+        "SERVER_HEALTH_REPAIR_COOLDOWN_SECONDS", REPAIR_COOLDOWN_SECONDS, 24 * 60 * 60,
+    )
+    if (current - last).total_seconds() < cooldown:
+        return False
+    window = _positive_int(
+        "SERVER_HEALTH_REPAIR_WINDOW_SECONDS", REPAIR_WINDOW_SECONDS, 7 * 24 * 60 * 60,
+    )
+    attempts = max(0, int(prior.get("attempts") or 0))
+    maximum = _positive_int("SERVER_HEALTH_REPAIR_MAX_ATTEMPTS", REPAIR_MAX_ATTEMPTS, 10)
+    if (current - last).total_seconds() <= window and attempts >= maximum:
+        return False
+    return True
+
+
+def _due_unfinished_stage(system: str, ledger: dict[str, Any], now: datetime) -> bool:
+    """Whether a normal bounded tick is still allowed to repair a native stage."""
+    watches = ledger.get("watch") if isinstance(ledger, dict) else {}
+    if not isinstance(watches, dict):
+        return False
+    for watch in watches.values():
+        if not isinstance(watch, dict):
+            continue
+        kickoff = _watch_kickoff(watch)
+        if kickoff is None or kickoff <= now:
+            continue
+        minutes = (kickoff - now).total_seconds() / 60.0
+        stages = watch.get("stages") if isinstance(watch.get("stages"), list) else []
+
+        def complete(name: str) -> bool:
+            return any(
+                isinstance(row, dict)
+                and row.get("stage") == name
+                and (system != "crown" or row.get("status") != "DATA_MISSING")
+                for row in stages
+            )
+
+        if (0.0 < minutes <= 10.5 and not complete("T-5")) or (
+            20.0 <= minutes <= 40.5 and not complete("T-30")
+        ):
+            return True
+    return False
+
+
+def _timer_units(system: str) -> tuple[str, ...]:
+    return (
+        (
+            "footbreak-tick.timer", "footbreak-sweep.timer", "footbreak-settle.timer",
+            "footbreak-result-reconcile.timer", "footbreak-dashboard-self-heal.timer",
+            "footbreak-server-health-monitor.timer",
+        )
+        if system == "footbreak"
+        else ("crown-tick.timer", "crown-sweep.timer", "crown-settle.timer")
+    )
+
+
+def _service_units(system: str) -> tuple[str, ...]:
+    return (
+        (
+            "footbreak-tick.service", "footbreak-sweep.service", "footbreak-settle.service",
+            "footbreak-result-reconcile.service", "footbreak-dashboard-api.service",
+            "footbreak-dashboard-self-heal.service",
+        )
+        if system == "footbreak"
+        else (
+            "crown-tick.service", "crown-sweep.service", "crown-settle.service",
+            "crown-dashboard-api.service",
+        )
+    )
+
+
+class RepairController:
+    """One bounded local repair attempt per incident; never clears lock files."""
+
+    def __init__(
+        self,
+        *,
+        state_path: Path | None = None,
+        runner: Callable[..., Any] = subprocess.run,
+        evidence_rebuilder: Callable[..., bool] = rebuild_cross_book_evidence,
+    ) -> None:
+        self.state_path = state_path or _repair_state_path()
+        self.runner = runner
+        self.evidence_rebuilder = evidence_rebuilder
+
+    def _run(self, command: list[str], timeout: int = 12) -> bool:
+        try:
+            result = self.runner(command, text=True, capture_output=True, timeout=timeout, check=False)
+        except (OSError, subprocess.SubprocessError):
+            return False
+        return int(getattr(result, "returncode", 1)) == 0
+
+    def _repair_timers(self, system: str) -> tuple[bool, bool]:
+        attempted = False
+        succeeded = True
+        for timer in _timer_units(system):
+            enabled = self._run(["systemctl", "is-enabled", "--quiet", timer])
+            active = self._run(["systemctl", "is-active", "--quiet", timer])
+            if enabled and active:
+                continue
+            attempted = True
+            succeeded = self._run(["systemctl", "unmask", timer]) and succeeded
+            succeeded = self._run(["systemctl", "enable", timer]) and succeeded
+            succeeded = self._run(["systemctl", "restart", timer]) and succeeded
+        return attempted, attempted and succeeded
+
+    def _repair_failed_services(self, system: str) -> tuple[bool, bool]:
+        """Restart only units systemd itself identifies as failed.
+
+        Oneshoot workers are commonly inactive between their normal timer
+        invocations, so ``is-active`` would be unsafe here.  ``is-failed`` is
+        the narrow evidence required for an automated service restart.
+        """
+        attempted = False
+        succeeded = True
+        for service in _service_units(system):
+            if not self._run(["systemctl", "is-failed", "--quiet", service]):
+                continue
+            attempted = True
+            succeeded = self._run(["systemctl", "restart", service]) and succeeded
+        return attempted, attempted and succeeded
+
+    def _start_due_tick(self, system: str, ledger: dict[str, Any], now: datetime) -> tuple[bool, bool]:
+        if not _due_unfinished_stage(system, ledger, now):
+            return False, False
+        unit = f"{system}-tick.service"
+        result, _status, active = _unit_show(unit, self.runner)
+        # A live runner owns any lock it uses; never kill it or remove a lock
+        # from the monitor.  Its normal bounded timeout and the timer retry are
+        # the safe recovery path.
+        if active in {"active", "activating"} or result == "timeout":
+            return False, False
+        return True, self._run(
+            ["systemctl", "start", unit],
+            timeout=_positive_int(
+                "SERVER_HEALTH_REPAIR_TICK_TIMEOUT_SECONDS",
+                REPAIR_TICK_TIMEOUT_SECONDS,
+                90,
+            ),
+        )
+
+    def attempt(
+        self,
+        finding: Finding,
+        *,
+        ledgers: dict[str, dict[str, Any]],
+        now: datetime,
+    ) -> RepairAction:
+        if not _repair_allowed(self.state_path, finding.system, finding.kind, now):
+            return RepairAction(finding.system, finding.kind, "cooldown_or_attempt_cap", False, False)
+        action = "no_safe_repair"
+        succeeded = False
+        attempted = True
+        if finding.kind == "dashboard_sidecar_mismatch":
+            action = "dashboard_self_heal"
+            succeeded = self._run(["systemctl", "start", "footbreak-dashboard-self-heal.service"], timeout=50)
+        elif finding.kind == "cross_book_counterpart_evidence":
+            action = "rebuild_cross_book_evidence"
+            succeeded = bool(self.evidence_rebuilder(now=now))
+        elif finding.kind in {"missing_expected_stage", "health_check_failure", "repeated_timeout"}:
+            action = "repair_timers"
+            timer_attempted, succeeded = self._repair_timers(finding.system)
+            service_attempted = False
+            if not timer_attempted and finding.kind in {"health_check_failure", "repeated_timeout"}:
+                action = "restart_failed_services"
+                service_attempted, succeeded = self._repair_failed_services(finding.system)
+            if not timer_attempted and not service_attempted:
+                action = "due_normal_tick"
+                attempted, succeeded = self._start_due_tick(finding.system, ledgers.get(finding.system, {}), now)
+        elif finding.kind == "cross_book_unevaluated_t5":
+            action = "due_footbreak_tick"
+            attempted, succeeded = self._start_due_tick("footbreak", ledgers.get("footbreak", {}), now)
+        if action == "no_safe_repair" or not attempted:
+            return RepairAction(finding.system, finding.kind, action, False, False)
+        _repair_state_update(
+            self.state_path, system=finding.system, kind=finding.kind,
+            action=action, succeeded=succeeded, now=now,
+        )
+        return RepairAction(finding.system, finding.kind, action, True, succeeded)
+
+
 def assess(system: str, now: datetime, runner: Callable[..., Any] = subprocess.run) -> list[Finding]:
     paths = paths_for(system)
     ledger = _json(paths.ledger, {})
@@ -427,11 +714,35 @@ def run(
     *,
     alerts: IncidentAlerts | None = None,
     runner: Callable[..., Any] = subprocess.run,
+    repairs: RepairController | None = None,
+    repair_enabled: bool = True,
 ) -> dict[str, list[Finding]]:
     current = _now(now)
     alerts = alerts or IncidentAlerts()
     maintenance = run_maintenance()
-    active = {system: assess(system, current, runner) for system in SYSTEMS}
+    initial = {system: assess(system, current, runner) for system in SYSTEMS}
+    ledgers = {system: _json(paths_for(system).ledger, {}) for system in SYSTEMS}
+    controller = repairs or RepairController(runner=runner)
+    actions: list[RepairAction] = []
+    if repair_enabled:
+        for system in SYSTEMS:
+            for finding in initial[system]:
+                actions.append(controller.attempt(finding, ledgers=ledgers, now=current))
+    # A repair attempt is always followed by a local re-audit, including a
+    # failed action.  This prevents an alert about a condition that another
+    # service happened to clear while the repair was being attempted.
+    active = (
+        {system: assess(system, current, runner) for system in SYSTEMS}
+        if any(action.attempted for action in actions)
+        else initial
+    )
+    repaired = {
+        (action.system, action.kind)
+        for action in actions
+        if action.attempted
+        and action.succeeded
+        and action.kind not in {finding.kind for finding in active[action.system]}
+    }
     kinds = (
         "missing_expected_stage", "repeated_timeout", "stuck_notification",
         "dashboard_sidecar_mismatch", "settlement_backlog", "health_check_failure",
@@ -448,6 +759,7 @@ def run(
                 count=by_kind.get(kind, 0), healthy_needed=2,
                 positive_needed=2 if kind == "repeated_timeout" else 1,
                 cooldown_seconds=cooldown, now=current,
+                repaired=(system, kind) in repaired,
             )
     alerts.report(
         system="server",

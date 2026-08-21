@@ -265,6 +265,7 @@ class IncidentAlerts:
         active: bool,
         count: int = 0,
         details: Mapping[str, Any] | None = None,
+        repaired: bool = False,
     ) -> str:
         system_label = (
             "伺服器" if system == "server"
@@ -307,6 +308,8 @@ class IncidentAlerts:
         suffix = f"（受影響項目：{_safe_count(count)}）" if active and count else ""
         if active:
             return f"【運作警報：{system_label}】{description}{suffix}。"
+        if repaired:
+            return f"【系統自動修復：{system_label}】{description}已自動修復並通過複核。"
         return f"【運作恢復：{system_label}】{description}已連續健康並恢復。"
 
     def monitoring_started_at(self, now: datetime | None = None) -> tuple[datetime | None, bool]:
@@ -336,6 +339,7 @@ class IncidentAlerts:
         healthy_needed: int = 1,
         cooldown_seconds: int | None = None,
         observation_token: str | None = None,
+        repaired: bool = False,
         now: datetime | None = None,
     ) -> bool:
         """Record an observation and emit at most one transition notification.
@@ -425,9 +429,23 @@ class IncidentAlerts:
                     current_active = False
                     emit, event = True, "recovery"
                     alert_suppressed = False
+                elif repaired and not was_active:
+                    # Repairs are noteworthy even when the incident was caught
+                    # before a normal alert was emitted.  The monitor supplies
+                    # this only after a fresh local re-audit is healthy.
+                    last_repair = _parse_time(prior.get("last_repair_at"))
+                    cooling_down = bool(
+                        cooldown_seconds
+                        and last_repair is not None
+                        and (_now(now) - last_repair).total_seconds() < cooldown_seconds
+                    )
+                    if not cooling_down:
+                        emit, event = True, "repair_recovery"
             if emit:
                 sender = self.sender or telegram_sender(system)
-                delivered = bool(sender(self.message(system, kind, current_active, count, details)))
+                delivered = bool(sender(self.message(
+                    system, kind, current_active, count, details, repaired=event == "repair_recovery",
+                )))
             incidents[key] = {
                 "active": current_active,
                 "positive_streak": positive_streak,
@@ -438,6 +456,9 @@ class IncidentAlerts:
                 "last_transition_at": observed_at if emit else prior.get("last_transition_at"),
                 "last_alert_at": (
                     observed_at if emit and event == "alert" else prior.get("last_alert_at")
+                ),
+                "last_repair_at": (
+                    observed_at if emit and event == "repair_recovery" else prior.get("last_repair_at")
                 ),
                 "alert_suppressed": alert_suppressed,
                 "last_positive_at": observed_at if active else prior.get("last_positive_at"),
