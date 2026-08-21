@@ -14,7 +14,7 @@ from .dashboard_data import write_dashboard_data, write_tick_dashboard_projectio
 from .engine import _tick_pass_deadline_seconds, run
 from .notify import notify_new
 from .prediction_history import archive_watch_fast, update_history
-from .state import load_ledger
+from .state import load_ledger, schedule_footbreak_execution_evidence_projection
 
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 _TICK_POSTPROCESS_MIN_SECONDS = 2.0
@@ -352,6 +352,15 @@ def main() -> int:
             # Signals are notification-only. A transport failure leaves the
             # durable outbox unacknowledged for the next safe tick.
             result["notification_warning"] = f"telegram_{type(exc).__name__}"
+        # The native stage, ledger and prediction card are already durable.
+        # Launch the optional persisted-state sidecar only after the bounded
+        # Telegram attempt, never from the deadline-owned engine child and
+        # never as a prerequisite for a native observation or notification.
+        # The helper only reads local persisted state; it performs no HKJC or
+        # Crown provider request and is independently wall-clock bounded.
+        schedule_footbreak_execution_evidence_projection(
+            config, result.get("evidence_projection_stages") or [],
+        )
     try:
         if args.mode == "tick":
             # Tick has a sub-minute service cap.  Archive its committed stage

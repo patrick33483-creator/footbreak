@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import fcntl
+import multiprocessing
+import signal
 import time
 from contextlib import contextmanager
 from datetime import datetime
@@ -98,7 +100,8 @@ def paths(config: Settings) -> dict[str, Path]:
         "predictions": config.state_dir / "predictions.json",
         # This is a deliberately narrow, local-only handoff for Footbreak's
         # T-5 cross-book execution adapter.  It is not a dashboard payload and
-        # contains no provider response, credential, or unselected board data.
+        # contains no provider response, credential, or raw/unbounded board
+        # data.  It carries only a compact normalized native execution board.
         "footbreak_execution_evidence": (
             config.state_dir / "footbreak-execution-evidence.json"
         ),
@@ -140,23 +143,59 @@ def load_predictions(config: Settings) -> list[dict[str, Any]]:
 
 def save_predictions(config: Settings, data: list[dict[str, Any]]) -> None:
     write_json_atomic(paths(config)["predictions"], data)
-    # Publish only after the native card persistence is durable.  The
-    # counterpart will either observe the complete former sidecar or this
-    # complete replacement; it never reads a copied/partially-written file.
-    write_json_atomic(
-        paths(config)["footbreak_execution_evidence"],
-        _footbreak_execution_evidence(data),
-    )
 
 
-def _footbreak_execution_evidence(data: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Project persisted Crown selected quotes into a bounded local handoff.
+def _safe_stage_quote_board(snapshot: dict[str, Any]) -> dict[str, Any] | None:
+    """Copy only bounded normalized execution fields from a native snapshot."""
+    board = snapshot.get("native_execution_quote_board")
+    if not isinstance(board, dict):
+        return None
+    quotes: list[dict[str, Any]] = []
+    for row in board.get("quotes") or []:
+        if not isinstance(row, dict):
+            continue
+        quotes.append({
+            key: row.get(key) for key in (
+                "code", "line", "side", "status", "reason", "odds", "source",
+                "native_source", "observed_at",
+            )
+        })
+        if len(quotes) >= 240:
+            break
+    status = board.get("market_status")
+    market_status = {
+        str(code).upper(): {
+            key: value.get(key) for key in ("status", "reason")
+        }
+        for code, value in status.items()
+        if str(code).upper() in {"HDC", "HIL", "CHL"} and isinstance(value, dict)
+    } if isinstance(status, dict) else {}
+    return {
+        "schema_version": 1,
+        "stage": snapshot.get("stage"),
+        # `stage_at` is immutable native persistence evidence.  It is not
+        # replaced by any later dashboard or sidecar publication time.
+        "stage_at": snapshot.get("ts"),
+        "native_observed_at": board.get("native_observed_at"),
+        "native_source": board.get("native_source"),
+        "coverage": board.get("coverage"),
+        "invalid_row_count": board.get("invalid_row_count"),
+        "market_status": market_status,
+        "quotes": quotes,
+    }
+
+
+def _footbreak_execution_evidence(
+    data: list[dict[str, Any]], *, now: datetime | None = None,
+) -> list[dict[str, Any]]:
+    """Project persisted Crown native boards into a bounded local handoff.
 
     Keep duplicates intact: the Footbreak consumer must reject ambiguous
     fixture identities rather than silently selecting a preferred card.  The
     full Crown prediction card remains authoritative; this artifact is only a
     local, exact-quote view for the reciprocal execution venue.
     """
+    now = (now or datetime.now(HKT)).astimezone(HKT)
     cards: list[dict[str, Any]] = []
     quote_keys = (
         "code", "line", "condition", "side", "odds", "odds_status", "reason",
@@ -170,18 +209,21 @@ def _footbreak_execution_evidence(data: list[dict[str, Any]]) -> list[dict[str, 
         match_id = str(card.get("match_id") or card.get("titan_match_id") or "").strip()
         if not match_id or kickoff is None:
             continue
-        # Cross-book execution is permitted only from Crown's immutable native
-        # T-5 snapshot, never from a later dashboard quote refresh.  The
-        # commit path attaches the just-persisted stage snapshots before
-        # `save_predictions()` is called.
-        t5_rows = [
-            row for row in (card.get("stages") or [])
-            if isinstance(row, dict) and row.get("stage") == "T-5"
-        ]
-        journal = (
-            t5_rows[0].get("selected_odds_journal")
-            if len(t5_rows) == 1 else None
-        )
+        # Never publish/replay a sidecar after kickoff.  The producer runs
+        # only after a genuine native stage; a delayed worker must fail closed
+        # rather than make a post-kickoff quote available to Footbreak.
+        kickoff_time = parse_time(kickoff)
+        if kickoff_time is None or kickoff_time <= now:
+            continue
+        stage_rows = {
+            stage: [
+                row for row in (card.get("stages") or [])
+                if isinstance(row, dict) and row.get("stage") == stage
+            ]
+            for stage in ("首預", "T-30", "T-5")
+        }
+        t5_rows = stage_rows["T-5"]
+        journal = t5_rows[0].get("selected_odds_journal") if len(t5_rows) == 1 else None
         rows = [
             {key: row.get(key) for key in quote_keys if key in row}
             for row in journal if isinstance(row, dict)
@@ -193,7 +235,7 @@ def _footbreak_execution_evidence(data: list[dict[str, Any]]) -> list[dict[str, 
         # of HKJC while giving the Footbreak→Crown sidecar enough durable
         # first-look evidence to distinguish "not collected" from "not listed".
         projected = {
-            "schema_version": 2,
+            "schema_version": 3,
             "match_id": match_id,
             "hkjc_match_id": hkjc_match_id or None,
             "kickoff_hkt": kickoff,
@@ -218,6 +260,25 @@ def _footbreak_execution_evidence(data: list[dict[str, Any]]) -> list[dict[str, 
                 ]
         if stage_journals:
             projected["native_stage_journals"] = stage_journals
+        quote_boards = {}
+        for stage, snapshots in stage_rows.items():
+            if len(snapshots) != 1:
+                continue
+            board = _safe_stage_quote_board(snapshots[0])
+            if board is not None:
+                quote_boards[stage] = board
+        if quote_boards:
+            projected["native_stage_quote_boards"] = quote_boards
+            projected["quote_board_coverage"] = {
+                stage: board.get("coverage") for stage, board in quote_boards.items()
+            }
+        elif stage_journals:
+            # Historic stage records persisted before the native board schema
+            # can only prove selected rows.  Keep that limitation explicit;
+            # the consumer never treats it as a full opposite-side board.
+            projected["quote_board_coverage"] = {
+                stage: "legacy_selected_quotes_only" for stage in stage_journals
+            }
         if rows is not None:
             # The consumer's historical name remains for compatibility, but
             # its values are exclusively the immutable Crown T-5 selection.
@@ -229,6 +290,92 @@ def _footbreak_execution_evidence(data: list[dict[str, Any]]) -> list[dict[str, 
         if len(cards) >= 400:
             break
     return cards
+
+
+def project_footbreak_execution_evidence(
+    config: Settings, *, now: datetime | None = None,
+) -> int:
+    """Atomically publish a sidecar from *already durable* native state only."""
+    evidence = _footbreak_execution_evidence(load_predictions(config), now=now)
+    write_json_atomic(paths(config)["footbreak_execution_evidence"], evidence)
+    return len(evidence)
+
+
+def _record_evidence_projection_health(
+    config: Settings, status: str, *, detail: str | None = None,
+    projected_cards: int | None = None,
+) -> None:
+    """Best-effort monitor status; it never changes Crown's native state."""
+    try:
+        path = paths(config)["health"]
+        current = read_json(path, {})
+        health = current if isinstance(current, dict) else {}
+        health["footbreak_execution_evidence_projection"] = {
+            "at": datetime.now(HKT).isoformat(timespec="seconds"),
+            "status": status,
+            "detail": detail,
+            "projected_cards": projected_cards,
+            "repairable_from": "predictions.json",
+        }
+        write_json_atomic(path, health)
+    except BaseException:
+        # The monitor will still observe a missing/stale sidecar and invoke its
+        # persisted-state repair path.  A health write can never become a
+        # dependency of the native T-30/T-5 or Telegram path.
+        return
+
+
+def _projection_worker(config: Settings, stages: tuple[str, ...]) -> None:
+    """Bounded local-only child used after a durable native stage commit."""
+    def timed_out(_signum, _frame):
+        raise TimeoutError("footbreak execution evidence projection timed out")
+
+    timer_set = False
+    try:
+        if hasattr(signal, "SIGALRM"):
+            signal.signal(signal.SIGALRM, timed_out)
+            signal.setitimer(signal.ITIMER_REAL, 2.0)
+            timer_set = True
+        count = project_footbreak_execution_evidence(config)
+    except BaseException as exc:
+        _record_evidence_projection_health(
+            config, "FAILED", detail=type(exc).__name__,
+        )
+    else:
+        _record_evidence_projection_health(
+            config, "PUBLISHED",
+            detail=",".join(sorted(set(stages))) or None,
+            projected_cards=count,
+        )
+    finally:
+        if timer_set:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+
+
+def schedule_footbreak_execution_evidence_projection(
+    config: Settings, stages: list[str] | tuple[str, ...],
+) -> bool:
+    """Launch optional persisted-state projection without waiting for it.
+
+    The child does no provider work and has its own short wall-clock bound.
+    Failure to launch is intentionally non-fatal: the monitor's repair job can
+    rebuild the same atomic sidecar from ``predictions.json`` before kickoff.
+    """
+    eligible = tuple(stage for stage in stages if stage in {"首預", "T-30", "T-5"})
+    if not eligible:
+        return False
+    try:
+        child = multiprocessing.Process(
+            target=_projection_worker, args=(config, eligible),
+            name="crown-footbreak-evidence",
+        )
+        # A non-daemon process is required because the tick engine itself is a
+        # short-lived child which is deliberately terminated once it returns.
+        child.daemon = False
+        child.start()
+    except BaseException:
+        return False
+    return True
 
 
 def _prediction_time(prediction: dict[str, Any]) -> datetime | None:

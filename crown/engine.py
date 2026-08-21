@@ -25,7 +25,10 @@ from .lines import parse_hkjc_total
 from .matching import MATCHING_VERSION, Event, Match, BridgeMatch, bridge_titan_to_pinnapi
 from .pinnapi import PinnapiClient
 from .period import in_current_period
-from .state import load_ledger, load_predictions, merge_predictions, save_ledger, state_lock
+from .state import (
+    load_ledger, load_predictions, merge_predictions, save_ledger, state_lock,
+    schedule_footbreak_execution_evidence_projection,
+)
 from .titan import TitanClient
 
 
@@ -1403,22 +1406,23 @@ def _commit_stage_predictions(
     stage_predictions: list[dict[str, Any]],
     *,
     deadline: float | None = None,
-) -> tuple[list[str], list[dict[str, str]], int]:
+) -> tuple[list[str], list[dict[str, str]], list[str], int]:
     """Commit a completed batch while holding the state lock only briefly."""
     if not stage_predictions:
-        return [], [], len(load_predictions(config))
+        return [], [], [], len(load_predictions(config))
     lock_wait = _deadline_remaining(deadline) if deadline is not None else None
     with state_lock(config, timeout_seconds=lock_wait) as acquired:
         if not acquired:
             # Another short state writer (normally sweep/settle final merge)
             # is still committing.  Leave this native stage unpersisted so
             # the next tick retries rather than waiting through its deadline.
-            return [], [], len(load_predictions(config))
+            return [], [], [], len(load_predictions(config))
         # Reload after every small batch: another mode can have committed
         # independently while this provider process was working.
         ledger = load_ledger(config)
         emitted: list[str] = []
         fresh_condition_predictions: list[dict[str, str]] = []
+        evidence_projection_stages: list[str] = []
         committed_predictions: list[dict[str, Any]] = []
         for prediction in stage_predictions:
             kickoff = datetime.fromisoformat(str(prediction["kickoff_hkt"]))
@@ -1441,6 +1445,11 @@ def _commit_stage_predictions(
                 ledger["watch"].get(match_id, {}).get("stages") or []
             )
             committed_predictions.append(prediction)
+            if stage in {"首預", "T-30", "T-5"}:
+                # This only records which native stage was durably committed.
+                # The optional sidecar producer runs after the lock and never
+                # participates in notification/outbox eligibility.
+                evidence_projection_stages.append(stage)
             if stage in {"T-30", "T-5"} and prediction.get("status") != "DATA_MISSING" and (
                 not prior_stage or (stage == "T-5" and bool(created))
             ) and any(
@@ -1456,7 +1465,11 @@ def _commit_stage_predictions(
         ledger["log"] = ledger["log"][-100:]
         save_ledger(config, ledger)
         retained = merge_predictions(config, committed_predictions)
-    return emitted, fresh_condition_predictions, len(retained)
+    if mode != "tick":
+        schedule_footbreak_execution_evidence_projection(
+            config, evidence_projection_stages,
+        )
+    return emitted, fresh_condition_predictions, evidence_projection_stages, len(retained)
 
 
 def _local_bulk_stage_prediction(
@@ -1652,7 +1665,7 @@ def _run_local_bulk_timed_stages(
     # preserves stage idempotency, and evaluates each T-5 once. One batch
     # avoids repeating ledger read/recompute/write work for same-kickoff
     # fixtures while retaining those per-prediction protections.
-    emitted, fresh_condition_predictions, retained = _commit_stage_predictions(
+    emitted, fresh_condition_predictions, evidence_projection_stages, retained = _commit_stage_predictions(
         config, "tick", stage_predictions, deadline=deadline,
     )
     return {
@@ -1664,6 +1677,7 @@ def _run_local_bulk_timed_stages(
         "retained_predictions": retained,
         "simulations_created": len(emitted),
         "fresh_condition_predictions": fresh_condition_predictions,
+        "evidence_projection_stages": evidence_projection_stages,
         "fresh_t5_predictions": [
             item["match_id"] for item in fresh_condition_predictions
             if item["stage"] == "T-5"
@@ -1954,15 +1968,17 @@ def run(
         ]
         emitted: list[str] = []
         fresh_condition_predictions: list[dict[str, str]] = []
+        evidence_projection_stages: list[str] = []
         retained = len(existing_predictions)
 
         def commit_completed(prediction: dict[str, Any]) -> None:
             nonlocal retained
-            created, fresh, retained = _commit_stage_predictions(
+            created, fresh, projected_stages, retained = _commit_stage_predictions(
                 config, mode, [prediction], deadline=tick_deadline,
             )
             emitted.extend(created)
             fresh_condition_predictions.extend(fresh)
+            evidence_projection_stages.extend(projected_stages)
 
         runtime = _run_tick_predictions(
             payloads, tick_deadline if tick_deadline is not None else time.monotonic(),
@@ -1975,6 +1991,7 @@ def run(
             "pinnapi_fixture_status": pinnapi_fixture_status,
             "titan_fixtures": len(titan_rows), "hkjc_fixtures": len(h_events),
             "fresh_condition_predictions": fresh_condition_predictions,
+            "evidence_projection_stages": evidence_projection_stages,
             "fresh_t5_predictions": [
                 item["match_id"] for item in fresh_condition_predictions
                 if item["stage"] == "T-5"
@@ -2026,6 +2043,7 @@ def run(
         # persisted.  The caller passes them to notifications; it never scans
         # old cards/history after a deploy.
         fresh_condition_predictions: list[dict[str, str]] = []
+        evidence_projection_stages: list[str] = []
         for prediction in stage_predictions:
             kickoff = datetime.fromisoformat(str(prediction["kickoff_hkt"]))
             if kickoff.tzinfo is None:
@@ -2045,6 +2063,8 @@ def run(
             prediction["stages"] = list(
                 ledger["watch"].get(str(prediction["match_id"]), {}).get("stages") or []
             )
+            if stage in {"首預", "T-30", "T-5"}:
+                evidence_projection_stages.append(stage)
             if stage in {"T-30", "T-5"} and (
                 not prior_stage or (stage == "T-5" and bool(emitted))
             ) and any(
@@ -2058,12 +2078,17 @@ def run(
         ledger["log"] = ledger["log"][-100:]
         save_ledger(config, ledger)
         retained = merge_predictions(config, predictions)
+    if mode != "tick":
+        schedule_footbreak_execution_evidence_projection(
+            config, evidence_projection_stages,
+        )
     return {"ok": True, "mode": mode, "predictions": len(predictions), "retained_predictions": len(retained),
             "simulations_created": len(emitted), "mapping": mapping,
             "pinnapi_fixtures": len(pinnapi_rows),
             "pinnapi_fixture_status": pinnapi_fixture_status,
             "titan_fixtures": len(titan_rows), "hkjc_fixtures": len(h_events),
             "fresh_condition_predictions": fresh_condition_predictions,
+            "evidence_projection_stages": evidence_projection_stages,
             # Compatibility only; notification dispatch uses the explicit
             # stage list above and never scans historical cards.
             "fresh_t5_predictions": [item["match_id"] for item in fresh_condition_predictions if item["stage"] == "T-5"]}

@@ -83,7 +83,12 @@ def rebuild(
     with _repair_lock(evidence_path) as acquired:
         if not acquired:
             return False
-        write_json_atomic(evidence_path, _footbreak_execution_evidence(upcoming))
+        # Pass the repair's explicit clock through to the projection.  This
+        # preserves its strict upcoming-only contract in tests and in monitor
+        # runs, without turning a delayed repair into a post-kickoff replay.
+        write_json_atomic(
+            evidence_path, _footbreak_execution_evidence(upcoming, now=current),
+        )
     return True
 
 

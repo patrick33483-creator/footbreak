@@ -214,6 +214,131 @@ def _selected_odds_journal(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     } for row in rows]
 
 
+_EXECUTION_MARKET_SIDES = {
+    "HDC": ("H", "A"),
+    "HIL": ("H", "L"),
+    "CHL": ("H", "L"),
+}
+
+
+def _execution_quote_board(prediction: dict[str, Any], stage: str) -> dict[str, Any]:
+    """Return the compact native Crown board needed by the Footbreak sidecar.
+
+    This deliberately reads only the already assembled ``book_odds.crown``
+    snapshot.  It does not inspect a raw provider response, call a provider, or
+    derive an opposing price from the selected prediction.  The board is
+    attached to the immutable native stage before that stage is durably saved.
+    """
+    raw_rows = ((prediction.get("book_odds") or {}).get("crown") or [])
+    quote_source = str(prediction.get("crown_quote_source") or "").strip()
+    observed_at = prediction.get("source_snapshot_at")
+    quotes: list[dict[str, Any]] = []
+    seen: dict[tuple[str, float, str], dict[str, Any]] = {}
+    market_lines: dict[str, set[float]] = {
+        market: set() for market in _EXECUTION_MARKET_SIDES
+    }
+    invalid_rows = 0
+    for raw in raw_rows if isinstance(raw_rows, list) else []:
+        if not isinstance(raw, dict):
+            invalid_rows += 1
+            continue
+        code = str(raw.get("market") or raw.get("code") or "").upper()
+        side = str(raw.get("selection") or raw.get("side") or "").upper()
+        line = raw.get("line")
+        odds = raw.get("odds")
+        try:
+            line_value = float(line)
+        except (TypeError, ValueError):
+            invalid_rows += 1
+            continue
+        if (
+            code not in _EXECUTION_MARKET_SIDES
+            or side not in _EXECUTION_MARKET_SIDES[code]
+            or not math.isfinite(line_value)
+        ):
+            invalid_rows += 1
+            continue
+        market_lines[code].add(line_value)
+        try:
+            odds_value = float(odds)
+        except (TypeError, ValueError):
+            odds_value = None
+        row_observed_at = raw.get("source_at") or raw.get("observed_at") or observed_at
+        status = "AVAILABLE"
+        reason = None
+        if odds_value is None or not math.isfinite(odds_value) or odds_value <= 1.0:
+            status, reason, odds_value = (
+                "UNAVAILABLE", "crown_native_quote_invalid", None,
+            )
+        elif not row_observed_at:
+            status, reason = "UNAVAILABLE", "crown_native_quote_timestamp_unavailable"
+        item = {
+            "code": code,
+            "line": line_value,
+            "side": side,
+            "status": status,
+            "reason": reason,
+            "odds": odds_value,
+            # ID 3 is the normalized venue identity.  The original compact
+            # collector label remains available separately for provenance.
+            "source": "titan007-crown-id-3",
+            "native_source": quote_source or None,
+            "observed_at": row_observed_at,
+        }
+        key = (code, line_value, side)
+        # An internally duplicated exact row is retained as explicit
+        # ambiguity rather than picking a price silently.
+        if key in seen:
+            seen[key]["status"] = "UNAVAILABLE"
+            seen[key]["reason"] = "crown_native_quote_duplicate"
+            item["status"] = "UNAVAILABLE"
+            item["reason"] = "crown_native_quote_duplicate"
+            item["odds"] = None
+        seen[key] = item
+    for code, lines in market_lines.items():
+        for line_value in sorted(lines):
+            for side in _EXECUTION_MARKET_SIDES[code]:
+                key = (code, line_value, side)
+                if key not in seen:
+                    seen[key] = {
+                        "code": code,
+                        "line": line_value,
+                        "side": side,
+                        "status": "UNAVAILABLE",
+                        "reason": "crown_native_quote_side_unavailable",
+                        "odds": None,
+                        "source": "titan007-crown-id-3",
+                        "native_source": quote_source or None,
+                        "observed_at": observed_at,
+                    }
+    for key in sorted(seen):
+        quotes.append(seen[key])
+    market_status = {
+        code: (
+            {"status": "AVAILABLE", "reason": None}
+            if market_lines[code] else
+            {"status": "UNAVAILABLE", "reason": "crown_native_market_unavailable"}
+        )
+        for code in ("HDC", "HIL")
+    }
+    if market_lines["CHL"]:
+        market_status["CHL"] = {"status": "AVAILABLE", "reason": None}
+    return {
+        "schema_version": 1,
+        "stage": stage,
+        "native_observed_at": observed_at,
+        "native_source": quote_source or None,
+        "coverage": (
+            "native_full_board"
+            if isinstance(raw_rows, list) and raw_rows
+            else "native_board_unavailable"
+        ),
+        "invalid_row_count": min(invalid_rows, 100),
+        "market_status": market_status,
+        "quotes": quotes[:240],
+    }
+
+
 def _snapshot(prediction: dict[str, Any], stage: str) -> dict[str, Any]:
     market_predictions, market_prediction_rejections = _market_predictions(
         prediction.get("forecast_candidates") or prediction.get("candidates") or [],
@@ -258,6 +383,9 @@ def _snapshot(prediction: dict[str, Any], stage: str) -> dict[str, Any]:
                 if odds_journal else "no_selected_market_quote"
             )
         ),
+        # This is a bounded, normalized board from the exact native stage
+        # snapshot, not a later dashboard refresh or a raw provider payload.
+        "native_execution_quote_board": _execution_quote_board(prediction, stage),
     }
     # Persist only compact, verifiable provider provenance for the immutable
     # source-health report.  It distinguishes an unmatched PinnAPI fixture
@@ -376,7 +504,14 @@ def sync_prediction(ledger: dict[str, Any], prediction: dict[str, Any], config: 
             len(STAGES) + 1,
         ))
     else:
+        # A retry may enrich an unavailable native stage, but it is never a new
+        # decision instant.  Keep the original durable stage timestamp so a
+        # counterpart can reject any quote observed after that first T-30/T-5
+        # decision rather than silently treating a retry as a replay.
+        original_ts = existing.get("ts")
         existing.update(snapshot)
+        if original_ts:
+            existing["ts"] = original_ts
     # Validation admission is singular: only the very first persisted native
     # pre-kickoff T-5 may create a bet.  A later quote refresh can enrich the
     # prediction record but is a replay, never a second admission chance.

@@ -180,13 +180,23 @@ def _cross_book_has_fresh_quote(
     # contacting Crown.
     if len(exact_cards) != 1:
         return False
-    journal = exact_cards[0].get("current_selected_odds_journal")
+    card = exact_cards[0]
+    board = ((card.get("native_stage_quote_boards") or {}).get("T-5")
+             if isinstance(card.get("native_stage_quote_boards"), dict) else None)
+    if isinstance(board, dict):
+        journal = board.get("quotes")
+        status_key = "status"
+    else:
+        # Pre-schema selected-only records remain diagnosable, but new native
+        # stages are expected to use the bounded full board above.
+        journal = card.get("current_selected_odds_journal")
+        status_key = "odds_status"
     if not isinstance(journal, list):
         return False
     freshness = _cross_book_freshness_seconds()
     return any(
         isinstance(quote, dict)
-        and str(quote.get("odds_status") or "available") == "available"
+        and str(quote.get(status_key) or "available").lower() == "available"
         and (observed := _parse_time(quote.get("observed_at"))) is not None
         and observed <= decision_at
         and (decision_at - observed).total_seconds() <= freshness

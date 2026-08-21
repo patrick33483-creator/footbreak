@@ -111,10 +111,26 @@ def _sidecar_report(path: Path, now: datetime) -> dict[str, Any]:
     structural: list[dict[str, Any]] = []
     fresh_now = 0
     latest_observed: datetime | None = None
+    board_cards = t30_board_cards = 0
+    coverage: dict[str, int] = {}
     for card in cards:
         fixture = str(card.get("hkjc_match_id") or "")
         kickoff = _time(card.get("kickoff_hkt") or card.get("kickoff"))
-        journal = card.get("current_selected_odds_journal")
+        boards = card.get("native_stage_quote_boards")
+        t5_board = boards.get("T-5") if isinstance(boards, dict) else None
+        if isinstance(t5_board, dict):
+            journal = t5_board.get("quotes")
+            board_cards += 1
+            label = str(t5_board.get("coverage") or "native_full_board")
+            coverage[label] = coverage.get(label, 0) + 1
+        else:
+            journal = card.get("current_selected_odds_journal")
+            if isinstance(journal, list):
+                coverage["legacy_selected_quotes_only"] = (
+                    coverage.get("legacy_selected_quotes_only", 0) + 1
+                )
+        if isinstance(boards, dict) and isinstance(boards.get("T-30"), dict):
+            t30_board_cards += 1
         if not fixture or kickoff is None or not isinstance(journal, list):
             continue
         for quote in journal:
@@ -135,7 +151,9 @@ def _sidecar_report(path: Path, now: datetime) -> dict[str, Any]:
                 "fixture": fixture, "market": market, "side": side, "line": line,
                 "observed_at": _stamp(quote.get("observed_at")),
                 "kickoff": _stamp(card.get("kickoff_hkt") or card.get("kickoff")),
-                "source": quote.get("source"), "odds_status": quote.get("odds_status"),
+                "source": quote.get("source"),
+                "odds_status": quote.get("status", quote.get("odds_status")),
+                "reason": quote.get("reason"),
             })
             # Replaying the reader at the quote's own snapshot instant proves
             # exact fixture/market/side/Asian-line matching without treating an
@@ -144,6 +162,7 @@ def _sidecar_report(path: Path, now: datetime) -> dict[str, Any]:
                 len(structural) < 8 and market in {"HDC", "HIL", "CHL"}
                 and cross._valid_side(market, side) and line is not None
                 and observed is not None and observed < kickoff
+                and str(quote.get("status", quote.get("odds_status", "available"))).lower() == "available"
             ):
                 quote_result, reason = cross._crown_quote_for_exact_fixture(
                     fixture, market, side, line, observed + timedelta(seconds=1), kickoff,
@@ -174,7 +193,16 @@ def _sidecar_report(path: Path, now: datetime) -> dict[str, Any]:
         "modified_at": datetime.fromtimestamp(stat.st_mtime, HKT).isoformat(timespec="seconds") if stat else None,
         "age_seconds": round(now.timestamp() - stat.st_mtime, 1) if stat else None,
         "cards": len(cards),
+        "t5_native_board_cards": board_cards,
+        "t30_native_board_cards": t30_board_cards,
+        "quote_board_coverage": coverage,
         "quote_rows": len(entries),
+        "available_quote_rows": sum(
+            str(row.get("odds_status") or "").lower() == "available" for row in entries
+        ),
+        "unavailable_quote_rows": sum(
+            str(row.get("odds_status") or "").lower() != "available" for row in entries
+        ),
         "duplicate_fixture_quote_rows": duplicate_fixtures,
         "latest_quote_observed_at": latest_observed.astimezone(HKT).isoformat(timespec="seconds") if latest_observed else None,
         "latest_quote_age_seconds": age,

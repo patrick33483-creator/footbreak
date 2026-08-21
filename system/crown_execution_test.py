@@ -245,8 +245,11 @@ def _canonical_bridge_identity(
 def _t30_market_mappings(watch: dict[str, Any], card: dict[str, Any]) -> dict[str, dict[str, Any]]:
     current = next((row for row in watch.get("stages") or []
                     if isinstance(row, dict) and row.get("stage") == "T-30"), {})
-    journal = ((card.get("native_stage_journals") or {}).get("T-30")
-               if isinstance(card.get("native_stage_journals"), dict) else None)
+    kickoff = _time(watch.get("kickoff"))
+    journal, board_reason, coverage = (
+        _native_stage_board(card, "T-30", kickoff)
+        if kickoff is not None else (None, "crown_fixture_kickoff_identity_mismatch", "unavailable")
+    )
     output: dict[str, dict[str, Any]] = {}
     for signal in current.get("market_predictions") or []:
         if not isinstance(signal, dict):
@@ -256,25 +259,21 @@ def _t30_market_mappings(watch: dict[str, Any], card: dict[str, Any]) -> dict[st
         line = _num(signal.get("line", signal.get("condition")))
         if market not in MARKETS or line is None or not _valid_side(market, side):
             continue
+        if board_reason:
+            output[market] = {
+                "side": side, "line": line, "status": "UNAVAILABLE",
+                "reason": board_reason,
+                "coverage": coverage,
+            }
+            continue
         if not isinstance(journal, list):
             output[market] = {
                 "side": side, "line": line, "status": "UNAVAILABLE",
                 "reason": "crown_t30_collector_unavailable",
+                "coverage": coverage,
             }
             continue
-        market_rows = [
-            row for row in journal if isinstance(row, dict)
-            and str(row.get("code") or "").upper() == market
-        ]
-        side_rows = [
-            row for row in market_rows
-            if str(row.get("side") or "").upper() == side
-        ]
-        exact = [
-            row for row in side_rows
-            if _num(row.get("line", row.get("condition"))) is not None
-            and abs(float(_num(row.get("line", row.get("condition"))) - line)) <= 1e-8
-        ]
+        market_rows, side_rows, exact = _exact_board_rows(journal, market, side, line)
         if not market_rows:
             reason = "crown_t30_market_unavailable"
         elif not side_rows:
@@ -283,12 +282,15 @@ def _t30_market_mappings(watch: dict[str, Any], card: dict[str, Any]) -> dict[st
             reason = "crown_t30_exact_line_unavailable"
         elif len(exact) != 1:
             reason = "crown_t30_exact_market_side_line_ambiguous"
+        elif str(exact[0].get("status") or exact[0].get("odds_status") or "AVAILABLE").upper() != "AVAILABLE":
+            reason = str(exact[0].get("reason") or "crown_t30_exact_quote_unavailable")
         else:
             reason = None
         output[market] = {
             "side": side, "line": line,
             "status": "AVAILABLE" if reason is None else "UNAVAILABLE",
             "reason": reason,
+            "coverage": coverage,
             "crown_market": (
                 {"code": market, "side": side, "line": line}
                 if reason is None else None
@@ -445,6 +447,59 @@ def _valid_side(market: str, side: Any) -> bool:
     return str(side or "").upper() in ({"H", "A"} if market == "HDC" else {"H", "L"})
 
 
+def _native_stage_board(
+    card: dict[str, Any], stage: str, kickoff: datetime,
+) -> tuple[list[dict[str, Any]] | None, str | None, str]:
+    """Read one immutable normalized board, with explicit legacy coverage."""
+    boards = card.get("native_stage_quote_boards")
+    if isinstance(boards, dict) and stage in boards:
+        board = boards.get(stage)
+        if not isinstance(board, dict) or board.get("stage") != stage:
+            return None, f"crown_native_{stage.lower().replace('-', '')}_board_invalid", "native_board_invalid"
+        board_at = _time(board.get("stage_at"))
+        if board_at is None:
+            return None, f"crown_native_{stage.lower().replace('-', '')}_stage_timestamp_missing", "native_board_invalid"
+        if board_at >= kickoff:
+            return None, f"crown_native_{stage.lower().replace('-', '')}_post_kickoff_rejected", "native_board_invalid"
+        rows = board.get("quotes")
+        if not isinstance(rows, list):
+            return None, f"crown_native_{stage.lower().replace('-', '')}_board_invalid", "native_board_invalid"
+        return [row for row in rows if isinstance(row, dict)], None, str(
+            board.get("coverage") or "native_full_board"
+        )
+    journals = card.get("native_stage_journals")
+    journal = journals.get(stage) if isinstance(journals, dict) else None
+    if isinstance(journal, list):
+        # A pre-schema native snapshot had only selected rows.  It can still
+        # prove a specific persisted price, but can never imply an absent
+        # opposite side was available.
+        return [row for row in journal if isinstance(row, dict)], None, "legacy_selected_quotes_only"
+    if stage == "T-5":
+        journal = card.get("current_selected_odds_journal")
+        if isinstance(journal, list):
+            return [row for row in journal if isinstance(row, dict)], None, "legacy_selected_quotes_only"
+    return None, None, "unavailable"
+
+
+def _exact_board_rows(
+    rows: list[dict[str, Any]], market: str, side: str, line: float,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    market_rows = [
+        row for row in rows
+        if str(row.get("code") or "").upper() == market
+    ]
+    side_rows = [
+        row for row in market_rows
+        if str(row.get("side") or "").upper() == side
+    ]
+    exact = [
+        row for row in side_rows
+        if _num(row.get("line", row.get("condition"))) is not None
+        and abs(float(_num(row.get("line", row.get("condition"))) - line)) <= 1e-8
+    ]
+    return market_rows, side_rows, exact
+
+
 def _crown_quote_for_exact_fixture(
     fixture: str, market: str, side: str, line: float, stage_at: datetime, kickoff: datetime,
     *, expected_crown_match_id: str | None = None,
@@ -469,22 +524,17 @@ def _crown_quote_for_exact_fixture(
     card_kickoff = _time(card.get("kickoff_hkt") or card.get("kickoff"))
     if card_kickoff is None or abs((card_kickoff - kickoff).total_seconds()) > 1:
         return None, "crown_fixture_kickoff_identity_mismatch"
-    journal = card.get("current_selected_odds_journal")
-    if not isinstance(journal, list):
+    rows, board_reason, coverage = _native_stage_board(card, "T-5", kickoff)
+    if board_reason:
+        return None, board_reason
+    if rows is None:
         return None, "crown_exact_quote_journal_missing"
-    exact = []
-    for row in journal:
-        if not isinstance(row, dict) or str(row.get("code") or "").upper() != market:
-            continue
-        if str(row.get("side") or "").upper() != side:
-            continue
-        quote_line = _num(row.get("line", row.get("condition")))
-        if quote_line is None or abs(quote_line - line) > 1e-8:
-            continue
-        exact.append(row)
+    _market_rows, _side_rows, exact = _exact_board_rows(rows, market, side, line)
     if len(exact) != 1:
         return None, "crown_exact_market_side_line_missing_or_ambiguous"
     quote = exact[0]
+    if str(quote.get("status") or quote.get("odds_status") or "AVAILABLE").upper() != "AVAILABLE":
+        return None, str(quote.get("reason") or "crown_execution_quote_not_available")
     odds = _num(quote.get("odds"))
     source = str(quote.get("source") or "").strip().lower()
     observed = _time(quote.get("observed_at"))
@@ -498,12 +548,11 @@ def _crown_quote_for_exact_fixture(
         return None, "crown_execution_post_kickoff_or_post_decision"
     if (stage_at - observed).total_seconds() > _freshness_seconds():
         return None, "crown_execution_quote_stale_at_t5"
-    if str(quote.get("odds_status") or "available") != "available":
-        return None, "crown_execution_quote_not_available"
     return {
         "odds": odds, "source": source, "observed_at": quote.get("observed_at"),
         "line": quote.get("line", quote.get("condition")), "side": side,
         "fixture_identity": {"hkjc_match_id": fixture, "crown_hkjc_match_id": fixture},
+        "coverage": coverage,
     }, None
 
 

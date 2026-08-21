@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import inspect
 import json
 import os
 import sys
@@ -22,7 +23,11 @@ import notify
 from analysis.wilson_validation import admission_arithmetic, freeze_condition
 from crown import hkjc_execution_test as reciprocal
 from crown.config import settings as crown_settings
-from crown.state import paths as crown_paths, save_predictions
+from crown import state as crown_state
+from crown.ledger import _snapshot as crown_stage_snapshot, sync_prediction
+from crown.state import (
+    paths as crown_paths, save_predictions, project_footbreak_execution_evidence,
+)
 import record_picks
 
 HKT = timezone(timedelta(hours=8))
@@ -444,6 +449,7 @@ class CrossEvidenceTests(unittest.TestCase):
             base = crown_settings()
             config = type(base)(**{**base.__dict__, "state_dir": Path(directory)})
             save_predictions(config, [card])
+            project_footbreak_execution_evidence(config)
             sidecar = crown_paths(config)["footbreak_execution_evidence"]
             projected = json.loads(sidecar.read_text(encoding="utf-8"))
             self.assertEqual(projected[0]["hkjc_match_id"], "fx")
@@ -455,6 +461,117 @@ class CrossEvidenceTests(unittest.TestCase):
                 )
             self.assertIsNone(reason)
             self.assertEqual(quote["odds"], 1.9)
+
+    def test_native_crown_stage_board_exports_both_sides_from_persisted_snapshot_only(self):
+        kickoff, observed = stamp(120), stamp(-1)
+        native = {
+            "match_id": "crown-board", "hkjc_match_id": "fx", "kickoff_hkt": kickoff,
+            "league": "Spain - La Liga", "home": "皇家贝蒂斯", "away": "皇家社会",
+            "source_snapshot_at": observed,
+            "crown_quote_source": "titan007-crown-id-3-bulk-current",
+            "book_odds": {"crown": [
+                {"market": "HDC", "line": 0.25, "selection": "H", "odds": 1.91, "source_at": observed},
+                {"market": "HDC", "line": 0.25, "selection": "A", "odds": 1.97, "source_at": observed},
+                {"market": "HIL", "line": 2.5, "selection": "H", "odds": 1.88, "source_at": observed},
+                {"market": "HIL", "line": 2.5, "selection": "L", "odds": 2.01, "source_at": observed},
+            ]},
+            "raw_provider_payload": {"token": "never-export"},
+            "forecast_candidates": [],
+        }
+        card = {
+            key: native[key] for key in (
+                "match_id", "hkjc_match_id", "kickoff_hkt", "league", "home", "away",
+            )
+        }
+        card["stages"] = [
+            crown_stage_snapshot(native, "T-30"),
+            crown_stage_snapshot(native, "T-5"),
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            base = crown_settings()
+            config = type(base)(**{**base.__dict__, "state_dir": Path(directory)})
+            save_predictions(config, [card])
+            project_footbreak_execution_evidence(config)
+            projected = json.loads(
+                crown_paths(config)["footbreak_execution_evidence"].read_text(encoding="utf-8")
+            )
+        boards = projected[0]["native_stage_quote_boards"]
+        self.assertEqual(boards["T-30"]["coverage"], "native_full_board")
+        hil_sides = {
+            row["side"]: row["odds"] for row in boards["T-5"]["quotes"]
+            if row["code"] == "HIL" and row["line"] == 2.5
+        }
+        self.assertEqual(hil_sides, {"H": 1.88, "L": 2.01})
+        encoded = json.dumps(projected)
+        self.assertNotIn("raw_provider_payload", encoded)
+        self.assertNotIn("never-export", encoded)
+
+    def test_native_board_marks_missing_opposite_side_without_inversion(self):
+        kickoff, observed = stamp(120), stamp(-1)
+        native = {
+            "match_id": "crown-one-side", "hkjc_match_id": "fx", "kickoff_hkt": kickoff,
+            "source_snapshot_at": observed, "crown_quote_source": "titan007-crown-id-3",
+            "book_odds": {"crown": [
+                {"market": "HIL", "line": 2.5, "selection": "H", "odds": 1.91, "source_at": observed},
+            ]},
+            "forecast_candidates": [],
+        }
+        card = {key: native[key] for key in ("match_id", "hkjc_match_id", "kickoff_hkt")}
+        card["stages"] = [crown_stage_snapshot(native, "T-5")]
+        with tempfile.TemporaryDirectory() as directory:
+            base = crown_settings()
+            config = type(base)(**{**base.__dict__, "state_dir": Path(directory)})
+            save_predictions(config, [card])
+            project_footbreak_execution_evidence(config)
+            with patch.dict(os.environ, {"CROWN_STATE_DIR": directory}, clear=False):
+                quote, reason = cross._crown_quote_for_exact_fixture(
+                    "fx", "HIL", "L", 2.5, cross._time(stamp()), cross._time(kickoff),
+                )
+        self.assertIsNone(quote)
+        self.assertEqual(reason, "crown_native_quote_side_unavailable")
+
+    def test_sidecar_projection_is_not_a_save_or_notification_dependency(self):
+        kickoff = stamp(120)
+        card = {"match_id": "independent", "hkjc_match_id": "fx", "kickoff_hkt": kickoff}
+        with tempfile.TemporaryDirectory() as directory:
+            base = crown_settings()
+            config = type(base)(**{**base.__dict__, "state_dir": Path(directory)})
+            save_predictions(config, [card])
+            self.assertTrue(crown_paths(config)["predictions"].exists())
+            self.assertFalse(crown_paths(config)["footbreak_execution_evidence"].exists())
+            with patch("crown.state.write_json_atomic", side_effect=OSError("sidecar full")):
+                with self.assertRaises(OSError):
+                    project_footbreak_execution_evidence(config)
+            # The durable native card remains untouched when optional
+            # publication fails; no Telegram function is imported/called.
+            self.assertEqual(json.loads(crown_paths(config)["predictions"].read_text()), [card])
+
+    def test_stage_timestamp_is_immutable_and_projection_launch_never_imports_telegram(self):
+        kickoff, observed = stamp(120), stamp(-1)
+        prediction = {
+            "match_id": "immutable-t30", "stage": "T-30", "kickoff_hkt": kickoff,
+            "source_snapshot_at": observed, "forecast_candidates": [],
+            "book_odds": {"crown": [
+                {"market": "HIL", "line": 2.5, "selection": "H", "odds": 1.91, "source_at": observed},
+                {"market": "HIL", "line": 2.5, "selection": "L", "odds": 1.91, "source_at": observed},
+            ]},
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            base = crown_settings()
+            config = type(base)(**{**base.__dict__, "state_dir": Path(directory)})
+            ledger = {"watch": {}, "bets": [], "log": [], "stats": {}}
+            sync_prediction(ledger, prediction, config)
+            original = ledger["watch"]["immutable-t30"]["stages"][0]["ts"]
+            sync_prediction(ledger, prediction, config)
+        self.assertEqual(ledger["watch"]["immutable-t30"]["stages"][0]["ts"], original)
+        self.assertNotIn("from .notify", inspect.getsource(crown_state))
+        self.assertNotIn("notify_new", inspect.getsource(crown_state))
+        fake = type("Process", (), {"daemon": False, "start": lambda self: setattr(self, "started", True)})()
+        with patch("crown.state.multiprocessing.Process", return_value=fake):
+            self.assertTrue(crown_state.schedule_footbreak_execution_evidence_projection(
+                config, ["T-30"],
+            ))
+        self.assertTrue(fake.started)
 
     def test_native_footbreak_t5_persistence_carries_reciprocal_hkjc_evidence(self):
         kickoff = datetime.now(HKT) + timedelta(minutes=20)
