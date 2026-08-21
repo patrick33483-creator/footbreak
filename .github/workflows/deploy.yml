@@ -70,6 +70,24 @@ jobs:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
         run: |
+          ssh "$DEPLOY_USER@$DEPLOY_HOST" \
+            'sudo bash -c '"'"'
+              set -euo pipefail
+              available_kb=$(df -Pk / | awk "NR == 2 {print \$4}")
+              echo "deployment_preflight_available_kb=$available_kb"
+              if [ "$available_kb" -lt 524288 ]; then
+                apt-get clean
+                rm -rf /var/lib/apt/lists/*
+                journalctl --vacuum-size=100M >/dev/null 2>&1 || true
+                find /tmp -xdev -type f -mtime +2 -delete 2>/dev/null || true
+              fi
+              available_kb=$(df -Pk / | awk "NR == 2 {print \$4}")
+              echo "deployment_preflight_available_after_kb=$available_kb"
+              if [ "$available_kb" -lt 131072 ]; then
+                echo "Insufficient safe free space for deployment" >&2
+                exit 1
+              fi
+            '"'"''
           if ! ssh "$DEPLOY_USER@$DEPLOY_HOST" \
             'sudo /opt/footbreak/deploy/update.sh main'; then
             echo "正常更新失敗；用 GitHub 官方 SSH 443 備援拉取最新部署腳本後重試"
