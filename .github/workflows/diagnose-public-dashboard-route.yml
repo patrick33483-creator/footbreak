@@ -78,6 +78,28 @@ jobs:
           check_url http://127.0.0.1:8082/api/data
           unset dashboard_password
 
+          echo "--- Crown data.json bounded size summary ---"
+          python3 - <<'PY'
+          import json
+          import pathlib
+
+          path = pathlib.Path("/var/www/crown/data.json")
+          payload = json.loads(path.read_text(encoding="utf-8"))
+          print(f"total_bytes={path.stat().st_size}")
+          for key, value in sorted(
+              payload.items(),
+              key=lambda item: len(json.dumps(item[1], ensure_ascii=False, separators=(",", ":"))),
+              reverse=True,
+          )[:12]:
+              size = len(json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode())
+              count = len(value) if isinstance(value, (dict, list)) else "-"
+              print(f"key={key} bytes={size} count={count}")
+          PY
+
+          echo "--- unified-dashboard configuration ---"
+          sed -E 's#(auth_basic_user_file[[:space:]]+)[^;]+#\1[redacted]#g' \
+            /etc/nginx/sites-enabled/unified-dashboard
+
           echo "--- sanitized Crown route directives ---"
           nginx -T 2>/dev/null \
             | awk '
