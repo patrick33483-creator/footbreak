@@ -94,8 +94,89 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
-      - name: Publish maintenance evidence to the commit checks
+      - name: Create bounded public audit summary
         if: always() && hashFiles('telegram-notification-maintenance.json') != ''
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          source = Path("telegram-notification-maintenance.json")
+          payload = json.loads(source.read_text(encoding="utf-8"))
+
+          def compact(system):
+              report = payload.get(system) or {}
+              identity = report.get("condition_identity_audit") or {}
+              return {
+                  "telegram_enabled": report.get("telegram_enabled"),
+                  "bot_token_configured": report.get("bot_token_configured"),
+                  "chat_id_configured": report.get("chat_id_configured"),
+                  "runner_enabled": report.get("runner_enabled"),
+                  "classification": report.get("classification"),
+                  "eligible_outbox": report.get("eligible_outbox"),
+                  "acknowledged": report.get("acknowledged"),
+                  "state_updated_at": report.get("state_updated_at"),
+                  "transport_tests": report.get("transport_tests"),
+                  "unacknowledged_low_odds_group_sizes": report.get(
+                      "unacknowledged_low_odds_group_sizes"
+                  ),
+                  "dashboard_authority_parity": report.get(
+                      "dashboard_authority_parity"
+                  ),
+                  "latest_wilson_decisions": report.get(
+                      "latest_wilson_decisions"
+                  ),
+                  "recent_low_odds_observations": report.get(
+                      "recent_low_odds_observations"
+                  ),
+                  "recent_native_t5_wilson_outcomes": report.get(
+                      "recent_native_t5_wilson_outcomes"
+                  ),
+                  "today_durable_condition_rows": identity.get(
+                      "today_durable_condition_rows"
+                  ),
+                  "frozen_condition_counters": [
+                      {
+                          "condition_number": row.get("condition_number"),
+                          "condition_signature": row.get("condition_signature"),
+                          "active_evidence_version": row.get(
+                              "active_evidence_version"
+                          ),
+                          "activation_boundary_at": row.get(
+                              "activation_boundary_at"
+                          ),
+                          "pending_rollover_progress": row.get(
+                              "pending_rollover_progress"
+                          ),
+                      }
+                      for row in identity.get("frozen_condition_counters") or []
+                      if isinstance(row, dict)
+                  ],
+              }
+
+          compact_payload = {
+              "generated_at": payload.get("generated_at"),
+              "safe_read_only": payload.get("safe_read_only"),
+              "footbreak": compact("footbreak"),
+              "crown": compact("crown"),
+          }
+          Path("telegram-notification-maintenance-compact.json").write_text(
+              json.dumps(compact_payload, ensure_ascii=False, indent=2, sort_keys=True),
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Upload compact maintenance evidence
+        if: always() && hashFiles('telegram-notification-maintenance-compact.json') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: telegram-notification-maintenance-compact-${{ github.run_id }}
+          path: telegram-notification-maintenance-compact.json
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Publish maintenance evidence to the commit checks
+        if: always() && hashFiles('telegram-notification-maintenance-compact.json') != ''
         env:
           GITHUB_TOKEN: ${{ github.token }}
           JOB_STATUS: ${{ job.status }}
@@ -106,7 +187,7 @@ jobs:
           import urllib.request
           from pathlib import Path
 
-          evidence = Path("telegram-notification-maintenance.json").read_text(encoding="utf-8")
+          evidence = Path("telegram-notification-maintenance-compact.json").read_text(encoding="utf-8")
           try:
               evidence = json.dumps(json.loads(evidence), ensure_ascii=False, indent=2, sort_keys=True)
           except json.JSONDecodeError:
