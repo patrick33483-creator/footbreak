@@ -110,6 +110,18 @@ class FootbreakWilsonNotificationTest(unittest.TestCase):
         message = self._message_with_counterpart(row, observed_seconds_ago=121)
         self.assertIn("皇冠對照：未能確認（非新鮮T-5）", message)
 
+    def test_missing_native_crown_t5_is_not_relabelled_as_no_market(self):
+        row = low_odds_observation(market="入球大細")
+        row.update({"code": "HIL", "market": "HIL", "side": "H", "selected_side": "H",
+                    "line": 2.5, "selected_line": 2.5, "selected_role": "大"})
+        with tempfile.TemporaryDirectory() as directory:
+            evidence = Path(directory, "empty-native-t5-sidecar.json")
+            evidence.write_text("[]", encoding="utf-8")
+            with patch.dict("os.environ", {"FOOTBREAK_CROWN_EXECUTION_EVIDENCE_PATH": str(evidence)}):
+                message = notify._condition_bet_message(row)
+        self.assertIn("皇冠對照：未能確認（系統未取得原生T-5）", message)
+        self.assertNotIn("皇冠對照：未能確認（無同場盤）", message)
+
     def test_durable_dedupe_retry_and_bounded_multiple_market_outbox(self):
         row = bet()
         low = low_odds_observation(market="入球大細", number=8)

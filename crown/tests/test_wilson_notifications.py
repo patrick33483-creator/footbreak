@@ -191,6 +191,19 @@ class CrownWilsonNotificationTest(unittest.TestCase):
         message = self._message_with_hkjc(row, observed_seconds_ago=121)
         self.assertIn("馬會對照：未能確認（非新鮮T-5）", message)
 
+    def test_missing_native_hkjc_t5_is_not_relabelled_as_no_market(self):
+        row = low_odds_observation()
+        with tempfile.TemporaryDirectory() as directory:
+            evidence = Path(directory, "empty-native-t5-sidecar.json")
+            source = {"watch": {row["hkjc_match_id"]: {
+                "match_id": row["hkjc_match_id"], "kickoff": row["kickoff"], "stages": [],
+            }}}
+            evidence.write_text(json.dumps(source), encoding="utf-8")
+            with patch.dict(os.environ, {"CROWN_HKJC_EXECUTION_EVIDENCE_PATH": str(evidence)}):
+                message = notify._wilson_observation_message(row)
+        self.assertIn("馬會對照：未能確認（系統未取得原生T-5）", message)
+        self.assertNotIn("馬會對照：未能確認（無同場盤）", message)
+
     def test_shared_budget_prioritizes_wilson_over_reciprocal_outbox(self):
         formal = bet()
         reciprocal = {

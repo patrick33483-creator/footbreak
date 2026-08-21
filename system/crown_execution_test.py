@@ -133,6 +133,12 @@ def _crown_quote_for_exact_fixture(
         return None, error
     # Cross-book identity is allowed only through the persisted Crown HKJC
     # bridge.  Title/team fuzzy matching is deliberately forbidden.
+    # An empty local sidecar cannot establish that Crown had no same-fixture
+    # market: it is a missing-native-T-5 collection/evidence state.  Once
+    # cards exist, a missing or ambiguous bridge identity remains the genuine
+    # fail-closed no-same-fixture outcome.
+    if not cards:
+        return None, "crown_native_t5_not_collected"
     cards = [row for row in cards if str(row.get("hkjc_match_id") or "") == fixture]
     if len(cards) != 1:
         return None, "crown_fixture_identity_missing_or_ambiguous"

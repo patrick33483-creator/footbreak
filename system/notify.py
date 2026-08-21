@@ -470,10 +470,14 @@ _CROWN_COMPARISON_REASONS = {
     "crown_execution_timestamp_missing": "報價時間缺失",
     "crown_execution_post_kickoff_or_post_decision": "賽後或決策後報價",
     "crown_execution_quote_not_available": "報價不可用",
+    "crown_native_t5_not_collected": "系統未取得原生T-5",
     "crown_local_evidence_unavailable": "皇冠資料未能讀取",
     "crown_local_evidence_invalid": "皇冠資料無效",
     "crown_local_evidence_too_large": "皇冠資料異常",
-    "crown_exact_quote_journal_missing": "無原生T-5報價",
+    # A missing sidecar/journal is a collection-health fact, not proof that
+    # Crown offered no same-fixture market. Keep it distinct from the exact
+    # fixture-identity no-market outcome above.
+    "crown_exact_quote_journal_missing": "系統未取得原生T-5",
 }
 
 

@@ -156,7 +156,9 @@ def _seed_wilson_match_alerts(state: dict[str, Any]) -> dict[str, Any]:
 _HKJC_COMPARISON_REASONS = {
     "hkjc_fixture_identity_missing_or_ambiguous": "無同場盤",
     "hkjc_fixture_kickoff_identity_mismatch": "開賽時間不一致",
-    "hkjc_exact_native_t5_missing": "非原生T-5",
+    # A missing native counterpart records a collection outage/absence; it
+    # must never be worded as evidence that HKJC had no same-fixture market.
+    "hkjc_exact_native_t5_missing": "系統未取得原生T-5",
     "hkjc_exact_market_side_line_missing_or_ambiguous": "盤口不一致",
     "hkjc_execution_quote_stale_at_t5": "非新鮮T-5",
     "hkjc_execution_odds_invalid_or_missing": "賠率未能確認",
