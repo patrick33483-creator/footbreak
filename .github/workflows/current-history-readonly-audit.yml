@@ -1,0 +1,214 @@
+name: Current historical-edge aggregate audit (read-only)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: Read only bounded production-history aggregation
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'sudo /opt/footbreak/.venv/bin/python3 -' \
+            > current-history-aggregate.json <<'PY'
+          import json, math, os, statistics
+          from collections import defaultdict, Counter
+          from datetime import datetime, timezone, timedelta
+          from pathlib import Path
+
+          HKT = timezone(timedelta(hours=8))
+          STAGES = {"首預": 1, "T-30": 2, "T-5": 3}
+          MARKETS = {"HDC", "HIL", "CHL"}
+          EXCL = {"backfill", "post_hoc", "recovered", "recovery_mode", "settlement_excluded", "exclude_from_settlement"}
+
+          def num(x):
+              try:
+                  v = float(x)
+                  return v if math.isfinite(v) else None
+              except (TypeError, ValueError):
+                  return None
+          def odds(x):
+              v = num(x)
+              return v if v and v > 1 else None
+          def line(x):
+              v = num(x)
+              if v is not None: return v
+              if isinstance(x, str) and "/" in x:
+                  a = [num(z.strip()) for z in x.split("/")]
+                  if len(a) == 2 and all(z is not None for z in a): return sum(a)/2
+              return None
+          def ts(x):
+              try: return datetime.fromisoformat(str(x).replace("Z", "+00:00"))
+              except Exception: return None
+          def native(x):
+              if not isinstance(x, dict): return False
+              for k in EXCL:
+                  if x.get(k) not in (None, False, "", 0, "native"): return False
+              return str(x.get("prediction_origin") or "native").lower() in {"", "native", "live"}
+          def cat_league(v):
+              s = str(v or "").casefold()
+              if any(x in s for x in ("korea - k2", "k league 2", "韓k2", "韩国k2")): return "K League 2"
+              if any(x in s for x in ("korea - k1", "k league 1", "韓k聯", "韩国k联")): return "K League 1"
+              if any(x in s for x in ("major league soccer", "usa - mls", "美職", "美國職", "美职业")): return "MLS"
+              return "Other"
+          def direction(m, side):
+              s = str(side or "").upper()
+              if m == "HDC": return s if s in {"H", "A"} else "unknown"
+              return {"H":"Over", "L":"Under", "O":"Over", "U":"Under"}.get(s, "unknown")
+          def line_bucket(m, ln):
+              if ln is None: return "missing"
+              v=abs(ln)
+              if m == "HDC": return "0" if v < 1e-9 else ("≤0.5" if v <= .5 else ("0.75–1.0" if v <= 1 else ">1.0"))
+              if m == "HIL": return "≤2.5" if ln <= 2.5 else ("2.75–3.0" if ln <= 3 else ">3.0")
+              return "≤9.5" if ln <= 9.5 else ("10–10.5" if ln <= 10.5 else "≥10.75")
+          def odds_tier(v):
+              if v is None: return "missing"
+              return "<1.70" if v < 1.7 else ("1.70–1.99" if v < 2 else ("2.00–2.49" if v < 2.5 else "≥2.50"))
+          def settle(g):
+              x=str(g.get("settlement") or "").strip().casefold().replace("_", " ")
+              hit=g.get("hit")
+              if x in {"refunded","refund","push","void"}: return (None,0,0,1)
+              if x in {"won","win"}: return (True,1,1,0)
+              if x in {"lost","loss"}: return (False,0,1,0)
+              if x in {"half won","half-win"}: return (True,.5,.5,.5)
+              if x in {"half lost","half-loss"}: return (False,0,.5,.5)
+              if isinstance(hit,bool): return (hit,1 if hit else 0,1,0)
+              return (None,0,0,0)
+          def pnl_unit(settlement, o):
+              if o is None: return None
+              x=str(settlement or "").strip().casefold().replace("_", " ")
+              if x in {"won","win"}: return o-1
+              if x in {"half won","half-win"}: return (o-1)/2
+              if x in {"lost","loss"}: return -1
+              if x in {"half lost","half-loss"}: return -.5
+              if x in {"refunded","refund","push","void"}: return 0
+              return None
+          def wilson(k,n):
+              if not n: return None
+              z=1.959963984540054; p=k/n; d=1+z*z/n
+              return max(0,(p+z*z/(2*n)-z*math.sqrt((p*(1-p)+z*z/(4*n))/n))/d)
+          def brier_log(g, hit):
+              p=num(g.get("probability",g.get("model_prob")))
+              if p is not None and p > 1: p/=100
+              if p is None or not 0 <= p <= 1 or hit is None: return None,None,p
+              b=(p-(1 if hit else 0))**2
+              q=min(max(p,1e-12),1-1e-12)
+              ll=-(math.log(q) if hit else math.log(1-q))
+              return b,ll,p
+          def path_label(paths):
+              ss=sorted(set(paths),key=lambda x:STAGES.get(x,0))
+              return ">".join(ss) if ss else "unknown"
+          def aggregate(rows, chronological=True):
+              # rows are already fixture-market deduplicated for their scope.
+              rs=[r for r in rows if r.get("decision") is not None]
+              n=len(rs); k=sum(r["decision"] is True for r in rs)
+              au=sum(r["asian_win"] for r in rs); du=sum(r["asian_decision"] for r in rs); pu=sum(r["asian_push"] for r in rs)
+              ovs=[r["odds"] for r in rs if r["odds"] is not None]
+              pnl=[r["pnl_unit"] for r in rs if r["pnl_unit"] is not None]
+              bs=[r["brier"] for r in rs if r["brier"] is not None]
+              ls=[r["log_loss"] for r in rs if r["log_loss"] is not None]
+              ps=[r["probability"] for r in rs if r["probability"] is not None]
+              out={"fixture_market_rows":len(rows),"decided_tickets":n,"wins":k,"hit_rate":k/n if n else None,"wilson95_lower":wilson(k,n),"asian_win_equivalent":au,"asian_decision_units":du,"asian_push_units":pu,"asian_hit_rate":au/du if du else None,"mean_odds":sum(ovs)/len(ovs) if ovs else None,"median_odds":statistics.median(ovs) if ovs else None,"break_even_probability":1/(sum(ovs)/len(ovs)) if ovs else None,"unit_pnl":sum(pnl) if pnl else None,"unit_roi":sum(pnl)/len(pnl) if pnl else None,"odds_coverage":len(ovs)/n if n else None,"brier":sum(bs)/len(bs) if bs else None,"log_loss":sum(ls)/len(ls) if ls else None,"probability_coverage":len(ps)/n if n else None}
+              if chronological and n >= 2:
+                  sr=sorted(rs,key=lambda r:(r.get("kickoff") or "",r.get("predicted_at") or "")); mid=n//2
+                  out["chronological_halves"]={"earlier":aggregate(sr[:mid],False),"later":aggregate(sr[mid:],False)}
+              return out
+          def groups(rows, keys):
+              bucket=defaultdict(list)
+              for r in rows: bucket[" | ".join(str(r.get(k,"missing")) for k in keys)].append(r)
+              return [{"segment":dict(zip(keys,k.split(" | "))),**aggregate(v)} for k,v in sorted(bucket.items())]
+          def calibration(rows):
+              bins=[("<40%",0,.4),("40–49.9%",.4,.5),("50–59.9%",.5,.6),("60–69.9%",.6,.7),("≥70%",.7,1.000001)]
+              out=[]
+              for label,lo,hi in bins:
+                  z=[r for r in rows if r.get("probability") is not None and lo<=r["probability"]<hi and r.get("decision") is not None]
+                  out.append({"bucket":label,"n":len(z),"mean_probability":sum(r["probability"] for r in z)/len(z) if z else None,"actual_hit_rate":sum(r["decision"] is True for r in z)/len(z) if z else None})
+              return out
+          def records(payload, system):
+              source = payload.get("matches") or [] if system=="footbreak" else payload.get("rows") or []
+              out=[]
+              for parent in source:
+                  if not isinstance(parent,dict) or not native(parent): continue
+                  stages=parent.get("stages") or ([parent] if system=="crown" else [])
+                  for row in stages:
+                      if not isinstance(row,dict) or not native(row): continue
+                      fixture=str(row.get("match_id") or parent.get("match_id") or row.get("fixture_id") or parent.get("fixture_id") or "")
+                      stage=str(row.get("stage") or parent.get("stage") or "")
+                      if not fixture or stage not in STAGES: continue
+                      league=cat_league(row.get("league") or parent.get("league"))
+                      kickoff=str(row.get("kickoff") or row.get("kickoff_hkt") or parent.get("kickoff") or parent.get("kickoff_hkt") or "")
+                      predicted=str(row.get("predicted_at") or row.get("ts") or parent.get("predicted_at") or parent.get("ts") or "")
+                      version=str(row.get("model_version") or row.get("prediction_era") or parent.get("model_version") or parent.get("prediction_era") or "unknown")
+                      for g in row.get("market_grades") or []:
+                          if not isinstance(g,dict) or not native(g): continue
+                          market=str(g.get("code") or g.get("market") or "").upper()
+                          if market not in MARKETS or str(g.get("grade_status") or "") != "GRADED": continue
+                          dec,aw,ad,ap=settle(g); o=odds(g.get("odds")); b,ll,p=brier_log(g,dec)
+                          out.append({"fixture":fixture,"market":market,"stage":stage,"league":league,"direction":direction(market,g.get("side") or g.get("selection")),"line_bucket":line_bucket(market,line(g.get("line",g.get("condition")))),"odds_tier":odds_tier(o),"path_seed":stage,"model_version":version,"decision":dec,"asian_win":aw,"asian_decision":ad,"asian_push":ap,"odds":o,"pnl_unit":pnl_unit(g.get("settlement"),o),"brier":b,"log_loss":ll,"probability":p,"kickoff":kickoff,"predicted_at":predicted})
+              return out
+          def dedup(raw):
+              by=defaultdict(list)
+              for r in raw: by[(r["fixture"],r["market"],r["stage"])].append(r)
+              selected=[]
+              for _,xs in by.items(): selected.append(max(xs,key=lambda r:(r["predicted_at"],json.dumps(r,sort_keys=True))))
+              allpaths=defaultdict(set)
+              for r in selected: allpaths[(r["fixture"],r["market"])].add(r["stage"])
+              for r in selected:r["path"]=path_label(allpaths[(r["fixture"],r["market"])])
+              return selected
+          def select_latest(rows):
+              by=defaultdict(list)
+              for r in rows: by[(r["fixture"],r["market"])].append(r)
+              return [max(xs,key=lambda r:(STAGES[r["stage"]],r["predicted_at"])) for xs in by.values()]
+          def focus(rows):
+              allout={}
+              for league in ("MLS","K League 1","K League 2","K League 1+2"):
+                  lr=[r for r in rows if r["league"]==league or (league=="K League 1+2" and r["league"] in {"K League 1","K League 2"})]
+                  allout[league]={"overall":aggregate(lr),"by_market_direction_line_odds_path_model":groups(lr,["market","direction","line_bucket","odds_tier","path","model_version"])}
+                  baseline=[]
+                  for r in lr:
+                      br=[x for x in rows if x["league"]=="Other" and x["market"]==r["market"] and x["direction"]==r["direction"] and x["odds_tier"]==r["odds_tier"]]
+                      # group baseline rows by matching key, then aggregate later
+                      baseline.extend(br)
+                  allout[league]["matched_global_baseline_market_direction_odds"] = aggregate(baseline) if baseline else aggregate([])
+              return allout
+          def system_report(system,path):
+              p=Path(path); payload=json.loads(p.read_text(encoding="utf-8")); raw=records(payload,system); dd=dedup(raw); latest=select_latest(dd); t5=[r for r in dd if r["stage"]=="T-5"]
+              return {"file":{"path":path,"bytes":p.stat().st_size,"modified_at":datetime.fromtimestamp(p.stat().st_mtime,HKT).isoformat()},"raw_graded_rows":len(raw),"deduplicated_fixture_market_stage_rows":len(dd),"discovery_latest_stage":{"scope":"latest available stage per native graded fixture-market; correlated with prospective T-5 where present","overall":aggregate(latest),"by_market":groups(latest,["market"]),"by_stage":groups(latest,["stage"]),"by_model_version":groups(latest,["model_version"]),"calibration":calibration(latest)},"prospective_t5":{"scope":"native graded T-5 unique fixture-market","overall":aggregate(t5),"by_market":groups(t5,["market"]),"by_market_direction":groups(t5,["market","direction"]),"by_market_line_bucket":groups(t5,["market","line_bucket"]),"by_market_odds_tier":groups(t5,["market","odds_tier"]),"by_path":groups(t5,["path"]),"by_model_version":groups(t5,["model_version"]),"league_focus":focus(t5)}}
+          report={"schema":"current-history-aggregate-v1","read_only":True,"provider_calls":0,"aggregate_only":True,"as_of_hkt":datetime.now(HKT).isoformat(),"systems":{"footbreak":system_report("footbreak","/opt/footbreak/system/accuracy_history.json"),"crown":system_report("crown","/var/lib/footbreak/crown/prediction_history.json")}}
+          print(json.dumps(report,ensure_ascii=False,sort_keys=True))
+          PY
+          python3 - <<'PY'
+          import json
+          data=json.load(open('current-history-aggregate.json',encoding='utf-8'))
+          assert data['read_only'] is True and data['provider_calls'] == 0 and data['aggregate_only'] is True
+          text=json.dumps(data,ensure_ascii=False).casefold()
+          for forbidden in ('fixture_id','match_id','team','provider','home','away','pinnacle','titan'):
+              assert forbidden not in text, forbidden
+          print(json.dumps({'as_of_hkt':data['as_of_hkt'],'systems':{k:{'raw_graded_rows':v['raw_graded_rows'],'t5':v['prospective_t5']['overall']['fixture_market_rows']} for k,v in data['systems'].items()}},ensure_ascii=False))
+          PY
+
+      - name: Upload bounded aggregate evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: current-history-aggregate-${{ github.run_id }}
+          path: current-history-aggregate.json
+          retention-days: 7
