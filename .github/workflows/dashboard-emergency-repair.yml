@@ -84,6 +84,14 @@ jobs:
           nginx -t
           systemctl reload nginx || systemctl restart nginx
 
+          # Re-project Crown from already-durable local state with the currently
+          # deployed code. This is provider-free and replaces any oversized
+          # payload left by a pre-deploy process that completed after release.
+          timeout 45s /opt/footbreak/.venv/bin/python3 -c \
+            'from crown.config import settings; from crown.dashboard_data import write_tick_dashboard_projection; write_tick_dashboard_projection(settings())'
+          chown root:www-data /var/www/crown/data.json
+          chmod 0644 /var/www/crown/data.json
+
           for dashboard in footbreak:8081 crown:8082; do
             name="${dashboard%%:*}"
             port="${dashboard##*:}"
