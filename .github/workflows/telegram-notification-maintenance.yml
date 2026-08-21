@@ -26,6 +26,7 @@ concurrency:
 
 permissions:
   contents: read
+  checks: write
 
 jobs:
   maintain:
@@ -92,3 +93,46 @@ jobs:
           path: telegram-notification-maintenance.json
           if-no-files-found: warn
           retention-days: 7
+
+      - name: Publish maintenance evidence to the commit checks
+        if: always() && hashFiles('telegram-notification-maintenance.json') != ''
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import urllib.request
+          from pathlib import Path
+
+          evidence = Path("telegram-notification-maintenance.json").read_text(encoding="utf-8")
+          try:
+              evidence = json.dumps(json.loads(evidence), ensure_ascii=False, indent=2, sort_keys=True)
+          except json.JSONDecodeError:
+              pass
+          conclusion = "success" if os.environ.get("JOB_STATUS") == "success" else "failure"
+          payload = {
+              "name": "Telegram notification maintenance evidence",
+              "head_sha": os.environ["GITHUB_SHA"],
+              "status": "completed",
+              "conclusion": conclusion,
+              "output": {
+                  "title": f"Telegram maintenance: {conclusion}",
+                  "summary": "```json\n" + evidence[:60000] + "\n```",
+              },
+          }
+          request = urllib.request.Request(
+              f"https://api.github.com/repos/{os.environ['GITHUB_REPOSITORY']}/check-runs",
+              data=json.dumps(payload).encode("utf-8"),
+              headers={
+                  "Accept": "application/vnd.github+json",
+                  "Authorization": f"Bearer {os.environ['GITHUB_TOKEN']}",
+                  "Content-Type": "application/json",
+              },
+              method="POST",
+          )
+          with urllib.request.urlopen(request, timeout=20) as response:
+              created = json.load(response)
+          print(f"evidence_check_url={created['html_url']}")
+          PY
