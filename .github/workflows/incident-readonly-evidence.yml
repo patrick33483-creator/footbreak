@@ -1,0 +1,199 @@
+name: Incident read-only evidence bundle
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  evidence:
+    name: Preserve Crown and Radar incident evidence
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: Collect bounded, read-only production evidence
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'sudo env PYTHONPATH=/opt/footbreak /opt/footbreak/.venv/bin/python3 -' \
+            > incident-evidence.json <<'PY'
+          import base64
+          import json
+          import os
+          import sqlite3
+          import subprocess
+          import urllib.request
+          from collections import Counter
+          from datetime import datetime
+          from pathlib import Path
+
+          from crown.common import HKT, parse_time
+          from crown.ledger import PREDICTION_ERA, completed_stages
+          from crown.matching import MATCHING_VERSION
+
+          def run(*command):
+              try:
+                  return subprocess.run(
+                      command, text=True, capture_output=True, timeout=20, check=False
+                  ).stdout[-6000:]
+              except Exception as exc:
+                  return type(exc).__name__
+
+          def read_json(path, default):
+              try:
+                  with open(path, encoding="utf-8") as fh:
+                      return json.load(fh)
+              except Exception:
+                  return default
+
+          now = datetime.now(HKT)
+          ledger = read_json("/var/lib/footbreak/crown/ledger.json", {})
+          cards = read_json("/var/lib/footbreak/crown/predictions.json", [])
+          public = read_json("/var/www/crown/data.json", {})
+          watch = ledger.get("watch", {}) if isinstance(ledger, dict) else {}
+          cards_by_id = {
+              str(row.get("match_id")): row for row in cards
+              if isinstance(row, dict) and row.get("match_id")
+          }
+          incident = []
+          for match_id, item in watch.items():
+              if not isinstance(item, dict):
+                  continue
+              card = cards_by_id.get(str(match_id), {})
+              merged = dict(item)
+              merged.update({k: v for k, v in card.items() if v is not None})
+              kickoff = parse_time(merged.get("kickoff_hkt") or merged.get("kickoff"))
+              if kickoff is None:
+                  continue
+              kickoff = kickoff.astimezone(HKT)
+              if kickoff.strftime("%Y-%m-%d %H:%M") != now.strftime("%Y-%m-%d") + " 18:30":
+                  continue
+              stages = [
+                  {
+                      "stage": str(stage.get("stage") or ""),
+                      "status": str(stage.get("status") or ""),
+                      "ts": str(stage.get("ts") or ""),
+                      "odds_status": str(stage.get("odds_status") or ""),
+                      "no_bet_reason": str(stage.get("no_bet_reason") or "")[:180],
+                  }
+                  for stage in item.get("stages", [])
+                  if isinstance(stage, dict) and stage.get("stage") in {"首預", "T-30", "T-5"}
+              ]
+              done = completed_stages(item, MATCHING_VERSION, PREDICTION_ERA)
+              t5 = [stage for stage in stages if stage["stage"] == "T-5"]
+              incident.append({
+                  "match_id": str(match_id),
+                  "fixture": f"{merged.get('home', '')} vs {merged.get('away', '')}",
+                  "league": str(merged.get("league") or ""),
+                  "kickoff_hkt": kickoff.isoformat(),
+                  "native_t5_truth": (
+                      "durably_recorded" if "T-5" in done else
+                      "attempted_rejected" if t5 else "missed_no_persisted_attempt"
+                  ),
+                  "stages": stages,
+                  "card_status": str(card.get("status") or ""),
+                  "card_reason": str(card.get("no_bet_reason") or "")[:180],
+              })
+          incident.sort(key=lambda row: row["fixture"])
+
+          def radar_dashboard():
+              values = {}
+              try:
+                  for raw in Path("/opt/odds-radar/.env").read_text().splitlines():
+                      if "=" in raw and not raw.lstrip().startswith("#"):
+                          key, value = raw.split("=", 1)
+                          values[key] = value
+                  token = base64.b64encode(
+                      f"{values.get('RADAR_ACCESS_USER','')}:{values.get('RADAR_ACCESS_PASSWORD','')}".encode()
+                  ).decode()
+                  req = urllib.request.Request(
+                      "http://127.0.0.1:5001/api/dashboard",
+                      headers={"Authorization": f"Basic {token}"},
+                  )
+                  with urllib.request.urlopen(req, timeout=15) as response:
+                      data = json.load(response)
+                  matches = data.get("matches", []) if isinstance(data, dict) else []
+                  market = Counter()
+                  exact = Counter()
+                  for match in matches:
+                      for line in match.get("lines", []) if isinstance(match, dict) else []:
+                          name = str(line.get("market") or "")
+                          market[name] += 1
+                          if line.get("exactLine"):
+                              exact[name] += 1
+                  return {
+                      "http_status": 200,
+                      "matches": len(matches),
+                      "lines_by_market": dict(market),
+                      "exact_lines_by_market": dict(exact),
+                      "status": data.get("status", {}),
+                  }
+              except Exception as exc:
+                  return {"http_status": None, "error": type(exc).__name__}
+
+          radar_db = {}
+          try:
+              db = sqlite3.connect("/opt/odds-radar/data/data.db")
+              radar_db = {
+                  "matches": db.execute("select count(*) from matches").fetchone()[0],
+                  "latest_rows": db.execute("select count(*) from odds_latest").fetchone()[0],
+                  "snapshot_rows": db.execute("select count(*) from odds_snapshots").fetchone()[0],
+              }
+              db.close()
+          except Exception as exc:
+              radar_db = {"error": type(exc).__name__}
+
+          print(json.dumps({
+              "generated_at_hkt": now.isoformat(),
+              "read_only": True,
+              "provider_requests": False,
+              "crown_incident_fixtures": incident,
+              "crown_runtime": {
+                  "units": run("systemctl", "show", "crown-tick.timer", "crown-tick.service",
+                               "footbreak-server-health-monitor.timer",
+                               "--no-pager", "-p", "ActiveState", "-p", "SubState", "-p", "Result",
+                               "-p", "LastTriggerUSec", "-p", "NextElapseUSecRealtime",
+                               "-p", "ExecMainStatus"),
+                  "recent_tick_journal": run("journalctl", "-u", "crown-tick.service",
+                                             "--since", "2026-08-21 17:45:00",
+                                             "--until", "2026-08-21 19:05:00",
+                                             "--no-pager", "-o", "short-iso"),
+                  "recent_monitor_journal": run("journalctl", "-u", "footbreak-server-health-monitor.service",
+                                                "--since", "2026-08-21 17:45:00",
+                                                "--until", "2026-08-21 19:05:00",
+                                                "--no-pager", "-o", "short-iso"),
+                  "lock_holders": run("fuser", "/var/lock/footbreak-crown-tick.lock"),
+              },
+              "radar": {
+                  "dashboard": radar_dashboard(),
+                  "database": radar_db,
+                  "compose": run("docker", "compose", "-f", "/opt/odds-radar/compose.yaml", "ps"),
+                  "recent_logs": run("docker", "compose", "-f", "/opt/odds-radar/compose.yaml",
+                                     "logs", "--tail", "180", "radar"),
+              },
+          }, ensure_ascii=False))
+          PY
+
+      - name: Upload immutable evidence bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: incident-readonly-evidence
+          path: incident-evidence.json
+          if-no-files-found: error
+          retention-days: 30
