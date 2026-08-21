@@ -143,6 +143,8 @@ install -m 0644 "$APP_DIR/deploy/nginx-footbreak.conf" /etc/nginx/sites-availabl
 ln -sf /etc/nginx/sites-available/footbreak /etc/nginx/sites-enabled/footbreak
 install -m 0644 "$APP_DIR/deploy/nginx-crown.conf" /etc/nginx/sites-available/crown
 ln -sf /etc/nginx/sites-available/crown /etc/nginx/sites-enabled/crown
+install -m 0644 "$APP_DIR/deploy/nginx-unified-dashboard.conf" /etc/nginx/sites-available/unified-dashboard
+ln -sf /etc/nginx/sites-available/unified-dashboard /etc/nginx/sites-enabled/unified-dashboard
 rm -f /etc/nginx/sites-enabled/default
 if [ ! -f /etc/nginx/.htpasswd-footbreak ]; then
   DASHBOARD_PASSWORD="$(openssl rand -base64 24 | tr -d '/+=' | head -c 24)"

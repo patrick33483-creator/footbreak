@@ -230,6 +230,29 @@ for dashboard_spec in \
   echo "OK nginx $dashboard_user /data.json valid JSON schema=$expected_schema"
 done
 
+# The user-facing dashboards are subpaths on port 80.  Validate both the
+# static boot payload and the API fallback there; healthy private :8081/:8082
+# listeners are not enough if the unified route is missing or misconfigured.
+for public_spec in \
+  "footbreak:/root/footbreak-dashboard-password.txt:footbreak-dashboard" \
+  "crown:/root/crown-dashboard-password.txt:crown-dashboard-v2"; do
+  IFS=: read -r dashboard_user password_file expected_schema <<< "$public_spec"
+  IFS= read -r dashboard_password < "$password_file"
+  for endpoint in data.json api/data; do
+    if ! curl --silent --show-error --fail --max-time 15 \
+        --user "${dashboard_user}:${dashboard_password}" \
+        "http://127.0.0.1/${dashboard_user}/${endpoint}?health=$(date +%s)" \
+        | python3 -c 'import json,sys; p=json.load(sys.stdin); c=sys.argv[1]; assert (c=="crown-dashboard-v2" and p.get("schema_version")==c) or (c=="footbreak-dashboard" and isinstance(p.get("matches"),list) and isinstance(p.get("ledger"),dict) and bool(p.get("generated_at")))' "$expected_schema" \
+        >/dev/null; then
+      unset dashboard_password
+      echo "FAIL public /$dashboard_user/$endpoint is not valid dashboard JSON" >&2
+      exit 1
+    fi
+    echo "OK public /$dashboard_user/$endpoint valid JSON schema=$expected_schema"
+  done
+  unset dashboard_password
+done
+
 python3 - <<'PY'
 import json
 from pathlib import Path

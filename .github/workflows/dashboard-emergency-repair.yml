@@ -77,6 +77,10 @@ jobs:
             systemctl is-active --quiet "$service" || systemctl restart "$service"
           done
 
+          install -m 0644 /opt/footbreak/deploy/nginx-unified-dashboard.conf \
+            /etc/nginx/sites-available/unified-dashboard
+          ln -sf /etc/nginx/sites-available/unified-dashboard \
+            /etc/nginx/sites-enabled/unified-dashboard
           nginx -t
           systemctl reload nginx || systemctl restart nginx
 
@@ -125,4 +129,23 @@ jobs:
             footbreak 8081 /root/footbreak-dashboard-password.txt footbreak-dashboard
           validate_dashboard_json \
             crown 8082 /root/crown-dashboard-password.txt crown-dashboard-v2
+          validate_public_dashboard_json() {
+            dashboard_user="$1"
+            password_file="$2"
+            expected_schema="$3"
+            endpoint="$4"
+            IFS= read -r dashboard_password < "$password_file"
+            curl --silent --show-error --fail --max-time 15 \
+              --user "${dashboard_user}:${dashboard_password}" \
+              "http://127.0.0.1/${dashboard_user}/${endpoint}?health=$(date +%s)" \
+              | python3 -c 'import json,sys; p=json.load(sys.stdin); c=sys.argv[1]; assert (c=="crown-dashboard-v2" and p.get("schema_version")==c) or (c=="footbreak-dashboard" and isinstance(p.get("matches"),list) and isinstance(p.get("ledger"),dict) and bool(p.get("generated_at")))' "$expected_schema" \
+              >/dev/null
+            unset dashboard_password
+          }
+          for endpoint in data.json api/data; do
+            validate_public_dashboard_json \
+              footbreak /root/footbreak-dashboard-password.txt footbreak-dashboard "$endpoint"
+            validate_public_dashboard_json \
+              crown /root/crown-dashboard-password.txt crown-dashboard-v2 "$endpoint"
+          done
           REMOTE

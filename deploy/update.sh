@@ -278,6 +278,8 @@ fi
 echo "▸ 重載 nginx"
 install -m 0644 "$APP_DIR/deploy/nginx-footbreak.conf" /etc/nginx/sites-available/footbreak
 install -m 0644 "$APP_DIR/deploy/nginx-crown.conf" /etc/nginx/sites-available/crown
+install -m 0644 "$APP_DIR/deploy/nginx-unified-dashboard.conf" /etc/nginx/sites-available/unified-dashboard
+ln -sf /etc/nginx/sites-available/unified-dashboard /etc/nginx/sites-enabled/unified-dashboard
 
 # nginx workers run as www-data. A password rotation or restored file can
 # leave either Basic Auth file unreadable, which nginx reports as a plain 500

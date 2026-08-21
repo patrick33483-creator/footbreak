@@ -88,7 +88,15 @@ const oddsSourceLabel = (value) => ODDS_SOURCE_LABEL[value] || value || '未提�
 
 // DigitalOcean serves the authenticated dashboard and proxies this same-origin
 // path to a local-only simulation settlement service.
-const API_BASE = '/api';
+// The same dashboard is served directly on :8082 and below /crown/ on the
+// public unified host.  Keep the fallback API on the same authenticated route
+// instead of accidentally requesting the unrelated site-root /api endpoint.
+const CURRENT_PATH = String(window.location?.pathname || '');
+const CROWN_PUBLIC_PREFIX = (
+  CURRENT_PATH === '/crown'
+  || CURRENT_PATH.startsWith('/crown/')
+) ? '/crown' : '';
+const API_BASE = `${CROWN_PUBLIC_PREFIX}/api`;
 let DATA = null, LIST = [], LED = null, SEL = null, STAGE = 'all', Q = '', VIEW = 'pred';
 let HISTORY_STAGE = 'all';
 const HISTORY_PAGE_SIZE = 50;

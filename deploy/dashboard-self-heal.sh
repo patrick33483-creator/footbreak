@@ -45,6 +45,23 @@ dashboard_json_is_healthy() {
   unset dashboard_password
 }
 
+public_dashboard_json_is_healthy() {
+  local system="$1" user="$2" password_file="$3" contract="$4" endpoint="$5"
+  local dashboard_password
+  [ -s "$password_file" ] || return 1
+  IFS= read -r dashboard_password < "$password_file"
+  [ -n "$dashboard_password" ] || return 1
+  if ! curl --silent --show-error --fail --max-time 15 \
+      --user "${user}:${dashboard_password}" \
+      "http://127.0.0.1/${system}/${endpoint}?health=$(date +%s)" \
+      | python3 -c 'import json,sys; p=json.load(sys.stdin); c=sys.argv[1]; assert (c=="crown-dashboard-v2" and p.get("schema_version")==c) or (c=="footbreak-dashboard" and isinstance(p.get("matches"),list) and isinstance(p.get("ledger"),dict) and bool(p.get("generated_at")))' "$contract" \
+      >/dev/null 2>&1; then
+    unset dashboard_password
+    return 1
+  fi
+  unset dashboard_password
+}
+
 republish_dashboard_json() {
   local system="$1"
   case "$system" in
@@ -159,6 +176,40 @@ dashboard_json_is_healthy \
   8081 footbreak /root/footbreak-dashboard-password.txt footbreak-dashboard || failed=1
 dashboard_json_is_healthy \
   8082 crown /root/crown-dashboard-password.txt crown-dashboard-v2 || failed=1
+
+public_routes_healthy=1
+for public_spec in \
+  "footbreak:footbreak:/root/footbreak-dashboard-password.txt:footbreak-dashboard" \
+  "crown:crown:/root/crown-dashboard-password.txt:crown-dashboard-v2"; do
+  IFS=: read -r system user password_file contract <<< "$public_spec"
+  for endpoint in data.json api/data; do
+    public_dashboard_json_is_healthy \
+      "$system" "$user" "$password_file" "$contract" "$endpoint" \
+      || public_routes_healthy=0
+  done
+done
+if [ "$public_routes_healthy" != 1 ]; then
+  log "Public dashboard route unhealthy; restoring tracked unified nginx routing"
+  install -m 0644 /opt/footbreak/deploy/nginx-unified-dashboard.conf \
+    /etc/nginx/sites-available/unified-dashboard || failed=1
+  ln -sf /etc/nginx/sites-available/unified-dashboard \
+    /etc/nginx/sites-enabled/unified-dashboard || failed=1
+  if nginx -t; then
+    systemctl reload nginx || systemctl restart nginx
+  else
+    failed=1
+  fi
+fi
+for public_spec in \
+  "footbreak:footbreak:/root/footbreak-dashboard-password.txt:footbreak-dashboard" \
+  "crown:crown:/root/crown-dashboard-password.txt:crown-dashboard-v2"; do
+  IFS=: read -r system user password_file contract <<< "$public_spec"
+  for endpoint in data.json api/data; do
+    public_dashboard_json_is_healthy \
+      "$system" "$user" "$password_file" "$contract" "$endpoint" \
+      || failed=1
+  done
+done
 
 if [ "$failed" != 0 ]; then
   exit 1

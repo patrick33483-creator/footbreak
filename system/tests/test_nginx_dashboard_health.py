@@ -132,6 +132,28 @@ class NginxDashboardHealthTests(unittest.TestCase):
             self.assertIn("--exclude 'history.json'", script)
             self.assertIn("history.json", script)
 
+    def test_public_subpath_routes_use_authenticated_dashboard_apis(self):
+        nginx = (
+            ROOT / "deploy" / "nginx-unified-dashboard.conf"
+        ).read_text(encoding="utf-8")
+        setup = (ROOT / "deploy" / "setup.sh").read_text(encoding="utf-8")
+        update = (ROOT / "deploy" / "update.sh").read_text(encoding="utf-8")
+        app = (ROOT / "crown" / "dashboard" / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn("location ^~ /crown/api/ {", nginx)
+        self.assertIn("proxy_pass http://127.0.0.1:8765/api/;", nginx)
+        self.assertIn("location ^~ /footbreak/api/ {", nginx)
+        self.assertIn("proxy_pass http://127.0.0.1:8766/api/;", nginx)
+        self.assertIn("CROWN_PUBLIC_PREFIX", app)
+        self.assertIn("CURRENT_PATH.startsWith('/crown/')", app)
+        self.assertIn("`${CROWN_PUBLIC_PREFIX}/api`", app)
+        for script in (setup, update):
+            self.assertIn("nginx-unified-dashboard.conf", script)
+            self.assertIn(
+                "/etc/nginx/sites-enabled/unified-dashboard",
+                script,
+            )
+
     def test_footbreak_history_sidecar_is_no_store_and_not_overwritten_on_update(self):
         nginx = (ROOT / "deploy" / "nginx-footbreak.conf").read_text(encoding="utf-8")
         setup = (ROOT / "deploy" / "setup.sh").read_text(encoding="utf-8")
@@ -323,10 +345,13 @@ class NginxDashboardHealthTests(unittest.TestCase):
 
         for script in (health, self_heal, emergency):
             self.assertIn("/data.json?health=", script)
+            self.assertIn("api/data", script)
             self.assertIn("footbreak-dashboard", script)
             self.assertIn("crown-dashboard-v2", script)
             self.assertIn("/root/footbreak-dashboard-password.txt", script)
             self.assertIn("/root/crown-dashboard-password.txt", script)
+        self.assertIn("nginx-unified-dashboard.conf", self_heal)
+        self.assertIn("nginx-unified-dashboard.conf", emergency)
         self.assertIn("republish_dashboard_json crown", self_heal)
         self.assertIn("-m crown.dashboard_data", emergency)
 

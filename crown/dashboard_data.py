@@ -160,7 +160,16 @@ def _project_authoritative_watch_stages(
 
 def _public_ledger(ledger: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Return the browser-safe active portfolio projection of a Crown ledger."""
-    dashboard_ledger = dict(ledger)
+    # Never shallow-copy the authoritative ledger into the browser payload.
+    # In particular, ``watch`` contains the durable per-fixture stage journal
+    # and can grow to tens of megabytes.  The dashboard reads only this
+    # explicit, bounded projection.
+    raw_log = ledger.get("log") if isinstance(ledger.get("log"), list) else []
+    dashboard_ledger = {
+        "bankroll": ledger.get("bankroll"),
+        "stats": ledger.get("stats") if isinstance(ledger.get("stats"), dict) else {},
+        "log": raw_log[-200:],
+    }
     active_condition_bets = active_bets(ledger, "crown")
     dashboard_ledger["bets"] = active_condition_bets
     wilson = ledger.get("wilson_validation") if isinstance(ledger.get("wilson_validation"), dict) else {}
@@ -218,18 +227,6 @@ def _public_ledger(ledger: dict[str, Any]) -> tuple[dict[str, Any], list[dict[st
                      for row in (cross.get("bets") or []) if isinstance(row, dict)],
             "stats": cross.get("stats") or {},
         }
-    # The stored namespace retains exact source/fixture evidence for settlement
-    # and audit.  Browser data must expose only the purpose-built safe
-    # projection above, never the raw cross-book ledger.
-    dashboard_ledger.pop("crown_hkjc_execution_test", None)
-    for key in (
-        "shadow_bets", "shadow_stats", "shadow_comparison",
-        "handicap_world", "handicap_world_audit", "handicap_world_stats",
-        # v2 has a dedicated top-level dashboard contract.  Do not let its
-        # research-only rows appear inside the historical v1 ledger projection.
-        "crown_v2_challenger",
-    ):
-        dashboard_ledger.pop(key, None)
     return dashboard_ledger, active_condition_bets
 
 

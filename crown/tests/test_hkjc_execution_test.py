@@ -201,6 +201,9 @@ class ReciprocalDashboardTest(unittest.TestCase):
         from crown.dashboard_data import _public_ledger
 
         dashboard, _ = _public_ledger({
+            "watch": {"fixture-1": {"raw_board": "x" * 1_000_000}},
+            "predictions": [{"raw_provider_payload": "secret"}],
+            "log": [{"index": index} for index in range(250)],
             "crown_hkjc_execution_test": {
                 "bets": [{
                     "bet_id": "r1", "portfolio": reciprocal.NAMESPACE,
@@ -211,4 +214,8 @@ class ReciprocalDashboardTest(unittest.TestCase):
             },
         })
         self.assertNotIn("crown_hkjc_execution_test", dashboard)
+        self.assertNotIn("watch", dashboard)
+        self.assertNotIn("predictions", dashboard)
+        self.assertEqual(len(dashboard["log"]), 200)
+        self.assertEqual(dashboard["log"][0]["index"], 50)
         self.assertNotIn("crown_signal_source", dashboard["hkjc_execution_test"]["bets"][0])
