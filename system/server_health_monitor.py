@@ -53,6 +53,7 @@ class Paths:
     ledger: Path
     notify: Path
     dashboard: Path
+    tick_health: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -82,6 +83,7 @@ def paths_for(system: str) -> Paths:
             ledger=_env_path("CROWN_LEDGER_PATH", str(state / "ledger.json")),
             notify=_env_path("CROWN_NOTIFY_STATE_PATH", str(state / "notify_state.json")),
             dashboard=_env_path("CROWN_DATA", "/var/www/crown/data.json"),
+            tick_health=_env_path("CROWN_TICK_HEALTH_PATH", str(state / "tick-health.json")),
         )
     return Paths(
         ledger=_env_path("FOOTBREAK_LEDGER_PATH", "/opt/footbreak/system/sim_ledger.json"),
@@ -251,6 +253,25 @@ def missing_native_stages(ledger: dict[str, Any], now: datetime) -> int:
         for watch in watches.values() if isinstance(watch, dict)
         for stage in EXPECTED_STAGES
     )
+
+
+def tick_internal_deadline(ledger: dict[str, Any], health: dict[str, Any], now: datetime) -> int:
+    """Detect a recent internal Crown tick deadline while work is still due.
+
+    A bounded tick deliberately exits 0 when it protects its teardown margin.
+    That is not a healthy outcome if a pre-kickoff native stage remains due.
+    The durable marker is overwritten by each tick, so no historical warning
+    can trigger recovery or an alert after the fixture has started.
+    """
+    if str(health.get("engine_warning") or "") != "deferred_tick_deadline":
+        return 0
+    recorded = _parse_time(health.get("at"))
+    if recorded is None or recorded > now:
+        return 0
+    freshness = _positive_int("CROWN_TICK_HEALTH_MAX_AGE_SECONDS", 125, 600)
+    if (now - recorded).total_seconds() > freshness:
+        return 0
+    return int(_due_unfinished_stage("crown", ledger, now))
 
 
 def _candidate_id(row: dict[str, Any]) -> str:
@@ -671,7 +692,7 @@ class RepairController:
         elif finding.kind == "cross_book_counterpart_evidence":
             action = "rebuild_cross_book_evidence"
             succeeded = bool(self.evidence_rebuilder(now=now))
-        elif finding.kind in {"missing_expected_stage", "health_check_failure", "repeated_timeout"}:
+        elif finding.kind in {"missing_expected_stage", "tick_internal_deadline", "health_check_failure", "repeated_timeout"}:
             action = "repair_timers"
             timer_attempted, succeeded = self._repair_timers(finding.system)
             service_attempted = False
@@ -697,8 +718,11 @@ def assess(system: str, now: datetime, runner: Callable[..., Any] = subprocess.r
     paths = paths_for(system)
     ledger = _json(paths.ledger, {})
     notify = _json(paths.notify, {})
+    tick_health = _json(paths.tick_health, {}) if system == "crown" and paths.tick_health else {}
     findings = [
         Finding(system, "missing_expected_stage", missing_native_stages(ledger, now)),
+        Finding(system, "tick_internal_deadline", tick_internal_deadline(ledger, tick_health, now))
+        if isinstance(tick_health, dict) else Finding(system, "tick_internal_deadline", 0),
         Finding(system, "stuck_notification", stuck_notifications(system, ledger, notify, now)),
         Finding(system, "dashboard_sidecar_mismatch", dashboard_sidecar_mismatch(system, paths.dashboard)),
         Finding(system, "settlement_backlog", settlement_backlog(ledger, now)),
@@ -744,7 +768,7 @@ def run(
         and action.kind not in {finding.kind for finding in active[action.system]}
     }
     kinds = (
-        "missing_expected_stage", "repeated_timeout", "stuck_notification",
+        "missing_expected_stage", "tick_internal_deadline", "repeated_timeout", "stuck_notification",
         "dashboard_sidecar_mismatch", "settlement_backlog", "health_check_failure",
         "cross_book_counterpart_evidence", "cross_book_unevaluated_t5",
     )

@@ -277,6 +277,7 @@ class IncidentAlerts:
             "service_failure": "排程／服務執行失敗或逾時",
             "health_check_failure": "部署或健康檢查異常",
             "missing_expected_stage": "預期 T-30/T-5 階段未持久化",
+            "tick_internal_deadline": "Crown T-5/T-30 tick 內部截止，未確認階段持久化",
             "repeated_timeout": "排程連續逾時",
             "stuck_notification": "通知佇列或傳輸逾時",
             "dashboard_sidecar_mismatch": "儀表板／歷史資料不同步",

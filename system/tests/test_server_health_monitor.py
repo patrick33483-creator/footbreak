@@ -69,6 +69,20 @@ class ServerHealthMonitorTests(unittest.TestCase):
         ledger["watch"]["one"]["stages"].append({"stage": "T-30"})
         self.assertEqual(monitor.missing_native_stages(ledger, NOW), 0)
 
+    def test_recent_internal_crown_deadline_is_actionable_only_before_kickoff(self) -> None:
+        ledger = {"watch": {"due": {
+            "kickoff": (NOW + timedelta(minutes=5)).isoformat(),
+            "stages": [],
+        }}}
+        health = {"at": (NOW - timedelta(seconds=30)).isoformat(),
+                  "engine_warning": "deferred_tick_deadline"}
+        self.assertEqual(monitor.tick_internal_deadline(ledger, health, NOW), 1)
+        self.assertEqual(
+            monitor.tick_internal_deadline(ledger, health, NOW + timedelta(minutes=6)), 0,
+        )
+        health["engine_warning"] = ""
+        self.assertEqual(monitor.tick_internal_deadline(ledger, health, NOW), 0)
+
     def test_absence_of_telegram_or_wilson_candidate_is_not_healthy_by_assumption(self) -> None:
         # There is no message/event to inspect, but the native timed stage is
         # persisted.  A sample gate that created no eligible Wilson row must

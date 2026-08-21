@@ -9,6 +9,7 @@ from pathlib import Path
 import traceback
 
 from .config import settings
+from .common import iso_hkt, write_json_atomic
 from .dashboard_data import write_dashboard_data, write_tick_dashboard_projection
 from .engine import _tick_pass_deadline_seconds, run
 from .notify import notify_new
@@ -21,6 +22,21 @@ _TICK_POSTPROCESS_MAX_SECONDS = 4.0
 _TICK_POSTPROCESS_TEARDOWN_MARGIN_SECONDS = 1.0
 _TICK_NOTIFICATION_MIN_SECONDS = 6.0
 _TICK_ENGINE_TEARDOWN_MARGIN_SECONDS = 0.25
+
+
+def _write_tick_health(config, result: dict[str, object]) -> None:
+    """Persist the authoritative, small tick outcome for the local monitor.
+
+    This is status only: it never changes the ledger, stage history, odds, or
+    notifications.  In particular an internal deadline defer becomes visible
+    to the monitor even though the bounded tick itself exits successfully.
+    """
+    write_json_atomic(config.state_dir / "tick-health.json", {
+        "at": iso_hkt(),
+        "engine_warning": str(result.get("engine_warning") or ""),
+        "ok": bool(result.get("ok")),
+        "mode": "tick",
+    })
 
 
 def _tick_notification_process(
@@ -375,7 +391,14 @@ def main() -> int:
             update_history(config, ledger)
     except Exception as exc:
         history_warning = f"prediction_history_{type(exc).__name__}"
-    if args.mode != "tick":
+    if args.mode == "tick":
+        try:
+            _write_tick_health(config, result)
+        except OSError:
+            # A separate disk-pressure finding covers a filesystem failure;
+            # do not turn the simulation worker into a retry/backfill path.
+            result["tick_health_warning"] = "unpersisted"
+    else:
         write_dashboard_data(config)
     if history_warning:
         result["warning"] = history_warning
