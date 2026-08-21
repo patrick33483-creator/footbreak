@@ -1,0 +1,35 @@
+name: urgent Crown stage status (read only)
+on:
+  workflow_dispatch:
+jobs:
+  evidence:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Read durable stages and dashboard projection
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+          ssh -o ServerAliveInterval=20 "$DEPLOY_USER@$DEPLOY_HOST" 'python3 - <<"PY"
+          import json
+          from datetime import datetime
+          from pathlib import Path
+          from crown.common import HKT
+          ids = {"2965008", "2965009", "3045634"}
+          ledger=json.loads(Path("/var/lib/footbreak/crown/ledger.json").read_text())
+          cards={str(x.get("match_id")):x for x in json.loads(Path("/var/lib/footbreak/crown/predictions.json").read_text()) if isinstance(x,dict)}
+          public=json.loads(Path("/var/www/crown/data.json").read_text())
+          result=[]
+          for mid in sorted(ids):
+              item=ledger.get("watch",{}).get(mid,{})
+              card=cards.get(mid,{})
+              result.append({"match_id":mid,"fixture":f"{item.get('home','')} vs {item.get('away','')}","kickoff":item.get("kickoff") or item.get("kickoff_hkt"),"stages":[{"stage":s.get("stage"),"status":s.get("status"),"ts":s.get("ts"),"odds_status":s.get("odds_status")} for s in item.get("stages",[]) if isinstance(s,dict) and s.get("stage") in {"首預","T-30","T-5"}],"card_status":card.get("status")})
+          print(json.dumps({"at":datetime.now(HKT).isoformat(),"fixtures":result,"dashboard_keys":list(public)[:30],"dashboard_timestamp":public.get("generated_at") or public.get("generated_at_hkt") or public.get("updated_at") or public.get("timestamp"),"dashboard_mtime":datetime.fromtimestamp(Path("/var/www/crown/data.json").stat().st_mtime,HKT).isoformat()},ensure_ascii=False))
+          PY'
+          systemctl show crown-tick.timer crown-tick.service footbreak-server-health-monitor.timer --no-pager -p ActiveState -p SubState -p Result -p LastTriggerUSec -p NextElapseUSecRealtime
+          journalctl -u crown-tick.service -u footbreak-server-health-monitor.service --since '2026-08-21 20:05:00' --no-pager -o short-iso | tail -120
