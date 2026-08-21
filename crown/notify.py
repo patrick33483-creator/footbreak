@@ -176,13 +176,18 @@ def _wilson_message(bet: dict[str, Any]) -> str | None:
     league = traditional_chinese_league(bet.get("league"))
     if not league:
         return None
+    selection = f"{market} · {bet.get('selected_role') or '—'} {line:g}"
     return "\n".join([
         "【皇冠 Wilson】",
         f"{kickoff.astimezone(HKT).strftime('%H:%M')} {league}",
         f"{bet.get('home') or ''} vs {bet.get('away') or ''}",
+        "",
         f"合符條件 #{number}",
-        f"投注 {market} · {bet.get('selected_role') or '—'} {line:g}（模擬）",
-        f"現時賠率：{odds:.2f} · 最低賠率要求：{minimum:.2f}",
+        f"投注：{selection}",
+        "投注平台：皇冠",
+        "",
+        f"現時賠率：{odds:.2f}",
+        f"最低賠率要求：{minimum:.2f}",
     ])
 
 
@@ -196,7 +201,18 @@ def _wilson_observation_message(row: dict[str, Any]) -> str | None:
     if not message:
         return None
     # A rejected quote is an observation, never a simulated position.
-    return message.replace("投注 ", "不投注（賠率不足） ", 1).replace("（模擬）", "")
+    lines = message.splitlines()
+    try:
+        action_index = next(index for index, line in enumerate(lines) if line.startswith("投注："))
+        platform_index = lines.index("投注平台：皇冠")
+    except (StopIteration, ValueError):
+        return None
+    selection = lines[action_index].removeprefix("投注：")
+    lines[action_index:platform_index + 1] = [
+        "不投注：賠率不足",
+        f"選擇：{selection}",
+    ]
+    return "\n".join(lines)
 
 
 def notify_wilson_pending(
@@ -285,17 +301,19 @@ def _hkjc_execution_message(bet: dict[str, Any]) -> str | None:
         or not league or market not in set(MARKET_LABELS.values())
     ):
         return None
-    selection = f"{bet.get('selected_role') or '—'} {line:g}"
+    selection = f"{market} · {bet.get('selected_role') or '—'} {line:g}"
     return "\n".join([
         "【皇冠×馬會執行測試倉（模擬）】",
         f"{kickoff.astimezone(HKT).strftime('%H:%M')} {league}",
         f"{bet.get('home') or ''} vs {bet.get('away') or ''}",
+        "",
         f"合符條件 #{number}",
+        f"投注：{selection}",
         "投注平台：馬會",
-        f"皇冠訊號：{market} {selection} @{crown_odds:.2f}",
-        f"馬會模擬：{market} {selection} @{hkjc_odds:.2f}",
-        f"最低要求賠率：{minimum:.2f}",
-        f"模擬投注 HK${float(bet.get('stake') or 0):,.0f}",
+        "",
+        f"皇冠訊號賠率：{crown_odds:.2f}",
+        f"馬會執行賠率：{hkjc_odds:.2f}",
+        f"最低賠率要求：{minimum:.2f}",
     ])
 
 

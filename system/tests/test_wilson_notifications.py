@@ -50,8 +50,9 @@ class FootbreakWilsonNotificationTest(unittest.TestCase):
     def test_concise_chinese_bet_message_uses_raw_minimum_and_stable_number(self):
         message = notify._condition_bet_message(bet())
         self.assertIsNotNone(message)
-        self.assertEqual(message.count("\n"), 5)
-        for text in ("【足破 Wilson】", "英格蘭超級聯賽", "主隊 vs 客隊", "合符條件 #7", "投注 讓球 · 主讓 -0.25（模擬）",
+        self.assertEqual(message.count("\n"), 9)
+        for text in ("【足破 Wilson】", "英格蘭超級聯賽", "主隊 vs 客隊", "合符條件 #7",
+                     "投注：讓球 · 主讓 -0.25", "投注平台：馬會",
                      "現時賠率：1.90", "最低賠率要求："):
             self.assertIn(text, message)
         self.assertNotIn("England - Premier League", message)
@@ -64,9 +65,10 @@ class FootbreakWilsonNotificationTest(unittest.TestCase):
         row = low_odds_observation()
         message = notify._condition_observation_message(row)
         self.assertIsNotNone(message)
-        for text in ("合符條件 #7", "不投注（賠率不足） 讓球 · 主讓 -0.25", "現時賠率：1.50", "最低賠率要求："):
+        for text in ("合符條件 #7", "不投注：賠率不足", "選擇：讓球 · 主讓 -0.25",
+                     "現時賠率：1.50", "最低賠率要求："):
             self.assertIn(text, message)
-        self.assertNotIn("（模擬）", message)
+        self.assertNotIn("投注平台：", message)
         self.assertFalse(row["formal_bet"])
 
     def test_durable_dedupe_retry_and_bounded_multiple_market_outbox(self):
@@ -85,7 +87,7 @@ class FootbreakWilsonNotificationTest(unittest.TestCase):
             self.assertEqual(send.call_count, 2)
             messages = [call.args[0] for call in send.call_args_list]
             self.assertTrue(any("合符條件 #7" in text and "讓球" in text for text in messages))
-            self.assertTrue(any("合符條件 #8" in text and "入球大細" in text and "不投注（賠率不足）" in text for text in messages))
+            self.assertTrue(any("合符條件 #8" in text and "入球大細" in text and "不投注：賠率不足" in text for text in messages))
 
     def test_shared_budget_prioritizes_wilson_over_cross_book_outbox(self):
         formal = bet()
@@ -166,7 +168,7 @@ class FootbreakWilsonNotificationTest(unittest.TestCase):
                 self.assertEqual(notify.notify_pending_condition_bets(ledger), 1)
                 self.assertEqual(notify.notify_pending_condition_bets(ledger), 0)
             self.assertEqual(sender.call_count, 1)
-            self.assertIn("不投注（賠率不足）", sender.call_args.args[0])
+            self.assertIn("不投注：賠率不足", sender.call_args.args[0])
             state = json.loads(state_path.read_text(encoding="utf-8"))
             self.assertEqual(state["condition_simulation_bets"], [formal["bet_id"]])
             self.assertEqual(

@@ -197,9 +197,11 @@ class CrossNotificationTests(unittest.TestCase):
     def test_message_dedupe_and_retry_has_required_venue_and_fields(self):
         bet = self._bet()
         text = notify._crown_execution_message(bet)
-        for expected in ("足破×皇冠", "投注平台：皇冠", "合符條件 #7", "馬會訊號", "皇冠模擬",
-                         "最低要求賠率", "模擬投注 HK$500"):
+        for expected in ("足破×皇冠", "合符條件 #7", "投注：入球大細 · 大 2.5",
+                         "投注平台：皇冠", "馬會訊號賠率：1.66",
+                         "皇冠執行賠率：1.90", "最低賠率要求："):
             self.assertIn(expected, text)
+        self.assertNotIn("模擬投注 HK$", text)
         ledger = {cross.NAMESPACE: {"bets": [bet]}}
         with tempfile.TemporaryDirectory() as directory, patch.object(notify, "STATE", str(Path(directory, "n.json"))):
             with patch.object(notify, "send", side_effect=RuntimeError("retry")):

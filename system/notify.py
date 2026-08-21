@@ -487,13 +487,22 @@ def _condition_bet_message(bet, prospective=None):
         number = int(number)
     except (TypeError, ValueError):
         return None
+    selection = f"{esc(market)} · {esc(direction)} {line:g}"
+    action_lines = (
+        [f"不投注：賠率不足", f"選擇：{selection}"]
+        if observation
+        else [f"投注：{selection}", "投注平台：馬會"]
+    )
     return "\n".join([
         "【足破 Wilson】",
         f"{kickoff.astimezone(HKT).strftime('%H:%M')} {esc(league)}",
         f"{esc(home)} vs {esc(away)}",
+        "",
         f"合符條件 #{number}",
-        f"{'不投注（賠率不足）' if observation else '投注'} {esc(market)} · {esc(direction)} {line:g}{'' if observation else '（模擬）'}",
-        f"現時賠率：{odds:.2f} · 最低賠率要求：{minimum:.2f}",
+        *action_lines,
+        "",
+        f"現時賠率：{odds:.2f}",
+        f"最低賠率要求：{minimum:.2f}",
     ])
 
 
@@ -612,17 +621,19 @@ def _crown_execution_message(bet):
         or crown_odds + 1e-12 < minimum or not math.isfinite(line)
     ):
         return None
-    selection = f"{direction} {line:g}"
+    selection = f"{esc(market)} · {esc(direction)} {line:g}"
     return "\n".join([
         "【足破×皇冠執行測試倉（模擬）】",
         f"{kickoff.astimezone(HKT).strftime('%H:%M')} {esc(league)}",
         f"{esc(home)} vs {esc(away)}",
+        "",
         f"合符條件 #{number}",
+        f"投注：{selection}",
         "投注平台：皇冠",
-        f"馬會訊號：{esc(market)} {esc(selection)} @{hkjc_odds:.2f}",
-        f"皇冠模擬：{esc(market)} {esc(selection)} @{crown_odds:.2f}",
-        f"最低要求賠率：{minimum:.2f}",
-        f"模擬投注 HK${float(bet.get('stake') or 0):,.0f}",
+        "",
+        f"馬會訊號賠率：{hkjc_odds:.2f}",
+        f"皇冠執行賠率：{crown_odds:.2f}",
+        f"最低賠率要求：{minimum:.2f}",
     ])
 
 

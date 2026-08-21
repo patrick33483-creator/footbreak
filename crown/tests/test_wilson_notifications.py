@@ -43,8 +43,9 @@ class CrownWilsonNotificationTest(unittest.TestCase):
         row = bet()
         message = notify._wilson_message(row)
         self.assertIsNotNone(message)
-        self.assertEqual(message.count("\n"), 5)
-        for text in ("【皇冠 Wilson】", "美國職業足球大聯盟", "合符條件 #3", "投注 入球大細 · 大 2.5（模擬）",
+        self.assertEqual(message.count("\n"), 9)
+        for text in ("【皇冠 Wilson】", "美國職業足球大聯盟", "合符條件 #3",
+                     "投注：入球大細 · 大 2.5", "投注平台：皇冠",
                      "現時賠率：1.90", "最低賠率要求："):
             self.assertIn(text, message)
         self.assertNotIn("USA - Major League Soccer", message)
@@ -67,8 +68,9 @@ class CrownWilsonNotificationTest(unittest.TestCase):
         message = notify._wilson_observation_message(low)
         self.assertIsNotNone(message)
         self.assertIn("合符條件 #4", message)
-        self.assertIn("不投注（賠率不足） 角球大細 · 大 2.5", message)
-        self.assertNotIn("（模擬）", message)
+        self.assertIn("不投注：賠率不足", message)
+        self.assertIn("選擇：角球大細 · 大 2.5", message)
+        self.assertNotIn("投注平台：", message)
         state = {"wilson_bets": [], "wilson_match_alerts": []}
         with tempfile.TemporaryDirectory() as directory:
             config = SimpleNamespace(state_dir=Path(directory))
@@ -160,7 +162,7 @@ class CrownWilsonNotificationTest(unittest.TestCase):
                 self.assertEqual(notify.notify_wilson_pending(ledger, config), 1)
                 self.assertEqual(notify.notify_wilson_pending(ledger, config), 0)
             self.assertEqual(sender.call_count, 1)
-            self.assertIn("不投注（賠率不足）", sender.call_args.args[1])
+            self.assertIn("不投注：賠率不足", sender.call_args.args[1])
             state = json.loads(notify_path.read_text())
             self.assertEqual(state["wilson_bets"], [formal["bet_id"]])
             self.assertEqual(
