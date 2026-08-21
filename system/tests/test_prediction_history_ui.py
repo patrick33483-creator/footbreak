@@ -195,6 +195,24 @@ class PredictionHistoryUiTests(unittest.TestCase):
             self.assertIn("不建立投注或 Telegram 通知", history)
             self.assertNotIn("合符條件 #", history)
 
+    def test_wilson_condition_labels_are_scoped_and_ranking_cards_do_not_reuse_numbers(self) -> None:
+        expected_scopes = {
+            "hkjc-dashboard": "足破 Wilson",
+            "crown/dashboard": "皇冠 Wilson",
+        }
+        for dashboard, scope in expected_scopes.items():
+            app = (ROOT / dashboard / "app.js").read_text(encoding="utf-8")
+            cards = app[
+                app.index("function historyConsensusCards"):
+                app.index("function historyConsensusCards") + 2800
+            ]
+            with self.subTest(dashboard=dashboard):
+                self.assertIn(f"const WILSON_CONDITION_SCOPE = '{scope}'", app)
+                self.assertIn("function wilsonConditionLabel", app)
+                self.assertIn("研究排名 #${index + 1}（未凍結；不計前瞻）", cards)
+                self.assertIn("研究卡未有凍結 Wilson 身份", cards)
+                self.assertNotIn("? Number(item.condition_number) : index + 1", cards)
+
     def test_crown_dashboard_renders_stage_completeness_monitor(self) -> None:
         root = ROOT / "crown" / "dashboard"
         app = (root / "app.js").read_text(encoding="utf-8")

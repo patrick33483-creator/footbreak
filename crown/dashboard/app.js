@@ -731,14 +731,22 @@ function oddsCompareCard(m) {
   </div>`;
 }
 
+const WILSON_CONDITION_SCOPE = '皇冠 Wilson';
+
+function wilsonConditionLabel(value) {
+  const number = numeric(value);
+  return number == null || !Number.isInteger(number)
+    ? `${WILSON_CONDITION_SCOPE} 條件 —`
+    : `${WILSON_CONDITION_SCOPE} 條件 #${Math.trunc(number)}`;
+}
+
 function wilsonMatchText(item) {
-  const number = numeric(item.condition_number) == null ? '—' : String(Math.trunc(numeric(item.condition_number)));
   const direction = publicText(item.selected_role || '—');
   const line = numeric(item.selected_line) == null ? '—' : numeric(item.selected_line).toString();
   const minimum = numeric(item.minimum_required_odds_display) == null
     ? f2(item.minimum_required_odds) : String(item.minimum_required_odds_display);
   const isBet = item.bet_status === 'BET';
-  return `<div class="condition-match"><b>合符條件 #${esc(number)}</b>
+  return `<div class="condition-match"><b>合符 ${esc(wilsonConditionLabel(item.condition_number))}</b>
     <span>${esc(marketLabel(item.market_label || item.market))} · ${esc(direction)} ${esc(line)} · 現時賠率 ${f2(item.odds)} · 最低賠率要求 ${esc(minimum)}</span>
     <span class="${isBet ? 'good-txt' : 'bad-txt'}">${isBet ? '模擬投注' : '因賠率不足，不投注'}</span></div>`;
 }
@@ -751,7 +759,7 @@ function historicalConditionMatchText(item) {
   const lower = numeric(interval[0]);
   const minimum = lower != null && lower > 0.03 ? 1 / (lower - 0.03) : null;
   const actual = numeric(item.selected_odds);
-  return `<div class="condition-match"><b>研究條件 #${esc(number)} · ${esc(publicText(item.label || ''))}</b>
+  return `<div class="condition-match"><b>研究排名 #${esc(number)} · ${esc(publicText(item.label || ''))}</b>
     <span>${pc(total.accuracy, 1)} (${total.hits || 0}/${total.decided || 0}) · 現時賠率 ${actual == null ? '—' : f2(actual)} · 研究參考門檻 ${minimum == null ? '未能計算' : f2(minimum)}</span>
     <span>研究吻合／未納入正式 Wilson；不建立投注或 Telegram 通知。</span></div>`;
 }
@@ -1414,7 +1422,7 @@ function wilsonRolloverCard(validation) {
       const minimum = numeric(active.minimum_acceptable_odds_display) == null ? f2(active.minimum_acceptable_odds_raw) : String(active.minimum_acceptable_odds_display);
       const batch = numeric(last.batch_decided) ? `${numeric(last.batch_hits) || 0}/${numeric(last.batch_decided)}${last.initial_migration_full_cohort ? '（初始完整驗證 cohort）' : ''}` : '—';
       const progress = pending.display || `${numeric(pending.eligible_decided) || 0}/${numeric(pending.required) || 20}`;
-      return `<tr><td>條件 #${numeric(row.condition_number) == null ? '—' : Math.trunc(numeric(row.condition_number))}</td><td>${esc(version)} · ${esc(total)}</td><td>下限 ${esc(lower)} · 最低 ${esc(minimum)}</td><td>${esc(batch)}</td><td><b>${esc(progress)}</b></td></tr>`;
+      return `<tr><td>${esc(wilsonConditionLabel(row.condition_number))}</td><td>${esc(version)} · ${esc(total)}</td><td>下限 ${esc(lower)} · 最低 ${esc(minimum)}</td><td>${esc(batch)}</td><td><b>${esc(progress)}</b></td></tr>`;
     }).join('')}</tbody></table></div>
     <p class="mx-note">「命中 x/y」是已判定命中率，不是批次進度；批次只看最右欄 x/20。公開面板只顯示不可逆 fixture-market 摘要，不顯示供應商或賽事 ID。</p></section>`;
 }
@@ -1686,7 +1694,7 @@ function legacyHistoryConsensusCards(stats) {
       : '<div class="consensus-odds-audit unavailable">賠率資料不足，未能檢查熱門盤偏差</div>';
     return `<article class="consensus-rank-card">
       <div class="consensus-rank-head">
-        <span class="consensus-rank-number">#${index + 1}</span>
+        <span class="consensus-rank-number">研究排名 #${index + 1}</span>
         <span class="consensus-sample ${qualified ? 'enough' : ''}">${qualified ? '樣本達標' : '只作觀察'}</span>
       </div>
       <b>${esc(marketLabel(item.market_label || item.market))} · ${esc(publicText(item.condition_label || ''))}</b>
@@ -1821,8 +1829,10 @@ function historyConsensusCards(stats) {
     const lower = numeric(ci[0]);
     const minimumOdds = lower != null && lower > 0.03
       ? f2(1 / (lower - 0.03)) : '—';
-    const conditionNumber = Number.isInteger(Number(item.condition_number))
-      ? Number(item.condition_number) : index + 1;
+    const hasFrozenCondition = Number.isInteger(Number(item.condition_number));
+    const conditionLabel = hasFrozenCondition
+      ? wilsonConditionLabel(item.condition_number)
+      : `研究排名 #${index + 1}（未凍結；不計前瞻）`;
     const pending = progress.display || `${Number(progress.pending_decided || 0)}/${Number(progress.required || 20)}`;
     const batchText = lastBatch.version
       ? (lastBatch.initial_migration_full_cohort
@@ -1830,13 +1840,15 @@ function historyConsensusCards(stats) {
         : `最近合併 ${lastBatch.batch_hits || 0}/${lastBatch.batch_decided || 0}（v${lastBatch.version}）`)
       : '尚未有新批次合併';
     return `<article class="granular-rank-card">
-      <div class="granular-rank-head"><span>#${conditionNumber}</span><span class="granular-badge">${esc(item.badge || '觀察')}</span></div>
+      <div class="granular-rank-head"><span>${esc(conditionLabel)}</span><span class="granular-badge">${esc(item.badge || '觀察')}</span></div>
       <b>${esc(publicText(item.label || ''))}</b><div class="granular-rate">${pc(total.accuracy, 1)}</div>
       <small>命中 ${total.hits || 0}/${total.decided || 0} · Wilson 95% ${ci.length ? `${pc(ci[0], 1)}–${pc(ci[1], 1)}` : '—'}</small>
       <small>Wilson 最低要求賠率 ${minimumOdds}</small>
-      <small>活躍證據 v${active.version || '—'} · ${batchText}</small>
+      ${hasFrozenCondition
+        ? `<small>活躍證據 v${active.version || '—'} · ${batchText}</small>
       <small>新前瞻待合併 ${esc(String(pending))}（已判定結果數，非命中率）</small>
-      <small>歷史賠率層 ${esc(item.odds_tier || '—')} · 只使用活躍版本作日後 T-5 Wilson 閘門</small>
+      <small>歷史賠率層 ${esc(item.odds_tier || '—')} · 只使用活躍版本作日後 T-5 Wilson 閘門</small>`
+        : '<small>研究卡未有凍結 Wilson 身份；不顯示前瞻累積，亦不會成為 Telegram 或模擬投注依據。</small>'}
     </article>`;
   }).join('');
   return `<section class="granular-block" aria-label="細緻條件排名">
@@ -2085,8 +2097,7 @@ function betRow(b, i, prefix = 'condition') {
   const prospective = frozen.prospective || {};
   const evidence = b.frozen_historical_evidence || frozen.historical_evidence || {};
   const arithmetic = b.wilson_admission || frozen.admission_arithmetic || {};
-  const conditionNumber = numeric(b.condition_number) == null ? '—' : Math.trunc(numeric(b.condition_number));
-  const condition = `條件 #${conditionNumber} · ${publicText((b.frozen_condition_definition || {}).path || evidence.label || '凍結歷史條件')} · 命中 ${evidence.hits || 0}/${evidence.decided || 0}`;
+  const condition = `${wilsonConditionLabel(b.condition_number)} · ${publicText((b.frozen_condition_definition || {}).path || evidence.label || '凍結歷史條件')} · 命中 ${evidence.hits || 0}/${evidence.decided || 0}`;
   const active = frozen.active_evidence || {};
   const validation = numeric(arithmetic.wilson95_lower_raw) == null
     ? '—'

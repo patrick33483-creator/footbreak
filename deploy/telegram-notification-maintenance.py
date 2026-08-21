@@ -40,6 +40,104 @@ def _ids(value: Any) -> set[str]:
     return {str(item) for item in value or [] if str(item)}
 
 
+def _condition_identity_audit(ledger: dict[str, Any], system: str) -> dict[str, Any]:
+    """Expose bounded, provider-free identity/rollover evidence for diagnosis.
+
+    The dashboard must never substitute a display rank for a durable Wilson
+    identity.  This local audit lets an operator compare a persisted formal
+    row (or low-odds observation) to the frozen condition it actually names,
+    including its active version boundary and current 20-result counter.
+    """
+    namespace = ledger.get("wilson_validation")
+    namespace = namespace if isinstance(namespace, dict) else {}
+    conditions = namespace.get("conditions")
+    conditions = conditions if isinstance(conditions, dict) else {}
+    counters: list[dict[str, Any]] = []
+    for signature, frozen in conditions.items():
+        if not isinstance(frozen, dict):
+            continue
+        active = frozen.get("active_evidence")
+        active = active if isinstance(active, dict) else {}
+        counters.append({
+            "condition_number": frozen.get("condition_number"),
+            "condition_signature": str(signature),
+            "definition": frozen.get("definition"),
+            "active_evidence_version": active.get("version"),
+            "activation_boundary_at": active.get("activation_boundary_at"),
+            "pending_rollover_progress": frozen.get("pending_rollover_progress"),
+        })
+    counters.sort(key=lambda row: (
+        int(row["condition_number"]) if str(row.get("condition_number") or "").isdigit() else 10**9,
+        str(row["condition_signature"]),
+    ))
+
+    durable_rows = list(ledger.get("bets") or []) + list(
+        namespace.get("observations") or []
+    )
+    current_date = datetime.now(timezone.utc).date().isoformat()
+    today: list[dict[str, Any]] = []
+    for row in durable_rows:
+        if not isinstance(row, dict):
+            continue
+        kickoff = str(row.get("kickoff") or "")
+        if not kickoff.startswith(current_date):
+            continue
+        signature = str(row.get("frozen_condition_signature") or "")
+        frozen = conditions.get(signature)
+        frozen = frozen if isinstance(frozen, dict) else {}
+        active = frozen.get("active_evidence")
+        active = active if isinstance(active, dict) else {}
+        formal = (
+            str(row.get("portfolio") or "") == f"{system}_wilson_test"
+            and row.get("formal_bet") is not False
+        )
+        marker = row.get("rollover_provenance")
+        marker = marker if isinstance(marker, dict) else None
+        today.append({
+            "row_id": row.get("bet_id") or row.get("observation_id"),
+            "formal_bet": formal,
+            "bet_status": row.get("bet_status") or row.get("status"),
+            "result": row.get("result"),
+            "settled_at": row.get("settled_at"),
+            "match_id": row.get("match_id"),
+            "home": row.get("home"),
+            "away": row.get("away"),
+            "kickoff": row.get("kickoff"),
+            "market": row.get("market") or row.get("code"),
+            "selected_role": row.get("selected_role"),
+            "selected_line": row.get("selected_line", row.get("line")),
+            "stage": row.get("stage"),
+            "condition_number": row.get("condition_number"),
+            "condition_signature": signature or None,
+            "frozen_definition": row.get("frozen_condition_definition"),
+            "evidence_version": row.get("evidence_version"),
+            "active_evidence_version": active.get("version"),
+            "activation_boundary_at": active.get("activation_boundary_at"),
+            "pending_rollover_progress": frozen.get("pending_rollover_progress"),
+            "native_pre_kickoff_t5": row.get("first_native_pre_kickoff_t5"),
+            "rollover_provenance_present": marker is not None,
+            "rollover_eligibility": (
+                "eligible_after_binary_settlement"
+                if formal and row.get("status") == "PENDING" and marker
+                else "settled_row_requires_binary_and_unique_provenance_check"
+                if formal and row.get("status") == "SETTLED" and marker
+                else "excluded_low_odds_observation_not_formal_bet"
+                if row.get("formal_bet") is False
+                else "excluded_missing_formal_rollover_provenance"
+            ),
+        })
+    today.sort(key=lambda row: (
+        str(row.get("kickoff") or ""), str(row.get("row_id") or ""),
+    ), reverse=True)
+    return {
+        "system": system,
+        "frozen_condition_counters": counters,
+        # Today-only, bounded records make incident analysis possible without
+        # publishing an unbounded historical ledger or contacting a provider.
+        "today_durable_condition_rows": today[:96],
+    }
+
+
 def _dashboard_authority_parity(
     payload_path: Path,
     ledger: dict[str, Any],
@@ -166,6 +264,7 @@ def _footbreak_audit() -> dict[str, Any]:
         },
         "state_last_sent": state.get("last_sent"),
         "transport_tests": len((state.get("transport_tests") or {})),
+        "condition_identity_audit": _condition_identity_audit(ledger, "footbreak"),
         "dashboard_authority_parity": _dashboard_authority_parity(
             Path(footbreak_notify.DASHBOARD_DATA), ledger,
         ),
@@ -319,6 +418,7 @@ def _crown_audit() -> dict[str, Any]:
         "unacknowledged_low_odds_group_sizes": [
             len(group) for group in unacknowledged_groups
         ],
+        "condition_identity_audit": _condition_identity_audit(ledger, "crown"),
         # A bounded local view links every recent native T-5 card to its
         # durable Wilson outcome. It permits post-kickoff diagnosis without
         # invoking a provider or reviving a normal alert.

@@ -498,8 +498,16 @@ function shortPick(p) {
   return String(p.label || '').replace(/[（(]\s*馬會盤[^）)]*[）)]\s*$/, '').trim();
 }
 
+const WILSON_CONDITION_SCOPE = '足破 Wilson';
+
+function wilsonConditionLabel(value) {
+  const number = numeric(value);
+  return number == null || !Number.isInteger(number)
+    ? `${WILSON_CONDITION_SCOPE} 條件 —`
+    : `${WILSON_CONDITION_SCOPE} 條件 #${Math.trunc(number)}`;
+}
+
 function wilsonMatchText(item) {
-  const number = numeric(item.condition_number) == null ? '—' : String(Math.trunc(numeric(item.condition_number)));
   const direction = publicText(item.selected_role || '—');
   const line = numeric(item.selected_line) == null ? '—' : numeric(item.selected_line).toString();
   // Producer persists this alongside the raw admission value. Do not derive
@@ -507,7 +515,7 @@ function wilsonMatchText(item) {
   const minimum = numeric(item.minimum_required_odds_display) == null
     ? f2(item.minimum_required_odds) : String(item.minimum_required_odds_display);
   const isBet = item.bet_status === 'BET';
-  return `<div class="condition-match"><b>合符條件 #${esc(number)}</b>
+  return `<div class="condition-match"><b>合符 ${esc(wilsonConditionLabel(item.condition_number))}</b>
     <span>${esc(marketLabel(item.market_label || item.market))} · ${esc(direction)} ${esc(line)} · 現時賠率 ${f2(item.odds)} · 最低賠率要求 ${esc(minimum)}</span>
     <span class="${isBet ? 'good-txt' : 'bad-txt'}">${isBet ? '模擬投注' : '因賠率不足，不投注'}</span></div>`;
 }
@@ -520,7 +528,7 @@ function historicalConditionMatchText(item) {
   const lower = numeric(interval[0]);
   const minimum = lower != null && lower > 0.03 ? 1 / (lower - 0.03) : null;
   const actual = numeric(item.selected_odds);
-  return `<div class="condition-match"><b>研究條件 #${esc(number)} · ${esc(publicText(item.label || ''))}</b>
+  return `<div class="condition-match"><b>研究排名 #${esc(number)} · ${esc(publicText(item.label || ''))}</b>
     <span>${pc(total.accuracy, 1)} (${total.hits || 0}/${total.decided || 0}) · 現時賠率 ${actual == null ? '—' : f2(actual)} · 研究參考門檻 ${minimum == null ? '未能計算' : f2(minimum)}</span>
     <span>研究吻合／未納入正式 Wilson；不建立投注或 Telegram 通知。</span></div>`;
 }
@@ -1320,7 +1328,7 @@ function legacyHistoryConsensusCards(stats) {
       : '<div class="consensus-odds-audit unavailable">賠率資料不足，未能檢查熱門盤偏差</div>';
     return `<article class="consensus-rank-card">
       <div class="consensus-rank-head">
-        <span class="consensus-rank-number">#${index + 1}</span>
+        <span class="consensus-rank-number">研究排名 #${index + 1}</span>
         <span class="consensus-sample ${qualified ? 'enough' : ''}">${qualified ? '樣本達標' : '只作觀察'}</span>
       </div>
       <b>${esc(marketLabel(item.market_label || item.market))} · ${esc(publicText(item.condition_label || ''))}</b>
@@ -1455,8 +1463,10 @@ function historyConsensusCards(stats) {
     const lower = numeric(ci[0]);
     const minimumOdds = lower != null && lower > 0.03
       ? f2(1 / (lower - 0.03)) : '—';
-    const conditionNumber = Number.isInteger(Number(item.condition_number))
-      ? Number(item.condition_number) : index + 1;
+    const hasFrozenCondition = Number.isInteger(Number(item.condition_number));
+    const conditionLabel = hasFrozenCondition
+      ? wilsonConditionLabel(item.condition_number)
+      : `研究排名 #${index + 1}（未凍結；不計前瞻）`;
     const pending = progress.display || `${Number(progress.pending_decided || 0)}/${Number(progress.required || 20)}`;
     const batchText = lastBatch.version
       ? (lastBatch.initial_migration_full_cohort
@@ -1464,14 +1474,16 @@ function historyConsensusCards(stats) {
         : `最近合併 ${lastBatch.batch_hits || 0}/${lastBatch.batch_decided || 0}（v${lastBatch.version}）`)
       : '尚未有新批次合併';
     return `<article class="granular-rank-card">
-      <div class="granular-rank-head"><span>#${conditionNumber}</span><span class="granular-badge">${esc(item.badge || '觀察')}</span></div>
+      <div class="granular-rank-head"><span>${esc(conditionLabel)}</span><span class="granular-badge">${esc(item.badge || '觀察')}</span></div>
       <b>${esc(publicText(item.label || ''))}</b>
       <div class="granular-rate">${pc(total.accuracy, 1)}</div>
       <small>命中 ${total.hits || 0}/${total.decided || 0} · Wilson 95% ${ci.length ? `${pc(ci[0], 1)}–${pc(ci[1], 1)}` : '—'}</small>
       <small>Wilson 最低要求賠率 ${minimumOdds}</small>
-      <small>活躍證據 v${active.version || '—'} · ${batchText}</small>
+      ${hasFrozenCondition
+        ? `<small>活躍證據 v${active.version || '—'} · ${batchText}</small>
       <small>新前瞻待合併 ${esc(String(pending))}（已判定結果數，非命中率）</small>
-      <small>歷史賠率層 ${esc(item.odds_tier || '—')} · 只使用活躍版本作日後 T-5 Wilson 閘門</small>
+      <small>歷史賠率層 ${esc(item.odds_tier || '—')} · 只使用活躍版本作日後 T-5 Wilson 閘門</small>`
+        : '<small>研究卡未有凍結 Wilson 身份；不顯示前瞻累積，亦不會成為 Telegram 或模擬投注依據。</small>'}
     </article>`;
   }).join('');
   return `<section class="granular-block" aria-label="細緻條件排名">
@@ -1794,7 +1806,7 @@ function crownExecutionTestCard(portfolio) {
       return `<tr><td class="mono nowrap">${hkDay(b.kickoff)} ${hkClock(b.kickoff)}<div class="cell-sub">${esc(b.home || '—')} vs ${esc(b.away || '—')} · ${esc(leagueDisplay(b.league || '—'))}</div></td>
         <td>${esc(marketLabel(b.market_label || b.market))}<div class="cell-sub">${esc(publicText(b.selected_role || '—'))} ${numeric(b.selected_line) == null ? '—' : numeric(b.selected_line)}</div></td>
         <td class="mono">${f2(b.hkjc_signal_odds)}</td><td class="mono">${f2(b.crown_execution_odds)}</td>
-        <td class="mono">${f2(admission.minimum_acceptable_odds_raw)}</td><td>條件 #${numeric(b.condition_number) == null ? '—' : Math.trunc(numeric(b.condition_number))}</td>
+        <td class="mono">${f2(admission.minimum_acceptable_odds_raw)}</td><td>${esc(wilsonConditionLabel(b.condition_number))}</td>
         <td>${money(b.stake)}</td><td>${status(b)}<div class="cell-sub">${result(b)} · ${b.pnl == null ? '—' : money(b.pnl)}</div></td></tr>`;
     }).join('')}</tbody></table></div>` : '<div class="empty2">尚未有已提交的足破×皇冠模擬注；缺少、新鮮度不足或身份不明確的本機證據會安全拒絕。</div>'}
     <h3 class="sub-h">安全拒絕診斷（彙總）</h3>${diagnostics ? `<div class="rule-grid">${diagnostics}</div>` : '<div class="empty2">暫未有拒絕紀錄。</div>'}
@@ -1815,7 +1827,7 @@ function wilsonRolloverCard(validation) {
       const minimum = numeric(active.minimum_acceptable_odds_display) == null ? f2(active.minimum_acceptable_odds_raw) : String(active.minimum_acceptable_odds_display);
       const batch = numeric(last.batch_decided) ? `${numeric(last.batch_hits) || 0}/${numeric(last.batch_decided)}${last.initial_migration_full_cohort ? '（初始完整驗證 cohort）' : ''}` : '—';
       const progress = pending.display || `${numeric(pending.eligible_decided) || 0}/${numeric(pending.required) || 20}`;
-      return `<tr><td>條件 #${numeric(row.condition_number) == null ? '—' : Math.trunc(numeric(row.condition_number))}</td><td>${esc(version)} · ${esc(total)}</td><td>下限 ${esc(lower)} · 最低 ${esc(minimum)}</td><td>${esc(batch)}</td><td><b>${esc(progress)}</b></td></tr>`;
+      return `<tr><td>${esc(wilsonConditionLabel(row.condition_number))}</td><td>${esc(version)} · ${esc(total)}</td><td>下限 ${esc(lower)} · 最低 ${esc(minimum)}</td><td>${esc(batch)}</td><td><b>${esc(progress)}</b></td></tr>`;
     }).join('')}</tbody></table></div>
     <p class="mx-note">「命中 x/y」是已判定命中率，不是批次進度；批次只看最右欄 x/20。公開面板只顯示不可逆 fixture-market 摘要，不顯示供應商或賽事 ID。</p></section>`;
 }
@@ -1870,7 +1882,7 @@ function conditionBetRow(b) {
   return `<tr class="brow ${String(b.status || '').toLowerCase()}">
     <td class="mono nowrap">${hkDay(b.kickoff)} ${hkClock(b.kickoff)}</td>
     <td><b>${esc(b.home || '—')} <span class="dim">vs</span> ${esc(b.away || '—')}</b><div class="cell-sub">${esc(leagueDisplay(b.league || '—'))}</div></td>
-    <td class="lbl">${esc(marketLabel(b.market_label))}<div class="cell-sub">條件 #${numeric(b.condition_number) == null ? '—' : Math.trunc(numeric(b.condition_number))}</div></td>
+    <td class="lbl">${esc(marketLabel(b.market_label))}<div class="cell-sub">${esc(wilsonConditionLabel(b.condition_number))}</div></td>
     <td><b>${esc(publicText(b.selected_role || '—'))}</b></td>
     <td class="mono">${numeric(b.selected_line) == null ? '—' : numeric(b.selected_line).toString()}</td>
     <td class="mono">${f2(b.odds)}</td>

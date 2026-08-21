@@ -38,24 +38,42 @@ class ConditionSimulationUiTests(unittest.TestCase):
         self.assertIn("投注", (ROOT / "system" / "notify.py").read_text(encoding="utf-8"))
 
     def test_wilson_match_card_keeps_stable_number_and_low_odds_explanation(self) -> None:
-        for path in (ROOT / "crown" / "dashboard" / "app.js", ROOT / "hkjc-dashboard" / "app.js"):
+        for path, scope in (
+            (ROOT / "crown" / "dashboard" / "app.js", "皇冠 Wilson"),
+            (ROOT / "hkjc-dashboard" / "app.js", "足破 Wilson"),
+        ):
             source = path.read_text(encoding="utf-8")
             with self.subTest(path=path):
                 self.assertIn("function wilsonMatchText", source)
                 self.assertIn("function historicalConditionMatchText", source)
-                self.assertIn("合符條件 #", source)
+                self.assertIn("function wilsonConditionLabel", source)
+                self.assertIn(scope, source)
+                self.assertIn("合符 ${esc(wilsonConditionLabel(item.condition_number))}", source)
                 history = source[
                     source.index("function historicalConditionMatchText"):
                     source.index("function historicalConditionMatchText") + 1800
                 ]
-                self.assertIn("研究條件 #${esc(number)}", history)
+                self.assertIn("研究排名 #${esc(number)}", history)
                 self.assertIn("研究吻合／未納入正式 Wilson", history)
-                self.assertNotIn("合符條件 #", history)
+                self.assertNotIn("合符 ${esc(wilsonConditionLabel", history)
                 self.assertIn("minimum_required_odds_display", source)
                 self.assertIn("最低賠率要求", source)
                 self.assertIn("因賠率不足，不投注", source)  # authoritative only
                 self.assertIn("wilsonMatches.map(wilsonMatchText)", source)
                 self.assertIn("historicalMatches.map(historicalConditionMatchText)", source)
+
+    def test_granular_cards_never_fallback_to_a_rank_as_a_wilson_identity(self) -> None:
+        for path in (ROOT / "crown" / "dashboard" / "app.js", ROOT / "hkjc-dashboard" / "app.js"):
+            source = path.read_text(encoding="utf-8")
+            cards = source[
+                source.index("function historyConsensusCards"):
+                source.index("function historyConsensusCards") + 2800
+            ]
+            with self.subTest(path=path):
+                self.assertIn("const hasFrozenCondition", cards)
+                self.assertIn("研究排名 #${index + 1}（未凍結；不計前瞻）", cards)
+                self.assertNotIn("? Number(item.condition_number) : index + 1", cards)
+                self.assertIn("研究卡未有凍結 Wilson 身份", cards)
 
     def test_legacy_creation_paths_are_inactive_and_reset_is_manual(self) -> None:
         engine = (ROOT / "crown" / "engine.py").read_text(encoding="utf-8")
