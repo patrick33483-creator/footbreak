@@ -88,7 +88,15 @@ systemctl daemon-reload
 if crown_is_enabled_in_config; then
   echo "▸ Crown validation gate enabled; starting Crown timers"
   for timer in crown-round-update.timer crown-first-look-reconcile.timer crown-sweep.timer crown-tick.timer crown-settle.timer; do
-    systemctl enable "$timer"
+    # A copied-in timer can retain a stale disabled unit-file state across a
+    # rollback/forward deployment.  Recreate the timers.target link instead
+    # of trusting `restart` to imply persistence; health-check verifies the
+    # durable enabled state immediately afterwards.
+    systemctl reenable "$timer"
+    systemctl is-enabled --quiet "$timer" || {
+      echo "ERROR: $timer was not enabled after reenable" >&2
+      exit 1
+    }
     systemctl restart "$timer"
     if ! systemctl is-active --quiet "$timer"; then
       systemctl reset-failed "$timer" 2>/dev/null || true
