@@ -214,7 +214,14 @@ class FootbreakPinnapiSharpTests(unittest.TestCase):
                      patch.object(run_predict, "analyse_match", side_effect=sharp.ProviderError("PinnAPI down")):
                     results = run_predict.main(mode="due", horizon_min=90)
                 self.assertEqual(results, [])
-                self.assertEqual(run_predict.pending_watch_match_ids(), ["m1"])
+                self.assertEqual(run_predict.pending_watch_match_ids(), [])
+                ledger = json.loads(Path(directory, "sim_ledger.json").read_text(encoding="utf-8"))
+                self.assertEqual(
+                    ledger["native_stage_attempts"][-1]["status"], "FAILED",
+                )
+                self.assertEqual(
+                    ledger["native_stage_attempts"][-1]["reason"], "analysis_timeout_or_error",
+                )
                 self.assertEqual(json.loads(target.read_text(encoding="utf-8")), [])
             finally:
                 run_predict.HERE, run_predict.HK_SNAP = previous_here, previous_snap
@@ -241,7 +248,14 @@ class FootbreakPinnapiSharpTests(unittest.TestCase):
                      patch.object(run_predict, "analyse_match", return_value={"skip": "no full-match lines"}):
                     results = run_predict.main(mode="due", horizon_min=90)
                 self.assertEqual(results, [])
-                self.assertEqual(run_predict.pending_watch_match_ids(), ["m1"])
+                self.assertEqual(run_predict.pending_watch_match_ids(), [])
+                ledger = json.loads(Path(directory, "sim_ledger.json").read_text(encoding="utf-8"))
+                self.assertEqual(
+                    ledger["native_stage_attempts"][-1]["status"], "DATA_MISSING",
+                )
+                self.assertEqual(
+                    ledger["native_stage_attempts"][-1]["reason"], "analysis_data_missing",
+                )
             finally:
                 run_predict.HERE, run_predict.HK_SNAP = previous_here, previous_snap
 

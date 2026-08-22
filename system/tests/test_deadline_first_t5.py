@@ -38,9 +38,9 @@ class DeadlineFirstTickTests(unittest.TestCase):
         now = dt.datetime.now(run_predict.HKT)
         with tempfile.TemporaryDirectory() as directory, patch.object(run_predict, "HERE", directory):
             Path(directory, "sim_ledger.json").write_text(json.dumps(self._ledger(now, [
-                ("unavailable", 5, [{"stage": "T-30"}]), ("ready", 6, [{"stage": "T-30"}]),
+                ("unavailable", 5, [{"stage": "T-30"}]), ("ready", 4, [{"stage": "T-30"}]),
             ])))
-            ready = self._match("ready", now, 6)
+            ready = self._match("ready", now, 4)
             result = {"match_id": "ready", "kickoff_hkt": ready["kickOffTime"], "stage": "T-5", "candidates": []}
             def synchronous_call(kind, _payload, _deadline):
                 return result if kind == "analyse" else True
@@ -73,11 +73,11 @@ class DeadlineFirstTickTests(unittest.TestCase):
             ledger_path = Path(directory, "sim_ledger.json")
             ledger_path.write_text(json.dumps(self._ledger(now, [
                 ("hung", 5, [{"stage": "T-30"}]),
-                ("ready-one", 6, [{"stage": "T-30"}]),
-                ("ready-two", 7, [{"stage": "T-30"}]),
+                ("ready-one", 4, [{"stage": "T-30"}]),
+                ("ready-two", 3, [{"stage": "T-30"}]),
             ])), encoding="utf-8")
             matches = [self._match(key, now, minutes) for key, minutes in (
-                ("hung", 5), ("ready-one", 6), ("ready-two", 7)
+                ("hung", 5), ("ready-one", 4), ("ready-two", 3)
             )]
             def analyse(row, *_args, stage_override=None, **_kwargs):
                 if row["id"] == "hung":
@@ -90,7 +90,7 @@ class DeadlineFirstTickTests(unittest.TestCase):
                  patch.object(run_predict, "pick_one", return_value=(None, "觀望")):
                 rows = run_predict.main(horizon_min=90)
             self.assertLess(time.monotonic() - started, 2.0)
-            self.assertEqual([row["match_id"] for row in rows], ["ready-one", "ready-two"])
+            self.assertEqual([row["match_id"] for row in rows], ["ready-two", "ready-one"])
             saved = json.loads(ledger_path.read_text(encoding="utf-8"))
             self.assertEqual(
                 [row["stage"] for row in saved["watch"]["ready-one"]["stages"]], ["T-30", "T-5"]
@@ -107,9 +107,9 @@ class DeadlineFirstTickTests(unittest.TestCase):
              patch.object(record_picks, "LEDGER", str(Path(directory, "sim_ledger.json"))):
             ledger_path = Path(directory, "sim_ledger.json")
             ledger_path.write_text(json.dumps(self._ledger(now, [
-                ("first", 5, [{"stage": "T-30"}]), ("second", 6, [{"stage": "T-30"}]),
+                ("first", 4, [{"stage": "T-30"}]), ("second", 5, [{"stage": "T-30"}]),
             ])), encoding="utf-8")
-            matches = [self._match("first", now, 5), self._match("second", now, 6)]
+            matches = [self._match("first", now, 4), self._match("second", now, 5)]
             proof = Path(directory, "second-saw-first")
             def analyse(row, *_args, stage_override=None, **_kwargs):
                 if row["id"] == "second":
@@ -130,17 +130,32 @@ class DeadlineFirstTickTests(unittest.TestCase):
                 self.assertEqual(
                     [stage["stage"] for stage in saved["watch"][match_id]["stages"]].count("T-5"), 1
                 )
+                stage = saved["watch"][match_id]["stages"][-1]
+                self.assertEqual(stage["match_id"], match_id)
+                self.assertTrue(stage["kickoff_at_utc"].endswith("+00:00"))
+                self.assertTrue(stage["due_at_utc"].endswith("+00:00"))
+            terminal = {
+                (row["hkjc_match_id"], row["stage"]): row["status"]
+                for row in saved["native_stage_attempts"]
+                if row["status"] != "STARTED"
+            }
+            self.assertEqual(terminal[("first", "T-5")], "COMMITTED")
+            self.assertEqual(terminal[("second", "T-5")], "COMMITTED")
             # No pick means no active bet and no duplicate notification-eligible native row.
             self.assertEqual(saved["bets"], [])
 
-    def test_timeout_or_provider_error_leaves_t5_due_for_next_minute(self):
+    def test_timeout_or_provider_error_writes_terminal_t5_evidence(self):
         now = dt.datetime.now(run_predict.HKT)
         with tempfile.TemporaryDirectory() as directory, patch.object(run_predict, "HERE", directory):
             path = Path(directory, "sim_ledger.json")
             path.write_text(json.dumps(self._ledger(now, [("retry", 5, [{"stage": "T-30"}])])) )
             with patch.object(run_predict.H, "fetch_matches", side_effect=TimeoutError):
                 self.assertEqual(run_predict.main(horizon_min=90), [])
-            self.assertEqual(run_predict.pending_watch_match_ids(), ["retry"])
+            saved = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                saved["native_stage_attempts"][-1]["status"], "FAILED",
+            )
+            self.assertEqual(run_predict.pending_watch_match_ids(), [])
 
     def test_post_kickoff_result_is_never_persisted_as_native_t5(self):
         now = dt.datetime.now(run_predict.HKT)

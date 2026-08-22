@@ -28,9 +28,56 @@ except (OSError, ValueError, TypeError):
     raise SystemExit(2)
 
 hkt = timezone(timedelta(hours=8))
+utc = timezone.utc
 now = datetime.now(hkt)
-for row in watch.values():
+attempts = ledger.get("native_stage_attempts")
+attempts = attempts if isinstance(attempts, list) else []
+latest = {}
+for event in attempts:
+    if not isinstance(event, dict):
+        continue
+    key = (
+        str(event.get("hkjc_match_id") or ""),
+        str(event.get("kickoff_at_utc") or ""),
+        str(event.get("stage") or ""),
+    )
+    if all(key):
+        latest[key] = event
+
+for raw_id, row in watch.items():
     if not isinstance(row, dict):
+        continue
+    manifest = row.get("native_stage_manifest")
+    if isinstance(manifest, dict):
+        identity = manifest.get("identity")
+        jobs = manifest.get("jobs")
+        if not isinstance(identity, dict) or not isinstance(jobs, dict):
+            raise SystemExit(2)
+        match_id = str(identity.get("hkjc_match_id") or raw_id)
+        kickoff_utc = str(identity.get("kickoff_at_utc") or "")
+        try:
+            kickoff = datetime.fromisoformat(kickoff_utc.replace("Z", "+00:00")).astimezone(utc)
+        except (TypeError, ValueError):
+            raise SystemExit(2)
+        if now.astimezone(utc) >= kickoff:
+            continue
+        stages = {str(stage.get("stage")) for stage in (row.get("stages") or []) if isinstance(stage, dict)}
+        for stage in ("T-30", "T-5"):
+            job = jobs.get(stage)
+            if not isinstance(job, dict):
+                raise SystemExit(2)
+            try:
+                due_at = datetime.fromisoformat(
+                    str(job.get("due_at_utc") or "").replace("Z", "+00:00")
+                ).astimezone(utc)
+            except (TypeError, ValueError):
+                raise SystemExit(2)
+            event = latest.get((match_id, kickoff_utc, stage))
+            terminal = str((event or {}).get("status") or "") in {
+                "COMMITTED", "FAILED", "DATA_MISSING", "EXPIRED",
+            }
+            if now.astimezone(utc) >= due_at and stage not in stages and not terminal:
+                raise SystemExit(0)
         continue
     try:
         kickoff = datetime.fromisoformat(str(row.get("kickoff") or "").replace("Z", "+00:00"))

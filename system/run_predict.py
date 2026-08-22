@@ -21,6 +21,10 @@ import sharp as S
 import context as C
 import predict as P
 import staking as K
+try:
+    import native_stage_state as stage_state
+except ImportError:  # package import used by offline tests
+    from system import native_stage_state as stage_state
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 HKT = dt.timezone(dt.timedelta(hours=8))
@@ -85,16 +89,27 @@ def due_now(mins: float, done: set) -> str | None:
 
 def _ledger_watch(*, strict: bool = False) -> dict:
     """Read the authoritative persisted schedule without silently masking corruption."""
+    payload = _ledger_payload(strict=strict)
+    watch = payload.get("watch") if isinstance(payload, dict) else None
+    if isinstance(watch, dict):
+        return watch
+    if strict:
+        raise ValueError("watch is not a mapping")
+    return {}
+
+
+def _ledger_payload(*, strict: bool = False) -> dict:
+    """Read the whole native ledger for manifest/attempt transitions."""
     fp = os.path.join(HERE, "sim_ledger.json")
     if not os.path.exists(fp):
-        return {}
+        return {"watch": {}}
     try:
         with open(fp, encoding="utf-8") as handle:
             payload = json.load(handle)
         watch = payload.get("watch")
         if not isinstance(watch, dict):
             raise ValueError("watch is not a mapping")
-        return watch
+        return payload
     except (OSError, ValueError, TypeError, json.JSONDecodeError):
         if strict:
             raise
@@ -130,35 +145,37 @@ def _parse_persisted_kickoff(value):
 
 
 def persisted_due_stages(horizon_min: float = 90.0, *, strict: bool = False):
-    """Return locally scheduled native T-5/T-30 work before any provider call.
-
-    A persisted native stage is complete regardless of its betting verdict.  A
-    transiently unavailable fixture has no stage and therefore remains due for
-    the next tick.  Bad legacy rows are ignored individually, while an unreadable
-    ledger is surfaced to callers that must fail closed.
-    """
-    watch = _ledger_watch(strict=strict)
+    """Return persisted `due_at <= now < kickoff` native work before providers."""
+    payload = _ledger_payload(strict=strict)
+    watch = payload.get("watch") if isinstance(payload, dict) else {}
     now = dt.datetime.now(HKT)
-    due = []
-    for mid, row in watch.items():
-        if not isinstance(row, dict):
-            continue
-        kickoff = _parse_persisted_kickoff(row.get("kickoff"))
-        if kickoff is None:
-            continue
-        minutes = (kickoff - now).total_seconds() / 60.0
-        if not (0.0 < minutes <= horizon_min):
-            continue
-        stages = {
-            str(stage.get("stage")) for stage in (row.get("stages") or [])
-            if isinstance(stage, dict) and stage.get("stage")
-        }
-        stage = due_now(minutes, stages)
-        if stage:
-            due.append((kickoff, str(mid), row, stage))
-    # Every T-5 gets priority over T-30, then earliest kickoff first.
-    due.sort(key=lambda item: (item[3] != "T-5", item[0], item[1]))
-    return due
+    due = stage_state.due_stage_work(payload, now=now, horizon_minutes=horizon_min)
+    # Compatibility for pre-deploy/read-only callers.  The real tick first
+    # persists manifests; this fallback never writes or fabricates a stage.
+    if not due:
+        for mid, row in (watch.items() if isinstance(watch, dict) else ()):
+            if not isinstance(row, dict) or row.get("native_stage_manifest"):
+                continue
+            kickoff = _parse_persisted_kickoff(row.get("kickoff"))
+            if kickoff is None:
+                continue
+            stage = due_now((kickoff - now).total_seconds() / 60.0, {
+                str(item.get("stage")) for item in (row.get("stages") or [])
+                if isinstance(item, dict) and item.get("stage")
+            })
+            if stage:
+                due.append({
+                    "hkjc_match_id": str(row.get("match_id") or mid),
+                    "watch_key": str(mid), "watch": row, "stage": stage,
+                    "kickoff_at_hkt": kickoff.isoformat(),
+                })
+    output = []
+    for item in due:
+        kickoff = _parse_persisted_kickoff(item.get("kickoff_at_hkt"))
+        if kickoff is not None:
+            output.append((kickoff, str(item["hkjc_match_id"]), item["watch"], item["stage"]))
+    output.sort(key=lambda item: (item[3] != "T-5", item[0], item[1]))
+    return output
 
 
 def pending_watch_match_ids(horizon_min: float = 90.0) -> list[str]:
@@ -572,6 +589,13 @@ def _due_worker(send, kind: str, payload) -> None:
         if kind == "analyse":
             match, fixture, stage, previous = payload
             value = analyse_match(match, fixture, news=None, prev_snap=previous, stage_override=stage)
+        elif kind == "optional_drain":
+            import record_picks
+            # Keep the sidecar retry bound to the same ledger selected by this
+            # timer instance (including isolated test/recovery directories).
+            record_picks.HERE = HERE
+            record_picks.LEDGER = os.path.join(HERE, "sim_ledger.json")
+            value = record_picks.drain_post_commit_jobs()
         else:
             _persist_urgent_result(payload)
             value = True
@@ -638,6 +662,78 @@ def _persist_urgent_result(result: dict) -> None:
             pass
 
 
+def _update_native_stage_ledger(mutator):
+    """Apply one local manifest/attempt transition as an atomic ledger write."""
+    payload = _ledger_payload(strict=True)
+    changed, value = mutator(payload)
+    if changed:
+        write_json_atomic(os.path.join(HERE, "sim_ledger.json"), payload)
+    return value
+
+
+def _repair_native_stage_schedule(now: dt.datetime) -> tuple[int, int]:
+    """Materialize future legacy work and expire lapsed jobs without providers."""
+    def repair(payload):
+        migrated = stage_state.migrate_future_manifests(payload, now=now)
+        expired = stage_state.expire_lapsed_work(payload, now=now)
+        return bool(migrated or expired), (migrated, expired)
+    return _update_native_stage_ledger(repair)
+
+
+def _start_due_attempts(due, now: dt.datetime) -> dict[tuple[str, str], dict]:
+    """Durably journal every selected batch item before any provider read."""
+    wanted = {(str(mid), str(stage)) for _ko, mid, _watch, stage in due}
+
+    def start(payload):
+        watches = payload.get("watch") if isinstance(payload.get("watch"), dict) else {}
+        started = {}
+        changed = False
+        for raw_id, watch in watches.items():
+            if not isinstance(watch, dict):
+                continue
+            match_id = str(watch.get("match_id") or raw_id)
+            for stage in ("T-30", "T-5"):
+                if (match_id, stage) not in wanted:
+                    continue
+                try:
+                    event = stage_state.start_attempt(payload, watch, stage, now=now)
+                except ValueError:
+                    continue
+                started[(match_id, stage)] = event
+                changed = True
+        return changed, started
+    return _update_native_stage_ledger(start)
+
+
+def _finish_due_attempts(attempts, status: str, now: dt.datetime, reason: str) -> None:
+    """Append terminal evidence for one or more already-journaled attempts."""
+    pending = [row for row in attempts if isinstance(row, dict)]
+    if not pending:
+        return
+
+    def finish(payload):
+        changed = False
+        latest = stage_state.latest_attempts(payload)
+        for attempt in pending:
+            key = (
+                str(attempt.get("hkjc_match_id") or ""),
+                str(attempt.get("kickoff_at_utc") or ""),
+                str(attempt.get("stage") or ""),
+            )
+            current = latest.get(key)
+            if not isinstance(current, dict) or str(current.get("status") or "") in stage_state.TERMINAL:
+                continue
+            stage_state.finish_attempt(payload, current, status, now=now, reason=reason)
+            changed = True
+            latest = stage_state.latest_attempts(payload)
+        return changed, None
+    _update_native_stage_ledger(finish)
+
+
+def _expired_attempt(attempt: dict, now: dt.datetime, reason: str) -> None:
+    _finish_due_attempts([attempt], "EXPIRED", now, reason)
+
+
 def _run_due_tick(match_ids, horizon_min, out, force, stage_filter):
     """Deadline-first local queue: no board discovery, fixture list, or dashboard work."""
     try:
@@ -645,6 +741,7 @@ def _run_due_tick(match_ids, horizon_min, out, force, stage_filter):
     except ValueError:
         pass_budget = 40.0
     deadline = time.monotonic() + min(45.0, max(5.0, pass_budget))
+    _repair_native_stage_schedule(dt.datetime.now(HKT))
     due = persisted_due_stages(horizon_min, strict=True)
     if stage_filter:
         due = [item for item in due if item[3] == stage_filter]
@@ -655,6 +752,7 @@ def _run_due_tick(match_ids, horizon_min, out, force, stage_filter):
         write_json_atomic(os.path.join(HERE, out), [])
         print("0 場已處理 · 本地到期隊列為空（沒有遠端查詢）")
         return []
+    attempts = _start_due_attempts(due, dt.datetime.now(HKT))
     # Direct fixture reads are the only mandatory remote operation in a tick.
     by_id = {}
     for start in range(0, len(due), 20):
@@ -663,60 +761,108 @@ def _run_due_tick(match_ids, horizon_min, out, force, stage_filter):
         try:
             rows = H.fetch_matches(match_ids=[item[1] for item in due[start:start + 20]])
         except Exception as exc:
-            print(f"到期賽事直接查詢暫不可用（{type(exc).__name__}）；保留下一輪重試")
-            break
+            batch = [attempts.get((item[1], item[3])) for item in due[start:start + 20]]
+            _finish_due_attempts(
+                batch, "FAILED", dt.datetime.now(HKT),
+                f"provider_fetch_{type(exc).__name__}",
+            )
+            print(f"到期賽事直接查詢失敗（{type(exc).__name__}）；已寫入 terminal evidence")
+            continue
         by_id.update({str(row.get("id")): row for row in rows if row.get("id") is not None})
     results = []
     for kickoff, mid, watch, scheduled_stage in due:
         if time.monotonic() >= deadline:
             break
+        attempt = attempts.get((mid, scheduled_stage))
+        if not isinstance(attempt, dict):
+            continue
         match = by_id.get(mid)
-        # Provider omission/unavailability is deliberately not a native stage:
-        # it remains due until kickoff and cannot be backfilled afterwards.
-        if not isinstance(match, dict) or match.get("status") != "PREEVENT":
+        if not isinstance(match, dict):
+            _finish_due_attempts(
+                [attempt], "DATA_MISSING", dt.datetime.now(HKT),
+                "provider_fixture_missing",
+            )
+            continue
+        if match.get("status") != "PREEVENT":
+            if kickoff <= dt.datetime.now(HKT):
+                _expired_attempt(attempt, dt.datetime.now(HKT), "kickoff_elapsed_before_provider_stage")
+            else:
+                _finish_due_attempts(
+                    [attempt], "DATA_MISSING", dt.datetime.now(HKT),
+                    f"provider_status_{str(match.get('status') or 'missing').lower()}",
+                )
             continue
         ko = H.parse_kickoff(match)
-        if ko is None or ko <= dt.datetime.now(HKT):
+        if ko is None:
+            _finish_due_attempts([attempt], "DATA_MISSING", dt.datetime.now(HKT), "provider_kickoff_missing")
             continue
-        existing = done_stages().get(mid, set())
-        stage = due_now((ko - dt.datetime.now(HKT)).total_seconds() / 60.0, existing)
-        if stage is None or stage != scheduled_stage:
+        if ko <= dt.datetime.now(HKT):
+            _expired_attempt(attempt, dt.datetime.now(HKT), "kickoff_elapsed_before_analysis")
+            continue
+        if abs((ko.astimezone(dt.timezone.utc) - kickoff.astimezone(dt.timezone.utc)).total_seconds()) > 60:
+            _finish_due_attempts([attempt], "DATA_MISSING", dt.datetime.now(HKT), "provider_kickoff_identity_mismatch")
+            continue
+        current_due = {
+            (entry[1], entry[3]) for entry in persisted_due_stages(horizon_min, strict=True)
+        }
+        if (mid, scheduled_stage) not in current_due:
+            if ko <= dt.datetime.now(HKT):
+                _expired_attempt(attempt, dt.datetime.now(HKT), "kickoff_elapsed_before_analysis")
             continue
         fixture_id = None if force else watch.get("fixture_id")
         fixture = _fixture_from_watch(watch, str(fixture_id)) if fixture_id else None
         result = _bounded_due_call(
-            "analyse", (match, fixture, stage, load_hk_snaps().get(mid)), deadline
+            "analyse", (match, fixture, scheduled_stage, load_hk_snaps().get(mid)), deadline
         )
-        # A timeout/error is deliberately not a final T-5 decision: it remains
-        # due and is retried with fresh pre-kickoff inputs on the next minute.
-        if not isinstance(result, dict) or result.get("skip"):
-            print(f"{stage} 分析暫不可用；保留下一輪重試")
+        if not isinstance(result, dict):
+            _finish_due_attempts([attempt], "FAILED", dt.datetime.now(HKT), "analysis_timeout_or_error")
+            print(f"{scheduled_stage} 分析失敗；已寫入 terminal evidence")
+            continue
+        if result.get("skip"):
+            _finish_due_attempts([attempt], "DATA_MISSING", dt.datetime.now(HKT), "analysis_data_missing")
             continue
         if ko <= dt.datetime.now(HKT):
+            _expired_attempt(attempt, dt.datetime.now(HKT), "kickoff_elapsed_before_persist")
             continue
         result["mins_to_ko"] = (ko - dt.datetime.now(HKT)).total_seconds() / 60.0
         pick, reason = pick_one(result)
-        result["can_bet"] = stage == "T-5"
+        result["can_bet"] = scheduled_stage == "T-5"
         result["pick"] = pick if result["can_bet"] else None
         result["lead_view"] = pick
-        result["no_bet_reason"] = reason if result["can_bet"] else (f"{stage} 只作預測,落注統一喺 T-5" if pick else reason)
+        result["no_bet_reason"] = reason if result["can_bet"] else (f"{scheduled_stage} 只作預測,落注統一喺 T-5" if pick else reason)
+        result["_native_stage_attempt_id"] = attempt["attempt_id"]
         # Atomic state/bet persistence is intentionally before the next fixture.
         if _bounded_due_call("persist", result, deadline) is not True:
-            # Atomic write did not confirm before its budget.  Treat it as
-            # uncommitted; a next tick re-reads the ledger and safely retries.
+            _finish_due_attempts([attempt], "FAILED", dt.datetime.now(HKT), "persistence_timeout_or_error")
             continue
         results.append(result)
         write_json_atomic(os.path.join(HERE, out), results)
+    unfinished = [
+        attempt for attempt in attempts.values()
+        if isinstance(attempt, dict)
+    ]
+    if time.monotonic() >= deadline:
+        _finish_due_attempts(
+            unfinished, "FAILED", dt.datetime.now(HKT), "tick_deadline_elapsed",
+        )
     results.sort(key=lambda row: row.get("mins_to_ko", 999999))
     write_json_atomic(os.path.join(HERE, out), results)
-    print(f"{len(results)} 場到期階段已逐場持久化；未完成項目會在下一輪重試")
+    print(
+        f"{len(results)} 場到期階段已逐場持久化；"
+        "非終結 STARTED 只會在開賽前由重啟恢復，終結失敗已保留證據"
+    )
     return results
 
 
 def main(match_ids=None, horizon_min=700, out="predictions.json", mode="due", force=False, stage_filter=None):
     """Run the deadline-first due queue or the separate full-board sweep."""
     if mode == "due":
-        return _run_due_tick(match_ids, horizon_min, out, force, stage_filter)
+        rows = _run_due_tick(match_ids, horizon_min, out, force, stage_filter)
+        # Run durable deferred consumers only after the native due path has
+        # selected and committed its work. A timeout here cannot roll back or
+        # delay a native stage; the queue remains retryable on the next tick.
+        _bounded_due_call("optional_drain", None, time.monotonic() + 2.0)
+        return rows
     matches = [m for m in fetch_matches_with_due_recovery(mode, horizon_min) if m.get("status") == "PREEVENT"]
     matches.sort(key=lambda row: H.parse_kickoff(row) or dt.datetime.max.replace(tzinfo=dt.timezone.utc))
     try:
