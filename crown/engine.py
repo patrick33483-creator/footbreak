@@ -155,14 +155,20 @@ def _repair_durable_stage_jobs(config: Settings, now: datetime) -> int:
 
 
 def _tick_pass_deadline_seconds() -> float:
-    """Return a bounded tick budget, leaving time for the service to stop cleanly."""
+    """Return the bounded native-stage tick budget.
+
+    The systemd service owns the final stop margin.  Within this budget the
+    durable native T-30/T-5 write is authoritative: Telegram, dashboards and
+    other consumers must use only whatever time remains after that write.
+    """
     try:
         configured = float(os.getenv("CROWN_TICK_PASS_DEADLINE_SECONDS", "30"))
     except ValueError:
         configured = 30.0
-    # The systemd service is the final 55-second backstop.  Keep the in-process
-    # budget meaningfully below it, including when an operator misconfigures it.
-    return min(40.0, max(1.0, configured))
+    # The service timeout is 55 seconds.  Retain a small stop margin while
+    # permitting a same-minute batch of exact-ID snapshots to complete and
+    # commit before kickoff.
+    return min(50.0, max(1.0, configured))
 
 
 def _tick_workers() -> int:
@@ -179,26 +185,21 @@ def _deadline_remaining(deadline: float) -> float:
 
 
 _MIN_DEADLINE_CALL_SECONDS = 0.25
-_TICK_NOTIFICATION_RESERVE_SECONDS = 8.0
 _TIMED_STAGE_COMMIT_RESERVE_SECONDS = 8.0
 _TIMED_STAGE_DIRECT_MAX_SECONDS = 8.0
 _TIMED_STAGE_LOCK_WAIT_SECONDS = 2.0
 
 
 def _tick_provider_deadline_seconds() -> float:
-    """Leave a bounded post-persistence window for one outbox delivery.
+    """Give the native provider/commit path the full bounded tick budget.
 
-    The tick owns discovery and provider work only until this sub-deadline.
-    The caller retains the remainder for the durable Telegram outbox before
-    any optional local dashboard projection.  Scale the reserve for small
-    test/operator budgets without making the provider deadline negative.
+    A former Telegram reserve shortened a 30-second tick to 22.5 seconds.
+    Under a same-kickoff batch this terminated the engine after writing
+    STARTED journals but before atomically committing native snapshots.  The
+    durable core now takes the whole bounded budget; callers may run transport
+    only from genuinely leftover time.
     """
-    budget = _tick_pass_deadline_seconds()
-    reserve = min(
-        _TICK_NOTIFICATION_RESERVE_SECONDS,
-        max(_MIN_DEADLINE_CALL_SECONDS, budget * 0.25),
-    )
-    return max(0.0, budget - reserve)
+    return _tick_pass_deadline_seconds()
 
 
 def _tick_hkjc_fetch_process(send: Any) -> None:

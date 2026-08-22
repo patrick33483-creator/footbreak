@@ -126,13 +126,13 @@ def _run_tick_engine(config, tick_deadline: float) -> dict[str, object]:
 
     Atomic state writes remain authoritative if the worker reaches a commit.
     If any local read, provider call or lock stalls, the parent terminates the
-    worker at the provider cutoff and still has time to retry the durable
-    Wilson outbox.
+    worker at the native-stage cutoff; any consumer is deferred rather than
+    reducing this pre-kickoff evidence window.
     """
-    provider_budget = _tick_pass_deadline_seconds()
-    from .engine import _tick_provider_deadline_seconds
-    reserve = max(0.0, provider_budget - _tick_provider_deadline_seconds())
-    provider_cutoff = tick_deadline - reserve
+    # Native stage durability is the critical path.  Consumers such as the
+    # Telegram transport are attempted below only from actual remaining time;
+    # never reserve time for them by truncating a due T-30/T-5 collection.
+    provider_cutoff = tick_deadline
     max_seconds = max(
         0.0,
         provider_cutoff - time.monotonic() - _TICK_ENGINE_TEARDOWN_MARGIN_SECONDS,

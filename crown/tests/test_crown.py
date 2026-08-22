@@ -1953,7 +1953,7 @@ class CrownSafetyTests(unittest.TestCase):
         self.assertEqual(rows, [])
         self.assertLess(time.monotonic() - started, 0.75)
 
-    def test_tick_provider_subdeadline_reserves_notification_delivery_window(self) -> None:
+    def test_tick_provider_subdeadline_preserves_full_native_stage_budget(self) -> None:
         from crown import engine as crown_engine
 
         with patch.dict(
@@ -1962,8 +1962,15 @@ class CrownSafetyTests(unittest.TestCase):
             total = crown_engine._tick_pass_deadline_seconds()
             provider = crown_engine._tick_provider_deadline_seconds()
         self.assertEqual(total, 30.0)
-        self.assertEqual(provider, 22.5)
-        self.assertGreaterEqual(total - provider, 6.0)
+        self.assertEqual(provider, 30.0)
+
+    def test_tick_budget_allows_fifty_seconds_inside_fifty_five_second_unit(self) -> None:
+        from crown import engine as crown_engine
+
+        with patch.dict(
+            os.environ, {"CROWN_TICK_PASS_DEADLINE_SECONDS": "50"}, clear=False,
+        ):
+            self.assertEqual(crown_engine._tick_pass_deadline_seconds(), 50.0)
 
     def test_same_kickoff_t5_batch_uses_each_locked_direct_fixture_id(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

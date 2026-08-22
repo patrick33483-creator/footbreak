@@ -10,10 +10,10 @@ WorkingDirectory=/opt/footbreak
 ExecStartPre=/opt/footbreak/.venv/bin/python3 /opt/footbreak/system/disk_guard.py --preflight
 ExecStartPre=/opt/footbreak/deploy/crown-tick-preempt.sh
 ExecStart=/opt/footbreak/deploy/crown-run.sh tick
-# The engine persists completed fixture stages independently and terminates
-# overdue provider workers before this. Keep a 25-second envelope for bounded
-# state/dashboard/notification cleanup and runner incident bookkeeping.
-Environment=CROWN_TICK_PASS_DEADLINE_SECONDS=30
+# The native stage journal + exact-ID snapshot + atomic commit are the only
+# critical path.  Consumers use leftover time; the 55-second unit timeout
+# retains the final stop margin.
+Environment=CROWN_TICK_PASS_DEADLINE_SECONDS=50
 Environment=CROWN_HKJC_EXECUTION_EVIDENCE_PATH=/opt/footbreak/system/sim_ledger.json
 # Footbreak owns this ledger; Crown's reciprocal adapter only reads it.
 ReadOnlyPaths=/opt/footbreak/system/sim_ledger.json
