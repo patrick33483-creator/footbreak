@@ -7,7 +7,6 @@ writes no ledger/dashboard data, and never invokes a result or tick worker.
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import subprocess
 from collections import Counter, defaultdict
@@ -119,6 +118,10 @@ def evidence_chain(
         if str(version.get("evidence_hash") or "") != _version_hash(version):
             well_formed = False
             failures.append("evidence_hash_mismatch")
+        initial_migration = version.get("initial_migration_full_cohort") is True
+        if initial_migration and index != 2:
+            well_formed = False
+            failures.append("initial_migration_not_v2")
         if previous is not None:
             if version.get("prior_version") != previous.get("version"):
                 well_formed = False
@@ -127,14 +130,27 @@ def evidence_chain(
                 well_formed = False
                 failures.append("prior_hash_mismatch")
             batch = version.get("batch_fixture_market_hashes")
-            if not isinstance(batch, list) or len(batch) != ROLLOVER_BATCH_SIZE:
-                well_formed = False
-                failures.append("non_exact_rollover_batch")
+            # Version 2 can be the one-time, immutable legacy aggregate
+            # migration.  It deliberately has no historical fixture hashes,
+            # records the cohort in legacy_prospective_cohort, and resets the
+            # prospective 0/20 counter.  Every later rollover must contain
+            # exactly the chronological 20-row fixture-market cohort.
+            if initial_migration:
+                if batch != []:
+                    well_formed = False
+                    failures.append("initial_migration_has_fixture_batch")
+                if not isinstance(version.get("legacy_prospective_cohort"), dict):
+                    well_formed = False
+                    failures.append("initial_migration_missing_legacy_cohort")
             else:
-                batch_hashes.extend(str(item) for item in batch)
-            if version.get("batch_decided") != ROLLOVER_BATCH_SIZE:
-                well_formed = False
-                failures.append("batch_decided_not_20")
+                if not isinstance(batch, list) or len(batch) != ROLLOVER_BATCH_SIZE:
+                    well_formed = False
+                    failures.append("non_exact_rollover_batch")
+                else:
+                    batch_hashes.extend(str(item) for item in batch)
+                if version.get("batch_decided") != ROLLOVER_BATCH_SIZE:
+                    well_formed = False
+                    failures.append("batch_decided_not_20")
         rendered_versions.append({
             "version": version.get("version"),
             "cumulative_hits": version.get("cumulative_hits"),
@@ -142,6 +158,7 @@ def evidence_chain(
             "activation_boundary_at": version.get("activation_boundary_at"),
             "evidence_hash_prefix": str(version.get("evidence_hash") or "")[:24],
             "batch_decided": version.get("batch_decided"),
+            "initial_migration_full_cohort": initial_migration,
         })
         previous = version
     if len(batch_hashes) != len(set(batch_hashes)):

@@ -70,6 +70,21 @@ def _fixture_name(watch: dict[str, Any]) -> str:
     return f"{watch.get('home') or ''} vs {watch.get('away') or ''}".strip()
 
 
+def _formal_audit_items(value: Any) -> list[dict[str, Any]]:
+    """Return the durable admission audit in a minimal public-safe shape."""
+    if not isinstance(value, list):
+        return []
+    return [{
+        key: row.get(key)
+        for key in (
+            "market", "status", "reason", "condition_number",
+            "frozen_condition_signature", "observation_id", "bet_id",
+            "minimum_acceptable_odds", "native_odds",
+        )
+        if key in row
+    } for row in value if isinstance(row, dict)]
+
+
 def _frozen_axes(candidate: dict[str, Any]) -> dict[str, str] | None:
     """Mirror the formal matcher axes so a rejected path is explainable."""
     aliases = {
@@ -181,6 +196,7 @@ def main() -> int:
     attempts = [row for row in reciprocal.get("counterpart_attempts") or [] if isinstance(row, dict)]
     audit_rows = [row for row in reciprocal.get("audit") or [] if isinstance(row, dict)]
     observations = [row for row in validation.get("observations") or [] if isinstance(row, dict)]
+    formal_audit = [row for row in validation.get("audit") or [] if isinstance(row, dict)]
     sent_wilson = {str(value) for value in state.get("wilson_match_alerts") or []}
     sent_bilateral = {str(value) for value in state.get("bilateral_decision_alerts") or []}
 
@@ -222,8 +238,16 @@ def main() -> int:
                     str(row.get("match_id") or "") == str(fixture)
                     and str(row.get("market") or row.get("code") or "") == market
                     and str(row.get("stage") or "") == DECISION_STAGE
-                    and str(row.get("created_at") or "") == stage_at.isoformat()
                 )]
+                # The admission evaluator uses its own durable ``now`` stamp,
+                # which can legitimately differ by seconds from the snapshot
+                # timestamp.  Match the immutable fixture/market/stage identity
+                # rather than falsely treating that timing detail as no row.
+                row_formal_audit = [
+                    row for row in formal_audit
+                    if str(row.get("match_id") or "") == str(fixture)
+                    and str(row.get("market") or "") in {market, "*"}
+                ][-20:]
                 row_decisions = [row for row in decisions if (
                     str(row.get("fixture") or "") == str(fixture)
                     and str(row.get("market") or "") == market
@@ -270,6 +294,17 @@ def main() -> int:
                             "minimum_odds": (row.get("arithmetic") or {}).get("minimum_acceptable_odds_raw"),
                         } for row in admissions],
                     },
+                    # This is the T-5 snapshot written atomically with the
+                    # stage.  It distinguishes a deliberate deadline deferral
+                    # from a normal evaluator result without invoking one.
+                    "stored_formal_admission_pending": (
+                        stage.get("formal_admission_pending") is True
+                    ),
+                    "stored_t5_wilson_audit": _formal_audit_items(
+                        (stage.get("wilson_validation") or {}).get("audit")
+                        if isinstance(stage.get("wilson_validation"), dict) else None
+                    ),
+                    "durable_formal_admission_audit": _formal_audit_items(row_formal_audit),
                     "formal_observations": [{
                         "observation_id": row.get("observation_id"), "status": row.get("status"),
                         "bet_status": row.get("bet_status"), "odds": row.get("odds"),

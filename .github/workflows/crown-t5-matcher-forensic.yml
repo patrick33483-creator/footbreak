@@ -118,6 +118,9 @@ jobs:
                   'no_match_reason': row.get('no_match_reason'),
                   'formal_observations': row.get('formal_observations'),
                   'admission': row.get('admission'),
+                  'stored_formal_admission_pending': row.get('stored_formal_admission_pending'),
+                  'stored_t5_wilson_audit': row.get('stored_t5_wilson_audit'),
+                  'durable_formal_admission_audit': row.get('durable_formal_admission_audit'),
               })
           body = json.dumps({
               'mode': report.get('mode'), 'since': report.get('since'),
