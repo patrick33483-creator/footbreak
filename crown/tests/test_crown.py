@@ -2180,7 +2180,13 @@ class CrownSafetyTests(unittest.TestCase):
             with patch.dict(os.environ, {
                 "CROWN_TICK_PASS_DEADLINE_SECONDS": "3",
                 "CROWN_TICK_MAX_WORKERS": "1",
-            }, clear=False), patch("crown.engine.TitanClient", return_value=titan_client):
+            }, clear=False), patch("crown.engine.TitanClient", return_value=titan_client), \
+                patch("crown.ledger.challenger_v2.recompute", side_effect=AssertionError(
+                    "a missing T-5 must commit before auxiliary aggregation"
+                )), \
+                patch("crown.engine.recompute_stats", side_effect=AssertionError(
+                    "a missing T-5 must commit before portfolio aggregation"
+                )):
                 result = run("tick", config)
             self.assertLess(time.monotonic() - started, 2.8)
             self.assertEqual(result["direct_id_attempted"], 1)

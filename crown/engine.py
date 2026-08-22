@@ -1662,7 +1662,9 @@ def _commit_stage_predictions(
                 ledger,
                 prediction,
                 config,
-                defer_auxiliary_recompute=stage != "T-5",
+                defer_auxiliary_recompute=(
+                    stage != "T-5" or prediction.get("status") == "DATA_MISSING"
+                ),
             )
             emitted.extend(created)
             prediction["stages"] = list(
@@ -1688,6 +1690,7 @@ def _commit_stage_predictions(
         # is split, because it owns the active frozen observation projection.
         if any(
             str(prediction.get("stage") or "") == "T-5"
+            and prediction.get("status") != "DATA_MISSING"
             for prediction in committed_predictions
         ):
             recompute_stats(ledger, config)
