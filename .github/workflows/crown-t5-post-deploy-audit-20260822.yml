@@ -252,6 +252,27 @@ jobs:
           path: crown-tick-journal-19532016.log
           retention-days: 14
 
+      - name: Read crown-tick env override diagnostics (read only, no secret values printed)
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "echo '--- systemctl show crown-tick.service Environment ---'; sudo systemctl show crown-tick.service -p Environment; echo '--- grep TICK_PASS_DEADLINE/TIMEOUT_START/STOP_MARGIN in env files (keys only, redacted) ---'; for f in /etc/footbreak.env /etc/footbreak-crown.env; do echo \"file: \$f\"; sudo test -f \"\$f\" && sudo grep -nE '^(CROWN_TICK_PASS_DEADLINE_SECONDS|CROWN_TICK_TIMEOUT_START_SECONDS|CROWN_TICK_STOP_MARGIN_SECONDS)=' \"\$f\" || echo '  (no match or file missing)'; done; echo '--- sentinel file check ---'; sudo stat /run/crown-tick-start-epoch 2>&1 || echo 'sentinel missing'; sudo cat /run/crown-tick-start-epoch 2>&1 || true; echo; date +%s" \
+            > crown-tick-env-diagnostic.log || true
+          cat crown-tick-env-diagnostic.log || true
+
+      - name: Upload env diagnostic
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: crown-tick-env-diagnostic-${{ github.run_id }}
+          path: crown-tick-env-diagnostic.log
+          retention-days: 14
+
       - name: Read footbreak-result-reconcile.service status and journal (read only, diagnostic only)
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
