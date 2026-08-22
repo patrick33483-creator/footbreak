@@ -1,0 +1,145 @@
+name: Crown T-5 deep diagnose 20260822 (read only)
+
+on:
+  workflow_dispatch:
+    inputs:
+      fixture_ids:
+        description: 'Comma-separated Crown hkjc_match_id list to audit'
+        required: true
+        type: string
+        default: '3000041,3000419,3021959,3066232,3067957,3069559,3069560,2940414,3000033,3000036,3000037,3000038,3000039,3000040,3000415,3000416,3000418,3001141,3001142,3001144,3001145,3001149,3023758,3035877,3066201,3068556,3000420,2925510,2925511,2925512,2925513,2929693,2929694,2929695,2929696,3000421'
+  push:
+    branches:
+      - audit/crown-t5-deep-diagnose-20260822
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: Read durable Crown ledger job/attempt/incident/log state for flagged fixtures
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          FIXTURE_IDS: ${{ inputs.fixture_ids }}
+        run: |
+          set -euo pipefail
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "sudo env FIXTURE_IDS='$FIXTURE_IDS' PYTHONPATH=/opt/footbreak /opt/footbreak/.venv/bin/python3 -" \
+            > crown-t5-deep-diagnose.json <<'PY'
+          import json
+          import os
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          from crown.common import HKT, parse_time
+
+          def read_json(path, default):
+              try:
+                  return json.loads(Path(path).read_text(encoding="utf-8"))
+              except Exception:
+                  return default
+
+          ids = [x.strip() for x in os.environ.get("FIXTURE_IDS", "").split(",") if x.strip()]
+          now = datetime.now(HKT)
+          ledger = read_json("/var/lib/footbreak/crown/ledger.json", {})
+          cards = read_json("/var/lib/footbreak/crown/predictions.json", [])
+          cards_by_id = {str(row.get("match_id")): row for row in cards if isinstance(row, dict)}
+          watches = ledger.get("watch") if isinstance(ledger.get("watch"), dict) else {}
+          full_log = ledger.get("log") if isinstance(ledger.get("log"), list) else []
+          TERMINAL = {"COMMITTED", "FAILED", "DATA_MISSING", "EXPIRED"}
+
+          rows = []
+          for mid in ids:
+              watch = watches.get(mid) if isinstance(watches, dict) else None
+              card = cards_by_id.get(mid, {})
+              if not isinstance(watch, dict):
+                  rows.append({
+                      "match_id": mid, "found_in_ledger": False,
+                      "reason": "no_watch_entry_in_ledger",
+                  })
+                  continue
+              kickoff = parse_time(watch.get("kickoff_hkt") or watch.get("kickoff") or card.get("kickoff_hkt") or card.get("kickoff"))
+              stages = [s for s in (watch.get("stages") or []) if isinstance(s, dict)]
+              t5_stages = [s for s in stages if s.get("stage") == "T-5"]
+              t30_stages = [s for s in stages if s.get("stage") == "T-30"]
+              stage_jobs = watch.get("stage_jobs") if isinstance(watch.get("stage_jobs"), dict) else {}
+              stage_attempts = watch.get("stage_attempts") if isinstance(watch.get("stage_attempts"), dict) else {}
+              stage_incidents = watch.get("stage_incidents") if isinstance(watch.get("stage_incidents"), list) else []
+              t5_job = stage_jobs.get("T-5") if isinstance(stage_jobs, dict) else None
+              t5_attempt = stage_attempts.get("T-5") if isinstance(stage_attempts, dict) else None
+              t5_incidents = [i for i in stage_incidents if isinstance(i, dict) and i.get("stage") == "T-5"]
+              row = {
+                  "match_id": mid,
+                  "found_in_ledger": True,
+                  "fixture": f"{watch.get('home','')} vs {watch.get('away','')}",
+                  "league": watch.get("league"),
+                  "kickoff_hkt": kickoff.isoformat() if kickoff else None,
+                  "now_hkt": now.isoformat(),
+                  "is_past_kickoff": bool(kickoff and now >= kickoff),
+                  "t30_stage_present": bool(t30_stages),
+                  "t30_last_attempt_at": (t30_stages[-1].get("stage_started_at") if t30_stages else None),
+                  "t5_stage_present": bool(t5_stages),
+                  "t5_stage_detail": t5_stages[-1] if t5_stages else None,
+                  "t5_status": (t5_stages[-1].get("status") if t5_stages else None),
+                  "t5_is_terminal": bool(t5_stages and str(t5_stages[-1].get("status") or "") in TERMINAL),
+                  "t5_job": t5_job,
+                  "t5_attempt_journal": t5_attempt,
+                  "t5_incidents": t5_incidents,
+                  "card_status": card.get("status"),
+                  "card_no_bet_reason": card.get("no_bet_reason"),
+              }
+              rows.append(row)
+
+          # Pull every ledger `log` tick entry in the 18:00 kickoff window
+          # (17:55-18:12 HKT) so we can see exactly which ticks ran, how many
+          # changes each made, and whether any tick was itself missing.
+          window_log = []
+          for entry in full_log:
+              ts = parse_time(entry.get("ts")) if isinstance(entry, dict) else None
+              if ts is None:
+                  continue
+              if ts.astimezone(HKT).strftime("%H:%M") >= "17:55" and ts.astimezone(HKT).strftime("%H:%M") <= "18:12" and ts.date() == now.date():
+                  window_log.append(entry)
+
+          missing = [r for r in rows if r.get("found_in_ledger") and not r.get("t5_stage_present")]
+          non_terminal = [r for r in rows if r.get("found_in_ledger") and r.get("t5_stage_present") and not r.get("t5_is_terminal")]
+          print(json.dumps({
+              "generated_at_hkt": now.isoformat(),
+              "requested_ids": ids,
+              "rows": rows,
+              "window_log_1755_1812_hkt": window_log,
+              "summary": {
+                  "requested": len(ids),
+                  "found_in_ledger": sum(1 for r in rows if r.get("found_in_ledger")),
+                  "t5_missing_no_stage_at_all": len(missing),
+                  "t5_stage_present_but_non_terminal": len(non_terminal),
+                  "t5_terminal": sum(1 for r in rows if r.get("t5_is_terminal")),
+                  "missing_ids": [r["match_id"] for r in missing],
+              },
+          }, ensure_ascii=False, indent=2))
+          PY
+          python3 -m json.tool crown-t5-deep-diagnose.json >/dev/null
+
+      - name: Upload audit evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: crown-t5-deep-diagnose-${{ github.run_id }}
+          path: crown-t5-deep-diagnose.json
+          retention-days: 14
