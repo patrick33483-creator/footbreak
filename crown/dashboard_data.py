@@ -18,8 +18,10 @@ from .ledger import STAGES, condition_bets, recompute_stats
 from .period import in_current_period
 from .prediction_history import normalize_history, project_watch_rows
 from .ledger import PREDICTION_ERA
-from .state import load_ledger, load_predictions, paths, save_ledger
-from analysis.wilson_validation import active_bets, project_dashboard_research_matches
+from .state import load_ledger, load_predictions, paths
+from analysis.wilson_validation import (
+    active_bets, project_dashboard_research_matches, project_frozen_ranking_evidence,
+)
 
 
 # A full publish writes an immutable, content-addressed sidecar before data.
@@ -576,17 +578,16 @@ def _build_payloads(config: Settings) -> tuple[dict[str, Any], dict[str, Any]]:
     # The browser's granular cards are discovery views, but the Wilson
     # threshold must use the separately persisted active evidence version.
     # Keep the raw rows untouched and replace only this dashboard projection.
-    from analysis.wilson_validation import project_granular_ranking_evidence
     raw_ranking = (
         prediction_history["stats"].get("granular_conditions", {}).get("ranking") or []
     )
-    projected_ranking = project_granular_ranking_evidence(
-        ledger, "crown", raw_ranking, now=iso_hkt(),
+    # A dashboard is a strictly read-only consumer of the authoritative
+    # prediction/evidence chain.  In particular, it must never register a
+    # formal condition, initialize an evidence version, or write the ledger
+    # that a concurrent native T-5 is committing.
+    projected_ranking = project_frozen_ranking_evidence(
+        ledger, "crown", raw_ranking,
     )
-    # The initial full-cohort merge is a ledger migration, not a browser-only
-    # presentation calculation. Persist it atomically with no provider work;
-    # later dashboard reruns remain idempotent.
-    save_ledger(config, ledger)
     if isinstance(prediction_history["stats"].get("granular_conditions"), dict):
         prediction_history["stats"]["granular_conditions"]["ranking"] = projected_ranking
     # Card-level matches are derived from persisted immutable snapshots, not

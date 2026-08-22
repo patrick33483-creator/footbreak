@@ -2674,6 +2674,32 @@ class CrownSafetyTests(unittest.TestCase):
             )
             self.assertGreaterEqual(parse_time(payload["generated_at"]), parse_time(t5))
 
+    def test_dashboard_publication_never_writes_or_registers_evidence(self) -> None:
+        """An optional dashboard build cannot erase a concurrent native T-5."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = replace(settings(), state_dir=root / "private-state", web_root=root / "web")
+            kickoff = (period_bounds()[0] + timedelta(hours=2)).isoformat()
+            t30 = (parse_time(kickoff) - timedelta(minutes=30)).isoformat()
+            card = {
+                "match_id": "dashboard-read-only", "kickoff_hkt": kickoff,
+                "stage": "T-30", "status": "PREDICTION_READY",
+                "book_odds": {"crown": [{"market": "HDC", "odds": 1.91}]},
+                "stages": [{"stage": "T-30", "status": "PREDICTION_READY", "ts": t30}],
+            }
+            save_predictions(config, [card])
+            ledger = load_ledger(config)
+            ledger["watch"] = {"dashboard-read-only": {
+                "match_id": "dashboard-read-only", "kickoff": kickoff,
+                "stages": list(card["stages"]),
+            }}
+            save_ledger(config, ledger)
+            ledger_path = config.state_dir / "ledger.json"
+            before = ledger_path.read_bytes()
+            with patch("crown.dashboard_data.in_current_period", return_value=True):
+                write_dashboard_data(config)
+            self.assertEqual(ledger_path.read_bytes(), before)
+
     def test_dashboard_live_board_uses_verified_crown_prices_as_the_master_list(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -594,14 +594,16 @@ class WilsonBatchRolloverTest(unittest.TestCase):
         self.assertTrue(all(len(value) == 64 for value in batch["batch_fixture_market_hashes"]))
         self.assertNotIn("fixture-", json.dumps(batch, ensure_ascii=False))
         root = Path(__file__).resolve().parents[2]
-        for path in (
-            root / "system" / "gen_app_data.py",
-            root / "crown" / "dashboard_data.py",
+        for path, projection in (
+            (root / "system" / "gen_app_data.py", "project_granular_ranking_evidence"),
+            # Crown's browser must project only the already-durable registry;
+            # it may not initialize or persist condition evidence itself.
+            (root / "crown" / "dashboard_data.py", "project_frozen_ranking_evidence"),
         ):
             source = path.read_text(encoding="utf-8")
             self.assertIn("pending_progress", source)
             self.assertIn("active_evidence", source)
-            self.assertIn("project_granular_ranking_evidence", source)
+            self.assertIn(projection, source)
         for path in (
             root / "hkjc-dashboard" / "app.js",
             root / "crown" / "dashboard" / "app.js",

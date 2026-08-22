@@ -834,23 +834,51 @@ def project_granular_ranking_evidence(
     ledger: dict[str, Any], system: str, ranking: Iterable[dict[str, Any]], *,
     now: str,
 ) -> list[dict[str, Any]]:
-    """Return browser/candidate ranking rows backed by active evidence only."""
+    """Synchronize authoritative evidence, then return its ranking projection.
+
+    This is an authority-side adapter: callers that use it may create the
+    one-time frozen registry/migration records and therefore must persist the
+    enclosing ledger while holding the Crown state lock.  A browser publisher
+    must use :func:`project_frozen_ranking_evidence` instead.
+    """
     sync_granular_ranking_evidence(ledger, system, ranking, now=now)
     ns = ensure_namespace(ledger, system, now=now)
+    return _project_frozen_ranking_evidence(ns, system, ranking)
+
+
+def _project_frozen_ranking_evidence(
+    ns: dict[str, Any], system: str, ranking: Iterable[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Project existing immutable evidence without repairing or creating it."""
+    if str(ns.get("system") or "") != system:
+        return []
+    conditions = ns.get("conditions")
+    if not isinstance(conditions, dict):
+        return []
     output: list[dict[str, Any]] = []
     for candidate in ranking:
         if not isinstance(candidate, dict):
             continue
         signature, _definition = condition_signature(system, candidate)
-        frozen = ns["conditions"].get(signature)
+        frozen = conditions.get(signature)
         if not isinstance(frozen, dict):
             continue
-        active = active_evidence_version(
-            frozen, migration_boundary=ns["activation_at"],
-        )
-        if active is None:
+        # Publication has no authority to synthesize a missing baseline,
+        # normalize an old namespace, or select a replacement version.  It
+        # displays only the already-durable final immutable version.
+        versions = frozen.get("evidence_versions")
+        active = versions[-1] if isinstance(versions, list) and versions else None
+        if (
+            not isinstance(active, dict)
+            or str(active.get("condition_signature") or "") != signature
+        ):
             continue
-        hits, decided = int(active["cumulative_hits"]), int(active["cumulative_decided"])
+        try:
+            hits, decided = int(active["cumulative_hits"]), int(active["cumulative_decided"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if hits < 0 or decided < 0 or hits > decided:
+            continue
         interval = wilson95(hits, decided)
         pending = frozen.get("pending_rollover_progress")
         if not isinstance(pending, dict):
@@ -889,6 +917,19 @@ def project_granular_ranking_evidence(
         current["holdout_lift"] = None
         output.append(current)
     return output
+
+
+def project_frozen_ranking_evidence(
+    ledger: dict[str, Any], system: str, ranking: Iterable[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Read-only browser projection of already-frozen formal evidence.
+
+    This deliberately neither calls ``ensure_namespace`` nor synchronizes a
+    ranking.  Missing, malformed, or incomplete persisted state remains absent
+    from the display rather than being repaired by an optional consumer.
+    """
+    ns = ledger.get(NAMESPACE)
+    return _project_frozen_ranking_evidence(ns, system, ranking) if isinstance(ns, dict) else []
 
 
 def project_dashboard_research_matches(
