@@ -322,4 +322,142 @@ jobs:
           name: crown-t5-deep-diagnose-${{ github.run_id }}
           path: crown-t5-deep-diagnose.json
           retention-days: 14
+
+      - name: Read crown-tick.service systemd cgroup CPU/memory/swap/IO accounting (read only)
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "echo '--- systemctl show crown-tick.service cgroup accounting ---'; sudo systemctl show crown-tick.service -p CPUUsageNSec,MemoryCurrent,MemoryMax,MemoryHigh,MemorySwapCurrent,MemorySwapMax,IOReadBytes,IOWriteBytes,TasksCurrent,TasksMax,NRestarts,ExecMainStatus,ExecMainStartTimestamp,ExecMainExitTimestamp,ActiveEnterTimestamp,InactiveEnterTimestamp; echo; echo '--- unit cgroup path and slice-level accounting ---'; unit_cgroup=\$(sudo systemctl show crown-tick.service -p ControlGroup --value); echo \"cgroup: \$unit_cgroup\"; if [ -n \"\$unit_cgroup\" ] && [ -d \"/sys/fs/cgroup\$unit_cgroup\" ]; then for f in cpu.stat cpu.pressure memory.current memory.max memory.swap.current memory.swap.max memory.pressure io.stat io.pressure pids.current pids.max; do path=\"/sys/fs/cgroup\$unit_cgroup/\$f\"; echo \"--- \$f ---\"; sudo cat \"\$path\" 2>&1 || echo missing; done; else echo 'cgroup path not resolvable or not cgroup v2'; fi" \
+            > crown-tick-cgroup-accounting.log 2>&1 || true
+          cat crown-tick-cgroup-accounting.log || true
+
+      - name: Upload cgroup accounting diagnostic
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: crown-tick-cgroup-accounting-${{ github.run_id }}
+          path: crown-tick-cgroup-accounting.log
+          retention-days: 14
+
+      - name: Read system-wide PSI pressure (CPU/memory/IO) and swap totals (read only)
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "echo '--- /proc/pressure/cpu ---'; cat /proc/pressure/cpu 2>&1 || echo missing; echo '--- /proc/pressure/memory ---'; cat /proc/pressure/memory 2>&1 || echo missing; echo '--- /proc/pressure/io ---'; cat /proc/pressure/io 2>&1 || echo missing; echo '--- /proc/meminfo (swap/available only) ---'; grep -E '^(MemTotal|MemAvailable|SwapTotal|SwapFree|Dirty|Writeback):' /proc/meminfo; echo '--- vm.swappiness and dirty ratios ---'; sysctl vm.swappiness vm.dirty_ratio vm.dirty_background_ratio 2>&1 || true; echo '--- loadavg ---'; cat /proc/loadavg; echo '--- nproc ---'; nproc" \
+            > server-psi-pressure.log 2>&1 || true
+          cat server-psi-pressure.log || true
+
+      - name: Upload PSI pressure diagnostic
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: server-psi-pressure-${{ github.run_id }}
+          path: server-psi-pressure.log
+          retention-days: 14
+
+      - name: Read crown-tick.service process tree snapshot during/after tick (read only)
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "echo '--- ps -eLf --forest (python3/crown processes only) ---'; ps -eLf --forest | grep -E 'crown|PYTHON|python3.*run|LWP' | grep -v grep || echo 'no matching processes at snapshot time'; echo; echo '--- full process count and top CPU/mem consumers ---'; ps -eo pid,ppid,pcpu,pmem,etimes,stat,comm --sort=-pcpu | head -20; echo; echo '--- systemd-cgls for crown-tick.service (if unit currently active) ---'; sudo systemd-cgls -u crown-tick.service 2>&1 || echo 'unit not currently active or systemd-cgls unavailable'" \
+            > crown-tick-process-tree.log 2>&1 || true
+          cat crown-tick-process-tree.log || true
+
+      - name: Upload process tree diagnostic
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: crown-tick-process-tree-${{ github.run_id }}
+          path: crown-tick-process-tree.log
+          retention-days: 14
+
+      - name: Benchmark raw fork+exit latency on the live box (read only, no persistent effect)
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "sudo env PYTHONPATH=/opt/footbreak /opt/footbreak/.venv/bin/python3 -" \
+            > crown-fork-latency-benchmark.log 2>&1 <<'PY' || true
+          import multiprocessing
+          import os
+          import statistics
+          import time
+
+          def _noop(send):
+              send.send("ok")
+              send.close()
+
+          ctx = multiprocessing.get_context("fork")
+          samples = []
+          for _ in range(20):
+              receiver, sender = ctx.Pipe(duplex=False)
+              start = time.monotonic()
+              p = ctx.Process(target=_noop, args=(sender,))
+              p.start()
+              sender.close()
+              receiver.poll(2.0)
+              try:
+                  receiver.recv()
+              except EOFError:
+                  pass
+              p.join(timeout=1.0)
+              samples.append(time.monotonic() - start)
+              receiver.close()
+
+          samples_ms = [round(s * 1000, 3) for s in samples]
+          print("fork+start+ipc_roundtrip+join latency samples (ms):", samples_ms)
+          print("median_ms:", round(statistics.median(samples_ms), 3))
+          print("p95_ms:", round(sorted(samples_ms)[int(len(samples_ms) * 0.95) - 1], 3))
+          print("max_ms:", round(max(samples_ms), 3))
+          print("cpu_count:", os.cpu_count())
+          PY
+          cat crown-fork-latency-benchmark.log || true
+
+      - name: Upload fork latency benchmark
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: crown-fork-latency-benchmark-${{ github.run_id }}
+          path: crown-fork-latency-benchmark.log
+          retention-days: 14
+
+      - name: Read Crown tick timing-probe JSONL evidence (read only, bounded, no provider payload)
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "echo '--- probe file presence/size ---'; sudo stat /var/lib/footbreak/crown/tick-timing-probe.jsonl 2>&1 || echo 'probe file does not exist yet'; echo '--- confirm probe env is enabled on the live unit ---'; sudo systemctl show crown-tick.service -p Environment | tr ' ' '\n' | grep -i CROWN_TICK_TIMING_PROBE || echo 'probe env not found in unit'; echo '--- last 2000 lines of the probe JSONL (bounded; contains only checkpoint/monotonic/rss/swap fields, never provider payloads) ---'; sudo tail -n 2000 /var/lib/footbreak/crown/tick-timing-probe.jsonl 2>&1 || echo 'no probe data yet'" \
+            > crown-tick-timing-probe.jsonl.log 2>&1 || true
+          wc -l crown-tick-timing-probe.jsonl.log || true
+
+      - name: Upload timing probe evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: crown-tick-timing-probe-${{ github.run_id }}
+          path: crown-tick-timing-probe.jsonl.log
+          retention-days: 14
 # trigger Sat Aug 22 11:10:33 UTC 2026
