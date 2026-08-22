@@ -33,6 +33,7 @@ from .state import (
     schedule_footbreak_execution_evidence_projection,
 )
 from .titan import TitanClient
+from . import tick_timing_probe as _timing
 
 
 _FIRST_LOOK_RECONCILE_MAX_FIXTURES = 30
@@ -330,12 +331,21 @@ def _crown_snapshot_process(
     max_seconds: float,
 ) -> None:
     """Read one locked native fixture outside the deadline-owning process."""
+    _timing.record(
+        "direct_id_fetch_child_start", match_id=match_id,
+        extra={"max_seconds": round(max_seconds, 3)},
+    )
     try:
         snapshot = TitanClient(config).crown_price_snapshot(
             match_id, max_seconds=max_seconds,
         )
         send.send(("ok", snapshot))
+        _timing.record("direct_id_fetch_child_ok", match_id=match_id)
     except BaseException as exc:
+        _timing.record(
+            "direct_id_fetch_child_error", match_id=match_id,
+            extra={"exception_type": type(exc).__name__},
+        )
         send.send(("error", type(exc).__name__))
     finally:
         send.close()
@@ -360,15 +370,28 @@ def _crown_bulk_snapshots_process(
 
 def _terminate_child(process: Any, receiver: Any) -> None:
     """Terminate a provider child without waiting beyond the native deadline."""
+    _terminate_start = time.monotonic() if _timing.enabled() else None
     try:
         receiver.close()
     finally:
         if process.is_alive():
             process.terminate()
         process.join(timeout=0.05)
+        killed = False
         if process.is_alive():
             process.kill()
             process.join(timeout=0.05)
+            killed = True
+        _timing.record(
+            "child_cleanup_complete",
+            extra={
+                "needed_sigkill": killed,
+                "cleanup_seconds": (
+                    round(time.monotonic() - _terminate_start, 3)
+                    if _terminate_start is not None else None
+                ),
+            },
+        )
 
 
 def _timed_stage_commit_reserve(remaining: float) -> float:
@@ -397,6 +420,15 @@ def _collect_locked_direct_snapshots(
     direct_window = min(
         _TIMED_STAGE_DIRECT_MAX_SECONDS,
         max(0.0, remaining - reserve),
+    )
+    _timing.record(
+        "direct_snapshots_collection_entered", deadline=deadline,
+        extra={
+            "row_count": len(rows),
+            "direct_window_s": round(direct_window, 3),
+            "reserve_s": round(reserve, 3),
+            "workers": min(_tick_workers(), len(rows)),
+        },
     )
     if direct_window < _MIN_DEADLINE_CALL_SECONDS:
         return {}, 0
@@ -463,6 +495,10 @@ def _collect_locked_direct_snapshots(
             _terminate_child(child, receiver)
     for receiver, (child, _row) in active.items():
         _terminate_child(child, receiver)
+    _timing.record(
+        "direct_snapshots_collection_returning", deadline=deadline,
+        extra={"attempted": attempted, "usable_snapshots": len(snapshots)},
+    )
     return snapshots, attempted
 
 
@@ -1737,12 +1773,17 @@ def _commit_stage_predictions(
     """Commit a completed batch while holding the state lock only briefly."""
     if not stage_predictions:
         return [], [], [], len(load_predictions(config))
+    _timing.record(
+        "commit_stage_predictions_entered", deadline=deadline,
+        extra={"batch_size": len(stage_predictions)},
+    )
     lock_wait = (
         min(_TIMED_STAGE_LOCK_WAIT_SECONDS, _deadline_remaining(deadline))
         if deadline is not None else None
     )
     with state_lock(config, timeout_seconds=lock_wait) as acquired:
         if not acquired:
+            _timing.record("commit_stage_predictions_lock_not_acquired", deadline=deadline)
             # Another short state writer (normally sweep/settle final merge)
             # is still committing.  Leave this native stage unpersisted so
             # the next tick retries rather than waiting through its deadline.
@@ -1820,12 +1861,18 @@ def _commit_stage_predictions(
             "changes": emitted or ["今次無模擬注動作"], "simulation_only": True,
         })
         ledger["log"] = ledger["log"][-100:]
+        _timing.record("commit_stage_predictions_before_save_ledger", deadline=deadline)
         save_ledger(config, ledger)
+        _timing.record("commit_stage_predictions_after_save_ledger", deadline=deadline)
         retained = merge_predictions(config, committed_predictions)
     if mode != "tick":
         schedule_footbreak_execution_evidence_projection(
             config, evidence_projection_stages,
         )
+    _timing.record(
+        "commit_stage_predictions_returning", deadline=deadline,
+        extra={"emitted": len(emitted)},
+    )
     return emitted, fresh_condition_predictions, evidence_projection_stages, len(retained)
 
 
@@ -1936,8 +1983,13 @@ def _journal_timed_stage_attempts(
     """
     journaled = 0
     now = datetime.now(HKT)
+    _timing.record(
+        "journal_timed_stage_attempts_entered",
+        extra={"row_count": len(rows), "reason": reason},
+    )
     with state_lock(config, timeout_seconds=1.0) as acquired:
         if not acquired:
+            _timing.record("journal_timed_stage_attempts_lock_not_acquired")
             return 0
         ledger = load_ledger(config)
         watches = ledger.setdefault("watch", {})
@@ -1978,6 +2030,10 @@ def _journal_timed_stage_attempts(
             journaled += 1
         if journaled:
             save_ledger(config, ledger)
+    _timing.record(
+        "journal_timed_stage_attempts_returning",
+        extra={"journaled": journaled},
+    )
     return journaled
 
 
@@ -2137,6 +2193,10 @@ def _run_local_bulk_timed_stages(
     inclusion can redirect a scheduled job.  The bulk board may only supply a
     same-ID fallback when a bounded direct read is unavailable.
     """
+    _timing.record(
+        "run_local_bulk_timed_stages_entered", deadline=deadline,
+        extra={"fixture_count": len(rows)},
+    )
     journaled = _journal_timed_stage_attempts(
         config, rows, reason="native_timed_stage_collection_started",
     )
@@ -2150,7 +2210,12 @@ def _run_local_bulk_timed_stages(
     ]
     bulk_fallback_attempted = 0
     if fallback_rows:
+        _timing.record(
+            "bulk_fallback_collection_entered", deadline=deadline,
+            extra={"fallback_row_count": len(fallback_rows)},
+        )
         snapshots, attempted_bulk = _collect_same_id_bulk_fallback(config, deadline)
+        _timing.record("bulk_fallback_collection_returning", deadline=deadline)
         if attempted_bulk:
             bulk_fallback_attempted = len(fallback_rows)
         for titan in fallback_rows:
@@ -2195,6 +2260,14 @@ def _run_local_bulk_timed_stages(
     # fixtures while retaining those per-prediction protections.
     emitted, fresh_condition_predictions, evidence_projection_stages, retained = _commit_stage_predictions(
         config, "tick", stage_predictions, deadline=deadline,
+    )
+    _timing.record(
+        "run_local_bulk_timed_stages_returning", deadline=deadline,
+        extra={
+            "fixture_count": len(rows),
+            "unavailable": unavailable,
+            "emitted": len(emitted),
+        },
     )
     return {
         "ok": True,

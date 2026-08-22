@@ -15,6 +15,7 @@ from .engine import _tick_pass_deadline_seconds, run
 from .notify import notify_new
 from .prediction_history import archive_watch_fast, update_history
 from .state import load_ledger, schedule_footbreak_execution_evidence_projection
+from . import tick_timing_probe as _timing
 
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 _TICK_POSTPROCESS_MIN_SECONDS = 2.0
@@ -108,16 +109,22 @@ def _run_tick_notification(
 
 def _tick_engine_process(send, config, tick_deadline: float) -> None:
     """Run all deadline-sensitive tick work behind a killable wall clock."""
+    _timing.record("child_process_entered", deadline=tick_deadline)
     try:
-        send.send(("complete", run(
-            "tick", config, tick_pass_deadline=tick_deadline,
-        )))
+        result = run("tick", config, tick_pass_deadline=tick_deadline)
+        _timing.record("child_process_run_returned", deadline=tick_deadline)
+        send.send(("complete", result))
     except BaseException as exc:
+        _timing.record(
+            "child_process_run_raised", deadline=tick_deadline,
+            extra={"exception_type": type(exc).__name__},
+        )
         send.send(("error", {
             "type": type(exc).__name__,
             "origin": _exception_origin(exc),
         }))
     finally:
+        _timing.record("child_process_exiting", deadline=tick_deadline)
         send.close()
 
 
@@ -133,11 +140,16 @@ def _run_tick_engine(config, tick_deadline: float) -> dict[str, object]:
     # Telegram transport are attempted below only from actual remaining time;
     # never reserve time for them by truncating a due T-30/T-5 collection.
     provider_cutoff = tick_deadline
+    _timing.record("run_tick_engine_entered", deadline=tick_deadline)
     max_seconds = max(
         0.0,
         provider_cutoff - time.monotonic() - _TICK_ENGINE_TEARDOWN_MARGIN_SECONDS,
     )
     if max_seconds <= 0.0 or os.name != "posix":
+        _timing.record(
+            "run_tick_engine_no_budget_fast_return", deadline=tick_deadline,
+            extra={"max_seconds": round(max_seconds, 3)},
+        )
         return {
             "ok": True,
             "mode": "tick",
@@ -151,7 +163,12 @@ def _run_tick_engine(config, tick_deadline: float) -> dict[str, object]:
         target=_tick_engine_process,
         args=(sender, config, tick_deadline),
     )
+    _timing.record("before_fork_process_start", deadline=tick_deadline)
     process.start()
+    _timing.record(
+        "after_fork_process_start", deadline=tick_deadline,
+        extra={"child_pid": getattr(process, "pid", None)},
+    )
     sender.close()
     try:
         if not receiver.poll(max_seconds):
@@ -159,11 +176,16 @@ def _run_tick_engine(config, tick_deadline: float) -> dict[str, object]:
             # when a same-minute provider batch overruns its native budget.
             # Kill that child first, then persist retryable DATA_MISSING rows
             # using only its already durable fixture identities.
+            _timing.record(
+                "parent_poll_timed_out_killing_child", deadline=tick_deadline,
+                extra={"max_seconds": round(max_seconds, 3)},
+            )
             if process.is_alive():
                 process.terminate()
                 process.join(timeout=0.10)
             from .engine import persist_timed_stage_timeout_failures
             failures = persist_timed_stage_timeout_failures(config)
+            _timing.record("timeout_failures_persisted", deadline=tick_deadline)
             return {
                 "ok": True,
                 "mode": "tick",
@@ -172,6 +194,7 @@ def _run_tick_engine(config, tick_deadline: float) -> dict[str, object]:
                 "simulations_created": 0,
                 "timeout_failure_snapshots": failures,
             }
+        _timing.record("parent_poll_returned_child_ready", deadline=tick_deadline)
         try:
             status, payload = receiver.recv()
         except EOFError:
@@ -195,6 +218,7 @@ def _run_tick_engine(config, tick_deadline: float) -> dict[str, object]:
         if process.is_alive():
             process.kill()
             process.join(timeout=0.10)
+        _timing.record("run_tick_engine_returning", deadline=tick_deadline)
 
 
 def _tick_postprocess_process(send, config) -> None:
@@ -292,6 +316,7 @@ def _ensure_dashboard_path(path) -> None:
 
 
 def main() -> int:
+    python_parent_start = time.monotonic() if _timing.enabled() else None
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "mode",
@@ -302,6 +327,8 @@ def main() -> int:
     )
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
+    if args.mode == "tick":
+        _timing.record("python_parent_main_start")
     config = settings()
     _ensure_dashboard_path(config.web_root)
     if args.dry_run:
@@ -316,6 +343,16 @@ def main() -> int:
         time.monotonic() + _tick_pass_deadline_seconds()
         if args.mode == "tick" else None
     )
+    if args.mode == "tick":
+        _timing.record(
+            "python_parent_deadline_established", deadline=tick_deadline,
+            extra={
+                "settings_and_argparse_seconds": (
+                    round(time.monotonic() - python_parent_start, 3)
+                    if python_parent_start is not None else None
+                ),
+            },
+        )
     try:
         result = (
             _run_tick_engine(config, tick_deadline)

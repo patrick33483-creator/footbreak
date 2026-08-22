@@ -9,6 +9,22 @@ CROWN_WEB_ROOT="${CROWN_WEB_ROOT:-/var/www/crown}"
 MODE="${1:-tick}"
 CROWN_LOCK_DIR="${CROWN_LOCK_DIR:-/var/lock}"
 
+# Bounded, opt-in timing instrumentation (diagnostic only; no provider data).
+# Off unless CROWN_TICK_TIMING_PROBE=1 is set in the unit's Environment=.
+TIMING_PROBE_PATH="${CROWN_TICK_TIMING_PROBE_PATH:-/var/lib/footbreak/crown/tick-timing-probe.jsonl}"
+record_shell_checkpoint() {
+  [ "${CROWN_TICK_TIMING_PROBE:-0}" = "1" ] || return 0
+  # Best-effort, capped write; never let a slow disk steal deadline time.
+  label="$1"
+  timeout 0.2s /bin/sh -c '
+    mkdir -p "$(dirname "$1")" 2>/dev/null
+    now=$(date +%s.%N 2>/dev/null || date +%s)
+    printf "{\"checkpoint\":\"%s\",\"shell_epoch\":%s,\"mode\":\"%s\",\"pid\":%s}\n" \
+      "$2" "$now" "$3" "$$" >> "$1" 2>/dev/null
+  ' _ "$TIMING_PROBE_PATH" "$label" "$MODE" || true
+}
+record_shell_checkpoint "shell_wrapper_start"
+
 # Recompute the tick's real native-stage budget from how much of the
 # systemd TimeoutStartSec wall clock ExecStartPre already spent, instead of
 # trusting a fixed CROWN_TICK_PASS_DEADLINE_SECONDS.  A slow ExecStartPre
@@ -38,6 +54,7 @@ if [ "$MODE" = "tick" ]; then
     fi
     [ "$dynamic_budget" -lt 5 ] && dynamic_budget=5
     export CROWN_TICK_PASS_DEADLINE_SECONDS="$dynamic_budget"
+    record_shell_checkpoint "dynamic_budget_computed_elapsed_${elapsed}s_budget_${dynamic_budget}s"
   fi
 fi
 
@@ -96,7 +113,9 @@ cd "$APP_DIR"
 # Keep the non-blocking lock owned by this wrapper while Python runs, but do
 # not let fd 9 cross the exec boundary. Provider helpers spawned by Python
 # therefore cannot keep a stale runner lock alive after the service is killed.
+record_shell_checkpoint "before_python_exec"
 "$PYTHON" -m crown.run "$MODE" 9>&-
+record_shell_checkpoint "after_python_exec"
 
 if [ -f "$ALERT_HELPER" ]; then
   run_alert_helper clear-service --system crown --unit "$SERVICE_UNIT" \
