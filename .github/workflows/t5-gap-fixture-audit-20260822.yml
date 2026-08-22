@@ -1,0 +1,120 @@
+name: T-5 gap fixture audit 20260822 (read only)
+
+on:
+  workflow_dispatch:
+    inputs:
+      fixture_ids:
+        description: 'Comma-separated Crown hkjc_match_id list to audit'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: Read durable Crown ledger stage/attempt state for flagged fixtures only
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          FIXTURE_IDS: ${{ inputs.fixture_ids }}
+        run: |
+          set -euo pipefail
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "sudo env FIXTURE_IDS='$FIXTURE_IDS' PYTHONPATH=/opt/footbreak /opt/footbreak/.venv/bin/python3 -" \
+            > t5-gap-fixture-audit.json <<'PY'
+          import json
+          import os
+          from datetime import datetime
+          from pathlib import Path
+
+          from crown.common import HKT, parse_time
+
+          def read_json(path, default):
+              try:
+                  return json.loads(Path(path).read_text(encoding="utf-8"))
+              except Exception:
+                  return default
+
+          ids = [x.strip() for x in os.environ.get("FIXTURE_IDS", "").split(",") if x.strip()]
+          now = datetime.now(HKT)
+          ledger = read_json("/var/lib/footbreak/crown/ledger.json", {})
+          cards = read_json("/var/lib/footbreak/crown/predictions.json", [])
+          cards_by_id = {str(row.get("match_id")): row for row in cards if isinstance(row, dict)}
+          watches = ledger.get("watch") if isinstance(ledger.get("watch"), dict) else {}
+          TERMINAL = {"COMMITTED", "FAILED", "DATA_MISSING", "EXPIRED"}
+
+          rows = []
+          for mid in ids:
+              watch = watches.get(mid) if isinstance(watches, dict) else None
+              card = cards_by_id.get(mid, {})
+              if not isinstance(watch, dict):
+                  rows.append({
+                      "match_id": mid, "found_in_ledger": False,
+                      "reason": "no_watch_entry_in_ledger",
+                  })
+                  continue
+              kickoff = parse_time(watch.get("kickoff_hkt") or watch.get("kickoff") or card.get("kickoff_hkt") or card.get("kickoff"))
+              stages = [s for s in (watch.get("stages") or []) if isinstance(s, dict)]
+              t5_stages = [s for s in stages if s.get("stage") == "T-5"]
+              t30_stages = [s for s in stages if s.get("stage") == "T-30"]
+              due_t5_utc = kickoff.astimezone(HKT) if kickoff else None
+              row = {
+                  "match_id": mid,
+                  "found_in_ledger": True,
+                  "fixture": f"{watch.get('home','')} vs {watch.get('away','')}",
+                  "league": watch.get("league"),
+                  "kickoff_hkt": kickoff.isoformat() if kickoff else None,
+                  "kickoff_utc": kickoff.astimezone(HKT).astimezone(__import__("datetime").timezone.utc).isoformat() if kickoff else None,
+                  "now_hkt": now.isoformat(),
+                  "is_past_kickoff": bool(kickoff and now >= kickoff),
+                  "t30_stage_present": bool(t30_stages),
+                  "t30_stage_detail": t30_stages[-1] if t30_stages else None,
+                  "t5_stage_present": bool(t5_stages),
+                  "t5_stage_detail": t5_stages[-1] if t5_stages else None,
+                  "t5_status": (t5_stages[-1].get("status") if t5_stages else None),
+                  "t5_is_terminal": bool(t5_stages and str(t5_stages[-1].get("status") or "") in TERMINAL),
+                  "card_status": card.get("status"),
+                  "card_no_bet_reason": card.get("no_bet_reason"),
+              }
+              rows.append(row)
+
+          missing = [r for r in rows if r.get("found_in_ledger") and not r.get("t5_stage_present")]
+          non_terminal = [r for r in rows if r.get("found_in_ledger") and r.get("t5_stage_present") and not r.get("t5_is_terminal")]
+          print(json.dumps({
+              "generated_at_hkt": now.isoformat(),
+              "requested_ids": ids,
+              "rows": rows,
+              "summary": {
+                  "requested": len(ids),
+                  "found_in_ledger": sum(1 for r in rows if r.get("found_in_ledger")),
+                  "t5_missing_no_stage_at_all": len(missing),
+                  "t5_stage_present_but_non_terminal": len(non_terminal),
+                  "t5_terminal": sum(1 for r in rows if r.get("t5_is_terminal")),
+              },
+          }, ensure_ascii=False, indent=2))
+          PY
+          python3 -m json.tool t5-gap-fixture-audit.json >/dev/null
+
+      - name: Upload audit evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: t5-gap-fixture-audit-${{ github.run_id }}
+          path: t5-gap-fixture-audit.json
+          retention-days: 14
