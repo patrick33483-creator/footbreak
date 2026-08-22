@@ -33,7 +33,7 @@ jobs:
           set -euo pipefail
           ssh -o BatchMode=yes -o ConnectTimeout=20 \
             "$DEPLOY_USER@$DEPLOY_HOST" \
-            'sudo env PYTHONPATH=/opt/footbreak /opt/footbreak/.venv/bin/python3 -' \
+            'sudo env PYTHONPATH=/opt/footbreak/system:/opt/footbreak /opt/footbreak/.venv/bin/python3 -' \
             > footbreak-native-stage-live-acceptance.json <<'PY'
           import json
           from collections import defaultdict
