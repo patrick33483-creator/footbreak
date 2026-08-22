@@ -12,6 +12,10 @@ from .common import HKT, iso_hkt, parse_time, read_json
 from .config import Settings
 from .condition_portfolio import FIXED_STAKE, STARTING_BANKROLL, STRATEGY, evaluate_new_t5
 from . import challenger_v2
+from .direct_t5_outbox import (
+    ensure_namespace as ensure_direct_t5_outbox,
+    record_new_native_t5,
+)
 from analysis.wilson_validation import (
     active_observations, ensure_namespace, portfolio_name, recompute_namespace, all_settleable_bets,
 )
@@ -447,6 +451,10 @@ def sync_prediction(ledger: dict[str, Any], prediction: dict[str, Any], config: 
     # The cutover only appends this namespace.  Legacy bet/stat rows remain
     # untouched and cannot enter the active validation flow.
     ensure_namespace(ledger, "crown")
+    # Direct notifications have their own prospective-only durable namespace.
+    # It is intentionally initialized before a new snapshot gets its
+    # timestamp, so the deployment activation boundary is unambiguous.
+    ensure_direct_t5_outbox(ledger)
     # v2 is a separate research namespace. Its creation and recomputation do
     # not touch v1 bets, conditions, stats, or dedupe keys.
     challenger_v2.ensure_namespace(ledger)
@@ -532,6 +540,19 @@ def sync_prediction(ledger: dict[str, Any], prediction: dict[str, Any], config: 
     # returned list in the snapshot is useful for this run, without duplicating
     # durable audit records.
     ledger["bets"].extend(created)
+    observation_rows = list(
+        ((ledger.get("wilson_validation") or {}).get("observations") or [])
+    )
+    # The legacy native direct policy was broader than formal Wilson matching
+    # but still exact: HDC must agree across 首預/T-30/T-5.  Record that
+    # notification opportunity independently of whether formal admission
+    # created a paper bet or a low-odds observation.
+    record_new_native_t5(
+        ledger,
+        watch,
+        snapshot,
+        formal_rows=list(created) + observation_rows,
+    )
     # The v2 challenger sees the same newly persisted native T-5 but records
     # only isolated research rows. It does not append to ``ledger['bets']``.
     challenger_v2.evaluate_new_t5(ledger, watch, snapshot)

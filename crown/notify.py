@@ -116,6 +116,10 @@ def _load(config: Settings) -> dict[str, Any]:
     # historical predictions.
     state.setdefault("corner_t5", [])
     state.setdefault("signals", [])
+    # Versioned native Crown T-5 direct-signal acknowledgements.  They never
+    # reuse the retired broad/granular `signals` list, preventing any replay
+    # of historical IDs when this prospective producer is activated.
+    state.setdefault("native_t5_direct_alerts", [])
     state.setdefault("wilson_bets", [])
     state.setdefault("wilson_match_alerts", [])
     state.setdefault("hkjc_execution_test_alerts", [])
@@ -463,6 +467,140 @@ def notify_wilson_pending(
             sent += 1
             state["updated_at"] = iso_hkt()
             write_json_atomic(paths(config)["notify"], state)
+        state["updated_at"] = iso_hkt()
+        write_json_atomic(paths(config)["notify"], state)
+        return sent
+
+
+def _native_direct_message(row: dict[str, Any]) -> str | None:
+    """Render only a pre-kickoff native Crown direct event; never compare HKJC."""
+    try:
+        kickoff = parse_time(str(row.get("kickoff") or ""))
+        line = float(row.get("selected_line"))
+        odds = float(row.get("odds"))
+    except (TypeError, ValueError):
+        return None
+    if (
+        kickoff is None
+        or kickoff <= now_hkt()
+        or not math.isfinite(line)
+        or not math.isfinite(odds)
+        or odds <= 0
+        or str(row.get("market") or "") != "HDC"
+        or str(row.get("side") or "") not in {"H", "A"}
+        or not row.get("native_pre_kickoff_t5")
+    ):
+        return None
+    league = str(row.get("league") or "").strip()
+    team = str(row.get("selected_team") or "").strip()
+    title: str
+    decision: str
+    if row.get("formal"):
+        numbers = [
+            str(value) for value in row.get("condition_numbers") or []
+            if str(value).strip()
+        ]
+        if not numbers:
+            return None
+        title = "【皇冠 Wilson】"
+        decision = (
+            "不投注：賠率不足"
+            if row.get("formal_decision") == "NO_BET_LOW_ODDS"
+            else "模擬投注／按正式 Wilson 驗證倉決定"
+        )
+        classification = f"合符 皇冠 Wilson 條件 #{'、#'.join(numbers)}"
+    else:
+        title = "【皇冠 T-5 觀察/研究訊號】"
+        decision = "觀察／研究訊號；非正式 Wilson 條件，不納入 x/20、不模擬投注"
+        classification = "首預、T-30、T-5 三段讓球同方向、同盤口"
+    return "\n".join([
+        title,
+        f"開賽：{kickoff.astimezone(HKT).strftime('%d/%m %H:%M')} HKT"
+        + (f" · {league}" if league else ""),
+        f"對賽：{row.get('home') or ''} vs {row.get('away') or ''}",
+        f"原生皇冠訊號：讓球 · {team} {_quarter_line(line)} @{odds:.3f}",
+        f"觸發：{classification}",
+        f"決定：{decision}",
+        "平台：皇冠（原生報價；不比較馬會）",
+        "只作通知，絕不實際投注。",
+    ])
+
+
+def _ack_direct_formal_ids(state: dict[str, Any], ids: list[str]) -> None:
+    """Link one direct formal message to existing Wilson durable acknowledgements."""
+    if not ids:
+        return
+    state["wilson_match_alerts"] = _bounded_unique_ids(
+        list(state.get("wilson_match_alerts") or []) + ids
+    )
+    bet_ids = [
+        ident for ident in ids
+        if "|T-5|wilson-test-strategy-v1" in ident
+    ]
+    if bet_ids:
+        state["wilson_bets"] = _bounded_unique_ids(
+            list(state.get("wilson_bets") or []) + bet_ids
+        )
+
+
+def notify_native_direct_t5_pending(
+    ledger: dict[str, Any],
+    config: Settings,
+    *,
+    max_attempts: int | None = None,
+    max_seconds: float | None = None,
+    _budget: _NotificationBudget | None = None,
+) -> int:
+    """Deliver only new durable native direct events, acknowledging `ok:true`."""
+    budget = _budget or _NotificationBudget.create(max_attempts, max_seconds)
+    namespace = ledger.get("native_t5_direct_notifications") or {}
+    outbox = namespace.get("outbox") if isinstance(namespace, dict) else None
+    if not isinstance(outbox, list):
+        return 0
+    with notification_lock(config) as acquired:
+        if not acquired:
+            return 0
+        state = _seed_wilson_match_alerts(_load(config))
+        sent_ids = {str(value) for value in state.get("native_t5_direct_alerts") or []}
+        formal_sent = {str(value) for value in state.get("wilson_match_alerts") or []}
+        sent = 0
+        for row in outbox:
+            if not isinstance(row, dict) or not row.get("notification_required"):
+                continue
+            direct_id = str(row.get("direct_signal_id") or "")
+            if not direct_id or direct_id in sent_ids:
+                continue
+            formal_ids = [
+                str(value) for value in row.get("formal_notification_ids") or []
+                if str(value).strip()
+            ]
+            # A legacy Wilson retry may have been delivered before this new
+            # producer got a transport slot.  It is already the same native
+            # formal notification: acknowledge the direct mirror, never send
+            # a duplicate nor broaden it into a stale replay.
+            if formal_ids and all(value in formal_sent for value in formal_ids):
+                state["native_t5_direct_alerts"] = _bounded_unique_ids(
+                    list(state.get("native_t5_direct_alerts") or []) + [direct_id]
+                )
+                sent_ids.add(direct_id)
+                continue
+            message = _native_direct_message(row)
+            if message is None:
+                continue
+            if not budget.reserve_attempt():
+                break
+            if _send(config, message, max_seconds=budget.remaining()) is False:
+                continue
+            state["native_t5_direct_alerts"] = _bounded_unique_ids(
+                list(state.get("native_t5_direct_alerts") or []) + [direct_id]
+            )
+            if formal_ids:
+                _ack_direct_formal_ids(state, formal_ids)
+                formal_sent.update(formal_ids)
+            state["updated_at"] = iso_hkt()
+            write_json_atomic(paths(config)["notify"], state)
+            sent_ids.add(direct_id)
+            sent += 1
         state["updated_at"] = iso_hkt()
         write_json_atomic(paths(config)["notify"], state)
         return sent
@@ -916,7 +1054,7 @@ def notify_new(
     max_attempts: int | None = None,
     max_seconds: float | None = None,
 ) -> int:
-    """Send committed Wilson simulations exactly once.
+    """Send native Crown direct and Wilson notifications exactly once.
 
     ``fresh_t5_predictions`` supplies just-persisted events.  An
     unacknowledged notification may also be retried from the same live watch
@@ -924,18 +1062,22 @@ def notify_new(
     short per-stage action window.  Historical, recovered, post-hoc, malformed
     and stale rows fail closed.
     """
-    # v1 granular candidate alerts were retired at the immutable Wilson
-    # cutover.  `fresh_t5_predictions` stays accepted for API compatibility
-    # but notification eligibility is the committed Wilson bet itself.
+    # The producer, not this function, uses fresh native persistence only.
+    # Never scan historical predictions; old IDs in `signals` stay untouched.
     del fresh_t5_predictions
-    # Native Crown Wilson evidence owns the critical notification path.
-    # Historical reciprocal queues are intentionally not read or replayed.
-    return notify_wilson_pending(
+    budget = _NotificationBudget.create(max_attempts, max_seconds)
+    direct = notify_native_direct_t5_pending(
+        ledger, config, _budget=budget,
+    )
+    # Native Wilson evidence remains independent and owns formal x/20.  The
+    # direct formal acknowledgement above suppresses only the duplicate
+    # transport message; no HKJC/reciprocal queue is read on this path.
+    wilson = notify_wilson_pending(
         ledger,
         config,
-        max_attempts=max_attempts,
-        max_seconds=max_seconds,
+        _budget=budget,
     )
+    return direct + wilson
 
     from analysis.granular_conditions import _role, notification_opportunities
     with notification_lock(config) as acquired:
