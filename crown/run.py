@@ -283,7 +283,13 @@ def _ensure_dashboard_path(path) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("mode", choices=("tick", "sweep", "settle", "refresh", "health"))
+    parser.add_argument(
+        "mode",
+        choices=(
+            "tick", "sweep", "round-update", "first-look-reconcile",
+            "settle", "refresh", "health",
+        ),
+    )
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
     config = settings()

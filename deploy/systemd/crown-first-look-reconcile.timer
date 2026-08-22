@@ -1,0 +1,11 @@
+[Unit]
+Description=足破 · 皇冠每小時 :10 首預 completeness reconciliation
+
+[Timer]
+OnCalendar=*-*-* *:10:00 Asia/Hong_Kong
+Persistent=true
+AccuracySec=30s
+Unit=crown-first-look-reconcile.service
+
+[Install]
+WantedBy=timers.target

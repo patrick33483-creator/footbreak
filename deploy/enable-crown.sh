@@ -36,11 +36,11 @@ mv -f "$TMP_FILE" "$ENV_FILE"
 trap - EXIT
 
 systemctl daemon-reload
-for timer in crown-sweep.timer crown-tick.timer crown-settle.timer; do
+for timer in crown-round-update.timer crown-first-look-reconcile.timer crown-sweep.timer crown-tick.timer crown-settle.timer; do
   systemctl enable "$timer"
   systemctl restart "$timer"
   systemctl is-enabled --quiet "$timer"
   systemctl is-active --quiet "$timer"
 done
 
-echo "Crown validation gate enabled; Crown sweep/tick/settle timers are active."
+echo "Crown validation gate enabled; Crown daily-update/reconcile/sweep/tick/settle timers are active."

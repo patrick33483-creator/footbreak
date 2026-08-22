@@ -27,7 +27,7 @@ from .ledger import (
 from .lines import parse_hkjc_total
 from .matching import MATCHING_VERSION, Event, Match, BridgeMatch, bridge_titan_to_pinnapi
 from .pinnapi import PinnapiClient
-from .period import in_current_period
+from .period import in_current_period, in_future_round_update_window
 from .state import (
     load_ledger, load_predictions, merge_predictions, save_ledger, state_lock,
     schedule_footbreak_execution_evidence_projection,
@@ -532,6 +532,8 @@ def _sweep_rows_with_due_existing(
     predictions: list[dict[str, Any]],
     ledger: dict[str, Any],
     now: datetime,
+    *,
+    window_contains: Any = in_current_period,
 ) -> list[dict[str, Any]]:
     """Recover stale first-look cards omitted from Titan's current fixture list."""
     rows = list(titan_rows)
@@ -544,7 +546,7 @@ def _sweep_rows_with_due_existing(
             or match_id in seen
             or kickoff is None
             or kickoff <= now
-            or not in_current_period(kickoff, now)
+            or not window_contains(kickoff, now)
         ):
             continue
         done = completed_stages(
@@ -564,6 +566,48 @@ def _sweep_rows_with_due_existing(
         seen.add(match_id)
     rows.sort(key=lambda row: row["kickoff"])
     return rows
+
+
+def _hourly_first_look_reconciliation_rows(
+    titan_rows: list[dict[str, Any]], ledger: dict[str, Any], now: datetime,
+) -> list[dict[str, Any]]:
+    """Keep only exact native IDs missing a usable first-look in this board.
+
+    This is deliberately fixture-ID-only: it never name-rematches a provider
+    row and never creates a record once kickoff has passed.
+    """
+    rows: list[dict[str, Any]] = []
+    watches = ledger.get("watch") if isinstance(ledger.get("watch"), dict) else {}
+    for titan in titan_rows:
+        event = _event_from_titan(titan)
+        if event.kickoff <= now or not in_current_period(event.kickoff, now):
+            continue
+        watch = watches.get(event.id, {})
+        done = completed_stages(watch, MATCHING_VERSION, PREDICTION_ERA)
+        if "首預" not in done:
+            rows.append(titan)
+    return rows
+
+
+def _record_hourly_first_look_reconciliation_incident(
+    config: Settings, reason: str, now: datetime,
+) -> None:
+    """Append bounded provider-failure evidence without inventing any stage."""
+    with state_lock(config, timeout_seconds=1.0) as acquired:
+        if not acquired:
+            return
+        ledger = load_ledger(config)
+        incidents = ledger.get("hourly_first_look_reconciliation_incidents")
+        if not isinstance(incidents, list):
+            incidents = []
+        incidents.append({
+            "at": now.astimezone(HKT).isoformat(),
+            "origin": "hourly_first_look_reconciliation",
+            "status": "PROVIDER_UNAVAILABLE",
+            "reason": reason,
+        })
+        ledger["hourly_first_look_reconciliation_incidents"] = incidents[-100:]
+        save_ledger(config, ledger)
 
 
 def _line_key(market: str, line: float | None) -> tuple[str, int | None]:
@@ -2034,8 +2078,8 @@ def run(
     tick_pass_deadline: float | None = None,
 ) -> dict[str, Any]:
     """Run a remote pass only when the explicit validation gate and PinnAPI key exist."""
-    if mode not in {"tick", "sweep", "settle", "refresh"}:
-        raise ValueError("mode must be tick, sweep, settle, or refresh")
+    if mode not in {"tick", "sweep", "round-update", "first-look-reconcile", "settle", "refresh"}:
+        raise ValueError("mode must be tick, sweep, round-update, first-look-reconcile, settle, or refresh")
     if not config.enabled:
         return {"ok": False, "reason": "CROWN_ENABLED=0; no network call was made"}
     if mode == "refresh":
@@ -2121,13 +2165,35 @@ def run(
             bulk_crown_quotes = fetched_bulk if isinstance(fetched_bulk, dict) else {}
         except OSError:
             bulk_crown_quotes = {}
-    if mode == "sweep":
+    sweep_mode = mode in {"sweep", "round-update", "first-look-reconcile"}
+    if sweep_mode:
+        now = datetime.now(HKT)
+        window_contains = in_future_round_update_window if mode == "round-update" else in_current_period
+        try:
+            provider_rows = titan_client.fixtures()
+        except (OSError, ValueError, TypeError) as exc:
+            if mode == "first-look-reconcile":
+                _record_hourly_first_look_reconciliation_incident(
+                    config, f"native_fixture_board_{type(exc).__name__}", now,
+                )
+                return {
+                    "ok": True, "mode": mode,
+                    "origin": "hourly_first_look_reconciliation",
+                    "provider_status": "unavailable_audited",
+                    "reconciled_first_look": 0,
+                }
+            raise
         titan_rows = _sweep_rows_with_due_existing(
-            titan_client.fixtures(),
+            provider_rows,
             existing_predictions,
             ledger,
-            datetime.now(HKT),
+            now,
+            window_contains=window_contains,
         )
+        if mode == "first-look-reconcile":
+            titan_rows = _hourly_first_look_reconciliation_rows(
+                titan_rows, ledger, now,
+            )
     pinnapi_fixture_status = "available"
     try:
         if mode == "tick":
@@ -2165,12 +2231,11 @@ def run(
         if row.get("match_id")
     }
     refresh_quotes: dict[str, dict[str, Any]] = {}
-    if mode == "sweep":
+    if sweep_mode:
         refresh_rows = []
-        now = datetime.now(HKT)
         for titan in titan_rows:
             event = _event_from_titan(titan)
-            if not in_current_period(event.kickoff) or event.kickoff <= now:
+            if not window_contains(event.kickoff, now) or event.kickoff <= now:
                 continue
             refresh_rows.append(titan)
         if refresh_rows:
@@ -2201,7 +2266,7 @@ def run(
     titan_rows.sort(key=lambda row: row["kickoff"])
     for titan in titan_rows:
         event = _event_from_titan(titan)
-        if not in_current_period(event.kickoff):
+        if not (window_contains(event.kickoff, now) if sweep_mode else in_current_period(event.kickoff)):
             continue
         watch = ledger["watch"].get(event.id, {})
         done = completed_stages(watch, MATCHING_VERSION, PREDICTION_ERA)
@@ -2211,7 +2276,7 @@ def run(
         if minutes <= 0:
             continue
         previous = current_predictions.get(event.id)
-        if mode == "sweep" and previous is not None and "首預" in done:
+        if sweep_mode and previous is not None and "首預" in done:
             predictions.append(
                 _refresh_crown_quote(
                     previous,
@@ -2223,7 +2288,7 @@ def run(
             continue
         crown_snapshot = (
             refresh_quotes.get(event.id)
-            if mode == "sweep" else bulk_crown_quotes.get(event.id)
+            if sweep_mode else bulk_crown_quotes.get(event.id)
         )
         if mode == "tick" and not _valid_pre_kickoff_bulk_snapshot(
             crown_snapshot, event.kickoff
@@ -2243,7 +2308,7 @@ def run(
             # market can still produce a CHL learning forecast.  Returning
             # here used to strand old first-look cards before corner handling.
             continue
-        stage = stage_for(minutes, mode == "sweep", done)
+        stage = stage_for(minutes, sweep_mode, done)
         if not stage:
             continue
         if mode == "tick" and stage == "T-5" and crown_snapshot is None:

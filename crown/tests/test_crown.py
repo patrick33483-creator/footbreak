@@ -17,14 +17,14 @@ import unicodedata
 import unittest
 from stat import S_IMODE
 from dataclasses import replace
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, Mock, patch
 
 from crown.config import settings
 from crown.common import HKT, parse_time
 from crown.dashboard_data import build, write_dashboard_data, write_tick_dashboard_projection
-from crown.engine import _cached_t5_crown_snapshot, _candidates, _crown_market_forecasts, _fixture_baseline_prediction, _fresh, _hkjc_chl_candidates, _hkjc_chl_forecasts, _prediction, _prioritize_tick_rows, _refresh_crown_quote, _skip_new_confirmed_empty_crown, _sweep_rows_with_due_existing, _tick_rows_from_predictions, _wdl_prediction, run
+from crown.engine import _cached_t5_crown_snapshot, _candidates, _crown_market_forecasts, _fixture_baseline_prediction, _fresh, _hkjc_chl_candidates, _hkjc_chl_forecasts, _hourly_first_look_reconciliation_rows, _prediction, _prioritize_tick_rows, _record_hourly_first_look_reconciliation_incident, _refresh_crown_quote, _skip_new_confirmed_empty_crown, _sweep_rows_with_due_existing, _tick_rows_from_predictions, _wdl_prediction, run
 from crown.hkjc import fetch_official_results, fetch_official_settlement_bundle
 from crown.ledger import (
     PREDICTION_ERA,
@@ -44,7 +44,13 @@ from crown.matching import (
 )
 from crown.notify import _bet_label, notify_new
 from crown.pinnapi import parse_fixtures, parse_lines
-from crown.period import in_current_period, is_upcoming_in_current_period, period_bounds
+from crown.period import (
+    future_round_bounds,
+    in_current_period,
+    in_future_round_update_window,
+    is_upcoming_in_current_period,
+    period_bounds,
+)
 from crown.prediction_history import (
     _persist_learning_exclusion,
     archive_watch,
@@ -2587,16 +2593,71 @@ class CrownSafetyTests(unittest.TestCase):
             self.assertEqual(merged["book_odds"]["crown"][0]["odds"], 1.9)
             self.assertNotIn("_quote_refresh_only", merged)
 
-    def test_crown_period_runs_from_1200_to_next_1159(self) -> None:
+    def test_crown_period_runs_from_1159_to_next_115959(self) -> None:
         start, end = period_bounds(self.now)
-        self.assertEqual(start.isoformat(), "2026-08-09T12:00:00+08:00")
-        self.assertEqual(end.isoformat(), "2026-08-10T11:59:59+08:00")
+        self.assertEqual(start.isoformat(), "2026-08-09T11:59:00+08:00")
+        self.assertEqual(end.isoformat(), "2026-08-10T11:58:59+08:00")
         future = datetime(2026, 8, 9, 12, 5, tzinfo=start.tzinfo)
-        started = datetime(2026, 8, 9, 12, 0, tzinfo=start.tzinfo)
+        started = datetime(2026, 8, 9, 11, 59, tzinfo=start.tzinfo)
         self.assertTrue(in_current_period(started, self.now))
         self.assertTrue(in_current_period(end, self.now))
         self.assertTrue(is_upcoming_in_current_period(future, self.now))
         self.assertFalse(is_upcoming_in_current_period(started, self.now))
+
+    def test_daily_future_round_window_is_exact_and_timezone_aware(self) -> None:
+        now_utc = datetime(2026, 8, 9, 3, 0, tzinfo=timezone.utc)  # 11:00 HKT
+        start, end = future_round_bounds(now_utc)
+        self.assertEqual(start.isoformat(), "2026-08-09T11:59:00+08:00")
+        self.assertEqual(end.isoformat(), "2026-08-10T11:58:59+08:00")
+        self.assertTrue(in_future_round_update_window(start, now_utc))
+        self.assertTrue(in_future_round_update_window(end, now_utc))
+        self.assertFalse(
+            in_future_round_update_window(start - timedelta(seconds=1), now_utc)
+        )
+        self.assertFalse(
+            in_future_round_update_window(end + timedelta(seconds=1), now_utc)
+        )
+
+    def test_hourly_first_look_reconciliation_uses_exact_id_and_never_postkickoff(self) -> None:
+        now = datetime(2026, 8, 9, 12, 10, tzinfo=HKT)
+        rows = [
+            {"id": "missing", "league": "L", "home": "A", "away": "B",
+             "kickoff": now + timedelta(hours=1)},
+            {"id": "complete", "league": "L", "home": "C", "away": "D",
+             "kickoff": now + timedelta(hours=1)},
+            {"id": "started", "league": "L", "home": "E", "away": "F",
+             "kickoff": now - timedelta(seconds=1)},
+        ]
+        ledger = {"watch": {
+            "complete": {
+                "matching_version": MATCHING_VERSION,
+                "prediction_era": PREDICTION_ERA,
+                "stages": [{"stage": "首預", "status": "PREDICTION_READY"}],
+            },
+            # A name-only card cannot suppress an exact provider fixture ID.
+            "other-id": {"home": "A", "away": "B", "stages": []},
+        }}
+        reconciled = _hourly_first_look_reconciliation_rows(rows, ledger, now)
+        self.assertEqual([row["id"] for row in reconciled], ["missing"])
+
+    def test_hourly_first_look_reconciliation_records_provider_outage_without_stage(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = replace(settings(), state_dir=Path(directory))
+            now = datetime(2026, 8, 9, 12, 10, tzinfo=HKT)
+            _record_hourly_first_look_reconciliation_incident(
+                config, "native_fixture_board_OSError", now,
+            )
+            ledger = load_ledger(config)
+            self.assertEqual(ledger.get("watch"), {})
+            self.assertEqual(
+                ledger["hourly_first_look_reconciliation_incidents"],
+                [{
+                    "at": now.isoformat(),
+                    "origin": "hourly_first_look_reconciliation",
+                    "status": "PROVIDER_UNAVAILABLE",
+                    "reason": "native_fixture_board_OSError",
+                }],
+            )
 
     def test_dashboard_keeps_started_crown_matches_until_the_daily_rollover(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

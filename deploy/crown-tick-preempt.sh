@@ -58,7 +58,7 @@ then
   /usr/bin/touch "$MARKER"
   # No wait here: once the marker is present, new slow jobs are conditioned
   # out and their existing work is asked to stop while the tick starts.
-  /usr/bin/systemctl stop --no-block crown-sweep.service crown-settle.service
+  /usr/bin/systemctl stop --no-block crown-round-update.service crown-first-look-reconcile.service crown-sweep.service crown-settle.service
   echo "Crown urgent timed stage due; slow jobs preempted"
 else
   status=$?

@@ -121,7 +121,11 @@ class ReconciliationEnablementTests(unittest.TestCase):
         health = (ROOT / "deploy" / "health-check.sh").read_text(encoding="utf-8")
         reconcile = RECONCILE.read_text(encoding="utf-8")
         self.assertIn("crown_is_enabled_in_config", update)
-        self.assertIn("systemctl disable --now crown-sweep.timer crown-tick.timer crown-settle.timer", update)
+        self.assertIn(
+            "systemctl disable --now crown-round-update.timer crown-first-look-reconcile.timer crown-sweep.timer "
+            "crown-tick.timer crown-settle.timer",
+            update,
+        )
         self.assertIn("if crown_is_enabled; then", health)
         self.assertIn("Crown timers are not required", health)
         self.assertIn("if crown_is_enabled; then", reconcile)

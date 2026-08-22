@@ -1,0 +1,22 @@
+[Unit]
+Description=足破 · 皇冠每日 11:00 future-round native update
+After=network-online.target
+Wants=network-online.target
+OnFailure=footbreak-incident-alert@%n.service
+ConditionPathExists=!/run/crown-t5-priority
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/footbreak
+# This is intentionally separate from the 15-minute recovery sweep and the
+# deadline-owned T-30/T-5 tick.  It has no timer relationship with either.
+ExecStart=/opt/footbreak/deploy/crown-run.sh round-update
+ExecStartPost=/opt/footbreak/.venv/bin/python3 /opt/footbreak/deploy/check-crown-first-look.py --state-dir /var/lib/footbreak/crown
+TimeoutStartSec=3600
+KillMode=control-group
+TimeoutStopSec=30
+SendSIGKILL=yes
+Nice=15
+
+[Install]
+WantedBy=multi-user.target

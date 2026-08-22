@@ -1,0 +1,11 @@
+[Unit]
+Description=足破 · 皇冠每日 11:00 future-round update
+
+[Timer]
+OnCalendar=*-*-* 11:00:00 Asia/Hong_Kong
+Persistent=true
+AccuracySec=30s
+Unit=crown-round-update.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,21 @@
+[Unit]
+Description=足破 · 皇冠每小時 native 首預 completeness reconciliation
+After=network-online.target
+Wants=network-online.target
+OnFailure=footbreak-incident-alert@%n.service
+ConditionPathExists=!/run/crown-t5-priority
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/footbreak
+# Exact native fixture IDs only. The engine records provider unavailability as
+# an append-only incident and cannot create a stage after kickoff.
+ExecStart=/opt/footbreak/deploy/crown-run.sh first-look-reconcile
+TimeoutStartSec=180
+TimeoutStopSec=20
+KillMode=control-group
+SendSIGKILL=yes
+Nice=15
+
+[Install]
+WantedBy=multi-user.target

@@ -139,7 +139,7 @@ class SchedulerPreemptionTests(unittest.TestCase):
         self.assertIn('0.0 < minutes <= 10.5 and not complete("T-5")', helper)
         self.assertIn('20.0 <= minutes <= 40.5 and not complete("T-30")', helper)
         self.assertIn(
-            "/usr/bin/systemctl stop --no-block crown-sweep.service crown-settle.service",
+            "/usr/bin/systemctl stop --no-block crown-round-update.service crown-first-look-reconcile.service crown-sweep.service crown-settle.service",
             helper,
         )
         for name in ("crown-sweep.service", "crown-settle.service"):

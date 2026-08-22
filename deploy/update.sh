@@ -79,15 +79,15 @@ echo "▸ 更新 systemd 單元"
 install -m 0644 "$APP_DIR"/deploy/systemd/*.service /etc/systemd/system/
 install -m 0644 "$APP_DIR"/deploy/systemd/*.timer   /etc/systemd/system/
 systemctl daemon-reload
-# Crown is a fixed 12:00-to-11:59 board.  The :05/:20/:35/:50 pass refreshes
-# fixture discovery and Crown quotes; the per-minute tick retains Footbreak's
-# original T-30/T-5 windows and is the only path that can create a T-5 bet.
+# Crown rolls at 11:59 HKT.  The dedicated 11:00 daily update establishes the
+# next native board; the :05/:20/:35/:50 pass remains recovery-only, while the
+# per-minute tick owns deadline-bound T-30/T-5 commits.
 # The default validation gate is disabled.  A disabled Crown runner exits
 # non-zero intentionally and performs no provider request, so keep its timers
 # stopped until an operator explicitly enables it.
 if crown_is_enabled_in_config; then
   echo "▸ Crown validation gate enabled; starting Crown timers"
-  for timer in crown-sweep.timer crown-tick.timer crown-settle.timer; do
+  for timer in crown-round-update.timer crown-first-look-reconcile.timer crown-sweep.timer crown-tick.timer crown-settle.timer; do
     systemctl enable "$timer"
     systemctl restart "$timer"
     if ! systemctl is-active --quiet "$timer"; then
@@ -102,9 +102,9 @@ if crown_is_enabled_in_config; then
   done
 else
   echo "▸ Crown validation gate disabled; stopping Crown timers"
-  systemctl disable --now crown-sweep.timer crown-tick.timer crown-settle.timer 2>/dev/null || true
-  systemctl stop crown-sweep.service crown-tick.service crown-settle.service 2>/dev/null || true
-  systemctl reset-failed crown-sweep.service crown-tick.service crown-settle.service 2>/dev/null || true
+  systemctl disable --now crown-round-update.timer crown-first-look-reconcile.timer crown-sweep.timer crown-tick.timer crown-settle.timer 2>/dev/null || true
+  systemctl stop crown-round-update.service crown-first-look-reconcile.service crown-sweep.service crown-tick.service crown-settle.service 2>/dev/null || true
+  systemctl reset-failed crown-round-update.service crown-first-look-reconcile.service crown-sweep.service crown-tick.service crown-settle.service 2>/dev/null || true
 fi
 # Settlement is deliberately separate from the latency-sensitive tick.  T-30
 # and T-5 now share one ordered queue, so the old second timer is retired

@@ -12,6 +12,10 @@ ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "deploy" / "check-crown-first-look.py"
 TIMER = ROOT / "deploy" / "systemd" / "crown-sweep.timer"
 SERVICE = ROOT / "deploy" / "systemd" / "crown-sweep.service"
+ROUND_TIMER = ROOT / "deploy" / "systemd" / "crown-round-update.timer"
+ROUND_SERVICE = ROOT / "deploy" / "systemd" / "crown-round-update.service"
+RECONCILE_TIMER = ROOT / "deploy" / "systemd" / "crown-first-look-reconcile.timer"
+RECONCILE_SERVICE = ROOT / "deploy" / "systemd" / "crown-first-look-reconcile.service"
 
 
 class CrownFirstLookHealthTests(unittest.TestCase):
@@ -89,6 +93,24 @@ class CrownFirstLookHealthTests(unittest.TestCase):
         self.assertIn("OnCalendar=*-*-* *:05,20,35,50:00", timer)
         self.assertIn("ExecStartPost=", service)
         self.assertIn("check-crown-first-look.py", service)
+
+    def test_daily_future_round_update_is_separate_and_persistent(self) -> None:
+        timer = ROUND_TIMER.read_text(encoding="utf-8")
+        service = ROUND_SERVICE.read_text(encoding="utf-8")
+        self.assertIn("OnCalendar=*-*-* 11:00:00 Asia/Hong_Kong", timer)
+        self.assertIn("Persistent=true", timer)
+        self.assertIn("Unit=crown-round-update.service", timer)
+        self.assertIn("crown-run.sh round-update", service)
+        self.assertIn("ConditionPathExists=!/run/crown-t5-priority", service)
+
+    def test_hourly_reconciliation_is_separate_and_deadline_safe(self) -> None:
+        timer = RECONCILE_TIMER.read_text(encoding="utf-8")
+        service = RECONCILE_SERVICE.read_text(encoding="utf-8")
+        self.assertIn("OnCalendar=*-*-* *:10:00 Asia/Hong_Kong", timer)
+        self.assertIn("Persistent=true", timer)
+        self.assertIn("crown-run.sh first-look-reconcile", service)
+        self.assertIn("ConditionPathExists=!/run/crown-t5-priority", service)
+        self.assertIn("TimeoutStartSec=180", service)
 
 
 if __name__ == "__main__":

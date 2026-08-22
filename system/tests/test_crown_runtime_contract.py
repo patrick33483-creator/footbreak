@@ -24,16 +24,31 @@ class CrownRuntimeContractTests(unittest.TestCase):
         self.assertNotIn("stale", settle.lower())
 
     def test_all_crown_runner_units_kill_descendants_and_t5_preemption_remains_safe(self) -> None:
-        for name in ("crown-settle.service", "crown-sweep.service", "crown-tick.service"):
+        for name in (
+            "crown-round-update.service",
+            "crown-first-look-reconcile.service",
+            "crown-settle.service",
+            "crown-sweep.service",
+            "crown-tick.service",
+        ):
             unit = (ROOT / "deploy/systemd" / name).read_text(encoding="utf-8")
             with self.subTest(unit=name):
                 self.assertIn("KillMode=control-group", unit)
                 self.assertIn("SendSIGKILL=yes", unit)
-        for name in ("crown-settle.service", "crown-sweep.service"):
+        for name in (
+            "crown-round-update.service",
+            "crown-first-look-reconcile.service",
+            "crown-settle.service",
+            "crown-sweep.service",
+        ):
             unit = (ROOT / "deploy/systemd" / name).read_text(encoding="utf-8")
             self.assertIn("ConditionPathExists=!/run/crown-t5-priority", unit)
         preempt = (ROOT / "deploy/crown-tick-preempt.sh").read_text(encoding="utf-8")
-        self.assertIn("systemctl stop --no-block crown-sweep.service crown-settle.service", preempt)
+        self.assertIn(
+            "systemctl stop --no-block crown-round-update.service crown-first-look-reconcile.service "
+            "crown-sweep.service crown-settle.service",
+            preempt,
+        )
 
     def test_runner_holds_duplicate_lock_but_does_not_pass_fd_to_python(self) -> None:
         runner = (ROOT / "deploy/crown-run.sh").read_text(encoding="utf-8")
