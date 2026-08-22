@@ -100,6 +100,45 @@ class SchedulerPreemptionTests(unittest.TestCase):
             self.assertEqual(unreadable.returncode, 2)
             self.assertIn("state unavailable", unreadable.stderr)
 
+    def test_refresh_precondition_honours_durable_manifest_after_legacy_window(self):
+        helper = ROOT / "deploy/footbreak-tick-preempt.sh"
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = Path(tmp, "sim_ledger.json")
+            env = os.environ | {
+                "FOOTBREAK_LEDGER": str(ledger),
+                "FOOTBREAK_PYTHON": sys.executable,
+                "FOOTBREAK_PRIORITY_MARKER": str(Path(tmp, "priority")),
+            }
+            kickoff = dt.datetime.now(record_picks.HKT) + dt.timedelta(minutes=15)
+            kickoff_utc = kickoff.astimezone(dt.timezone.utc).isoformat()
+            ledger.write_text(json.dumps({"watch": {"late-t30": {
+                "match_id": "late-t30", "kickoff": kickoff.isoformat(), "stages": [],
+                "native_stage_manifest": {
+                    "identity": {
+                        "hkjc_match_id": "late-t30",
+                        "kickoff_at_utc": kickoff_utc,
+                    },
+                    "jobs": {
+                        "T-30": {
+                            "due_at_utc": (kickoff - dt.timedelta(minutes=30)).astimezone(
+                                dt.timezone.utc
+                            ).isoformat(),
+                        },
+                        "T-5": {
+                            "due_at_utc": (kickoff - dt.timedelta(minutes=5)).astimezone(
+                                dt.timezone.utc
+                            ).isoformat(),
+                        },
+                    },
+                },
+            }}}), encoding="utf-8")
+            result = subprocess.run(
+                ["bash", str(helper), "--yield-if-urgent"],
+                env=env, text=True, capture_output=True,
+            )
+            self.assertEqual(result.returncode, 1, result.stderr)
+            self.assertIn("full-board refresh yielded", result.stdout)
+
     def test_tick_service_conditionally_preempts_slow_jobs_before_running(self):
         unit = (ROOT / "deploy/systemd/footbreak-tick.service").read_text(
             encoding="utf-8"
@@ -121,8 +160,9 @@ class SchedulerPreemptionTests(unittest.TestCase):
             )
 
         helper = (ROOT / "deploy/footbreak-tick-preempt.sh").read_text(encoding="utf-8")
-        self.assertIn('0.0 < minutes <= 10.5 and "T-5" not in stages', helper)
-        self.assertIn('20.0 <= minutes <= 40.5 and "T-30" not in stages', helper)
+        self.assertIn('row.get("native_stage_manifest")', helper)
+        self.assertIn('now.astimezone(utc) >= due_at', helper)
+        self.assertIn('"COMMITTED", "FAILED", "DATA_MISSING", "EXPIRED"', helper)
         self.assertIn("/usr/bin/systemctl stop footbreak-sweep.service footbreak-settle.service", helper)
 
     def test_crown_tick_preempts_only_when_a_local_t5_is_due(self):

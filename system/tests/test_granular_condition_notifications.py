@@ -128,7 +128,7 @@ class GranularConditionNotificationTests(unittest.TestCase):
         notifier = (SYSTEM / "notify.py").read_text(encoding="utf-8")
         self.assertIn("notify_pending_condition_bets(ledger)", source)
         self.assertNotIn("notify_fresh_granular_conditions(ledger, fresh_t30_events)", source)
-        self.assertIn('if stage == "T-30":', source)
+        self.assertIn('if stage in {"首預", "T-30"}:', source)
         self.assertNotIn(
             'fresh_t30_events.append({"match_id": match_id, "stage": "T-5"})',
             source,

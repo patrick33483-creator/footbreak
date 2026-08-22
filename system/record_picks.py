@@ -29,6 +29,10 @@ from crown_execution_test import (
     prefetch_bridge as prefetch_crown_bridge,
     recompute as recompute_crown_execution,
 )
+try:
+    import native_stage_state as stage_state
+except ImportError:  # package import used by offline tests
+    from system import native_stage_state as stage_state
 
 # Production keeps this root-only ledger at the application path.  An
 # explicit path is also injected for Crown's read-only reciprocal handoff;
@@ -336,23 +340,247 @@ def _attach_persisted_crown_counterpart(ledger, watch, rows):
             }
 
 
+OPTIONAL_JOB_LOG = "native_post_commit_jobs"
+OPTIONAL_JOB_TERMINAL = frozenset({"COMPLETED", "EXPIRED"})
+
+
+def _optional_job_events(ledger):
+    events = ledger.get(OPTIONAL_JOB_LOG)
+    if not isinstance(events, list):
+        events = []
+        ledger[OPTIONAL_JOB_LOG] = events
+    return events
+
+
+def _latest_optional_jobs(ledger):
+    latest = {}
+    for event in ledger.get(OPTIONAL_JOB_LOG) or []:
+        if isinstance(event, dict) and event.get("job_id"):
+            latest[str(event["job_id"])] = event
+    return latest
+
+
+def _job_snapshot_id(match_id, snapshot, result):
+    attempt_id = str(result.get("_native_stage_attempt_id") or "")
+    return (
+        f"attempt:{attempt_id}" if attempt_id
+        else f"snapshot:{match_id}:{snapshot.get('stage')}:{snapshot.get('ts')}"
+    )
+
+
+def _enqueue_optional_job(ledger, match_id, snapshot, result, *, now, t5_safe_to_evaluate):
+    """Journal deferred consumers with the immutable native snapshot."""
+    snapshot_id = _job_snapshot_id(match_id, snapshot, result)
+    snapshot["native_snapshot_id"] = snapshot_id
+    job_id = f"{match_id}:{snapshot_id}"
+    previous = _latest_optional_jobs(ledger).get(job_id)
+    if isinstance(previous, dict):
+        return previous
+    event = {
+        "schema_version": 1, "job_id": job_id, "status": "PENDING", "at": now,
+        "match_id": match_id, "stage": snapshot.get("stage"),
+        "snapshot_id": snapshot_id,
+        "t5_safe_to_evaluate": bool(t5_safe_to_evaluate),
+    }
+    _optional_job_events(ledger).append(event)
+    return event
+
+
+def _optional_job_transition(ledger, job, status, *, now, reason=None):
+    event = {
+        key: job.get(key)
+        for key in ("schema_version", "job_id", "match_id", "stage", "snapshot_id",
+                    "t5_safe_to_evaluate")
+    }
+    event.update({"status": status, "at": now})
+    if reason:
+        event["reason"] = reason
+    _optional_job_events(ledger).append(event)
+    return event
+
+
+def _job_watch_snapshot(ledger, job):
+    watch = (ledger.get("watch") or {}).get(str(job.get("match_id") or ""))
+    if not isinstance(watch, dict):
+        return None, None
+    snapshot = next((
+        row for row in watch.get("stages") or []
+        if isinstance(row, dict)
+        and str(row.get("native_snapshot_id") or "") == str(job.get("snapshot_id") or "")
+        and str(row.get("stage") or "") == str(job.get("stage") or "")
+    ), None)
+    return watch, snapshot
+
+
+def _load_frozen_ranking():
+    try:
+        payload = json.loads(Path(GRANULAR_RANKING).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        payload = {}
+    return (
+        payload.get("ranking")
+        if isinstance(payload, dict) and payload.get("system") == "footbreak"
+        and payload.get("schema_version") == 1
+        else None
+    )
+
+
+def _process_optional_job(ledger, job, *, now, changes):
+    """Run sidecars/evaluation only from an already durable native snapshot."""
+    watch, snapshot = _job_watch_snapshot(ledger, job)
+    if not isinstance(watch, dict) or not isinstance(snapshot, dict):
+        raise ValueError("native_snapshot_missing_for_optional_job")
+    stage, match_id = str(job.get("stage") or ""), str(job.get("match_id") or "")
+    # Learning is deliberately a side effect of a committed immutable snapshot,
+    # never a prerequisite for the native stage transaction.
+    _record_learning_snapshot(match_id, {
+        "kickoff_hkt": snapshot.get("kickoff"),
+        "stage": stage,
+    }, snapshot)
+    if stage in {"首預", "T-30"}:
+        field = "first_look" if stage == "首預" else "t30"
+        try:
+            prefetch_crown_bridge(watch, stage=stage, now=now)
+        except Exception as exc:
+            watch.setdefault("counterpart_bridges", {}).setdefault("crown", {})[field] = {
+                "at": now, "status": "UNAVAILABLE",
+                "reason": f"crown_sidecar_local_error:{type(exc).__name__}",
+            }
+        return
+    if stage != BET_STAGE:
+        return
+    try:
+        capture_t5_counterparts(watch, now=now)
+    except Exception as exc:
+        watch.setdefault("counterpart_bridges", {}).setdefault("crown", {})["t5"] = {
+            "at": now, "markets": {}, "reason": f"crown_sidecar_local_error:{type(exc).__name__}",
+        }
+    if not job.get("t5_safe_to_evaluate"):
+        ledger["wilson_validation"]["audit"].append({
+            "ts": now, "match_id": match_id, "market": "*",
+            "status": "SKIPPED", "reason": "t5_safe_lead_not_met",
+        })
+        return
+    ranking = _load_frozen_ranking()
+    created, _audit = evaluate_new_t5(
+        ledger, watch, history_path=Path(ACCURACY_HISTORY),
+        ranking=ranking if isinstance(ranking, list) else None,
+    )
+    observations = [
+        row for row in ((ledger.get("wilson_validation") or {}).get("observations") or [])
+        if isinstance(row, dict) and str(row.get("match_id") or "") == match_id
+        and str(row.get("stage") or "") == BET_STAGE
+        and str(row.get("created_at") or "") == str(snapshot.get("ts") or "")
+    ]
+    _attach_persisted_crown_counterpart(ledger, watch, list(created) + observations)
+    evaluate_probability_research(
+        ledger, watch, ranking=ranking if isinstance(ranking, list) else None,
+        evidence_path=Path(PROBABILITY_EVIDENCE),
+    )
+    if created:
+        ledger["bets"].extend(created)
+        changes.extend(_condition_change(bet) for bet in created)
+    try:
+        crown_created, _crown_audit = evaluate_crown_execution_t5(
+            ledger, watch, ranking=ranking if isinstance(ranking, list) else None, now=now,
+        )
+    except Exception as exc:
+        crown_created = []
+        (ledger.get("wilson_validation") or {}).setdefault("audit", []).append({
+            "ts": now, "match_id": match_id, "market": "*", "status": "SKIPPED",
+            "reason": f"crown_execution_sidecar_local_error:{type(exc).__name__}",
+        })
+    if crown_created:
+        changes.extend(_crown_execution_change(bet) for bet in crown_created)
+
+
+def _drain_optional_jobs(ledger, *, now, changes, notes):
+    """Retry durable post-commit work without rolling back native evidence."""
+    for _job_id, job in list(_latest_optional_jobs(ledger).items()):
+        if str(job.get("status") or "") in OPTIONAL_JOB_TERMINAL:
+            continue
+        watch, snapshot = _job_watch_snapshot(ledger, job)
+        kickoff = stage_state.parse_time(
+            snapshot.get("kickoff") if isinstance(snapshot, dict) else None
+        )
+        current = stage_state.parse_time(now)
+        if kickoff is None or current is None or current >= kickoff:
+            if str(job.get("stage") or "") == BET_STAGE and job.get("t5_safe_to_evaluate"):
+                ledger["wilson_validation"]["audit"].append({
+                    "ts": now, "match_id": job.get("match_id"), "market": "*",
+                    "status": "SKIPPED", "reason": "optional_job_expired_before_native_evaluation",
+                })
+            _optional_job_transition(
+                ledger, job, "EXPIRED", now=now,
+                reason="kickoff_elapsed_before_optional_consumer",
+            )
+            continue
+        _optional_job_transition(ledger, job, "STARTED", now=now)
+        try:
+            _process_optional_job(ledger, job, now=now, changes=changes)
+        except Exception as exc:
+            _optional_job_transition(
+                ledger, job, "RETRYABLE_FAILURE", now=now,
+                reason=f"optional_consumer_error:{type(exc).__name__}",
+            )
+            notes.append(
+                f"{job.get('match_id') or '—'} — {job.get('stage') or '—'} "
+                f"optional consumer failed ({type(exc).__name__}); native snapshot remains committed"
+            )
+            continue
+        _optional_job_transition(ledger, job, "COMPLETED", now=now)
+
+
+def drain_post_commit_jobs():
+    """Retry optional consumers independently of a new native stage arrival."""
+    ledger = load()
+    now = dt.datetime.now(HKT).isoformat(timespec="seconds")
+    changes, notes = [], []
+    _drain_optional_jobs(ledger, now=now, changes=changes, notes=notes)
+    recompute(ledger)
+    recompute_crown_execution(ledger)
+    save(ledger)
+    return changes, notes, ledger
+
+
 def sync(preds_file="predictions.json", *, send_notifications=True):
     """Persist prediction snapshots and evaluate only newly saved T-5 rows.
 
-    The decision and audit are committed atomically with the new snapshot. A
-    a duplicate stage is ignored entirely: stage evidence is immutable and it
-    cannot create, alter, or withdraw a condition simulation bet.
+    Native stage evidence is committed before any optional consumer. A duplicate
+    stage leaves the immutable snapshot alone, while its durable consumer job
+    may still be retried idempotently.
     """
     ledger = load()
     with open(os.path.join(HERE, preds_file), encoding="utf-8") as handle:
         predictions = json.load(handle)
     now = dt.datetime.now(HKT).isoformat(timespec="seconds")
-    changes, notes, fresh_t30_events = [], [], []
+    recorded_at = dt.datetime.fromisoformat(now)
+    changes, notes = [], []
 
     for result in predictions:
         match_id = str(result["match_id"])
         stage = result["stage"]
         if stage not in STAGE_ORDER:
+            continue
+        result_kickoff = stage_state.parse_time(result.get("kickoff_hkt"))
+        if result_kickoff is None or result_kickoff <= recorded_at:
+            attempt_id = str(result.get("_native_stage_attempt_id") or "")
+            if stage in {"T-30", "T-5"} and attempt_id:
+                attempt = next((
+                    row for row in reversed(ledger.get("native_stage_attempts") or [])
+                    if isinstance(row, dict)
+                    and row.get("attempt_id") == attempt_id
+                    and row.get("status") == "STARTED"
+                ), None)
+                if isinstance(attempt, dict):
+                    stage_state.finish_attempt(
+                        ledger, attempt, "EXPIRED", now=recorded_at,
+                        reason="kickoff_elapsed_before_native_snapshot",
+                    )
+            notes.append(
+                f"{result.get('home') or '—'} v {result.get('away') or '—'} — "
+                f"{stage} 賽後結果已隔離，沒有建立 native stage"
+            )
             continue
         t5_safe_to_evaluate = True
         if stage == BET_STAGE:
@@ -391,132 +619,55 @@ def sync(preds_file="predictions.json", *, send_notifications=True):
             continue
 
         snapshot = _snap(result, now)
+        # A genuine first-look snapshot atomically creates native scheduler
+        # metadata only.  It never fabricates T-30/T-5 evidence.  Timed rows
+        # inherit that immutable HKJC identity/due schedule redundantly.
+        if stage == "首預":
+            stage_state.ensure_first_look_manifest(
+                watch, now=dt.datetime.fromisoformat(now),
+            )
+        elif stage in {"T-30", "T-5"} and not isinstance(
+            watch.get("native_stage_manifest"), dict,
+        ):
+            kickoff = stage_state.parse_time(watch.get("kickoff"))
+            if kickoff is not None and kickoff > dt.datetime.now(HKT):
+                stage_state.ensure_manifest(
+                    watch, origin="migration_existing_future_card",
+                    now=dt.datetime.fromisoformat(now),
+                )
+        stage_state.enrich_snapshot(snapshot, watch, stage)
         if stage == BET_STAGE:
             snapshot["t30_data_complete"] = any(
                 item.get("stage") == "T-30" for item in watch["stages"]
             )
-        learning = _record_learning_snapshot(match_id, result, snapshot)
-        if learning:
-            snapshot.update({
-                "learning_snapshot_id": learning["snapshot_id"],
-                "learning_attempt": learning["attempt"],
-                "learning_pre_kickoff": learning["pre_kickoff"],
-                "learning_payload_sha256": learning["payload_sha256"],
-            })
-            if not learning["pre_kickoff"]:
-                notes.append(
-                    f"{result.get('home') or '—'} v {result.get('away') or '—'} — "
-                    f"{stage} 賽後重跑已隔離，沒有覆蓋賽前預測"
-                )
-                continue
-
         watch["stages"].append(snapshot)
         watch["stages"].sort(key=lambda row: STAGE_ORDER.get(row.get("stage"), 9))
+        attempt_id = str(result.get("_native_stage_attempt_id") or "")
+        if stage in {"T-30", "T-5"} and attempt_id:
+            attempt = next((
+                row for row in reversed(ledger.get("native_stage_attempts") or [])
+                if isinstance(row, dict)
+                and row.get("attempt_id") == attempt_id
+                and row.get("status") == "STARTED"
+            ), None)
+            if isinstance(attempt, dict):
+                # This transition and the immutable native snapshot share the
+                # same later `save(ledger)` replacement.
+                stage_state.finish_attempt(
+                    ledger, attempt, "COMMITTED",
+                    now=dt.datetime.fromisoformat(now),
+                )
+        _enqueue_optional_job(
+            ledger, match_id, snapshot, result, now=now,
+            t5_safe_to_evaluate=t5_safe_to_evaluate,
+        )
         label = (snapshot.get("pick") or {}).get("label") or "無明顯傾向"
         notes.append(f"{result.get('home') or '—'} v {result.get('away') or '—'} — {stage} {snapshot['verdict']}：{label}")
-        if stage == "首預":
-            # First-look identity resolution is an optional local sidecar read.
-            # It cannot delay or alter any native Footbreak stage.
-            try:
-                prefetch_crown_bridge(watch, stage="首預", now=now)
-            except Exception as exc:
-                watch.setdefault("counterpart_bridges", {}).setdefault("crown", {})["first_look"] = {
-                    "at": now, "status": "UNAVAILABLE",
-                    "reason": f"crown_sidecar_local_error:{type(exc).__name__}",
-                }
-        elif stage == "T-30":
-            fresh_t30_events.append({"match_id": match_id, "stage": stage})
-            # Re-verify the already selected identity and persist exact
-            # market/side/Asian-line availability.  No provider call occurs.
-            try:
-                prefetch_crown_bridge(watch, stage="T-30", now=now)
-            except Exception as exc:
-                watch.setdefault("counterpart_bridges", {}).setdefault("crown", {})["t30"] = {
-                    "at": now, "status": "UNAVAILABLE",
-                    "reason": f"crown_sidecar_local_error:{type(exc).__name__}",
-                }
 
-        # Only this branch is allowed to create active bets: a fresh, persisted
-        # T-5 snapshot. T-30, historical backfill, and replay paths never call
-        # the evaluator.
-        if stage != BET_STAGE or not t5_safe_to_evaluate:
-            if stage == BET_STAGE:
-                ledger["wilson_validation"]["audit"].append({
-                    "ts": now, "match_id": match_id, "market": "*",
-                    "status": "SKIPPED", "reason": "t5_safe_lead_not_met",
-                })
-            continue
-        # Capture the optional Crown counterpart from the already verified
-        # local bridge before formal evaluation.  It is never a prerequisite
-        # for native Wilson admission, low-odds observation, or Telegram.
-        try:
-            capture_t5_counterparts(watch, now=now)
-        except Exception as exc:
-            watch.setdefault("counterpart_bridges", {}).setdefault("crown", {})["t5"] = {
-                "at": now, "markets": {}, "reason": f"crown_sidecar_local_error:{type(exc).__name__}",
-            }
-        try:
-            ranking_payload = json.loads(Path(GRANULAR_RANKING).read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            ranking_payload = {}
-        # ``accuracy_history`` intentionally contains raw settled outcomes,
-        # not dashboard statistics.  Reading a dashboard-only path from it
-        # made every native T-5 look like a granular mismatch.  This dedicated
-        # artifact is written only by the settled accuracy pass; absence stays
-        # fail-closed.
-        cached_ranking = (
-            ranking_payload.get("ranking")
-            if isinstance(ranking_payload, dict)
-            and ranking_payload.get("system") == "footbreak"
-            and ranking_payload.get("schema_version") == 1
-            else None
-        )
-        created, audit = evaluate_new_t5(
-            ledger, watch, history_path=Path(ACCURACY_HISTORY),
-            ranking=cached_ranking if isinstance(cached_ranking, list) else None,
-        )
-        # The native evaluator owns condition identity.  Attach only the
-        # independently persisted execution/presentation evidence afterwards;
-        # this neither changes signatures nor gates low-odds observations.
-        observation_rows = [
-            row for row in ((ledger.get("wilson_validation") or {}).get("observations") or [])
-            if isinstance(row, dict) and str(row.get("match_id") or "") == match_id
-            and str(row.get("stage") or "") == BET_STAGE
-            and str(row.get("created_at") or "") == str(snapshot.get("ts") or "")
-        ]
-        _attach_persisted_crown_counterpart(ledger, watch, list(created) + observation_rows)
-        # This is intentionally a second, isolated append-only evaluation.
-        # It receives the same first native T-5 and frozen ranking but never
-        # appends a v1 bet, changes notification eligibility, or supplies a
-        # missing historical evidence set from a fallback/post-hoc source.
-        evaluate_probability_research(
-            ledger, watch,
-            ranking=cached_ranking if isinstance(cached_ranking, list) else None,
-            evidence_path=Path(PROBABILITY_EVIDENCE),
-        )
-        # The shared evaluator writes its own immutable admission audit exactly
-        # once.  Do not append the returned view a second time.
-        if created:
-            ledger["bets"].extend(created)
-            changes.extend(_condition_change(bet) for bet in created)
-        # This local adapter reads only a bounded persisted Crown evidence
-        # artifact.  It deliberately has no engine/client import and cannot
-        # add remote/provider work to the urgent Footbreak T-5 process.
-        try:
-            crown_created, _crown_audit = evaluate_crown_execution_t5(
-                ledger, watch,
-                ranking=cached_ranking if isinstance(cached_ranking, list) else None,
-                now=now,
-            )
-        except Exception as exc:
-            crown_created, _crown_audit = [], []
-            (ledger.get("wilson_validation") or {}).setdefault("audit", []).append({
-                "ts": now, "match_id": match_id, "market": "*", "status": "SKIPPED",
-                "reason": f"crown_execution_sidecar_local_error:{type(exc).__name__}",
-            })
-        if crown_created:
-            changes.extend(_crown_execution_change(bet) for bet in crown_created)
-
+    # Native stage, expected-job record, and terminal attempt are durable
+    # before any sidecar, matcher, research, or notification work is entered.
+    save(ledger)
+    _drain_optional_jobs(ledger, now=now, changes=changes, notes=notes)
     recompute(ledger)
     recompute_crown_execution(ledger)
     ledger["log"].append({
