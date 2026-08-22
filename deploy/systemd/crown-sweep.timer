@@ -1,8 +1,8 @@
 [Unit]
-Description=足破 · 皇冠 native future board discovery at :25
+Description=足破 · 皇冠 native board discovery every half hour
 
 [Timer]
-OnCalendar=*-*-* *:25:00
+OnCalendar=*-*-* *:00,30:00
 Persistent=true
 AccuracySec=30s
 Unit=crown-sweep.service
