@@ -1977,6 +1977,46 @@ def _expire_lapsed_timed_stage_attempts(config: Settings, now: datetime) -> int:
     return expired
 
 
+def persist_timed_stage_timeout_failures(config: Settings, now: datetime | None = None) -> int:
+    """Terminally record timed-out native work before the service deadline.
+
+    The deadline-owning parent calls this only after terminating a stalled tick
+    child.  It performs no provider request and converts its pre-existing
+    STARTED journals into retryable, immutable DATA_MISSING stage records while
+    kickoff is still in the future.
+    """
+    now = (now or datetime.now(HKT)).astimezone(HKT)
+    ledger = load_ledger(config)
+    rows: list[dict[str, Any]] = []
+    for key, watch in (ledger.get("watch") or {}).items():
+        if not isinstance(watch, dict):
+            continue
+        kickoff = parse_time(watch.get("kickoff_utc") or watch.get("kickoff_hkt") or watch.get("kickoff"))
+        if kickoff is None or kickoff <= now:
+            continue
+        attempts = watch.get("stage_attempts") if isinstance(watch.get("stage_attempts"), dict) else {}
+        for stage in ("T-30", "T-5"):
+            if not isinstance(attempts.get(stage), dict) or attempts[stage].get("state") != "STARTED":
+                continue
+            rows.append({
+                "id": str(watch.get("native_fixture_id") or watch.get("titan_match_id") or watch.get("match_id") or key),
+                "league": watch.get("league") or "", "home": watch.get("home") or "",
+                "away": watch.get("away") or "", "kickoff": kickoff, "_due_stage": stage,
+            })
+    if not rows:
+        return 0
+    predictions = [
+        _unavailable_timed_stage_prediction(
+            row, str(row["_due_stage"]), "native_stage_engine_deadline_exhausted",
+        )
+        for row in rows
+    ]
+    _commit_stage_predictions(
+        config, "tick", predictions, deadline=time.monotonic() + 3.5,
+    )
+    return len(predictions)
+
+
 def _run_local_bulk_timed_stages(
     config: Settings,
     rows: list[dict[str, Any]],

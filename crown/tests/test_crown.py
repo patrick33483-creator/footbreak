@@ -1972,6 +1972,29 @@ class CrownSafetyTests(unittest.TestCase):
         ):
             self.assertEqual(crown_engine._tick_pass_deadline_seconds(), 50.0)
 
+    def test_timed_out_tick_persists_explicit_retryable_failure_from_started_journal(self) -> None:
+        from crown import engine as crown_engine
+
+        with tempfile.TemporaryDirectory() as directory:
+            config = replace(settings(), state_dir=Path(directory), enabled=True)
+            now = datetime.now(__import__("crown.common", fromlist=["HKT"]).HKT)
+            kickoff = now + timedelta(minutes=5)
+            save_ledger(config, {
+                "bankroll": 50000, "bets": [], "log": [], "stats": {},
+                "watch": {"native-id": {
+                    "match_id": "native-id", "native_fixture_id": "native-id",
+                    "titan_match_id": "native-id", "league": "L", "home": "H", "away": "A",
+                    "kickoff": kickoff.isoformat(), "kickoff_hkt": kickoff.isoformat(),
+                    "stages": [], "stage_attempts": {"T-5": {"state": "STARTED"}},
+                    "stage_jobs": {"T-5": {"stage": "T-5", "state": "STARTED"}},
+                }},
+            })
+            self.assertEqual(crown_engine.persist_timed_stage_timeout_failures(config, now), 1)
+            watch = load_ledger(config)["watch"]["native-id"]
+            self.assertEqual(watch["stage_attempts"]["T-5"]["state"], "FAILED")
+            self.assertEqual(watch["stage_jobs"]["T-5"]["state"], "FAILED")
+            self.assertEqual(watch["stages"][0]["status"], "DATA_MISSING")
+
     def test_same_kickoff_t5_batch_uses_each_locked_direct_fixture_id(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             config = replace(settings(), state_dir=Path(directory), enabled=True, pinnapi_key="test")

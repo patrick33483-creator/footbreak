@@ -155,12 +155,22 @@ def _run_tick_engine(config, tick_deadline: float) -> dict[str, object]:
     sender.close()
     try:
         if not receiver.poll(max_seconds):
+            # Do not leave a write-ahead STARTED record as the only evidence
+            # when a same-minute provider batch overruns its native budget.
+            # Kill that child first, then persist retryable DATA_MISSING rows
+            # using only its already durable fixture identities.
+            if process.is_alive():
+                process.terminate()
+                process.join(timeout=0.10)
+            from .engine import persist_timed_stage_timeout_failures
+            failures = persist_timed_stage_timeout_failures(config)
             return {
                 "ok": True,
                 "mode": "tick",
                 "engine_warning": "deferred_tick_deadline",
                 "predictions": 0,
                 "simulations_created": 0,
+                "timeout_failure_snapshots": failures,
             }
         try:
             status, payload = receiver.recv()
