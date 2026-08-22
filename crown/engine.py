@@ -66,7 +66,11 @@ def _tick_rows_from_predictions(
         # Existing cards from before the durable-job migration become visible
         # through the old legal windows once, then the write-ahead path
         # reconstructs and persists their job records before collection.
-        if not jobs:
+        # A durable job is the deadline authority.  Do not fall back to the
+        # legacy wide (20–40 minute) window merely because a future job is not
+        # due yet: that would start a 13:00 T-30 at 12:27 and consume its
+        # attempt before the persisted 12:30 deadline.
+        if not jobs and not isinstance(watch.get("stage_jobs"), dict):
             minutes = (kickoff - now).total_seconds() / 60
             jobs = [stage for stage in stages_due(minutes, False, done) if stage in {"T-30", "T-5"}]
         first_due = stages_due(

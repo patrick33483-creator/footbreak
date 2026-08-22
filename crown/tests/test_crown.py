@@ -1715,6 +1715,24 @@ class CrownSafetyTests(unittest.TestCase):
             [],
         )
 
+    def test_durable_t30_job_never_starts_before_its_exact_due_at(self) -> None:
+        kickoff = datetime(2026, 8, 23, 10, 0, tzinfo=HKT)
+        now = datetime(2026, 8, 23, 9, 27, tzinfo=HKT)
+        watch = {
+            "match_id": "deadline-authority",
+            "kickoff": kickoff.isoformat(),
+            "matching_version": MATCHING_VERSION,
+            "prediction_era": PREDICTION_ERA,
+            "stages": [{"stage": "首預", "status": "PREDICTION_READY"}],
+        }
+        ensure_stage_jobs(watch, kickoff.isoformat())
+        rows = _tick_rows_from_predictions([{
+            "match_id": "deadline-authority",
+            "league": "L", "home": "H", "away": "A",
+            "kickoff_hkt": kickoff.isoformat(),
+        }], {"watch": {"deadline-authority": watch}}, now)
+        self.assertEqual(rows, [])
+
     def test_first_look_locks_native_identity_and_stage_lines_are_immutable(self) -> None:
         """Later names/lines cannot rematch or rewrite the first native quote."""
         with tempfile.TemporaryDirectory() as directory:
