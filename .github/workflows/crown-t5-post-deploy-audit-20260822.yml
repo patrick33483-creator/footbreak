@@ -265,6 +265,27 @@ jobs:
             > crown-tick-env-diagnostic.log || true
           cat crown-tick-env-diagnostic.log || true
 
+      - name: Dry-run crown-run.sh dynamic budget block against the live sentinel (read only)
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "sudo head -50 /opt/footbreak/deploy/crown-run.sh | sudo tee /tmp/crown-run-head.sh >/dev/null; echo '--- deployed crown-run.sh first 50 lines (source of truth on server) ---'; sudo cat /tmp/crown-run-head.sh; echo '--- dry run of dynamic budget block using live sentinel ---'; sudo bash -c 'EPOCH_FILE=/run/crown-tick-start-epoch; TIMEOUT_START_SECONDS=55; STOP_MARGIN_SECONDS=4; FALLBACK_DEADLINE_SECONDS=50; if [ -r \"\$EPOCH_FILE\" ] && start_epoch=\$(cat \"\$EPOCH_FILE\" 2>/dev/null) && [ -n \"\$start_epoch\" ] && [ \"\$start_epoch\" -eq \"\$start_epoch\" ] 2>/dev/null; then now_epoch=\$(date +%s); elapsed=\$((now_epoch - start_epoch)); echo \"elapsed=\$elapsed\"; else echo SENTINEL_READ_FAILED; fi'" \
+            > crown-run-dryrun-diagnostic.log 2>&1 || true
+          cat crown-run-dryrun-diagnostic.log || true
+
+      - name: Upload dry-run diagnostic
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: crown-run-dryrun-diagnostic-${{ github.run_id }}
+          path: crown-run-dryrun-diagnostic.log
+          retention-days: 14
+
       - name: Upload env diagnostic
         if: always()
         uses: actions/upload-artifact@v4
