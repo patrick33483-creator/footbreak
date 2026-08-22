@@ -44,11 +44,11 @@ jobs:
           import time
           from pathlib import Path
 
-          from crown.config import Settings
+          from crown.config import settings
           from crown.state import paths
 
           repeat_count = max(1, int(os.environ.get("REPEAT_COUNT", "5")))
-          config = Settings.load()
+          config = settings()
           ledger_path = paths(config)["ledger"]
 
           result = {
