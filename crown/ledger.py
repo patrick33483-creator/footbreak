@@ -559,22 +559,34 @@ def sync_prediction(ledger: dict[str, Any], prediction: dict[str, Any], config: 
     watch = ledger["watch"].setdefault(match_id, {
         "match_id": match_id, "league": prediction.get("league"), "home": prediction.get("home"),
         "away": prediction.get("away"), "kickoff": prediction.get("kickoff_hkt"),
-        "titan_match_id": prediction.get("titan_match_id"), "pinnapi_event_id": prediction.get("pinnapi_event_id"),
+        "titan_match_id": prediction.get("titan_match_id"),
+        "native_fixture_id": prediction.get("titan_match_id") or match_id,
+        "pinnapi_event_id": prediction.get("pinnapi_event_id"),
         "hkjc_match_id": prediction.get("hkjc_match_id"), "stages": [],
         "matching_version": prediction.get("matching_version"), "prediction_era": PREDICTION_ERA,
         "discovered_at": prediction.get("discovered_at") or iso_hkt(),
     })
-    watch.update({key: prediction.get(key) for key in (
-        "league", "home", "away", "kickoff_hkt", "titan_match_id", "pinnapi_event_id", "hkjc_match_id", "matching_version",
-    )})
+    # First look locks the native Crown identity.  Later T-30/T-5 updates are
+    # observations of that exact provider fixture, not an opportunity to
+    # resolve another match from changing team names or a broad board.
+    native_fixture_id = str(
+        watch.get("native_fixture_id") or watch.get("titan_match_id")
+        or prediction.get("titan_match_id") or match_id
+    )
+    watch.setdefault("native_fixture_id", native_fixture_id)
+    if not watch.get("titan_match_id"):
+        watch["titan_match_id"] = native_fixture_id
+    for key in ("league", "home", "away", "kickoff_hkt", "pinnapi_event_id", "hkjc_match_id", "matching_version"):
+        if key not in watch or watch.get(key) in {None, ""}:
+            watch[key] = prediction.get(key)
     # Existing operational watch shells created by a write-ahead attempt or a
     # prior deployment may contain only ``stages``.  Restore the immutable
     # fixture identifier before T-5 admission; otherwise a real native T-5
     # appears anonymous and is silently rejected despite valid quote evidence.
     watch["match_id"] = match_id
     watch["prediction_era"] = PREDICTION_ERA
-    watch["kickoff"] = prediction.get("kickoff_hkt")
-    ensure_stage_jobs(watch, prediction.get("kickoff_hkt"))
+    watch.setdefault("kickoff", prediction.get("kickoff_hkt"))
+    ensure_stage_jobs(watch, watch.get("kickoff_hkt") or watch.get("kickoff"))
     if not watch.get("discovered_at"):
         watch["discovered_at"] = prediction.get("discovered_at") or iso_hkt()
     stage_rows = watch.get("stages")

@@ -54,7 +54,10 @@ def _tick_rows_from_predictions(
     seen: set[tuple[str, str]] = set()
 
     def append_due(identity: dict[str, Any], watch: dict[str, Any]) -> None:
-        match_id = str(identity.get("id") or identity.get("match_id") or "")
+        match_id = str(
+            watch.get("native_fixture_id") or watch.get("titan_match_id")
+            or identity.get("id") or identity.get("match_id") or ""
+        )
         kickoff = parse_time(identity.get("kickoff") or identity.get("kickoff_hkt"))
         if not match_id or kickoff is None:
             return
@@ -1662,81 +1665,77 @@ def _run_local_bulk_timed_stages(
     rows: list[dict[str, Any]],
     deadline: float,
 ) -> dict[str, Any]:
-    """Persist due T-30/T-5 cards before kickoff without optional providers.
+    """Persist due stages from each locked native Crown fixture ID.
 
-    A current Crown ID-3 bulk row is preferred.  A missing or malformed bulk
-    row gets one bounded, parallel direct-page fallback, because the bulk feed
-    can omit an otherwise live Crown market.  A T-30 that remains unavailable
-    gets one durable DATA_MISSING attempt under the same state lock; it stays
-    due for repair and is never reconstructed after kickoff.
+    Direct ID=3 reads are authoritative: no team-name rematch or broad-board
+    inclusion can redirect a scheduled job.  The bulk board may only supply a
+    same-ID fallback when a bounded direct read is unavailable.
     """
     journaled = _journal_timed_stage_attempts(
         config, rows, reason="native_timed_stage_collection_started",
     )
     titan_client = TitanClient(config)
-    try:
-        remaining = _deadline_remaining(deadline)
-        snapshots = (
-            titan_client.crown_bulk_price_snapshots(max_seconds=remaining)
-            if remaining >= _MIN_DEADLINE_CALL_SECONDS else {}
-        )
-    except OSError:
-        snapshots = {}
-    if not isinstance(snapshots, dict):
-        snapshots = {}
-
     usable_snapshots: dict[str, dict[str, Any]] = {}
-    fallback_rows: list[dict[str, Any]] = []
-    for titan in rows:
-        match_id = str(titan.get("id") or "")
-        kickoff = parse_time(titan.get("kickoff"))
-        snapshot = snapshots.get(match_id)
-        if (
-            kickoff is not None
-            and snapshot
-            and snapshot.get("quote_source") == _CROWN_BULK_ID3_SOURCE
-            and _valid_pre_kickoff_bulk_snapshot(snapshot, kickoff)
-        ):
-            usable_snapshots[match_id] = snapshot
-        else:
-            fallback_rows.append(titan)
-
-    # Direct page reads are deliberately bounded and concurrent.  Reserve a
-    # small commit window, and never start a fallback when doing so could
-    # crowd out the pre-kickoff persistence guard.
     direct_attempted = 0
+    remaining = _deadline_remaining(deadline)
+    direct_budget = min(8.0, max(0.0, remaining - 3.0))
+    if rows and direct_budget >= _MIN_DEADLINE_CALL_SECONDS:
+        direct_attempted = len(rows)
+        with ThreadPoolExecutor(
+            max_workers=min(_tick_workers(), len(rows)),
+        ) as pool:
+            futures = {
+                pool.submit(
+                    titan_client.crown_price_snapshot,
+                    str(row.get("id") or ""),
+                    max_seconds=direct_budget,
+                ): row
+                for row in rows
+            }
+            for future in as_completed(futures):
+                titan = futures[future]
+                match_id = str(titan.get("id") or "")
+                kickoff = parse_time(titan.get("kickoff"))
+                try:
+                    snapshot = future.result()
+                except (OSError, TimeoutError):
+                    continue
+                if (
+                    kickoff is not None
+                    and snapshot
+                    and snapshot.get("quote_source") == _CROWN_ID3_SOURCE
+                    and _valid_pre_kickoff_bulk_snapshot(snapshot, kickoff)
+                    and snapshot.get("prices")
+                ):
+                    usable_snapshots[match_id] = snapshot
+
+    fallback_rows = [
+        row for row in rows
+        if str(row.get("id") or "") not in usable_snapshots
+    ]
+    bulk_fallback_attempted = 0
     if fallback_rows:
         remaining = _deadline_remaining(deadline)
-        fallback_budget = min(8.0, max(0.0, remaining - 3.0))
-        if fallback_budget >= _MIN_DEADLINE_CALL_SECONDS:
-            direct_attempted = len(fallback_rows)
-            with ThreadPoolExecutor(
-                max_workers=min(_tick_workers(), len(fallback_rows)),
-            ) as pool:
-                futures = {
-                    pool.submit(
-                        titan_client.crown_price_snapshot,
-                        str(row.get("id") or ""),
-                        max_seconds=fallback_budget,
-                    ): row
-                    for row in fallback_rows
-                }
-                for future in as_completed(futures):
-                    titan = futures[future]
-                    match_id = str(titan.get("id") or "")
-                    kickoff = parse_time(titan.get("kickoff"))
-                    try:
-                        snapshot = future.result()
-                    except (OSError, TimeoutError):
-                        continue
-                    if (
-                        kickoff is not None
-                        and snapshot
-                        and snapshot.get("quote_source") == _CROWN_ID3_SOURCE
-                        and _valid_pre_kickoff_bulk_snapshot(snapshot, kickoff)
-                        and snapshot.get("prices")
-                    ):
-                        usable_snapshots[match_id] = snapshot
+        if remaining >= _MIN_DEADLINE_CALL_SECONDS:
+            bulk_fallback_attempted = len(fallback_rows)
+            try:
+                snapshots = titan_client.crown_bulk_price_snapshots(max_seconds=remaining)
+            except OSError:
+                snapshots = {}
+            if not isinstance(snapshots, dict):
+                snapshots = {}
+            for titan in fallback_rows:
+                match_id = str(titan.get("id") or "")
+                kickoff = parse_time(titan.get("kickoff"))
+                snapshot = snapshots.get(match_id)
+                if (
+                    kickoff is not None
+                    and snapshot
+                    and snapshot.get("quote_source") == _CROWN_BULK_ID3_SOURCE
+                    and _valid_pre_kickoff_bulk_snapshot(snapshot, kickoff)
+                    and snapshot.get("prices")
+                ):
+                    usable_snapshots[match_id] = snapshot
 
     stage_predictions: list[dict[str, Any]] = []
     retained = len(load_predictions(config))
@@ -1750,7 +1749,7 @@ def _run_local_bulk_timed_stages(
             stage_predictions.append(_unavailable_timed_stage_prediction(
                 titan,
                 stage,
-                "bulk_and_bounded_direct_id3_unavailable",
+                "locked_direct_id3_and_bulk_fallback_unavailable",
             ))
             continue
         stage_predictions.append(
@@ -1783,11 +1782,12 @@ def _run_local_bulk_timed_stages(
             if item["stage"] == "T-5"
         ],
         "bulk_unavailable_predictions": unavailable,
-        "direct_fallback_attempted": direct_attempted,
-        "direct_fallback_predictions": sum(
+        "direct_id_attempted": direct_attempted,
+        "direct_id_predictions": sum(
             snapshot.get("quote_source") == _CROWN_ID3_SOURCE
             for snapshot in usable_snapshots.values()
         ),
+        "bulk_fallback_attempted": bulk_fallback_attempted,
         "pinnapi_fixtures": 0,
         "hkjc_fixtures": 0,
         "deferred_predictions": unavailable,

@@ -1708,6 +1708,72 @@ class CrownSafetyTests(unittest.TestCase):
             [],
         )
 
+    def test_first_look_locks_native_identity_and_stage_lines_are_immutable(self) -> None:
+        """Later names/lines cannot rematch or rewrite the first native quote."""
+        with tempfile.TemporaryDirectory() as directory:
+            config = replace(settings(), state_dir=Path(directory), telegram_enabled=False)
+            kickoff = self.now + timedelta(minutes=40)
+            ledger = {"bankroll": 50000, "bets": [], "watch": {}, "log": [], "stats": {}}
+
+            def prediction(stage: str, *, line: float, odds: float, home: str, native_id: str) -> dict:
+                return {
+                    "match_id": "locked-9001", "titan_match_id": native_id,
+                    "league": "Locked League", "home": home, "away": "Original Away",
+                    "kickoff_hkt": kickoff.isoformat(), "stage": stage,
+                    "status": "PREDICTION_READY", "matching_version": MATCHING_VERSION,
+                    "forecast_candidates": [{
+                        "code": "HDC", "market": "讓球", "line": line,
+                        "condition": f"{line:g}", "side": "H", "odds": odds,
+                        "observed_at": self.now.timestamp(), "source": "titan007-crown-id-3",
+                    }],
+                }
+
+            sync_prediction(
+                ledger, prediction("首預", line=-0.25, odds=1.65,
+                                   home="Original Home", native_id="locked-9001"),
+                config,
+            )
+            sync_prediction(
+                ledger, prediction("T-30", line=-0.5, odds=1.75,
+                                   home="Renamed Home", native_id="wrong-other-fixture"),
+                config,
+            )
+            watch = ledger["watch"]["locked-9001"]
+            self.assertEqual(watch["native_fixture_id"], "locked-9001")
+            self.assertEqual(watch["titan_match_id"], "locked-9001")
+            self.assertEqual((watch["home"], watch["away"]), ("Original Home", "Original Away"))
+            snapshots = {row["stage"]: row for row in watch["stages"]}
+            self.assertEqual(
+                snapshots["首預"]["market_predictions"][0]["line"], -0.25,
+            )
+            self.assertEqual(
+                snapshots["T-30"]["market_predictions"][0]["line"], -0.5,
+            )
+
+    def test_scheduled_tick_uses_locked_native_id_not_card_team_names(self) -> None:
+        kickoff = self.now + timedelta(minutes=5)
+        rows = _tick_rows_from_predictions(
+            [{
+                "match_id": "card-projection-id", "league": "Renamed League",
+                "home": "Changed Home", "away": "Changed Away",
+                "kickoff_hkt": kickoff.isoformat(),
+            }],
+            {"watch": {
+                "card-projection-id": {
+                    "native_fixture_id": "locked-native-42",
+                    "kickoff": kickoff.isoformat(),
+                    "matching_version": MATCHING_VERSION,
+                    "prediction_era": PREDICTION_ERA,
+                    "stages": [{"stage": "首預"}, {"stage": "T-30"}],
+                },
+            }},
+            self.now,
+        )
+        self.assertEqual(
+            [(row["id"], row["_due_stage"]) for row in rows],
+            [("locked-native-42", "T-5")],
+        )
+
     def test_timed_stages_stay_ahead_of_first_look_without_starving_t30(self) -> None:
         rows = [
             {"id": "t30", "_due_stage": "T-30"},
@@ -1874,7 +1940,7 @@ class CrownSafetyTests(unittest.TestCase):
         self.assertEqual(provider, 22.5)
         self.assertGreaterEqual(total - provider, 6.0)
 
-    def test_same_kickoff_t5_batch_fetches_bulk_crown_once_not_fixture_pages(self) -> None:
+    def test_same_kickoff_t5_batch_uses_each_locked_direct_fixture_id(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             config = replace(settings(), state_dir=Path(directory), enabled=True, pinnapi_key="test")
             now = datetime.now(__import__("crown.common", fromlist=["HKT"]).HKT)
@@ -1907,6 +1973,13 @@ class CrownSafetyTests(unittest.TestCase):
                 }
                 for card in cards
             }
+            titan_client.crown_price_snapshot.side_effect = lambda match_id, **_kwargs: {
+                "prices": [{
+                    "market": "HDC", "line": -0.25, "selection": "H",
+                    "odds": 1.91, "source_at": now.timestamp(),
+                }],
+                "quote_source": "titan007-crown-id-3",
+            }
             pinnapi_client.fixtures.return_value = []
             with patch("crown.engine.TitanClient", return_value=titan_client), \
                  patch("crown.engine.PinnapiClient", return_value=pinnapi_client), \
@@ -1915,16 +1988,15 @@ class CrownSafetyTests(unittest.TestCase):
                  patch("crown.engine._prediction", new=_runtime_batch_prediction):
                 result = run("tick", config)
             self.assertEqual(result["predictions"], 2)
-            titan_client.crown_bulk_price_snapshots.assert_called_once()
-            self.assertGreater(
-                titan_client.crown_bulk_price_snapshots.call_args.kwargs["max_seconds"],
-                0,
+            titan_client.crown_bulk_price_snapshots.assert_not_called()
+            self.assertEqual(
+                [call.args[0] for call in titan_client.crown_price_snapshot.call_args_list],
+                ["bulk-a", "bulk-b"],
             )
-            titan_client.crown_price_snapshot.assert_not_called()
             titan_client.crown_prices.assert_not_called()
 
-    def test_missing_bulk_t5_row_uses_bounded_direct_current_crown_fallback(self) -> None:
-        """A live direct Crown page must not be discarded when bulk omits it."""
+    def test_locked_direct_t5_does_not_depend_on_bulk_board_inclusion(self) -> None:
+        """A live direct Crown page remains authoritative without a bulk row."""
         with tempfile.TemporaryDirectory() as directory:
             config = replace(
                 settings(), state_dir=Path(directory), enabled=True, pinnapi_key="test",
@@ -1963,9 +2035,9 @@ class CrownSafetyTests(unittest.TestCase):
                 result = run("tick", config)
 
             self.assertEqual(result["predictions"], 1)
-            self.assertEqual(result["direct_fallback_attempted"], 1)
-            self.assertEqual(result["direct_fallback_predictions"], 1)
-            titan_client.crown_bulk_price_snapshots.assert_called_once()
+            self.assertEqual(result["direct_id_attempted"], 1)
+            self.assertEqual(result["direct_id_predictions"], 1)
+            titan_client.crown_bulk_price_snapshots.assert_not_called()
             titan_client.crown_price_snapshot.assert_called_once()
             self.assertGreater(
                 titan_client.crown_price_snapshot.call_args.kwargs["max_seconds"], 0,
@@ -1979,8 +2051,8 @@ class CrownSafetyTests(unittest.TestCase):
             self.assertEqual(stored["crown_quote_source"], "titan007-crown-id-3")
             self.assertEqual(stored["crown_quote_status"], "direct_current")
 
-    def test_due_t30_bulk_persists_without_optional_provider_or_bridge(self) -> None:
-        """T-30 uses the same deadline-first native-ID=3 path as T-5."""
+    def test_due_t30_direct_id_persists_without_optional_provider_or_bridge(self) -> None:
+        """T-30 uses the locked deadline-first native-ID=3 path as T-5."""
         with tempfile.TemporaryDirectory() as directory:
             config = replace(
                 settings(), state_dir=Path(directory), enabled=True, pinnapi_key="test",
@@ -2009,6 +2081,14 @@ class CrownSafetyTests(unittest.TestCase):
                     "quote_source": "titan007-crown-id-3-bulk-current",
                 },
             }
+            titan_client.crown_price_snapshot.return_value = {
+                "prices": [
+                    {"market": "HDC", "line": -0.25, "selection": side,
+                     "odds": odds, "source_at": now.timestamp()}
+                    for side, odds in (("H", 1.91), ("A", 1.99))
+                ],
+                "quote_source": "titan007-crown-id-3",
+            }
             with patch("crown.engine.TitanClient", return_value=titan_client), \
                  patch("crown.engine.PinnapiClient", side_effect=AssertionError(
                      "T-30 must not wait for PinnAPI"
@@ -2022,7 +2102,9 @@ class CrownSafetyTests(unittest.TestCase):
             stages = load_ledger(config)["watch"]["t30-fast"]["stages"]
             stored = next(row for row in stages if row["stage"] == "T-30")
             self.assertEqual(stored["status"], "PREDICTION_READY")
-            self.assertEqual(stored["crown_quote_source"], "titan007-crown-id-3-bulk-current")
+            self.assertEqual(stored["crown_quote_source"], "titan007-crown-id-3")
+            titan_client.crown_price_snapshot.assert_called_once_with("t30-fast", max_seconds=8.0)
+            titan_client.crown_bulk_price_snapshots.assert_not_called()
 
     def test_due_t30_unavailable_is_durably_audited_and_remains_retryable(self) -> None:
         """A failed native read is evidence, not a completed or fabricated stage."""
@@ -2056,7 +2138,7 @@ class CrownSafetyTests(unittest.TestCase):
             self.assertEqual(stored["status"], "DATA_MISSING")
             self.assertEqual(
                 stored["collection_attempts"][-1]["reason"],
-                "bulk_and_bounded_direct_id3_unavailable",
+                "locked_direct_id3_and_bulk_fallback_unavailable",
             )
             self.assertNotIn(
                 "T-30",
