@@ -1,0 +1,89 @@
+name: Crown native core live proof (read only)
+
+on:
+  push:
+    branches: [audit/crown-t5-detail-20260822]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  checks: write
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - name: Read durable native reconciliation and formal settlement evidence
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          cat deploy/audit-crown-live-core.py | ssh \
+            -o BatchMode=yes -o ConnectTimeout=20 \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "sudo env PYTHONPATH=/opt/footbreak /opt/footbreak/.venv/bin/python3 -" \
+            > crown-live-core-proof.json
+          python3 -m json.tool crown-live-core-proof.json >/dev/null
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: crown-live-core-proof-${{ github.run_id }}
+          path: crown-live-core-proof.json
+          retention-days: 14
+      - name: Publish compact read-only evidence
+        if: always() && hashFiles('crown-live-core-proof.json') != ''
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          python3 - <<'PY'
+          import json, os, urllib.request
+          from pathlib import Path
+          report = json.loads(Path("crown-live-core-proof.json").read_text(encoding="utf-8"))
+          summary = json.dumps({
+              "mode": report.get("mode"),
+              "at_hkt": report.get("at_hkt"),
+              "server_sha": report.get("server_sha"),
+              "reconciliation": {
+                  key: report.get("reconciliation", {}).get(key)
+                  for key in ("future_watch_count", "future_first_look_missing",
+                              "future_first_look_data_missing", "recent_incidents")
+              },
+              "formal_target_2920948": report.get("formal_target_2920948"),
+              "units": report.get("units"),
+          }, ensure_ascii=False, indent=2, sort_keys=True)
+          request = urllib.request.Request(
+              f"https://api.github.com/repos/{os.environ['GITHUB_REPOSITORY']}/check-runs",
+              data=json.dumps({
+                  "name": "Crown native core live proof",
+                  "head_sha": os.environ["GITHUB_SHA"],
+                  "status": "completed",
+                  "conclusion": "success" if os.environ["JOB_STATUS"] == "success" else "failure",
+                  "output": {
+                      "title": "Provider-free Crown reconciliation and settlement proof",
+                      "summary": "```json\n" + summary[:60000] + "\n```",
+                  },
+              }).encode("utf-8"),
+              headers={
+                  "Accept": "application/vnd.github+json",
+                  "Authorization": f"Bearer {os.environ['GITHUB_TOKEN']}",
+                  "Content-Type": "application/json",
+              },
+              method="POST",
+          )
+          with urllib.request.urlopen(request, timeout=20) as response:
+              print(f"evidence_check_url={json.load(response)['html_url']}")
+          PY
