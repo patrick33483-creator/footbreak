@@ -51,6 +51,29 @@ jobs:
             -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
             "$DEPLOY_USER@$DEPLOY_HOST" "$remote_command" > crown-t5-matcher-forensic.json
           python3 -m json.tool crown-t5-matcher-forensic.json >/dev/null
+          # The matching report proves exact admission axes for this batch.
+          # The second read-only program validates the frozen evidence chains
+          # and the separate periodic timers.  Neither program contacts a
+          # provider or invokes a scheduler/settlement worker.
+          cat deploy/audit-crown-formal-integrity.py | ssh \
+            -o BatchMode=yes -o ConnectTimeout=20 \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "sudo env PYTHONPATH=/opt/footbreak /opt/footbreak/.venv/bin/python3 -" \
+            > crown-formal-integrity.json
+          python3 -m json.tool crown-formal-integrity.json >/dev/null
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          matcher = json.loads(Path("crown-t5-matcher-forensic.json").read_text(encoding="utf-8"))
+          matcher["formal_integrity"] = json.loads(
+              Path("crown-formal-integrity.json").read_text(encoding="utf-8")
+          )
+          Path("crown-t5-matcher-forensic.json").write_text(
+              json.dumps(matcher, ensure_ascii=False, sort_keys=True, indent=2),
+              encoding="utf-8",
+          )
+          PY
 
       - name: Upload forensic evidence
         if: always()
@@ -100,6 +123,7 @@ jobs:
               'mode': report.get('mode'), 'since': report.get('since'),
               'registry': registry, 'summary': summary, 'records': records,
               'structural_matcher_rejections': report.get('structural_matcher_rejections', []),
+              'formal_integrity': report.get('formal_integrity', {}),
           }, ensure_ascii=False, indent=2)
           payload = {
               'name': 'Crown T-5 matcher forensic evidence',
