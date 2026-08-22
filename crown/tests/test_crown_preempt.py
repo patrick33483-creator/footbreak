@@ -17,6 +17,15 @@ class CrownTickPreemptionTests(unittest.TestCase):
         self.assertIn("crown-sweep.service", stop_line)
         self.assertIn("crown-settle.service", stop_line)
 
+    def test_first_look_runner_exits_before_optional_dashboard_publication(self) -> None:
+        runner = (
+            Path(__file__).resolve().parents[2] / "crown" / "run.py"
+        ).read_text(encoding="utf-8")
+        reconcile = runner.index('if args.mode == "first-look-reconcile":')
+        dashboard = runner.index("write_dashboard_data(config)", reconcile)
+        terminal = runner.index("return 0", reconcile)
+        self.assertLess(terminal, dashboard)
+
 
 if __name__ == "__main__":
     unittest.main()

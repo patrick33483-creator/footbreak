@@ -342,6 +342,16 @@ def main() -> int:
         write_dashboard_data(config)
         print(result)
         return 0
+    if args.mode == "first-look-reconcile":
+        # This worker owns only the bounded native-ID completeness repair and
+        # its atomic stage/attempt commit.  Full dashboard/history publication
+        # is an optional consumer and can block on another local writer; it
+        # must never turn an otherwise terminal native reconciliation into a
+        # systemd timeout.  The normal tick/sweep publisher will consume the
+        # durable stage on its own schedule.
+        result["dashboard_projection"] = "deferred_nonblocking"
+        print(result)
+        return 0
     ledger = load_ledger(config) if args.mode != "tick" else None
     history_warning = None
     if args.mode == "tick":
