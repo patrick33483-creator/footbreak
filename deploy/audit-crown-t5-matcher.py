@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from analysis.granular_conditions import MARKETS
-from analysis.wilson_portfolio import _native_t5
+from analysis.wilson_portfolio import _native_match_rows, _native_t5
 from analysis.wilson_validation import (
     DECISION_STAGE, formal_registry_candidates, match_formal_registry,
     matching_admissions,
@@ -114,11 +114,11 @@ def main() -> int:
             native = _native_t5(watch, stage, _time)
             if native:
                 native_t5_count += 1
-            stage_rows = [{
-                "match_id": str(fixture), "stage": DECISION_STAGE, "kickoff": watch.get("kickoff"),
-                "predicted_at": stage.get("ts"),
-                "market_predictions": stage.get("market_predictions") or [],
-            }]
+            # Formal identity is the immutable 首預→T-30→T-5 native sequence,
+            # including its tier trajectory.  Auditing a mutable or T-5-only
+            # projection would falsely report every multi-stage condition as
+            # unmatched.
+            stage_rows = _native_match_rows(watch, _time)
             matched = match_formal_registry(
                 stage_rows, registry, system="crown", decision_stage=DECISION_STAGE,
             ).get(str(fixture), []) if native and registry else []
