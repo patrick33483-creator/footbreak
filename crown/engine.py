@@ -27,7 +27,7 @@ from .ledger import (
 from .lines import parse_hkjc_total
 from .matching import MATCHING_VERSION, Event, Match, BridgeMatch, bridge_titan_to_pinnapi
 from .pinnapi import PinnapiClient
-from .period import in_current_period
+from .period import in_current_period, in_native_discovery_horizon
 from .state import (
     load_ledger, load_predictions, merge_predictions, save_ledger, state_lock,
     schedule_footbreak_execution_evidence_projection,
@@ -1672,7 +1672,7 @@ def _commit_stage_predictions(
                 # path so an exact frozen match still creates its observation
                 # in the same valid pre-kickoff transaction.
                 deadline_critical_snapshot=(
-                    mode == "tick"
+                    mode in {"tick", "sweep"}
                     and (stage == "T-30" or prediction.get("status") == "DATA_MISSING")
                 ),
             )
@@ -1711,7 +1711,7 @@ def _commit_stage_predictions(
         ledger["log"] = ledger["log"][-100:]
         save_ledger(config, ledger)
         retained = merge_predictions(config, committed_predictions)
-    if mode != "tick":
+    if mode not in {"tick", "sweep"}:
         schedule_footbreak_execution_evidence_projection(
             config, evidence_projection_stages,
         )
@@ -2024,6 +2024,105 @@ def _run_local_bulk_timed_stages(
         "deferred_predictions": unavailable,
         "failed_predictions": 0,
         "write_ahead_attempts": journaled,
+    }
+
+
+def _run_native_discovery_sweep(
+    config: Settings,
+    titan_client: TitanClient,
+    *,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Discover the next native Crown horizon without optional providers.
+
+    This is intentionally separate from the legacy cross-book sweep.  A
+    provider-listed Crown fixture first receives its locked native identity,
+    first-look snapshot and T-30/T-5 jobs; any optional research or bridge is
+    a later consumer and cannot prevent the durable native stage.
+    """
+    current = (now or datetime.now(HKT)).astimezone(HKT)
+    titan_rows = [
+        row for row in titan_client.fixtures()
+        if parse_time(row.get("kickoff")) is not None
+        and in_native_discovery_horizon(parse_time(row.get("kickoff")), current)
+    ]
+    titan_rows.sort(key=lambda row: row["kickoff"])
+    if not titan_rows:
+        return {
+            "ok": True, "mode": "sweep", "native_discovery_only": True,
+            "titan_fixtures": 0, "predictions": 0, "write_ahead_attempts": 0,
+        }
+
+    ledger = load_ledger(config)
+    stages_by_fixture: list[tuple[dict[str, Any], str]] = []
+    journal_rows: list[dict[str, Any]] = []
+    for titan in titan_rows:
+        match_id = str(titan.get("id") or "")
+        kickoff = parse_time(titan.get("kickoff"))
+        if not match_id or kickoff is None or kickoff <= current:
+            continue
+        watch = (ledger.get("watch") or {}).get(match_id, {})
+        done = completed_stages(watch, MATCHING_VERSION, PREDICTION_ERA)
+        if "首預" not in done:
+            stages_by_fixture.append((titan, "首預"))
+        # A 12:00 fixture discovered at 11:30 must not wait for another exact
+        # minute.  Persist its normal due T-30 in the same bounded pass.
+        due = stages_due((kickoff - current).total_seconds() / 60, False, done)
+        for stage in due:
+            if stage in {"T-30", "T-5"}:
+                stages_by_fixture.append((titan, stage))
+                journal_rows.append({**titan, "_due_stage": stage})
+    if not stages_by_fixture:
+        return {
+            "ok": True, "mode": "sweep", "native_discovery_only": True,
+            "titan_fixtures": len(titan_rows), "predictions": 0,
+            "write_ahead_attempts": 0,
+        }
+
+    journaled = _journal_timed_stage_attempts(
+        config, journal_rows, reason="native_discovery_timed_stage_started",
+    )
+    deadline = time.monotonic() + _tick_provider_deadline_seconds()
+    unique_rows = list({str(row.get("id") or ""): row for row, _ in stages_by_fixture}.values())
+    snapshots, direct_attempted = _collect_locked_direct_snapshots(config, unique_rows, deadline)
+    fallback_rows = [row for row in unique_rows if str(row.get("id") or "") not in snapshots]
+    bulk_fallback_attempted = False
+    if fallback_rows:
+        fallback, bulk_fallback_attempted = _collect_same_id_bulk_fallback(config, deadline)
+        for titan in fallback_rows:
+            match_id = str(titan.get("id") or "")
+            kickoff = parse_time(titan.get("kickoff"))
+            snapshot = fallback.get(match_id)
+            if (
+                kickoff is not None and isinstance(snapshot, dict)
+                and snapshot.get("quote_source") == _CROWN_BULK_ID3_SOURCE
+                and _valid_pre_kickoff_bulk_snapshot(snapshot, kickoff)
+                and snapshot.get("prices")
+            ):
+                snapshots[match_id] = snapshot
+
+    stage_predictions = []
+    for titan, stage in stages_by_fixture:
+        snapshot = snapshots.get(str(titan.get("id") or ""))
+        if snapshot is None:
+            stage_predictions.append(_unavailable_timed_stage_prediction(
+                titan, stage, "native_discovery_id3_quote_unavailable",
+            ))
+        else:
+            stage_predictions.append(_local_bulk_stage_prediction(titan, config, snapshot, stage))
+    emitted, fresh, projected, retained = _commit_stage_predictions(
+        config, "sweep", stage_predictions, deadline=deadline,
+    )
+    return {
+        "ok": True, "mode": "sweep", "native_discovery_only": True,
+        "titan_fixtures": len(titan_rows), "predictions": len(stage_predictions),
+        "retained_predictions": retained, "write_ahead_attempts": journaled,
+        "direct_id_attempted": direct_attempted,
+        "direct_id_predictions": len(snapshots),
+        "bulk_fallback_attempted": bool(bulk_fallback_attempted),
+        "simulations_created": len(emitted),
+        "fresh_condition_predictions": fresh,
+        "evidence_projection_stages": projected,
     }
 
 

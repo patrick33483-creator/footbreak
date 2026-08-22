@@ -24,7 +24,7 @@ from unittest.mock import MagicMock, Mock, patch
 from crown.config import settings
 from crown.common import HKT, parse_time
 from crown.dashboard_data import build, write_dashboard_data, write_tick_dashboard_projection
-from crown.engine import _cached_t5_crown_snapshot, _candidates, _crown_market_forecasts, _fixture_baseline_prediction, _fresh, _hkjc_chl_candidates, _hkjc_chl_forecasts, _prediction, _prioritize_tick_rows, _refresh_crown_quote, _skip_new_confirmed_empty_crown, _sweep_rows_with_due_existing, _tick_rows_from_predictions, _wdl_prediction, run
+from crown.engine import _cached_t5_crown_snapshot, _candidates, _crown_market_forecasts, _fixture_baseline_prediction, _fresh, _hkjc_chl_candidates, _hkjc_chl_forecasts, _prediction, _prioritize_tick_rows, _refresh_crown_quote, _run_native_discovery_sweep, _skip_new_confirmed_empty_crown, _sweep_rows_with_due_existing, _tick_rows_from_predictions, _wdl_prediction, run
 from crown.hkjc import fetch_official_results, fetch_official_settlement_bundle
 from crown.ledger import (
     PREDICTION_ERA,
@@ -44,7 +44,7 @@ from crown.matching import (
 )
 from crown.notify import _bet_label, notify_new
 from crown.pinnapi import parse_fixtures, parse_lines
-from crown.period import in_current_period, is_upcoming_in_current_period, period_bounds
+from crown.period import in_current_period, in_native_discovery_horizon, is_upcoming_in_current_period, native_discovery_horizon, period_bounds
 from crown.prediction_history import (
     _persist_learning_exclusion,
     archive_watch,
@@ -1707,6 +1707,53 @@ class CrownSafetyTests(unittest.TestCase):
             due_stage_jobs(restarted, datetime(2026, 8, 23, 10, 0, tzinfo=HKT)),
             [],
         )
+
+    def test_half_hour_native_discovery_locks_1200_identity_and_due_t30(self) -> None:
+        """11:30 discovery writes native first-look plus due T-30, no bridge."""
+        with tempfile.TemporaryDirectory() as directory:
+            config = replace(settings(), state_dir=Path(directory), telegram_enabled=False)
+            now = datetime(2026, 8, 22, 11, 30, tzinfo=HKT)
+            kickoff = datetime(2026, 8, 22, 12, 0, tzinfo=HKT)
+            self.assertEqual(
+                native_discovery_horizon(now),
+                (kickoff, datetime(2026, 8, 23, 11, 59, 59, tzinfo=HKT)),
+            )
+            self.assertTrue(in_native_discovery_horizon(kickoff, now))
+            titan = Mock()
+            titan.fixtures.return_value = [{
+                "id": "native-1200", "league": "L", "home": "Home",
+                "away": "Away", "kickoff": kickoff,
+            }]
+            snapshot = {
+                "quote_source": "titan007-crown-id-3",
+                "prices": [
+                    {"market": "HDC", "line": -0.25, "selection": "H",
+                     "odds": 1.88, "source_at": now.timestamp()},
+                    {"market": "HDC", "line": -0.25, "selection": "A",
+                     "odds": 1.98, "source_at": now.timestamp()},
+                    {"market": "HIL", "line": 2.5, "selection": "H",
+                     "odds": 1.91, "source_at": now.timestamp()},
+                    {"market": "HIL", "line": 2.5, "selection": "L",
+                     "odds": 1.95, "source_at": now.timestamp()},
+                ],
+            }
+            with patch("crown.engine._collect_locked_direct_snapshots",
+                       return_value=({"native-1200": snapshot}, 1)), \
+                patch("crown.engine._collect_same_id_bulk_fallback",
+                      side_effect=AssertionError("valid direct native snapshot must not fall back")), \
+                patch("crown.engine.schedule_footbreak_execution_evidence_projection",
+                      side_effect=AssertionError("native discovery must not invoke cross-book projection")):
+                result = _run_native_discovery_sweep(config, titan, now=now)
+            self.assertTrue(result["native_discovery_only"])
+            self.assertEqual(result["predictions"], 2)
+            watch = load_ledger(config)["watch"]["native-1200"]
+            stages = {row["stage"]: row for row in watch["stages"]}
+            self.assertEqual(set(stages), {"首預", "T-30"})
+            self.assertEqual(watch["native_fixture_id"], "native-1200")
+            self.assertEqual(watch["stage_jobs"]["T-30"]["due_at_hkt"], "2026-08-22T11:30:00+08:00")
+            self.assertEqual(watch["stage_jobs"]["T-30"]["state"], "COMMITTED")
+            self.assertEqual(stages["首預"]["crown_quote_source"], "titan007-crown-id-3")
+            self.assertEqual(stages["首預"]["market_predictions"][0]["observed_at"], now.timestamp())
 
     def test_first_look_locks_native_identity_and_stage_lines_are_immutable(self) -> None:
         """Later names/lines cannot rematch or rewrite the first native quote."""
