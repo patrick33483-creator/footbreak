@@ -2,6 +2,9 @@ name: Footbreak native-stage state audit (read only)
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - audit/footbreak-native-stage-state-20260822
 
 permissions:
   contents: read
