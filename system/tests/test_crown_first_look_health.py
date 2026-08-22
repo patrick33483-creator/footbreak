@@ -83,10 +83,10 @@ class CrownFirstLookHealthTests(unittest.TestCase):
         self.assertEqual(report["eligible_future_cards"], 0)
         self.assertEqual(report["missing_first_look"], 0)
 
-    def test_sweep_runs_every_half_hour_and_checks_after_success(self) -> None:
+    def test_sweep_runs_every_fifteen_minutes_and_checks_after_success(self) -> None:
         timer = TIMER.read_text(encoding="utf-8")
         service = SERVICE.read_text(encoding="utf-8")
-        self.assertIn("OnCalendar=*-*-* *:00,30:00", timer)
+        self.assertIn("OnCalendar=*-*-* *:05,20,35,50:00", timer)
         self.assertIn("ExecStartPost=", service)
         self.assertIn("check-crown-first-look.py", service)
 

@@ -1,8 +1,8 @@
 [Unit]
-Description=足破 · 皇冠 native board discovery every half hour
+Description=足破 · 皇冠 board discovery and first-look recovery every 15 minutes
 
 [Timer]
-OnCalendar=*-*-* *:00,30:00
+OnCalendar=*-*-* *:05,20,35,50:00
 Persistent=true
 AccuracySec=30s
 Unit=crown-sweep.service
