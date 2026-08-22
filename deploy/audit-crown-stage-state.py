@@ -437,6 +437,11 @@ def build_report(
         "report": "crown_stage_status_v1",
         "read_only": True,
         "provider_requests": False,
+        # Keep the incident evidence before the bounded fixture list so GitHub
+        # log viewers retain it even if a long list is display-truncated.
+        "notification_silence_audit": _notification_silence_audit(
+            ledger, notify_state,
+        ),
         "generated_at_hkt": now.isoformat(),
         "scope": {
             "future_hours": future_hours,
@@ -453,9 +458,6 @@ def build_report(
             "fixtures_emitted": min(len(fixtures), limit),
         },
         "fixtures": fixtures[:limit],
-        "notification_silence_audit": _notification_silence_audit(
-            ledger, notify_state,
-        ),
     }
 
 
