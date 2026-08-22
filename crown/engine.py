@@ -2427,6 +2427,11 @@ def run(
                 completed[futures[future]] = future.result()
         for titan, _bridge, _h_row, _stage, _snapshot, _previous in pending_predictions:
             prediction = completed[str(titan["id"])]
+            if mode == "first-look-reconcile":
+                # The audit label describes why this *new* immutable
+                # first-look was collected.  It is attached before the stage
+                # snapshot is committed and does not rewrite existing cards.
+                prediction["origin"] = "hourly_first_look_reconciliation"
             stage_predictions.append(prediction)
             # The dashboard card keeps all completed stages while the top-level
             # fields remain the latest stage snapshot.  This also survives a

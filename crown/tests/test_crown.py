@@ -32,6 +32,7 @@ from crown.ledger import (
     due_stage_jobs,
     ensure_stage_jobs,
     market_entry_thresholds,
+    _snapshot,
     recompute_stats,
     stage_for,
     stages_due,
@@ -2659,6 +2660,15 @@ class CrownSafetyTests(unittest.TestCase):
                 }],
             )
 
+    def test_hourly_first_look_reconciliation_origin_is_immutable_stage_provenance(self) -> None:
+        snapshot = _snapshot({
+            "match_id": "native-id-only",
+            "kickoff_hkt": "2026-08-09T13:10:00+08:00",
+            "origin": "hourly_first_look_reconciliation",
+            "forecast_candidates": [],
+        }, "首預")
+        self.assertEqual(snapshot["origin"], "hourly_first_look_reconciliation")
+
     def test_dashboard_keeps_started_crown_matches_until_the_daily_rollover(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -2926,9 +2936,13 @@ class CrownSafetyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             config = replace(settings(), state_dir=root / "private-state", web_root=root / "web")
-            kickoff = (period_bounds()[0] + timedelta(hours=2)).isoformat()
-            t30 = (parse_time(kickoff) - timedelta(minutes=30)).isoformat()
-            t5 = (parse_time(kickoff) - timedelta(minutes=5)).isoformat()
+            # Keep the committed T-5 timestamp before the real publication
+            # time.  A future synthetic timestamp made this assertion depend
+            # on when the suite happened to run after the noon rollover.
+            now = datetime.now(HKT)
+            kickoff = (now + timedelta(minutes=4)).isoformat()
+            t30 = (now - timedelta(minutes=26)).isoformat()
+            t5 = (now - timedelta(minutes=1)).isoformat()
             card = {
                 "match_id": "publish-race", "kickoff_hkt": kickoff,
                 "stage": "T-30", "status": "PREDICTION_READY",
@@ -2964,9 +2978,13 @@ class CrownSafetyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             config = replace(settings(), state_dir=root / "private-state", web_root=root / "web")
-            kickoff = (period_bounds()[0] + timedelta(hours=2)).isoformat()
-            t30 = (parse_time(kickoff) - timedelta(minutes=30)).isoformat()
-            t5 = (parse_time(kickoff) - timedelta(minutes=5)).isoformat()
+            # See the sibling publication race test: generated_at is a real
+            # publication time, so the persisted T-5 must not be synthetic
+            # future evidence.
+            now = datetime.now(HKT)
+            kickoff = (now + timedelta(minutes=4)).isoformat()
+            t30 = (now - timedelta(minutes=26)).isoformat()
+            t5 = (now - timedelta(minutes=1)).isoformat()
             card = {
                 "match_id": "full-publish-race", "kickoff_hkt": kickoff,
                 "stage": "T-30", "status": "PREDICTION_READY",

@@ -457,7 +457,7 @@ def _snapshot(prediction: dict[str, Any], stage: str) -> dict[str, Any]:
         "sharp_reference_available", "source_status", "pinnapi_source_at",
         "pinnapi_timestamp_inferred", "pinnapi_timestamp_basis",
         "pinnapi_corner_event_id", "pinnapi_corner_source_at", "pinnapi_corner_timestamp_inferred",
-        "matching_version", "crown_quote_cached_forecast_only", "crown_cached_source_at",
+        "matching_version", "origin", "crown_quote_cached_forecast_only", "crown_cached_source_at",
         "crown_quote_source", "crown_quote_status", "crown_cached_t5_fallback",
         "collection_attempt",
     )} | {
