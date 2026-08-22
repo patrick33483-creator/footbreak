@@ -459,7 +459,7 @@ def _snapshot(prediction: dict[str, Any], stage: str) -> dict[str, Any]:
         "pinnapi_corner_event_id", "pinnapi_corner_source_at", "pinnapi_corner_timestamp_inferred",
         "matching_version", "origin", "crown_quote_cached_forecast_only", "crown_cached_source_at",
         "crown_quote_source", "crown_quote_status", "crown_cached_t5_fallback",
-        "collection_attempt",
+        "native_snapshot_status", "native_snapshot_reason", "collection_attempt",
     )} | {
         "prediction_era": PREDICTION_ERA,
         "schema_version": PREDICTION_SCHEMA_VERSION,

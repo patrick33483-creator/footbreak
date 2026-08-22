@@ -2708,6 +2708,116 @@ class CrownSafetyTests(unittest.TestCase):
                 }],
             )
 
+    def test_hourly_first_look_reconciliation_is_native_only_and_persists_snapshot(self) -> None:
+        """The bounded hourly repair must not wait on counterpart providers."""
+        with tempfile.TemporaryDirectory() as directory:
+            config = replace(
+                settings(), state_dir=Path(directory), enabled=True, pinnapi_key="",
+            )
+            now = datetime.now(HKT)
+            titan_client = Mock()
+            titan_client.fixtures.return_value = [{
+                "id": "native-only-1", "league": "L", "home": "A", "away": "B",
+                "kickoff": now + timedelta(hours=1),
+            }]
+            titan_client.crown_price_snapshot.return_value = {
+                "prices": [{
+                    "market": "HIL", "line": 2.5, "selection": "H",
+                    "odds": 1.91, "source_at": now.timestamp(),
+                }, {
+                    "market": "HIL", "line": 2.5, "selection": "L",
+                    "odds": 1.99, "source_at": now.timestamp(),
+                }],
+                "asian_ok": True, "total_ok": True,
+                "quote_source": "titan007-crown-id-3",
+            }
+            with patch("crown.engine.TitanClient", return_value=titan_client), \
+                 patch("crown.engine.PinnapiClient", side_effect=AssertionError(
+                     "PinnAPI must not run in native first-look reconciliation"
+                 )), \
+                 patch("crown.engine.fetch_matches", side_effect=AssertionError(
+                     "HKJC must not run in native first-look reconciliation"
+                 )), \
+                 patch("crown.engine.market_entry_thresholds", side_effect=AssertionError(
+                     "policy store must not run in native first-look reconciliation"
+                 )), \
+                 patch("crown.engine.bridge_titan_to_pinnapi", side_effect=AssertionError(
+                     "bridge mapping must not run in native first-look reconciliation"
+                 )), \
+                 patch("crown.engine.schedule_footbreak_execution_evidence_projection",
+                       side_effect=AssertionError(
+                           "Footbreak projection must not run in native first-look reconciliation"
+                       )):
+                result = run("first-look-reconcile", config)
+
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["pinnapi_fixture_status"], "not_requested_native_only")
+            self.assertEqual(result["hkjc_fixtures"], 0)
+            titan_client.crown_price_snapshot.assert_called_once_with(
+                "native-only-1", max_seconds=15.0,
+            )
+            watch = load_ledger(config)["watch"]["native-only-1"]
+            stage = watch["stages"][0]
+            self.assertEqual(stage["stage"], "首預")
+            self.assertEqual(stage["status"], "PREDICTION_READY")
+            self.assertEqual(stage["market_predictions"][0]["source"], "crown_full_market_no_vig")
+            self.assertEqual(watch["native_fixture_id"], "native-only-1")
+
+    def test_hourly_first_look_reconciliation_records_native_quote_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = replace(
+                settings(), state_dir=Path(directory), enabled=True, pinnapi_key="",
+            )
+            titan_client = Mock()
+            titan_client.fixtures.return_value = [{
+                "id": "native-missing-1", "league": "L", "home": "A", "away": "B",
+                "kickoff": datetime.now(HKT) + timedelta(hours=1),
+            }]
+            titan_client.crown_price_snapshot.return_value = {
+                "prices": [], "asian_ok": False, "total_ok": False,
+                "quote_source": "titan007-crown-id-3",
+            }
+            with patch("crown.engine.TitanClient", return_value=titan_client), \
+                 patch("crown.engine.PinnapiClient", side_effect=AssertionError), \
+                 patch("crown.engine.fetch_matches", side_effect=AssertionError), \
+                 patch("crown.engine.market_entry_thresholds", side_effect=AssertionError):
+                result = run("first-look-reconcile", config)
+
+            self.assertTrue(result["ok"])
+            stage = load_ledger(config)["watch"]["native-missing-1"]["stages"][0]
+            self.assertEqual(stage["stage"], "首預")
+            self.assertEqual(stage["status"], "DATA_MISSING")
+            self.assertEqual(stage["native_snapshot_status"], "DATA_MISSING")
+            self.assertEqual(stage["native_snapshot_reason"], "native_crown_quote_unavailable")
+
+    def test_hourly_first_look_reconciliation_audits_bounded_overflow(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = replace(
+                settings(), state_dir=Path(directory), enabled=True, pinnapi_key="",
+            )
+            now = datetime.now(HKT)
+            titan_client = Mock()
+            titan_client.fixtures.return_value = [{
+                "id": f"native-{index}", "league": "L", "home": "A", "away": "B",
+                "kickoff": now + timedelta(hours=1),
+            } for index in range(31)]
+            titan_client.crown_price_snapshot.return_value = {
+                "prices": [], "asian_ok": False, "total_ok": False,
+                "quote_source": "titan007-crown-id-3",
+            }
+            with patch("crown.engine.TitanClient", return_value=titan_client), \
+                 patch("crown.engine.PinnapiClient", side_effect=AssertionError), \
+                 patch("crown.engine.fetch_matches", side_effect=AssertionError), \
+                 patch("crown.engine.market_entry_thresholds", side_effect=AssertionError):
+                result = run("first-look-reconcile", config)
+
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["titan_fixtures"], 30)
+            incidents = load_ledger(config)["hourly_first_look_reconciliation_incidents"]
+            self.assertEqual(
+                incidents[-1]["reason"], "native_first_look_reconcile_batch_limit_1",
+            )
+
     def test_hourly_first_look_reconciliation_origin_is_immutable_stage_provenance(self) -> None:
         snapshot = _snapshot({
             "match_id": "native-id-only",

@@ -35,6 +35,10 @@ from .state import (
 from .titan import TitanClient
 
 
+_FIRST_LOOK_RECONCILE_MAX_FIXTURES = 30
+_FIRST_LOOK_RECONCILE_QUOTE_SECONDS = 15.0
+
+
 def _event_from_titan(row: dict[str, Any]) -> Event:
     return Event(str(row["id"]), str(row["league"]), str(row["home"]), str(row["away"]), row["kickoff"], {"raw": row})
 
@@ -42,6 +46,12 @@ def _event_from_titan(row: dict[str, Any]) -> Event:
 def _event_from_pinnapi(row: dict[str, Any]) -> Event:
     return Event(str(row["id"]), str(row["league"]), str(row["home"]), str(row["away"]),
                  datetime.fromtimestamp(float(row["kickoff"]), HKT), {"raw": row})
+
+
+def _native_only_bridge() -> BridgeMatch:
+    """Represent a native-Crown pass without invoking counterpart matching."""
+    absent = Match(None, False, 0.0, "native_only_reconciliation")
+    return BridgeMatch(absent, absent, "native_only", "native_only_reconciliation")
 
 
 def _tick_rows_from_predictions(
@@ -2187,15 +2197,20 @@ def run(
         # fixture-list call that cannot be interrupted in-process.
     else:
         tick_deadline = None
-    if not config.pinnapi_configured:
+    native_first_look_reconcile = mode == "first-look-reconcile"
+    if not config.pinnapi_configured and not native_first_look_reconcile:
         return {"ok": False, "reason": "PinnAPI credentials are not configured; no network call was made"}
     # This can read the local learning store.  Keep it after the local tick
     # due check so a genuine no-op has no expensive work or provider calls.
-    entry_policies = {
-        code: market_entry_thresholds(ledger, code, config)
-        for code in ("HDC", "HIL", "CHL")
-    }
-    titan_client, pinnapi_client = TitanClient(config), PinnapiClient(config)
+    entry_policies = (
+        {}
+        if native_first_look_reconcile else {
+            code: market_entry_thresholds(ledger, code, config)
+            for code in ("HDC", "HIL", "CHL")
+        }
+    )
+    titan_client = TitanClient(config)
+    pinnapi_client = None if native_first_look_reconcile else PinnapiClient(config)
     bulk_crown_quotes: dict[str, dict[str, Any]] = {}
     if mode == "tick":
         # A single company-ID-3 bulk read serves every due local card.  Do not
@@ -2239,26 +2254,45 @@ def run(
             titan_rows = _hourly_first_look_reconciliation_rows(
                 titan_rows, ledger, now,
             )
-    pinnapi_fixture_status = "available"
-    try:
-        if mode == "tick":
-            remaining = _deadline_remaining(tick_deadline)
-            pinnapi_rows = (
-                pinnapi_client.fixtures(max_seconds=remaining)
-                if remaining >= _MIN_DEADLINE_CALL_SECONDS else []
+    if native_first_look_reconcile:
+        # This hourly reconciliation has one responsibility: exact native
+        # Crown IDs that lack 首預.  It must not request PinnAPI, HKJC, any
+        # cross-book bridge, policy store, or Footbreak projection.  Those
+        # optional calls previously kept this three-minute service alive until
+        # systemd terminated it, leaving the native-only repair unable to
+        # commit its first-look snapshots.
+        if len(titan_rows) > _FIRST_LOOK_RECONCILE_MAX_FIXTURES:
+            _record_hourly_first_look_reconciliation_incident(
+                config,
+                "native_first_look_reconcile_batch_limit_"
+                f"{len(titan_rows) - _FIRST_LOOK_RECONCILE_MAX_FIXTURES}",
+                now,
             )
-        else:
-            pinnapi_rows = pinnapi_client.fixtures()
-    except (OSError, ValueError, TypeError):
-        # PinnAPI is an optional reference for bridge/EV work.  A transport
-        # failure or malformed response must fail closed for that reference,
-        # but must not abort Crown/Titan first-look discovery and persistence.
+        titan_rows = titan_rows[:_FIRST_LOOK_RECONCILE_MAX_FIXTURES]
         pinnapi_rows = []
-        pinnapi_fixture_status = "unavailable_fail_closed"
-    # A deadline-bound Crown tick is native-Crown only.  Do not spend the
-    # urgent scheduler budget on the optional Footbreak/HKJC bridge; sweep may
-    # still retain its noncritical research/mapping collection separately.
-    hkjc_rows = [] if mode == "tick" else fetch_matches()
+        pinnapi_fixture_status = "not_requested_native_only"
+        hkjc_rows = []
+    else:
+        pinnapi_fixture_status = "available"
+        try:
+            if mode == "tick":
+                remaining = _deadline_remaining(tick_deadline)
+                pinnapi_rows = (
+                    pinnapi_client.fixtures(max_seconds=remaining)
+                    if remaining >= _MIN_DEADLINE_CALL_SECONDS else []
+                )
+            else:
+                pinnapi_rows = pinnapi_client.fixtures()
+        except (OSError, ValueError, TypeError):
+            # PinnAPI is an optional reference for bridge/EV work.  A transport
+            # failure or malformed response must fail closed for that reference,
+            # but must not abort Crown/Titan first-look discovery and persistence.
+            pinnapi_rows = []
+            pinnapi_fixture_status = "unavailable_fail_closed"
+        # A deadline-bound Crown tick is native-Crown only.  Do not spend the
+        # urgent scheduler budget on the optional Footbreak/HKJC bridge; sweep may
+        # still retain its noncritical research/mapping collection separately.
+        hkjc_rows = [] if mode == "tick" else fetch_matches()
     h_events = [(event_from_match(row), row) for row in hkjc_rows]
     h_events = [(event, row) for event, row in h_events if event]
     p_events = [_event_from_pinnapi(row) for row in pinnapi_rows]
@@ -2289,7 +2323,14 @@ def run(
             # blocking the two-minute T-30/T-5 worker for most of the window.
             with ThreadPoolExecutor(max_workers=min(6, len(refresh_rows))) as pool:
                 futures = {
-                    pool.submit(titan_client.crown_price_snapshot, str(row["id"])): str(row["id"])
+                    pool.submit(
+                        titan_client.crown_price_snapshot,
+                        str(row["id"]),
+                        **(
+                            {"max_seconds": _FIRST_LOOK_RECONCILE_QUOTE_SECONDS}
+                            if native_first_look_reconcile else {}
+                        ),
+                    ): str(row["id"])
                     for row in refresh_rows
                 }
                 for future in as_completed(futures):
@@ -2362,26 +2403,33 @@ def run(
             # native T-5, never for ordinary sweeps/earlier stages.
             crown_snapshot = _cached_t5_crown_snapshot(titan, previous)
         mapping["titan_due"] += 1
-        bridge = bridge_titan_to_pinnapi(event, [item[0] for item in h_events], p_events)
-        if bridge.hkjc.event:
-            mapping["titan_to_hkjc_mapped"] += 1
-            if bridge.reversed:
-                mapping["reversed_identity_mapped"] += 1
-        elif bridge.path != "direct_same_script":
-            mapping["unmapped_titan_to_hkjc"] += 1
-        if bridge.event:
-            if bridge.path == "hkjc_bilingual_bridge":
-                mapping["hkjc_to_pinnapi_mapped"] += 1
-            elif bridge.path == "direct_same_script":
-                mapping["direct_same_script_mapped"] += 1
-        elif bridge.hkjc.event:
-            mapping["unmapped_hkjc_to_pinnapi"] += 1
-        if bridge.reason:
-            mapping["reasons"][bridge.reason] = mapping["reasons"].get(bridge.reason, 0) + 1
+        if native_first_look_reconcile:
+            bridge = _native_only_bridge()
+        else:
+            bridge = bridge_titan_to_pinnapi(event, [item[0] for item in h_events], p_events)
+            if bridge.hkjc.event:
+                mapping["titan_to_hkjc_mapped"] += 1
+                if bridge.reversed:
+                    mapping["reversed_identity_mapped"] += 1
+            elif bridge.path != "direct_same_script":
+                mapping["unmapped_titan_to_hkjc"] += 1
+            if bridge.event:
+                if bridge.path == "hkjc_bilingual_bridge":
+                    mapping["hkjc_to_pinnapi_mapped"] += 1
+                elif bridge.path == "direct_same_script":
+                    mapping["direct_same_script_mapped"] += 1
+            elif bridge.hkjc.event:
+                mapping["unmapped_hkjc_to_pinnapi"] += 1
+            if bridge.reason:
+                mapping["reasons"][bridge.reason] = mapping["reasons"].get(bridge.reason, 0) + 1
         # Keep the complete Crown/Titan fixture board visible.  Crown's own
         # complete market can always create a forecast-learning snapshot;
         # only the strict HKJC -> PinnAPI bridge can unlock edge or a bet.
-        h_row = next((row for candidate, row in h_events if bridge.hkjc.event and candidate.id == bridge.hkjc.event.id), None)
+        h_row = next(
+            (row for candidate, row in h_events
+             if bridge.hkjc.event and candidate.id == bridge.hkjc.event.id),
+            None,
+        )
         previous_crown_prices = list(
             ((previous or {}).get("book_odds") or {}).get("crown") or []
         )
@@ -2477,6 +2525,12 @@ def run(
                 # first-look was collected.  It is attached before the stage
                 # snapshot is committed and does not rewrite existing cards.
                 prediction["origin"] = "hourly_first_look_reconciliation"
+                snapshot = _snapshot or {}
+                if not snapshot.get("asian_ok") and not snapshot.get("total_ok"):
+                    prediction["status"] = "DATA_MISSING"
+                    prediction["verdict"] = "原生皇冠盤暫不可用"
+                    prediction["native_snapshot_status"] = "DATA_MISSING"
+                    prediction["native_snapshot_reason"] = "native_crown_quote_unavailable"
             stage_predictions.append(prediction)
             # The dashboard card keeps all completed stages while the top-level
             # fields remain the latest stage snapshot.  This also survives a
@@ -2529,7 +2583,7 @@ def run(
         ledger["log"] = ledger["log"][-100:]
         save_ledger(config, ledger)
         retained = merge_predictions(config, predictions)
-    if mode != "tick":
+    if mode not in {"tick", "first-look-reconcile"}:
         schedule_footbreak_execution_evidence_projection(
             config, evidence_projection_stages,
         )
