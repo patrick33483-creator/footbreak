@@ -435,11 +435,34 @@ class TitanClient:
                 process.kill()
                 process.join(timeout=0.03)
 
-    def fixtures(self, offsets: tuple[int, ...] = (0, 1)) -> list[dict[str, Any]]:
+    def fixtures(
+        self,
+        offsets: tuple[int, ...] = (0, 1),
+        *,
+        max_seconds: float | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return native upcoming fixtures, optionally within one hard pass budget.
+
+        The ordinary daily/sweep callers retain the existing retry policy.  The
+        hourly first-look reconciler supplies a single wall-clock budget: its
+        XML index plus each ``Next`` page must never consume the systemd unit
+        and leave an unrecorded timeout.
+        """
+        deadline = time.monotonic() + max_seconds if max_seconds is not None else None
+
+        def remaining() -> float:
+            return deadline - time.monotonic() if deadline is not None else 25.0
+
+        first_budget = remaining()
+        if first_budget <= 0:
+            return []
         try:
             source = self._read(
                 "https://livestatic.titan007.com/vbsxml/"
-                f"goal{self.config.titan_company_id}.xml?r=007{int(time.time() * 1000)}"
+                f"goal{self.config.titan_company_id}.xml?r=007{int(time.time() * 1000)}",
+                timeout=max(0.1, min(8.0, first_budget)),
+                attempts=1 if max_seconds is not None else 2,
+                hard_deadline=first_budget if max_seconds is not None else None,
             )
             bulk = (
                 parse_crown_bulk_prices(source, observed_at=time.time())
@@ -456,6 +479,9 @@ class TitanClient:
             return []
         output: list[dict[str, Any]] = []
         for offset in offsets:
+            page_budget = remaining()
+            if page_budget <= 0:
+                break
             day = (datetime.now(HKT) + timedelta(days=offset)).strftime("%Y%m%d")
             try:
                 # `Over_YYYYMMDD` is a completed-results page.  Falling back to
@@ -463,10 +489,12 @@ class TitanClient:
                 # upcoming matches, so fixture discovery must use Next only.
                 output.extend(
                     row
-                    for row in parse_schedule_page(
-                        self._read(f"{self.config.titan_bf_base}/Next_{day}.htm"),
-                        day,
-                    )
+                    for row in parse_schedule_page(self._read(
+                        f"{self.config.titan_bf_base}/Next_{day}.htm",
+                        timeout=max(0.1, min(8.0, page_budget)),
+                        attempts=1 if max_seconds is not None else 2,
+                        hard_deadline=page_budget if max_seconds is not None else None,
+                    ), day)
                     if str(row["id"]) in crown_ids
                 )
             except OSError:

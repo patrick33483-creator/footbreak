@@ -1142,6 +1142,30 @@ class CrownSafetyTests(unittest.TestCase):
         self.assertEqual(read.call_args.kwargs["attempts"], 1)
         self.assertIn("livestatic.titan007.com/vbsxml/goal3.xml", read.call_args.args[0])
 
+    def test_bounded_fixture_discovery_shares_one_hard_pass_budget(self) -> None:
+        from crown.titan import TitanClient
+
+        client = TitanClient(replace(settings(), titan_company_id="3"))
+        with patch.object(client, "_read", return_value="") as read:
+            self.assertEqual(client.fixtures(max_seconds=12.0), [])
+        read.assert_called_once()
+        self.assertEqual(read.call_args.kwargs["timeout"], 8.0)
+        self.assertEqual(read.call_args.kwargs["attempts"], 1)
+        self.assertGreater(read.call_args.kwargs["hard_deadline"], 11.9)
+        self.assertLessEqual(read.call_args.kwargs["hard_deadline"], 12.0)
+
+    def test_bounded_fixture_discovery_stops_before_second_schedule_page(self) -> None:
+        from crown.titan import TitanClient
+
+        client = TitanClient(replace(settings(), titan_company_id="3"))
+        feed = "<c><match><m>1,2,3,4,5,fixture</m></match></c>"
+        with patch("crown.titan.parse_crown_fixture_ids", return_value={"fixture"}), \
+             patch("crown.titan.parse_crown_bulk_prices", return_value={}), \
+             patch("crown.titan.time.monotonic", side_effect=[100.0, 100.0, 112.1]), \
+             patch.object(client, "_read", return_value=feed) as read:
+            self.assertEqual(client.fixtures(max_seconds=12.0), [])
+        self.assertEqual(read.call_count, 1)
+
     def test_direct_crown_snapshot_accepts_a_hard_t5_budget_and_keeps_provenance(self) -> None:
         from crown.titan import TitanClient
 
@@ -2751,6 +2775,7 @@ class CrownSafetyTests(unittest.TestCase):
                 result = run("first-look-reconcile", config)
 
             self.assertTrue(result["ok"])
+            titan_client.fixtures.assert_called_once_with(max_seconds=30.0)
             self.assertEqual(result["pinnapi_fixture_status"], "not_requested_native_only")
             self.assertEqual(result["hkjc_fixtures"], 0)
             titan_client.crown_price_snapshot.assert_called_once_with(

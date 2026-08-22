@@ -36,6 +36,7 @@ from .titan import TitanClient
 
 
 _FIRST_LOOK_RECONCILE_MAX_FIXTURES = 30
+_FIRST_LOOK_RECONCILE_FIXTURE_SECONDS = 30.0
 _FIRST_LOOK_RECONCILE_QUOTE_SECONDS = 15.0
 
 
@@ -2230,7 +2231,10 @@ def run(
         now = datetime.now(HKT)
         window_contains = in_future_round_update_window if mode == "round-update" else in_current_period
         try:
-            provider_rows = titan_client.fixtures()
+            provider_rows = titan_client.fixtures(**(
+                {"max_seconds": _FIRST_LOOK_RECONCILE_FIXTURE_SECONDS}
+                if native_first_look_reconcile else {}
+            ))
         except (OSError, ValueError, TypeError) as exc:
             if mode == "first-look-reconcile":
                 _record_hourly_first_look_reconciliation_incident(
