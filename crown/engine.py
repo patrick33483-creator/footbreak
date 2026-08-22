@@ -6,7 +6,7 @@ import multiprocessing
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime
+from datetime import datetime, timezone
 from multiprocessing.connection import wait as wait_for_connections
 from typing import Any
 
@@ -128,13 +128,64 @@ def _tick_rows_from_predictions(
 def _prioritize_tick_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Put native deadlines ahead of first-look work without starving T-30."""
     rank = {"T-5": 0, "T-30": 1, "首預": 2}
-    return sorted(
+    ordered = sorted(
         rows,
         key=lambda row: (
             rank.get(str(row.get("_due_stage") or ""), 3),
             row.get("kickoff") or datetime.max.replace(tzinfo=HKT),
         ),
     )
+    return _fair_rotate_same_kickoff_cluster(ordered)
+
+
+# Below this cluster size, sorting alone already gives every fixture a
+# worker slot within one or two ticks, so rotation is unnecessary churn.
+# At or above it, an oversized same-stage/same-kickoff cluster can exceed a
+# single tick's bounded collection budget and sorting alone would always
+# strand the same tail fixtures -- exactly the 19-fixture 18:00 HKT pattern.
+_FAIR_ROTATION_CLUSTER_THRESHOLD = 5
+
+
+def _fair_rotate_same_kickoff_cluster(
+    rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Rotate large same-stage/same-kickoff clusters so no tail starves.
+
+    A large same-kickoff batch (for example 19+ fixtures all due at the same
+    T-5 minute) can exceed one tick's bounded collection budget.  Sorting
+    alone always keeps the same fixtures at the tail of an oversized cluster,
+    so they never get a worker slot on any tick before their durable job
+    window closes at kickoff.  This keeps every (stage, kickoff) group intact
+    and in its prioritized position, but rotates the *order within* a
+    same-stage/same-kickoff cluster using the current wall-clock minute, so
+    consecutive ticks give a different subset of that cluster the earliest
+    worker slots and every fixture in an oversized batch eventually reaches
+    the front while kickoff is still in the future.  Small clusters (below
+    ``_FAIR_ROTATION_CLUSTER_THRESHOLD``) are left in their sorted order
+    unchanged, since they already drain within a tick or two.
+    """
+    if len(rows) < 2:
+        return rows
+    clusters: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    order: list[tuple[str, str]] = []
+    for row in rows:
+        stage = str(row.get("_due_stage") or "")
+        kickoff = row.get("kickoff")
+        due_key = kickoff.isoformat() if hasattr(kickoff, "isoformat") else str(kickoff)
+        key = (stage, due_key)
+        if key not in clusters:
+            clusters[key] = []
+            order.append(key)
+        clusters[key].append(row)
+    minute_index = int(time.time() // 60)
+    rotated: list[dict[str, Any]] = []
+    for key in order:
+        bucket = clusters[key]
+        if len(bucket) >= _FAIR_ROTATION_CLUSTER_THRESHOLD:
+            offset = minute_index % len(bucket)
+            bucket = bucket[offset:] + bucket[:offset]
+        rotated.extend(bucket)
+    return rotated
 
 
 def _repair_durable_stage_jobs(config: Settings, now: datetime) -> int:
@@ -1935,6 +1986,14 @@ def _expire_lapsed_timed_stage_attempts(config: Settings, now: datetime) -> int:
 
     This is an append-only operational incident marker only.  It never writes
     a prediction, quote, result, or formal observation after kickoff.
+
+    A same-kickoff batch large enough to exhaust the tick deadline can be
+    killed before the child ever journals a ``STARTED`` attempt at all.  Such
+    a job is due, past kickoff, and was never even attempted -- that is a
+    genuine missed stage, not merely an abandoned one, and it must receive
+    the same honest, visible ``EXPIRED`` incident.  This never invents a
+    ``stage_attempts`` history that did not happen; it only records the
+    terminal outcome of the durable job that truly was due.
     """
     expired = 0
     with state_lock(config, timeout_seconds=0.5) as acquired:
@@ -1951,18 +2010,36 @@ def _expire_lapsed_timed_stage_attempts(config: Settings, now: datetime) -> int:
                 continue
             attempts = watch.get("stage_attempts")
             if not isinstance(attempts, dict):
-                continue
+                attempts = {}
+                watch["stage_attempts"] = attempts
             jobs = watch.get("stage_jobs") if isinstance(watch.get("stage_jobs"), dict) else {}
-            for stage, attempt in attempts.items():
-                if not isinstance(attempt, dict) or attempt.get("state") != "STARTED":
+            stages_to_close: set[str] = {
+                stage for stage, attempt in attempts.items()
+                if isinstance(attempt, dict) and attempt.get("state") == "STARTED"
+            }
+            for stage, job in jobs.items():
+                if stage not in ("T-30", "T-5") or not isinstance(job, dict):
                     continue
+                if job.get("state") in {"COMMITTED", "STARTED", "EXPIRED"}:
+                    continue
+                existing_attempt = attempts.get(stage)
+                if isinstance(existing_attempt, dict) and existing_attempt.get("state") in {
+                    "COMMITTED", "EXPIRED",
+                }:
+                    continue
+                stages_to_close.add(stage)
+            for stage in stages_to_close:
+                attempt = attempts.get(stage)
+                if not isinstance(attempt, dict):
+                    attempt = {"stage": stage}
+                    attempts[stage] = attempt
                 attempt.update({
                     "state": "EXPIRED",
                     "updated_at": iso_hkt(now),
                     "reason": "deadline_exhausted_before_native_stage_commit",
                 })
                 job = jobs.get(stage)
-                if isinstance(job, dict) and job.get("state") == "STARTED":
+                if isinstance(job, dict) and job.get("state") != "COMMITTED":
                     job.update({
                         "state": "EXPIRED",
                         "updated_at": iso_hkt(now),
@@ -1995,6 +2072,16 @@ def persist_timed_stage_timeout_failures(config: Settings, now: datetime | None 
     child.  It performs no provider request and converts its pre-existing
     STARTED journals into retryable, immutable DATA_MISSING stage records while
     kickoff is still in the future.
+
+    A same-kickoff batch large enough to exhaust the tick deadline can be
+    killed before the child ever reaches the in-process write-ahead journal
+    (``_journal_timed_stage_attempts``).  That earlier omission must not be
+    silent: a job whose durable ``due_at_utc`` has already elapsed, but whose
+    attempt was never marked ``STARTED`` at all, is exactly as timed-out as one
+    that was marked ``STARTED`` and then abandoned.  Both receive the same
+    honest, retryable DATA_MISSING outcome here so the parent's safety net
+    covers a child that dies before its own journal write, not only one that
+    dies after it.
     """
     now = (now or datetime.now(HKT)).astimezone(HKT)
     ledger = load_ledger(config)
@@ -2006,8 +2093,19 @@ def persist_timed_stage_timeout_failures(config: Settings, now: datetime | None 
         if kickoff is None or kickoff <= now:
             continue
         attempts = watch.get("stage_attempts") if isinstance(watch.get("stage_attempts"), dict) else {}
+        jobs = watch.get("stage_jobs") if isinstance(watch.get("stage_jobs"), dict) else {}
         for stage in ("T-30", "T-5"):
-            if not isinstance(attempts.get(stage), dict) or attempts[stage].get("state") != "STARTED":
+            attempt = attempts.get(stage)
+            attempt_started = isinstance(attempt, dict) and attempt.get("state") == "STARTED"
+            job = jobs.get(stage)
+            job_due_unstarted = False
+            if not attempt_started and isinstance(job, dict) and job.get("state") not in {
+                "COMMITTED", "STARTED",
+            }:
+                due_at = parse_time(job.get("due_at_utc"))
+                if due_at is not None and now.astimezone(timezone.utc) >= due_at.astimezone(timezone.utc):
+                    job_due_unstarted = True
+            if not attempt_started and not job_due_unstarted:
                 continue
             rows.append({
                 "id": str(watch.get("native_fixture_id") or watch.get("titan_match_id") or watch.get("match_id") or key),
