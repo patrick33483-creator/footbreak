@@ -606,14 +606,18 @@ def export_watch_csv(led, path=None):
     return path
 
 
+def notify_only(led):
+    """Retry all durable Footbreak notification outboxes with native priority."""
+    import notify
+    return notify.notify_pending_committed_bets(led)
+
+
 if __name__ == "__main__":
     import sys
     if "--notify-only" in sys.argv[1:]:
         led = load()
         try:
-            import notify
-            notify.notify_pending_condition_bets(led)
-            notify.notify_pending_crown_execution_bets(led)
+            notify_only(led)
         except Exception as exc:
             print(f"通知暫不可用（{type(exc).__name__}）；下一輪重試")
         raise SystemExit(0)

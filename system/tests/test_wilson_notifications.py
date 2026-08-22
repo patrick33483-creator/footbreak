@@ -14,6 +14,7 @@ SYSTEM = Path(__file__).resolve().parents[1]
 if str(SYSTEM) not in sys.path:
     sys.path.insert(0, str(SYSTEM))
 import notify
+import record_picks
 
 HKT = timezone(timedelta(hours=8))
 
@@ -47,6 +48,17 @@ def low_odds_observation(*, market="讓球", number=7):
         "wilson_admission": admission_arithmetic(41, 59, 1.50),
     })
     return row
+
+
+def bilateral_decision(*, kickoff=None):
+    return {
+        "decision_id": "bilateral|fixture|HIL|T-5",
+        "kickoff": kickoff or (datetime.now(HKT) + timedelta(hours=2)).isoformat(),
+        "market": "HIL", "side": "H", "line": 2.5, "condition_number": 7,
+        "minimum_odds": 1.92, "signal_quote": 1.75,
+        "counterpart_quote": None, "counterpart_reason": "系統未取得原生T-5",
+        "decision": "COUNTERPART_UNAVAILABLE", "chosen_execution_book": None,
+    }
 
 
 class FootbreakWilsonNotificationTest(unittest.TestCase):
@@ -185,6 +197,54 @@ class FootbreakWilsonNotificationTest(unittest.TestCase):
                 )
                 self.assertEqual(sender.call_count, 2)
                 self.assertIn("足破×皇冠執行測試倉", sender.call_args.args[0])
+
+    def test_notify_only_uses_the_unified_retry_dispatcher(self):
+        with patch("notify.notify_pending_committed_bets", return_value=3) as dispatcher:
+            self.assertEqual(record_picks.notify_only({"bets": []}), 3)
+        dispatcher.assert_called_once_with({"bets": []})
+
+    def test_native_observation_precedes_bilateral_retry_under_shared_budget(self):
+        low = low_odds_observation()
+        decision = bilateral_decision()
+        ledger = {
+            "wilson_validation": {"observations": [low]},
+            "footbreak_crown_execution_test": {
+                "decisions": [decision],
+                "decision_outbox": [{
+                    "decision_id": decision["decision_id"], "notification_required": True,
+                }],
+            },
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            state = str(Path(directory, "notify.json"))
+            with patch.object(notify, "STATE", state), patch.object(notify, "send") as sender:
+                self.assertEqual(
+                    notify.notify_pending_committed_bets(ledger, max_attempts=1, max_seconds=5), 1,
+                )
+                self.assertIn("不投注：賠率不足", sender.call_args.args[0])
+                self.assertEqual(
+                    notify.notify_pending_committed_bets(ledger, max_attempts=1, max_seconds=5), 1,
+                )
+                self.assertIn("對照收集失敗；保留原生訊號決定", sender.call_args.args[0])
+            persisted = json.loads(Path(state).read_text(encoding="utf-8"))
+        self.assertEqual(persisted["wilson_match_alerts"], [low["observation_id"]])
+        self.assertEqual(persisted["bilateral_decision_alerts"], [decision["decision_id"]])
+
+    def test_bilateral_retry_never_sends_after_kickoff(self):
+        decision = bilateral_decision(kickoff=(datetime.now(HKT) - timedelta(seconds=1)).isoformat())
+        ledger = {
+            "footbreak_crown_execution_test": {
+                "decisions": [decision],
+                "decision_outbox": [{
+                    "decision_id": decision["decision_id"], "notification_required": True,
+                }],
+            },
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            state = str(Path(directory, "notify.json"))
+            with patch.object(notify, "STATE", state), patch.object(notify, "send") as sender:
+                self.assertEqual(notify.notify_pending_bilateral_decisions(ledger), 0)
+        sender.assert_not_called()
 
     def test_shared_wall_clock_budget_does_not_restart_for_cross_book_outbox(self):
         formal = bet()

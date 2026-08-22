@@ -1163,15 +1163,20 @@ def review_msg(events, generated_at=None):
 
 # ─────────────────────────── 發送 ───────────────────────────
 def notify_pending_committed_bets(ledger, *, max_attempts=8, max_seconds=None):
-    """Drain both Footbreak committed-entry outboxes under one shared budget."""
+    """Drain Footbreak outboxes under one shared, native-first budget.
+
+    Native Wilson observations/entries must not be delayed by optional
+    Footbreak→Crown presentation retries.  The latter remain durable and are
+    retried afterwards while still sharing the same bounded deadline.
+    """
     budget = _NotificationBudget(max_attempts, max_seconds)
     return (
-        notify_pending_bilateral_decisions(
+        notify_pending_condition_bets(
             ledger, max_attempts=max_attempts, max_seconds=max_seconds,
             _budget=budget,
         )
         +
-        notify_pending_condition_bets(
+        notify_pending_bilateral_decisions(
             ledger, max_attempts=max_attempts, max_seconds=max_seconds,
             _budget=budget,
         )
