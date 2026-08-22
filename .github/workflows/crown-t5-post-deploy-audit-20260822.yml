@@ -133,6 +133,92 @@ jobs:
           PY
           python3 -m json.tool crown-t5-deep-diagnose.json >/dev/null
 
+      - name: List near-term Crown T-5 due batches (natural verification window)
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            'sudo env PYTHONPATH=/opt/footbreak /opt/footbreak/.venv/bin/python3 -' \
+            > crown-t5-upcoming-batches.json <<'PY'
+          import json
+          from datetime import timedelta
+          from pathlib import Path
+
+          from crown.common import HKT, parse_time
+
+          def read_json(path, default):
+              try:
+                  return json.loads(Path(path).read_text(encoding="utf-8"))
+              except Exception:
+                  return default
+
+          now = __import__("datetime").datetime.now(HKT)
+          ledger = read_json("/var/lib/footbreak/crown/ledger.json", {})
+          watches = ledger.get("watch") if isinstance(ledger.get("watch"), dict) else {}
+
+          rows = []
+          for mid, watch in watches.items():
+              if not isinstance(watch, dict):
+                  continue
+              kickoff = parse_time(watch.get("kickoff_hkt") or watch.get("kickoff"))
+              if kickoff is None:
+                  continue
+              # Natural verification window: fixtures whose T-5 due time
+              # (kickoff - 5m) falls within the last 20 minutes or the next
+              # 90 minutes of real wall-clock time, read-only, no filtering
+              # by any specific fixture ID list.
+              if not (now - timedelta(minutes=20) <= kickoff <= now + timedelta(minutes=90)):
+                  continue
+              stage_jobs = watch.get("stage_jobs") if isinstance(watch.get("stage_jobs"), dict) else {}
+              stage_attempts = watch.get("stage_attempts") if isinstance(watch.get("stage_attempts"), dict) else {}
+              t5_job = stage_jobs.get("T-5") if isinstance(stage_jobs, dict) else None
+              t5_attempt = stage_attempts.get("T-5") if isinstance(stage_attempts, dict) else None
+              rows.append({
+                  "match_id": mid,
+                  "fixture": f"{watch.get('home','')} vs {watch.get('away','')}",
+                  "league": watch.get("league"),
+                  "kickoff_hkt": kickoff.isoformat(),
+                  "t5_due_at_hkt": (kickoff - timedelta(minutes=5)).isoformat(),
+                  "t5_job_state": (t5_job or {}).get("state") if isinstance(t5_job, dict) else None,
+                  "t5_attempt_state": (t5_attempt or {}).get("state") if isinstance(t5_attempt, dict) else None,
+              })
+
+          rows.sort(key=lambda r: r["kickoff_hkt"])
+          by_kickoff: dict[str, list] = {}
+          for r in rows:
+              by_kickoff.setdefault(r["kickoff_hkt"], []).append(r)
+
+          print(json.dumps({
+              "generated_at_hkt": now.isoformat(),
+              "window": {
+                  "start_hkt": (now - timedelta(minutes=20)).isoformat(),
+                  "end_hkt": (now + timedelta(minutes=90)).isoformat(),
+              },
+              "batches_by_kickoff": {
+                  k: {
+                      "count": len(v),
+                      "match_ids": [r["match_id"] for r in v],
+                      "t5_job_states": sorted(set(r["t5_job_state"] for r in v)),
+                  }
+                  for k, v in by_kickoff.items()
+              },
+              "rows": rows,
+          }, ensure_ascii=False, indent=2))
+          PY
+          python3 -m json.tool crown-t5-upcoming-batches.json >/dev/null
+
+      - name: Upload near-term batch evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: crown-t5-upcoming-batches-${{ github.run_id }}
+          path: crown-t5-upcoming-batches.json
+          retention-days: 14
+
       - name: Upload audit evidence
         if: always()
         uses: actions/upload-artifact@v4
