@@ -1,0 +1,91 @@
+name: Crown formal evidence integrity (read only)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  checks: write
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+jobs:
+  forensic:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: Read only Crown formal evidence and timer state
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          cat deploy/audit-crown-formal-integrity.py | ssh \
+            -o BatchMode=yes -o ConnectTimeout=20 \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "sudo env PYTHONPATH=/opt/footbreak /opt/footbreak/.venv/bin/python3 -" \
+            > crown-formal-integrity.json
+          python3 -m json.tool crown-formal-integrity.json >/dev/null
+
+      - name: Upload forensic evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: crown-formal-integrity-${{ github.run_id }}
+          path: crown-formal-integrity.json
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Publish compact formal evidence summary
+        if: always() && hashFiles('crown-formal-integrity.json') != ''
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import urllib.request
+          from pathlib import Path
+
+          report = json.loads(Path("crown-formal-integrity.json").read_text(encoding="utf-8"))
+          body = json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True)
+          payload = {
+              "name": "Crown formal evidence integrity",
+              "head_sha": os.environ["GITHUB_SHA"],
+              "status": "completed",
+              "conclusion": "success" if os.environ["JOB_STATUS"] == "success" else "failure",
+              "output": {
+                  "title": "Read-only Crown formal evidence / x20 audit",
+                  "summary": "```json\n" + body[:60000] + "\n```",
+              },
+          }
+          request = urllib.request.Request(
+              f"https://api.github.com/repos/{os.environ['GITHUB_REPOSITORY']}/check-runs",
+              data=json.dumps(payload).encode("utf-8"),
+              headers={
+                  "Accept": "application/vnd.github+json",
+                  "Authorization": f"Bearer {os.environ['GITHUB_TOKEN']}",
+                  "Content-Type": "application/json",
+              },
+              method="POST",
+          )
+          with urllib.request.urlopen(request, timeout=20) as response:
+              created = json.load(response)
+          print(f"evidence_check_url={created['html_url']}")
+          PY
