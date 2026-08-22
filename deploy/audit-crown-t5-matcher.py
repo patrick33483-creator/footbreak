@@ -293,10 +293,10 @@ def main() -> int:
         key = (str(row["fixture"]), str(row["market"]))
         row["persisted_path_descriptors"] = explanations.get(key, [])
         if not row["structural_registry_matches"] and row["signal"] is not None:
-            paths = row["persisted_path_descriptors"]
+            descriptors = row["persisted_path_descriptors"]
             nearest = [
-                path.get("nearest_frozen") for path in paths
-                if isinstance(path.get("nearest_frozen"), dict)
+                descriptor.get("nearest_frozen") for descriptor in descriptors
+                if isinstance(descriptor.get("nearest_frozen"), dict)
             ]
             if nearest:
                 nearest.sort(key=lambda value: (
