@@ -24,6 +24,12 @@ Environment=CROWN_TICK_PASS_DEADLINE_SECONDS=50
 Environment=CROWN_TICK_TIMEOUT_START_SECONDS=55
 Environment=CROWN_TICK_STOP_MARGIN_SECONDS=4
 Environment=CROWN_HKJC_EXECUTION_EVIDENCE_PATH=/opt/footbreak/system/sim_ledger.json
+# Diagnostic-only, default-safe timing probe (2026-08-22 T-5 tick-starvation
+# investigation).  Bounded JSONL of checkpoint/monotonic/RSS/swap samples
+# only -- never provider payloads.  Safe to leave enabled at low overhead;
+# remove once root cause is confirmed and fixed if no longer needed.
+Environment=CROWN_TICK_TIMING_PROBE=1
+Environment=CROWN_TICK_TIMING_PROBE_PATH=/var/lib/footbreak/crown/tick-timing-probe.jsonl
 # Footbreak owns this ledger; Crown's reciprocal adapter only reads it.
 ReadOnlyPaths=/opt/footbreak/system/sim_ledger.json
 TimeoutStartSec=55
