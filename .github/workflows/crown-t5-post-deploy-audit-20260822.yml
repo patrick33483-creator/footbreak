@@ -240,6 +240,27 @@ jobs:
           path: crown-tick-journal-19532016.log
           retention-days: 14
 
+      - name: Read footbreak-result-reconcile.service status and journal (read only, diagnostic only)
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "sudo systemctl status footbreak-result-reconcile.service --no-pager -l; echo '---JOURNAL---'; sudo journalctl -u footbreak-result-reconcile.service --since '2026-08-22 19:50:00' --no-pager -o short-iso" \
+            > footbreak-result-reconcile-status.log || true
+          cat footbreak-result-reconcile-status.log || true
+
+      - name: Upload reconcile diagnostic
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: footbreak-result-reconcile-diagnostic-${{ github.run_id }}
+          path: footbreak-result-reconcile-status.log
+          retention-days: 14
+
       - name: Upload audit evidence
         if: always()
         uses: actions/upload-artifact@v4
