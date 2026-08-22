@@ -192,6 +192,10 @@ class FootbreakPinnapiSharpTests(unittest.TestCase):
                 sharp.fetch_odds(["123"])
 
     def test_prediction_failure_persists_fail_closed_stage_decision(self) -> None:
+        """Analysis failure writes an honest terminal FAILED attempt, but per
+        the pre-kickoff retry contract (2026-08-22 T-5 starvation fix) the
+        fixture -- kickoff still 30 minutes away -- must remain pending so a
+        later tick can retry instead of being dropped forever."""
         kickoff = datetime.now(timezone.utc) + timedelta(minutes=30)
         match = {
             "id": "m1", "status": "PREEVENT",
@@ -214,7 +218,7 @@ class FootbreakPinnapiSharpTests(unittest.TestCase):
                      patch.object(run_predict, "analyse_match", side_effect=sharp.ProviderError("PinnAPI down")):
                     results = run_predict.main(mode="due", horizon_min=90)
                 self.assertEqual(results, [])
-                self.assertEqual(run_predict.pending_watch_match_ids(), [])
+                self.assertEqual(run_predict.pending_watch_match_ids(), ["m1"])
                 ledger = json.loads(Path(directory, "sim_ledger.json").read_text(encoding="utf-8"))
                 self.assertEqual(
                     ledger["native_stage_attempts"][-1]["status"], "FAILED",

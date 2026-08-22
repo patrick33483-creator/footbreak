@@ -734,6 +734,41 @@ def _expired_attempt(attempt: dict, now: dt.datetime, reason: str) -> None:
     _finish_due_attempts([attempt], "EXPIRED", now, reason)
 
 
+def _fair_rotate_due(due: list, now: dt.datetime) -> list:
+    """Rotate same-stage/same-due-minute clusters so no fixture tail always
+    starves when one tick's bounded pass budget cannot finish an entire large
+    same-kickoff batch.  `persisted_due_stages` already sorts T-5 ahead of
+    T-30 and by kickoff/match_id for determinism; this only changes which
+    item leads within an identical (stage, due-minute) cluster, using the
+    current wall-clock minute so consecutive ticks favour a different item.
+    A retry (this tick's own STARTED/FAILED-retryable carryover) therefore
+    gets an earlier turn on a later tick instead of being permanently last.
+    """
+    if len(due) < 2:
+        return due
+    clusters: dict[tuple[str, str], list] = {}
+    order: list[tuple[str, str]] = []
+    for item in due:
+        kickoff, mid, watch, stage = item
+        due_job = (watch.get("native_stage_manifest") or {}).get("jobs", {}).get(stage, {}) \
+            if isinstance(watch, dict) else {}
+        due_key = str(due_job.get("due_at_utc") or kickoff.isoformat())
+        key = (stage, due_key)
+        if key not in clusters:
+            clusters[key] = []
+            order.append(key)
+        clusters[key].append(item)
+    rotated: list = []
+    minute_index = int(now.timestamp() // 60)
+    for key in order:
+        bucket = clusters[key]
+        if len(bucket) > 1:
+            offset = minute_index % len(bucket)
+            bucket = bucket[offset:] + bucket[:offset]
+        rotated.extend(bucket)
+    return rotated
+
+
 def _run_due_tick(match_ids, horizon_min, out, force, stage_filter):
     """Deadline-first local queue: no board discovery, fixture list, or dashboard work."""
     try:
@@ -752,6 +787,7 @@ def _run_due_tick(match_ids, horizon_min, out, force, stage_filter):
         write_json_atomic(os.path.join(HERE, out), [])
         print("0 場已處理 · 本地到期隊列為空（沒有遠端查詢）")
         return []
+    due = _fair_rotate_due(due, dt.datetime.now(HKT))
     attempts = _start_due_attempts(due, dt.datetime.now(HKT))
     # Direct fixture reads are the only mandatory remote operation in a tick.
     by_id = {}

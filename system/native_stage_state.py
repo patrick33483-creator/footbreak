@@ -16,6 +16,29 @@ UTC = timezone.utc
 SCHEDULED_STAGES: tuple[tuple[str, int], ...] = (("T-30", 30), ("T-5", 5))
 TERMINAL = frozenset({"COMMITTED", "FAILED", "DATA_MISSING", "EXPIRED"})
 
+# A same-kickoff batch that exceeds one tick's bounded pass budget, a single
+# slow persistence call, or a transient direct-read exception must not
+# permanently discard an otherwise-legitimate pre-kickoff due stage.  These
+# exact FAILED reasons describe the tick's own capacity/timing, not a
+# genuine provider/analysis absence, so they remain retryable while
+# `now < kickoff`.  A later terminal COMMITTED/DATA_MISSING/EXPIRED event for
+# the same identity still wins because `latest_attempts` always returns the
+# most recent event; `expire_lapsed_work` still converts any non-COMMITTED
+# stage to EXPIRED the instant kickoff passes, so this cannot leak past
+# kickoff or create an unbounded retry loop.
+RETRYABLE_FAILURE_REASONS = frozenset({
+    "tick_deadline_elapsed",
+    "persistence_timeout_or_error",
+    "analysis_timeout_or_error",
+})
+
+
+def _is_retryable_failure(event: dict[str, Any]) -> bool:
+    if str(event.get("status") or "") != "FAILED":
+        return False
+    reason = str(event.get("reason") or "")
+    return reason in RETRYABLE_FAILURE_REASONS or reason.startswith("provider_fetch_")
+
 
 def parse_time(value: Any) -> datetime | None:
     try:
@@ -200,7 +223,11 @@ def start_attempt(
         state = str(current.get("status") or "")
         if state == "STARTED":
             return current
-        if state in TERMINAL:
+        # A retryable FAILED (tick capacity/timing, not a genuine provider or
+        # analysis absence) may start a fresh attempt while still pre-kickoff.
+        # Every other terminal state (COMMITTED/DATA_MISSING/EXPIRED, or a
+        # FAILED with a non-retryable reason) is immutable.
+        if state in TERMINAL and not _is_retryable_failure(current):
             raise ValueError("native_stage_attempt_already_terminal")
     event = _event_payload(
         watch, stage, attempt_id=uuid.uuid4().hex, status="STARTED", now=now,
@@ -224,7 +251,12 @@ def finish_attempt(
         raise ValueError("native_stage_attempt_identity_missing")
     latest = latest_attempts(ledger).get((match_id, kickoff_utc, stage))
     if isinstance(latest, dict) and str(latest.get("status") or "") in TERMINAL:
-        return latest
+        # A post-kickoff EXPIRED sweep may still close out a retryable FAILED
+        # attempt that never got a further retry before kickoff; every other
+        # terminal record (including the attempt's own matching FAILED, once
+        # already superseded by a newer terminal event) is immutable.
+        if not (status == "EXPIRED" and attempt_id == str(latest.get("attempt_id") or "") and _is_retryable_failure(latest)):
+            return latest
     event = {
         key: attempt.get(key)
         for key in (
@@ -277,7 +309,12 @@ def due_stage_work(
                 continue
             latest_event = latest.get((match_id, iso_utc(kickoff_utc), stage))
             if isinstance(latest_event, dict) and str(latest_event.get("status") or "") in TERMINAL:
-                continue
+                # A retryable FAILED (tick deadline/persistence/analysis
+                # timing, or a transient direct-read exception) remains due
+                # while still pre-kickoff; every other terminal outcome is
+                # final and is never re-offered.
+                if not _is_retryable_failure(latest_event):
+                    continue
             work.append({
                 "hkjc_match_id": match_id,
                 "watch_key": str(raw_id),
@@ -312,7 +349,11 @@ def expire_lapsed_work(ledger: dict[str, Any], *, now: datetime) -> int:
             if key is None:
                 continue
             last = latest.get(key)
-            if isinstance(last, dict) and str(last.get("status") or "") in TERMINAL:
+            if (
+                isinstance(last, dict)
+                and str(last.get("status") or "") in TERMINAL
+                and not _is_retryable_failure(last)
+            ):
                 continue
             attempt = last if isinstance(last, dict) else _event_payload(
                 watch, stage, attempt_id=f"expired-{uuid.uuid4().hex}", status="STARTED", now=now,
@@ -371,12 +412,24 @@ def completeness_projection(ledger: dict[str, Any], *, now: datetime) -> dict[st
                 else str(event.get("status") or "PENDING") if isinstance(event, dict)
                 else "PENDING"
             )
+            # `retryable_pending` is honest secondary evidence only: the literal
+            # terminal FAILED event and its reason are preserved exactly as
+            # recorded above, this simply flags that `due_stage_work` will
+            # still re-offer it pre-kickoff rather than treating it as final.
+            kickoff_dt = parse_time(kickoff_utc)
+            retryable_pending = (
+                isinstance(event, dict)
+                and kickoff_dt is not None
+                and kickoff_dt.astimezone(UTC) > now.astimezone(UTC)
+                and _is_retryable_failure(event)
+            )
             stages[stage] = {
                 "status": status,
                 "due_at_utc": job.get("due_at_utc"),
                 "due_at_hkt": job.get("due_at_hkt"),
                 "attempt_id": event.get("attempt_id") if isinstance(event, dict) else None,
                 "reason": event.get("reason") if isinstance(event, dict) else None,
+                "retryable_pending": bool(retryable_pending),
             }
             counts[status] += 1
         rows.append({
