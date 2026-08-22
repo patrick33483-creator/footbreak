@@ -41,18 +41,15 @@ jobs:
           SINCE: ${{ inputs.since }}
         run: |
           set -euo pipefail
-          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+          # Stream the reviewed audit script from this read-only workflow
+          # ref.  The imports remain the deployed production code; this
+          # never installs or changes it.
+          printf -v remote_command \
+            "sudo env SINCE=%q bash -c 'set -a; [ ! -r /etc/footbreak.env ] || . /etc/footbreak.env; [ ! -r /etc/footbreak-crown.env ] || . /etc/footbreak-crown.env; set +a; exec env PYTHONPATH=/opt/footbreak /opt/footbreak/.venv/bin/python3 -'" \
+            "$SINCE"
+          cat deploy/audit-crown-t5-matcher.py | ssh -o BatchMode=yes -o ConnectTimeout=20 \
             -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
-            "$DEPLOY_USER@$DEPLOY_HOST" \
-            "sudo env SINCE='$SINCE' bash -s" <<'REMOTE' > crown-t5-matcher-forensic.json
-          set -euo pipefail
-          set -a
-          [ ! -r /etc/footbreak.env ] || . /etc/footbreak.env
-          [ ! -r /etc/footbreak-crown.env ] || . /etc/footbreak-crown.env
-          set +a
-          PYTHONPATH=/opt/footbreak /opt/footbreak/.venv/bin/python3 \
-            /opt/footbreak/deploy/audit-crown-t5-matcher.py --since "$SINCE"
-          REMOTE
+            "$DEPLOY_USER@$DEPLOY_HOST" "$remote_command" > crown-t5-matcher-forensic.json
           python3 -m json.tool crown-t5-matcher-forensic.json >/dev/null
 
       - name: Upload forensic evidence
