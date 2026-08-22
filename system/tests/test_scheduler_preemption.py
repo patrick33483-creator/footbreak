@@ -131,7 +131,7 @@ class SchedulerPreemptionTests(unittest.TestCase):
             unit.index("ExecStartPre=/opt/footbreak/deploy/crown-tick-preempt.sh"),
             unit.index("ExecStart=/opt/footbreak/deploy/crown-run.sh tick"),
         )
-        self.assertIn("Environment=CROWN_TICK_PASS_DEADLINE_SECONDS=30", unit)
+        self.assertIn("Environment=CROWN_TICK_PASS_DEADLINE_SECONDS=50", unit)
         self.assertIn("TimeoutStartSec=55", unit)
         self.assertIn("TimeoutStopSec=5", unit)
         self.assertIn("ExecStopPost=-/usr/bin/rm -f /run/crown-t5-priority", unit)
