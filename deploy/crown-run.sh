@@ -9,6 +9,38 @@ CROWN_WEB_ROOT="${CROWN_WEB_ROOT:-/var/www/crown}"
 MODE="${1:-tick}"
 CROWN_LOCK_DIR="${CROWN_LOCK_DIR:-/var/lock}"
 
+# Recompute the tick's real native-stage budget from how much of the
+# systemd TimeoutStartSec wall clock ExecStartPre already spent, instead of
+# trusting a fixed CROWN_TICK_PASS_DEADLINE_SECONDS.  A slow ExecStartPre
+# (disk_guard preflight or the T-5-priority preempt script stopping other
+# units, observed 3-23s in production) previously meant
+# ExecStartPre + fixed 50s budget + parent teardown could exceed
+# TimeoutStartSec=55, causing systemd to kill the whole service *and* its
+# in-flight children before any commit or honest DATA_MISSING/EXPIRED
+# write-ahead journal -- a silent same-kickoff-batch outage.  This is
+# read-only bookkeeping local to this wrapper; it never touches Crown state.
+if [ "$MODE" = "tick" ]; then
+  EPOCH_FILE="${CROWN_TICK_START_EPOCH_FILE:-/run/crown-tick-start-epoch}"
+  TIMEOUT_START_SECONDS="${CROWN_TICK_TIMEOUT_START_SECONDS:-55}"
+  STOP_MARGIN_SECONDS="${CROWN_TICK_STOP_MARGIN_SECONDS:-4}"
+  FALLBACK_DEADLINE_SECONDS="${CROWN_TICK_PASS_DEADLINE_SECONDS:-50}"
+  if [ -r "$EPOCH_FILE" ] && start_epoch=$(cat "$EPOCH_FILE" 2>/dev/null) \
+     && [ -n "$start_epoch" ] && [ "$start_epoch" -eq "$start_epoch" ] 2>/dev/null; then
+    now_epoch=$(date +%s)
+    elapsed=$((now_epoch - start_epoch))
+    [ "$elapsed" -lt 0 ] && elapsed=0
+    dynamic_budget=$((TIMEOUT_START_SECONDS - STOP_MARGIN_SECONDS - elapsed))
+    # Never raise the budget above the configured fallback ceiling, and
+    # never let it go below a small floor that still allows one honest
+    # DATA_MISSING/EXPIRED write-ahead pass instead of a bare no-op.
+    if [ "$dynamic_budget" -gt "$FALLBACK_DEADLINE_SECONDS" ]; then
+      dynamic_budget="$FALLBACK_DEADLINE_SECONDS"
+    fi
+    [ "$dynamic_budget" -lt 5 ] && dynamic_budget=5
+    export CROWN_TICK_PASS_DEADLINE_SECONDS="$dynamic_budget"
+  fi
+fi
+
 # Existing PinnAPI Edge credentials may already be held in Footbreak's secure
 # environment.  Crown's own file is a later, separate override.  Neither is
 # ever copied, printed, or committed.

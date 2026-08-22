@@ -7,13 +7,22 @@ OnFailure=footbreak-incident-alert@%n.service
 [Service]
 Type=oneshot
 WorkingDirectory=/opt/footbreak
+ExecStartPre=/bin/sh -c '/usr/bin/date +%%s > /run/crown-tick-start-epoch'
 ExecStartPre=/opt/footbreak/.venv/bin/python3 /opt/footbreak/system/disk_guard.py --preflight
 ExecStartPre=/opt/footbreak/deploy/crown-tick-preempt.sh
 ExecStart=/opt/footbreak/deploy/crown-run.sh tick
 # The native stage journal + exact-ID snapshot + atomic commit are the only
 # critical path.  Consumers use leftover time; the 55-second unit timeout
 # retains the final stop margin.
+#
+# CROWN_TICK_PASS_DEADLINE_SECONDS below is a fallback ceiling only.
+# crown-run.sh recomputes the real budget at ExecStart time from the
+# ExecStartPre epoch sentinel above, so a slow ExecStartPre (disk_guard or
+# the T-5-priority preempt, observed 3-23s in production) no longer lets the
+# combined ExecStartPre+ExecStart wall clock exceed TimeoutStartSec.
 Environment=CROWN_TICK_PASS_DEADLINE_SECONDS=50
+Environment=CROWN_TICK_TIMEOUT_START_SECONDS=55
+Environment=CROWN_TICK_STOP_MARGIN_SECONDS=4
 Environment=CROWN_HKJC_EXECUTION_EVIDENCE_PATH=/opt/footbreak/system/sim_ledger.json
 # Footbreak owns this ledger; Crown's reciprocal adapter only reads it.
 ReadOnlyPaths=/opt/footbreak/system/sim_ledger.json
