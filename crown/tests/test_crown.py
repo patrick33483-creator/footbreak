@@ -1988,11 +1988,12 @@ class CrownSafetyTests(unittest.TestCase):
                  patch("crown.engine._prediction", new=_runtime_batch_prediction):
                 result = run("tick", config)
             self.assertEqual(result["predictions"], 2)
-            titan_client.crown_bulk_price_snapshots.assert_not_called()
-            self.assertEqual(
-                [call.args[0] for call in titan_client.crown_price_snapshot.call_args_list],
-                ["bulk-a", "bulk-b"],
-            )
+            # The direct reads run in isolated, killable children.  Parent
+            # mocks deliberately do not receive child call counters; durable
+            # results prove both locked IDs were read and committed.
+            self.assertEqual(result["direct_id_attempted"], 2)
+            self.assertEqual(result["direct_id_predictions"], 2)
+            self.assertEqual(result["bulk_fallback_attempted"], 0)
             titan_client.crown_prices.assert_not_called()
 
     def test_locked_direct_t5_does_not_depend_on_bulk_board_inclusion(self) -> None:
@@ -2037,11 +2038,7 @@ class CrownSafetyTests(unittest.TestCase):
             self.assertEqual(result["predictions"], 1)
             self.assertEqual(result["direct_id_attempted"], 1)
             self.assertEqual(result["direct_id_predictions"], 1)
-            titan_client.crown_bulk_price_snapshots.assert_not_called()
-            titan_client.crown_price_snapshot.assert_called_once()
-            self.assertGreater(
-                titan_client.crown_price_snapshot.call_args.kwargs["max_seconds"], 0,
-            )
+            self.assertEqual(result["bulk_fallback_attempted"], 0)
             stages = load_ledger(config)["watch"]["direct-fallback"]["stages"]
             self.assertEqual(
                 sum(row.get("stage") == "T-5" for row in stages if isinstance(row, dict)),
@@ -2103,8 +2100,9 @@ class CrownSafetyTests(unittest.TestCase):
             stored = next(row for row in stages if row["stage"] == "T-30")
             self.assertEqual(stored["status"], "PREDICTION_READY")
             self.assertEqual(stored["crown_quote_source"], "titan007-crown-id-3")
-            titan_client.crown_price_snapshot.assert_called_once_with("t30-fast", max_seconds=8.0)
-            titan_client.crown_bulk_price_snapshots.assert_not_called()
+            self.assertEqual(result["direct_id_attempted"], 1)
+            self.assertEqual(result["direct_id_predictions"], 1)
+            self.assertEqual(result["bulk_fallback_attempted"], 0)
 
     def test_due_t30_unavailable_is_durably_audited_and_remains_retryable(self) -> None:
         """A failed native read is evidence, not a completed or fabricated stage."""
@@ -2146,6 +2144,86 @@ class CrownSafetyTests(unittest.TestCase):
                     load_ledger(config)["watch"]["t30-unavailable"],
                     MATCHING_VERSION, PREDICTION_ERA,
                 ),
+            )
+
+    def test_direct_timeout_commits_explicit_missing_stage_before_kickoff(self) -> None:
+        """A stuck direct ID page cannot consume the atomic failure commit."""
+        with tempfile.TemporaryDirectory() as directory:
+            config = replace(
+                settings(), state_dir=Path(directory), enabled=True, pinnapi_key="test",
+            )
+            now = datetime.now(__import__("crown.common", fromlist=["HKT"]).HKT)
+            card = {
+                "match_id": "slow-direct", "league": "L", "home": "Home", "away": "Away",
+                "kickoff_hkt": (now + timedelta(minutes=5)).isoformat(),
+            }
+            save_predictions(config, [card])
+            save_ledger(config, {
+                "bankroll": 50000, "bets": [], "log": [], "stats": {},
+                "watch": {"slow-direct": {
+                    "matching_version": MATCHING_VERSION, "prediction_era": PREDICTION_ERA,
+                    "stages": [{"stage": "首預"}, {"stage": "T-30"}],
+                }},
+            })
+            titan_client = Mock()
+            titan_client.crown_price_snapshot.side_effect = (
+                lambda *_args, **_kwargs: time.sleep(10)
+            )
+            titan_client.crown_bulk_price_snapshots.return_value = {}
+            started = time.monotonic()
+            with patch.dict(os.environ, {
+                "CROWN_TICK_PASS_DEADLINE_SECONDS": "3",
+                "CROWN_TICK_MAX_WORKERS": "1",
+            }, clear=False), patch("crown.engine.TitanClient", return_value=titan_client):
+                result = run("tick", config)
+            self.assertLess(time.monotonic() - started, 2.8)
+            self.assertEqual(result["direct_id_attempted"], 1)
+            watch = load_ledger(config)["watch"]["slow-direct"]
+            stage = next(row for row in watch["stages"] if row["stage"] == "T-5")
+            self.assertEqual(stage["status"], "DATA_MISSING")
+            self.assertEqual(watch["stage_attempts"]["T-5"]["state"], "FAILED")
+            self.assertEqual(
+                watch["stage_jobs"]["T-5"]["state"],
+                "FAILED",
+            )
+
+    def test_lapsed_started_attempt_becomes_incident_without_late_stage(self) -> None:
+        """Post-kickoff cleanup closes only the journal, never inventing T-5."""
+        with tempfile.TemporaryDirectory() as directory:
+            config = replace(
+                settings(), state_dir=Path(directory), enabled=True, pinnapi_key="test",
+            )
+            now = datetime.now(__import__("crown.common", fromlist=["HKT"]).HKT)
+            kickoff = now - timedelta(minutes=1)
+            save_ledger(config, {
+                "bankroll": 50000, "bets": [], "log": [], "stats": {},
+                "watch": {"expired-direct": {
+                    "match_id": "expired-direct", "native_fixture_id": "expired-direct",
+                    "kickoff_hkt": kickoff.isoformat(), "kickoff": kickoff.isoformat(),
+                    "stages": [{"stage": "首預"}, {"stage": "T-30"}],
+                    "stage_attempts": {"T-5": {
+                        "stage": "T-5", "state": "STARTED",
+                        "started_at": (kickoff - timedelta(minutes=5)).isoformat(),
+                    }},
+                    "stage_jobs": {"T-5": {"stage": "T-5", "state": "STARTED"}},
+                }},
+            })
+            save_predictions(config, [])
+            with patch("crown.engine.TitanClient", side_effect=AssertionError(
+                "expired attempt must not read a provider"
+            )):
+                result = run("tick", config)
+            self.assertTrue(result["fast_noop"])
+            self.assertEqual(result["expired_stage_attempts"], 1)
+            watch = load_ledger(config)["watch"]["expired-direct"]
+            self.assertEqual(watch["stage_attempts"]["T-5"]["state"], "EXPIRED")
+            self.assertEqual(watch["stage_jobs"]["T-5"]["state"], "EXPIRED")
+            self.assertEqual(
+                watch["stage_incidents"][-1]["reason"],
+                "deadline_exhausted_before_native_stage_commit",
+            )
+            self.assertEqual(
+                [row["stage"] for row in watch["stages"]].count("T-5"), 0,
             )
 
     def test_persisted_due_t5_bulk_commit_bypasses_hung_discovery_and_providers(self) -> None:
@@ -2241,11 +2319,7 @@ class CrownSafetyTests(unittest.TestCase):
 
             self.assertTrue(result["fast_t5_bulk"])
             self.assertEqual(result["predictions"], 2)
-            titan_client.crown_bulk_price_snapshots.assert_called_once()
-            self.assertGreater(
-                titan_client.crown_bulk_price_snapshots.call_args.kwargs["max_seconds"],
-                0,
-            )
+            self.assertEqual(result["bulk_fallback_attempted"], 2)
             titan_client.crown_prices.assert_not_called()
             stored = {row["match_id"]: row for row in load_predictions(config)}
             self.assertEqual(set(stored), {"fast-a", "fast-b"})

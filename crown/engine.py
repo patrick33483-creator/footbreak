@@ -176,6 +176,9 @@ def _deadline_remaining(deadline: float) -> float:
 
 _MIN_DEADLINE_CALL_SECONDS = 0.25
 _TICK_NOTIFICATION_RESERVE_SECONDS = 8.0
+_TIMED_STAGE_COMMIT_RESERVE_SECONDS = 8.0
+_TIMED_STAGE_DIRECT_MAX_SECONDS = 8.0
+_TIMED_STAGE_LOCK_WAIT_SECONDS = 2.0
 
 
 def _tick_provider_deadline_seconds() -> float:
@@ -251,6 +254,183 @@ def _prediction_process(send: Any, payload: tuple[Any, ...]) -> None:
         send.send(("error", type(exc).__name__))
     finally:
         send.close()
+
+
+def _crown_snapshot_process(
+    send: Any,
+    config: Settings,
+    match_id: str,
+    max_seconds: float,
+) -> None:
+    """Read one locked native fixture outside the deadline-owning process."""
+    try:
+        snapshot = TitanClient(config).crown_price_snapshot(
+            match_id, max_seconds=max_seconds,
+        )
+        send.send(("ok", snapshot))
+    except BaseException as exc:
+        send.send(("error", type(exc).__name__))
+    finally:
+        send.close()
+
+
+def _crown_bulk_snapshots_process(
+    send: Any,
+    config: Settings,
+    max_seconds: float,
+) -> None:
+    """Read the optional same-ID board fallback in a killable child process."""
+    try:
+        snapshots = TitanClient(config).crown_bulk_price_snapshots(
+            max_seconds=max_seconds,
+        )
+        send.send(("ok", snapshots))
+    except BaseException as exc:
+        send.send(("error", type(exc).__name__))
+    finally:
+        send.close()
+
+
+def _terminate_child(process: Any, receiver: Any) -> None:
+    """Terminate a provider child without waiting beyond the native deadline."""
+    try:
+        receiver.close()
+    finally:
+        if process.is_alive():
+            process.terminate()
+        process.join(timeout=0.05)
+        if process.is_alive():
+            process.kill()
+            process.join(timeout=0.05)
+
+
+def _timed_stage_commit_reserve(remaining: float) -> float:
+    """Keep enough absolute time to atomically write an attempt or snapshot."""
+    return min(
+        _TIMED_STAGE_COMMIT_RESERVE_SECONDS,
+        max(_MIN_DEADLINE_CALL_SECONDS, remaining * 0.25),
+    )
+
+
+def _collect_locked_direct_snapshots(
+    config: Settings,
+    rows: list[dict[str, Any]],
+    deadline: float,
+) -> tuple[dict[str, dict[str, Any]], int]:
+    """Collect exact-ID quotes with killable workers and a hard commit reserve.
+
+    Threads cannot be safely cancelled once a provider socket stalls.  This
+    deliberately mirrors the prediction worker process boundary so a stuck
+    direct ID page cannot consume the pre-kickoff ledger-commit window.
+    """
+    if not rows or os.name != "posix":
+        return {}, 0
+    remaining = _deadline_remaining(deadline)
+    reserve = _timed_stage_commit_reserve(remaining)
+    direct_window = min(
+        _TIMED_STAGE_DIRECT_MAX_SECONDS,
+        max(0.0, remaining - reserve),
+    )
+    if direct_window < _MIN_DEADLINE_CALL_SECONDS:
+        return {}, 0
+    context = multiprocessing.get_context("fork")
+    stop_at = time.monotonic() + direct_window
+    queued = iter(rows)
+    active: dict[Any, tuple[Any, dict[str, Any]]] = {}
+    snapshots: dict[str, dict[str, Any]] = {}
+    attempted = 0
+    exhausted = False
+    while active or not exhausted:
+        while (
+            not exhausted
+            and len(active) < min(_tick_workers(), len(rows))
+            and time.monotonic() < stop_at
+        ):
+            try:
+                row = next(queued)
+            except StopIteration:
+                exhausted = True
+                break
+            match_id = str(row.get("id") or "")
+            if not match_id:
+                continue
+            receiver, sender = context.Pipe(duplex=False)
+            child = context.Process(
+                target=_crown_snapshot_process,
+                args=(sender, config, match_id, min(
+                    _TIMED_STAGE_DIRECT_MAX_SECONDS,
+                    max(_MIN_DEADLINE_CALL_SECONDS, stop_at - time.monotonic()),
+                )),
+            )
+            child.start()
+            sender.close()
+            active[receiver] = (child, row)
+            attempted += 1
+        remaining = stop_at - time.monotonic()
+        if remaining <= 0:
+            break
+        if not active:
+            continue
+        for receiver in wait_for_connections(list(active), timeout=min(0.10, remaining)):
+            child, row = active.pop(receiver)
+            try:
+                status, value = receiver.recv()
+            except EOFError:
+                status, value = "error", "worker_exited"
+            finally:
+                _terminate_child(child, receiver)
+            kickoff = parse_time(row.get("kickoff"))
+            if (
+                status == "ok"
+                and isinstance(value, dict)
+                and kickoff is not None
+                and value.get("quote_source") == _CROWN_ID3_SOURCE
+                and _valid_pre_kickoff_bulk_snapshot(value, kickoff)
+                and value.get("prices")
+            ):
+                snapshots[str(row.get("id") or "")] = value
+        for receiver, (child, _row) in list(active.items()):
+            if child.is_alive() or receiver.poll():
+                continue
+            active.pop(receiver)
+            _terminate_child(child, receiver)
+    for receiver, (child, _row) in active.items():
+        _terminate_child(child, receiver)
+    return snapshots, attempted
+
+
+def _collect_same_id_bulk_fallback(
+    config: Settings,
+    deadline: float,
+) -> tuple[dict[str, dict[str, Any]], bool]:
+    """Use the broad board only when its bounded child cannot steal commit time."""
+    if os.name != "posix":
+        return {}, False
+    remaining = _deadline_remaining(deadline)
+    reserve = _timed_stage_commit_reserve(remaining)
+    budget = min(
+        _TIMED_STAGE_DIRECT_MAX_SECONDS,
+        max(0.0, remaining - reserve),
+    )
+    if budget < _MIN_DEADLINE_CALL_SECONDS:
+        return {}, False
+    context = multiprocessing.get_context("fork")
+    receiver, sender = context.Pipe(duplex=False)
+    child = context.Process(
+        target=_crown_bulk_snapshots_process,
+        args=(sender, config, budget),
+    )
+    child.start()
+    sender.close()
+    try:
+        if not receiver.poll(budget):
+            return {}, True
+        status, value = receiver.recv()
+        return (value if status == "ok" and isinstance(value, dict) else {}), True
+    except EOFError:
+        return {}, True
+    finally:
+        _terminate_child(child, receiver)
 
 
 def _run_tick_predictions(
@@ -1446,7 +1626,10 @@ def _commit_stage_predictions(
     """Commit a completed batch while holding the state lock only briefly."""
     if not stage_predictions:
         return [], [], [], len(load_predictions(config))
-    lock_wait = _deadline_remaining(deadline) if deadline is not None else None
+    lock_wait = (
+        min(_TIMED_STAGE_LOCK_WAIT_SECONDS, _deadline_remaining(deadline))
+        if deadline is not None else None
+    )
     with state_lock(config, timeout_seconds=lock_wait) as acquired:
         if not acquired:
             # Another short state writer (normally sweep/settle final merge)
@@ -1660,6 +1843,64 @@ def _journal_timed_stage_attempts(
     return journaled
 
 
+def _expire_lapsed_timed_stage_attempts(config: Settings, now: datetime) -> int:
+    """Close a started journal after kickoff without creating a late stage.
+
+    This is an append-only operational incident marker only.  It never writes
+    a prediction, quote, result, or formal observation after kickoff.
+    """
+    expired = 0
+    with state_lock(config, timeout_seconds=0.5) as acquired:
+        if not acquired:
+            return 0
+        ledger = load_ledger(config)
+        for watch in (ledger.get("watch") or {}).values():
+            if not isinstance(watch, dict):
+                continue
+            kickoff = parse_time(
+                watch.get("kickoff_utc") or watch.get("kickoff_hkt") or watch.get("kickoff")
+            )
+            if kickoff is None or kickoff > now:
+                continue
+            attempts = watch.get("stage_attempts")
+            if not isinstance(attempts, dict):
+                continue
+            jobs = watch.get("stage_jobs") if isinstance(watch.get("stage_jobs"), dict) else {}
+            for stage, attempt in attempts.items():
+                if not isinstance(attempt, dict) or attempt.get("state") != "STARTED":
+                    continue
+                attempt.update({
+                    "state": "EXPIRED",
+                    "updated_at": iso_hkt(now),
+                    "reason": "deadline_exhausted_before_native_stage_commit",
+                })
+                job = jobs.get(stage)
+                if isinstance(job, dict) and job.get("state") == "STARTED":
+                    job.update({
+                        "state": "EXPIRED",
+                        "updated_at": iso_hkt(now),
+                        "reason": "deadline_exhausted_before_native_stage_commit",
+                    })
+                incidents = watch.setdefault("stage_incidents", [])
+                if isinstance(incidents, list) and not any(
+                    isinstance(row, dict)
+                    and row.get("stage") == stage
+                    and row.get("reason") == "deadline_exhausted_before_native_stage_commit"
+                    for row in incidents
+                ):
+                    incidents.append({
+                        "stage": stage,
+                        "kind": "MISSING_PRE_KICKOFF_STAGE",
+                        "reason": "deadline_exhausted_before_native_stage_commit",
+                        "recorded_at": iso_hkt(now),
+                        "started_at": attempt.get("started_at"),
+                    })
+                expired += 1
+        if expired:
+            save_ledger(config, ledger)
+    return expired
+
+
 def _run_local_bulk_timed_stages(
     config: Settings,
     rows: list[dict[str, Any]],
@@ -1674,40 +1915,9 @@ def _run_local_bulk_timed_stages(
     journaled = _journal_timed_stage_attempts(
         config, rows, reason="native_timed_stage_collection_started",
     )
-    titan_client = TitanClient(config)
-    usable_snapshots: dict[str, dict[str, Any]] = {}
-    direct_attempted = 0
-    remaining = _deadline_remaining(deadline)
-    direct_budget = min(8.0, max(0.0, remaining - 3.0))
-    if rows and direct_budget >= _MIN_DEADLINE_CALL_SECONDS:
-        direct_attempted = len(rows)
-        with ThreadPoolExecutor(
-            max_workers=min(_tick_workers(), len(rows)),
-        ) as pool:
-            futures = {
-                pool.submit(
-                    titan_client.crown_price_snapshot,
-                    str(row.get("id") or ""),
-                    max_seconds=direct_budget,
-                ): row
-                for row in rows
-            }
-            for future in as_completed(futures):
-                titan = futures[future]
-                match_id = str(titan.get("id") or "")
-                kickoff = parse_time(titan.get("kickoff"))
-                try:
-                    snapshot = future.result()
-                except (OSError, TimeoutError):
-                    continue
-                if (
-                    kickoff is not None
-                    and snapshot
-                    and snapshot.get("quote_source") == _CROWN_ID3_SOURCE
-                    and _valid_pre_kickoff_bulk_snapshot(snapshot, kickoff)
-                    and snapshot.get("prices")
-                ):
-                    usable_snapshots[match_id] = snapshot
+    usable_snapshots, direct_attempted = _collect_locked_direct_snapshots(
+        config, rows, deadline,
+    )
 
     fallback_rows = [
         row for row in rows
@@ -1715,27 +1925,21 @@ def _run_local_bulk_timed_stages(
     ]
     bulk_fallback_attempted = 0
     if fallback_rows:
-        remaining = _deadline_remaining(deadline)
-        if remaining >= _MIN_DEADLINE_CALL_SECONDS:
+        snapshots, attempted_bulk = _collect_same_id_bulk_fallback(config, deadline)
+        if attempted_bulk:
             bulk_fallback_attempted = len(fallback_rows)
-            try:
-                snapshots = titan_client.crown_bulk_price_snapshots(max_seconds=remaining)
-            except OSError:
-                snapshots = {}
-            if not isinstance(snapshots, dict):
-                snapshots = {}
-            for titan in fallback_rows:
-                match_id = str(titan.get("id") or "")
-                kickoff = parse_time(titan.get("kickoff"))
-                snapshot = snapshots.get(match_id)
-                if (
-                    kickoff is not None
-                    and snapshot
-                    and snapshot.get("quote_source") == _CROWN_BULK_ID3_SOURCE
-                    and _valid_pre_kickoff_bulk_snapshot(snapshot, kickoff)
-                    and snapshot.get("prices")
-                ):
-                    usable_snapshots[match_id] = snapshot
+        for titan in fallback_rows:
+            match_id = str(titan.get("id") or "")
+            kickoff = parse_time(titan.get("kickoff"))
+            snapshot = snapshots.get(match_id)
+            if (
+                kickoff is not None
+                and snapshot
+                and snapshot.get("quote_source") == _CROWN_BULK_ID3_SOURCE
+                and _valid_pre_kickoff_bulk_snapshot(snapshot, kickoff)
+                and snapshot.get("prices")
+            ):
+                usable_snapshots[match_id] = snapshot
 
     stage_predictions: list[dict[str, Any]] = []
     retained = len(load_predictions(config))
@@ -1817,6 +2021,11 @@ def run(
         # state_lock only for its final merge.  Never hold the commit lock
         # while result providers are read: a T-5 commit is deadline-bound.
         return settle_due(config)
+    expired_stage_attempts = 0
+    if mode == "tick":
+        expired_stage_attempts = _expire_lapsed_timed_stage_attempts(
+            config, datetime.now(HKT),
+        )
     ledger = load_ledger(config)
     existing_predictions = load_predictions(config)
     if mode == "tick":
@@ -1845,6 +2054,7 @@ def run(
                 "predictions": 0, "retained_predictions": len(existing_predictions),
                 "simulations_created": 0,
                 "repaired_stage_jobs": repaired_stage_jobs,
+                "expired_stage_attempts": expired_stage_attempts,
             }
         titan_rows = _prioritize_tick_rows(titan_rows)
         if titan_rows:
@@ -1853,7 +2063,9 @@ def run(
             # stage, including a late missing 首預, uses the bounded ID=3 path.
             # T-5 stays first, while no optional reference or counterpart
             # worker can block durable stage evidence.
-            return _run_local_bulk_timed_stages(config, titan_rows, tick_deadline)
+            result = _run_local_bulk_timed_stages(config, titan_rows, tick_deadline)
+            result["expired_stage_attempts"] = expired_stage_attempts
+            return result
         # This is deliberately measured before any provider work.  The
         # systemd 55-second limit remains the final safeguard for an upstream
         # fixture-list call that cannot be interrupted in-process.
