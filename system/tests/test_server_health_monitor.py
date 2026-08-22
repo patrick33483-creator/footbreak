@@ -87,7 +87,7 @@ class ServerHealthMonitorTests(unittest.TestCase):
         ledger = {"watch": {"due": {
             "kickoff": (NOW + timedelta(minutes=30)).isoformat(),
             "discovered_at": (NOW - timedelta(hours=1)).isoformat(),
-            "stages": [{
+            "stages": [{"stage": "首預"}, {
                 "stage": "T-30", "status": "DATA_MISSING",
                 "collection_attempts": [{"reason": "bulk_and_bounded_direct_id3_unavailable"}],
             }],
@@ -104,7 +104,10 @@ class ServerHealthMonitorTests(unittest.TestCase):
                 "one": {
                     "kickoff": (NOW + timedelta(minutes=30)).isoformat(),
                     "discovered_at": (NOW - timedelta(hours=1)).isoformat(),
-                    "stages": [{"stage": "T-30", "ts": NOW.isoformat()}],
+                    "stages": [
+                        {"stage": "首預", "ts": NOW.isoformat()},
+                        {"stage": "T-30", "ts": NOW.isoformat()},
+                    ],
                 },
             },
             "wilson_validation": {

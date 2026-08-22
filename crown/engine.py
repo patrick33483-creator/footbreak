@@ -16,9 +16,12 @@ from .hkjc import event_from_match, fetch_matches, flatten_odds
 from .ledger import (
     PREDICTION_ERA,
     completed_stages,
+    due_stage_jobs,
+    ensure_stage_jobs,
     market_entry_thresholds,
     recompute_stats,
     stage_for,
+    stages_due,
     sync_prediction,
 )
 from .lines import parse_hkjc_total
@@ -48,32 +51,45 @@ def _tick_rows_from_predictions(
 ) -> list[dict[str, Any]]:
     """Select only locally known Crown cards whose timed stage is due."""
     rows: list[dict[str, Any]] = []
-    seen: set[str] = set()
+    seen: set[tuple[str, str]] = set()
+
+    def append_due(identity: dict[str, Any], watch: dict[str, Any]) -> None:
+        match_id = str(identity.get("id") or identity.get("match_id") or "")
+        kickoff = parse_time(identity.get("kickoff") or identity.get("kickoff_hkt"))
+        if not match_id or kickoff is None:
+            return
+        done = completed_stages(watch, MATCHING_VERSION, PREDICTION_ERA)
+        jobs = due_stage_jobs(watch, now)
+        # Existing cards from before the durable-job migration become visible
+        # through the old legal windows once, then the write-ahead path
+        # reconstructs and persists their job records before collection.
+        if not jobs:
+            minutes = (kickoff - now).total_seconds() / 60
+            jobs = [stage for stage in stages_due(minutes, False, done) if stage in {"T-30", "T-5"}]
+        first_due = stages_due(
+            (kickoff - now).total_seconds() / 60, False, done,
+        )
+        if "首預" in first_due:
+            jobs.append("首預")
+        for stage in jobs:
+            key = (match_id, stage)
+            if key in seen:
+                continue
+            rows.append({
+                "id": match_id,
+                "league": identity.get("league") or "",
+                "home": identity.get("home") or "",
+                "away": identity.get("away") or "",
+                "kickoff": kickoff,
+                "_due_stage": stage,
+            })
+            seen.add(key)
+
     for card in predictions:
         match_id = str(card.get("match_id") or "")
-        kickoff = parse_time(card.get("kickoff_hkt") or card.get("kickoff"))
-        if not match_id or match_id in seen or kickoff is None:
+        if not match_id:
             continue
-        minutes = (kickoff - now).total_seconds() / 60
-        done = completed_stages(
-            (ledger.get("watch") or {}).get(match_id, {}),
-            MATCHING_VERSION,
-            PREDICTION_ERA,
-        )
-        stage = stage_for(minutes, False, done)
-        if not stage:
-            continue
-        rows.append({
-            "id": match_id,
-            "league": card.get("league") or "",
-            "home": card.get("home") or "",
-            "away": card.get("away") or "",
-            "kickoff": kickoff,
-            # Local-only scheduling metadata.  It never becomes provider
-            # evidence or a persisted stage field.
-            "_due_stage": stage,
-        })
-        seen.add(match_id)
+        append_due(card, (ledger.get("watch") or {}).get(match_id, {}))
     # The durable watch is authoritative for a scheduled native stage.  A
     # projection/merge delay must not make a known T-30 disappear from the
     # time-critical local queue just because its dashboard card is absent.
@@ -82,23 +98,12 @@ def _tick_rows_from_predictions(
             continue
         match_id = str(watch.get("match_id") or key or "")
         kickoff = parse_time(watch.get("kickoff_hkt") or watch.get("kickoff"))
-        if not match_id or match_id in seen or kickoff is None:
+        if not match_id or kickoff is None:
             continue
-        minutes = (kickoff - now).total_seconds() / 60
-        done = completed_stages(watch, MATCHING_VERSION, PREDICTION_ERA)
-        stage = stage_for(minutes, False, done)
-        if not stage:
-            continue
-        rows.append({
-            "id": match_id,
-            "league": watch.get("league") or "",
-            "home": watch.get("home") or "",
-            "away": watch.get("away") or "",
-            "kickoff": kickoff,
-            "_due_stage": stage,
-        })
-        seen.add(match_id)
-    rows.sort(key=lambda row: row["kickoff"])
+        append_due({"id": match_id, "kickoff": kickoff,
+                    "league": watch.get("league"), "home": watch.get("home"),
+                    "away": watch.get("away")}, watch)
+    rows = _prioritize_tick_rows(rows)
     return rows
 
 
@@ -112,6 +117,34 @@ def _prioritize_tick_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             row.get("kickoff") or datetime.max.replace(tzinfo=HKT),
         ),
     )
+
+
+def _repair_durable_stage_jobs(config: Settings, now: datetime) -> int:
+    """Recreate missing future job metadata without creating a prediction."""
+    repaired = 0
+    with state_lock(config, timeout_seconds=1.0) as acquired:
+        if not acquired:
+            return 0
+        ledger = load_ledger(config)
+        watches = ledger.get("watch")
+        if not isinstance(watches, dict):
+            return 0
+        for watch in watches.values():
+            if not isinstance(watch, dict):
+                continue
+            kickoff = parse_time(
+                watch.get("kickoff_utc") or watch.get("kickoff_hkt") or watch.get("kickoff")
+            )
+            if kickoff is None or kickoff <= now:
+                continue
+            before = watch.get("stage_jobs")
+            before_keys = set(before) if isinstance(before, dict) else set()
+            ensure_stage_jobs(watch, kickoff)
+            if set((watch.get("stage_jobs") or {})) != before_keys:
+                repaired += 1
+        if repaired:
+            save_ledger(config, ledger)
+    return repaired
 
 
 def _tick_pass_deadline_seconds() -> float:
@@ -1517,6 +1550,12 @@ def _local_bulk_stage_prediction(
     })
     prediction.pop("probabilities", None)
     prediction.pop("baseline_low_confidence", None)
+    prediction["collection_attempt"] = {
+        "at": iso_hkt(),
+        "status": "AVAILABLE",
+        "reason": None,
+        "source": str(crown_snapshot.get("quote_source") or _CROWN_BULK_ID3_SOURCE),
+    }
     return prediction
 
 
@@ -1561,6 +1600,63 @@ def _unavailable_timed_stage_prediction(
     }
 
 
+def _journal_timed_stage_attempts(
+    config: Settings, rows: list[dict[str, Any]], *, reason: str,
+) -> int:
+    """Write-ahead journal every due native stage before any collection work.
+
+    The journal is intentionally outside ``stages``: it proves a scheduled
+    attempt and a crash/timeout without pretending an absent quote was a
+    prediction.  A later atomic snapshot commit advances the same keyed record
+    to COMMITTED or FAILED.
+    """
+    journaled = 0
+    now = datetime.now(HKT)
+    with state_lock(config, timeout_seconds=1.0) as acquired:
+        if not acquired:
+            return 0
+        ledger = load_ledger(config)
+        watches = ledger.setdefault("watch", {})
+        for row in rows:
+            stage = str(row.get("_due_stage") or "")
+            match_id = str(row.get("id") or "")
+            kickoff = parse_time(row.get("kickoff"))
+            if stage not in {"首預", "T-30", "T-5"} or not match_id or kickoff is None:
+                continue
+            if kickoff <= now:
+                continue
+            watch = watches.setdefault(match_id, {
+                "match_id": match_id, "league": row.get("league") or "",
+                "home": row.get("home") or "", "away": row.get("away") or "",
+                "kickoff": iso_hkt(kickoff), "titan_match_id": match_id,
+                "matching_version": MATCHING_VERSION,
+                "prediction_era": PREDICTION_ERA, "stages": [],
+                "discovered_at": iso_hkt(),
+            })
+            ensure_stage_jobs(watch, kickoff)
+            attempts = watch.setdefault("stage_attempts", {})
+            if not isinstance(attempts, dict):
+                attempts = {}
+                watch["stage_attempts"] = attempts
+            previous = attempts.get(stage)
+            retry_count = int(previous.get("retry_count") or 0) + 1 if isinstance(previous, dict) else 1
+            attempts[stage] = {
+                "stage": stage, "state": "STARTED", "started_at": iso_hkt(),
+                "reason": reason, "source": "titan007-crown-id-3",
+                "retry_count": retry_count,
+            }
+            job = (watch.get("stage_jobs") or {}).get(stage)
+            if isinstance(job, dict):
+                job.update({
+                    "state": "STARTED", "started_at": iso_hkt(),
+                    "reason": reason, "retry_count": retry_count,
+                })
+            journaled += 1
+        if journaled:
+            save_ledger(config, ledger)
+    return journaled
+
+
 def _run_local_bulk_timed_stages(
     config: Settings,
     rows: list[dict[str, Any]],
@@ -1574,6 +1670,9 @@ def _run_local_bulk_timed_stages(
     gets one durable DATA_MISSING attempt under the same state lock; it stays
     due for repair and is never reconstructed after kickoff.
     """
+    journaled = _journal_timed_stage_attempts(
+        config, rows, reason="native_timed_stage_collection_started",
+    )
     titan_client = TitanClient(config)
     try:
         remaining = _deadline_remaining(deadline)
@@ -1645,21 +1744,22 @@ def _run_local_bulk_timed_stages(
         stage = str(titan.get("_due_stage") or "")
         snapshot = usable_snapshots.get(str(titan.get("id") or ""))
         if snapshot is None:
-            # Keep T-5's established retry semantics unchanged.  T-30 now
-            # persists an explicit native collection attempt so monitor/repair
-            # can distinguish data unavailability from a silently skipped
-            # deadline.
-            if stage == "T-30":
-                stage_predictions.append(_unavailable_timed_stage_prediction(
-                    titan,
-                    stage,
-                    "bulk_and_bounded_direct_id3_unavailable",
-                ))
+            # Every due stage receives an explicit failure snapshot before
+            # kickoff.  This preserves the retryable absence for T-5 as well
+            # as T-30 and prevents a process timeout from looking successful.
+            stage_predictions.append(_unavailable_timed_stage_prediction(
+                titan,
+                stage,
+                "bulk_and_bounded_direct_id3_unavailable",
+            ))
             continue
         stage_predictions.append(
             _local_bulk_stage_prediction(titan, config, snapshot, stage)
         )
-    unavailable = len(rows) - len(stage_predictions)
+    unavailable = sum(
+        str(titan.get("id") or "") not in usable_snapshots
+        for titan in rows
+    )
 
     # The commit helper already rejects a prediction that has crossed kickoff,
     # preserves stage idempotency, and evaluates each T-5 once. One batch
@@ -1690,12 +1790,9 @@ def _run_local_bulk_timed_stages(
         ),
         "pinnapi_fixtures": 0,
         "hkjc_fixtures": 0,
-        "deferred_predictions": sum(
-            row.get("_due_stage") != "T-30"
-            and str(row.get("id") or "") not in usable_snapshots
-            for row in rows
-        ),
+        "deferred_predictions": unavailable,
         "failed_predictions": 0,
+        "write_ahead_attempts": journaled,
     }
 
 
@@ -1737,6 +1834,8 @@ def run(
             if tick_pass_deadline is not None
             else local_provider_deadline
         )
+        repaired_stage_jobs = _repair_durable_stage_jobs(config, datetime.now(HKT))
+        ledger = load_ledger(config)
         titan_rows = _tick_rows_from_predictions(
             existing_predictions, ledger, datetime.now(HKT)
         )
@@ -1745,18 +1844,16 @@ def run(
                 "ok": True, "mode": mode, "fast_noop": True,
                 "predictions": 0, "retained_predictions": len(existing_predictions),
                 "simulations_created": 0,
+                "repaired_stage_jobs": repaired_stage_jobs,
             }
         titan_rows = _prioritize_tick_rows(titan_rows)
-        timed_rows = [
-            row for row in titan_rows
-            if row.get("_due_stage") in {"T-30", "T-5"}
-        ]
-        if timed_rows:
+        if titan_rows:
             # This return is intentionally before PinnAPI credentials, policy
-            # reads, fixture discovery and bridge mapping.  T-5 stays first,
-            # but T-30 receives the same bounded direct-ID=3 path instead of
-            # being starved behind a continuous T-5 queue or slow references.
-            return _run_local_bulk_timed_stages(config, timed_rows, tick_deadline)
+            # reads, fixture discovery and bridge mapping.  Every known native
+            # stage, including a late missing 首預, uses the bounded ID=3 path.
+            # T-5 stays first, while no optional reference or counterpart
+            # worker can block durable stage evidence.
+            return _run_local_bulk_timed_stages(config, titan_rows, tick_deadline)
         # This is deliberately measured before any provider work.  The
         # systemd 55-second limit remains the final safeguard for an upstream
         # fixture-list call that cannot be interrupted in-process.

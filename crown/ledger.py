@@ -21,11 +21,80 @@ from analysis.wilson_validation import (
 )
 
 STAGES = {"首預": 1, "T-30": 2, "T-5": 3}
+SCHEDULED_STAGES = {"T-30": 30, "T-5": 5}
 # This deliberately is not part of ``STAGES``.  It is a post-hoc audit record,
 # never a schedulable or genuine T-5 prediction stage.
 RECOVERED_T5_STAGE = "T-5（事後回補）"
 PREDICTION_ERA = "2026-08-12-hkjc-corner-forecast-v4"
 PREDICTION_SCHEMA_VERSION = 2
+
+
+def ensure_stage_jobs(watch: dict[str, Any], kickoff_value: Any) -> dict[str, dict[str, Any]]:
+    """Materialize durable UTC deadline jobs without fabricating a stage.
+
+    These jobs are scheduler metadata, not predictions.  They may be
+    reconstructed from a known, future fixture after a deploy/restart, but a
+    completed or failed prediction is only ever written by ``sync_prediction``.
+    """
+    kickoff = parse_time(kickoff_value)
+    jobs = watch.get("stage_jobs")
+    if not isinstance(jobs, dict):
+        jobs = {}
+        watch["stage_jobs"] = jobs
+    if kickoff is None:
+        return jobs
+    kickoff_utc = kickoff.astimezone(timezone.utc)
+    watch["kickoff"] = iso_hkt(kickoff)
+    watch["kickoff_hkt"] = iso_hkt(kickoff)
+    watch["kickoff_utc"] = kickoff_utc.isoformat()
+    for stage, minutes_before in SCHEDULED_STAGES.items():
+        due_at = kickoff_utc - timedelta(minutes=minutes_before)
+        existing = jobs.get(stage)
+        if isinstance(existing, dict) and existing.get("due_at_utc") == due_at.isoformat():
+            continue
+        # A changed authoritative kickoff supersedes only an uncommitted
+        # scheduler record.  It never rewrites a persisted stage snapshot.
+        if isinstance(existing, dict) and existing.get("state") == "COMMITTED":
+            continue
+        existing_stage = next((
+            row for row in (watch.get("stages") or [])
+            if isinstance(row, dict) and row.get("stage") == stage
+        ), None)
+        completed = _completed_stage_row(existing_stage)
+        jobs[stage] = {
+            "stage": stage,
+            "due_at_utc": due_at.isoformat(),
+            "due_at_hkt": iso_hkt(due_at),
+            "kickoff_utc": kickoff_utc.isoformat(),
+            "state": "COMMITTED" if completed else "PENDING",
+            "retry_count": int(existing.get("retry_count") or 0) if isinstance(existing, dict) else 0,
+            "reconstructed": not isinstance(existing, dict),
+        }
+    return jobs
+
+
+def due_stage_jobs(
+    watch: dict[str, Any], now: datetime,
+) -> list[str]:
+    """Return pending scheduled jobs whose full legal window is still open."""
+    kickoff = parse_time(watch.get("kickoff_utc") or watch.get("kickoff_hkt") or watch.get("kickoff"))
+    if kickoff is None or now.astimezone(timezone.utc) >= kickoff.astimezone(timezone.utc):
+        return []
+    jobs = watch.get("stage_jobs")
+    if not isinstance(jobs, dict):
+        return []
+    current = now.astimezone(timezone.utc)
+    due: list[str] = []
+    for stage in ("T-30", "T-5"):
+        job = jobs.get(stage)
+        due_at = parse_time(job.get("due_at_utc")) if isinstance(job, dict) else None
+        if (
+            due_at is not None
+            and current >= due_at.astimezone(timezone.utc)
+            and str(job.get("state") or "") != "COMMITTED"
+        ):
+            due.append(stage)
+    return due
 
 
 def completed_stages(
@@ -74,8 +143,19 @@ def completed_stages(
 
 
 def stage_for(minutes_to_kickoff: float, sweep: bool, done: set[str]) -> str | None:
+    due = stages_due(minutes_to_kickoff, sweep, done)
+    return due[0] if due else None
+
+
+def stages_due(minutes_to_kickoff: float, sweep: bool, done: set[str]) -> list[str]:
+    """Return every legitimate native stage that is still due before kickoff.
+
+    A missing first look must be visible, but it must not consume the only
+    T-5 opportunity.  The caller persists each returned stage independently;
+    it never synthesizes a stage after kickoff.
+    """
     if sweep:
-        return "首預" if "首預" not in done else None
+        return ["首預"] if "首預" not in done else []
     # A known card can reach a timed window when a prior board sweep failed,
     # was delayed, or discovered it just after that sweep started.  Do not let
     # a later T-30/T-5 snapshot become the first persisted decision: it makes
@@ -83,17 +163,31 @@ def stage_for(minutes_to_kickoff: float, sweep: bool, done: set[str]) -> str | N
     # it is merely waiting for T-30.  The tick has enough local identity to
     # recover 首預 without another fixture-list request; the next tick can
     # process the still-due timed stage.
-    if (
-        0 < minutes_to_kickoff <= 40
-        and "首預" not in done
-        and "T-5" not in done
-    ):
-        return "首預"
-    if 0 < minutes_to_kickoff <= 10 and "T-5" not in done:
-        return "T-5"
+    output: list[str] = []
+    # Once a fixture is known locally, a missing first-look is still a
+    # legitimate native repair at any point before kickoff.  This intentionally
+    # makes the normal native tick (rather than an optional discovery/counterpart
+    # path) responsible for recording its explicit attempt or snapshot.
+    if 0 < minutes_to_kickoff and "首預" not in done:
+        output.append("首預")
     if 20 <= minutes_to_kickoff <= 40 and "T-30" not in done:
-        return "T-30"
-    return None
+        output.append("T-30")
+    if 0 < minutes_to_kickoff <= 10 and "T-5" not in done:
+        output.append("T-5")
+    return output
+
+
+def _completed_stage_row(row: dict[str, Any] | None) -> bool:
+    """Whether a saved row is a usable native prediction, not an attempt."""
+    if not isinstance(row, dict) or row.get("status") == "DATA_MISSING":
+        return False
+    return (
+        row.get("odds_status") is None
+        or (
+            row.get("odds_status") == "available"
+            and bool(row.get("market_predictions"))
+        )
+    )
 
 
 def _observed_before_kickoff(value: Any, kickoff: Any) -> bool:
@@ -473,8 +567,14 @@ def sync_prediction(ledger: dict[str, Any], prediction: dict[str, Any], config: 
     watch.update({key: prediction.get(key) for key in (
         "league", "home", "away", "kickoff_hkt", "titan_match_id", "pinnapi_event_id", "hkjc_match_id", "matching_version",
     )})
+    # Existing operational watch shells created by a write-ahead attempt or a
+    # prior deployment may contain only ``stages``.  Restore the immutable
+    # fixture identifier before T-5 admission; otherwise a real native T-5
+    # appears anonymous and is silently rejected despite valid quote evidence.
+    watch["match_id"] = match_id
     watch["prediction_era"] = PREDICTION_ERA
     watch["kickoff"] = prediction.get("kickoff_hkt")
+    ensure_stage_jobs(watch, prediction.get("kickoff_hkt"))
     if not watch.get("discovered_at"):
         watch["discovered_at"] = prediction.get("discovered_at") or iso_hkt()
     stage_rows = watch.get("stages")
@@ -485,6 +585,7 @@ def sync_prediction(ledger: dict[str, Any], prediction: dict[str, Any], config: 
         row for row in stage_rows
         if isinstance(row, dict) and row.get("stage") == stage
     ), None)
+    existing_was_completed = _completed_stage_row(existing)
     snapshot = _snapshot(prediction, stage)
     attempt = snapshot.pop("collection_attempt", None)
     if isinstance(attempt, dict):
@@ -512,18 +613,58 @@ def sync_prediction(ledger: dict[str, Any], prediction: dict[str, Any], config: 
             len(STAGES) + 1,
         ))
     else:
-        # A retry may enrich an unavailable native stage, but it is never a new
-        # decision instant.  Keep the original durable stage timestamp so a
-        # counterpart can reject any quote observed after that first T-30/T-5
-        # decision rather than silently treating a retry as a replay.
-        original_ts = existing.get("ts")
+        # A DATA_MISSING row is a write-ahead attempt, not a completed market
+        # decision.  A later legitimate pre-kickoff retry therefore receives
+        # its own immutable completion time and may perform the one native T-5
+        # admission.  A completed stage, by contrast, cannot be repriced or
+        # admitted again.
+        original_ts = existing.get("ts") if existing_was_completed else None
+        if not existing.get("stage_started_at"):
+            existing["stage_started_at"] = existing.get("ts")
         existing.update(snapshot)
         if original_ts:
             existing["ts"] = original_ts
+    stored = next((
+        row for row in stage_rows
+        if isinstance(row, dict) and row.get("stage") == stage
+    ), None)
+    if isinstance(stored, dict):
+        stored.setdefault("stage_started_at", stored.get("ts"))
+        attempts = watch.setdefault("stage_attempts", {})
+        record: dict[str, Any] = {}
+        if isinstance(attempts, dict):
+            prior = attempts.get(stage)
+            record = prior if isinstance(prior, dict) else {}
+            record.update({
+                "stage": stage,
+                "state": "COMMITTED" if _completed_stage_row(stored) else "FAILED",
+                "updated_at": stored.get("ts"),
+                "reason": (
+                    None if _completed_stage_row(stored)
+                    else str((attempt or {}).get("reason") or stored.get("odds_reason")
+                             or stored.get("status") or "native_quote_unavailable")
+                ),
+                "source": (
+                    str((attempt or {}).get("source") or stored.get("crown_quote_source")
+                        or "titan007-crown-id-3")
+                ),
+            })
+            attempts[stage] = record
+        job = (watch.get("stage_jobs") or {}).get(stage)
+        if isinstance(job, dict):
+            job.update({
+                "state": "COMMITTED" if _completed_stage_row(stored) else "FAILED",
+                "updated_at": stored.get("ts"),
+                "reason": None if _completed_stage_row(stored) else record.get("reason"),
+            })
     # Validation admission is singular: only the very first persisted native
     # pre-kickoff T-5 may create a bet.  A later quote refresh can enrich the
     # prediction record but is a replay, never a second admission chance.
-    if stage != "T-5" or existing is not None:
+    if (
+        stage != "T-5"
+        or not _completed_stage_row(stored)
+        or existing_was_completed
+    ):
         challenger_v2.recompute(ledger[challenger_v2.NAMESPACE], ledger)
         return []
     history = read_json(config.state_dir / "prediction_history.json", {})

@@ -8,6 +8,7 @@ from analysis.wilson_validation import (
     admission_arithmetic, condition_signature, freeze_condition, ensure_namespace,
     formal_registry_candidates, match_formal_registry,
 )
+from analysis.wilson_portfolio import _native_match_rows
 
 
 STAGE_AT = "2026-08-21T18:21:23+08:00"
@@ -157,3 +158,71 @@ class FormalObservationRecoveryTest(unittest.TestCase):
         self.assertEqual(match_formal_registry(
             mismatched, registry, system="footbreak",
         ), {})
+
+    def test_frozen_tier_trajectory_is_exact_and_boundary_is_ge_170(self):
+        """A multi-stage price path is formal identity, not an execution gate."""
+        candidate = formal_candidate()
+        candidate["key"] = [
+            "system=footbreak", "market=HIL", "path=首預→T-30→T-5",
+            "decision=T-5", "tier=≥1.70", "tier_path=<1.70→<1.70→≥1.70",
+            "direction=A→A→A", "role=大", "bucket=≤2.5", "movement=不變",
+        ]
+        candidate["path"] = "首預→T-30→T-5"
+        candidate["odds_tier"] = "≥1.70"
+        candidate["odds_trajectory"] = "<1.70→<1.70→≥1.70"
+        signature, definition = condition_signature("footbreak", candidate)
+        ledger = {"bets": []}
+        freeze_condition(ledger, "footbreak", {
+            "signature": signature, "definition": definition,
+            "history": {"hits": 41, "decided": 59, "pushes": 0,
+                        "artifact": candidate["source_artifact"]},
+            "arithmetic": admission_arithmetic(41, 59, 1.50),
+        }, now="2026-08-20T12:00:00+08:00")
+        registry = formal_registry_candidates(ledger, "footbreak")
+        rows = [
+            {
+                "match_id": "tier-path", "stage": stage, "kickoff": KICKOFF,
+                "predicted_at": f"2026-08-21T{clock}:00+08:00",
+                "market_predictions": [{
+                    "code": "HIL", "side": "H", "line": 2.5, "odds": odds,
+                    "quote_source": "native", "observed_at":
+                    f"2026-08-21T{clock}:00+08:00",
+                }],
+            }
+            for stage, clock, odds in (
+                ("首預", "16:00", 1.69), ("T-30", "18:00", 1.60),
+                ("T-5", "18:21", 1.70),
+            )
+        ]
+        self.assertIn("tier-path", match_formal_registry(rows, registry, system="footbreak"))
+        changed = copy.deepcopy(rows)
+        changed[1]["market_predictions"][0]["odds"] = 1.70
+        self.assertEqual(match_formal_registry(changed, registry, system="footbreak"), {})
+        changed = copy.deepcopy(rows)
+        changed[2]["market_predictions"][0]["odds"] = 1.69
+        self.assertEqual(match_formal_registry(changed, registry, system="footbreak"), {})
+
+    def test_crown_native_match_rows_fail_closed_when_any_stage_quote_lacks_provenance(self):
+        watch = {
+            "match_id": "native-path", "kickoff": KICKOFF,
+            "stages": [
+                {
+                    "stage": stage, "ts": f"2026-08-21T{clock}:00+08:00",
+                    "status": "PREDICTION_READY",
+                    "market_predictions": [{
+                        "code": "HIL", "side": "H", "line": 2.5, "odds": odds,
+                        "quote_source": "titan007-crown-id-3",
+                        "observed_at": f"2026-08-21T{clock}:00+08:00",
+                    }],
+                }
+                for stage, clock, odds in (
+                    ("首預", "16:00", 1.69), ("T-30", "18:00", 1.60),
+                    ("T-5", "18:21", 1.70),
+                )
+            ],
+        }
+        rows = _native_match_rows(watch, __import__("crown.common", fromlist=["parse_time"]).parse_time)
+        self.assertEqual([row["stage"] for row in rows], ["首預", "T-30", "T-5"])
+        watch["stages"][1]["market_predictions"][0].pop("observed_at")
+        rows = _native_match_rows(watch, __import__("crown.common", fromlist=["parse_time"]).parse_time)
+        self.assertEqual([row["stage"] for row in rows], ["首預", "T-5"])

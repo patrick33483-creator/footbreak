@@ -760,16 +760,20 @@ def match_formal_registry(
     rows: Iterable[dict[str, Any]], registry: Iterable[dict[str, Any]], *, system: str,
     decision_stage: str = DECISION_STAGE,
 ) -> dict[str, list[dict[str, Any]]]:
-    """Match immutable formal axes while deliberately excluding quote-price axes.
+    """Match the complete immutable formal identity, including price path.
 
-    ``tier``/``tier_path`` describe the observed quote price and are useful
-    historical research labels, but cannot decide whether a formal condition
-    observation exists: the native current price is evaluated afterwards by
-    the Wilson execution gate.  Every other frozen structural axis is exact.
+    ``tier`` and (for multi-stage conditions) ``tier_path`` are contemporaneous
+    native-observation axes frozen with the condition definition.  They are
+    unrelated to the later Wilson minimum-price execution gate: a formal
+    match still records an observation when its current execution price is
+    too low.
     """
     from .granular_conditions import _descriptor, _paths, canonical_panels
 
-    required = {"system", "market", "path", "decision", "direction", "role", "bucket"}
+    required = {
+        "system", "market", "path", "decision", "direction", "role", "bucket",
+        "tier",
+    }
 
     def axes(candidate: dict[str, Any]) -> dict[str, str] | None:
         result: dict[str, str] = {}
@@ -791,6 +795,17 @@ def match_formal_registry(
             return None
         if result["decision"] != decision_stage or result["path"].split("→")[-1] != decision_stage:
             return None
+        stages = result["path"].split("→")
+        tier_path = result.get("tier_path")
+        if len(stages) > 1:
+            if not tier_path or len(tier_path.split("→")) != len(stages):
+                return None
+            if tier_path.split("→")[-1] != result["tier"]:
+                return None
+        elif tier_path:
+            # A single-stage condition cannot be widened by a synthetic
+            # trajectory field; it is malformed immutable state.
+            return None
         return result
 
     candidates = [
@@ -809,11 +824,7 @@ def match_formal_registry(
                 descriptor, _label, _specificity = _descriptor(system, path, level)
                 live = dict(piece.split("=", 1) for piece in descriptor)
                 for candidate, frozen_axes in candidates:
-                    if all(
-                        live.get(axis) == value
-                        for axis, value in frozen_axes.items()
-                        if axis not in {"tier", "tier_path"}
-                    ):
+                    if all(live.get(axis) == value for axis, value in frozen_axes.items()):
                         matches.append(candidate | {
                             "selected_side": path[-1]["side"],
                             "selected_line": path[-1]["selected_line"],

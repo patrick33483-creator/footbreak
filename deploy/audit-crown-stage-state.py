@@ -9,7 +9,7 @@ import json
 import os
 import re
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -18,14 +18,14 @@ if str(APP_DIR) not in sys.path:
     sys.path.insert(0, str(APP_DIR))
 
 from crown.common import HKT, parse_time  # noqa: E402
-from crown.ledger import PREDICTION_ERA, completed_stages, stage_for  # noqa: E402
+from crown.ledger import PREDICTION_ERA, completed_stages, stage_for, stages_due  # noqa: E402
 from crown.matching import MATCHING_VERSION  # noqa: E402
 
 
 ALLOWED_WINDOWS = {6, 12, 24}
 ALLOWED_GRACE_MINUTES = {15, 30, 60}
 ALLOWED_LIMITS = {25, 50, 100}
-STAGE_FIELDS = ("stage", "status", "ts", "no_bet_reason")
+STAGE_FIELDS = ("stage", "status", "ts", "no_bet_reason", "odds_status", "odds_reason")
 
 
 def _load(path: Path, default: Any) -> tuple[Any, str | None]:
@@ -86,9 +86,56 @@ def _stage_rows(watch: dict[str, Any]) -> list[dict[str, Any]]:
         row = {key: _text(source.get(key)) for key in STAGE_FIELDS}
         row["ts"] = _safe_timestamp(source.get("ts"))
         row["no_bet_reason"] = _reason(source.get("no_bet_reason"))
+        row["odds_reason"] = _reason(source.get("odds_reason"))
         rows.append(row)
     order = {"首預": 1, "T-30": 2, "T-5": 3}
     return sorted(rows, key=lambda row: order[row["stage"]])
+
+
+def _stage_attempts(watch: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    source = watch.get("stage_attempts")
+    if not isinstance(source, dict):
+        return {}
+    output: dict[str, dict[str, Any]] = {}
+    for stage in ("首預", "T-30", "T-5"):
+        attempt = source.get(stage)
+        if not isinstance(attempt, dict):
+            continue
+        output[stage] = {
+            "state": _text(attempt.get("state")),
+            "retry_count": attempt.get("retry_count") if isinstance(attempt.get("retry_count"), int) else None,
+            "started_at": _safe_timestamp(attempt.get("started_at")),
+            "updated_at": _safe_timestamp(attempt.get("updated_at")),
+            "reason": _reason(attempt.get("reason")),
+        }
+    return output
+
+
+def _stage_jobs(watch: dict[str, Any], now: datetime) -> dict[str, dict[str, Any]]:
+    source = watch.get("stage_jobs")
+    if not isinstance(source, dict):
+        return {}
+    kickoff = parse_time(watch.get("kickoff_utc") or watch.get("kickoff_hkt") or watch.get("kickoff"))
+    output: dict[str, dict[str, Any]] = {}
+    for stage in ("T-30", "T-5"):
+        job = source.get(stage)
+        if not isinstance(job, dict):
+            continue
+        due_at = parse_time(job.get("due_at_utc"))
+        output[stage] = {
+            "state": _text(job.get("state")),
+            "due_at_utc": due_at.astimezone(timezone.utc).isoformat() if due_at else None,
+            "due_at_hkt": due_at.astimezone(HKT).isoformat() if due_at else None,
+            "due_now_pre_kickoff": bool(
+                due_at is not None
+                and due_at <= now
+                and kickoff is not None
+                and now < kickoff
+            ),
+            "retry_count": job.get("retry_count") if isinstance(job.get("retry_count"), int) else None,
+            "reason": _reason(job.get("reason")),
+        }
+    return output
 
 
 def _merged_fixtures(
@@ -122,6 +169,7 @@ def _report_fixture(
     kickoff = kickoff.astimezone(HKT)
     stages = _stage_rows(watch)
     done = completed_stages(watch, MATCHING_VERSION, PREDICTION_ERA)
+    minutes_to_kickoff = (kickoff - now).total_seconds() / 60
     first = next((row for row in stages if row["stage"] == "首預"), None)
     observed_at = _first_timestamp(
         watch.get("discovered_at"),
@@ -162,6 +210,8 @@ def _report_fixture(
         },
         "completed_stages": [stage for stage in ("首預", "T-30", "T-5") if stage in done],
         "stage_status": stages,
+        "stage_attempts": _stage_attempts(watch),
+        "stage_jobs": _stage_jobs(watch, now),
         "latest_status": _text(card.get("status")),
         "latest_reason": _reason(card.get("no_bet_reason")),
         "first_look": {
@@ -173,8 +223,9 @@ def _report_fixture(
             "reason": first_reason,
         },
         "scheduler": {
-            "minutes_to_kickoff": round((kickoff - now).total_seconds() / 60, 1),
-            "next_due_stage": stage_for((kickoff - now).total_seconds() / 60, False, done),
+            "minutes_to_kickoff": round(minutes_to_kickoff, 1),
+            "next_due_stage": stage_for(minutes_to_kickoff, False, done),
+            "next_due_stages": stages_due(minutes_to_kickoff, False, done),
         },
     }
 

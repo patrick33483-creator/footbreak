@@ -25,6 +25,7 @@ def historical_row(
     hit: bool = True,
     side: str = "H",
     line: float = -0.25,
+    odds: float = 1.82,
     kickoff: datetime | None = None,
 ) -> dict:
     kickoff = kickoff or datetime(2026, 1, 1, 20, tzinfo=HKT)
@@ -36,7 +37,7 @@ def historical_row(
         "kickoff": kickoff.isoformat(),
         "predicted_at": (kickoff - timedelta(minutes=5)).isoformat(),
         "market_grades": [{
-            "code": code, "side": side, "line": line, "odds": 1.82,
+            "code": code, "side": side, "line": line, "odds": odds,
             "grade_status": "GRADED", "hit": hit,
         }],
     }
@@ -112,7 +113,7 @@ class ConditionPortfolioTests(unittest.TestCase):
     def test_frozen_registry_admits_native_low_odds_without_live_research_card(self) -> None:
         """A frozen formal condition survives an empty/re-ranked research list."""
         rows = [
-            historical_row(f"registry-{i}", "HDC", hit=i < 50,
+            historical_row(f"registry-{i}", "HDC", hit=i < 50, odds=1.50,
                            kickoff=datetime(2026, 3, 1, 20, tzinfo=HKT) + timedelta(days=i))
             for i in range(59)
         ]

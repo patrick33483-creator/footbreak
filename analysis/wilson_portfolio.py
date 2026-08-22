@@ -79,6 +79,49 @@ def _native_t5(watch: dict[str, Any], stage: dict[str, Any], parse_time: Callabl
     return saved is not None and kickoff is not None and saved < kickoff
 
 
+def _native_match_rows(
+    watch: dict[str, Any], parse_time: Callable[[Any], datetime | None],
+) -> list[dict[str, Any]]:
+    """Return only immutable, pre-kickoff native market evidence by stage.
+
+    The formal matcher needs the actual 首預→T-30→T-5 sequence, not a mutable
+    current card or a later quote refresh.  Missing source/time evidence is
+    omitted so a fine-grained frozen price trajectory fails closed.
+    """
+    kickoff = watch.get("kickoff") or watch.get("kickoff_hkt")
+    fixture = str(watch.get("match_id") or "")
+    kickoff_at = _parse(kickoff, parse_time)
+    if not fixture or kickoff_at is None:
+        return []
+    result: list[dict[str, Any]] = []
+    for stage_name in ("首預", "T-30", "T-5"):
+        snapshots = [
+            row for row in watch.get("stages") or []
+            if isinstance(row, dict) and row.get("stage") == stage_name
+        ]
+        if len(snapshots) != 1:
+            continue
+        stage = snapshots[0]
+        saved = _parse(stage.get("ts") or stage.get("source_snapshot_at"), parse_time)
+        if saved is None or saved >= kickoff_at or stage.get("status") == "DATA_MISSING":
+            continue
+        selections = []
+        for market in MARKETS:
+            selected, _reason = _selected(
+                stage, market, parse_time, fixture_kickoff=kickoff,
+            )
+            if selected is not None:
+                selections.append(dict(selected))
+        if not selections:
+            continue
+        result.append({
+            "match_id": fixture, "stage": stage_name, "kickoff": kickoff,
+            "predicted_at": str(stage.get("ts") or stage.get("source_snapshot_at")),
+            "market_predictions": selections,
+        })
+    return result
+
+
 def _audit_selection(market: str, row: dict[str, Any]) -> tuple[str | None, float | None, str]:
     side = str(row.get("side") or "").upper()
     line = _finite(row.get("line", row.get("condition")))
@@ -120,10 +163,10 @@ def evaluate(
             "no_frozen_historical_condition"
             if ranking is not None else "formal_condition_registry_unavailable"
         )
-    # The matcher derives the exact current native side/line from this saved
-    # T-5.  The condition identity remains the registry's original key.
-    current_rows = [{"match_id": fixture, "stage": current.get("stage"), "kickoff": watch.get("kickoff") or watch.get("kickoff_hkt"),
-                     "predicted_at": stage_at, "market_predictions": current.get("market_predictions") or []}]
+    # Match all persisted native stages.  A frozen multi-stage tier trajectory
+    # must be proven by its own pre-kickoff source timestamp at every stage;
+    # only the Wilson execution decision reads the terminal selected price.
+    current_rows = _native_match_rows(watch, parse_time)
     matched = match_formal_registry(
         current_rows, formal_candidates, system=system, decision_stage=DECISION_STAGE,
     ).get(fixture, [])

@@ -22,16 +22,19 @@ from pathlib import Path
 from unittest.mock import MagicMock, Mock, patch
 
 from crown.config import settings
-from crown.common import parse_time
+from crown.common import HKT, parse_time
 from crown.dashboard_data import build, write_dashboard_data, write_tick_dashboard_projection
 from crown.engine import _cached_t5_crown_snapshot, _candidates, _crown_market_forecasts, _fixture_baseline_prediction, _fresh, _hkjc_chl_candidates, _hkjc_chl_forecasts, _prediction, _prioritize_tick_rows, _refresh_crown_quote, _skip_new_confirmed_empty_crown, _sweep_rows_with_due_existing, _tick_rows_from_predictions, _wdl_prediction, run
 from crown.hkjc import fetch_official_results, fetch_official_settlement_bundle
 from crown.ledger import (
     PREDICTION_ERA,
     completed_stages,
+    due_stage_jobs,
+    ensure_stage_jobs,
     market_entry_thresholds,
     recompute_stats,
     stage_for,
+    stages_due,
     sync_prediction,
 )
 from crown.lines import parse_hkjc_handicap, parse_hkjc_total, settle_handicap, settle_total
@@ -1324,12 +1327,16 @@ class CrownSafetyTests(unittest.TestCase):
         self.assertEqual(stage_for(30, False, set()), "首預")
         self.assertEqual(stage_for(30, False, {"首預"}), "T-30")
         self.assertEqual(stage_for(30, False, {"T-30"}), "首預")
-        self.assertIsNone(stage_for(120, False, set()))
+        self.assertEqual(stage_for(120, False, set()), "首預")
         self.assertEqual(stage_for(5, False, set()), "首預")
         self.assertEqual(stage_for(5, False, {"首預"}), "T-5")
         self.assertEqual(stage_for(0.1, False, {"首預"}), "T-5")
         self.assertIsNone(stage_for(0, False, set()))
         self.assertIsNone(stage_for(-0.1, False, set()))
+        self.assertEqual(
+            stages_due(5, False, set()),
+            ["首預", "T-5"],
+        )
         with tempfile.TemporaryDirectory() as directory:
             config = replace(settings(), state_dir=Path(directory), telegram_enabled=False)
             ledger = {"bankroll": 50000, "bets": [], "watch": {}, "log": [], "stats": {}}
@@ -1407,8 +1414,8 @@ class CrownSafetyTests(unittest.TestCase):
         }
         self.assertEqual(completed_stages(priced, "same"), {"首預"})
 
-    def test_t5_quote_refresh_updates_one_stage_but_cannot_create_a_bet(self) -> None:
-        """Only the first persisted T-5 may admit an independent validation bet."""
+    def test_t5_failure_then_quote_commit_admits_once_without_a_bet(self) -> None:
+        """A failed attempt does not consume the sole genuine T-5 admission."""
         with tempfile.TemporaryDirectory() as directory:
             config = replace(settings(), state_dir=Path(directory), telegram_enabled=False)
             kickoff = (self.now + timedelta(minutes=5)).isoformat()
@@ -1431,7 +1438,7 @@ class CrownSafetyTests(unittest.TestCase):
             }
             with patch("crown.ledger.evaluate_new_t5", return_value=([], [])) as evaluate:
                 self.assertEqual(sync_prediction(ledger, priced, config), [])
-            self.assertEqual(evaluate.call_count, 0)
+            self.assertEqual(evaluate.call_count, 1)
             self.assertEqual(len(ledger["watch"]["retry-t5"]["stages"]), 1)
             self.assertEqual(
                 ledger["watch"]["retry-t5"]["stages"][0]["odds_status"], "available"
@@ -1439,6 +1446,42 @@ class CrownSafetyTests(unittest.TestCase):
             self.assertEqual(
                 completed_stages(ledger["watch"]["retry-t5"], "same"), {"T-5"}
             )
+
+    def test_t5_failure_then_pre_kickoff_success_is_one_admission_not_a_replay(self) -> None:
+        """A failure journal cannot consume the sole genuine T-5 admission."""
+        with tempfile.TemporaryDirectory() as directory:
+            config = replace(settings(), state_dir=Path(directory), telegram_enabled=False)
+            kickoff = (self.now + timedelta(minutes=5)).isoformat()
+            ledger = {"bankroll": 50000, "bets": [], "watch": {}, "log": [], "stats": {}}
+            missing = {
+                "match_id": "retry-admission", "league": "L", "home": "A", "away": "B",
+                "kickoff_hkt": kickoff, "stage": "T-5", "status": "DATA_MISSING",
+                "forecast_candidates": [], "collection_attempt": {
+                    "status": "DATA_MISSING", "reason": "timeout", "source": "native",
+                },
+            }
+            with patch("crown.ledger.evaluate_new_t5", return_value=([], [])) as evaluate:
+                sync_prediction(ledger, missing, config)
+                self.assertEqual(evaluate.call_count, 0)
+                priced = missing | {
+                    "status": "PREDICTION_READY",
+                    "forecast_candidates": [{
+                        "code": "HIL", "market": "入球大細", "line": 2.5,
+                        "condition": "2.5", "side": "H", "odds": 1.50,
+                        "observed_at": self.now.timestamp(),
+                        "source": "titan007-crown-id-3", "prob": .6,
+                    }],
+                    "collection_attempt": {
+                        "status": "AVAILABLE", "reason": None,
+                        "source": "titan007-crown-id-3",
+                    },
+                }
+                sync_prediction(ledger, priced, config)
+                sync_prediction(ledger, priced, config)
+            self.assertEqual(evaluate.call_count, 1)
+            watch = ledger["watch"]["retry-admission"]
+            self.assertEqual(watch["stage_attempts"]["T-5"]["state"], "COMMITTED")
+            self.assertEqual(len(watch["stages"]), 1)
 
     def test_settlement_merge_preserves_concurrent_t5_commit(self) -> None:
         """Slow settlement must never write an old ledger over a new T-5."""
@@ -1626,10 +1669,44 @@ class CrownSafetyTests(unittest.TestCase):
             {"match_id": "done", "league": "L", "home": "E", "away": "F",
              "kickoff_hkt": (self.now + timedelta(minutes=5)).isoformat()},
         ]
-        ledger = {"watch": {"done": {"matching_version": "current",
-                                     "stages": [{"stage": "T-5"}]}}}
+        ledger = {"watch": {"done": {
+            "matching_version": MATCHING_VERSION,
+            "prediction_era": PREDICTION_ERA,
+            "stages": [{"stage": "T-5"}],
+        }}}
         rows = _tick_rows_from_predictions(predictions, ledger, self.now)
-        self.assertEqual([row["id"] for row in rows], ["t5"])
+        self.assertEqual(
+            [(row["id"], row["_due_stage"]) for row in rows],
+            [
+                ("t5", "T-5"), ("t5", "首預"),
+                ("done", "首預"), ("later", "首預"),
+            ],
+        )
+
+    def test_durable_utc_stage_jobs_survive_restart_and_never_run_post_kickoff(self) -> None:
+        """A 10:00 HKT fixture owns absolute T-30/T-5 jobs, not UI minutes."""
+        kickoff = datetime(2026, 8, 23, 10, 0, tzinfo=HKT)
+        watch = {"match_id": "utc-job", "stages": []}
+        jobs = ensure_stage_jobs(watch, kickoff.isoformat())
+        self.assertEqual(watch["kickoff_hkt"], "2026-08-23T10:00:00+08:00")
+        self.assertEqual(watch["kickoff_utc"], "2026-08-23T02:00:00+00:00")
+        self.assertEqual(jobs["T-30"]["due_at_utc"], "2026-08-23T01:30:00+00:00")
+        self.assertEqual(jobs["T-5"]["due_at_hkt"], "2026-08-23T09:55:00+08:00")
+        self.assertEqual(due_stage_jobs(watch, datetime(2026, 8, 23, 9, 31, tzinfo=HKT)), ["T-30"])
+        # Reconstructing a missing job map after restart creates only scheduler
+        # records; it cannot synthesize a stage prediction.
+        restarted = {"match_id": "utc-job", "stages": []}
+        ensure_stage_jobs(restarted, kickoff.isoformat())
+        self.assertEqual(restarted["stages"], [])
+        restarted["stage_jobs"]["T-30"]["state"] = "COMMITTED"
+        self.assertEqual(
+            due_stage_jobs(restarted, datetime(2026, 8, 23, 9, 56, tzinfo=HKT)),
+            ["T-5"],
+        )
+        self.assertEqual(
+            due_stage_jobs(restarted, datetime(2026, 8, 23, 10, 0, tzinfo=HKT)),
+            [],
+        )
 
     def test_timed_stages_stay_ahead_of_first_look_without_starving_t30(self) -> None:
         rows = [
@@ -1732,17 +1809,29 @@ class CrownSafetyTests(unittest.TestCase):
                  patch("crown.engine._prediction", new=_runtime_batch_prediction):
                 first = run("tick", config)
             self.assertLess(time.monotonic() - started, 2.5)
-            self.assertEqual(first["predictions"], 2)
+            self.assertEqual(first["predictions"], 3)
             self.assertEqual(first["deferred_predictions"], 1)
             first_ledger = load_ledger(config)
             self.assertEqual(
                 {match_id for match_id, row in first_ledger["watch"].items()
                  if any(stage.get("stage") == "T-5" for stage in row["stages"])},
-                {"same-kickoff", "next-kickoff"},
+                {"hung", "same-kickoff", "next-kickoff"},
+            )
+            self.assertEqual(
+                next(
+                    stage["status"] for stage in first_ledger["watch"]["hung"]["stages"]
+                    if stage.get("stage") == "T-5"
+                ),
+                "DATA_MISSING",
+            )
+            self.assertEqual(
+                first_ledger["watch"]["hung"]["stage_attempts"]["T-5"]["state"],
+                "FAILED",
             )
 
-            # The deferred fixture has no stage at all, so the ordinary next
-            # minute scheduler retries it as T-5 rather than relabelling it.
+            # The deferred fixture has an explicit failure stage, so the
+            # ordinary next minute scheduler retries it as T-5 rather than
+            # hiding the loss or relabelling it.
             titan_client.crown_bulk_price_snapshots.return_value = {
                 "hung": bulk_snapshot("hung"),
             }
@@ -2063,7 +2152,10 @@ class CrownSafetyTests(unittest.TestCase):
             commit.assert_called_once()
             self.assertEqual(len(commit.call_args.args[2]), 2)
             recompute.assert_called_once()
-            save.assert_called_once()
+            # A write-ahead attempt is intentionally persisted before the
+            # atomic native snapshot commit, so a timeout can never look like
+            # a successful-but-missing T-5.
+            self.assertEqual(save.call_count, 2)
 
             self.assertTrue(result["fast_t5_bulk"])
             self.assertEqual(result["predictions"], 2)
@@ -2092,6 +2184,10 @@ class CrownSafetyTests(unittest.TestCase):
                     [stage["stage"] for stage in load_ledger(config)["watch"][match_id]["stages"]]
                     .count("T-5"),
                     1,
+                )
+                self.assertEqual(
+                    load_ledger(config)["watch"][match_id]["stage_attempts"]["T-5"]["state"],
+                    "COMMITTED",
                 )
 
     def test_fast_t5_tolerates_legacy_watch_row_without_stage_key(self) -> None:

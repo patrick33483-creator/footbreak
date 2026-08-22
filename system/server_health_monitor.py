@@ -38,7 +38,7 @@ REPAIR_WINDOW_SECONDS = 6 * 60 * 60
 REPAIR_TICK_TIMEOUT_SECONDS = 60
 REPAIR_AUDIT_LIMIT = 128
 SYSTEMS = ("footbreak", "crown")
-EXPECTED_STAGES = ("T-30", "T-5")
+EXPECTED_STAGES = ("首預", "T-30", "T-5")
 
 
 @dataclass(frozen=True)
@@ -304,7 +304,9 @@ def _expected_stage_missing(
         return False
     # Every native stage has a bounded due interval.  Evaluate work due during
     # this monitor period, not merely the instant the timer happened to run.
-    if stage == "T-30":
+    if stage == "首預":
+        due_start, due_end = _watch_known_at(watch, window_start), kickoff
+    elif stage == "T-30":
         due_start, due_end = kickoff - timedelta(minutes=40), kickoff - timedelta(minutes=20)
     else:
         due_start, due_end = kickoff - timedelta(minutes=10), kickoff
@@ -640,7 +642,9 @@ def _due_unfinished_stage(system: str, ledger: dict[str, Any], now: datetime) ->
                 for row in stages
             )
 
-        if (0.0 < minutes <= 10.5 and not complete("T-5")) or (
+        if (0.0 < minutes and not complete("首預")) or (
+            0.0 < minutes <= 10.5 and not complete("T-5")
+        ) or (
             20.0 <= minutes <= 40.5 and not complete("T-30")
         ):
             return True
