@@ -26,6 +26,9 @@ ALLOWED_WINDOWS = {6, 12, 24}
 ALLOWED_GRACE_MINUTES = {15, 30, 60}
 ALLOWED_LIMITS = {25, 50, 100}
 STAGE_FIELDS = ("stage", "status", "ts", "no_bet_reason", "odds_status", "odds_reason")
+SNAPSHOT_PREDICTION_FIELDS = (
+    "status", "verdict", "pick", "lead_view", "forecast", "prediction_source",
+)
 
 
 def _load(path: Path, default: Any) -> tuple[Any, str | None]:
@@ -90,6 +93,82 @@ def _stage_rows(watch: dict[str, Any]) -> list[dict[str, Any]]:
         rows.append(row)
     order = {"首預": 1, "T-30": 2, "T-5": 3}
     return sorted(rows, key=lambda row: order[row["stage"]])
+
+
+def _number(value: Any) -> float | int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return value
+    try:
+        return float(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _binding_key(value: Any) -> str | None:
+    """Correlate native fixture identity without emitting raw provider IDs."""
+    text = _text(value)
+    if text is None:
+        return None
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+
+def _snapshot_rows(
+    watch: dict[str, Any],
+    match_id: str,
+) -> dict[str, dict[str, Any]]:
+    """Emit compact immutable native stage evidence; never raw board payloads."""
+    snapshots: dict[str, dict[str, Any]] = {}
+    watch_native = _binding_key(
+        watch.get("native_fixture_id") or watch.get("titan_match_id") or match_id
+    )
+    for source in watch.get("stages") or []:
+        if not isinstance(source, dict):
+            continue
+        stage = _text(source.get("stage"))
+        if stage not in {"首預", "T-30", "T-5"}:
+            continue
+        candidates = []
+        for row in source.get("market_predictions") or []:
+            if not isinstance(row, dict):
+                continue
+            candidates.append({
+                "prediction": _text(
+                    row.get("prediction") or row.get("pick") or row.get("verdict")
+                ),
+                "market": _text(row.get("code") or row.get("market")),
+                "side": _text(row.get("side") or row.get("selection")),
+                "line": _number(row.get("line")),
+                "odds": _number(row.get("odds")),
+                "source": _text(row.get("quote_source") or row.get("source")),
+                "observed_at": _safe_timestamp(
+                    row.get("observed_at") or row.get("source_at")
+                ),
+            })
+        raw_snapshot_native = (
+            source.get("native_fixture_id")
+            or source.get("titan_match_id")
+            or source.get("match_id")
+        )
+        snapshot_native = _binding_key(raw_snapshot_native)
+        snapshots[stage] = {
+            "status": _text(source.get("status")),
+            "ts": _safe_timestamp(source.get("ts")),
+            "prediction": {
+                key: _text(source.get(key))
+                for key in SNAPSHOT_PREDICTION_FIELDS
+                if _text(source.get(key)) is not None
+            },
+            "odds_status": _text(source.get("odds_status")),
+            "odds_reason": _reason(source.get("odds_reason")),
+            "native_fixture_key": snapshot_native,
+            "same_watch_native_fixture": (
+                snapshot_native is not None and snapshot_native == watch_native
+            ),
+            "selected_markets": candidates[:24],
+        }
+    return snapshots
 
 
 def _stage_attempts(watch: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -210,6 +289,10 @@ def _report_fixture(
         },
         "completed_stages": [stage for stage in ("首預", "T-30", "T-5") if stage in done],
         "stage_status": stages,
+        "native_fixture_key": _binding_key(
+            watch.get("native_fixture_id") or watch.get("titan_match_id") or match_id
+        ),
+        "immutable_snapshots": _snapshot_rows(watch, match_id),
         "stage_attempts": _stage_attempts(watch),
         "stage_jobs": _stage_jobs(watch, now),
         "latest_status": _text(card.get("status")),
