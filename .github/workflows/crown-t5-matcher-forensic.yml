@@ -99,6 +99,30 @@ jobs:
           report = json.loads(Path('crown-t5-matcher-forensic.json').read_text(encoding='utf-8'))
           summary = report.get('summary', {})
           registry = report.get('registry', {})
+          integrity = report.get('formal_integrity', {})
+          # Keep the end-to-end evidence-chain decision ahead of verbose
+          # per-fixture rows so the public check remains legible even where
+          # GitHub truncates large check summaries.
+          phase2 = {
+              'server_sha': integrity.get('server_sha'),
+              'registry': integrity.get('registry'),
+              'formal_row_inventory': integrity.get('formal_row_inventory'),
+              'integrity': integrity.get('integrity'),
+              'conditions': [{
+                  key: condition.get(key)
+                  for key in (
+                      'condition_number', 'signature_prefix',
+                      'frozen_active', 'active_evidence_version',
+                      'active_evidence_hash_prefix', 'chain_valid',
+                      'chain_failures', 'admitted_formal_rows',
+                      'settlement_lifecycle', 'eligible_progress',
+                      'eligible_excluded', 'stored_pending_rollover_progress',
+                      'stored_rollover_audit_count',
+                  )
+              } for condition in integrity.get('conditions', [])
+                 if isinstance(condition, dict)],
+              'timers': integrity.get('timers'),
+          }
           # The full artifact retains internal fixture identifiers.  Publish
           # only the bounded immutable admission evidence requested for
           # operations: names, native signal fields, frozen axes and formal
@@ -124,7 +148,8 @@ jobs:
               })
           body = json.dumps({
               'mode': report.get('mode'), 'since': report.get('since'),
-              'registry': registry, 'summary': summary, 'records': records,
+              'registry': registry, 'summary': summary,
+              'phase2_integrity': phase2, 'records': records,
               'structural_matcher_rejections': report.get('structural_matcher_rejections', []),
               'formal_integrity': report.get('formal_integrity', {}),
           }, ensure_ascii=False, indent=2)
