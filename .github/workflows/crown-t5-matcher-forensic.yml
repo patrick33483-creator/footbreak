@@ -45,7 +45,7 @@ jobs:
           # ref.  The imports remain the deployed production code; this
           # never installs or changes it.
           printf -v remote_command \
-            "sudo env SINCE=%q bash -c 'set -a; [ ! -r /etc/footbreak.env ] || . /etc/footbreak.env; [ ! -r /etc/footbreak-crown.env ] || . /etc/footbreak-crown.env; set +a; exec env PYTHONPATH=/opt/footbreak /opt/footbreak/.venv/bin/python3 -'" \
+            "sudo env SINCE=%q bash -c 'set -a; [ ! -r /etc/footbreak.env ] || . /etc/footbreak.env; [ ! -r /etc/footbreak-crown.env ] || . /etc/footbreak-crown.env; set +a; exec env PYTHONPATH=/opt/footbreak /opt/footbreak/.venv/bin/python3 - --since \"\$SINCE\"'" \
             "$SINCE"
           cat deploy/audit-crown-t5-matcher.py | ssh -o BatchMode=yes -o ConnectTimeout=20 \
             -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
