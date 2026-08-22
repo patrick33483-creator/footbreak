@@ -1,0 +1,182 @@
+name: Crown dashboard durable-stage audit (read only)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: Compare public Crown snapshot with durable native stages
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            'sudo env PYTHONPATH=/opt/footbreak /opt/footbreak/.venv/bin/python3 -' \
+            > crown-dashboard-durable-audit.json <<'PY'
+          import json
+          import os
+          import subprocess
+          from collections import Counter
+          from datetime import datetime, timedelta
+          from pathlib import Path
+
+          from crown.common import HKT, parse_time
+
+          def read_json(path, default):
+              try:
+                  value = json.loads(Path(path).read_text(encoding="utf-8"))
+                  return value
+              except Exception:
+                  return default
+
+          def stages(row):
+              return [
+                  {
+                      "stage": str(value.get("stage") or ""),
+                      "status": str(value.get("status") or ""),
+                      "ts": str(value.get("ts") or ""),
+                  }
+                  for value in (row.get("stages") or [])
+                  if isinstance(value, dict)
+                  and str(value.get("stage") or "") in {"首預", "T-30", "T-5"}
+              ]
+
+          def identity(row):
+              return (
+                  str(row.get("match_id") or "").strip(),
+                  str(row.get("kickoff_hkt") or row.get("kickoff") or "").strip(),
+              )
+
+          now = datetime.now(HKT)
+          horizon_start = now - timedelta(hours=48)
+          horizon_end = now + timedelta(hours=24)
+          ledger = read_json("/var/lib/footbreak/crown/ledger.json", {})
+          cards = read_json("/var/lib/footbreak/crown/predictions.json", [])
+          public_path = Path("/var/www/crown/data.json")
+          public = read_json(str(public_path), {})
+          watches = ledger.get("watch") if isinstance(ledger, dict) else {}
+          watches = watches if isinstance(watches, dict) else {}
+          cards = cards if isinstance(cards, list) else []
+          public_cards = public.get("matches") if isinstance(public, dict) else []
+          public_cards = public_cards if isinstance(public_cards, list) else []
+          cards_by_id = {
+              str(row.get("match_id") or "").strip(): row
+              for row in cards if isinstance(row, dict) and row.get("match_id")
+          }
+          public_by_id = {
+              str(row.get("match_id") or "").strip(): row
+              for row in public_cards if isinstance(row, dict) and row.get("match_id")
+          }
+          generated_at = parse_time(public.get("generated_at")) if isinstance(public, dict) else None
+          affected = []
+          rows = []
+          durable_t5 = 0
+          public_t5 = 0
+          for match_id, watch in watches.items():
+              if not isinstance(watch, dict):
+                  continue
+              card = cards_by_id.get(str(match_id), {})
+              kickoff = parse_time(
+                  card.get("kickoff_hkt") or card.get("kickoff")
+                  or watch.get("kickoff_hkt") or watch.get("kickoff")
+              )
+              if kickoff is None or kickoff < horizon_start or kickoff > horizon_end:
+                  continue
+              durable = stages(watch)
+              if not any(value["stage"] == "T-5" for value in durable):
+                  continue
+              durable_t5 += 1
+              public_card = public_by_id.get(str(match_id), {})
+              public_stages = stages(public_card) if isinstance(public_card, dict) else []
+              if any(value["stage"] == "T-5" for value in public_stages):
+                  public_t5 += 1
+              snapshot = {
+                  "match_id": str(match_id),
+                  "fixture": f"{card.get('home') or watch.get('home') or ''} vs {card.get('away') or watch.get('away') or ''}",
+                  "league": str(card.get("league") or watch.get("league") or ""),
+                  "kickoff_hkt": kickoff.astimezone(HKT).isoformat(),
+                  "durable_stages": durable,
+                  "card_stages": stages(card) if isinstance(card, dict) else [],
+                  "public_stages": public_stages,
+                  "public_card_present": bool(public_card),
+              }
+              t5 = next(value for value in durable if value["stage"] == "T-5")
+              t5_at = parse_time(t5["ts"])
+              mismatch = (
+                  not public_card
+                  or not any(value["stage"] == "T-5" for value in public_stages)
+                  or (
+                      generated_at is not None and t5_at is not None
+                      and generated_at < t5_at
+                  )
+              )
+              if mismatch:
+                  snapshot["reason"] = (
+                      "public_card_missing" if not public_card else
+                      "public_t5_missing" if not any(value["stage"] == "T-5" for value in public_stages) else
+                      "public_generated_before_durable_t5"
+                  )
+                  affected.append(snapshot)
+              rows.append(snapshot)
+          timers = subprocess.run(
+              [
+                  "systemctl", "show", "crown-tick.timer", "crown-sweep.timer",
+                  "crown-tick.service", "crown-dashboard-api.service",
+                  "--no-pager", "-p", "Id", "-p", "ActiveState", "-p", "SubState",
+                  "-p", "Result", "-p", "LastTriggerUSec", "-p", "NextElapseUSecRealtime",
+              ],
+              text=True, capture_output=True, check=False, timeout=20,
+          ).stdout[-8000:]
+          sha = subprocess.run(
+              ["git", "-C", "/opt/footbreak", "rev-parse", "HEAD"],
+              text=True, capture_output=True, check=False, timeout=10,
+          ).stdout.strip()
+          print(json.dumps({
+              "mode": "provider_free_read_only",
+              "at": now.isoformat(),
+              "server_sha": sha,
+              "public": {
+                  "schema_version": public.get("schema_version") if isinstance(public, dict) else None,
+                  "generated_at": public.get("generated_at") if isinstance(public, dict) else None,
+                  "mtime_hkt": datetime.fromtimestamp(public_path.stat().st_mtime, HKT).isoformat(),
+                  "card_count": len(public_cards),
+              },
+              "window": {"start_hkt": horizon_start.isoformat(), "end_hkt": horizon_end.isoformat()},
+              "counts": {
+                  "durable_native_t5": durable_t5,
+                  "public_t5": public_t5,
+                  "affected": len(affected),
+                  "durable_statuses": Counter(value["status"] for row in rows for value in row["durable_stages"]).most_common(),
+              },
+              "affected": affected,
+              "durable_t5_rows": rows,
+              "timers": timers,
+          }, ensure_ascii=False, indent=2))
+          PY
+          python3 -m json.tool crown-dashboard-durable-audit.json >/dev/null
+
+      - name: Upload audit evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: crown-dashboard-durable-audit-${{ github.run_id }}
+          path: crown-dashboard-durable-audit.json
+          retention-days: 14

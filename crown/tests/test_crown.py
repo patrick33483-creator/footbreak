@@ -22,6 +22,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, Mock, patch
 
 from crown.config import settings
+from crown.common import parse_time
 from crown.dashboard_data import build, write_dashboard_data, write_tick_dashboard_projection
 from crown.engine import _cached_t5_crown_snapshot, _candidates, _crown_market_forecasts, _fixture_baseline_prediction, _fresh, _hkjc_chl_candidates, _hkjc_chl_forecasts, _prediction, _prioritize_tick_rows, _refresh_crown_quote, _skip_new_confirmed_empty_crown, _sweep_rows_with_due_existing, _tick_rows_from_predictions, _wdl_prediction, run
 from crown.hkjc import fetch_official_results, fetch_official_settlement_bundle
@@ -2588,11 +2589,90 @@ class CrownSafetyTests(unittest.TestCase):
                      "ts": "2026-08-21T01:45:01+08:00"},
                 ],
             }}
+            save_ledger(config, ledger)
             with patch("crown.dashboard_data.in_current_period", return_value=True):
                 output = write_tick_dashboard_projection(config, ledger)
             published = json.loads(output.read_text(encoding="utf-8"))["matches"][0]
             self.assertEqual(published["stage"], "T-30")
             self.assertEqual([row["stage"] for row in published["stages"]], ["T-30"])
+
+    def test_tick_projection_reloads_durable_t5_after_waiting_to_publish(self) -> None:
+        """A stale child copy must not overwrite the newer committed T-5."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = replace(settings(), state_dir=root / "private-state", web_root=root / "web")
+            kickoff = (period_bounds()[0] + timedelta(hours=2)).isoformat()
+            t30 = (parse_time(kickoff) - timedelta(minutes=30)).isoformat()
+            t5 = (parse_time(kickoff) - timedelta(minutes=5)).isoformat()
+            card = {
+                "match_id": "publish-race", "kickoff_hkt": kickoff,
+                "stage": "T-30", "status": "PREDICTION_READY",
+                "book_odds": {"crown": [{"market": "HDC", "odds": 1.91}]},
+                "stages": [{"stage": "T-30", "status": "PREDICTION_READY", "ts": t30}],
+            }
+            save_predictions(config, [card])
+            committed = load_ledger(config)
+            committed["watch"] = {"publish-race": {
+                "match_id": "publish-race", "kickoff": kickoff,
+                "stages": list(card["stages"]),
+            }}
+            save_ledger(config, committed)
+            stale_child_copy = load_ledger(config)
+            committed["watch"]["publish-race"]["stages"].append({
+                "stage": "T-5", "status": "WILSON_REJECTED", "ts": t5,
+            })
+            save_ledger(config, committed)
+            with patch("crown.dashboard_data.in_current_period", return_value=True):
+                output = write_tick_dashboard_projection(config, stale_child_copy)
+            payload = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(payload["matches"][0]["stage"], "T-5")
+            self.assertEqual(
+                [row["stage"] for row in payload["matches"][0]["stages"]],
+                ["T-30", "T-5"],
+            )
+            self.assertGreaterEqual(parse_time(payload["generated_at"]), parse_time(t5))
+
+    def test_full_publish_rebases_stale_build_to_durable_t5_before_swap(self) -> None:
+        """History work begun before T-5 cannot replace its public projection."""
+        from crown.dashboard_data import _build_payloads
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = replace(settings(), state_dir=root / "private-state", web_root=root / "web")
+            kickoff = (period_bounds()[0] + timedelta(hours=2)).isoformat()
+            t30 = (parse_time(kickoff) - timedelta(minutes=30)).isoformat()
+            t5 = (parse_time(kickoff) - timedelta(minutes=5)).isoformat()
+            card = {
+                "match_id": "full-publish-race", "kickoff_hkt": kickoff,
+                "stage": "T-30", "status": "PREDICTION_READY",
+                "book_odds": {"crown": [{"market": "HDC", "odds": 1.91}]},
+                "stages": [{"stage": "T-30", "status": "PREDICTION_READY", "ts": t30}],
+            }
+            save_predictions(config, [card])
+            ledger = load_ledger(config)
+            ledger["watch"] = {"full-publish-race": {
+                "match_id": "full-publish-race", "kickoff": kickoff,
+                "stages": list(card["stages"]),
+            }}
+            save_ledger(config, ledger)
+            with patch("crown.dashboard_data.in_current_period", return_value=True):
+                stale_dashboard, history_artifact = _build_payloads(config)
+            ledger["watch"]["full-publish-race"]["stages"].append({
+                "stage": "T-5", "status": "PREDICTION_READY", "ts": t5,
+            })
+            save_ledger(config, ledger)
+            with patch("crown.dashboard_data.in_current_period", return_value=True), patch(
+                "crown.dashboard_data._build_payloads",
+                return_value=(stale_dashboard, history_artifact),
+            ):
+                output = write_dashboard_data(config)
+            payload = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(payload["matches"][0]["stage"], "T-5")
+            self.assertEqual(
+                [row["stage"] for row in payload["matches"][0]["stages"]],
+                ["T-30", "T-5"],
+            )
+            self.assertGreaterEqual(parse_time(payload["generated_at"]), parse_time(t5))
 
     def test_dashboard_live_board_uses_verified_crown_prices_as_the_master_list(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
