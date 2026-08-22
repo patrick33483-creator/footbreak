@@ -1665,6 +1665,16 @@ def _commit_stage_predictions(
                 defer_auxiliary_recompute=(
                     stage != "T-5" or prediction.get("status") == "DATA_MISSING"
                 ),
+                # T-30 has no formal admission, and an unavailable T-5 has
+                # no condition evidence to evaluate.  Both must commit their
+                # immutable native attempt/snapshot before every consumer.
+                # A quote-complete T-5 remains on the normal formal-admission
+                # path so an exact frozen match still creates its observation
+                # in the same valid pre-kickoff transaction.
+                deadline_critical_snapshot=(
+                    mode == "tick"
+                    and (stage == "T-30" or prediction.get("status") == "DATA_MISSING")
+                ),
             )
             emitted.extend(created)
             prediction["stages"] = list(

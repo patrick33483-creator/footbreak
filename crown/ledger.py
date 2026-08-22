@@ -544,20 +544,22 @@ def sync_prediction(
     config: Settings,
     *,
     defer_auxiliary_recompute: bool = False,
+    deadline_critical_snapshot: bool = False,
 ) -> list[str]:
     """Persist a stage and create only newly-observed eligible T-5 condition bets."""
     ledger.setdefault("bets", [])
     ledger.setdefault("watch", {})
-    # The cutover only appends this namespace.  Legacy bet/stat rows remain
-    # untouched and cannot enter the active validation flow.
-    ensure_namespace(ledger, "crown")
-    # Direct notifications have their own prospective-only durable namespace.
-    # It is intentionally initialized before a new snapshot gets its
-    # timestamp, so the deployment activation boundary is unambiguous.
-    ensure_direct_t5_outbox(ledger)
-    # v2 is a separate research namespace. Its creation and recomputation do
-    # not touch v1 bets, conditions, stats, or dedupe keys.
-    challenger_v2.ensure_namespace(ledger)
+    if not deadline_critical_snapshot:
+        # The cutover only appends this namespace.  Legacy bet/stat rows remain
+        # untouched and cannot enter the active validation flow.
+        ensure_namespace(ledger, "crown")
+        # Direct notifications have their own prospective-only durable namespace.
+        # It is intentionally initialized before a new snapshot gets its
+        # timestamp, so the deployment activation boundary is unambiguous.
+        ensure_direct_t5_outbox(ledger)
+        # v2 is a separate research namespace. Its creation and recomputation do
+        # not touch v1 bets, conditions, stats, or dedupe keys.
+        challenger_v2.ensure_namespace(ledger)
     stage = prediction.get("stage")
     if stage not in STAGES:
         return []
@@ -612,7 +614,14 @@ def sync_prediction(
             if isinstance(existing, dict) else []
         )
         snapshot["collection_attempts"] = (prior_attempts + [attempt])[-8:]
-    learning = _record_learning_snapshot(prediction, snapshot)
+    # Learning/history projection is a consumer of this immutable native
+    # snapshot.  It is not permitted to make a T-30/T-5 write miss its legal
+    # pre-kickoff deadline.  The bounded timed worker commits the snapshot
+    # first; ordinary reconciliation may project it later.
+    learning = (
+        None if deadline_critical_snapshot
+        else _record_learning_snapshot(prediction, snapshot)
+    )
     if learning:
         snapshot.update({
             "learning_snapshot_id": learning["snapshot_id"], "learning_attempt": learning["attempt"],
@@ -675,6 +684,16 @@ def sync_prediction(
                 "updated_at": stored.get("ts"),
                 "reason": None if _completed_stage_row(stored) else record.get("reason"),
             })
+    if deadline_critical_snapshot:
+        # The stage itself is now durable, with its native quote/timestamp and
+        # terminal attempt state.  Never run condition, research, execution,
+        # notification, or aggregate consumers on the write-ahead path.
+        # A completed T-5 retains an explicit marker so the authoritative
+        # evidence reconciler can resume only from this immutable pre-kickoff
+        # stage record; it never creates or reprices a stage after kickoff.
+        if stage == "T-5" and _completed_stage_row(stored):
+            stored["formal_admission_pending"] = True
+        return []
     # Validation admission is singular: only the very first persisted native
     # pre-kickoff T-5 may create a bet.  A later quote refresh can enrich the
     # prediction record but is a replay, never a second admission chance.
