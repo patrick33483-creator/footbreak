@@ -145,6 +145,11 @@ class DeadlineFirstTickTests(unittest.TestCase):
             self.assertEqual(saved["bets"], [])
 
     def test_timeout_or_provider_error_writes_terminal_t5_evidence(self):
+        """A provider-fetch timeout writes a terminal FAILED attempt record
+        (honest evidence), but per the pre-kickoff retry contract
+        (2026-08-22 T-5 starvation fix) the fixture must remain due/pending
+        while `now < kickoff` so the very next tick gets a fair retry
+        instead of the fixture being silently dropped forever."""
         now = dt.datetime.now(run_predict.HKT)
         with tempfile.TemporaryDirectory() as directory, patch.object(run_predict, "HERE", directory):
             path = Path(directory, "sim_ledger.json")
@@ -155,7 +160,10 @@ class DeadlineFirstTickTests(unittest.TestCase):
             self.assertEqual(
                 saved["native_stage_attempts"][-1]["status"], "FAILED",
             )
-            self.assertEqual(run_predict.pending_watch_match_ids(), [])
+            self.assertTrue(
+                saved["native_stage_attempts"][-1]["reason"].startswith("provider_fetch_"),
+            )
+            self.assertEqual(run_predict.pending_watch_match_ids(), ["retry"])
 
     def test_post_kickoff_result_is_never_persisted_as_native_t5(self):
         now = dt.datetime.now(run_predict.HKT)
