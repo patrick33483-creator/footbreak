@@ -63,6 +63,11 @@ def _reason(value: Any) -> str | None:
 
 
 def _safe_timestamp(value: Any) -> str | None:
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        try:
+            return datetime.fromtimestamp(float(value), timezone.utc).astimezone(HKT).isoformat()
+        except (OSError, OverflowError, ValueError):
+            return None
     parsed = parse_time(value)
     return parsed.astimezone(HKT).isoformat() if parsed is not None else None
 
