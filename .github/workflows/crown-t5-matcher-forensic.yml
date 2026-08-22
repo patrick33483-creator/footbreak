@@ -79,9 +79,29 @@ jobs:
           report = json.loads(Path('crown-t5-matcher-forensic.json').read_text(encoding='utf-8'))
           summary = report.get('summary', {})
           registry = report.get('registry', {})
+          # The full artifact retains internal fixture identifiers.  Publish
+          # only the bounded immutable admission evidence requested for
+          # operations: names, native signal fields, frozen axes and formal
+          # lifecycle state.  No provider payload or raw fixture ID is emitted.
+          records = []
+          for row in report.get('records', []):
+              if not isinstance(row, dict):
+                  continue
+              records.append({
+                  'fixture_name': row.get('fixture_name'),
+                  'kickoff': row.get('kickoff'),
+                  'market': row.get('market'),
+                  'native_first_pre_kickoff_t5': row.get('native_first_pre_kickoff_t5'),
+                  'signal': row.get('signal'),
+                  'signal_reason': row.get('signal_reason'),
+                  'structural_registry_matches': row.get('structural_registry_matches'),
+                  'no_match_reason': row.get('no_match_reason'),
+                  'formal_observations': row.get('formal_observations'),
+                  'admission': row.get('admission'),
+              })
           body = json.dumps({
               'mode': report.get('mode'), 'since': report.get('since'),
-              'registry': registry, 'summary': summary,
+              'registry': registry, 'summary': summary, 'records': records,
               'structural_matcher_rejections': report.get('structural_matcher_rejections', []),
           }, ensure_ascii=False, indent=2)
           payload = {
