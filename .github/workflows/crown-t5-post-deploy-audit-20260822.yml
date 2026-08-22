@@ -8,6 +8,16 @@ on:
         required: true
         type: string
         default: '2940414,3000033,3000036,3000037,3000038,3000039,3000040,3000415,3000416,3000418,3001141,3001142,3001144,3001145,3001149,3023758,3035877,3066201,3068556'
+      journal_since:
+        description: 'journalctl --since window start (read only)'
+        required: false
+        type: string
+        default: '2026-08-22 19:53:00'
+      journal_until:
+        description: 'journalctl --until window end (read only)'
+        required: false
+        type: string
+        default: '2026-08-22 20:16:00'
 
 permissions:
   contents: read
@@ -219,16 +229,18 @@ jobs:
           path: crown-t5-upcoming-batches.json
           retention-days: 14
 
-      - name: Read crown-tick.service systemd journal around 19:53-20:16 HKT (read only)
+      - name: Read crown-tick.service systemd journal for the requested window (read only)
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          JOURNAL_SINCE: ${{ inputs.journal_since }}
+          JOURNAL_UNTIL: ${{ inputs.journal_until }}
         run: |
           set -euo pipefail
           ssh -o BatchMode=yes -o ConnectTimeout=20 \
             -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
             "$DEPLOY_USER@$DEPLOY_HOST" \
-            "sudo journalctl -u crown-tick.service --since '2026-08-22 19:53:00' --until '2026-08-22 20:16:00' --no-pager -o short-iso" \
+            "sudo journalctl -u crown-tick.service --since '$JOURNAL_SINCE' --until '$JOURNAL_UNTIL' --no-pager -o short-iso" \
             > crown-tick-journal-19532016.log || true
           wc -l crown-tick-journal-19532016.log || true
 
