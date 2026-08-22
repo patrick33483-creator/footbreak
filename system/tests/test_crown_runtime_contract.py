@@ -45,8 +45,15 @@ class CrownRuntimeContractTests(unittest.TestCase):
             self.assertIn("ConditionPathExists=!/run/crown-t5-priority", unit)
         preempt = (ROOT / "deploy/crown-tick-preempt.sh").read_text(encoding="utf-8")
         self.assertIn(
-            "systemctl stop --no-block crown-round-update.service crown-first-look-reconcile.service "
-            "crown-sweep.service crown-settle.service",
+            "systemctl stop --no-block crown-round-update.service crown-sweep.service "
+            "crown-settle.service",
+            preempt,
+        )
+        # The hourly native-only repair has an independent short pass budget.
+        # Do not kill an already-started run at the same minute as a deadline
+        # tick: it must record a terminal result while direct-ID stages run.
+        self.assertNotIn(
+            "systemctl stop --no-block crown-round-update.service crown-first-look-reconcile.service",
             preempt,
         )
 
