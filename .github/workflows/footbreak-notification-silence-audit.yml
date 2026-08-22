@@ -1,0 +1,98 @@
+name: Audit Footbreak notification silence
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  checks: write
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: Read only notification and scheduler audit
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          {
+            cat <<'REMOTE'
+          set -euo pipefail
+          set -a
+          [ ! -f /etc/footbreak.env ] || . /etc/footbreak.env
+          [ ! -f /etc/footbreak-crown.env ] || . /etc/footbreak-crown.env
+          set +a
+          exec env PYTHONPATH=/opt/footbreak /opt/footbreak/.venv/bin/python3 -
+          REMOTE
+            cat deploy/audit-footbreak-notification-silence.py
+          } | ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "sudo bash -s" \
+            | tee footbreak-notification-silence-audit.json
+
+      - name: Upload audit evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: footbreak-notification-silence-audit-${{ github.run_id }}
+          path: footbreak-notification-silence-audit.json
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Publish compact audit evidence
+        if: always() && hashFiles('footbreak-notification-silence-audit.json') != ''
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import urllib.request
+          from pathlib import Path
+
+          evidence = json.loads(Path("footbreak-notification-silence-audit.json").read_text(encoding="utf-8"))
+          text = json.dumps(evidence, ensure_ascii=False, indent=2, sort_keys=True)
+          payload = {
+              "name": "Footbreak notification-silence audit evidence",
+              "head_sha": os.environ["GITHUB_SHA"],
+              "status": "completed",
+              "conclusion": "success" if os.environ.get("JOB_STATUS") == "success" else "failure",
+              "output": {
+                  "title": "Read-only Footbreak notification audit",
+                  "summary": "```json\n" + text[:60000] + "\n```",
+              },
+          }
+          request = urllib.request.Request(
+              f"https://api.github.com/repos/{os.environ['GITHUB_REPOSITORY']}/check-runs",
+              data=json.dumps(payload).encode(),
+              headers={
+                  "Accept": "application/vnd.github+json",
+                  "Authorization": f"Bearer {os.environ['GITHUB_TOKEN']}",
+                  "Content-Type": "application/json",
+              },
+              method="POST",
+          )
+          with urllib.request.urlopen(request, timeout=20) as response:
+              created = json.load(response)
+          print(f"evidence_check_url={created['html_url']}")
+          PY
