@@ -67,6 +67,23 @@ jobs:
               result["error"] = "ledger.json not found at expected path"
 
           state_dir = ledger_path.parent
+          predictions_path = state_dir / "predictions.json"
+          try:
+              pstat = predictions_path.stat()
+              result["predictions_bytes"] = pstat.st_size
+              result["predictions_mtime_utc"] = time.strftime(
+                  "%Y-%m-%dT%H:%M:%SZ", time.gmtime(pstat.st_mtime)
+              )
+              with open(predictions_path, "rb") as fh:
+                  praw = fh.read()
+              pt0 = time.monotonic()
+              pdata = json.loads(praw)
+              pt1 = time.monotonic()
+              result["predictions_json_parse_s"] = round(pt1 - pt0, 6)
+              result["predictions_row_count"] = len(pdata) if isinstance(pdata, list) else None
+          except FileNotFoundError:
+              result["predictions_bytes"] = None
+              result["predictions_error"] = "predictions.json not found at expected path"
           try:
               du = os.statvfs(state_dir)
               result["state_dir_fs_free_bytes"] = du.f_bavail * du.f_frsize
