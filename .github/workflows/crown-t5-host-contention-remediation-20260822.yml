@@ -1,0 +1,335 @@
+name: Crown T-5 host contention remediation 20260822 (bounded, evidence-first)
+
+on:
+  workflow_dispatch:
+    inputs:
+      apply_process_cleanup:
+        description: 'If true, actually TERM/KILL confirmed-orphan python3 processes. If false, evidence-only dry run.'
+        required: true
+        type: boolean
+        default: false
+      apply_cpu_priority:
+        description: 'If true, install the crown-tick.service CPUWeight/Nice systemd drop-in and daemon-reload.'
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  remediate:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: STEP 1 (read-only) - capture full process evidence BEFORE any action
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' > process-evidence-before.log <<'EOSSH'
+          set -uo pipefail
+          echo "--- captured at (server clock) ---"
+          date -u
+          echo "--- loadavg / nproc ---"
+          cat /proc/loadavg
+          nproc
+          echo "--- full ps snapshot: pid,ppid,pgid,sid,etime,stat,%cpu,%mem,lstart,cmd ---"
+          ps -eo pid,ppid,pgid,sid,etimes,stat,pcpu,pmem,lstart,cmd --sort=-etimes
+          echo "--- systemd unit membership for every pid (cgroup path) ---"
+          for pid in $(ps -eo pid= ); do
+            pid=$(echo "$pid" | tr -d ' ')
+            [ -z "$pid" ] && continue
+            cg=$(cat /proc/$pid/cgroup 2>/dev/null | tr '\n' ';')
+            cmd=$(tr '\0' ' ' < /proc/$pid/cmdline 2>/dev/null)
+            echo "PID=$pid CGROUP=$cg CMD=$cmd"
+          done
+          echo "--- active systemd units (footbreak/crown related) ---"
+          systemctl list-units --type=service --all | grep -iE 'crown|footbreak' || true
+          echo "--- currently running/active PIDs per crown/footbreak unit ---"
+          for u in $(systemctl list-units --type=service --all --no-legend | awk '{print $1}' | grep -iE 'crown|footbreak' || true); do
+            echo "unit=$u MainPID=$(systemctl show -p MainPID --value "$u") ExecMainStartTimestamp=$(systemctl show -p ExecMainStartTimestamp --value "$u")"
+          done
+          EOSSH
+          echo "----- process-evidence-before.log (head) -----"
+          head -100 process-evidence-before.log
+
+      - name: STEP 2 (read-only) - classify candidate orphan python3 processes with strict safety filter
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' > orphan-classification.json <<'EOSSH'
+          python3 - <<'PY'
+          import json, os, subprocess, re
+
+          def read(path):
+              try:
+                  return open(path, "r", errors="replace").read()
+              except Exception:
+                  return ""
+
+          # Known-legitimate systemd MainPIDs for crown/footbreak units -- never touch these.
+          out = subprocess.run(
+              ["systemctl", "list-units", "--type=service", "--all", "--no-legend"],
+              capture_output=True, text=True,
+          ).stdout
+          unit_names = [ln.split()[0] for ln in out.splitlines() if ln.strip()]
+          protected_pids = set()
+          protected_units = []
+          for u in unit_names:
+              if not re.search(r'crown|footbreak', u, re.I):
+                  continue
+              mp = subprocess.run(
+                  ["systemctl", "show", "-p", "MainPID", "--value", u],
+                  capture_output=True, text=True,
+              ).stdout.strip()
+              if mp and mp != "0":
+                  protected_pids.add(int(mp))
+                  protected_units.append({"unit": u, "main_pid": int(mp)})
+              # also protect every PID currently in that unit's cgroup
+              cg_procs_path = f"/sys/fs/cgroup/system.slice/{u}/cgroup.procs"
+              for line in read(cg_procs_path).splitlines():
+                  line = line.strip()
+                  if line.isdigit():
+                      protected_pids.add(int(line))
+
+          rows = []
+          for pid_dir in os.listdir("/proc"):
+              if not pid_dir.isdigit():
+                  continue
+              pid = int(pid_dir)
+              cmdline = read(f"/proc/{pid_dir}/cmdline").replace("\x00", " ").strip()
+              if "python3" not in cmdline:
+                  continue
+              stat = read(f"/proc/{pid_dir}/stat")
+              cgroup = read(f"/proc/{pid_dir}/cgroup").replace("\n", ";")
+              try:
+                  ppid = int(stat.split(")")[-1].split()[1])
+              except Exception:
+                  ppid = None
+              # etime via ps for readability
+              etimes = subprocess.run(
+                  ["ps", "-o", "etimes=", "-p", str(pid)], capture_output=True, text=True
+              ).stdout.strip()
+              lstart = subprocess.run(
+                  ["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True
+              ).stdout.strip()
+              is_protected = (
+                  pid in protected_pids
+                  or "crown-tick.service" in cgroup
+                  or "crown" in cgroup and ".service" in cgroup
+                  or re.search(r'crown\.run|crown_run|/opt/footbreak', cgroup)
+              )
+              in_footbreak_cgroup = bool(re.search(r'crown|footbreak', cgroup, re.I))
+              is_recent = False
+              try:
+                  is_recent = int(etimes or "999999") < 90
+              except Exception:
+                  pass
+              # Candidate for termination ONLY if: python3 process, NOT in any
+              # crown/footbreak systemd unit's protected pid/cgroup set, AND has
+              # been running long enough that it cannot be a normal in-flight
+              # tick's own child (normal tick child lifetime is bounded by the
+              # unit's TimeoutStartSec, ~55s; anything from an unrelated cgroup
+              # running far longer than that, with no owning unit, is suspect).
+              candidate_for_cleanup = (not is_protected) and (not in_footbreak_cgroup) and (not is_recent)
+              rows.append({
+                  "pid": pid,
+                  "ppid": ppid,
+                  "cmdline": cmdline,
+                  "cgroup": cgroup,
+                  "etime_seconds": etimes,
+                  "lstart": lstart,
+                  "is_protected_by_systemd_unit": is_protected,
+                  "in_footbreak_or_crown_cgroup": in_footbreak_cgroup,
+                  "candidate_for_cleanup": candidate_for_cleanup,
+              })
+
+          print(json.dumps({
+              "protected_units": protected_units,
+              "python3_processes": rows,
+          }, indent=2))
+          PY
+          EOSSH
+          echo "----- orphan-classification.json -----"
+          cat orphan-classification.json
+
+      - name: STEP 3 (conditional, destructive) - TERM then bounded-wait then KILL only confirmed-safe orphans
+        if: ${{ inputs.apply_process_cleanup == true }}
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          CANDIDATES=$(python3 -c "
+          import json
+          d = json.load(open('orphan-classification.json'))
+          pids = [str(r['pid']) for r in d['python3_processes'] if r['candidate_for_cleanup']]
+          print(','.join(pids))
+          ")
+          echo "Candidate PIDs for TERM/KILL (not in any crown/footbreak systemd unit, not recent): $CANDIDATES"
+          if [ -z "$CANDIDATES" ]; then
+            echo "No candidate orphan processes found. Nothing to clean up."
+            exit 0
+          fi
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
+            "$DEPLOY_USER@$DEPLOY_HOST" "sudo env CANDIDATES='$CANDIDATES' bash -s" > process-cleanup.log <<'EOSSH'
+          set -uo pipefail
+          IFS=',' read -ra PIDS <<< "$CANDIDATES"
+          echo "=== Re-verifying each candidate is still present and still non-footbreak before signaling ==="
+          for pid in "${PIDS[@]}"; do
+            [ -e "/proc/$pid" ] || { echo "pid=$pid already gone, skip"; continue; }
+            cg=$(cat /proc/$pid/cgroup 2>/dev/null | tr '\n' ';')
+            if echo "$cg" | grep -qiE 'crown|footbreak'; then
+              echo "pid=$pid re-check shows it IS in a crown/footbreak cgroup now -- SKIPPING for safety"
+              continue
+            fi
+            cmd=$(tr '\0' ' ' < /proc/$pid/cmdline 2>/dev/null)
+            echo "pid=$pid cmd=[$cmd] cgroup=[$cg] -> sending SIGTERM"
+            kill -TERM "$pid" 2>&1 || echo "  TERM failed or already gone"
+          done
+          echo "=== Bounded wait (10s) for graceful exit ==="
+          sleep 10
+          echo "=== Escalating to SIGKILL only for PIDs still alive ==="
+          for pid in "${PIDS[@]}"; do
+            if [ -e "/proc/$pid" ]; then
+              cg=$(cat /proc/$pid/cgroup 2>/dev/null | tr '\n' ';')
+              if echo "$cg" | grep -qiE 'crown|footbreak'; then
+                echo "pid=$pid now in crown/footbreak cgroup -- SKIPPING kill"
+                continue
+              fi
+              echo "pid=$pid still alive after TERM -> SIGKILL"
+              kill -KILL "$pid" 2>&1 || echo "  KILL failed or already gone"
+            else
+              echo "pid=$pid exited cleanly after TERM"
+            fi
+          done
+          echo "=== Post-cleanup process count check ==="
+          ps -eo pid,etimes,cmd --sort=-etimes | head -20
+          EOSSH
+          echo "----- process-cleanup.log -----"
+          cat process-cleanup.log
+
+      - name: STEP 3b (dry-run only) - report what WOULD be cleaned up, no signals sent
+        if: ${{ inputs.apply_process_cleanup == false }}
+        run: |
+          echo "apply_process_cleanup=false -> dry run only, no processes were signaled."
+          python3 -c "
+          import json
+          d = json.load(open('orphan-classification.json'))
+          cands = [r for r in d['python3_processes'] if r['candidate_for_cleanup']]
+          print('Would-terminate candidate count:', len(cands))
+          for r in cands:
+              print(r['pid'], r['etime_seconds'], r['cmdline'][:120])
+          "
+
+      - name: STEP 4 (conditional) - install crown-tick.service CPUWeight/Nice systemd drop-in
+        if: ${{ inputs.apply_cpu_priority == true }}
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' > cpu-priority-install.log <<'EOSSH'
+          set -euo pipefail
+          echo "--- other footbreak/crown-related services currently defined (so we do not starve them) ---"
+          systemctl list-units --type=service --all --no-legend | grep -iE 'crown|footbreak' || true
+
+          install -d -m 0755 /etc/systemd/system/crown-tick.service.d
+          cat > /etc/systemd/system/crown-tick.service.d/99-cpu-priority.conf <<'CONF'
+          # Bounded, deadline-first host-contention relief for crown-tick.service.
+          # crown-tick.service is a deadline-bound (TimeoutStartSec=55) T-5 job whose
+          # own cgroup CPU pressure was measured at ~74% "full" during host contention
+          # (single-vCPU droplet, loadavg ~8). CPUWeight raises its share of the CPU
+          # relative to other cgroups WITHOUT starving them entirely (CPUWeight is a
+          # relative share, default 100; other services keep the default and still get
+          # CPU, just proportionally less when both are runnable at once). Nice gives
+          # it scheduling priority within its own cgroup's threads. This does not pin
+          # or reserve a core, does not use CPUQuota (which would cap it), and does not
+          # touch TimeoutStartSec.
+          [Service]
+          CPUWeight=400
+          Nice=-5
+          CONF
+          chmod 0644 /etc/systemd/system/crown-tick.service.d/99-cpu-priority.conf
+          cat /etc/systemd/system/crown-tick.service.d/99-cpu-priority.conf
+
+          systemctl daemon-reload
+
+          echo "--- effective properties after daemon-reload ---"
+          systemctl show crown-tick.service -p CPUWeight -p Nice -p CPUQuotaPerSecUSec -p TimeoutStartUSec
+          echo "--- confirm timer/unit still enabled, no change to TimeoutStartSec source unit ---"
+          systemctl cat crown-tick.service | grep -i TimeoutStartSec || echo "(TimeoutStartSec not overridden, unchanged from base unit)"
+          EOSSH
+          echo "----- cpu-priority-install.log -----"
+          cat cpu-priority-install.log
+
+      - name: STEP 5 (read-only) - post-remediation system verification
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' > post-remediation-verify.log <<'EOSSH'
+          set -uo pipefail
+          echo "--- loadavg / nproc ---"
+          cat /proc/loadavg
+          nproc
+          echo "--- PSI ---"
+          for f in cpu memory io; do echo "-- /proc/pressure/$f --"; cat /proc/pressure/$f; done
+          echo "--- swap/mem ---"
+          grep -E '^(MemTotal|MemAvailable|SwapTotal|SwapFree|Dirty|Writeback):' /proc/meminfo
+          echo "--- process count ---"
+          ps -e --no-headers | wc -l
+          echo "--- top etimes processes now ---"
+          ps -eo pid,etimes,pcpu,pmem,cmd --sort=-etimes | head -15
+          echo "--- crown-tick.service effective CPUWeight/Nice ---"
+          systemctl show crown-tick.service -p CPUWeight -p Nice
+          echo "--- crown/footbreak timers still enabled ---"
+          systemctl list-timers --all --no-legend | grep -iE 'crown|footbreak' || true
+          echo "--- crown-tick / footbreak service unit health (not started/stopped by us) ---"
+          systemctl is-enabled crown-tick.timer 2>&1 || true
+          systemctl is-active footbreak-server-health-monitor.service 2>&1 || true
+          echo "--- server code SHA still matches expected deploy ---"
+          cd /opt/footbreak && git rev-parse HEAD
+          echo "--- API quick check (local health endpoint, if present) ---"
+          curl -s -o /dev/null -w 'dashboard_http_status=%{http_code}\n' http://127.0.0.1/ || true
+          EOSSH
+          echo "----- post-remediation-verify.log -----"
+          cat post-remediation-verify.log
+
+      - name: Upload all evidence and logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: crown-t5-host-contention-remediation-${{ github.run_id }}
+          path: |
+            process-evidence-before.log
+            orphan-classification.json
+            process-cleanup.log
+            cpu-priority-install.log
+            post-remediation-verify.log
+          if-no-files-found: warn
+          retention-days: 30

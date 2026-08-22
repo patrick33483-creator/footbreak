@@ -8,6 +8,16 @@ on:
         required: true
         type: string
         default: '2940414,3000033,3000036,3000037,3000038,3000039,3000040,3000415,3000416,3000418,3001141,3001142,3001144,3001145,3001149,3023758,3035877,3066201,3068556'
+      journal_since:
+        description: 'journalctl --since window start (read only)'
+        required: false
+        type: string
+        default: '2026-08-22 19:53:00'
+      journal_until:
+        description: 'journalctl --until window end (read only)'
+        required: false
+        type: string
+        default: '2026-08-22 20:16:00'
 
 permissions:
   contents: read
@@ -219,16 +229,18 @@ jobs:
           path: crown-t5-upcoming-batches.json
           retention-days: 14
 
-      - name: Read crown-tick.service systemd journal around 19:53-20:16 HKT (read only)
+      - name: Read crown-tick.service systemd journal for the requested window (read only)
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          JOURNAL_SINCE: ${{ inputs.journal_since }}
+          JOURNAL_UNTIL: ${{ inputs.journal_until }}
         run: |
           set -euo pipefail
           ssh -o BatchMode=yes -o ConnectTimeout=20 \
             -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
             "$DEPLOY_USER@$DEPLOY_HOST" \
-            "sudo journalctl -u crown-tick.service --since '2026-08-22 19:53:00' --until '2026-08-22 20:16:00' --no-pager -o short-iso" \
+            "sudo journalctl -u crown-tick.service --since '$JOURNAL_SINCE' --until '$JOURNAL_UNTIL' --no-pager -o short-iso" \
             > crown-tick-journal-19532016.log || true
           wc -l crown-tick-journal-19532016.log || true
 
@@ -240,11 +252,212 @@ jobs:
           path: crown-tick-journal-19532016.log
           retention-days: 14
 
+      - name: Read crown-tick env override diagnostics (read only, no secret values printed)
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "echo '--- systemctl show crown-tick.service Environment ---'; sudo systemctl show crown-tick.service -p Environment; echo '--- grep TICK_PASS_DEADLINE/TIMEOUT_START/STOP_MARGIN in env files (keys only, redacted) ---'; for f in /etc/footbreak.env /etc/footbreak-crown.env; do echo \"file: \$f\"; sudo test -f \"\$f\" && sudo grep -nE '^(CROWN_TICK_PASS_DEADLINE_SECONDS|CROWN_TICK_TIMEOUT_START_SECONDS|CROWN_TICK_STOP_MARGIN_SECONDS)=' \"\$f\" || echo '  (no match or file missing)'; done; echo '--- sentinel file check ---'; sudo stat /run/crown-tick-start-epoch 2>&1 || echo 'sentinel missing'; sudo cat /run/crown-tick-start-epoch 2>&1 || true; echo; date +%s" \
+            > crown-tick-env-diagnostic.log || true
+          cat crown-tick-env-diagnostic.log || true
+
+      - name: Dry-run crown-run.sh dynamic budget block against the live sentinel (read only)
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "sudo head -50 /opt/footbreak/deploy/crown-run.sh | sudo tee /tmp/crown-run-head.sh >/dev/null; echo '--- deployed crown-run.sh first 50 lines (source of truth on server) ---'; sudo cat /tmp/crown-run-head.sh; echo '--- dry run of dynamic budget block using live sentinel ---'; sudo bash -c 'EPOCH_FILE=/run/crown-tick-start-epoch; TIMEOUT_START_SECONDS=55; STOP_MARGIN_SECONDS=4; FALLBACK_DEADLINE_SECONDS=50; if [ -r \"\$EPOCH_FILE\" ] && start_epoch=\$(cat \"\$EPOCH_FILE\" 2>/dev/null) && [ -n \"\$start_epoch\" ] && [ \"\$start_epoch\" -eq \"\$start_epoch\" ] 2>/dev/null; then now_epoch=\$(date +%s); elapsed=\$((now_epoch - start_epoch)); echo \"elapsed=\$elapsed\"; else echo SENTINEL_READ_FAILED; fi'" \
+            > crown-run-dryrun-diagnostic.log 2>&1 || true
+          cat crown-run-dryrun-diagnostic.log || true
+
+      - name: Upload dry-run diagnostic
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: crown-run-dryrun-diagnostic-${{ github.run_id }}
+          path: crown-run-dryrun-diagnostic.log
+          retention-days: 14
+
+      - name: Upload env diagnostic
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: crown-tick-env-diagnostic-${{ github.run_id }}
+          path: crown-tick-env-diagnostic.log
+          retention-days: 14
+
+      - name: Read footbreak-result-reconcile.service status and journal (read only, diagnostic only)
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "sudo systemctl status footbreak-result-reconcile.service --no-pager -l; echo '---JOURNAL---'; sudo journalctl -u footbreak-result-reconcile.service --since '2026-08-22 19:50:00' --no-pager -o short-iso" \
+            > footbreak-result-reconcile-status.log || true
+          cat footbreak-result-reconcile-status.log || true
+
+      - name: Upload reconcile diagnostic
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: footbreak-result-reconcile-diagnostic-${{ github.run_id }}
+          path: footbreak-result-reconcile-status.log
+          retention-days: 14
+
       - name: Upload audit evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: crown-t5-deep-diagnose-${{ github.run_id }}
           path: crown-t5-deep-diagnose.json
+          retention-days: 14
+
+      - name: Read crown-tick.service systemd cgroup CPU/memory/swap/IO accounting (read only)
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "echo '--- systemctl show crown-tick.service cgroup accounting ---'; sudo systemctl show crown-tick.service -p CPUUsageNSec,MemoryCurrent,MemoryMax,MemoryHigh,MemorySwapCurrent,MemorySwapMax,IOReadBytes,IOWriteBytes,TasksCurrent,TasksMax,NRestarts,ExecMainStatus,ExecMainStartTimestamp,ExecMainExitTimestamp,ActiveEnterTimestamp,InactiveEnterTimestamp; echo; echo '--- unit cgroup path and slice-level accounting ---'; unit_cgroup=\$(sudo systemctl show crown-tick.service -p ControlGroup --value); echo \"cgroup: \$unit_cgroup\"; if [ -n \"\$unit_cgroup\" ] && [ -d \"/sys/fs/cgroup\$unit_cgroup\" ]; then for f in cpu.stat cpu.pressure memory.current memory.max memory.swap.current memory.swap.max memory.pressure io.stat io.pressure pids.current pids.max; do path=\"/sys/fs/cgroup\$unit_cgroup/\$f\"; echo \"--- \$f ---\"; sudo cat \"\$path\" 2>&1 || echo missing; done; else echo 'cgroup path not resolvable or not cgroup v2'; fi" \
+            > crown-tick-cgroup-accounting.log 2>&1 || true
+          cat crown-tick-cgroup-accounting.log || true
+
+      - name: Upload cgroup accounting diagnostic
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: crown-tick-cgroup-accounting-${{ github.run_id }}
+          path: crown-tick-cgroup-accounting.log
+          retention-days: 14
+
+      - name: Read system-wide PSI pressure (CPU/memory/IO) and swap totals (read only)
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "echo '--- /proc/pressure/cpu ---'; cat /proc/pressure/cpu 2>&1 || echo missing; echo '--- /proc/pressure/memory ---'; cat /proc/pressure/memory 2>&1 || echo missing; echo '--- /proc/pressure/io ---'; cat /proc/pressure/io 2>&1 || echo missing; echo '--- /proc/meminfo (swap/available only) ---'; grep -E '^(MemTotal|MemAvailable|SwapTotal|SwapFree|Dirty|Writeback):' /proc/meminfo; echo '--- vm.swappiness and dirty ratios ---'; sysctl vm.swappiness vm.dirty_ratio vm.dirty_background_ratio 2>&1 || true; echo '--- loadavg ---'; cat /proc/loadavg; echo '--- nproc ---'; nproc" \
+            > server-psi-pressure.log 2>&1 || true
+          cat server-psi-pressure.log || true
+
+      - name: Upload PSI pressure diagnostic
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: server-psi-pressure-${{ github.run_id }}
+          path: server-psi-pressure.log
+          retention-days: 14
+
+      - name: Read crown-tick.service process tree snapshot during/after tick (read only)
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "echo '--- ps -eLf --forest (python3/crown processes only) ---'; ps -eLf --forest | grep -E 'crown|PYTHON|python3.*run|LWP' | grep -v grep || echo 'no matching processes at snapshot time'; echo; echo '--- full process count and top CPU/mem consumers ---'; ps -eo pid,ppid,pcpu,pmem,etimes,stat,comm --sort=-pcpu | head -20; echo; echo '--- systemd-cgls for crown-tick.service (if unit currently active) ---'; sudo systemd-cgls -u crown-tick.service 2>&1 || echo 'unit not currently active or systemd-cgls unavailable'" \
+            > crown-tick-process-tree.log 2>&1 || true
+          cat crown-tick-process-tree.log || true
+
+      - name: Upload process tree diagnostic
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: crown-tick-process-tree-${{ github.run_id }}
+          path: crown-tick-process-tree.log
+          retention-days: 14
+
+      - name: Benchmark raw fork+exit latency on the live box (read only, no persistent effect)
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "sudo env PYTHONPATH=/opt/footbreak /opt/footbreak/.venv/bin/python3 -" \
+            > crown-fork-latency-benchmark.log 2>&1 <<'PY' || true
+          import multiprocessing
+          import os
+          import statistics
+          import time
+
+          def _noop(send):
+              send.send("ok")
+              send.close()
+
+          ctx = multiprocessing.get_context("fork")
+          samples = []
+          for _ in range(20):
+              receiver, sender = ctx.Pipe(duplex=False)
+              start = time.monotonic()
+              p = ctx.Process(target=_noop, args=(sender,))
+              p.start()
+              sender.close()
+              receiver.poll(2.0)
+              try:
+                  receiver.recv()
+              except EOFError:
+                  pass
+              p.join(timeout=1.0)
+              samples.append(time.monotonic() - start)
+              receiver.close()
+
+          samples_ms = [round(s * 1000, 3) for s in samples]
+          print("fork+start+ipc_roundtrip+join latency samples (ms):", samples_ms)
+          print("median_ms:", round(statistics.median(samples_ms), 3))
+          print("p95_ms:", round(sorted(samples_ms)[int(len(samples_ms) * 0.95) - 1], 3))
+          print("max_ms:", round(max(samples_ms), 3))
+          print("cpu_count:", os.cpu_count())
+          PY
+          cat crown-fork-latency-benchmark.log || true
+
+      - name: Upload fork latency benchmark
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: crown-fork-latency-benchmark-${{ github.run_id }}
+          path: crown-fork-latency-benchmark.log
+          retention-days: 14
+
+      - name: Read Crown tick timing-probe JSONL evidence (read only, bounded, no provider payload)
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "echo '--- probe file presence/size ---'; sudo stat /var/lib/footbreak/crown/tick-timing-probe.jsonl 2>&1 || echo 'probe file does not exist yet'; echo '--- confirm probe env is enabled on the live unit ---'; sudo systemctl show crown-tick.service -p Environment | tr ' ' '\n' | grep -i CROWN_TICK_TIMING_PROBE || echo 'probe env not found in unit'; echo '--- last 2000 lines of the probe JSONL (bounded; contains only checkpoint/monotonic/rss/swap fields, never provider payloads) ---'; sudo tail -n 2000 /var/lib/footbreak/crown/tick-timing-probe.jsonl 2>&1 || echo 'no probe data yet'" \
+            > crown-tick-timing-probe.jsonl.log 2>&1 || true
+          wc -l crown-tick-timing-probe.jsonl.log || true
+
+      - name: Upload timing probe evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: crown-tick-timing-probe-${{ github.run_id }}
+          path: crown-tick-timing-probe.jsonl.log
           retention-days: 14
 # trigger Sat Aug 22 11:10:33 UTC 2026
