@@ -9,6 +9,7 @@ import json
 import os
 import re
 import sys
+from collections import Counter
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -26,6 +27,226 @@ ALLOWED_WINDOWS = {6, 12, 24}
 ALLOWED_GRACE_MINUTES = {15, 30, 60}
 ALLOWED_LIMITS = {25, 50, 100}
 STAGE_FIELDS = ("stage", "status", "ts", "no_bet_reason")
+
+
+def _date_bucket(value: Any) -> str:
+    parsed = parse_time(value)
+    return parsed.astimezone(HKT).date().isoformat() if parsed is not None else "unparseable"
+
+
+def _counter_rows(counter: Counter[str]) -> dict[str, int]:
+    return {key: int(counter[key]) for key in sorted(counter)}
+
+
+def _notification_silence_audit(
+    ledger: dict[str, Any],
+    state: dict[str, Any],
+) -> dict[str, Any]:
+    """Audit persisted Crown admissions and Telegram state, without network I/O.
+
+    This function intentionally recomputes matcher outcomes from the immutable
+    stored T-5 stages and frozen registry only.  It reads no results, invokes
+    no provider, and does not save the in-memory ledger used for projection.
+    """
+    from analysis.granular_conditions import MARKETS
+    from analysis.wilson_portfolio import _native_t5, _selected
+    from analysis.wilson_validation import (
+        DECISION_STAGE,
+        formal_registry_candidates,
+        match_formal_registry,
+        matching_admissions,
+    )
+    from crown.notify import _observation_group_key
+
+    validation = (
+        ledger.get("wilson_validation")
+        if isinstance(ledger.get("wilson_validation"), dict) else {}
+    )
+    conditions = (
+        validation.get("conditions")
+        if isinstance(validation.get("conditions"), dict) else {}
+    )
+    registry = formal_registry_candidates(ledger, "crown")
+    activation = sorted({
+        str((item.get("active_evidence") or {}).get("activation_boundary_at") or "")
+        for item in conditions.values()
+        if isinstance(item, dict)
+    })
+    activation = [value for value in activation if value]
+    observations = [
+        row for row in validation.get("observations") or []
+        if isinstance(row, dict)
+    ]
+    bets = [
+        row for row in ledger.get("bets") or []
+        if isinstance(row, dict)
+        and str(row.get("portfolio") or "") == "crown_wilson_test"
+    ]
+    acknowledged = {
+        str(item) for item in state.get("wilson_match_alerts") or [] if str(item)
+    }
+    watches = ledger.get("watch") if isinstance(ledger.get("watch"), dict) else {}
+
+    by_day = Counter()
+    by_window = Counter()
+    market_outcome = Counter()
+    structural_by_market = Counter()
+    formal_admissions_by_market = Counter()
+    examples: list[dict[str, Any]] = []
+    native_count = 0
+
+    # The active v2 boundary is a stored immutable value.  For a malformed
+    # registry with no unique boundary we still report all rows fail-closed,
+    # rather than inferring a replacement boundary.
+    boundary = parse_time(activation[0]) if len(activation) == 1 else None
+    for raw_fixture, watch in sorted(watches.items(), key=lambda item: str(item[0])):
+        if not isinstance(watch, dict):
+            continue
+        stages = [
+            stage for stage in watch.get("stages") or []
+            if isinstance(stage, dict) and stage.get("stage") == DECISION_STAGE
+        ]
+        for stage in stages:
+            if not _native_t5(watch, stage, parse_time):
+                continue
+            stage_at = parse_time(stage.get("ts") or stage.get("source_snapshot_at"))
+            if stage_at is None:
+                continue
+            native_count += 1
+            by_day[_date_bucket(stage_at)] += 1
+            if boundary is None:
+                by_window["boundary_unavailable"] += 1
+            elif stage_at < boundary:
+                by_window["before_active_v2_boundary"] += 1
+            else:
+                by_window["at_or_after_active_v2_boundary"] += 1
+            fixture = str(watch.get("match_id") or raw_fixture)
+            stage_rows = [{
+                "match_id": fixture,
+                "stage": DECISION_STAGE,
+                "kickoff": watch.get("kickoff") or watch.get("kickoff_hkt"),
+                "predicted_at": str(stage.get("ts") or stage.get("source_snapshot_at") or ""),
+                "market_predictions": stage.get("market_predictions") or [],
+            }]
+            matched = match_formal_registry(
+                stage_rows, registry, system="crown", decision_stage=DECISION_STAGE,
+            ).get(fixture, [])
+            for market in MARKETS:
+                selected, selection_reason = _selected(
+                    stage, market, parse_time,
+                    fixture_kickoff=watch.get("kickoff") or watch.get("kickoff_hkt"),
+                )
+                if selected is None:
+                    market_outcome[f"{market}:{selection_reason or 'selection_invalid'}"] += 1
+                    continue
+                structural = [
+                    item for item in matched
+                    if str(item.get("market") or "") == market
+                ]
+                if structural:
+                    structural_by_market[market] += 1
+                admissions, admission_reason = matching_admissions(
+                    "crown", market, selected, matched,
+                    stage_at=str(stage.get("ts") or stage.get("source_snapshot_at") or ""),
+                )
+                if admissions:
+                    formal_admissions_by_market[market] += 1
+                    outcome = "formal_admission"
+                else:
+                    outcome = admission_reason or "no_admission"
+                market_outcome[f"{market}:{outcome}"] += 1
+                if len(examples) < 18:
+                    examples.append({
+                        "fixture": fixture,
+                        "fixture_name": (
+                            f"{str(watch.get('home') or '')} vs "
+                            f"{str(watch.get('away') or '')}"
+                        ).strip(),
+                        "kickoff_hkt": _safe_timestamp(
+                            watch.get("kickoff") or watch.get("kickoff_hkt")
+                        ),
+                        "native_t5_at_hkt": _safe_timestamp(
+                            stage.get("ts") or stage.get("source_snapshot_at")
+                        ),
+                        "market": market,
+                        "structural_frozen_match": bool(structural),
+                        "matcher_outcome": outcome,
+                    })
+
+    durable_rows = bets + observations
+    formal_rows = [
+        row for row in durable_rows
+        if row.get("formal_bet") is not False
+        and str(row.get("portfolio") or "") == "crown_wilson_test"
+    ]
+    low_odds = [
+        row for row in observations
+        if row.get("formal_bet") is False
+    ]
+    eligible = []
+    for row in durable_rows:
+        row_id = str(row.get("bet_id") or row.get("observation_id") or "")
+        if row_id and row_id not in acknowledged and (
+            row.get("bet_id") or _observation_group_key(row) is not None
+        ):
+            eligible.append(row_id)
+
+    notification_keys = {
+        key: len(value) if isinstance(value, list) else None
+        for key, value in state.items()
+        if key in {
+            "signals", "corner_t5", "bets", "wilson_bets",
+            "wilson_match_alerts", "bilateral_decision_alerts",
+        }
+    }
+    legacy_signals = state.get("signals") if isinstance(state.get("signals"), list) else []
+    legacy_formats = Counter()
+    for item in legacy_signals:
+        text = str(item)
+        if "|three-stage-v1|" in text:
+            legacy_formats["three_stage_signal"] += 1
+        elif "|T-5|" in text:
+            legacy_formats["other_t5_signal"] += 1
+        else:
+            legacy_formats["other"] += 1
+
+    return {
+        "read_only": True,
+        "provider_requests": False,
+        "results_read_or_used": False,
+        "frozen_registry": {
+            "loaded_entries": len(registry),
+            "coverage_by_market": _counter_rows(Counter(
+                str(item.get("market") or "") for item in registry
+            )),
+            "active_evidence_boundaries": activation,
+        },
+        "native_t5": {
+            "count": native_count,
+            "by_hkt_day": _counter_rows(by_day),
+            "by_registry_version_window": _counter_rows(by_window),
+        },
+        "recomputed_matcher": {
+            "structural_frozen_matches_by_market": _counter_rows(structural_by_market),
+            "formal_admissions_by_market": _counter_rows(formal_admissions_by_market),
+            "outcomes_by_market_and_reason": _counter_rows(market_outcome),
+            "representative_rows": examples,
+        },
+        "durable_formal_lifecycle": {
+            "formal_rows": len(formal_rows),
+            "low_odds_observations": len(low_odds),
+            "eligible_unacknowledged_outbox_rows": len(eligible),
+            "acknowledged_wilson_ids": len(acknowledged),
+        },
+        "historical_notification_state": {
+            "state_updated_at": state.get("updated_at"),
+            "key_counts": notification_keys,
+            "legacy_signal_policy_formats": _counter_rows(legacy_formats),
+            "legacy_signal_samples": [
+                str(item)[:180] for item in legacy_signals[:4]
+            ],
+        },
+    }
 
 
 def _load(path: Path, default: Any) -> tuple[Any, str | None]:
@@ -195,9 +416,12 @@ def build_report(
     now = (now or datetime.now(HKT)).astimezone(HKT)
     raw_predictions, prediction_error = _load(state_dir / "predictions.json", [])
     raw_ledger, ledger_error = _load(state_dir / "ledger.json", {})
+    raw_notify, notify_error = _load(state_dir / "notify_state.json", {})
     predictions = raw_predictions if isinstance(raw_predictions, list) else []
     watches = (raw_ledger.get("watch") or {}) if isinstance(raw_ledger, dict) else {}
     watches = watches if isinstance(watches, dict) else {}
+    ledger = raw_ledger if isinstance(raw_ledger, dict) else {}
+    notify_state = raw_notify if isinstance(raw_notify, dict) else {}
     current_after = now - timedelta(minutes=current_grace_minutes)
     future_before = now + timedelta(hours=future_hours)
     fixtures = []
@@ -224,10 +448,14 @@ def build_report(
         "state": {
             "predictions": "available" if prediction_error is None else prediction_error,
             "ledger": "available" if ledger_error is None else ledger_error,
+            "notify_state": "available" if notify_error is None else notify_error,
             "fixtures_observed": len(fixtures),
             "fixtures_emitted": min(len(fixtures), limit),
         },
         "fixtures": fixtures[:limit],
+        "notification_silence_audit": _notification_silence_audit(
+            ledger, notify_state,
+        ),
     }
 
 
