@@ -2087,12 +2087,18 @@ class CrownSafetyTests(unittest.TestCase):
                 "quote_source": "titan007-crown-id-3",
             }
             with patch("crown.engine.TitanClient", return_value=titan_client), \
-                 patch("crown.engine.PinnapiClient", side_effect=AssertionError(
-                     "T-30 must not wait for PinnAPI"
-                 )), \
-                 patch("crown.engine.fetch_matches", side_effect=AssertionError(
-                     "T-30 must not wait for HKJC discovery"
-                 )):
+                patch("crown.engine.PinnapiClient", side_effect=AssertionError(
+                    "T-30 must not wait for PinnAPI"
+                )), \
+                patch("crown.engine.fetch_matches", side_effect=AssertionError(
+                    "T-30 must not wait for HKJC discovery"
+                )), \
+                patch("crown.ledger.challenger_v2.recompute", side_effect=AssertionError(
+                    "T-30 must not wait for research aggregation"
+                )), \
+                patch("crown.engine.recompute_stats", side_effect=AssertionError(
+                    "T-30 must not wait for portfolio aggregation"
+                )):
                 result = run("tick", config)
             self.assertTrue(result["fast_timed_stage_bulk"])
             self.assertEqual(result["predictions"], 1)

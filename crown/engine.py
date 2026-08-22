@@ -1658,7 +1658,12 @@ def _commit_stage_predictions(
                 for row in ((ledger.get("watch") or {}).get(match_id, {}).get("stages") or [])
                 if isinstance(row, dict)
             )
-            created = sync_prediction(ledger, prediction, config)
+            created = sync_prediction(
+                ledger,
+                prediction,
+                config,
+                defer_auxiliary_recompute=stage != "T-5",
+            )
             emitted.extend(created)
             prediction["stages"] = list(
                 ledger["watch"].get(match_id, {}).get("stages") or []
@@ -1676,7 +1681,16 @@ def _commit_stage_predictions(
                 if isinstance(row, dict)
             ):
                 fresh_condition_predictions.append({"match_id": match_id, "stage": stage})
-        recompute_stats(ledger, config)
+        # A timed 首預/T-30 row is authoritative immediately after its atomic
+        # snapshot write.  Portfolio/challenger aggregation is not required to
+        # preserve that evidence and can be rebuilt by ordinary reconciliation.
+        # Keep formal T-5 recomputation in-line until its own persistence path
+        # is split, because it owns the active frozen observation projection.
+        if any(
+            str(prediction.get("stage") or "") == "T-5"
+            for prediction in committed_predictions
+        ):
+            recompute_stats(ledger, config)
         ledger["log"].append({
             "ts": iso_hkt(), "kind": mode, "n_changes": len(emitted),
             "changes": emitted or ["今次無模擬注動作"], "simulation_only": True,

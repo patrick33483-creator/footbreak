@@ -538,7 +538,13 @@ def _record_learning_snapshot(
         )
 
 
-def sync_prediction(ledger: dict[str, Any], prediction: dict[str, Any], config: Settings) -> list[str]:
+def sync_prediction(
+    ledger: dict[str, Any],
+    prediction: dict[str, Any],
+    config: Settings,
+    *,
+    defer_auxiliary_recompute: bool = False,
+) -> list[str]:
     """Persist a stage and create only newly-observed eligible T-5 condition bets."""
     ledger.setdefault("bets", [])
     ledger.setdefault("watch", {})
@@ -677,7 +683,11 @@ def sync_prediction(ledger: dict[str, Any], prediction: dict[str, Any], config: 
         or not _completed_stage_row(stored)
         or existing_was_completed
     ):
-        challenger_v2.recompute(ledger[challenger_v2.NAMESPACE], ledger)
+        # Timed 首預/T-30 durability is deadline-critical.  Research-only
+        # challenger aggregation is a consumer of the already durable native
+        # snapshot and must never make a stage job miss its legal window.
+        if not defer_auxiliary_recompute:
+            challenger_v2.recompute(ledger[challenger_v2.NAMESPACE], ledger)
         return []
     history = read_json(config.state_dir / "prediction_history.json", {})
     cached_ranking = (
