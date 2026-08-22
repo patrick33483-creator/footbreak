@@ -1,0 +1,228 @@
+name: Crown T-5 ledger I/O measurement 20260822 (read only)
+
+on:
+  workflow_dispatch:
+    inputs:
+      repeat_count:
+        description: 'Number of load/parse/serialize/fsync/replace cycles to time (read only, writes only to a scratch tmp file, never touches ledger.json)'
+        required: false
+        type: string
+        default: '5'
+
+permissions:
+  contents: read
+
+jobs:
+  measure:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: Measure live ledger.json size, shape, and I/O timing (read only; scratch-file only writes)
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          REPEAT_COUNT: ${{ inputs.repeat_count }}
+        run: |
+          set -euo pipefail
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "sudo env REPEAT_COUNT='$REPEAT_COUNT' PYTHONPATH=/opt/footbreak /opt/footbreak/.venv/bin/python3 -" \
+            > crown-ledger-io-measure.json <<'PY'
+          import json
+          import os
+          import time
+          from pathlib import Path
+
+          from crown.config import Settings
+          from crown.state import paths
+
+          repeat_count = max(1, int(os.environ.get("REPEAT_COUNT", "5")))
+          config = Settings.load()
+          ledger_path = paths(config)["ledger"]
+
+          result = {
+              "generated_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+              "ledger_path": str(ledger_path),
+          }
+
+          try:
+              stat = ledger_path.stat()
+              result["ledger_bytes"] = stat.st_size
+              result["ledger_mtime_utc"] = time.strftime(
+                  "%Y-%m-%dT%H:%M:%SZ", time.gmtime(stat.st_mtime)
+              )
+          except FileNotFoundError:
+              result["ledger_bytes"] = None
+              result["error"] = "ledger.json not found at expected path"
+
+          state_dir = ledger_path.parent
+          try:
+              du = os.statvfs(state_dir)
+              result["state_dir_fs_free_bytes"] = du.f_bavail * du.f_frsize
+              result["state_dir_fs_block_size"] = du.f_frsize
+          except OSError:
+              pass
+
+          cycles = []
+          raw_bytes = None
+          for i in range(repeat_count):
+              cycle = {"iteration": i}
+              t0 = time.monotonic()
+              try:
+                  with open(ledger_path, "rb") as fh:
+                      raw_bytes = fh.read()
+              except FileNotFoundError:
+                  cycle["error"] = "ledger.json missing"
+                  cycles.append(cycle)
+                  continue
+              t1 = time.monotonic()
+              cycle["read_bytes_s"] = round(t1 - t0, 6)
+              cycle["read_bytes_len"] = len(raw_bytes)
+
+              t2 = time.monotonic()
+              data = json.loads(raw_bytes)
+              t3 = time.monotonic()
+              cycle["json_parse_s"] = round(t3 - t2, 6)
+
+              watch = data.get("watch") if isinstance(data, dict) else None
+              if isinstance(watch, dict):
+                  cycle["watch_count"] = len(watch)
+                  job_count = 0
+                  attempt_count = 0
+                  stage_count = 0
+                  for w in watch.values():
+                      if not isinstance(w, dict):
+                          continue
+                      jobs = w.get("stage_jobs")
+                      if isinstance(jobs, dict):
+                          job_count += len(jobs)
+                      attempts = w.get("stage_attempts")
+                      if isinstance(attempts, dict):
+                          attempt_count += len(attempts)
+                      stages = w.get("stages")
+                      if isinstance(stages, list):
+                          stage_count += len(stages)
+                  cycle["stage_job_count"] = job_count
+                  cycle["stage_attempt_count"] = attempt_count
+                  cycle["stage_row_count"] = stage_count
+              bets = data.get("bets") if isinstance(data, dict) else None
+              if isinstance(bets, list):
+                  cycle["bet_count"] = len(bets)
+              log = data.get("log") if isinstance(data, dict) else None
+              if isinstance(log, list):
+                  cycle["log_count"] = len(log)
+
+              t4 = time.monotonic()
+              serialized = json.dumps(data, ensure_ascii=False)
+              t5 = time.monotonic()
+              cycle["json_serialize_s"] = round(t5 - t4, 6)
+              cycle["serialized_bytes_len"] = len(serialized)
+
+              # Scratch-only atomic-write timing: never touches the real ledger
+              # or state_dir; uses an isolated tmp path so this measurement is
+              # strictly read-only with respect to production state.
+              scratch_dir = Path("/tmp/crown-ledger-io-measure-20260822")
+              scratch_dir.mkdir(parents=True, exist_ok=True)
+              scratch_tmp = scratch_dir / f"scratch-{i}.json.tmp"
+              scratch_final = scratch_dir / f"scratch-{i}.json"
+
+              t6 = time.monotonic()
+              with open(scratch_tmp, "w", encoding="utf-8") as fh:
+                  fh.write(serialized)
+                  fh.flush()
+                  t7 = time.monotonic()
+                  os.fsync(fh.fileno())
+              t8 = time.monotonic()
+              cycle["scratch_write_before_fsync_s"] = round(t7 - t6, 6)
+              cycle["scratch_fsync_s"] = round(t8 - t7, 6)
+
+              t9 = time.monotonic()
+              os.replace(scratch_tmp, scratch_final)
+              t10 = time.monotonic()
+              cycle["scratch_replace_s"] = round(t10 - t9, 6)
+              cycle["scratch_total_write_path_s"] = round(t10 - t6, 6)
+
+              try:
+                  scratch_final.unlink(missing_ok=True)
+              except Exception:
+                  pass
+
+              cycle["cycle_total_s"] = round(t10 - t0, 6)
+              cycles.append(cycle)
+              time.sleep(0.2)
+
+          result["cycles"] = cycles
+          if cycles:
+              totals = [c.get("cycle_total_s") for c in cycles if "cycle_total_s" in c]
+              reads = [c.get("read_bytes_s") for c in cycles if "read_bytes_s" in c]
+              parses = [c.get("json_parse_s") for c in cycles if "json_parse_s" in c]
+              serializes = [c.get("json_serialize_s") for c in cycles if "json_serialize_s" in c]
+              fsyncs = [c.get("scratch_fsync_s") for c in cycles if "scratch_fsync_s" in c]
+              def avg(xs):
+                  return round(sum(xs) / len(xs), 6) if xs else None
+              result["averages"] = {
+                  "cycle_total_s": avg(totals),
+                  "read_bytes_s": avg(reads),
+                  "json_parse_s": avg(parses),
+                  "json_serialize_s": avg(serializes),
+                  "scratch_fsync_s": avg(fsyncs),
+              }
+
+          # Lock-wait sampling: measure how long the real state lock is held
+          # by observing flock contention without ever acquiring it ourselves
+          # in blocking mode (LOCK_NB probe only -- read only, no mutation).
+          import fcntl
+          lock_path = state_dir / ".state.lock"
+          lock_samples = []
+          for _ in range(10):
+              t_probe0 = time.monotonic()
+              try:
+                  with open(lock_path, "a+", encoding="utf-8") as handle:
+                      try:
+                          fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                          fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                          lock_samples.append({"t": round(time.monotonic() - t_probe0, 6), "held_by_other": False})
+                      except BlockingIOError:
+                          lock_samples.append({"t": round(time.monotonic() - t_probe0, 6), "held_by_other": True})
+              except FileNotFoundError:
+                  lock_samples.append({"error": "lock file missing"})
+              time.sleep(0.3)
+          result["lock_contention_samples"] = lock_samples
+          result["lock_held_by_other_count"] = sum(
+              1 for s in lock_samples if s.get("held_by_other")
+          )
+
+          # Live loadavg / PSI snapshot for correlation, read only.
+          try:
+              result["loadavg"] = open("/proc/loadavg").read().strip()
+          except OSError:
+              pass
+          try:
+              result["psi_cpu"] = open("/proc/pressure/cpu").read().strip()
+          except OSError:
+              pass
+          try:
+              result["psi_memory"] = open("/proc/pressure/memory").read().strip()
+          except OSError:
+              pass
+
+          print(json.dumps(result, indent=2, ensure_ascii=False))
+          PY
+
+      - name: Upload measurement
+        uses: actions/upload-artifact@v4
+        with:
+          name: crown-ledger-io-measure-${{ github.run_id }}
+          path: crown-ledger-io-measure.json
+          retention-days: 14
