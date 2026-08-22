@@ -16,6 +16,7 @@ from analysis.wilson_validation import (
     DECISION_STAGE, formal_registry_candidates, match_formal_registry,
     matching_admissions,
 )
+from analysis.granular_conditions import _descriptor, _paths, canonical_panels
 from crown.common import HKT, iso_hkt
 from crown.config import settings
 from crown.hkjc_execution_test import NAMESPACE, _native_crown_signal, _number, _time
@@ -69,6 +70,86 @@ def _fixture_name(watch: dict[str, Any]) -> str:
     return f"{watch.get('home') or ''} vs {watch.get('away') or ''}".strip()
 
 
+def _frozen_axes(candidate: dict[str, Any]) -> dict[str, str] | None:
+    """Mirror the formal matcher axes so a rejected path is explainable."""
+    aliases = {
+        "stage": "decision", "decision_stage": "decision",
+        "observed_path": "path", "odds_tier": "tier",
+        "line_bucket": "bucket", "tier_path": "tier_path",
+        "odds_trajectory": "tier_path",
+    }
+    result: dict[str, str] = {}
+    for raw in candidate.get("key") or []:
+        if not isinstance(raw, str) or "=" not in raw:
+            return None
+        key, value = raw.split("=", 1)
+        key, value = aliases.get(key.strip(), key.strip()), value.strip()
+        if not key or not value or (key in result and result[key] != value):
+            return None
+        result[key] = value
+    return result or None
+
+
+def _descriptor_explanations(
+    rows: list[dict[str, Any]], registry: list[dict[str, Any]], *, system: str,
+) -> dict[tuple[str, str], list[dict[str, Any]]]:
+    """Provide exact persisted axes and the nearest frozen mismatch per market."""
+    frozen = [
+        (candidate, axes)
+        for candidate in registry
+        if isinstance(candidate, dict) and (axes := _frozen_axes(candidate)) is not None
+    ]
+    output: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for panel in canonical_panels(rows, settled_only=False):
+        fixture, market = str(panel.get("fixture") or ""), str(panel.get("market") or "")
+        if not fixture or not market:
+            continue
+        entries: list[dict[str, Any]] = []
+        for path in _paths(panel, DECISION_STAGE):
+            if not path or path[-1].get("stage") != DECISION_STAGE:
+                continue
+            for level in range(4):
+                descriptor, _label, _specificity = _descriptor(system, path, level)
+                live = dict(piece.split("=", 1) for piece in descriptor)
+                candidates = [
+                    (candidate, axes)
+                    for candidate, axes in frozen
+                    if axes.get("market") == market
+                ]
+                closest = None
+                if candidates:
+                    ranked = sorted(
+                        (
+                            (
+                                sum(live.get(axis) != value for axis, value in axes.items()),
+                                str(candidate.get("__formal_frozen_signature") or ""),
+                                candidate,
+                                axes,
+                            )
+                            for candidate, axes in candidates
+                        ),
+                        key=lambda row: (row[0], row[1]),
+                    )
+                    distance, _signature, candidate, axes = ranked[0]
+                    mismatch = {
+                        axis: {"live": live.get(axis), "frozen": value}
+                        for axis, value in axes.items()
+                        if live.get(axis) != value
+                    }
+                    closest = {
+                        "condition_number": candidate.get("__formal_condition_number"),
+                        "signature": candidate.get("__formal_frozen_signature"),
+                        "mismatch_count": distance,
+                        "mismatch_axes": mismatch,
+                    }
+                entries.append({
+                    "live_axes": live,
+                    "nearest_frozen": closest,
+                })
+        output[(fixture, market)] = entries
+    return output
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--since", required=True, help="inclusive ISO-8601 HKT deployment boundary")
@@ -91,6 +172,9 @@ def main() -> int:
         str((row.get("__formal_frozen_definition") or {}).get("market") or "")
         for row in registry
     )
+    for row in registry:
+        signature = str(row.get("__formal_frozen_signature") or "")
+        row["__formal_condition_number"] = raw_conditions.get(signature, {}).get("condition_number")
     reciprocal = ledger.get(NAMESPACE) if isinstance(ledger.get(NAMESPACE), dict) else {}
     decisions = [row for row in reciprocal.get("decisions") or [] if isinstance(row, dict)]
     outboxes = [row for row in reciprocal.get("decision_outbox") or [] if isinstance(row, dict)]
@@ -101,6 +185,7 @@ def main() -> int:
     sent_bilateral = {str(value) for value in state.get("bilateral_decision_alerts") or []}
 
     all_records: list[dict[str, Any]] = []
+    all_native_rows: list[dict[str, Any]] = []
     native_t5_count = 0
     for fixture, watch in sorted(watches.items()):
         if not isinstance(watch, dict):
@@ -119,6 +204,7 @@ def main() -> int:
             # projection would falsely report every multi-stage condition as
             # unmatched.
             stage_rows = _native_match_rows(watch, _time)
+            all_native_rows.extend(stage_rows)
             matched = match_formal_registry(
                 stage_rows, registry, system="crown", decision_stage=DECISION_STAGE,
             ).get(str(fixture), []) if native and registry else []
@@ -201,6 +287,37 @@ def main() -> int:
                     } for row in row_outbox],
                     "persisted_audit": row_audit,
                 })
+
+    explanations = _descriptor_explanations(all_native_rows, registry, system="crown")
+    for row in all_records:
+        key = (str(row["fixture"]), str(row["market"]))
+        row["persisted_path_descriptors"] = explanations.get(key, [])
+        if not row["structural_registry_matches"] and row["signal"] is not None:
+            paths = row["persisted_path_descriptors"]
+            nearest = [
+                path.get("nearest_frozen") for path in paths
+                if isinstance(path.get("nearest_frozen"), dict)
+            ]
+            if nearest:
+                nearest.sort(key=lambda value: (
+                    int(value.get("mismatch_count") or 999),
+                    str(value.get("signature") or ""),
+                ))
+                row["no_match_reason"] = {
+                    "code": "frozen_axes_mismatch",
+                    "nearest_frozen": nearest[0],
+                }
+            else:
+                row["no_match_reason"] = {
+                    "code": "no_frozen_formal_condition_for_market",
+                    "market": row["market"],
+                }
+        elif row["structural_registry_matches"]:
+            row["no_match_reason"] = None
+        else:
+            row["no_match_reason"] = {
+                "code": row["signal_reason"] or "native_signal_unavailable",
+            }
 
     wrong_rejections = [row for row in all_records if (
         row["native_first_pre_kickoff_t5"] and row["signal"] is not None
