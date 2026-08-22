@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import copy
+import fcntl
 import hashlib
 import json
 import os
@@ -25,6 +27,28 @@ from analysis.wilson_validation import active_bets, project_dashboard_research_m
 # its old sidecar rather than a mutable file from the next generation.
 HISTORY_DATA_URL = "history.json"
 HISTORY_ARTIFACT_SCHEMA = "crown-history-v1"
+
+
+@contextlib.contextmanager
+def _dashboard_publish_lock(destination: Path):
+    """Serialize only final public-snapshot replacement across Crown writers.
+
+    Native stages commit to the durable ledger before either publisher runs.
+    A full sweep may have begun deriving history from an older read while a
+    deadline-bound tick commits and publishes T-5.  Without a common final
+    publication lock, that older full writer can atomically replace the newer
+    public snapshot after the tick.  The lock deliberately protects neither
+    provider work nor history derivation; it protects the small final
+    authoritative rebase and atomic replacement only.
+    """
+    lock_path = destination.with_name(f".{destination.name}.publish.lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+", encoding="utf-8") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 def _dashboard_matches(config: Settings) -> list[dict[str, Any]]:
@@ -288,6 +312,59 @@ def _attach_wilson_matches(matches: list[dict[str, Any]], ledger: dict[str, Any]
             match["wilson_matches"] = by_fixture.get(str(match.get("match_id") or ""), [])
 
 
+def _rebase_live_dashboard_payload(
+    payload: dict[str, Any],
+    config: Settings,
+    ledger: dict[str, Any],
+    *,
+    clear_research_matches: bool,
+) -> dict[str, Any]:
+    """Rebase one public payload onto the latest committed native ledger state.
+
+    This is intentionally local and read-only.  It never discovers fixtures,
+    creates stages, changes lifecycle evidence, or invokes a provider.  The
+    prediction card remains the fixture source; the matching durable watch
+    entry replaces only verified native stage facts.  ``generated_at`` is set
+    only after this latest durable-state read has been incorporated.
+    """
+    existing = {
+        str(row.get("match_id") or ""): row
+        for row in (payload.get("matches") or [])
+        if isinstance(row, dict) and row.get("match_id")
+    }
+    seeded = []
+    for card in _dashboard_matches(config):
+        old = dict(existing.get(str(card.get("match_id") or ""), {}))
+        if clear_research_matches:
+            old.pop("condition_matches", None)
+            old.pop("research_matches", None)
+        seeded.append(old | card)
+    matches = _project_authoritative_watch_stages(seeded, ledger)
+    _attach_wilson_matches(matches, ledger)
+    if clear_research_matches:
+        for row in matches:
+            if isinstance(row, dict):
+                row["condition_matches"] = []
+    dashboard_ledger, active_condition_bets = _public_ledger(ledger)
+    payload.update({
+        "schema_version": "crown-dashboard-v2",
+        # This value must describe the authoritative state used for the
+        # public replacement, not the beginning of an earlier full build.
+        "generated_at": iso_hkt(),
+        "title": payload.get("title") or "足破 · 皇冠賽事預測終端",
+        "summary": _summary(matches, active_condition_bets),
+        "matches": matches,
+        "ledger": dashboard_ledger,
+        "v2_challenger": (
+            ledger.get("crown_v2_challenger")
+            if isinstance(ledger.get("crown_v2_challenger"), dict)
+            else None
+        ),
+        "stage_completeness": stage_completeness(matches, ledger),
+    })
+    return payload
+
+
 def _summary(matches: list[dict[str, Any]], active_condition_bets: list[dict[str, Any]]) -> dict[str, int]:
     return {
         "crown_matches": len(matches),
@@ -317,60 +394,29 @@ def write_tick_dashboard_projection(
     local state, so a native T-5 cannot remain invisible until a later sweep.
     """
     destination = out or config.web_root / "data.json"
-    previous = read_json(destination, {})
-    payload = previous if (
-        isinstance(previous, dict)
-        and previous.get("schema_version") == "crown-dashboard-v2"
-    ) else {}
-    current_ledger = ledger if isinstance(ledger, dict) else load_ledger(config)
-    matches = _project_authoritative_watch_stages(
-        _dashboard_matches(config), current_ledger,
-    )
-    old_matches = {
-        str(row.get("match_id") or ""): row
-        for row in (payload.get("matches") or [])
-        if isinstance(row, dict) and row.get("match_id")
-    }
-    # Preserve dashboard-only fields, then replace every persisted stage/card
-    # field with committed state.  A fast tick intentionally cannot rebuild
-    # discovery rankings, so discard old research matches rather than
-    # presenting a stale row as the just-committed native T-5 decision.
-    projected_matches = []
-    for row in matches:
-        old = dict(old_matches.get(str(row.get("match_id") or ""), {}))
-        old.pop("condition_matches", None)
-        old.pop("research_matches", None)
-        projected_matches.append(old | row)
-    dashboard_ledger, active_condition_bets = _public_ledger(current_ledger)
-    _attach_wilson_matches(projected_matches, current_ledger)
-    for row in projected_matches:
-        if isinstance(row, dict):
-            row["condition_matches"] = []
-    payload.update({
-        "schema_version": "crown-dashboard-v2",
-        "generated_at": iso_hkt(),
-        "title": payload.get("title") or "足破 · 皇冠賽事預測終端",
-        "summary": _summary(projected_matches, active_condition_bets),
-        "matches": projected_matches,
-        "ledger": dashboard_ledger,
+    with _dashboard_publish_lock(destination):
+        previous = read_json(destination, {})
+        payload = previous if (
+            isinstance(previous, dict)
+            and previous.get("schema_version") == "crown-dashboard-v2"
+        ) else {}
+        # Do not trust a child-process copy that could predate a just-committed
+        # native T-5 while waiting for this publication lock.
+        current_ledger = load_ledger(config)
+        payload = _rebase_live_dashboard_payload(
+            payload, config, current_ledger, clear_research_matches=True,
+        )
         # The fast archive already writes raw history rows.  Do not parse,
         # normalize, grade, calculate statistics, or mine conditions here.
-        "prediction_history": (
+        payload["prediction_history"] = (
             payload.get("prediction_history")
             if isinstance(payload.get("prediction_history"), dict)
             else {"stats": {}}
-        ),
-        "history_data_url": payload.get("history_data_url") or HISTORY_DATA_URL,
-        "history_data_version": payload.get("history_data_version"),
-        "v2_challenger": (
-            current_ledger.get("crown_v2_challenger")
-            if isinstance(current_ledger.get("crown_v2_challenger"), dict)
-            else None
-        ),
-        "stage_completeness": stage_completeness(projected_matches, current_ledger),
-    })
-    write_json_atomic(destination, payload)
-    os.chmod(destination, 0o644)
+        )
+        payload["history_data_url"] = payload.get("history_data_url") or HISTORY_DATA_URL
+        payload["history_data_version"] = payload.get("history_data_version")
+        write_json_atomic(destination, payload)
+        os.chmod(destination, 0o644)
     return destination
 
 
@@ -632,10 +678,18 @@ def write_dashboard_data(config: Settings, out: Path | None = None) -> Path:
     # the short two-file replacement window.
     write_json_atomic(history_destination, history_artifact)
     os.chmod(history_destination, 0o644)
-    write_json_atomic(destination, dashboard)
-    # A root-owned runner replaces the file atomically; retain nginx readability
-    # on every pass, not just setup/update.
-    os.chmod(destination, 0o644)
+    with _dashboard_publish_lock(destination):
+        # A full build can spend seconds normalizing local history.  Rebase its
+        # final public state after it wins the lock so it cannot overwrite a
+        # later native T-5 projection produced by the tick process.
+        latest_ledger = load_ledger(config)
+        dashboard = _rebase_live_dashboard_payload(
+            dashboard, config, latest_ledger, clear_research_matches=False,
+        )
+        write_json_atomic(destination, dashboard)
+        # A root-owned runner replaces the file atomically; retain nginx
+        # readability on every pass, not just setup/update.
+        os.chmod(destination, 0o644)
     # Keep a short overlap window for browsers that loaded the previous boot
     # payload, while bounding derived immutable sidecars. The authoritative
     # prediction_history.json is never a cleanup target.
