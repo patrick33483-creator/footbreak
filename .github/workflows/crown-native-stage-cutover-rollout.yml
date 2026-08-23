@@ -1,0 +1,201 @@
+name: Crown native-stage cutover rollout
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "AUDIT is read-only. ENABLE/DISABLE update only the three native-stage flags."
+        required: true
+        type: choice
+        default: AUDIT
+        options: [AUDIT, ENABLE, DISABLE]
+      confirmation:
+        description: "For changes, type ENABLE_CROWN_NATIVE_STAGE_CUTOVER or DISABLE_CROWN_NATIVE_STAGE_CUTOVER."
+        required: true
+        type: string
+        default: AUDIT
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+jobs:
+  rollout:
+    name: Audit or change Crown native-stage flags
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: Validate requested action
+        env:
+          ACTION: ${{ inputs.action }}
+          CONFIRMATION: ${{ inputs.confirmation }}
+        run: |
+          set -euo pipefail
+          case "$ACTION" in
+            AUDIT)
+              [ "$CONFIRMATION" = "AUDIT" ] || {
+                echo "AUDIT requires confirmation AUDIT" >&2
+                exit 2
+              }
+              ;;
+            ENABLE)
+              [ "$CONFIRMATION" = "ENABLE_CROWN_NATIVE_STAGE_CUTOVER" ] || {
+                echo "ENABLE requires exact confirmation ENABLE_CROWN_NATIVE_STAGE_CUTOVER" >&2
+                exit 2
+              }
+              ;;
+            DISABLE)
+              [ "$CONFIRMATION" = "DISABLE_CROWN_NATIVE_STAGE_CUTOVER" ] || {
+                echo "DISABLE requires exact confirmation DISABLE_CROWN_NATIVE_STAGE_CUTOVER" >&2
+                exit 2
+              }
+              ;;
+            *)
+              echo "Unsupported action: $ACTION" >&2
+              exit 2
+              ;;
+          esac
+
+      - name: Read-only production preflight
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' > preflight.txt <<'EOSSH'
+          set -euo pipefail
+          cd /opt/footbreak
+          printf 'server_sha=%s\n' "$(git rev-parse HEAD)"
+          for path in \
+            crown/native_stage_store.py \
+            crown/native_stage_cutover.py \
+            crown/native_stage_deferred_projection.py; do
+            test -f "$path"
+            printf 'module_present=%s\n' "$path"
+          done
+          printf 'crown_tick_timer_active=%s\n' "$(systemctl is-active crown-tick.timer || true)"
+          printf 'crown_tick_timer_enabled=%s\n' "$(systemctl is-enabled crown-tick.timer || true)"
+          printf '%s\n' 'effective_flags_begin'
+          if [ -f /etc/footbreak-crown.env ]; then
+            awk -F= '
+              $1 == "CROWN_NATIVE_STAGE_STORE_ENABLED" ||
+              $1 == "CROWN_NATIVE_STAGE_CUTOVER_ENABLED" ||
+              $1 == "CROWN_NATIVE_STAGE_DEFERRED_PROJECTION_ENABLED" {
+                print $1 "=" $2
+              }
+            ' /etc/footbreak-crown.env
+          fi
+          printf '%s\n' 'effective_flags_end'
+          EOSSH
+          cat preflight.txt
+
+      - name: Apply exact flag state
+        if: ${{ inputs.action != 'AUDIT' }}
+        env:
+          ACTION: ${{ inputs.action }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "sudo env ROLLOUT_ACTION='$ACTION' bash -s" > apply.txt <<'EOSSH'
+          set -euo pipefail
+          env_file=/etc/footbreak-crown.env
+          if [ ! -e "$env_file" ]; then
+            install -m 0600 /dev/null "$env_file"
+          fi
+          backup="${env_file}.native-stage-cutover.$(date -u +%Y%m%dT%H%M%SZ).bak"
+          cp -a "$env_file" "$backup"
+          tmp=$(mktemp)
+          trap 'rm -f "$tmp"' EXIT
+          grep -vE '^CROWN_NATIVE_STAGE_(STORE|CUTOVER|DEFERRED_PROJECTION)_ENABLED=' \
+            "$env_file" > "$tmp" || true
+          case "$ROLLOUT_ACTION" in
+            ENABLE) value=1 ;;
+            DISABLE) value=0 ;;
+            *) echo "invalid rollout action" >&2; exit 2 ;;
+          esac
+          {
+            cat "$tmp"
+            printf 'CROWN_NATIVE_STAGE_STORE_ENABLED=%s\n' "$value"
+            printf 'CROWN_NATIVE_STAGE_CUTOVER_ENABLED=%s\n' "$value"
+            printf 'CROWN_NATIVE_STAGE_DEFERRED_PROJECTION_ENABLED=%s\n' "$value"
+          } > "${env_file}.new"
+          chown --reference="$env_file" "${env_file}.new"
+          chmod 0600 "${env_file}.new"
+          mv -f "${env_file}.new" "$env_file"
+          printf 'action=%s\n' "$ROLLOUT_ACTION"
+          printf 'backup=%s\n' "$backup"
+          EOSSH
+          cat apply.txt
+
+      - name: Verify effective flags without running a tick
+        env:
+          ACTION: ${{ inputs.action }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "sudo env EXPECTED_ACTION='$ACTION' bash -s" > verification.txt <<'EOSSH'
+          set -euo pipefail
+          set -a
+          [ ! -f /etc/footbreak.env ] || . /etc/footbreak.env
+          [ ! -f /etc/footbreak-crown.env ] || . /etc/footbreak-crown.env
+          set +a
+          cd /opt/footbreak
+          export PYTHONPATH=/opt/footbreak
+          /opt/footbreak/.venv/bin/python3 - <<'PY'
+          import json
+          from crown.native_stage_cutover import cutover_enabled, deferred_projection_enabled
+          from crown.native_stage_store import is_enabled
+          print(json.dumps({
+              "store_enabled": is_enabled(),
+              "cutover_enabled": cutover_enabled(),
+              "deferred_projection_enabled": deferred_projection_enabled(),
+              "provider_calls_made": 0,
+              "tick_started": False,
+          }, sort_keys=True))
+          PY
+          systemctl is-active crown-tick.timer
+          systemctl is-enabled crown-tick.timer
+          EOSSH
+          cat verification.txt
+          if [ "$ACTION" = "ENABLE" ]; then
+            grep -q '"store_enabled": true' verification.txt
+            grep -q '"cutover_enabled": true' verification.txt
+            grep -q '"deferred_projection_enabled": true' verification.txt
+          elif [ "$ACTION" = "DISABLE" ]; then
+            grep -q '"store_enabled": false' verification.txt
+            grep -q '"cutover_enabled": false' verification.txt
+            grep -q '"deferred_projection_enabled": false' verification.txt
+          fi
+
+      - name: Save privacy-safe rollout evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: crown-native-stage-cutover-${{ inputs.action }}
+          path: |
+            preflight.txt
+            apply.txt
+            verification.txt
+          if-no-files-found: ignore
+          retention-days: 14
