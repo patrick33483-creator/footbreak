@@ -854,7 +854,131 @@ def project_granular_ranking_evidence(
     """
     sync_granular_ranking_evidence(ledger, system, ranking, now=now)
     ns = ensure_namespace(ledger, system, now=now)
-    return _project_frozen_ranking_evidence(ns, system, ranking)
+    projected = _project_frozen_ranking_evidence(ns, system, ranking)
+    for card in projected:
+        card["last_merged_evidence"] = _project_last_merged_batch_rows(
+            ledger,
+            system,
+            str(card.get("condition_signature") or ""),
+            card.get("last_merged_batch"),
+        )
+    return projected
+
+
+def _project_last_merged_batch_rows(
+    ledger: dict[str, Any], system: str, signature: str,
+    batch: Any,
+) -> dict[str, Any] | None:
+    """Resolve one immutable rollover batch to safe dashboard rows.
+
+    The version's ordered fixture-market hashes are the only join keys.  A
+    missing, duplicate, malformed, cross-condition, or outcome-mismatched row
+    makes the whole detail fail closed; the dashboard must never fill a V2/V3
+    batch from a nearby formal observation.
+    """
+    if not isinstance(batch, dict) or not batch.get("version"):
+        return None
+    try:
+        expected_decided = int(batch.get("batch_decided") or 0)
+        expected_hits = int(batch.get("batch_hits") or 0)
+        version = int(batch["version"])
+    except (TypeError, ValueError):
+        return {
+            "version": batch.get("version"), "expected_decided": 0,
+            "expected_hits": 0, "rows": [], "complete": False,
+            "unavailable_reason": "malformed_batch_summary",
+        }
+    hashes = batch.get("batch_fixture_market_hashes")
+    if not isinstance(hashes, list) or not hashes:
+        return {
+            "version": version, "expected_decided": expected_decided,
+            "expected_hits": expected_hits, "rows": [], "complete": False,
+            "unavailable_reason": "legacy_batch_without_row_identity",
+        }
+    if (
+        expected_decided <= 0
+        or expected_hits < 0
+        or expected_hits > expected_decided
+        or len(hashes) != expected_decided
+        or any(not isinstance(value, str) or len(value) != 64 for value in hashes)
+        or len(set(hashes)) != len(hashes)
+    ):
+        return {
+            "version": version, "expected_decided": expected_decided,
+            "expected_hits": expected_hits, "rows": [], "complete": False,
+            "unavailable_reason": "malformed_batch_identity",
+        }
+
+    namespace = ledger.get(NAMESPACE)
+    observations = (
+        namespace.get("observations") or []
+        if isinstance(namespace, dict) and namespace.get("system") == system else []
+    )
+    candidates = list(active_bets(ledger, system)) + [
+        row for row in observations
+        if isinstance(row, dict)
+        and row.get("portfolio") == f"{system}_wilson_observations"
+        and row.get("strategy") == STRATEGY
+        and row.get("formal_bet") is False
+    ]
+    wanted = set(hashes)
+    matched: dict[str, list[dict[str, Any]]] = {}
+    for row in candidates:
+        marker = row.get("rollover_provenance")
+        if not (
+            row.get("status") == "SETTLED"
+            and row.get("stage") == DECISION_STAGE
+            and row.get("first_native_pre_kickoff_t5") is True
+            and not row.get("post_hoc_backfill")
+            and not row.get("exclude_from_simulation")
+            and str(row.get("frozen_condition_signature") or "") == signature
+            and row.get("result") in BINARY_DECIDED_RESULTS
+            and isinstance(marker, dict)
+            and marker.get("schema_version") == 1
+            and marker.get("system") == system
+            and marker.get("condition_signature") == signature
+            and marker.get("native_pre_kickoff_t5") is True
+            and marker.get("fixture_market_hash") in wanted
+        ):
+            continue
+        matched.setdefault(str(marker["fixture_market_hash"]), []).append(row)
+
+    if any(len(matched.get(value) or []) != 1 for value in hashes):
+        return {
+            "version": version, "expected_decided": expected_decided,
+            "expected_hits": expected_hits, "rows": [], "complete": False,
+            "unavailable_reason": "batch_row_identity_mismatch",
+        }
+
+    rows: list[dict[str, Any]] = []
+    for value in hashes:
+        row = matched[value][0]
+        rows.append({
+            "league": row.get("league"),
+            "home": row.get("home"),
+            "away": row.get("away"),
+            "kickoff": row.get("kickoff"),
+            "market": row.get("market") or row.get("code"),
+            "market_label": row.get("market_label"),
+            "selected_role": row.get("selected_role"),
+            "selected_side": row.get("selected_side") or row.get("side"),
+            "selected_line": row.get("selected_line", row.get("line")),
+            "odds": row.get("odds"),
+            "result": row.get("result"),
+            "settled_at": row.get("settled_at"),
+            "hit": row.get("result") in BINARY_HIT_RESULTS,
+        })
+    if sum(bool(row["hit"]) for row in rows) != expected_hits:
+        return {
+            "version": version, "expected_decided": expected_decided,
+            "expected_hits": expected_hits, "rows": [], "complete": False,
+            "unavailable_reason": "batch_outcome_mismatch",
+        }
+    return {
+        "version": version, "expected_decided": expected_decided,
+        "expected_hits": expected_hits, "rows": rows, "complete": True,
+        "unavailable_reason": None,
+    }
 
 
 def _project_frozen_ranking_evidence(
