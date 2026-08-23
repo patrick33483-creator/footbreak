@@ -13,7 +13,8 @@ from analysis.wilson_validation import (
     STARTING_BANKROLL, admission_arithmetic, choose_admission, commit_bet,
     apply_active_evidence, condition_number, ensure_namespace, freeze_condition,
     matching_admissions, portfolio_name, active_observations, project_granular_ranking_evidence,
-    project_dashboard_research_matches, record_match_observation,
+    project_dashboard_research_matches, project_frozen_ranking_evidence,
+    record_match_observation,
     recompute_namespace, wilson95,
 )
 from analysis.migrate_wilson_strategy import migrate_file
@@ -643,6 +644,35 @@ class WilsonBatchRolloverTest(unittest.TestCase):
         self.assertNotIn("fixture-", serialized)
         self.assertNotIn("fixture_market_hash", serialized)
         self.assertNotIn("rollover_provenance", serialized)
+
+    def test_crown_read_only_projection_includes_batch_rows_without_mutating_ledger(self):
+        ledger = {"bets": []}
+        for index in range(1, 21):
+            self._settled(
+                ledger, index, system="crown",
+                result="Won" if index <= 13 else "Lost",
+            )
+        recompute_namespace(ledger, "crown")
+        before = copy.deepcopy(ledger)
+        frozen, _active = self._active(ledger)
+        crown_candidate = copy.deepcopy(frozen["definition"])
+        crown_candidate["key"] = copy.deepcopy(
+            crown_candidate.pop("miner_key"),
+        )
+
+        projected = project_frozen_ranking_evidence(
+            ledger, "crown", [crown_candidate],
+        )
+
+        self.assertEqual(ledger, before)
+        self.assertEqual(len(projected), 1)
+        detail = projected[0]["last_merged_evidence"]
+        self.assertTrue(detail["complete"])
+        self.assertEqual(detail["version"], 2)
+        self.assertEqual(detail["expected_decided"], 20)
+        self.assertEqual(detail["expected_hits"], 13)
+        self.assertEqual(len(detail["rows"]), 20)
+        self.assertEqual(sum(row["hit"] for row in detail["rows"]), 13)
 
     def test_last_merged_batch_detail_fails_closed_on_identity_mismatch(self):
         ledger = {"bets": []}

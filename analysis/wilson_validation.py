@@ -1064,7 +1064,17 @@ def project_frozen_ranking_evidence(
     from the display rather than being repaired by an optional consumer.
     """
     ns = ledger.get(NAMESPACE)
-    return _project_frozen_ranking_evidence(ns, system, ranking) if isinstance(ns, dict) else []
+    if not isinstance(ns, dict):
+        return []
+    projected = _project_frozen_ranking_evidence(ns, system, ranking)
+    for card in projected:
+        card["last_merged_evidence"] = _project_last_merged_batch_rows(
+            ledger,
+            system,
+            str(card.get("condition_signature") or ""),
+            card.get("last_merged_batch"),
+        )
+    return projected
 
 
 def project_dashboard_research_matches(
