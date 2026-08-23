@@ -613,6 +613,58 @@ class WilsonBatchRolloverTest(unittest.TestCase):
             self.assertIn("新前瞻待合併", source)
             self.assertIn("活躍證據 v", source)
 
+    def test_last_merged_batch_projects_exact_twenty_rows_and_thirteen_hits(self):
+        ledger = {"bets": []}
+        for index in range(1, 21):
+            self._settled(
+                ledger, index, result="Won" if index <= 13 else "Lost",
+            )
+        recompute_namespace(ledger, "footbreak")
+
+        projected = project_granular_ranking_evidence(
+            ledger, "footbreak", [candidate()],
+            now="2026-08-22T00:00:00+08:00",
+        )
+        self.assertEqual(len(projected), 1)
+        detail = projected[0]["last_merged_evidence"]
+        self.assertTrue(detail["complete"])
+        self.assertEqual(detail["version"], 2)
+        self.assertEqual(detail["expected_decided"], 20)
+        self.assertEqual(detail["expected_hits"], 13)
+        self.assertEqual(len(detail["rows"]), 20)
+        self.assertEqual(sum(row["hit"] for row in detail["rows"]), 13)
+        self.assertEqual(detail["rows"][0]["home"], "主")
+        self.assertEqual(detail["rows"][0]["away"], "客")
+        self.assertEqual(detail["rows"][0]["market"], "HDC")
+        self.assertEqual(detail["rows"][0]["selected_role"], "主讓")
+        self.assertEqual(detail["rows"][0]["selected_line"], -.25)
+        self.assertEqual(detail["rows"][0]["odds"], 1.90)
+        serialized = json.dumps(detail, ensure_ascii=False)
+        self.assertNotIn("fixture-", serialized)
+        self.assertNotIn("fixture_market_hash", serialized)
+        self.assertNotIn("rollover_provenance", serialized)
+
+    def test_last_merged_batch_detail_fails_closed_on_identity_mismatch(self):
+        ledger = {"bets": []}
+        for index in range(1, 21):
+            self._settled(
+                ledger, index, result="Won" if index <= 13 else "Lost",
+            )
+        recompute_namespace(ledger, "footbreak")
+        frozen, _ = self._active(ledger)
+        frozen["rollover_audit"][-1]["batch_fixture_market_hashes"][7] = "f" * 64
+
+        projected = project_granular_ranking_evidence(
+            ledger, "footbreak", [candidate()],
+            now="2026-08-22T00:00:00+08:00",
+        )
+        detail = projected[0]["last_merged_evidence"]
+        self.assertFalse(detail["complete"])
+        self.assertEqual(detail["rows"], [])
+        self.assertEqual(
+            detail["unavailable_reason"], "batch_row_identity_mismatch",
+        )
+
     def test_future_formal_odds_gate_uses_active_version_not_old_baseline(self):
         ledger = {"bets": []}
         for index in range(1, 21):
