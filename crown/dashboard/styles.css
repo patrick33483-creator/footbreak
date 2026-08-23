@@ -1952,7 +1952,46 @@ table.t.history-table td {
 .granular-rank-card small, .granular-note, .granular-empty { color: var(--ink-3); font-size: var(--text-xs); }
 .granular-note { margin: var(--s2) 0 0; }
 .granular-empty { padding: var(--s3); border: 1px dashed var(--line-soft); }
+.granular-rank-card:has(.evidence-batch[open]) { grid-column: 1 / -1; }
+.evidence-batch { min-width: 0; margin: var(--s1) 0; border-block: 1px solid var(--line-soft); }
+.evidence-batch summary {
+  min-width: 0;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s2);
+  padding: var(--s2) 0;
+  color: var(--ink);
+  cursor: pointer;
+  font-size: var(--text-xs);
+  font-weight: 700;
+  list-style: none;
+}
+.evidence-batch summary::-webkit-details-marker { display: none; }
+.evidence-batch summary:focus-visible { outline: 2px solid var(--amber); outline-offset: 3px; }
+.evidence-batch-summary { display: inline-flex; align-items: center; gap: var(--s1); color: var(--ink-3); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.evidence-batch-summary i { color: var(--amber); font-size: var(--text-sm); font-style: normal; line-height: 1; }
+.evidence-batch[open] .evidence-batch-summary i { transform: rotate(45deg); }
+.evidence-batch-panel { min-width: 0; padding: 0 0 var(--s2); }
+.evidence-batch-panel ol { min-width: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--s1); margin: 0; padding: 0; list-style: none; }
+.evidence-batch-row { min-width: 0; display: grid; grid-template-columns: 24px minmax(0, 1.4fr) minmax(0, 1fr) auto; align-items: center; gap: var(--s2); padding: var(--s2); border: 1px solid var(--line-soft); border-radius: var(--radius-sm); background: var(--bg); }
+.evidence-batch-index { color: var(--ink-4); text-align: right; font-family: var(--mono); font-size: var(--text-xs); font-variant-numeric: tabular-nums; }
+.evidence-batch-match, .evidence-batch-market { min-width: 0; display: grid; gap: 2px; }
+.evidence-batch-match b, .evidence-batch-market b { min-width: 0; overflow-wrap: anywhere; font-size: var(--text-xs); }
+.evidence-batch-match b span { color: var(--ink-4); font-weight: 400; }
+.evidence-batch-match small, .evidence-batch-market small { color: var(--ink-4); font-size: var(--text-xs); }
+.evidence-batch-result { min-width: 44px; padding: 4px 7px; border: 1px solid currentColor; border-radius: 999px; text-align: center; font-size: var(--text-xs); font-weight: 700; }
+.evidence-batch-result.is-hit { color: var(--good); }
+.evidence-batch-result.is-miss { color: var(--bad); }
+.evidence-batch-unavailable { margin: 0; padding: var(--s2); border: 1px dashed var(--amber); color: var(--ink-3); font-size: var(--text-xs); }
 .condition-match-list { display: grid; gap: var(--s2); }
 .condition-match { display: grid; gap: var(--s1); padding: var(--s2); border-left: 2px solid var(--amber); background: var(--bg-2); font-size: var(--text-sm); }
 .condition-match span { color: var(--ink-3); font-variant-numeric: tabular-nums; }
-@media (max-width: 620px) { .granular-grid { grid-template-columns: 1fr; } .granular-rank-card, .condition-match-card { overflow-x: hidden; } }
+@media (max-width: 900px) { .evidence-batch-panel ol { grid-template-columns: 1fr; } }
+@media (max-width: 620px) { .granular-grid { grid-template-columns: 1fr; }
+  .granular-rank-card, .condition-match-card { overflow-x: hidden; }
+  .evidence-batch summary { align-items: flex-start; flex-direction: column; }
+  .evidence-batch-row { grid-template-columns: 22px minmax(0, 1fr) auto; }
+  .evidence-batch-market { grid-column: 2 / -1; }
+}
