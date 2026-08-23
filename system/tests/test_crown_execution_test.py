@@ -719,3 +719,267 @@ class CrossSettlementTests(unittest.TestCase):
         source = Path(cross.__file__).read_text(encoding="utf-8")
         for forbidden in ("PinnapiClient", "TitanClient", "urllib", "radar"):
             self.assertNotIn(forbidden, source.lower() if forbidden == "radar" else source)
+
+
+class BilateralSidecarFailureIsolationTests(unittest.TestCase):
+    """Gap #2 from bilateral_wilson_audit_report.md: both directions' sidecars
+    raising RuntimeError at the same time must not block either native
+    pipeline's durable stage/observation commit, and must not cross-pollute
+    the two namespaces (``footbreak_crown_execution_test`` vs the native
+    Footbreak/Crown ledgers themselves).
+    """
+
+    def test_both_sidecars_raising_simultaneously_does_not_block_either_native_pipeline(self):
+        # --- Footbreak-native direction: record_picks.sync with its Crown
+        # sidecar (capture_t5_counterparts / evaluate_crown_execution_t5)
+        # both raising RuntimeError at once, mirroring
+        # test_crown_sidecar_failure_cannot_block_native_footbreak_t5_commit
+        # but asserting the *other* direction fails at the same wall-clock
+        # moment too. ---
+        kickoff = datetime.now(HKT) + timedelta(minutes=20)
+        footbreak_result = {
+            "match_id": "bilateral-native-survives", "stage": "T-5",
+            "kickoff_hkt": kickoff.isoformat(), "league": "英超",
+            "home": "主", "away": "客", "candidates": [],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "predictions.json").write_text(json.dumps([footbreak_result]), encoding="utf-8")
+            ledger_path = root / "sim_ledger.json"
+            with patch.object(record_picks, "HERE", str(root)), \
+                 patch.object(record_picks, "LEDGER", str(ledger_path)), \
+                 patch.object(record_picks, "_record_learning_snapshot", return_value=None), \
+                 patch.object(record_picks, "evaluate_new_t5", return_value=([], [])), \
+                 patch.object(record_picks, "evaluate_probability_research", return_value=([], [])), \
+                 patch.object(record_picks, "capture_t5_counterparts",
+                               side_effect=RuntimeError("both-sides-down")), \
+                 patch.object(record_picks, "evaluate_crown_execution_t5",
+                               side_effect=RuntimeError("both-sides-down")), \
+                 patch.object(record_picks, "recompute", return_value=None), \
+                 patch.object(record_picks, "recompute_crown_execution", return_value=None), \
+                 patch(
+                     "crown.state.multiprocessing.Process",
+                     side_effect=RuntimeError("both-sides-down"),
+                 ):
+                # --- Crown-native direction: sync_prediction commits its own
+                # durable stage first (exactly like production order: native
+                # commit happens, then the optional Footbreak-evidence sidecar
+                # is scheduled and may fail independently). Both RuntimeErrors
+                # are therefore live at the same instant as the footbreak sync
+                # above runs. ---
+                crown_prediction = {
+                    "match_id": "bilateral-crown-native-survives", "stage": "T-5",
+                    "kickoff_hkt": kickoff.isoformat(), "league": "英超",
+                    "home": "主", "away": "客",
+                    "source_snapshot_at": stamp(-1),
+                    "book_odds": {"crown": [
+                        {"market": "HIL", "line": 2.5, "selection": "H",
+                         "odds": 1.91, "source_at": stamp(-1)},
+                    ]},
+                }
+                crown_ledger_doc = {"watch": {}, "bets": [], "log": [], "stats": {}}
+                base = crown_settings()
+                config = type(base)(**{**base.__dict__, "state_dir": root})
+                sync_prediction(crown_ledger_doc, crown_prediction, config)
+                # The optional sidecar launch failing must not raise out of
+                # this call and must not touch the native watch/stage.
+                scheduled_ok = crown_state.schedule_footbreak_execution_evidence_projection(
+                    config, ["T-5"],
+                )
+                _, _, footbreak_ledger = record_picks.sync(send_notifications=False)
+
+            # Footbreak native pipeline: the durable T-5 stage commits regardless.
+            self.assertEqual(
+                footbreak_ledger["watch"]["bilateral-native-survives"]["stages"][0]["stage"],
+                "T-5",
+            )
+            self.assertTrue(ledger_path.exists())
+            # Crown native pipeline: the durable T-5 stage commits regardless,
+            # even though the reciprocal projection launch raised.
+            self.assertFalse(scheduled_ok)
+            crown_watch = crown_ledger_doc["watch"]["bilateral-crown-native-survives"]
+            self.assertEqual(crown_watch["stages"][0]["stage"], "T-5")
+            # Namespace isolation: neither native watch dict leaked into the
+            # other book's ledger, and the cross-book simulation namespace was
+            # not fabricated by either sidecar failure.
+            self.assertNotIn("bilateral-crown-native-survives", footbreak_ledger["watch"])
+            self.assertNotIn("bilateral-native-survives", crown_ledger_doc["watch"])
+            self.assertNotIn(cross.NAMESPACE, crown_ledger_doc)
+            crown_t5_bridge = (
+                footbreak_ledger["watch"]["bilateral-native-survives"]
+                .get("counterpart_bridges", {})
+                .get("crown", {})
+                .get("t5", {})
+            )
+            if crown_t5_bridge:
+                self.assertIn("crown_sidecar_local_error", str(crown_t5_bridge.get("reason", "")))
+
+
+class BilateralFirstLookVsT30BootstrapPriorityTests(unittest.TestCase):
+    """Gap #3 from bilateral_wilson_audit_report.md: when an authoritative
+    首預 (first-look) bridge already exists, a later T-30 call must always
+    re-verify against it (never silently take the T30_BOOTSTRAP_ORIGIN
+    narrow-path), and the bootstrap path must never overwrite or fabricate a
+    first-look record. This directly locks in the priority rule implemented
+    by ``bootstrap = not isinstance(root.get("first_look"), dict)`` in
+    ``crown_execution_test.prefetch_bridge``.
+    """
+
+    def test_authoritative_first_look_takes_priority_over_t30_bootstrap_and_is_never_overwritten(self):
+        kickoff, at = stamp(120), stamp()
+        watch = {
+            "match_id": "fx", "kickoff": kickoff, "league": "Spain - La Liga",
+            "home": "貝迪斯", "away": "皇家蘇斯達",
+            "stages": [{"stage": "T-30", "ts": at, "market_predictions": [
+                {"code": "HIL", "side": "H", "line": 2.5},
+            ]}],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            evidence = Path(directory, "cards.json")
+            evidence.write_text(
+                json.dumps(authoritative_betis_card(kickoff=kickoff)), encoding="utf-8",
+            )
+            with patch.dict(os.environ, {"FOOTBREAK_CROWN_EXECUTION_EVIDENCE_PATH": str(evidence)}):
+                # A genuine 首預 is recorded first (authoritative), *then* T-30
+                # runs on the same watch that would otherwise have qualified
+                # for the T30_BOOTSTRAP narrow path (no prior first_look).
+                first = cross.prefetch_bridge(watch, stage="首預", now=at)
+                t30 = cross.prefetch_bridge(watch, stage="T-30", now=at)
+        self.assertEqual(first["status"], "RESOLVED")
+        # Because a real first_look now exists, T-30 must take the normal
+        # re-verification branch, never the bootstrap origin marker.
+        self.assertNotEqual(t30.get("origin"), cross.T30_BOOTSTRAP_ORIGIN)
+        self.assertNotIn("first_look_recorded", t30)
+        bridge = watch["counterpart_bridges"]["crown"]
+        # The first_look object itself must be exactly what 首預 produced;
+        # T-30 (bootstrap or not) must never mutate it.
+        self.assertEqual(bridge["first_look"], first)
+        self.assertEqual(bridge["first_look"]["crown_match_id"], "crown-betis")
+
+    def test_bootstrap_path_cannot_retroactively_fabricate_a_first_look_after_it_runs_first(self):
+        kickoff, at = stamp(120), stamp()
+        watch = {
+            "match_id": "fx", "kickoff": kickoff, "league": "Spain - La Liga",
+            "home": "貝迪斯", "away": "皇家蘇斯達",
+            "stages": [{"stage": "T-30", "ts": at, "market_predictions": [
+                {"code": "HIL", "side": "H", "line": 2.5},
+            ]}],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            evidence = Path(directory, "cards.json")
+            evidence.write_text(
+                json.dumps(authoritative_betis_card(kickoff=kickoff)), encoding="utf-8",
+            )
+            with patch.dict(os.environ, {"FOOTBREAK_CROWN_EXECUTION_EVIDENCE_PATH": str(evidence)}):
+                # Bootstrap runs first (no first_look exists yet) -- this is
+                # the documented narrow path.
+                bootstrapped = cross.prefetch_bridge(watch, stage="T-30", now=at)
+                self.assertEqual(bootstrapped["origin"], cross.T30_BOOTSTRAP_ORIGIN)
+                self.assertNotIn("first_look", watch["counterpart_bridges"]["crown"])
+                # A subsequent authoritative 首預 call is still free to record
+                # the real first_look afterwards; the earlier bootstrap must
+                # not have pre-populated or forged one.
+                first = cross.prefetch_bridge(watch, stage="首預", now=at)
+        self.assertEqual(first["status"], "RESOLVED")
+        self.assertNotEqual(first.get("origin"), cross.T30_BOOTSTRAP_ORIGIN)
+        bridge = watch["counterpart_bridges"]["crown"]
+        self.assertEqual(bridge["first_look"], first)
+        # The prior bootstrap t30 record remains as historical fact, distinct
+        # from (and not silently merged into) the newly authoritative first_look.
+        self.assertEqual(bridge["t30"]["origin"], cross.T30_BOOTSTRAP_ORIGIN)
+
+
+class WilsonExecutionOddsSourceOrderInvarianceTests(unittest.TestCase):
+    """Gap #4 from bilateral_wilson_audit_report.md: for a fixed hits/decided,
+    the Wilson gate threshold must not depend on whether the caller first
+    computed arithmetic against the HKJC quote and then replaced it with a
+    higher qualifying Crown quote, versus feeding the same higher Crown quote
+    directly. ``admission_arithmetic`` is a pure function of
+    (hits, decided, odds); this test locks that invariant in explicitly.
+
+    Per the audit report: if this were NOT the case, the correct action would
+    be to leave a red/failing test and explain, never to change production
+    code to make the test pass. Reading ``admission_arithmetic`` shows
+    ``minimum_acceptable_odds_raw`` derives solely from ``wilson95(hits,
+    decided)`` and ``EDGE_BUFFER`` -- it is odds-independent by construction,
+    so this invariant is expected to hold (green), while ``passes`` legitimately
+    tracks whichever odds value is actually used as the final chosen quote.
+    """
+
+    def test_hkjc_then_higher_crown_matches_direct_higher_crown_minimum_and_verdict(self):
+        hits, decided = 41, 59
+        hkjc_odds, higher_crown_odds = 1.66, 1.90
+
+        # Sequence A: compute with the native HKJC quote first (as the T-5
+        # evaluator does via _active_existing_admission), then the caller
+        # substitutes the higher qualifying Crown quote as chosen_odds,
+        # mirroring `chosen_odds = max(native_odds, counterpart_odds or 0.0)`.
+        hkjc_first_arithmetic = admission_arithmetic(hits, decided, hkjc_odds)
+        chosen_odds_after_hkjc_first = max(hkjc_odds, higher_crown_odds)
+        sequence_a_final = admission_arithmetic(hits, decided, chosen_odds_after_hkjc_first)
+
+        # Sequence B: the caller is handed the higher Crown quote directly,
+        # with no prior HKJC computation at all.
+        sequence_b_direct = admission_arithmetic(hits, decided, higher_crown_odds)
+
+        self.assertIsNotNone(hkjc_first_arithmetic)
+        self.assertIsNotNone(sequence_a_final)
+        self.assertIsNotNone(sequence_b_direct)
+        self.assertEqual(
+            sequence_a_final["minimum_acceptable_odds_raw"],
+            sequence_b_direct["minimum_acceptable_odds_raw"],
+        )
+        self.assertEqual(sequence_a_final["passes"], sequence_b_direct["passes"])
+        self.assertEqual(
+            sequence_a_final["wilson95_lower_raw"], sequence_b_direct["wilson95_lower_raw"],
+        )
+        # The threshold is also identical to the (unused) HKJC-only
+        # computation, proving minimum_acceptable_odds_raw never moves with
+        # the odds argument at all -- only hits/decided determine it.
+        self.assertEqual(
+            hkjc_first_arithmetic["minimum_acceptable_odds_raw"],
+            sequence_b_direct["minimum_acceptable_odds_raw"],
+        )
+
+
+class RoleEqualsSideCharacterizationTest(unittest.TestCase):
+    """Gap #1 from bilateral_wilson_audit_report.md Q3 / uncertainty #2:
+    characterization test only -- locks in the CURRENT behavior that there is
+    no independent "role" dimension in the codebase; what the audit calls
+    "role" is exactly ``side`` (H/A or H/L) plus ``line``. This test adds NO
+    production field. If the business later requires an independent role
+    axis distinct from side, that is a separate design/feature-flagged change
+    (see audit report shadow-mode plan phase 3) and must get its own test --
+    this test must then be revisited, not silently reinterpreted.
+    """
+
+    def test_current_codebase_has_no_independent_role_field_role_is_side_plus_line(self):
+        # `selected_role` in bet/observation rows is a free-text display label
+        # (e.g. "主讓", "大") derived from side+line for notification text; it
+        # is never used as an independent identity/matching key anywhere the
+        # exact Crown fixture/market/side/line comparison happens.
+        source = Path(cross.__file__).read_text(encoding="utf-8")
+        self.assertNotIn('"role"', source)
+        self.assertNotIn("selected_role ==", source)
+        self.assertNotIn("row.get(\"role\")", source)
+        # The exact T-5 identity gate compares side + line only (see
+        # _crown_quote_for_exact_fixture / _exact_board_rows); it never reads
+        # or requires a `role` key on either the HKJC or Crown side.
+        self.assertIn("side", source)
+        self.assertIn("line", source)
+        kickoff = stamp(120)
+        # A row that only carries side+line (no `role` key at all, and no
+        # `selected_role` on the quote/journal row) is fully sufficient for
+        # a successful exact quote match -- proving side+line alone is the
+        # complete current identity contract.
+        card = crown_card(side="H", line=2.5)
+        self.assertNotIn("role", card[0]["current_selected_odds_journal"][0])
+        with tempfile.TemporaryDirectory() as directory:
+            evidence = Path(directory, "cards.json")
+            evidence.write_text(json.dumps(card), encoding="utf-8")
+            with patch.dict(os.environ, {"FOOTBREAK_CROWN_EXECUTION_EVIDENCE_PATH": str(evidence)}):
+                quote, reason = cross._crown_quote_for_exact_fixture(
+                    "fx", "HIL", "H", 2.5, cross._time(stamp()), cross._time(kickoff),
+                )
+        self.assertIsNone(reason)
+        self.assertIsNotNone(quote)

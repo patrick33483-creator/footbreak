@@ -414,6 +414,85 @@ class WilsonBatchRolloverTest(unittest.TestCase):
         self.assertEqual(active["cumulative_decided"], 79)
         self.assertEqual(frozen["pending_rollover_progress"]["display"], "6/20")
 
+    def test_v2_evidence_is_immutable_after_v3_rollover_and_decision_id_boundary_holds(self):
+        """Gap #6 from bilateral_wilson_audit_report.md: V2->V3 evidence-version
+        transition isolation. Reuses the exact 40-bet rollover fixture from
+        ``test_forty_rolls_two_versions_and_twenty_six_leaves_six`` (which
+        rolls from v1 -> v2 at bet 20, and v2 -> v3 at bet 40) but additionally
+        snapshots v2 before/after the v3 rollover to prove it is never mutated
+        in place, and confirms a decision keyed to v2's condition_signature +
+        evidence_version cannot collide with or be reinterpreted under v3.
+        """
+        from analysis import bilateral_decision as bilateral
+
+        ledger = {"bets": []}
+        for index in range(1, 21):
+            self._settled(ledger, index, result="Won")
+        recompute_namespace(ledger, "footbreak")
+        frozen, active = self._active(ledger)
+        self.assertEqual(active["version"], 2)
+        signature = frozen["signature"]
+        # Byte-identical snapshot of v2 taken the moment it becomes active,
+        # before any v3 rollover has run.
+        v2_before = copy.deepcopy(frozen["evidence_versions"][1])
+        self.assertEqual(v2_before["version"], 2)
+
+        # A decision recorded while v2 was authoritative embeds v2's
+        # condition_signature + evidence_version in its idempotency key.
+        v2_decision_id = bilateral.decision_id(
+            system="footbreak", fixture="fixture-20", market="HDC", side="H",
+            line=-0.25, condition_signature=v2_before["condition_signature"],
+            evidence_version=v2_before["version"],
+        )
+
+        # Roll forward to v3 with 20 more settled bets on the SAME condition.
+        for index in range(21, 41):
+            self._settled(ledger, index, result="Won")
+        recompute_namespace(ledger, "footbreak")
+        frozen, active = self._active(ledger)
+        self.assertEqual(active["version"], 3)
+        self.assertEqual(frozen["signature"], signature)
+
+        # v2's row in evidence_versions must be byte-identical to the snapshot
+        # taken before v3 existed -- the rollover only ever appends.
+        v2_after = frozen["evidence_versions"][1]
+        self.assertEqual(v2_after, v2_before)
+        self.assertEqual(v2_after["evidence_hash"], v2_before["evidence_hash"])
+        # v3 is a distinct, newly appended row referencing v2 as its parent,
+        # never overwriting v2's slot.
+        v3 = frozen["evidence_versions"][2]
+        self.assertEqual(v3["version"], 3)
+        self.assertEqual(v3["prior_version"], 2)
+        self.assertEqual(v3["prior_evidence_hash"], v2_before["evidence_hash"])
+        self.assertNotEqual(v3["evidence_hash"], v2_before["evidence_hash"])
+        self.assertEqual(len(frozen["evidence_versions"]), 3)
+
+        # condition_signature is identical across versions (same immutable
+        # condition), but the active pointer now reads v3, not v2.
+        self.assertEqual(v3["condition_signature"], v2_before["condition_signature"])
+        self.assertEqual(frozen["active_evidence_version"], 3)
+        self.assertEqual(frozen["active_evidence_hash"], v3["evidence_hash"])
+        self.assertNotEqual(frozen["active_evidence_hash"], v2_before["evidence_hash"])
+
+        # The v2-era decision_id is a pure function of (signature, version);
+        # recomputing it after the v3 rollover yields the exact same id
+        # (v2's record is never reinterpreted), while a same-fixture decision
+        # made under the new active version produces a DIFFERENT id -- the
+        # condition_signature+evidence_version boundary prevents any
+        # collision between the two evidence eras.
+        v2_decision_id_recomputed = bilateral.decision_id(
+            system="footbreak", fixture="fixture-20", market="HDC", side="H",
+            line=-0.25, condition_signature=v2_before["condition_signature"],
+            evidence_version=v2_before["version"],
+        )
+        self.assertEqual(v2_decision_id, v2_decision_id_recomputed)
+        v3_decision_id = bilateral.decision_id(
+            system="footbreak", fixture="fixture-20", market="HDC", side="H",
+            line=-0.25, condition_signature=v3["condition_signature"],
+            evidence_version=v3["version"],
+        )
+        self.assertNotEqual(v2_decision_id, v3_decision_id)
+
     def test_push_duplicate_conflict_and_activation_boundary_fail_closed(self):
         ledger = {"bets": []}
         for index in range(1, 19):
