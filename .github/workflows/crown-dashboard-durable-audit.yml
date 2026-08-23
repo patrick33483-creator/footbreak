@@ -239,6 +239,52 @@ jobs:
           PY
           REMOTE
 
+      - name: Compare live Wilson 1.80 readiness
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'sudo /bin/sh -s' \
+            > wilson-180-readiness.json <<'REMOTE'
+          set -eu
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          output = {"mode": "provider_free_read_only", "systems": {}}
+          for system in ("footbreak", "crown"):
+              payload = json.loads(
+                  Path(f"/var/www/{system}/data.json").read_text(encoding="utf-8")
+              )
+              granular = (
+                  ((payload.get("prediction_history") or {}).get("stats") or {})
+                  .get("granular_conditions") or {}
+              )
+              ranking = granular.get("ranking") or []
+              rows = []
+              for item in ranking:
+                  if not isinstance(item, dict):
+                      continue
+                  active = item.get("active_evidence") or {}
+                  pending = item.get("pending_progress") or item.get("validation_progress") or {}
+                  rows.append({
+                      "condition_number": item.get("condition_number"),
+                      "active_version": active.get("version"),
+                      "cumulative_hits": active.get("cumulative_hits"),
+                      "cumulative_decided": active.get("cumulative_decided"),
+                      "wilson95_lower_raw": active.get("wilson95_lower_raw"),
+                      "minimum_acceptable_odds_raw": active.get("minimum_acceptable_odds_raw"),
+                      "minimum_acceptable_odds_display": active.get("minimum_acceptable_odds_display"),
+                      "pending_progress": pending,
+                  })
+              output["systems"][system] = rows
+          print(json.dumps(output, ensure_ascii=False, indent=2))
+          PY
+          REMOTE
+          python3 -m json.tool wilson-180-readiness.json >/dev/null
+
       - name: Upload audit evidence
         uses: actions/upload-artifact@v4
         with:
@@ -246,4 +292,5 @@ jobs:
           path: |
             crown-dashboard-durable-audit.json
             crown-evidence-expansion-audit.txt
+            wilson-180-readiness.json
           retention-days: 14
