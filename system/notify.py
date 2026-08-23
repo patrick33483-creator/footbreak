@@ -617,8 +617,8 @@ def _condition_bet_message(bet, prospective=None):
     ])
 
 
-def _bilateral_decision_message(row):
-    """Presentation only: consumes the immutable fan-in record, never evidence."""
+def _bilateral_decision_fields(row):
+    """Validate one immutable Footbreak fan-in row for public presentation."""
     try:
         kickoff = _future_kickoff(row.get("kickoff"))
         minimum = float(row.get("minimum_odds"))
@@ -627,30 +627,93 @@ def _bilateral_decision_message(row):
         number = int(row.get("condition_number"))
     except (TypeError, ValueError):
         return None
-    if kickoff is None:
+    if (
+        kickoff is None or not all(math.isfinite(value) and value > 0 for value in (minimum, signal))
+        or not math.isfinite(line) or str(row.get("system") or "") != "footbreak"
+    ):
         return None
     market = MARKET_LABELS.get(str(row.get("market") or "").upper())
-    if not market:
+    league = traditional_chinese_league(row.get("league"))
+    home, away = str(row.get("home") or "").strip(), str(row.get("away") or "").strip()
+    side = str(row.get("side") or "").upper()
+    valid_sides = {"H", "A"} if market == "讓球" else {"H", "L"}
+    if not market or not league or not home or not away or side not in valid_sides:
         return None
     counterpart = row.get("counterpart_quote")
-    counterpart_line = (
-        f"皇冠對照：@{float(counterpart):.2f}"
-        if counterpart is not None else
-        f"皇冠對照：未能確認（{esc(str(row.get('counterpart_reason') or '收集不可用'))}）"
-    )
-    decision = {"PAPER_SIMULATION": "模擬投注",
-                "NO_BET_LOW_ODDS": "不投注：賠率不足",
-                "COUNTERPART_UNAVAILABLE": "對照收集失敗；保留原生訊號決定"}.get(
-                    str(row.get("decision")), "不投注")
+    if counterpart is not None:
+        counterpart = _finite_positive(counterpart)
+        if counterpart is None:
+            return None
+        counterpart_line = f"皇冠對照 @{counterpart:.2f}"
+    else:
+        reason = str(row.get("counterpart_reason") or "").strip()
+        if not reason:
+            return None
+        counterpart_line = f"皇冠對照：未能確認（{esc(reason)}）"
+    decisions = {
+        "PAPER_SIMULATION": "模擬投注",
+        "NO_BET_LOW_ODDS": "不投注：賠率不足",
+        "COUNTERPART_UNAVAILABLE": "對照收集失敗；保留原生訊號決定",
+    }
+    decision = decisions.get(str(row.get("decision")))
+    if decision is None:
+        return None
     platform = {"hkjc": "馬會", "crown": "皇冠"}.get(
         str(row.get("chosen_execution_book") or ""), "—")
+    side_label = {"H": "主", "A": "客"}.get(side) if market == "讓球" else {"H": "大", "L": "細"}.get(side)
+    return {
+        "fixture": str(row.get("fixture") or "").strip(),
+        "kickoff": kickoff,
+        "league": league,
+        "home": home,
+        "away": away,
+        "number": number,
+        "line": line,
+        "market": market,
+        "side": side_label,
+        "signal": signal,
+        "counterpart": counterpart_line,
+        "minimum": minimum,
+        "decision": decision,
+        "platform": platform,
+    }
+
+
+def _bilateral_decision_group_message(rows):
+    """Render one fail-closed Footbreak Telegram message for one fixture."""
+    fields = [_bilateral_decision_fields(row) for row in rows]
+    if not fields or any(row is None for row in fields):
+        return None
+    base = fields[0]
+    identity = tuple(base[key] for key in ("fixture", "kickoff", "league", "home", "away"))
+    if not base["fixture"] or any(
+        tuple(row[key] for key in ("fixture", "kickoff", "league", "home", "away")) != identity
+        for row in fields[1:]
+    ):
+        return None
+    fields.sort(key=lambda row: (row["number"], row["market"], row["side"], row["line"]))
+    condition_line = "、".join(f"足破 Wilson 條件 #{row['number']}" for row in fields)
+    details = [
+        (
+            f"條件 #{row['number']}：{esc(row['market'])} · {esc(row['side'])} {row['line']:g} "
+            f"｜馬會訊號 @{row['signal']:.2f}｜{row['counterpart']} "
+            f"｜最低 {row['minimum']:.2f}｜決定：{row['decision']}｜平台：{row['platform']}"
+        )
+        for row in fields
+    ]
     return "\n".join([
-        "【足破 Wilson】", f"{kickoff.astimezone(HKT).strftime('%H:%M')} bilateral T-5",
-        f"合符 足破 Wilson 條件 #{number}",
-        f"馬會訊號：{esc(market)} · {esc(str(row.get('side') or ''))} {line:g} @{signal:.2f}",
-        counterpart_line, f"最低賠率要求：{minimum:.2f}",
-        f"決定：{decision}", f"投注平台：{platform}",
+        "【足破 Wilson】",
+        f"{base['kickoff'].astimezone(HKT).strftime('%Y-%m-%d %H:%M HKT')} {esc(base['league'])}",
+        f"{esc(base['home'])} vs {esc(base['away'])}",
+        "",
+        f"合符 {condition_line}",
+        *details,
     ])
+
+
+def _bilateral_decision_message(row):
+    """Backward-compatible single-row presentation wrapper."""
+    return _bilateral_decision_group_message([row])
 
 
 def notify_pending_bilateral_decisions(ledger, *, max_attempts=8, max_seconds=None, _budget=None):
@@ -664,18 +727,29 @@ def notify_pending_bilateral_decisions(ledger, *, max_attempts=8, max_seconds=No
     state = load_state()
     sent = set(map(str, state.get("bilateral_decision_alerts") or []))
     order = list(state.get("bilateral_decision_alerts") or [])
-    count = 0
+    groups = {}
     for outbox in ns.get("decision_outbox") or []:
         if not isinstance(outbox, dict) or not outbox.get("notification_required"):
             continue
         ident = str(outbox.get("decision_id") or "")
         if not ident or ident in sent:
             continue
-        text = _bilateral_decision_message(decisions.get(ident) or {})
+        row = decisions.get(ident)
+        if not isinstance(row, dict):
+            continue
+        # Do not merge across books even if their provider fixture IDs happen
+        # to be equal.  A fixture group is one platform's immutable decision
+        # records from this pending pass.
+        group_key = (str(row.get("system") or ""), str(row.get("fixture") or ""))
+        groups.setdefault(group_key, []).append((ident, row))
+    count = 0
+    for _group_key, entries in groups.items():
+        identifiers = [ident for ident, _row in entries]
+        text = _bilateral_decision_group_message([row for _ident, row in entries])
         if text is None or not budget.reserve_attempt():
             continue
         send(text, max_seconds=budget.remaining())  # raises unless JSON ok:true
-        sent.add(ident); order.append(ident)
+        sent.update(identifiers); order.extend(identifiers)
         state["bilateral_decision_alerts"] = _bounded_unique_ids(order)
         state["last_sent"] = dt.datetime.now(HKT).isoformat(timespec="seconds")
         save_state(state); count += 1

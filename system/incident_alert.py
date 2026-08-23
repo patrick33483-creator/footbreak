@@ -168,15 +168,19 @@ def _normalise_state(value: Any) -> dict[str, Any]:
 
 
 def telegram_sender(system: str) -> Callable[[str], bool]:
-    """Use each system's existing direct Telegram configuration."""
-    if system == "crown":
-        enabled = _flag("CROWN_TELEGRAM_ENABLED")
-        token = os.environ.get("CROWN_TELEGRAM_BOT_TOKEN") or os.environ.get("TELEGRAM_BOT_TOKEN")
-        chat_id = os.environ.get("CROWN_TELEGRAM_CHAT_ID") or os.environ.get("TELEGRAM_CHAT_ID")
-    else:
-        enabled = bool(os.environ.get("TELEGRAM_BOT_TOKEN") and os.environ.get("TELEGRAM_CHAT_ID"))
-        token = os.environ.get("TELEGRAM_BOT_TOKEN")
-        chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+    """Return the dedicated private operational-alert transport.
+
+    Prediction channels deliberately retain their existing chat-ID
+    configuration through ``TELEGRAM_CHAT_ID`` and ``CROWN_TELEGRAM_CHAT_ID``.
+    Incident traffic must never inherit either recipient.  Production may
+    continue to use the existing Footbreak/global bot token, but its
+    destination is always the PPlai private chat unless explicitly overridden
+    by the incident-only variable.
+    """
+    del system
+    enabled = _flag("INCIDENT_ALERT_ENABLED", True)
+    token = os.environ.get("INCIDENT_TELEGRAM_BOT_TOKEN") or os.environ.get("TELEGRAM_BOT_TOKEN")
+    chat_id = (os.environ.get("INCIDENT_TELEGRAM_CHAT_ID") or "703318555").strip()
 
     def send(text: str) -> bool:
         if not (enabled and token and chat_id):
