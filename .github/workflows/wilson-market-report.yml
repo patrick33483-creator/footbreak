@@ -30,3 +30,121 @@ jobs:
               /opt/footbreak/analysis/wilson_market_report.py \
               --footbreak /opt/footbreak/system/accuracy_history.json \
               --crown /var/lib/footbreak/crown/prediction_history.json"
+
+      - name: 輸出足破讓球主隊盤結構
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh "$DEPLOY_USER@$DEPLOY_HOST" \
+            'sudo env PYTHONPATH=/opt/footbreak /opt/footbreak/.venv/bin/python3 -' <<'PY'
+          import json
+          from collections import defaultdict
+          from pathlib import Path
+
+          from analysis.wilson_market_report import (
+              _excluded,
+              _history_rows,
+              wilson_lower,
+          )
+
+          payload = json.loads(
+              Path("/opt/footbreak/system/accuracy_history.json").read_text(
+                  encoding="utf-8"
+              )
+          )
+          observations = defaultdict(list)
+          diagnostics = defaultdict(int)
+
+          for row in _history_rows(payload, "footbreak"):
+              if _excluded(row) or str(row.get("stage") or "") != "T-5":
+                  diagnostics["non_native_or_non_t5_rows"] += 1
+                  continue
+              identity = str(row.get("_fixture_identity") or "")
+              if not identity:
+                  diagnostics["missing_fixture_identity"] += 1
+                  continue
+              grades = row.get("market_grades") or []
+              if not isinstance(grades, list):
+                  diagnostics["malformed_market_grades"] += 1
+                  continue
+              for grade in grades:
+                  if not isinstance(grade, dict) or _excluded(grade):
+                      continue
+                  if str(grade.get("code") or "").upper() != "HDC":
+                      continue
+                  if grade.get("grade_status") != "GRADED":
+                      diagnostics["not_graded_hdc"] += 1
+                      continue
+                  raw_line = grade.get("line", grade.get("condition"))
+                  try:
+                      line = float(raw_line)
+                  except (TypeError, ValueError):
+                      diagnostics["invalid_hdc_line"] += 1
+                      continue
+                  group = (
+                      "平手盤"
+                      if abs(line) < 1e-9
+                      else "主讓"
+                      if line < 0
+                      else "主受讓"
+                  )
+                  settlement = str(grade.get("settlement") or "")
+                  hit = grade.get("hit")
+                  if settlement == "Refunded" or hit is None:
+                      observations[(identity, group)].append(None)
+                  elif isinstance(hit, bool):
+                      observations[(identity, group)].append(hit)
+                  else:
+                      diagnostics["invalid_hit"] += 1
+
+          grouped = defaultdict(list)
+          conflicts = defaultdict(int)
+          for (_, group), values in observations.items():
+              decided_values = {value for value in values if value is not None}
+              if len(decided_values) > 1:
+                  conflicts[group] += 1
+                  continue
+              grouped[group].append(
+                  next(iter(decided_values)) if decided_values else None
+              )
+
+          report = {}
+          for group in ("主讓", "主受讓", "平手盤"):
+              values = grouped.get(group, [])
+              hits = sum(value is True for value in values)
+              losses = sum(value is False for value in values)
+              refunded = sum(value is None for value in values)
+              decided = hits + losses
+              lower = wilson_lower(hits, decided)
+              report[group] = {
+                  "unique_fixtures": len(values),
+                  "decided": decided,
+                  "hits": hits,
+                  "losses": losses,
+                  "refunded": refunded,
+                  "hit_rate_pct": (
+                      round(hits / decided * 100, 2) if decided else None
+                  ),
+                  "wilson_95_lower_pct": (
+                      round(lower * 100, 2) if lower is not None else None
+                  ),
+                  "conflicts_excluded": conflicts.get(group, 0),
+              }
+
+          print(
+              json.dumps(
+                  {
+                      "schema_version": "hdc-home-line-report-v1",
+                      "scope": (
+                          "footbreak_native_prospective_t5_graded_"
+                          "unique_fixture_hdc"
+                      ),
+                      "groups": report,
+                      "diagnostics": dict(sorted(diagnostics.items())),
+                  },
+                  ensure_ascii=False,
+                  sort_keys=True,
+              )
+          )
+          PY
