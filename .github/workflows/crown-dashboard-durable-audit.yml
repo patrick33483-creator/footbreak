@@ -87,6 +87,44 @@ jobs:
               for row in public_cards if isinstance(row, dict) and row.get("match_id")
           }
           generated_at = parse_time(public.get("generated_at")) if isinstance(public, dict) else None
+          upcoming_end = now + timedelta(hours=2)
+          upcoming = []
+          for match_id in sorted(set(watches) | set(cards_by_id) | set(public_by_id)):
+              watch = watches.get(str(match_id), {})
+              card = cards_by_id.get(str(match_id), {})
+              public_card = public_by_id.get(str(match_id), {})
+              if not isinstance(watch, dict):
+                  watch = {}
+              if not isinstance(card, dict):
+                  card = {}
+              if not isinstance(public_card, dict):
+                  public_card = {}
+              kickoff = parse_time(
+                  card.get("kickoff_hkt") or card.get("kickoff")
+                  or watch.get("kickoff_hkt") or watch.get("kickoff")
+                  or public_card.get("kickoff_hkt") or public_card.get("kickoff")
+              )
+              if kickoff is None or kickoff < now or kickoff > upcoming_end:
+                  continue
+              upcoming.append({
+                  "match_id": str(match_id),
+                  "fixture": (
+                      f"{card.get('home') or watch.get('home') or public_card.get('home') or ''}"
+                      f" vs {card.get('away') or watch.get('away') or public_card.get('away') or ''}"
+                  ),
+                  "league": str(
+                      card.get("league") or watch.get("league")
+                      or public_card.get("league") or ""
+                  ),
+                  "kickoff_hkt": kickoff.astimezone(HKT).isoformat(),
+                  "ledger_present": bool(watch),
+                  "prediction_card_present": bool(card),
+                  "public_card_present": bool(public_card),
+                  "durable_stages": stages(watch),
+                  "prediction_stages": stages(card),
+                  "public_stages": stages(public_card),
+                  "stage_jobs": watch.get("stage_jobs") if isinstance(watch.get("stage_jobs"), dict) else {},
+              })
           affected = []
           rows = []
           durable_t5 = 0
@@ -140,6 +178,7 @@ jobs:
           timers = subprocess.run(
               [
                   "systemctl", "show", "crown-tick.timer", "crown-sweep.timer",
+                  "crown-round-update.timer", "crown-round-update.service",
                   "crown-tick.service", "crown-dashboard-api.service",
                   "--no-pager", "-p", "Id", "-p", "ActiveState", "-p", "SubState",
                   "-p", "Result", "-p", "LastTriggerUSec", "-p", "NextElapseUSecRealtime",
@@ -169,6 +208,7 @@ jobs:
               },
               "affected": affected,
               "durable_t5_rows": rows,
+              "upcoming_two_hours": upcoming,
               "timers": timers,
           }, ensure_ascii=False, indent=2))
           PY
