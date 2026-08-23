@@ -234,6 +234,7 @@ jobs:
                       "expected_decided": detail.get("expected_decided") if isinstance(detail, dict) else None,
                       "expected_hits": detail.get("expected_hits") if isinstance(detail, dict) else None,
                       "rows_count": len(rows) if isinstance(rows, list) else None,
+                      "unavailable_reason": detail.get("unavailable_reason") if isinstance(detail, dict) else None,
                   }, ensure_ascii=False, sort_keys=True))
           PY
           REMOTE
