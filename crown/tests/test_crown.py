@@ -2771,7 +2771,8 @@ class CrownSafetyTests(unittest.TestCase):
                  patch("crown.engine.schedule_footbreak_execution_evidence_projection",
                        side_effect=AssertionError(
                            "Footbreak projection must not run in native first-look reconciliation"
-                       )):
+                       )), \
+                 patch("crown.engine.in_current_period", return_value=True):
                 result = run("first-look-reconcile", config)
 
             self.assertTrue(result["ok"])
@@ -2805,7 +2806,8 @@ class CrownSafetyTests(unittest.TestCase):
             with patch("crown.engine.TitanClient", return_value=titan_client), \
                  patch("crown.engine.PinnapiClient", side_effect=AssertionError), \
                  patch("crown.engine.fetch_matches", side_effect=AssertionError), \
-                 patch("crown.engine.market_entry_thresholds", side_effect=AssertionError):
+                 patch("crown.engine.market_entry_thresholds", side_effect=AssertionError), \
+                 patch("crown.engine.in_current_period", return_value=True):
                 result = run("first-look-reconcile", config)
 
             self.assertTrue(result["ok"])
@@ -2833,7 +2835,8 @@ class CrownSafetyTests(unittest.TestCase):
             with patch("crown.engine.TitanClient", return_value=titan_client), \
                  patch("crown.engine.PinnapiClient", side_effect=AssertionError), \
                  patch("crown.engine.fetch_matches", side_effect=AssertionError), \
-                 patch("crown.engine.market_entry_thresholds", side_effect=AssertionError):
+                 patch("crown.engine.market_entry_thresholds", side_effect=AssertionError), \
+                 patch("crown.engine.in_current_period", return_value=True):
                 result = run("first-look-reconcile", config)
 
             self.assertTrue(result["ok"])
