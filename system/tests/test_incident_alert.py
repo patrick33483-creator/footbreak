@@ -267,35 +267,71 @@ class IncidentAlertTests(unittest.TestCase):
         self.assertNotIn("provider-fixture-secret-999", serialised)
         self.assertNotIn("token", serialised.lower())
 
-    def test_existing_telegram_configuration_is_used_without_exposing_credentials(self) -> None:
-        response = Mock()
-        response.read.return_value = json.dumps({"ok": True}).encode()
-        context = Mock()
-        context.__enter__ = Mock(return_value=response)
-        context.__exit__ = Mock(return_value=False)
-        with patch.dict(os.environ, {"TELEGRAM_BOT_TOKEN": "secret-token", "TELEGRAM_CHAT_ID": "123"}, clear=False), \
-             patch.object(alerts_module.urllib.request, "urlopen", return_value=context) as opener:
-            self.assertTrue(alerts_module.telegram_sender("footbreak")("【運作警報：足破】測試"))
-        request = opener.call_args.args[0]
-        payload = json.loads(request.data.decode("utf-8"))
-        self.assertEqual(payload["chat_id"], "123")
-        self.assertNotIn("secret-token", payload["text"])
-
-    def test_crown_incident_uses_the_separate_crown_transport(self) -> None:
+    def test_private_incident_recipient_is_used_without_exposing_credentials(self) -> None:
         response = Mock()
         response.read.return_value = json.dumps({"ok": True}).encode()
         context = Mock()
         context.__enter__ = Mock(return_value=response)
         context.__exit__ = Mock(return_value=False)
         environment = {
-            "TELEGRAM_BOT_TOKEN": "footbreak-token",
-            "TELEGRAM_CHAT_ID": "footbreak-chat",
+            "INCIDENT_TELEGRAM_BOT_TOKEN": "secret-token",
+            "INCIDENT_TELEGRAM_CHAT_ID": "703318555",
+        }
+        with patch.dict(os.environ, environment, clear=True), \
+             patch.object(alerts_module.urllib.request, "urlopen", return_value=context) as opener:
+            self.assertTrue(alerts_module.telegram_sender("footbreak")("【運作警報：足破】測試"))
+        request = opener.call_args.args[0]
+        payload = json.loads(request.data.decode("utf-8"))
+        self.assertEqual(payload["chat_id"], "703318555")
+        self.assertNotIn("secret-token", payload["text"])
+
+    def test_incident_uses_global_bot_token_but_never_prediction_chat_id(self) -> None:
+        response = Mock()
+        response.read.return_value = json.dumps({"ok": True}).encode()
+        context = Mock()
+        context.__enter__ = Mock(return_value=response)
+        context.__exit__ = Mock(return_value=False)
+        environment = {
+            "TELEGRAM_BOT_TOKEN": "prediction-token",
+            "TELEGRAM_CHAT_ID": "prediction-chat",
             "CROWN_TELEGRAM_ENABLED": "1",
             "CROWN_TELEGRAM_BOT_TOKEN": "crown-token",
             "CROWN_TELEGRAM_CHAT_ID": "crown-chat",
         }
+        with patch.dict(os.environ, environment, clear=True), \
+             patch.object(alerts_module.urllib.request, "urlopen", return_value=context) as opener:
+            self.assertTrue(alerts_module.telegram_sender("footbreak")("alert"))
+            self.assertTrue(alerts_module.telegram_sender("crown")("alert"))
+        self.assertEqual(json.loads(opener.call_args.args[0].data.decode("utf-8"))["chat_id"], "703318555")
+
+    def test_incident_chat_override_is_explicit_and_prediction_chat_never_used(self) -> None:
+        response = Mock()
+        response.read.return_value = json.dumps({"ok": True}).encode()
+        context = Mock()
+        context.__enter__ = Mock(return_value=response)
+        context.__exit__ = Mock(return_value=False)
+        environment = {
+            "TELEGRAM_BOT_TOKEN": "global-token",
+            "TELEGRAM_CHAT_ID": "prediction-chat",
+            "INCIDENT_TELEGRAM_CHAT_ID": "703318555",
+        }
+        with patch.dict(os.environ, environment, clear=True), \
+             patch.object(alerts_module.urllib.request, "urlopen", return_value=context) as opener:
+            self.assertTrue(alerts_module.telegram_sender("server")("alert"))
+        self.assertEqual(json.loads(opener.call_args.args[0].data.decode("utf-8"))["chat_id"], "703318555")
+
+    def test_crown_and_footbreak_incidents_share_the_private_transport(self) -> None:
+        response = Mock()
+        response.read.return_value = json.dumps({"ok": True}).encode()
+        context = Mock()
+        context.__enter__ = Mock(return_value=response)
+        context.__exit__ = Mock(return_value=False)
+        environment = {
+            "INCIDENT_TELEGRAM_BOT_TOKEN": "private-token",
+            "INCIDENT_TELEGRAM_CHAT_ID": "703318555",
+        }
         with tempfile.TemporaryDirectory() as directory, \
-             patch.dict(os.environ, environment, clear=False), \
+             patch.dict(os.environ, environment, clear=True), \
              patch.object(alerts_module.urllib.request, "urlopen", return_value=context) as opener:
             alerts = alerts_module.IncidentAlerts(Path(directory) / "state.json")
             alerts_module.report_service_failure(
@@ -305,8 +341,16 @@ class IncidentAlertTests(unittest.TestCase):
                 alerts, system="crown", unit="crown-tick.service", invocation="two", now=NOW + timedelta(minutes=1),
             )
         request = opener.call_args.args[0]
-        self.assertIn("/botcrown-token/sendMessage", request.full_url)
-        self.assertEqual(json.loads(request.data.decode("utf-8"))["chat_id"], "crown-chat")
+        self.assertIn("/botprivate-token/sendMessage", request.full_url)
+        self.assertEqual(json.loads(request.data.decode("utf-8"))["chat_id"], "703318555")
+
+    def test_deployment_config_requires_explicit_private_recipient(self) -> None:
+        root = SYSTEM.parents[0]
+        example = (root / "deploy" / "footbreak.env.example").read_text(encoding="utf-8")
+        health = (root / "deploy" / "health-check.sh").read_text(encoding="utf-8")
+        self.assertIn("INCIDENT_TELEGRAM_CHAT_ID=703318555", example)
+        self.assertIn("INCIDENT_TELEGRAM_CHAT_ID", health)
+        self.assertIn('= 703318555', health)
 
     def test_preemption_is_suppressed_and_wrappers_share_the_systemd_key_boundary(self) -> None:
         with patch.object(alerts_module.subprocess, "run") as run:

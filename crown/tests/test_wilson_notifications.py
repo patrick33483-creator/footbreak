@@ -44,6 +44,19 @@ def low_odds_observation(*, market="角球大細", number=4):
     return row
 
 
+def bilateral_decision(*, fixture="crown-fixture", number=7):
+    return {
+        "decision_id": f"bilateral|{fixture}|HIL|T-5|{number}",
+        "system": "crown", "fixture": fixture,
+        "kickoff": (now_hkt() + timedelta(hours=2)).isoformat(),
+        "league": "USA - Major League Soccer", "home": "主隊", "away": "客隊",
+        "market": "HIL", "side": "H", "line": 2.5, "condition_number": number,
+        "minimum_odds": 1.92, "signal_quote": 1.75,
+        "counterpart_quote": None, "counterpart_reason": "系統未取得原生T-5",
+        "decision": "COUNTERPART_UNAVAILABLE", "chosen_execution_book": None,
+    }
+
+
 class CrownWilsonNotificationTest(unittest.TestCase):
     def _native_message(self, row):
         return (
@@ -166,6 +179,86 @@ class CrownWilsonNotificationTest(unittest.TestCase):
         self.assertIn("投注平台：皇冠", message)
         self.assertNotIn("馬會對照", message)
         self.assertIn(f"最低賠率要求：{row['wilson_admission']['minimum_acceptable_odds_raw']:.2f}", message)
+
+    def test_bilateral_groups_same_fixture_without_cross_platform_or_fixture_merge(self):
+        first = bilateral_decision()
+        second = dict(first, decision_id="bilateral|crown-fixture|CHL|T-5|8",
+                      market="CHL", side="L", line=10.5, condition_number=8,
+                      minimum_odds=1.95, signal_quote=1.81, decision="NO_BET_LOW_ODDS")
+        other = bilateral_decision(fixture="other-fixture", number=9)
+        cross_platform = dict(first, decision_id="bilateral|footbreak-fixture|HIL|T-5|10",
+                              system="footbreak", condition_number=10)
+        ledger = {"crown_hkjc_execution_test": {
+            "decisions": [first, second, other, cross_platform],
+            "decision_outbox": [
+                {"decision_id": row["decision_id"], "notification_required": True}
+                for row in (first, second, other, cross_platform)
+            ],
+        }}
+        state = {"bilateral_decision_alerts": []}
+        with tempfile.TemporaryDirectory() as directory:
+            config = SimpleNamespace(state_dir=Path(directory))
+            with patch.object(notify, "notification_lock", return_value=nullcontext(True)), \
+                 patch.object(notify, "_load", return_value=state), \
+                 patch.object(notify, "_send", return_value=True) as sender, \
+                 patch.object(notify, "write_json_atomic"):
+                self.assertEqual(notify.notify_bilateral_decisions(ledger, config), 2)
+        self.assertEqual(sender.call_count, 2)
+        merged = next(call.args[1] for call in sender.call_args_list if "條件 #8" in call.args[1])
+        for expected in ("HKT", "美國職業足球大聯盟", "主隊 vs 客隊",
+                         "皇冠 Wilson 條件 #7", "皇冠 Wilson 條件 #8",
+                         "入球大細 · 大 2.5", "角球大細 · 細 10.5"):
+            self.assertIn(expected, merged)
+        self.assertNotIn("bilateral T-5", merged)
+        self.assertNotIn("條件 #10", "\n".join(call.args[1] for call in sender.call_args_list))
+        self.assertEqual(state["bilateral_decision_alerts"], [
+            first["decision_id"], second["decision_id"], other["decision_id"],
+        ])
+
+    def test_bilateral_group_failure_keeps_all_ids_for_one_retry(self):
+        first = bilateral_decision()
+        second = dict(first, decision_id="bilateral|crown-fixture|CHL|T-5|8",
+                      market="CHL", side="L", line=10.5, condition_number=8)
+        ledger = {"crown_hkjc_execution_test": {
+            "decisions": [first, second],
+            "decision_outbox": [
+                {"decision_id": row["decision_id"], "notification_required": True}
+                for row in (first, second)
+            ],
+        }}
+        state = {"bilateral_decision_alerts": []}
+        with tempfile.TemporaryDirectory() as directory:
+            config = SimpleNamespace(state_dir=Path(directory))
+            with patch.object(notify, "notification_lock", return_value=nullcontext(True)), \
+                 patch.object(notify, "_load", return_value=state), \
+                 patch.object(notify, "_send", side_effect=[False, True]) as sender, \
+                 patch.object(notify, "write_json_atomic"):
+                self.assertEqual(notify.notify_bilateral_decisions(ledger, config), 0)
+                self.assertEqual(state["bilateral_decision_alerts"], [])
+                self.assertEqual(notify.notify_bilateral_decisions(ledger, config), 1)
+        self.assertEqual(sender.call_count, 2)
+        self.assertEqual(state["bilateral_decision_alerts"], [first["decision_id"], second["decision_id"]])
+
+    def test_notify_new_drains_present_bilateral_outbox_after_native_queues(self):
+        decision = bilateral_decision()
+        ledger = {"bets": [], "wilson_validation": {"observations": []},
+                  "crown_hkjc_execution_test": {
+                      "decisions": [decision],
+                      "decision_outbox": [{
+                          "decision_id": decision["decision_id"],
+                          "notification_required": True,
+                      }],
+                  }}
+        state = {"bilateral_decision_alerts": []}
+        with tempfile.TemporaryDirectory() as directory:
+            config = SimpleNamespace(state_dir=Path(directory))
+            with patch.object(notify, "notification_lock", return_value=nullcontext(True)), \
+                 patch.object(notify, "_load", return_value=state), \
+                 patch.object(notify, "_send", return_value=True) as sender, \
+                 patch.object(notify, "write_json_atomic"):
+                self.assertEqual(notify.notify_new(ledger, config, max_attempts=1), 1)
+        self.assertEqual(sender.call_count, 1)
+        self.assertEqual(state["bilateral_decision_alerts"], [decision["decision_id"]])
 
     def test_missing_stale_or_malformed_hkjc_artifacts_do_not_change_native_observation(self):
         row = low_odds_observation()

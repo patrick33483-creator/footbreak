@@ -53,8 +53,10 @@ def low_odds_observation(*, market="讓球", number=7):
 def bilateral_decision(*, kickoff=None):
     return {
         "decision_id": "bilateral|fixture|HIL|T-5",
+        "system": "footbreak", "fixture": "fixture",
         "kickoff": kickoff or (datetime.now(HKT) + timedelta(hours=2)).isoformat(),
         "market": "HIL", "side": "H", "line": 2.5, "condition_number": 7,
+        "league": "England - Premier League", "home": "主隊", "away": "客隊",
         "minimum_odds": 1.92, "signal_quote": 1.75,
         "counterpart_quote": None, "counterpart_reason": "系統未取得原生T-5",
         "decision": "COUNTERPART_UNAVAILABLE", "chosen_execution_book": None,
@@ -245,6 +247,78 @@ class FootbreakWilsonNotificationTest(unittest.TestCase):
             with patch.object(notify, "STATE", state), patch.object(notify, "send") as sender:
                 self.assertEqual(notify.notify_pending_bilateral_decisions(ledger), 0)
         sender.assert_not_called()
+
+    def test_bilateral_fixture_group_has_complete_identity_and_acknowledges_all_conditions(self):
+        first = bilateral_decision()
+        second = dict(first, decision_id="bilateral|fixture|CHL|T-5", market="CHL",
+                      side="L", line=10.5, condition_number=8, signal_quote=1.81,
+                      minimum_odds=1.95, decision="NO_BET_LOW_ODDS")
+        ledger = {
+            "footbreak_crown_execution_test": {
+                "decisions": [first, second],
+                "decision_outbox": [
+                    {"decision_id": first["decision_id"], "notification_required": True},
+                    {"decision_id": second["decision_id"], "notification_required": True},
+                ],
+            },
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory, "notify.json")
+            with patch.object(notify, "STATE", str(state)), patch.object(notify, "send") as sender:
+                self.assertEqual(notify.notify_pending_bilateral_decisions(ledger), 1)
+            saved = json.loads(state.read_text(encoding="utf-8"))
+        self.assertEqual(sender.call_count, 1)
+        message = sender.call_args.args[0]
+        for expected in ("英格蘭超級聯賽", "主隊 vs 客隊", "HKT",
+                         "足破 Wilson 條件 #7", "足破 Wilson 條件 #8",
+                         "入球大細 · 大 2.5", "角球大細 · 細 10.5",
+                         "最低 1.92", "最低 1.95", "決定："):
+            self.assertIn(expected, message)
+        self.assertNotIn("bilateral T-5", message)
+        self.assertEqual(saved["bilateral_decision_alerts"], [first["decision_id"], second["decision_id"]])
+
+    def test_bilateral_groups_are_separate_for_different_fixture_or_platform(self):
+        first = bilateral_decision()
+        other_fixture = dict(first, decision_id="bilateral|other|HIL|T-5", fixture="other",
+                             kickoff=(datetime.now(HKT) + timedelta(hours=3)).isoformat(),
+                             home="另一主隊", away="另一客隊", condition_number=8)
+        other_platform = dict(first, decision_id="bilateral|crown|fixture|HIL|T-5", system="crown",
+                              condition_number=9)
+        ledger = {"footbreak_crown_execution_test": {
+            "decisions": [first, other_fixture, other_platform],
+            "decision_outbox": [
+                {"decision_id": row["decision_id"], "notification_required": True}
+                for row in (first, other_fixture, other_platform)
+            ],
+        }}
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(notify, "STATE", str(Path(directory, "notify.json"))), \
+                 patch.object(notify, "send") as sender:
+                self.assertEqual(notify.notify_pending_bilateral_decisions(ledger), 2)
+        self.assertEqual(sender.call_count, 2)
+        self.assertTrue(all("條件 #9" not in call.args[0] for call in sender.call_args_list))
+
+    def test_bilateral_group_transport_failure_keeps_every_id_for_one_retry(self):
+        first = bilateral_decision()
+        second = dict(first, decision_id="bilateral|fixture|CHL|T-5", market="CHL",
+                      side="L", line=10.5, condition_number=8)
+        ledger = {"footbreak_crown_execution_test": {
+            "decisions": [first, second],
+            "decision_outbox": [
+                {"decision_id": row["decision_id"], "notification_required": True}
+                for row in (first, second)
+            ],
+        }}
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory, "notify.json")
+            with patch.object(notify, "STATE", str(state)), \
+                 patch.object(notify, "send", side_effect=RuntimeError("temporary")):
+                with self.assertRaisesRegex(RuntimeError, "temporary"):
+                    notify.notify_pending_bilateral_decisions(ledger)
+            self.assertFalse(state.exists())
+            with patch.object(notify, "STATE", str(state)), patch.object(notify, "send") as sender:
+                self.assertEqual(notify.notify_pending_bilateral_decisions(ledger), 1)
+        self.assertEqual(sender.call_count, 1)
 
     def test_shared_wall_clock_budget_does_not_restart_for_cross_book_outbox(self):
         formal = bet()

@@ -348,6 +348,16 @@ for name in TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID PINNAPI_API_KEY; do
   }
   echo "OK credential $name configured"
 done
+if [ "${INCIDENT_ALERT_ENABLED:-1}" = 1 ]; then
+  INCIDENT_PRIVATE_CHAT_ID="${INCIDENT_TELEGRAM_CHAT_ID:-703318555}"
+  [ "$INCIDENT_PRIVATE_CHAT_ID" = 703318555 ] || {
+    echo "FAIL private incident Telegram chat ID is not PPlai" >&2
+    exit 1
+  }
+  echo "OK private incident Telegram recipient configured"
+else
+  echo "OK private incident Telegram disabled by INCIDENT_ALERT_ENABLED=0"
+fi
 if crown_is_enabled; then
   [ "${CROWN_TELEGRAM_ENABLED:-0}" = 1 ] || {
     echo "FAIL Crown Telegram disabled" >&2
