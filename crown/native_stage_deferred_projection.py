@@ -355,6 +355,109 @@ class DeferredProjectionQueue:
             outcomes.append(DrainOutcome(match_id, stage, COMPLETED, None))
         return outcomes
 
+    def drain_batch(
+        self,
+        project_one: Callable[[dict[str, Any]], bool],
+        *,
+        now: datetime | None = None,
+        max_items: int | None = None,
+        write_fn: Callable[[Path, Any], None] | None = None,
+    ) -> list[DrainOutcome]:
+        """Bounded drain sharing ONE caller-owned legacy transaction (Stage 7).
+
+        Unlike ``drain``, which is designed around a caller-supplied
+        ``project_fn`` that performs its own complete
+        load/sync/save/merge cycle per item (correct for a single item, but
+        exactly the "N whole-ledger cycles per batch" cost this stage must
+        avoid for a multi-item recovery drain), ``drain_batch`` performs all
+        of this queue's own bookkeeping (identity re-validation, expiry,
+        payload/identity mismatch, append-only attempt history, terminal
+        state transitions) but delegates only the actual per-item legacy
+        projection to ``project_one`` -- a narrow callback that is expected
+        to mutate an **already-loaded** ledger object in place (e.g. calling
+        ``crown.native_stage_cutover.project_committed_native_snapshot``
+        against a ledger the caller loaded once, before this method was
+        called, and will save once, after it returns). ``project_one``
+        returns ``True`` for a successful/idempotent projection and
+        ``False`` (or raises) for a failure; it must never itself call
+        ``crown.state.load_ledger``/``save_ledger`` -- this method assumes
+        exactly one such pair brackets the whole batch, owned by the caller.
+
+        Every other invariant (identity re-validation, no-post-kickoff
+        projection, append-only attempts, isolated per-item failure, bounded
+        terminal-failure freezing) is identical to ``drain``.
+        """
+        writer = write_fn or _atomic_write
+        now = (now or datetime.now(HKT)).astimezone(HKT)
+        outcomes: list[DrainOutcome] = []
+        items = self.pending_items()
+        if max_items is not None:
+            items = items[: max(0, max_items)]
+        for item in items:
+            match_id = str(item.get("match_id") or "")
+            stage = str(item.get("stage") or "")
+            path = self.path_for(match_id, stage)
+            kickoff = _parse_kickoff(item.get("kickoff_hkt"))
+            if not match_id or not stage or kickoff is None:
+                self._append_attempt(item, "failed", "malformed_queue_item")
+                item["state"] = FAILED
+                item["updated_at"] = iso_hkt(now)
+                writer(path, item)
+                outcomes.append(DrainOutcome(match_id, stage, FAILED, "malformed_queue_item"))
+                continue
+            if kickoff <= now:
+                self._append_attempt(item, "expired", "post_kickoff_projection_refused")
+                item["state"] = EXPIRED
+                item["updated_at"] = iso_hkt(now)
+                writer(path, item)
+                outcomes.append(DrainOutcome(match_id, stage, EXPIRED, "post_kickoff_projection_refused"))
+                continue
+            payload = item.get("payload")
+            payload_match = str((payload or {}).get("match_id") or "")
+            payload_stage = str((payload or {}).get("stage") or "")
+            if not isinstance(payload, dict) or payload_match != match_id or payload_stage != stage:
+                self._append_attempt(item, "failed", "identity_mismatch_refused")
+                item["state"] = FAILED
+                item["updated_at"] = iso_hkt(now)
+                writer(path, item)
+                outcomes.append(DrainOutcome(match_id, stage, FAILED, "identity_mismatch_refused"))
+                continue
+            try:
+                ok = project_one(payload)
+            except Exception as exc:  # noqa: BLE001 - isolate one item's failure
+                ok = False
+                exc_name = type(exc).__name__
+            else:
+                exc_name = None
+            if not ok:
+                self._append_attempt(
+                    item, "failed",
+                    f"project_one_exception:{exc_name}" if exc_name else "project_one_returned_false",
+                )
+                attempts = item.get("attempts") or []
+                failed_attempts = sum(
+                    1 for a in attempts if isinstance(a, dict) and a.get("outcome") == "failed"
+                )
+                if failed_attempts >= _MAX_TERMINAL_FAILURES:
+                    item["state"] = FAILED
+                    item["frozen"] = True
+                    reason = "max_projection_attempts_exhausted"
+                else:
+                    item["state"] = PENDING
+                    reason = (
+                        f"project_one_exception:{exc_name}" if exc_name else "project_one_returned_false"
+                    )
+                item["updated_at"] = iso_hkt(now)
+                writer(path, item)
+                outcomes.append(DrainOutcome(match_id, stage, item["state"], reason))
+                continue
+            self._append_attempt(item, "completed", None)
+            item["state"] = COMPLETED
+            item["updated_at"] = iso_hkt(now)
+            writer(path, item)
+            outcomes.append(DrainOutcome(match_id, stage, COMPLETED, None))
+        return outcomes
+
 
 def _parse_kickoff(value: Any) -> datetime | None:
     if not value:

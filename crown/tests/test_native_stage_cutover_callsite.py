@@ -536,12 +536,15 @@ class NativeBatchPathCutoverEnabledTests(CutoverCallsiteTestBase):
         self.assertIsNone(self._read_native(match_id))
 
     def test_deferred_projection_flag_on_still_runs_legacy_batch_commit_unconditionally(self) -> None:
-        """This batch path deliberately never enqueues into
-        `DeferredProjectionQueue` itself (see the code comment at its call
-        site) -- the single whole-batch legacy commit runs unconditionally
-        regardless of the deferred-projection flag, precisely to avoid
-        double-projecting a fixture. Confirm that invariant holds with the
-        flag on."""
+        """The single whole-batch legacy commit runs unconditionally
+        regardless of the deferred-projection flag -- Stage 7 additionally
+        enqueues each fixture at native-commit time (see
+        ``test_native_stage_cutover_stage7.py`` for dedicated enqueue/drain
+        coverage), but that enqueue must never replace, skip, or delay the
+        existing unconditional legacy whole-batch commit itself. Every
+        enqueued item ends up idempotently COMPLETED (ACKed) rather than
+        left PENDING, because the legacy whole-batch commit that runs in
+        the same tick already projected it first."""
         match_ids, result = self._run_sized(6, deferred=True)
         self.assertEqual(result["predictions"], 6)
         self._assert_all_committed_natively(match_ids)
@@ -550,9 +553,17 @@ class NativeBatchPathCutoverEnabledTests(CutoverCallsiteTestBase):
             self.assertEqual(
                 [row["stage"] for row in ledger["watch"][match_id]["stages"]].count("T-5"), 1,
             )
-        # Queue should be empty: this path never enqueues.
+        # Stage 7: this batch path now enqueues at native-commit time, but
+        # every item must be idempotently ACKed (COMPLETED), never left
+        # PENDING, since the unconditional legacy whole-batch commit in the
+        # same tick already projected it. No item should still need a
+        # future drain.
         queue = deferred_mod.DeferredProjectionQueue(self.state_dir)
         self.assertEqual(queue.pending_items(), [])
+        for match_id in match_ids:
+            item = queue.read(match_id, "T-5")
+            self.assertIsNotNone(item, f"{match_id} should have been enqueued at native-commit time")
+            self.assertEqual(item.get("state"), deferred_mod.COMPLETED)
 
     def test_bounded_drain_call_is_a_noop_when_queue_empty_and_flag_off(self) -> None:
         """The bounded deferred-drain call added at the end of this batch

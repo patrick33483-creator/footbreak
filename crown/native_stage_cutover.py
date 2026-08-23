@@ -138,9 +138,24 @@ from .common import HKT, parse_time
 from .config import Settings
 from . import native_stage_store as _store
 from .native_stage_deferred_projection import DeferredProjectionQueue
+from .state import load_ledger, save_ledger, state_lock
 
 ENV_CUTOVER_ENABLED = "CROWN_NATIVE_STAGE_CUTOVER_ENABLED"
 ENV_DEFERRED_PROJECTION_ENABLED = "CROWN_NATIVE_STAGE_DEFERRED_PROJECTION_ENABLED"
+
+# Stage 7: strict lock-wait ceiling for ``drain_deferred_projections_batch``.
+# This must never be able to consume the T-5 collection budget waiting on a
+# contended lock -- callers pass an explicit deadline-derived seconds value;
+# this constant is only the hard ceiling even when a caller-supplied budget
+# would otherwise allow more. There is deliberately no analogous hard
+# per-call item-count ceiling inside this module: once the lock is held,
+# the batch's own cost is one ledger read + N narrow, independently-bounded
+# per-item writes + one ledger write, so the caller's own ``max_items`` is
+# the only bound that should apply -- a dedicated bounded worker outside the
+# tick path may legitimately want to drain far more than a single tick's
+# own conservative recovery budget would allow. The two engine call sites
+# (`crown.engine`) choose their own conservative ``max_items`` explicitly.
+_STAGE7_RECOVERY_DRAIN_MAX_SECONDS = 3.0
 
 
 def cutover_enabled() -> bool:
@@ -389,6 +404,253 @@ def drain_deferred_projections(
     if queue is None:
         return []
     return queue.drain(project_fn, max_items=max_items)
+
+
+# ---------------------------------------------------------------------------
+# Stage 7: enqueue-at-native-commit, narrow post-kickoff-safe projection
+# writer, and a bounded single-transaction batch drain.
+# ---------------------------------------------------------------------------
+#
+# Gap being closed (see the mail this stage implements, and
+# ``CROWN_T5_DEADLINE_FIRST_PATCH_REPORT_20260823.md`` section S7 for the
+# full narrative): Stage 6 wired ``commit_native_only`` per fixture at
+# collection time, but nothing enqueued a deferred legacy projection at that
+# same moment, and the only drain call ran *after* the existing unconditional
+# whole-batch ``_commit_stage_predictions`` legacy commit. If that legacy
+# commit is killed or times out, a fixture whose native snapshot is already
+# durably COMMITTED has no recorded backlog item and no recovery path until
+# the next tick happens to re-collect and re-commit it natively (which
+# ``commit_snapshot``'s own idempotency makes harmless, but is not a
+# *guaranteed* recovery -- a fixture whose kickoff passes in the interim is
+# lost to legacy/dashboard evidence forever, even though the native store
+# still has it). Stage 7 adds:
+#
+#   1. ``enqueue_committed_snapshot`` -- called at the exact moment
+#      ``commit_native_only`` returns ``"COMMITTED"`` in the live
+#      ``_on_direct_result`` callback, strictly before the existing
+#      whole-batch legacy commit. Idempotent (backed by
+#      ``DeferredProjectionQueue.enqueue``'s own idempotency).
+#   2. ``project_committed_native_snapshot`` -- the narrow, post-kickoff-safe
+#      projection writer. It calls ``crown.ledger.sync_prediction`` with
+#      ``deadline_critical_snapshot=True`` -- the *only* branch of
+#      ``sync_prediction`` proven (by direct reading, not memory) to return
+#      before ``evaluate_new_t5``/``record_new_native_t5``/
+#      ``challenger_v2.evaluate_new_t5``/``recompute`` or any bet-creation
+#      log append, and to skip ``ensure_namespace``/``ensure_direct_t5_outbox``/
+#      ``challenger_v2.ensure_namespace`` entirely. This function performs a
+#      second, independent kickoff check before calling ``sync_prediction``
+#      (mirroring ``_commit_stage_predictions``'s own pre-check at its call
+#      site) so a post-kickoff item can never reach even the safe branch.
+#      It never calls ``load_ledger``/``save_ledger``/``state_lock`` itself --
+#      the caller must already hold the ledger and lock for the whole batch.
+#   3. ``drain_deferred_projections_batch`` -- one bounded
+#      ``state_lock``/``load_ledger``/``save_ledger`` transaction for up to
+#      ``max_items`` queued items, delegating each item's actual projection
+#      to ``project_committed_native_snapshot`` via
+#      ``DeferredProjectionQueue.drain_batch``. A fixture already projected
+#      by the existing legacy whole-batch commit (i.e. its stage row already
+#      exists and is complete) is detected and ACKed idempotently without
+#      re-invoking any consumer.
+ENV_NATIVE_STAGE_STORE_ENABLED = _store.ENV_ENABLED
+
+
+def enqueue_committed_snapshot(
+    config: Settings,
+    prediction: dict[str, Any],
+    *,
+    now: datetime | None = None,
+) -> bool:
+    """Enqueue one native-COMMITTED fixture for bounded deferred projection.
+
+    Must be called only after ``commit_native_only`` (or equivalent) has
+    already returned ``"COMMITTED"`` for this exact ``prediction`` -- this
+    function does not itself touch ``NativeStageStore`` or re-verify the
+    native commit; it only records that a legacy projection is still owed.
+    References the prediction's own identity (``match_id``, ``stage``,
+    ``kickoff_hkt``) and the already-normalized ``prediction`` payload --
+    never a raw provider response. A no-op (returns ``False``, no I/O)
+    when ``CROWN_NATIVE_STAGE_DEFERRED_PROJECTION_ENABLED`` is off or the
+    queue cannot be constructed; isolated (returns ``False``, swallows the
+    exception) if the enqueue write itself raises, so a queue durability
+    failure can never propagate into or block the caller's own per-fixture
+    native-commit callback.
+    """
+    if not deferred_projection_enabled():
+        return False
+    match_id, stage, kickoff = _identity_of(prediction)
+    if not match_id or not stage or kickoff is None:
+        return False
+    queue = _safe_queue(config)
+    if queue is None:
+        return False
+    try:
+        queue.enqueue(match_id, stage, kickoff=kickoff, payload=prediction)
+        return True
+    except Exception:
+        return False
+
+
+def _already_projected(ledger: dict[str, Any], match_id: str, stage: str) -> bool:
+    """Whether the legacy ledger already carries a completed row for this stage.
+
+    Read-only; used only to decide idempotent ACK vs. projection. Mirrors
+    ``crown.ledger._completed_stage_row``'s own completion test so a queue
+    item cannot be marked COMPLETED against a row this codebase would not
+    itself consider a usable native prediction.
+    """
+    from .ledger import _completed_stage_row  # local import: avoid any risk
+    # of a module-load-order cycle between ledger.py and this module; both
+    # already import cleanly today, this keeps the dependency narrow and
+    # explicit at the one call site that needs it.
+
+    watch = (ledger.get("watch") or {}).get(match_id)
+    if not isinstance(watch, dict):
+        return False
+    for row in watch.get("stages") or []:
+        if isinstance(row, dict) and row.get("stage") == stage:
+            return _completed_stage_row(row)
+    return False
+
+
+def project_committed_native_snapshot(
+    ledger: dict[str, Any],
+    prediction: dict[str, Any],
+    config: Settings,
+    *,
+    now: datetime | None = None,
+) -> bool:
+    """Narrow, post-kickoff-safe projection of one native-committed snapshot.
+
+    This is the *only* function in this patch permitted to write a stage
+    row into the legacy ``ledger["watch"][match_id]["stages"]`` outside the
+    existing, unmodified ``_commit_stage_predictions`` whole-batch path. It
+    is designed so that even if called after kickoff it still cannot create
+    a bet, observation, TG/outbox row, or fabricate a new native snapshot:
+
+      * It refuses (returns ``False``, no ledger mutation) if this exact
+        ``(match_id, stage)`` already has a completed legacy stage row --
+        idempotent ACK, matching requirement that a successful existing
+        legacy whole-batch commit may cause a later drain to detect an
+        already-projected row and ACK it without re-projecting.
+      * It refuses (returns ``False``) if the prediction's own kickoff has
+        already passed relative to ``now`` -- an independent, local
+        pre-check mirroring ``_commit_stage_predictions``'s own kickoff
+        gate, so this function never depends on being called only from a
+        pre-kickoff context to stay safe.
+      * It calls ``crown.ledger.sync_prediction`` with
+        ``deadline_critical_snapshot=True``, which -- confirmed by direct
+        reading of ``crown/ledger.py`` -- persists only the stage
+        snapshot plus ``stage_attempts``/``stage_jobs`` bookkeeping, sets
+        ``formal_admission_pending=True`` on a completed T-5 row, and
+        returns before any Wilson/notification/research consumer runs, and
+        does not initialize the ``crown``/direct-outbox/``challenger_v2``
+        namespaces at all.
+      * It never calls ``load_ledger``/``save_ledger``/``state_lock`` --
+        the caller (``drain_deferred_projections_batch`` or a future
+        recovery-drain call site) owns exactly one such transaction for the
+        whole batch this item belongs to.
+      * It never calls ``recompute_stats`` (the whole-batch Wilson gate) or
+        appends the whole-batch's own simulation-log entry -- those remain
+        exclusively the unmodified legacy whole-batch commit's
+        responsibility; this function's contract is display/evidence
+        projection only, never aggregate recomputation.
+
+    Returns ``True`` on a successful or idempotently-skipped projection,
+    ``False`` if refused for any of the reasons above. Never raises: an
+    unexpected internal error is caught and treated as ``False`` so one
+    item's failure can never abort a batch drain transaction that other
+    items in the same call still need to complete.
+    """
+    try:
+        match_id = str(prediction.get("match_id") or "")
+        stage = str(prediction.get("stage") or "")
+        if not match_id or stage not in {"首預", "T-30", "T-5"}:
+            return False
+        if _already_projected(ledger, match_id, stage):
+            # Idempotent ACK: the existing legacy whole-batch commit (or an
+            # earlier batch-drain call) already projected this fixture/stage.
+            return True
+        kickoff = parse_time(prediction.get("kickoff_hkt"))
+        if kickoff is None:
+            return False
+        kickoff = kickoff.astimezone(HKT)
+        current = (now or datetime.now(HKT)).astimezone(HKT)
+        if kickoff <= current:
+            # Independent, local no-backfill refusal -- never project a
+            # stage after its fixture's kickoff, matching the native store's
+            # own ``commit_snapshot``/``expire_post_kickoff`` refusal and the
+            # legacy whole-batch commit's own kickoff pre-check.
+            return False
+        from .ledger import sync_prediction  # local import: see _already_projected note.
+
+        sync_prediction(
+            ledger,
+            prediction,
+            config,
+            defer_auxiliary_recompute=True,
+            deadline_critical_snapshot=True,
+        )
+        return True
+    except Exception:
+        return False
+
+
+def drain_deferred_projections_batch(
+    config: Settings,
+    *,
+    max_items: int | None = None,
+    max_seconds: float | None = None,
+    now: datetime | None = None,
+) -> list[Any]:
+    """Bounded recovery drain sharing exactly ONE legacy ledger transaction.
+
+    Loads the ledger once, projects up to ``max_items`` queued fixtures via
+    ``project_committed_native_snapshot`` (each independently idempotent and
+    fail-closed), saves the ledger once, and returns the per-item outcomes.
+    Never calls any Wilson/notification/research consumer, never calls
+    ``merge_predictions`` (predictions.json is refreshed by the ordinary
+    whole-batch commit path; this recovery drain only needs to make the
+    legacy *display/evidence* ledger consistent with what the native store
+    already durably has).
+
+    Returns an empty list (no-op, no I/O) when the deferred-projection flag
+    is off, the queue cannot be constructed, there are no pending items, or
+    the state lock cannot be acquired within ``max_seconds`` -- the last
+    case fails closed (skips this drain opportunity entirely, leaving every
+    item PENDING for the next tick/recovery-drain call) rather than risk
+    consuming caller-critical time waiting on a contended lock.
+
+    ``max_seconds`` bounds only the lock-wait; the per-item work itself is
+    already bounded by ``max_items`` and by each item's own narrow,
+    single-ledger-mutation cost, so no additional in-loop deadline check is
+    needed once the lock is held.
+    """
+    if not deferred_projection_enabled():
+        return []
+    queue = _safe_queue(config)
+    if queue is None:
+        return []
+    if not queue.pending_items():
+        return []
+    lock_wait = (
+        min(_STAGE7_RECOVERY_DRAIN_MAX_SECONDS, max(0.0, max_seconds))
+        if max_seconds is not None else _STAGE7_RECOVERY_DRAIN_MAX_SECONDS
+    )
+    with state_lock(config, timeout_seconds=lock_wait) as acquired:
+        if not acquired:
+            # Fail closed: never hold up the caller's own deadline-critical
+            # work waiting on a contended lock. The next tick or recovery
+            # opportunity will retry; nothing queued here is lost.
+            return []
+        ledger = load_ledger(config)
+
+        def _project_one(payload: dict[str, Any]) -> bool:
+            return project_committed_native_snapshot(ledger, payload, config, now=now)
+
+        outcomes = queue.drain_batch(_project_one, now=now, max_items=max_items)
+        if outcomes:
+            save_ledger(config, ledger)
+        return outcomes
 
 
 def wrap_completion_callback(

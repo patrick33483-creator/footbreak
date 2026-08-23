@@ -44,6 +44,12 @@ _FIRST_LOOK_RECONCILE_MAX_FIXTURES = 30
 # process. No-op/unused when CROWN_NATIVE_STAGE_DEFERRED_PROJECTION_ENABLED
 # is off. Keeps the drain itself bounded even if the queue has backed up.
 _NATIVE_DEFERRED_DRAIN_MAX_ITEMS = 50
+# Stage 7: hard ceiling on how much of the remaining tick deadline the
+# pre-legacy-commit and fast-noop recovery drains may ever consume. Chosen
+# to be small relative to `_TIMED_STAGE_COMMIT_RESERVE_SECONDS` (8.0s) so a
+# recovery drain can never itself become a new cause of deadline starvation
+# for this tick's own urgent due-stage work.
+_NATIVE_STAGE7_RECOVERY_DRAIN_RESERVE_SECONDS = 3.0
 _FIRST_LOOK_RECONCILE_FIXTURE_SECONDS = 30.0
 _FIRST_LOOK_RECONCILE_QUOTE_SECONDS = 15.0
 
@@ -2279,9 +2285,25 @@ def _run_local_bulk_timed_stages(
             stage = str(titan_row.get("_due_stage") or "")
             prediction = _local_bulk_stage_prediction(titan_row, config, snapshot, stage)
             try:
-                _native_cutover.commit_native_only(config, prediction)
+                native_state = _native_cutover.commit_native_only(config, prediction)
             except Exception:
-                pass
+                native_state = None
+            if native_state == "COMMITTED":
+                # Stage 7: the instant this fixture's own native snapshot is
+                # durable, atomically enqueue a bounded/idempotent deferred
+                # legacy-projection job referencing this exact prediction's
+                # identity -- strictly BEFORE the unconditional whole-batch
+                # legacy commit below. If that whole-batch commit is later
+                # killed or times out, this queued item is the fixture's
+                # only recorded path back to legacy/dashboard evidence; the
+                # existing legacy whole-batch commit succeeding first just
+                # makes this item an idempotent no-op ACK on its next drain.
+                # No-op (returns False, no I/O) when the deferred-projection
+                # flag is off; isolated (never raises) either way.
+                try:
+                    _native_cutover.enqueue_committed_snapshot(config, prediction)
+                except Exception:
+                    pass
 
     usable_snapshots, direct_attempted = _collect_locked_direct_snapshots(
         config, rows, deadline, on_result=_on_direct_result,
@@ -2355,6 +2377,34 @@ def _run_local_bulk_timed_stages(
     except Exception:
         pass
 
+    # Stage 7: bounded, single-transaction recovery drain, placed after this
+    # tick's own native per-fixture collection has already finished but
+    # strictly BEFORE the unbounded legacy whole-batch commit immediately
+    # below. This is the primary reachable-recovery opportunity per the
+    # Stage 7 design mandate: if an EARLIER tick's legacy whole-batch commit
+    # was killed/timed out after native commits (and enqueues) had already
+    # happened for some fixtures, those queued items are drained here, in
+    # this tick, before this tick adds its own (unrelated) unbounded legacy
+    # commit work. A strict, small time budget is carved out of the
+    # remaining deadline so this can never compete with or delay this
+    # tick's own urgent due-stage collection/commit; if the remaining budget
+    # is at or below the reserve this drain needs, it is skipped entirely
+    # (never partially run) and left for the next opportunity. Default-off
+    # (no-op, no I/O) when CROWN_NATIVE_STAGE_DEFERRED_PROJECTION_ENABLED is
+    # unset/false.
+    _stage7_recovery_reserve = _NATIVE_STAGE7_RECOVERY_DRAIN_RESERVE_SECONDS
+    if _deadline_remaining(deadline) > _stage7_recovery_reserve:
+        try:
+            _native_cutover.drain_deferred_projections_batch(
+                config,
+                max_items=_NATIVE_DEFERRED_DRAIN_MAX_ITEMS,
+                max_seconds=min(
+                    _stage7_recovery_reserve, _deadline_remaining(deadline),
+                ),
+            )
+        except Exception:
+            pass
+
     # The commit helper already rejects a prediction that has crossed kickoff,
     # preserves stage idempotency, and evaluates each T-5 once. One batch
     # avoids repeating ledger read/recompute/write work for same-kickoff
@@ -2371,12 +2421,18 @@ def _run_local_bulk_timed_stages(
         },
     )
     # Bounded deferred-projection drain (Crown T-5 deadline-first patch,
-    # stage 6). This native ID=3 batch path never itself enqueues into the
-    # deferred queue (see the ``_on_direct_result``/``commit_native_only``
-    # comment above), but the queue is shared/persistent across both tick
-    # paths, so a bounded, isolated drain is included here too as a
-    # non-critical, post-commit, best-effort catch-up. Default-off/no-op
-    # when CROWN_NATIVE_STAGE_DEFERRED_PROJECTION_ENABLED is unset/false.
+    # stage 6; Stage 7 correction below). This native ID=3 batch path itself
+    # now DOES enqueue into the deferred queue -- see the
+    # ``_on_direct_result``/``enqueue_committed_snapshot`` call above -- and
+    # Stage 7 added the *primary* recovery-drain opportunity earlier in this
+    # same function, strictly before the whole-batch legacy commit above,
+    # using ``drain_deferred_projections_batch``'s single shared transaction.
+    # This per-item ``drain`` call remains as a secondary, non-critical,
+    # post-commit, best-effort catch-up only -- every item it processes is
+    # independently idempotent, so running both drains in the same tick can
+    # only ever re-ACK an already-projected item, never double-project one.
+    # Default-off/no-op when CROWN_NATIVE_STAGE_DEFERRED_PROJECTION_ENABLED
+    # is unset/false.
     try:
         _native_cutover.drain_deferred_projections(
             config,
@@ -2465,6 +2521,22 @@ def run(
             existing_predictions, ledger, datetime.now(HKT)
         )
         if not titan_rows:
+            # Stage 7: the fast-noop path has no urgent due-stage work this
+            # tick by definition (``titan_rows`` is empty), so it is always
+            # safe to spend the same small, strictly-bounded recovery-drain
+            # budget here -- this can never delay or compete with due-stage
+            # collection because there is none pending in this tick. This is
+            # the restart-safe backlog-drain opportunity for a process that
+            # was killed during a previous tick's legacy whole-batch commit
+            # and then restarted directly into a tick with nothing newly due.
+            try:
+                _native_cutover.drain_deferred_projections_batch(
+                    config,
+                    max_items=_NATIVE_DEFERRED_DRAIN_MAX_ITEMS,
+                    max_seconds=_NATIVE_STAGE7_RECOVERY_DRAIN_RESERVE_SECONDS,
+                )
+            except Exception:
+                pass
             return {
                 "ok": True, "mode": mode, "fast_noop": True,
                 "predictions": 0, "retained_predictions": len(existing_predictions),
