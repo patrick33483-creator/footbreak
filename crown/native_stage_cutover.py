@@ -31,46 +31,74 @@ The code-level bottleneck, confirmed by reading ``crown/engine.py`` and
     cycle, holding the global lock for however long that entire loop takes.
   * The separate PinnAPI-bridge tick path (``mode == "tick"`` branch that
     builds ``pending_predictions`` and calls ``_run_tick_predictions`` with
-    an ``on_complete`` callback) is *structurally worse*: its
-    ``commit_completed`` callback (defined inline in
-    ``crown.engine.run``) calls ``_commit_stage_predictions`` with a
-    **single-item list per completed fixture**, so N near-simultaneous
-    fixture completions serialize into N full
-    lock/load_ledger/sync_prediction/save_ledger/merge_predictions cycles,
-    each one paying the *whole* ledger's read/write cost. This is the
-    strongest candidate for a same-minute multi-fixture deadline miss: with
-    ``ledger.json``/``predictions.json`` growing every day, cost per
-    fixture grows too, and a 00:00-rollover batch of many simultaneously
-    due fixtures is exactly the shape that maximizes serialized whole-file
-    I/O under one lock.
+    an ``on_complete`` callback, wired to a ``commit_completed`` closure
+    that calls ``_commit_stage_predictions`` with a single-item list per
+    completed fixture) was analyzed as part of this module's original
+    design as a second, structurally-worse candidate for the same
+    deadline-miss failure mode described above.
+
+    **Stage 6 correction (2026-08-24), superseding the paragraph above and
+    everything below in this section that assumed the bridge path runs in
+    production:** static call-graph tracing plus live call-count
+    instrumentation across the full existing test suite established that
+    ``crown.engine.run()``'s ``mode == "tick"`` branch **never reaches**
+    that ``commit_completed``/``_run_tick_predictions`` call site at all --
+    every real tick control-flow path returns earlier (either the
+    fast-no-op early return or the native ID=3
+    ``_run_local_bulk_timed_stages`` path taken whenever ``titan_rows`` is
+    non-empty). Zero calls were observed across the entire pre-existing
+    181-test ``test_crown.py`` suite, and
+    ``crown/tests/test_native_stage_cutover_callsite.py``
+    (``BridgeCallbackUnreachableForTickTests``) now asserts this as a
+    permanent control-flow regression test. This means the paragraph above
+    is describing dead code: it cannot be "the strongest candidate for a
+    same-minute multi-fixture deadline miss" in the running system because
+    it does not run in the running system for tick mode. It is retained
+    here, unedited apart from this correction notice, purely as a record of
+    the (superseded) design reasoning that originally motivated
+    ``wrap_completion_callback`` below; that function remains unused by any
+    ``crown/engine.py`` call site and must not be treated as active
+    durability. See ``CROWN_STAGE6_CRITICAL_FINDING_20260824.md`` for the
+    full investigation.
   * ``crown.engine._run_tick_predictions`` also calls
     ``on_complete(value)`` (line ~599) with **no exception isolation** --
     if the callback raises, the whole bounded collection loop for every
-    other still-in-flight fixture in that tick is destroyed. This module
-    fixes that specific gap for the *cutover-enabled* callback it supplies
-    (see ``wrap_pinnapi_bridge_commit_completed`` below); it does not
-    change the existing ``commit_completed`` when the cutover is disabled.
+    other still-in-flight fixture in that tick is destroyed. This module's
+    ``wrap_completion_callback`` fixes that specific gap for a
+    cutover-enabled callback supplied to that call site -- but per the
+    Stage 6 correction immediately above, that call site is unreachable
+    for ``mode == "tick"``, so this fix is dormant/unused code today, not
+    an active production mitigation.
 
 What this module changes and does not change
 ----------------------------------------------
-This module adds a **parallel, opt-in composition layer** on top of
-Stages 1-4's already-tested primitives
+**Stage 5 (original, historical):** this module added a parallel, opt-in
+composition layer on top of Stages 1-4's already-tested primitives
 (``crown.native_stage_store.NativeStageStore``,
-``crown.native_stage_deferred_projection.DeferredProjectionQueue``). It does
-not edit ``_run_local_bulk_timed_stages``, ``_commit_stage_predictions``, or
-the tick-mode ``commit_completed``/``_run_tick_predictions`` call site in
-``crown/engine.py`` at all in this stage -- see the accompanying runbook for
-exactly why an actual call-site rewire is deferred (this keeps the change
-set reviewable and lets every new code path be independently exercised and
-covered by tests before any real ``crown/engine.py`` call site is touched).
-This module is therefore, precisely like Stages 1-2, **shadow/parallel
-only** with respect to the live tick: nothing here is imported or called by
-``crown/engine.py`` in this patch. The three new flags below are fully
-plumbed, tested, and default-off, ready for a follow-up call-site change
-that is explicitly out of scope for this commit -- see
-``CROWN_T5_NATIVE_STAGE_CUTOVER_RUNBOOK_20260824.md`` for the precise,
-minimal diff a future change would need at each call site, and for why that
-final wiring step was not taken in this same patch.
+``crown.native_stage_deferred_projection.DeferredProjectionQueue``) but was
+not wired into any ``crown/engine.py`` call site -- shadow/parallel only,
+exactly like Stages 1-2, with every flag default-off and unreachable from
+the live tick.
+
+**Stage 6 (current, 2026-08-24):** ``crown.engine._run_local_bulk_timed_stages``
+(the live native ID=3 batch path -- the only tick-mode path confirmed
+reachable, per the correction above) now calls this module's
+``commit_native_only`` once per fixture, at collection time, via an
+``on_result`` callback passed into ``_collect_locked_direct_snapshots``,
+strictly before the existing single whole-batch
+``_commit_stage_predictions`` legacy call. A bounded
+``drain_deferred_projections`` call runs after that legacy call,
+independently isolated. Both are no-ops (byte-identical to Stage 5
+behaviour) whenever ``CROWN_NATIVE_STAGE_CUTOVER_ENABLED`` is off. The
+tick-mode ``commit_completed``/``_run_tick_predictions`` call site was
+deliberately **left untouched** in Stage 6, because it is dead code for
+``mode == "tick"`` (see the correction above) -- wiring it would not fix
+any reachable T-5 miss and was explicitly out of scope per the user's
+Stage 6 direction. ``wrap_completion_callback`` below therefore remains
+unused by any call site; it is kept only as tested-but-dormant code and
+documentation of the (superseded) original two-call-site design. See
+``CROWN_T5_NATIVE_STAGE_CUTOVER_RUNBOOK_20260824.md`` for the current,
+accurate call-site wiring description.
 
 New flags (all default OFF; composed, never replacing, the Stage 1 flag)
 --------------------------------------------------------------------------
@@ -234,6 +262,38 @@ def commit_fixture_result(
     return FixtureCommitResult(match_id, stage, native_state, "inline")
 
 
+def commit_native_only(
+    config: Settings,
+    prediction: dict[str, Any],
+    *,
+    now: datetime | None = None,
+) -> str | None:
+    """Commit exactly one fixture's native durability snapshot, nothing else.
+
+    This performs *only* step 1 of ``commit_fixture_result`` -- the
+    immediate per-fixture ``NativeStageStore`` commit -- and makes no
+    decision at all about the legacy ledger/Wilson/dashboard/Telegram
+    projection. It is intended for call sites (such as the native ID=3
+    batch path in ``crown.engine._run_local_bulk_timed_stages``) that must
+    keep their own unconditional, once-per-batch legacy commit fully
+    intact and only want to move the *native* durability write earlier,
+    without touching if/when/how the legacy projection itself runs.
+
+    Returns the resulting native terminal state string (``COMMITTED`` /
+    ``FAILED`` / ``DATA_MISSING`` / ``EXPIRED``), or ``None`` if the native
+    store is disabled, the prediction's identity is incomplete, or the
+    commit raised (isolated internally -- never propagates).
+    """
+    match_id, stage, kickoff = _identity_of(prediction)
+    store = _safe_store(config)
+    if store is None or not match_id or stage not in {"首預", "T-30", "T-5"} or kickoff is None:
+        return None
+    try:
+        return _commit_native(store, match_id, stage, prediction, kickoff, now=now)
+    except Exception:
+        return None
+
+
 def _commit_native(
     store: "_store.NativeStageStore",
     match_id: str,
@@ -337,13 +397,20 @@ def wrap_completion_callback(
     """Isolate exceptions from a per-completion callback.
 
     ``crown.engine._run_tick_predictions`` calls ``on_complete(value)`` with
-    no exception isolation today: a raising callback destroys the bounded
-    collection loop for every other still-in-flight fixture in the same
-    tick. This wrapper preserves the exact call signature and return
-    contract (``None``) while guaranteeing one fixture's callback exception
-    can never propagate to the loop that drives every other fixture's
-    result. It changes nothing about ``on_complete``'s own logic or side
-    effects when it does not raise.
+    no exception isolation today: a raising callback would destroy the
+    bounded collection loop for every other still-in-flight fixture in the
+    same tick, if that loop ever ran. This wrapper preserves the exact call
+    signature and return contract (``None``) while guaranteeing one
+    fixture's callback exception can never propagate to the loop that
+    drives every other fixture's result. It changes nothing about
+    ``on_complete``'s own logic or side effects when it does not raise.
+
+    Stage 6 correction: ``crown.engine.run()`` never calls
+    ``_run_tick_predictions``/``commit_completed`` for ``mode == "tick"``
+    (confirmed dead call site -- see the module docstring above and
+    ``CROWN_STAGE6_CRITICAL_FINDING_20260824.md``). This function is not
+    wired into that call site or any other; it is retained, tested, and
+    correct in isolation, but dormant/unused in the running system.
     """
 
     def _wrapped(value: Any) -> None:

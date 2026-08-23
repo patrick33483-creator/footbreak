@@ -197,7 +197,7 @@ class ShadowEnabledOrderingTests(ShadowWiringTestBase):
         now, _cards = self._seed_due_t5_fixtures(match_ids)
         observed: dict[str, list[str]] = {"events": []}
 
-        def fake_direct_collect(_config, _rows, _deadline):
+        def fake_direct_collect(_config, _rows, _deadline, **_kwargs):
             store = store_mod.NativeStageStore(self.state_dir)
             state = store.read("shadow-on-order")
             observed["events"].append(

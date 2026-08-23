@@ -8,7 +8,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from multiprocessing.connection import wait as wait_for_connections
-from typing import Any
+from typing import Any, Callable
 
 from .common import HKT, iso_hkt, parse_time
 from .config import Settings
@@ -35,9 +35,15 @@ from .state import (
 from .titan import TitanClient
 from . import tick_timing_probe as _timing
 from . import native_stage_shadow as _native_shadow
+from . import native_stage_cutover as _native_cutover
 
 
 _FIRST_LOOK_RECONCILE_MAX_FIXTURES = 30
+# Crown T-5 deadline-first patch, stage 6: bounds how many queued deferred
+# legacy-projection items a single tick's non-critical drain call will
+# process. No-op/unused when CROWN_NATIVE_STAGE_DEFERRED_PROJECTION_ENABLED
+# is off. Keeps the drain itself bounded even if the queue has backed up.
+_NATIVE_DEFERRED_DRAIN_MAX_ITEMS = 50
 _FIRST_LOOK_RECONCILE_FIXTURE_SECONDS = 30.0
 _FIRST_LOOK_RECONCILE_QUOTE_SECONDS = 15.0
 
@@ -407,12 +413,28 @@ def _collect_locked_direct_snapshots(
     config: Settings,
     rows: list[dict[str, Any]],
     deadline: float,
+    *,
+    on_result: Callable[[dict[str, Any], dict[str, Any]], None] | None = None,
 ) -> tuple[dict[str, dict[str, Any]], int]:
     """Collect exact-ID quotes with killable workers and a hard commit reserve.
 
     Threads cannot be safely cancelled once a provider socket stalls.  This
     deliberately mirrors the prediction worker process boundary so a stuck
     direct ID page cannot consume the pre-kickoff ledger-commit window.
+
+    ``on_result`` (Crown T-5 deadline-first patch, stage 6; optional,
+    default ``None``) -- when supplied, is invoked with ``(row, value)`` at
+    the exact moment this collector accepts a usable snapshot for that row,
+    strictly before the next ``wait_for_connections`` cycle begins, so a
+    caller can commit each fixture natively the instant it is available
+    instead of waiting for the whole batch's collection loop to finish.
+    This never changes which snapshots are accepted, never changes the
+    return value below, never blocks or slows the collection loop for any
+    other in-flight fixture, and is fully isolated: any exception raised by
+    ``on_result`` is swallowed here so a caller's commit failure can never
+    interrupt collection for the rest of the batch. When ``on_result`` is
+    ``None`` (the default), this function's behaviour is byte-identical to
+    every prior stage.
     """
     if not rows or os.name != "posix":
         return {}, 0
@@ -489,6 +511,14 @@ def _collect_locked_direct_snapshots(
                 and value.get("prices")
             ):
                 snapshots[str(row.get("id") or "")] = value
+                if on_result is not None:
+                    try:
+                        on_result(row, value)
+                    except Exception:
+                        # Isolated: a caller's per-fixture commit failure
+                        # must never interrupt collection for any other
+                        # still-in-flight fixture in this same batch.
+                        pass
         for receiver, (child, _row) in list(active.items()):
             if child.is_alive() or receiver.poll():
                 continue
@@ -2215,8 +2245,46 @@ def _run_local_bulk_timed_stages(
         _native_shadow.shadow_mark_started_batch(config, rows)
     except Exception:
         pass
+
+    # Native per-fixture cutover (Crown T-5 deadline-first patch, stage 6).
+    # Default-off: when CROWN_NATIVE_STAGE_CUTOVER_ENABLED is unset/false,
+    # ``_on_direct_result`` below is never constructed and ``on_result`` is
+    # passed as ``None``, so ``_collect_locked_direct_snapshots`` runs with
+    # byte-identical behaviour to every prior stage.
+    #
+    # When the flag is on, this fires ONLY the native per-fixture durability
+    # commit (write-ahead STARTED is already covered by
+    # ``shadow_mark_started_batch`` above; this adds the terminal
+    # COMMITTED/FAILED/DATA_MISSING snapshot) the instant each fixture's own
+    # snapshot is collected -- strictly before the whole batch's collection
+    # loop finishes. It deliberately does NOT call
+    # ``native_stage_cutover.commit_fixture_result`` (which would also
+    # decide whether to run/defer the *legacy* projection): the legacy
+    # ledger/Wilson/dashboard/Telegram projection for every row in this
+    # batch path continues to run exactly once, unconditionally, via the
+    # existing ``stage_predictions``/``_commit_stage_predictions`` call
+    # below -- never split, never duplicated, never skipped by this stage.
+    # Splitting the *legacy* batch commit itself into N per-fixture legacy
+    # commits here would reintroduce the very N-whole-ledger-write cost
+    # this stage exists to avoid, and would also risk double-projecting a
+    # fixture whose native commit is separately deferred by
+    # ``commit_fixture_result`` elsewhere (the tick-mode path). Native
+    # commit failure for one fixture is isolated (a bare ``try/except``
+    # here, plus the ``on_result`` wrapper's own isolation in
+    # ``_collect_locked_direct_snapshots``) and can never block collection
+    # or the legacy commit for any other fixture.
+    _on_direct_result = None
+    if _native_cutover.cutover_enabled():
+        def _on_direct_result(titan_row: dict[str, Any], snapshot: dict[str, Any]) -> None:
+            stage = str(titan_row.get("_due_stage") or "")
+            prediction = _local_bulk_stage_prediction(titan_row, config, snapshot, stage)
+            try:
+                _native_cutover.commit_native_only(config, prediction)
+            except Exception:
+                pass
+
     usable_snapshots, direct_attempted = _collect_locked_direct_snapshots(
-        config, rows, deadline,
+        config, rows, deadline, on_result=_on_direct_result,
     )
 
     fallback_rows = [
@@ -2302,6 +2370,23 @@ def _run_local_bulk_timed_stages(
             "emitted": len(emitted),
         },
     )
+    # Bounded deferred-projection drain (Crown T-5 deadline-first patch,
+    # stage 6). This native ID=3 batch path never itself enqueues into the
+    # deferred queue (see the ``_on_direct_result``/``commit_native_only``
+    # comment above), but the queue is shared/persistent across both tick
+    # paths, so a bounded, isolated drain is included here too as a
+    # non-critical, post-commit, best-effort catch-up. Default-off/no-op
+    # when CROWN_NATIVE_STAGE_DEFERRED_PROJECTION_ENABLED is unset/false.
+    try:
+        _native_cutover.drain_deferred_projections(
+            config,
+            lambda prediction: _commit_stage_predictions(
+                config, "tick", [prediction], deadline=deadline,
+            ),
+            max_items=_NATIVE_DEFERRED_DRAIN_MAX_ITEMS,
+        )
+    except Exception:
+        pass
     return {
         "ok": True,
         "mode": "tick",
@@ -2682,6 +2767,27 @@ def run(
             fresh_condition_predictions.extend(fresh)
             evidence_projection_stages.extend(projected_stages)
 
+        # NOTE (Crown T-5 deadline-first patch, stage 6 -- source-review
+        # finding, verified both statically and empirically against the
+        # full existing test suite): this ``commit_completed`` /
+        # ``_run_tick_predictions`` call site is UNREACHABLE for
+        # ``mode == "tick"``. Earlier in this same branch of ``run()``,
+        # ``mode == "tick"`` always returns before this point -- either via
+        # the ``fast_noop`` short-circuit when ``_tick_rows_from_predictions``
+        # finds nothing due, or via ``_run_local_bulk_timed_stages`` when it
+        # finds something due. ``titan_rows`` is reassigned only inside
+        # ``if sweep_mode:`` (sweep/round-update/first-look-reconcile),
+        # never for tick, so ``pending_predictions``/``payloads`` stay empty
+        # for every ``mode == "tick"`` invocation and this callback never
+        # fires. This is confirmed pre-existing at Stage 5 (`2f21f4d`) and at
+        # the original base (`f11bafedf2db70ad83a5096a8750544b91e0f486`) --
+        # not introduced by this patch series. See
+        # ``CROWN_STAGE6_CRITICAL_FINDING_20260824.md`` and
+        # ``crown/tests/test_native_stage_cutover_callsite.py``'s
+        # control-flow regression test for the full analysis and proof.
+        # Deliberately left UNWIRED to ``native_stage_cutover`` here: wiring
+        # dead code would misrepresent it as live durability protection,
+        # which is the exact failure mode this stage exists to avoid.
         runtime = _run_tick_predictions(
             payloads, tick_deadline if tick_deadline is not None else time.monotonic(),
             commit_completed,
