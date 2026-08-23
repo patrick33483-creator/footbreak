@@ -34,6 +34,7 @@ from .state import (
 )
 from .titan import TitanClient
 from . import tick_timing_probe as _timing
+from . import native_stage_shadow as _native_shadow
 
 
 _FIRST_LOOK_RECONCILE_MAX_FIXTURES = 30
@@ -2200,6 +2201,20 @@ def _run_local_bulk_timed_stages(
     journaled = _journal_timed_stage_attempts(
         config, rows, reason="native_timed_stage_collection_started",
     )
+    # Shadow instrumentation (Crown T-5 deadline-first patch, stage 2).
+    # Default-off: when CROWN_NATIVE_STAGE_STORE_ENABLED is unset/false this
+    # call constructs no store and performs no filesystem I/O whatsoever.
+    # The callee already guards every exception internally; this call site
+    # adds a second, defense-in-depth guard so that even an unanticipated
+    # defect inside shadow bookkeeping can never propagate into this
+    # deadline-critical path.  It mirrors the legacy write-ahead journal
+    # above into a separate per-fixture store, strictly before any provider
+    # collection begins, and never gates, delays, or replaces the legacy
+    # journal/collection/commit below.
+    try:
+        _native_shadow.shadow_mark_started_batch(config, rows)
+    except Exception:
+        pass
     usable_snapshots, direct_attempted = _collect_locked_direct_snapshots(
         config, rows, deadline,
     )
@@ -2253,6 +2268,24 @@ def _run_local_bulk_timed_stages(
         str(titan.get("id") or "") not in usable_snapshots
         for titan in rows
     )
+
+    # Shadow instrumentation (Crown T-5 deadline-first patch, stage 2).
+    # Runs strictly after the legacy path's own bounded provider collection
+    # above has already produced a result -- a usable snapshot or an
+    # explicit DATA_MISSING -- for every row, and strictly before the legacy
+    # commit below. The shadow STARTED journal already happened once, right
+    # before collection began; only the per-fixture shadow commit runs here.
+    # Default-off: constructs no store and performs no filesystem I/O when
+    # CROWN_NATIVE_STAGE_STORE_ENABLED is unset/false.  The callee already
+    # guards every exception internally; this call site adds a second,
+    # defense-in-depth guard so shadow bookkeeping can never mutate
+    # ``stage_predictions`` or delay/gate the legacy commit that immediately
+    # follows -- the legacy ledger remains the sole authority for Wilson
+    # admission, dashboard projection and Telegram notification either way.
+    try:
+        _native_shadow.shadow_commit_stage_predictions(config, stage_predictions)
+    except Exception:
+        pass
 
     # The commit helper already rejects a prediction that has crossed kickoff,
     # preserves stage idempotency, and evaluates each T-5 once. One batch
