@@ -10,6 +10,8 @@ jobs:
   audit:
     runs-on: ubuntu-24.04
     steps:
+      - uses: actions/checkout@v5
+
       - name: Configure SSH
         env:
           DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
@@ -174,9 +176,25 @@ jobs:
           PY
           python3 -m json.tool crown-dashboard-durable-audit.json >/dev/null
 
+      - name: Run provider-free historical odds-path analysis
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            'sudo /opt/footbreak/.venv/bin/python3 - --crown-ledger /var/lib/footbreak/crown/ledger.json --footbreak-ledger /opt/footbreak/system/sim_ledger.json' \
+            < deploy/audit-odds-path-outcome-analysis.py \
+            | tee odds-path-outcome-audit.json
+          python3 -m json.tool odds-path-outcome-audit.json >/dev/null
+
       - name: Upload audit evidence
         uses: actions/upload-artifact@v4
         with:
           name: crown-dashboard-durable-audit-${{ github.run_id }}
-          path: crown-dashboard-durable-audit.json
+          path: |
+            crown-dashboard-durable-audit.json
+            odds-path-outcome-audit.json
           retention-days: 14
