@@ -1,0 +1,48 @@
+name: 賠率路徑與賽果歷史稽核
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: Read-only T-30 to T-5 odds-path audit
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: 設定 SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: 只讀執行歷史賠率路徑分析
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          # The checked-out audit script is streamed to Python stdin.  The
+          # server only opens the two ledger paths read-only; no deploy, write,
+          # provider, notification, or application import is involved.
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            'sudo /opt/footbreak/.venv/bin/python3 - --crown-ledger /var/lib/footbreak/crown/ledger.json --footbreak-ledger /opt/footbreak/system/sim_ledger.json' \
+            < deploy/audit-odds-path-outcome-analysis.py \
+            | tee odds-path-outcome-audit.json
+
+      - name: 保存安全 aggregate JSON
+        uses: actions/upload-artifact@v4
+        with:
+          name: odds-path-outcome-audit
+          path: odds-path-outcome-audit.json
+          retention-days: 14
