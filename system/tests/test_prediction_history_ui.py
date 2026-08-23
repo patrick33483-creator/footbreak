@@ -213,29 +213,31 @@ class PredictionHistoryUiTests(unittest.TestCase):
                 self.assertIn("研究卡未有凍結 Wilson 身份", cards)
                 self.assertNotIn("? Number(item.condition_number) : index + 1", cards)
 
-    def test_footbreak_evidence_batch_details_are_collapsed_and_fail_closed(self) -> None:
-        root = ROOT / "hkjc-dashboard"
-        app = (root / "app.js").read_text(encoding="utf-8")
-        css = (root / "styles.css").read_text(encoding="utf-8")
-        helper = app[
-            app.index("function evidenceBatchDetails"):
-            app.index("function historyConsensusCards")
-        ]
+    def test_both_evidence_batch_details_are_collapsed_and_fail_closed(self) -> None:
+        for dashboard in ("hkjc-dashboard", "crown/dashboard"):
+            root = ROOT / dashboard
+            app = (root / "app.js").read_text(encoding="utf-8")
+            css = (root / "styles.css").read_text(encoding="utf-8")
+            helper = app[
+                app.index("function evidenceBatchDetails"):
+                app.index("function historyConsensusCards")
+            ]
 
-        self.assertIn('const detail = item.last_merged_evidence || {}', helper)
-        self.assertIn('<details class="evidence-batch"', helper)
-        self.assertNotIn("<details open", helper)
-        self.assertIn('data-testid="evidence-batch-toggle-', helper)
-        self.assertIn('data-testid="evidence-batch-row-', helper)
-        self.assertIn("查看 v${esc(String(detail.version))} 的 ${decided || '—'} 場明細", helper)
-        self.assertIn("${hits} 命中 · ${misses} 未中", helper)
-        self.assertIn("為免撈錯 V2／V3／V4，暫不顯示明細", helper)
-        self.assertIn("${evidenceBatchDetails(item)}", app)
-        self.assertIn("min-height: 44px", css)
-        self.assertIn(".granular-rank-card:has(.evidence-batch[open])", css)
-        self.assertIn(".evidence-batch-panel ol", css)
-        self.assertIn("@media (max-width: 900px)", css)
-        self.assertIn(".evidence-batch-row { grid-template-columns: 22px minmax(0, 1fr) auto; }", css)
+            with self.subTest(dashboard=dashboard):
+                self.assertIn('const detail = item.last_merged_evidence || {}', helper)
+                self.assertIn('<details class="evidence-batch"', helper)
+                self.assertNotIn("<details open", helper)
+                self.assertIn('data-testid="evidence-batch-toggle-', helper)
+                self.assertIn('data-testid="evidence-batch-row-', helper)
+                self.assertIn("查看 v${esc(String(detail.version))} 的 ${decided || '—'} 場明細", helper)
+                self.assertIn("${hits} 命中 · ${misses} 未中", helper)
+                self.assertIn("為免撈錯 V2／V3／V4，暫不顯示明細", helper)
+                self.assertIn("${evidenceBatchDetails(item)}", app)
+                self.assertIn("min-height: 44px", css)
+                self.assertIn(".granular-rank-card:has(.evidence-batch[open])", css)
+                self.assertIn(".evidence-batch-panel ol", css)
+                self.assertIn("@media (max-width: 900px)", css)
+                self.assertIn(".evidence-batch-row { grid-template-columns: 22px minmax(0, 1fr) auto; }", css)
 
     def test_crown_dashboard_renders_stage_completeness_monitor(self) -> None:
         root = ROOT / "crown" / "dashboard"
