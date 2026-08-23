@@ -174,9 +174,75 @@ jobs:
           PY
           python3 -m json.tool crown-dashboard-durable-audit.json >/dev/null
 
+      - name: Inspect live Crown evidence expansion inputs
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'sudo /bin/sh -s' \
+            > crown-evidence-expansion-audit.txt <<'REMOTE'
+          set -eu
+          cd /opt/footbreak
+          printf 'server_sha=%s\n' "$(git rev-parse HEAD)"
+          printf 'asset_file_sha256=%s\n' "$(sha256sum /var/www/crown/app.js | awk '{print $1}')"
+          printf 'asset_helper_count=%s\n' "$(grep -c 'function evidenceBatchDetails' /var/www/crown/app.js || true)"
+          printf 'asset_toggle_count=%s\n' "$(grep -c 'evidence-batch-toggle-' /var/www/crown/app.js || true)"
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          payload = json.loads(Path("/var/www/crown/data.json").read_text(encoding="utf-8"))
+
+          def find_key(value, key, path="$"):
+              hits = []
+              if isinstance(value, dict):
+                  if key in value:
+                      hits.append((path, value[key]))
+                  for child_key, child_value in value.items():
+                      hits.extend(find_key(child_value, key, f"{path}.{child_key}"))
+              elif isinstance(value, list):
+                  for index, child_value in enumerate(value):
+                      hits.extend(find_key(child_value, key, f"{path}[{index}]"))
+              return hits
+
+          granular_hits = find_key(payload, "granular_conditions")
+          detail_hits = find_key(payload, "last_merged_evidence")
+          print(f"granular_conditions_paths={len(granular_hits)}")
+          print(f"last_merged_evidence_paths={len(detail_hits)}")
+
+          for path, granular in granular_hits:
+              ranking = granular.get("ranking", []) if isinstance(granular, dict) else []
+              print(f"ranking_path={path}.ranking")
+              print(f"ranking_count={len(ranking) if isinstance(ranking, list) else 0}")
+              if not isinstance(ranking, list):
+                  continue
+              for item in ranking:
+                  if not isinstance(item, dict):
+                      continue
+                  detail = item.get("last_merged_evidence")
+                  number = item.get("condition_number")
+                  if number != 4 and not isinstance(detail, dict):
+                      continue
+                  rows = detail.get("rows") if isinstance(detail, dict) else None
+                  print(json.dumps({
+                      "condition_number": number,
+                      "active_version": (item.get("active_evidence") or {}).get("version"),
+                      "detail_version": detail.get("version") if isinstance(detail, dict) else None,
+                      "complete": detail.get("complete") if isinstance(detail, dict) else None,
+                      "expected_decided": detail.get("expected_decided") if isinstance(detail, dict) else None,
+                      "expected_hits": detail.get("expected_hits") if isinstance(detail, dict) else None,
+                      "rows_count": len(rows) if isinstance(rows, list) else None,
+                  }, ensure_ascii=False, sort_keys=True))
+          PY
+          REMOTE
+
       - name: Upload audit evidence
         uses: actions/upload-artifact@v4
         with:
           name: crown-dashboard-durable-audit-${{ github.run_id }}
-          path: crown-dashboard-durable-audit.json
+          path: |
+            crown-dashboard-durable-audit.json
+            crown-evidence-expansion-audit.txt
           retention-days: 14
