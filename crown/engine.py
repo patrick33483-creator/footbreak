@@ -25,11 +25,18 @@ from .ledger import (
     sync_prediction,
 )
 from .lines import parse_hkjc_total
-from .matching import MATCHING_VERSION, Event, Match, BridgeMatch, bridge_titan_to_pinnapi
+from .matching import (
+    MATCHING_VERSION,
+    Event,
+    Match,
+    BridgeMatch,
+    bridge_titan_to_pinnapi,
+    same_event_for_hkjc,
+)
 from .pinnapi import PinnapiClient
 from .period import in_current_period, in_future_round_update_window
 from .state import (
-    load_ledger, load_predictions, merge_predictions, save_ledger, state_lock,
+    load_ledger, load_predictions, merge_predictions, save_ledger, save_predictions, state_lock,
     schedule_footbreak_execution_evidence_projection,
 )
 from .titan import TitanClient
@@ -318,6 +325,107 @@ def _fetch_tick_hkjc_matches(deadline: float) -> list[dict[str, Any]]:
         if process.is_alive():
             process.kill()
             process.join(timeout=0.03)
+
+
+def _reconcile_hkjc_identities(
+    config: Settings,
+    hkjc_events: list[Event],
+    *,
+    now: datetime | None = None,
+) -> int:
+    """Enrich active Crown fixtures with one strict HKJC identity.
+
+    This runs only from a non-deadline sweep after the HKJC board has already
+    been fetched.  It never performs provider I/O, changes a native stage,
+    evaluates a condition, creates a simulation, or sends a notification.
+    Existing identities are immutable and ambiguous/name-weak matches remain
+    unresolved.
+    """
+    if not hkjc_events:
+        return 0
+    at = (now or datetime.now(HKT)).astimezone(HKT)
+    reconciled = 0
+    with state_lock(config):
+        predictions = load_predictions(config)
+        ledger = load_ledger(config)
+        watches = ledger.setdefault("watch", {})
+        changed_predictions = False
+        changed_ledger = False
+        for card in predictions:
+            if not isinstance(card, dict):
+                continue
+            match_id = str(card.get("match_id") or card.get("titan_match_id") or "").strip()
+            watch = watches.get(match_id)
+            if not match_id or not isinstance(watch, dict):
+                continue
+            native_fixture_id = str(
+                watch.get("native_fixture_id") or watch.get("titan_match_id")
+                or watch.get("match_id") or ""
+            ).strip()
+            if native_fixture_id != match_id:
+                continue
+            card_hkjc_id = str(card.get("hkjc_match_id") or "").strip()
+            watch_hkjc_id = str(watch.get("hkjc_match_id") or "").strip()
+            if card_hkjc_id and watch_hkjc_id and card_hkjc_id != watch_hkjc_id:
+                # Conflicting durable identities are never auto-repaired.
+                continue
+            existing_hkjc_id = card_hkjc_id or watch_hkjc_id
+            if existing_hkjc_id:
+                synchronized = False
+                if not card_hkjc_id:
+                    card["hkjc_match_id"] = existing_hkjc_id
+                    changed_predictions = True
+                    synchronized = True
+                if not watch_hkjc_id:
+                    watch["hkjc_match_id"] = existing_hkjc_id
+                    changed_ledger = True
+                    synchronized = True
+                if synchronized:
+                    reconciled += 1
+                continue
+            kickoff = parse_time(watch.get("kickoff_hkt") or watch.get("kickoff"))
+            if not match_id or kickoff is None or kickoff <= at:
+                continue
+            target = Event(
+                match_id,
+                str(watch.get("league") or ""),
+                str(watch.get("home") or ""),
+                str(watch.get("away") or ""),
+                kickoff,
+                None,
+            )
+            matched = same_event_for_hkjc(target, hkjc_events)
+            if matched.event is None or matched.reversed:
+                continue
+            hkjc_match_id = str(matched.event.id or "").strip()
+            if not hkjc_match_id:
+                continue
+            card["hkjc_match_id"] = hkjc_match_id
+            mapping = card.setdefault("mapping", {})
+            if isinstance(mapping, dict):
+                mapping["titan_to_hkjc_score"] = round(matched.score, 3)
+                mapping["titan_to_hkjc_reason"] = None
+                mapping["hkjc_identity_source"] = "noncritical_sweep_unique_verified"
+                mapping["hkjc_identity_resolved_at"] = iso_hkt(at)
+                mapping["orientation"] = "direct_only"
+            changed_predictions = True
+            watch["hkjc_match_id"] = hkjc_match_id
+            watch_mapping = watch.setdefault("mapping", {})
+            if isinstance(watch_mapping, dict):
+                watch_mapping["titan_to_hkjc_score"] = round(matched.score, 3)
+                watch_mapping["titan_to_hkjc_reason"] = None
+                watch_mapping["hkjc_identity_source"] = (
+                    "noncritical_sweep_unique_verified"
+                )
+                watch_mapping["hkjc_identity_resolved_at"] = iso_hkt(at)
+                watch_mapping["orientation"] = "direct_only"
+            changed_ledger = True
+            reconciled += 1
+        if changed_ledger:
+            save_ledger(config, ledger)
+        if changed_predictions:
+            save_predictions(config, predictions)
+    return reconciled
 
 
 def _prediction_process(send: Any, payload: tuple[Any, ...]) -> None:
@@ -2660,6 +2768,16 @@ def run(
         hkjc_rows = [] if mode == "tick" else fetch_matches()
     h_events = [(event_from_match(row), row) for row in hkjc_rows]
     h_events = [(event, row) for event, row in h_events if event]
+    reconciled_hkjc_identities = 0
+    if not native_first_look_reconcile and h_events:
+        reconciled_hkjc_identities = _reconcile_hkjc_identities(
+            config, [event for event, _row in h_events],
+        )
+        if reconciled_hkjc_identities:
+            # Publish only from already durable local state.  The worker is
+            # independently bounded and cannot gate this sweep or any tick.
+            schedule_footbreak_execution_evidence_projection(config, ["首預"])
+            existing_predictions = load_predictions(config)
     p_events = [_event_from_pinnapi(row) for row in pinnapi_rows]
     predictions = []
     stage_predictions: list[dict[str, Any]] = []
@@ -2978,6 +3096,7 @@ def run(
             "pinnapi_fixtures": len(pinnapi_rows),
             "pinnapi_fixture_status": pinnapi_fixture_status,
             "titan_fixtures": len(titan_rows), "hkjc_fixtures": len(h_events),
+            "reconciled_hkjc_identities": reconciled_hkjc_identities,
             "fresh_condition_predictions": fresh_condition_predictions,
             "evidence_projection_stages": evidence_projection_stages,
             # Compatibility only; notification dispatch uses the explicit

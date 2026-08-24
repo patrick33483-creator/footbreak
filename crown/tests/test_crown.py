@@ -24,7 +24,7 @@ from unittest.mock import MagicMock, Mock, patch
 from crown.config import settings
 from crown.common import HKT, parse_time
 from crown.dashboard_data import build, write_dashboard_data, write_tick_dashboard_projection
-from crown.engine import _cached_t5_crown_snapshot, _candidates, _crown_market_forecasts, _fixture_baseline_prediction, _fresh, _hkjc_chl_candidates, _hkjc_chl_forecasts, _hourly_first_look_reconciliation_rows, _prediction, _prioritize_tick_rows, _record_hourly_first_look_reconciliation_incident, _refresh_crown_quote, _skip_new_confirmed_empty_crown, _sweep_rows_with_due_existing, _tick_rows_from_predictions, _wdl_prediction, run
+from crown.engine import _cached_t5_crown_snapshot, _candidates, _crown_market_forecasts, _fixture_baseline_prediction, _fresh, _hkjc_chl_candidates, _hkjc_chl_forecasts, _hourly_first_look_reconciliation_rows, _prediction, _prioritize_tick_rows, _reconcile_hkjc_identities, _record_hourly_first_look_reconciliation_incident, _refresh_crown_quote, _skip_new_confirmed_empty_crown, _sweep_rows_with_due_existing, _tick_rows_from_predictions, _wdl_prediction, run
 from crown.hkjc import fetch_official_results, fetch_official_settlement_bundle
 from crown.ledger import (
     PREDICTION_ERA,
@@ -1690,6 +1690,87 @@ class CrownSafetyTests(unittest.TestCase):
             self.assertEqual(merge_predictions(config, [update], now=now)[0]["stage"], "T-30")
             self.assertEqual(load_predictions(config)[0]["stage"], "T-30")
             self.assertEqual(merge_predictions(config, [], now=now)[0]["stage"], "T-30")
+
+    def test_noncritical_sweep_reconciles_one_strict_hkjc_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = replace(settings(), state_dir=Path(directory))
+            kickoff = self.now + timedelta(hours=2)
+            card = {
+                "match_id": "crown-1", "titan_match_id": "crown-1",
+                "kickoff_hkt": kickoff.isoformat(), "league": "英格蘭超級聯賽",
+                "home": "曼城", "away": "阿仙奴", "hkjc_match_id": None,
+            }
+            save_predictions(config, [copy.deepcopy(card)])
+            save_ledger(config, {
+                "watch": {"crown-1": {**copy.deepcopy(card), "stages": []}},
+                "bets": [], "log": [], "stats": {},
+            })
+            hkjc = Event(
+                "hkjc-1", "英格蘭超級聯賽", "曼城", "阿仙奴", kickoff,
+                {"home_team_id": "home-1", "away_team_id": "away-1"},
+            )
+
+            self.assertEqual(
+                _reconcile_hkjc_identities(config, [hkjc], now=self.now), 1,
+            )
+            stored = load_predictions(config)[0]
+            watch = load_ledger(config)["watch"]["crown-1"]
+            self.assertEqual(stored["hkjc_match_id"], "hkjc-1")
+            self.assertEqual(watch["hkjc_match_id"], "hkjc-1")
+            self.assertEqual(
+                stored["mapping"]["hkjc_identity_source"],
+                "noncritical_sweep_unique_verified",
+            )
+
+    def test_hkjc_identity_reconciliation_is_immutable_and_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = replace(settings(), state_dir=Path(directory))
+            kickoff = self.now + timedelta(hours=2)
+            cards = [{
+                "match_id": "unresolved", "kickoff_hkt": kickoff.isoformat(),
+                "league": "英格蘭超級聯賽", "home": "曼城", "away": "阿仙奴",
+            }, {
+                "match_id": "locked", "kickoff_hkt": kickoff.isoformat(),
+                "league": "英格蘭超級聯賽", "home": "曼城", "away": "阿仙奴",
+                "hkjc_match_id": "original-hkjc",
+            }]
+            save_predictions(config, cards)
+            save_ledger(config, {
+                "watch": {
+                    row["match_id"]: {**copy.deepcopy(row), "stages": []}
+                    for row in cards
+                },
+                "bets": [], "log": [], "stats": {},
+            })
+            ambiguous = [
+                Event(
+                    fixture_id, "英格蘭超級聯賽", "曼城", "阿仙奴", kickoff,
+                    {"home_team_id": f"{fixture_id}-h", "away_team_id": f"{fixture_id}-a"},
+                )
+                for fixture_id in ("hkjc-a", "hkjc-b")
+            ]
+
+            self.assertEqual(
+                _reconcile_hkjc_identities(config, ambiguous, now=self.now), 0,
+            )
+            stored = {row["match_id"]: row for row in load_predictions(config)}
+            self.assertNotIn("hkjc_match_id", stored["unresolved"])
+            self.assertEqual(stored["locked"]["hkjc_match_id"], "original-hkjc")
+
+    def test_native_tick_none_does_not_erase_reconciled_hkjc_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = replace(settings(), state_dir=Path(directory))
+            kickoff = self.now + timedelta(hours=2)
+            save_predictions(config, [{
+                "match_id": "future", "kickoff_hkt": kickoff.isoformat(),
+                "stage": "首預", "hkjc_match_id": "hkjc-locked",
+            }])
+            merged = merge_predictions(config, [{
+                "match_id": "future", "kickoff_hkt": kickoff.isoformat(),
+                "stage": "T-30", "hkjc_match_id": None,
+            }], now=self.now)
+            self.assertEqual(merged[0]["hkjc_match_id"], "hkjc-locked")
+            self.assertEqual(merged[0]["stage"], "T-30")
 
     def test_tick_preflight_uses_only_due_local_cards(self) -> None:
         predictions = [
