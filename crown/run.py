@@ -26,10 +26,13 @@ _TICK_POSTPROCESS_MAX_SECONDS = 4.0
 _TICK_POSTPROCESS_TEARDOWN_MARGIN_SECONDS = 1.0
 _TICK_NOTIFICATION_MIN_SECONDS = 6.0
 _TICK_ENGINE_TEARDOWN_MARGIN_SECONDS = 0.25
-_REVERSE_T5_DRAIN_MAX_SECONDS = 4.0
-_TICK_REVERSE_T5_DRAIN_MIN_SECONDS = 4.0
-_TICK_REVERSE_T5_DRAIN_MAX_SECONDS = 2.5
-_TICK_REVERSE_T5_DRAIN_TEARDOWN_MARGIN_SECONDS = 1.0
+# The dedicated server worker owns live reverse-T-5 progress.  Sweep retains
+# only a short recovery attempt; neither is allowed on the native tick path.
+_REVERSE_T5_DRAIN_SWEEP_MAX_SECONDS = 4.0
+_REVERSE_T5_DRAIN_SERVICE_MAX_SECONDS = 15.0
+_REVERSE_T5_DRAIN_MAX_JOBS = 3
+# Keep the upstream first-look card publication bounded and independent from
+# the durable reconciliation commit.
 _FIRST_LOOK_PROJECTION_MAX_SECONDS = 5.0
 
 
@@ -356,20 +359,28 @@ def _reverse_t5_drain_process(send, config) -> None:
     """Run restart-safe bridge work in a killable non-deadline child only."""
     try:
         from .reverse_t5_bridge import drain_pending_jobs
-        send.send(("complete", drain_pending_jobs(config)))
+        # A worker invocation makes deliberately small, durable forward
+        # progress.  This bounds slow strict matching while each completed
+        # fixture is merged before the next one begins.
+        send.send((
+            "complete",
+            drain_pending_jobs(config, max_jobs=_REVERSE_T5_DRAIN_MAX_JOBS),
+        ))
     except BaseException as exc:
         send.send(("error", type(exc).__name__))
     finally:
         send.close()
 
 
-def _run_reverse_t5_drain(config, max_seconds: float = _REVERSE_T5_DRAIN_MAX_SECONDS) -> tuple[str, str | None]:
-    """Bound a post-commit bridge drain and always reap its child.
+def _run_reverse_t5_drain(
+    config, max_seconds: float = _REVERSE_T5_DRAIN_SERVICE_MAX_SECONDS,
+) -> tuple[str, str | None]:
+    """Bound one bridge-worker batch and always reap its child.
 
-    Native tick persistence and its priority notification are complete before
-    the tick caller invokes this helper.  Sweep remains the restart-recovery
-    owner.  The parent terminates/reaps the non-daemon child, so provider or
-    matching work can neither hold native state nor delay interpreter shutdown.
+    The dedicated reverse-t5-drain service is the live owner; sweep may call
+    this helper only as restart recovery.  The parent terminates/reaps the
+    non-daemon child, so provider or matching work can neither hold native
+    state nor delay interpreter shutdown.
     """
     if max_seconds <= 0.0 or os.name != "posix":
         return "deferred", None
@@ -433,7 +444,7 @@ def main() -> int:
         "mode",
         choices=(
             "tick", "sweep", "round-update", "first-look-reconcile",
-            "settle", "refresh", "health",
+            "settle", "refresh", "health", "reverse-t5-drain",
         ),
     )
     parser.add_argument("--dry-run", action="store_true")
@@ -441,7 +452,6 @@ def main() -> int:
     if args.mode == "tick":
         _timing.record("python_parent_main_start")
     config = settings()
-    _ensure_dashboard_path(config.web_root)
     if args.dry_run:
         print({"ok": True, "dry_run": True, "mode": args.mode, "enabled": config.enabled,
                "pinnapi_configured": config.pinnapi_configured, "real_betting_enabled": False})
@@ -450,6 +460,30 @@ def main() -> int:
         print({"ok": True, "enabled": config.enabled, "pinnapi_configured": config.pinnapi_configured,
                "telegram_enabled": config.telegram_enabled, "real_betting_enabled": False})
         return 0
+    if args.mode == "reverse-t5-drain":
+        # This intentionally precedes dashboard setup and engine dispatch.
+        # The mode owns only the durable bridge queue: no native provider
+        # engine, Telegram/outbox delivery, Wilson/V2/V3 work, dashboard
+        # publication, or real betting can be reached from this path.
+        try:
+            status, detail = _run_reverse_t5_drain(
+                config, _REVERSE_T5_DRAIN_SERVICE_MAX_SECONDS,
+            )
+        except BaseException as exc:
+            status, detail = "error", type(exc).__name__
+        result = {
+            "ok": status != "error",
+            "mode": "reverse-t5-drain",
+            "reverse_t5_bridge_drain": status,
+            "real_betting_enabled": False,
+        }
+        if detail:
+            result["reverse_t5_bridge_warning"] = detail
+        print(result)
+        return 0 if result["ok"] else 4
+    # All modes below may publish native/dashboard state.  The dedicated
+    # reverse bridge worker returned above before any of those paths run.
+    _ensure_dashboard_path(config.web_root)
     tick_deadline = (
         time.monotonic() + _tick_pass_deadline_seconds()
         if args.mode == "tick" else None
@@ -495,7 +529,9 @@ def main() -> int:
         # The bounded/reaped child may be killed without losing work: a
         # RUNNING/PENDING job is revalidated and recovered on the next sweep.
         try:
-            status, detail = _run_reverse_t5_drain(config)
+            status, detail = _run_reverse_t5_drain(
+                config, _REVERSE_T5_DRAIN_SWEEP_MAX_SECONDS,
+            )
             result["reverse_t5_bridge_drain"] = status
             if detail:
                 result["reverse_t5_bridge_warning"] = detail
@@ -564,35 +600,10 @@ def main() -> int:
             # Signals are notification-only. A transport failure leaves the
             # durable outbox unacknowledged for the next safe tick.
             result["notification_warning"] = f"telegram_{type(exc).__name__}"
-        # Native stage persistence and the priority notification attempt are
-        # complete.  Use only genuine leftover tick budget for the reverse
-        # quote job that the same T-5 commit just enqueued.  The child is
-        # killable/reaped and the durable job remains retryable on timeout.
-        # A newly-created bilateral outbox row is intentionally delivered by
-        # the next tick, preserving native direct/Wilson notification priority.
-        try:
-            from .reverse_t5_bridge import is_enabled as reverse_t5_enabled
-
-            remaining = tick_deadline - time.monotonic()
-            if (
-                reverse_t5_enabled()
-                and remaining >= _TICK_REVERSE_T5_DRAIN_MIN_SECONDS
-            ):
-                status, detail = _run_reverse_t5_drain(
-                    config,
-                    min(
-                        _TICK_REVERSE_T5_DRAIN_MAX_SECONDS,
-                        remaining - _TICK_REVERSE_T5_DRAIN_TEARDOWN_MARGIN_SECONDS,
-                    ),
-                )
-                result["reverse_t5_bridge_drain"] = status
-                if detail:
-                    result["reverse_t5_bridge_warning"] = detail
-            elif reverse_t5_enabled():
-                result["reverse_t5_bridge_drain"] = "deferred_tick_deadline"
-        except BaseException as exc:
-            result["reverse_t5_bridge_drain"] = "error"
-            result["reverse_t5_bridge_warning"] = type(exc).__name__
+        # The native commit atomically enqueues its reverse-T-5 job.  A
+        # dedicated low-priority server timer owns all remote board fetching,
+        # matching, and bridge draining.  Tick never spends its remaining
+        # native notification/postprocess budget on that optional work.
         # The native stage, ledger and prediction card are already durable.
         # Launch the optional persisted-state sidecar only after the bounded
         # Telegram attempt, never from the deadline-owned engine child and

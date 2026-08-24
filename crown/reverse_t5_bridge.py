@@ -1,11 +1,12 @@
 """Durable, post-commit Crown T-5 to HKJC public-board bridge.
 
 The deadline-owned native T-5 transaction only appends a tiny idempotent job.
-An existing non-deadline Crown server pass later drains that job in a separately
-bounded child.  Provider I/O, fixture matching, formal-condition evaluation,
-and counterpart selection all run from an immutable snapshot *outside* the
-shared native state lock.  The final lock reacquires only long enough to
-revalidate the exact persisted T-5 evidence and merge isolated outcomes.
+A dedicated non-deadline Crown server worker drains that job in a separately
+bounded child; sweep retains only safe recovery coverage.  Provider I/O,
+fixture matching, formal-condition evaluation, and counterpart selection all
+run from an immutable snapshot *outside* the shared native state lock.  The
+final lock reacquires only long enough to revalidate the exact persisted T-5
+evidence and merge isolated outcomes.
 """
 from __future__ import annotations
 

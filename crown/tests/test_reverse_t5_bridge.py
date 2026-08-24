@@ -403,20 +403,54 @@ class ReverseT5LifecycleTests(unittest.TestCase):
             time.sleep(0.15)
             self.assertFalse(marker.exists())
 
+    def test_dedicated_mode_isolated_from_native_engine_notifications_and_dashboard(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = replace(
+                settings(), state_dir=Path(directory), web_root=Path(directory) / "web",
+            )
+            called: list[tuple[object, ...]] = []
+
+            def drain(received_config, budget):
+                called.append((received_config, budget))
+                return "complete", None
+
+            with patch.object(crown_run, "settings", return_value=config), \
+                 patch.object(crown_run, "_run_reverse_t5_drain", side_effect=drain), \
+                 patch.object(crown_run, "_ensure_dashboard_path", side_effect=AssertionError), \
+                 patch.object(crown_run, "run", side_effect=AssertionError), \
+                 patch.object(crown_run, "_run_tick_engine", side_effect=AssertionError), \
+                 patch.object(crown_run, "_run_tick_notification", side_effect=AssertionError), \
+                 patch.object(crown_run, "_run_tick_postprocess", side_effect=AssertionError), \
+                 patch("sys.argv", ["crown.run", "reverse-t5-drain"]):
+                self.assertEqual(crown_run.main(), 0)
+
+            self.assertEqual(
+                called, [(config, crown_run._REVERSE_T5_DRAIN_SERVICE_MAX_SECONDS)],
+            )
+
     def test_tick_engine_has_no_reverse_provider_or_worker_callsite(self) -> None:
-        # The deadline-owned engine remains provider-isolated.  Main may use
-        # only a bounded post-commit child after native persistence and the
-        # priority notification attempt; sweep remains the recovery owner.
+        # The deadline-owned engine remains provider-isolated.  Only the
+        # explicit worker mode owns live draining; sweep is recovery only.
         self.assertNotIn("_run_reverse_t5_drain", inspect.getsource(crown_run._run_tick_engine))
         main = inspect.getsource(crown_run.main)
         self.assertEqual(main.count("_run_reverse_t5_drain("), 2)
+        self.assertIn('if args.mode == "reverse-t5-drain":', main)
         self.assertIn('if args.mode == "sweep":', main)
-        self.assertLess(
-            main.index("_run_tick_notification("),
-            main.rindex("_run_reverse_t5_drain("),
-        )
+        reverse_mode = main[
+            main.index('if args.mode == "reverse-t5-drain":'):
+            main.index("# All modes below may publish native/dashboard state.")
+        ]
+        self.assertNotIn("_run_tick_engine", reverse_mode)
+        self.assertNotIn("_run_tick_notification", reverse_mode)
+        self.assertNotIn("_run_tick_postprocess", reverse_mode)
+        self.assertNotIn("write_dashboard_data", reverse_mode)
+        tick_block = main[
+            main.index("if args.mode == \"tick\":", main.index("ledger = load_ledger")):
+            main.index("try:", main.index("ledger = load_ledger"))
+        ]
+        self.assertNotIn("_run_reverse_t5_drain", tick_block)
 
-    def test_tick_reverse_drain_is_post_commit_bounded_and_failure_isolated(self) -> None:
+    def test_tick_never_drains_remote_bridge_after_native_commit(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             config = replace(
                 settings(), state_dir=Path(directory), web_root=Path(directory) / "web",
@@ -431,28 +465,31 @@ class ReverseT5LifecycleTests(unittest.TestCase):
                 order.append("native_notification")
                 return "complete", None
 
-            def drain(_config, budget):
-                order.append("reverse_drain")
-                self.assertGreater(budget, 0)
-                self.assertLessEqual(budget, crown_run._TICK_REVERSE_T5_DRAIN_MAX_SECONDS)
-                return "error", "SyntheticFailure"
-
-            with patch.dict(os.environ, {bridge.ENV_ENABLED: "1"}), \
-                 patch.object(crown_run, "settings", return_value=config), \
+            with patch.object(crown_run, "settings", return_value=config), \
                  patch.object(crown_run, "_tick_pass_deadline_seconds", return_value=30), \
                  patch.object(crown_run, "_run_tick_engine", side_effect=engine), \
                  patch.object(crown_run, "_run_tick_notification", side_effect=notify), \
-                 patch.object(crown_run, "_run_reverse_t5_drain", side_effect=drain), \
+                 patch.object(
+                     crown_run, "_run_reverse_t5_drain",
+                     side_effect=AssertionError("tick must not drain the bridge"),
+                 ), \
                  patch.object(crown_run, "_run_tick_postprocess", return_value=("complete", None)), \
                  patch.object(crown_run, "schedule_footbreak_execution_evidence_projection"), \
                  patch.object(crown_run, "_write_tick_health"), \
                  patch("sys.argv", ["crown.run", "tick"]):
                 self.assertEqual(crown_run.main(), 0)
 
-            self.assertEqual(
-                order,
-                ["native_commit", "native_notification", "reverse_drain"],
-            )
+            self.assertEqual(order, ["native_commit", "native_notification"])
+
+    def test_worker_batch_cap_is_small_and_service_budget_is_independent(self) -> None:
+        self.assertEqual(crown_run._REVERSE_T5_DRAIN_MAX_JOBS, 3)
+        self.assertEqual(crown_run._REVERSE_T5_DRAIN_SERVICE_MAX_SECONDS, 15.0)
+
+    def test_tick_reverse_drain_is_post_commit_bounded_and_failure_isolated(self) -> None:
+        # Regression name retained for test discovery compatibility.  The old
+        # post-tick drain was removed: a native tick must never invoke it.
+        source = inspect.getsource(crown_run.main)
+        self.assertNotIn("_TICK_REVERSE_T5_DRAIN", source)
 
 
 if __name__ == "__main__":

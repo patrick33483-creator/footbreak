@@ -27,6 +27,7 @@ class CrownRuntimeContractTests(unittest.TestCase):
         for name in (
             "crown-round-update.service",
             "crown-first-look-reconcile.service",
+            "crown-reverse-t5-drain.service",
             "crown-settle.service",
             "crown-sweep.service",
             "crown-tick.service",
@@ -56,6 +57,38 @@ class CrownRuntimeContractTests(unittest.TestCase):
             "systemctl stop --no-block crown-round-update.service crown-first-look-reconcile.service",
             preempt,
         )
+        # The durable reverse worker is not a slow native-engine job.  Its
+        # isolated drain lock makes concurrent ticks safe, and urgent native
+        # T-5 must never stop/revoke its recovery attempt.
+        self.assertNotIn("crown-reverse-t5-drain.service", preempt)
+
+    def test_reverse_t5_worker_timer_is_server_owned_low_priority_and_bounded(self) -> None:
+        service = (
+            ROOT / "deploy/systemd/crown-reverse-t5-drain.service"
+        ).read_text(encoding="utf-8")
+        timer = (
+            ROOT / "deploy/systemd/crown-reverse-t5-drain.timer"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            "ExecStart=/opt/footbreak/deploy/crown-run.sh reverse-t5-drain",
+            service,
+        )
+        self.assertIn("TimeoutStartSec=20", service)
+        self.assertIn("TimeoutStopSec=2", service)
+        self.assertIn("KillMode=control-group", service)
+        self.assertIn("SendSIGKILL=yes", service)
+        self.assertIn("Nice=19", service)
+        self.assertIn("NoNewPrivileges=true", service)
+        self.assertIn("PrivateTmp=true", service)
+        self.assertNotIn("ConditionPathExists=!/run/crown-t5-priority", service)
+        self.assertNotIn(
+            "ExecStartPre=/opt/footbreak/deploy/crown-tick-preempt.sh", service,
+        )
+        self.assertIn("OnUnitInactiveSec=30s", timer)
+        self.assertIn("AccuracySec=1s", timer)
+        self.assertIn("Persistent=true", timer)
+        self.assertIn("Unit=crown-reverse-t5-drain.service", timer)
+        self.assertNotIn("perplexity", (service + timer).lower())
 
     def test_runner_holds_duplicate_lock_but_does_not_pass_fd_to_python(self) -> None:
         runner = (ROOT / "deploy/crown-run.sh").read_text(encoding="utf-8")
@@ -67,6 +100,7 @@ class CrownRuntimeContractTests(unittest.TestCase):
         self.assertNotIn('exec "$PYTHON" -m crown.run', runner)
         self.assertIn('timeout "${ALERT_TIMEOUT_SECONDS}s"', runner)
         self.assertIn("CROWN_RUNNER_ALERT_TIMEOUT_SECONDS", runner)
+        self.assertIn('if [ "$MODE" != "reverse-t5-drain" ]; then', runner)
 
 
 if __name__ == "__main__":

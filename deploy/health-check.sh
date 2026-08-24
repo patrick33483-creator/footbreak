@@ -57,7 +57,7 @@ for unit in \
 done
 
 if crown_is_enabled; then
-  for unit in crown-round-update.timer crown-first-look-reconcile.timer crown-tick.timer crown-sweep.timer crown-settle.timer; do
+  for unit in crown-round-update.timer crown-first-look-reconcile.timer crown-tick.timer crown-sweep.timer crown-settle.timer crown-reverse-t5-drain.timer; do
     systemctl is-enabled --quiet "$unit" || {
       state="$(systemctl is-enabled "$unit" 2>&1 || true)"
       echo "FAIL timer $unit enabled_state=$state" >&2
@@ -280,7 +280,7 @@ services=(
   footbreak-result-reconcile.service
 )
 if crown_is_enabled; then
-  services+=(crown-tick.service crown-sweep.service crown-settle.service)
+  services+=(crown-tick.service crown-sweep.service crown-settle.service crown-reverse-t5-drain.service)
 fi
 for service in "${services[@]}"; do
   result="$(systemctl show "$service" -p Result --value)"
@@ -317,7 +317,8 @@ for service in "${services[@]}"; do
   case "$service:$status" in
     footbreak-tick.service:75|footbreak-settle.service:75|\
     footbreak-result-reconcile.service:75|\
-    crown-tick.service:75|crown-sweep.service:75|crown-settle.service:75)
+    crown-tick.service:75|crown-sweep.service:75|crown-settle.service:75|\
+    crown-reverse-t5-drain.service:75)
       expected_preemption=true
       ;;
   esac

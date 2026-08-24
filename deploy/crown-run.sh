@@ -87,18 +87,22 @@ report_runner_failure() {
       --unit "$SERVICE_UNIT" --invocation "${INVOCATION_ID:-}"
   fi
 }
-trap report_runner_failure EXIT
+if [ "$MODE" != "reverse-t5-drain" ]; then
+  trap report_runner_failure EXIT
+fi
 export LEARNING_DB_PATH="${LEARNING_DB_PATH:-/var/lib/footbreak/learning/predictions.sqlite}"
 export ODDS_RECOVERY_SIDECAR="${ODDS_RECOVERY_SIDECAR:-/var/lib/footbreak/private/odds-recovery-overlay.json}"
 
 PYTHON="$APP_DIR/.venv/bin/python3"
 [ -x "$PYTHON" ] || PYTHON=python3
 install -d -m 0700 "$CROWN_STATE_DIR"
-install -d -m 0700 "$(dirname "$LEARNING_DB_PATH")"
-install -d -m 0700 "$(dirname "$ODDS_RECOVERY_SIDECAR")"
-# The runner may atomically replace data.json.  Keep only the static web tree
-# readable by nginx; private state remains in CROWN_STATE_DIR.
-install -d -m 0755 "$(dirname "$CROWN_WEB_ROOT")" "$CROWN_WEB_ROOT"
+if [ "$MODE" != "reverse-t5-drain" ]; then
+  install -d -m 0700 "$(dirname "$LEARNING_DB_PATH")"
+  install -d -m 0700 "$(dirname "$ODDS_RECOVERY_SIDECAR")"
+  # The runner may atomically replace data.json.  Keep only the static web tree
+  # readable by nginx; private state remains in CROWN_STATE_DIR.
+  install -d -m 0755 "$(dirname "$CROWN_WEB_ROOT")" "$CROWN_WEB_ROOT"
+fi
 
 # Provider reads for the 30-minute board sweep and the time-critical tick may
 # run concurrently. Python serializes only the short state commit.
@@ -117,7 +121,7 @@ record_shell_checkpoint "before_python_exec"
 "$PYTHON" -m crown.run "$MODE" 9>&-
 record_shell_checkpoint "after_python_exec"
 
-if [ -f "$ALERT_HELPER" ]; then
+if [ "$MODE" != "reverse-t5-drain" ] && [ -f "$ALERT_HELPER" ]; then
   run_alert_helper clear-service --system crown --unit "$SERVICE_UNIT" \
     --invocation "${INVOCATION_ID:-}"
   run_alert_helper check --system crown

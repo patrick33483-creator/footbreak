@@ -125,10 +125,17 @@ class ReconciliationEnablementTests(unittest.TestCase):
         self.assertIn("was not enabled after reenable", update)
         self.assertIn(
             "systemctl disable --now crown-round-update.timer crown-first-look-reconcile.timer crown-sweep.timer "
-            "crown-tick.timer crown-settle.timer",
+            "crown-tick.timer crown-settle.timer crown-reverse-t5-drain.timer",
             update,
         )
+        enable = (ROOT / "deploy" / "enable-crown.sh").read_text(encoding="utf-8")
+        setup = (ROOT / "deploy" / "setup.sh").read_text(encoding="utf-8")
+        self.assertIn("crown-reverse-t5-drain.timer", update)
+        self.assertIn("crown-reverse-t5-drain.timer", enable)
+        self.assertIn("crown-reverse-t5-drain.timer", setup)
         self.assertIn("if crown_is_enabled; then", health)
+        self.assertIn("crown-reverse-t5-drain.timer", health)
+        self.assertIn("crown-reverse-t5-drain.service", health)
         self.assertIn("Crown timers are not required", health)
         self.assertIn("if crown_is_enabled; then", reconcile)
 
