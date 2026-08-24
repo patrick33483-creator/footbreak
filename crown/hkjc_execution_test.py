@@ -110,6 +110,11 @@ def ensure_namespace(ledger: dict[str, Any]) -> dict[str, Any]:
     # They make a post-commit board observation restart-safe without allowing
     # a missing history, price, or identity to masquerade as a decision.
     ns.setdefault("research_observations", [])
+    # The immutable bilateral decision/outbox collections are required even
+    # for research-only outcomes: a detached reverse worker may later merge
+    # either kind of isolated result into a previously untouched namespace.
+    # Reuse the contract owner rather than duplicating its schema defaults.
+    bilateral.ensure_namespace(ns)
     return ns
 
 
@@ -153,7 +158,16 @@ def record_research_observation(
         "market": market, "side": side, "line": line, "stage_at": stage_at,
         "captured_at": captured_at, "status": "RESEARCH_ONLY", "reason": reason,
     }
-    fingerprint = json.dumps(row, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    # A retry necessarily has a later board capture time.  It must still
+    # identify the same rejected native evidence rather than append audit
+    # noise after every restart.  Capture/record times remain useful metadata,
+    # but are explicitly not part of the stable research identity.
+    fingerprint = json.dumps({
+        key: row.get(key) for key in (
+            "system", "match_id", "hkjc_match_id", "market", "side", "line",
+            "stage_at", "status", "reason",
+        )
+    }, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     for existing in ns["research_observations"]:
         if isinstance(existing, dict) and existing.get("fingerprint") == fingerprint:
             return existing
@@ -165,7 +179,7 @@ def record_research_observation(
 
 def _provided_hkjc_quote(
     quotes: Iterable[dict[str, Any]],
-    market: str,
+    hkjc_id: str, market: str,
     side: str,
     line: float,
     captured_at: datetime,
@@ -179,6 +193,10 @@ def _provided_hkjc_quote(
     T-5 signal.  Exact market, orientation, and Asian line still remain
     mandatory.
     """
+    expected = str(hkjc_id or "").strip()
+    if not expected:
+        return None, "hkjc_fixture_identity_missing_or_ambiguous"
+    exact_rows = []
     rows = []
     for row in quotes:
         if not isinstance(row, dict):
@@ -189,8 +207,14 @@ def _provided_hkjc_quote(
             and str(row.get("side") or "").upper() == side
             and qline is not None and abs(qline - line) <= 1e-8
         ):
+            exact_rows.append(row)
+            identity = row.get("fixture_identity")
+            if not isinstance(identity, dict) or str(identity.get("hkjc_match_id") or "").strip() != expected:
+                continue
             rows.append(row)
     if len(rows) != 1:
+        if len(exact_rows) == 1:
+            return None, "hkjc_fixture_identity_mismatch"
         return None, "hkjc_exact_market_side_line_missing_or_ambiguous"
     row = rows[0]
     odds, observed = _number(row.get("odds")), _time(row.get("observed_at"))
@@ -302,6 +326,7 @@ def evaluate_new_t5(
     ledger: dict[str, Any], watch: dict[str, Any], *, ranking: Iterable[dict[str, Any]] | None,
     counterpart_quotes: Iterable[dict[str, Any]] | None = None,
     counterpart_captured_at: str | None = None,
+    counterpart_unavailable_reason: str | None = None,
     require_complete_history: bool = False,
     record_native_observation: bool = True,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -369,7 +394,7 @@ def evaluate_new_t5(
             _audit(ns, fixture, market, reason or "crown_condition_not_matched"); continue
         quote, quote_reason = (
             _provided_hkjc_quote(
-                counterpart_quotes, market, side, line, captured_time, kickoff,
+                counterpart_quotes, hkjc_id, market, side, line, captured_time, kickoff,
             )
             if counterpart_quotes is not None
             else _exact_hkjc_quote(hkjc_id, market, side, line, stage_at, kickoff)
@@ -387,11 +412,11 @@ def evaluate_new_t5(
             if counterpart_quotes is not None and quote is None:
                 record_research_observation(
                     ns, fixture=fixture, market=market,
-                    reason=quote_reason or "hkjc_counterpart_unavailable",
+                    reason=counterpart_unavailable_reason or quote_reason or "hkjc_counterpart_unavailable",
                     hkjc_match_id=hkjc_id or None, side=side, line=line,
                     stage_at=stage_at.isoformat(), captured_at=counterpart_captured_at,
                 )
-                _audit(ns, fixture, market, quote_reason or "hkjc_counterpart_unavailable",
+                _audit(ns, fixture, market, counterpart_unavailable_reason or quote_reason or "hkjc_counterpart_unavailable",
                        status="RESEARCH_ONLY")
                 continue
             # Crown's formal-condition identity and validation evidence are
