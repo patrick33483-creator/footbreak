@@ -109,6 +109,7 @@ class ReverseT5QuoteValidationTests(unittest.TestCase):
     def test_closed_suspended_and_unknown_statuses_are_not_quotes(self) -> None:
         for kwargs in (
             {"pool_status": "CLOSED"}, {"line_status": "SUSPENDED"}, {"pool_status": "UNKNOWN"},
+            {"pool_status": "OPEN"}, {"line_status": "OPEN"},
         ):
             with self.subTest(kwargs=kwargs):
                 quotes, reason = bridge._board_quotes(raw_match(**kwargs), observed_at=stamp())
@@ -226,6 +227,51 @@ class ReverseT5DurabilityTests(unittest.TestCase):
             self.assertEqual(ns["decision_outbox"], [])
             self.assertEqual(ns["bets"], [])
             self.assertIn("hkjc_pool_or_line_not_sellable", [row["reason"] for row in ns["research_observations"]])
+
+    def test_open_board_job_completes_research_only_without_decision_or_bet(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {bridge.ENV_ENABLED: "1"}, clear=False):
+            config = replace(settings(), state_dir=Path(directory))
+            value = watch()
+            ledger = ledger_for(value)
+            bridge.enqueue_committed_t5(ledger, value); save_ledger(config, ledger)
+            with patch.object(bridge, "fetch_matches", return_value=[raw_match(pool_status="OPEN")]), self._patch_evaluator():
+                bridge.drain_pending_jobs(config)
+            ns = load_ledger(config)[reciprocal.NAMESPACE]
+            self.assertEqual(ns["decisions"], [])
+            self.assertEqual(ns["decision_outbox"], [])
+            self.assertEqual(ns["bets"], [])
+            self.assertIn("hkjc_pool_or_line_not_sellable", [row["reason"] for row in ns["research_observations"]])
+
+    def test_isolated_merge_preserves_full_bilateral_collections_and_pending_outbox(self) -> None:
+        current = reciprocal.ensure_namespace({})
+        decision_ids = [f"decision-{number}" for number in range(4000)]
+        attempt_ids = [f"attempt-{number}" for number in range(4000)]
+        current["decisions"] = [{"decision_id": value} for value in decision_ids]
+        current["decision_outbox"] = [
+            {"outbox_id": f"outbox-{value}", "decision_id": value, "delivery": "PENDING"}
+            for value in decision_ids
+        ]
+        current["counterpart_attempts"] = [{"fingerprint": value} for value in attempt_ids]
+        current["bets"] = [{"bet_id": "existing-isolated-bet", "simulation_only": True}]
+        outcome = {
+            "research_observations": [{"fingerprint": "research-new"}],
+            "counterpart_attempts": [{"fingerprint": "attempt-new"}],
+            "decisions": [{"decision_id": "decision-new"}],
+            "decision_outbox": [{"outbox_id": "outbox-decision-new", "decision_id": "decision-new", "delivery": "PENDING"}],
+            "bets": [{"bet_id": "new-isolated-bet", "simulation_only": True}],
+        }
+        bridge._merge_isolated_namespace({reciprocal.NAMESPACE: current}, outcome)
+
+        self.assertEqual(len(current["counterpart_attempts"]), 4001)
+        self.assertEqual(len(current["decisions"]), 4001)
+        self.assertEqual(len(current["decision_outbox"]), 4001)
+        self.assertEqual(len(current["bets"]), 2)
+        self.assertEqual({row["decision_id"] for row in current["decisions"]}, {*decision_ids, "decision-new"})
+        self.assertEqual(
+            {row["outbox_id"] for row in current["decision_outbox"]},
+            {*(f"outbox-{value}" for value in decision_ids), "outbox-decision-new"},
+        )
+        self.assertTrue(all(row["delivery"] == "PENDING" for row in current["decision_outbox"]))
 
     @unittest.skipUnless(os.name == "posix", "requires fork")
     def test_slow_multi_fixture_matching_never_blocks_native_state_commit(self) -> None:

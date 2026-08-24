@@ -30,7 +30,7 @@ JOB_NAMESPACE = "crown_reverse_t5_bridge"
 _JOB_LIMIT = 1600
 _MAX_DRAIN_JOBS = 12
 _REMOTE_TIMEOUT_SECONDS = 1.0
-_SELLABLE_STATUSES = {"SELLING", "SELLINGSTARTED", "AVAILABLE", "OPEN"}
+_SELLABLE_STATUSES = {"SELLING", "SELLINGSTARTED", "AVAILABLE"}
 _MARKETS = ("HDC", "HIL", "CHL")
 _SIDES = {"HDC": {"H", "A"}, "HIL": {"H", "L"}, "CHL": {"H", "L"}}
 
@@ -332,16 +332,23 @@ def _evaluate_snapshot(snapshot: dict[str, Any], matches: list[dict[str, Any]], 
 
 
 def _merge_isolated_namespace(ledger: dict[str, Any], outcome: dict[str, Any]) -> None:
-    """Merge only idempotent bilateral/research rows; never touch native state."""
+    """Merge only idempotent bilateral/research rows; never touch native state.
+
+    The bilateral contract owns its own 4,000-row retention rule.  This merge
+    must not apply the bridge's smaller job/research cap, because that could
+    silently discard pending outbox deliveries or valid historical decisions.
+    It therefore only bounds research-only observations and leaves bilateral
+    attempts, decisions, outbox rows, and isolated simulation bets intact.
+    """
     from . import hkjc_execution_test as reciprocal
 
     current = reciprocal.ensure_namespace(ledger)
-    for key, identity in (
-        ("research_observations", "fingerprint"),
-        ("counterpart_attempts", "fingerprint"),
-        ("decisions", "decision_id"),
-        ("decision_outbox", "outbox_id"),
-        ("bets", "bet_id"),
+    for key, identity, limit in (
+        ("research_observations", "fingerprint", _JOB_LIMIT),
+        ("counterpart_attempts", "fingerprint", None),
+        ("decisions", "decision_id", None),
+        ("decision_outbox", "outbox_id", None),
+        ("bets", "bet_id", None),
     ):
         existing = {
             str(row.get(identity) or "") for row in current.get(key) or []
@@ -352,7 +359,8 @@ def _merge_isolated_namespace(ledger: dict[str, Any], outcome: dict[str, Any]) -
             if value and value not in existing:
                 current[key].append(copy.deepcopy(row))
                 existing.add(value)
-        current[key] = current[key][-_JOB_LIMIT:]
+        if limit is not None:
+            current[key] = current[key][-limit:]
 
 
 def _merge_completed(config: Settings, outcomes: list[tuple[dict[str, Any], dict[str, Any]]]) -> int:
