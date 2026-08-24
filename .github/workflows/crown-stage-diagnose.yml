@@ -79,6 +79,58 @@ jobs:
             "$DEPLOY_USER@$DEPLOY_HOST" "$remote_command" \
             < deploy/audit-crown-stage-state.py
 
+      - name: 只讀取得 HKJC identity reconciliation 摘要
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            'sudo systemctl show crown-first-look-reconcile.timer crown-first-look-reconcile.service --no-pager -p Id -p LoadState -p UnitFileState -p ActiveState -p SubState -p Result -p ExecMainStatus -p LastTriggerUSec -p NextElapseUSecRealtime 2>/dev/null || true'
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            'sudo env PYTHONPATH=/opt/footbreak /opt/footbreak/.venv/bin/python3 -' <<'PY'
+          import json
+          from pathlib import Path
+
+          root = Path("/var/lib/footbreak/crown")
+
+          def read_json(name, default):
+              try:
+                  return json.loads((root / name).read_text(encoding="utf-8"))
+              except Exception:
+                  return default
+
+          ledger = read_json("ledger.json", {})
+          predictions = read_json("predictions.json", [])
+          health = read_json("hkjc-identity-reconciliation-health.json", {})
+          watch = ledger.get("watch", {}) if isinstance(ledger, dict) else {}
+          watch_rows = [row for row in watch.values() if isinstance(row, dict)]
+          card_rows = [row for row in predictions if isinstance(row, dict)]
+          print(json.dumps({
+              "read_only": True,
+              "provider_requests": False,
+              "identity_health": health,
+              "ledger_watch_total": len(watch_rows),
+              "ledger_hkjc_identity_count": sum(
+                  bool(str(row.get("hkjc_match_id") or "").strip())
+                  for row in watch_rows
+              ),
+              "prediction_total": len(card_rows),
+              "prediction_hkjc_identity_count": sum(
+                  bool(str(row.get("hkjc_match_id") or "").strip())
+                  for row in card_rows
+              ),
+          }, ensure_ascii=False, sort_keys=True))
+          PY
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            'sudo journalctl -u crown-first-look-reconcile.service --since "2026-08-24 21:55:00" --no-pager -o cat | tail -n 80'
+
       - name: 明確要求後重啟皇冠 T-5 worker
         if: ${{ inputs.restart_t5_worker == 'yes' }}
         env:
