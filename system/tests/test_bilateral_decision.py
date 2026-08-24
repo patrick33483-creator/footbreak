@@ -1,6 +1,7 @@
 """Focused regression coverage for bilateral fan-in durability."""
 from __future__ import annotations
 
+import json
 import unittest
 
 from analysis import bilateral_decision as bilateral
@@ -30,6 +31,22 @@ class BilateralDecisionTests(unittest.TestCase):
         self.assertEqual(namespace["decision_outbox"][0]["delivery"], "PENDING")
         self.assertEqual(namespace["decision_outbox"][0]["decision_id"], "d1")
         self.assertIn("provenance_hash", first)
+
+    def test_persisted_decision_survives_restart_without_duplicate_outbox(self):
+        """A reload keeps the frozen record and its one delivery identity."""
+        namespace = {}
+        first, created = bilateral.persist_decision(namespace, record())
+        restarted = json.loads(json.dumps(namespace))
+        repeated, duplicate = bilateral.persist_decision(restarted, record())
+        self.assertTrue(created)
+        self.assertFalse(duplicate)
+        self.assertEqual(repeated, first)
+        self.assertEqual(len(restarted["decisions"]), 1)
+        self.assertEqual(len(restarted["decision_outbox"]), 1)
+        self.assertEqual(
+            restarted["decision_outbox"][0]["outbox_id"],
+            "outbox-d1",
+        )
 
     def test_counterpart_attempt_is_idempotent_and_distinguishes_failure_from_no_market(self):
         namespace = {}
