@@ -86,6 +86,15 @@ jobs:
             "$(systemctl is-active crown-tick.timer || true)"
           printf 'crown_tick_timer_enabled=%s\n' \
             "$(systemctl is-enabled crown-tick.timer || true)"
+          printf 'deployed_commit=%s\n' \
+            "$(git -C /opt/footbreak rev-parse HEAD 2>/dev/null || true)"
+          systemctl show crown-tick.service \
+            -p Result -p ExecMainStatus -p ExecMainStartTimestamp -p ExecMainExitTimestamp \
+            --no-pager
+          echo 'recent_crown_tick_results_begin'
+          journalctl -u crown-tick.service --since '15 minutes ago' -n 80 \
+            --no-pager -o cat | tail -n 80
+          echo 'recent_crown_tick_results_end'
 
           if [ "$ROLLOUT_ACTION" = enable ]; then
             systemctl start --no-block crown-sweep.service
@@ -162,6 +171,19 @@ jobs:
                       }
                       for row in reversed(jobs) if isinstance(row, dict)
                   ), None),
+                  "recent_jobs": [{
+                      "match_id": str(row.get("match_id") or ""),
+                      "state": str(row.get("state") or ""),
+                      "stage_at": str(row.get("stage_at") or ""),
+                      "completed_at": str(row.get("completed_at") or ""),
+                      "attempts": len(row.get("attempts") or []),
+                      "last_attempt_state": str(
+                          ((row.get("attempts") or [{}])[-1] or {}).get("state") or ""
+                      ),
+                      "last_attempt_reason": str(
+                          ((row.get("attempts") or [{}])[-1] or {}).get("reason") or ""
+                      ),
+                  } for row in jobs[-16:] if isinstance(row, dict)],
               },
               "reciprocal_isolated": {
                   key: len(reciprocal.get(key) or [])
