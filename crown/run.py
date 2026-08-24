@@ -12,6 +12,9 @@ from .config import settings
 from .common import iso_hkt, write_json_atomic
 from .dashboard_data import write_dashboard_data, write_tick_dashboard_projection
 from .engine import _tick_pass_deadline_seconds, run
+from .footbreak_identity_reconciliation import (
+    schedule_hkjc_identity_reconciliation,
+)
 from .notify import notify_new
 from .prediction_history import archive_watch_fast, update_history
 from .state import load_ledger, schedule_footbreak_execution_evidence_projection
@@ -386,6 +389,15 @@ def main() -> int:
         # must never turn an otherwise terminal native reconciliation into a
         # systemd timeout.  The normal tick/sweep publisher will consume the
         # durable stage on its own schedule.
+        # HKJC identity enrichment is a separate post-commit child with its
+        # own hard wall-clock bound.  It cannot delay or roll back the native
+        # first-look commit and is never part of the deadline-sensitive tick.
+        try:
+            result["hkjc_identity_reconciliation_scheduled"] = (
+                schedule_hkjc_identity_reconciliation(config, ["首預"])
+            )
+        except BaseException:
+            result["hkjc_identity_reconciliation_scheduled"] = False
         result["dashboard_projection"] = "deferred_nonblocking"
         print(result)
         return 0
