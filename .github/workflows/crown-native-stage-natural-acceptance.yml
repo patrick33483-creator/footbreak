@@ -1,0 +1,172 @@
+name: Crown native-stage natural batch acceptance (read only)
+
+on:
+  workflow_dispatch:
+    inputs:
+      kickoff_hkt:
+        description: Exact natural batch kickoff in HKT ISO format
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: Read native shard, projection queue, and legacy stage state
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          KICKOFF_HKT: ${{ inputs.kickoff_hkt }}
+        run: |
+          set -euo pipefail
+          case "$KICKOFF_HKT" in
+            ????-??-??T??:??:??+08:00) ;;
+            *) echo "kickoff_hkt must be an exact HKT ISO timestamp" >&2; exit 2 ;;
+          esac
+
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "sudo env KICKOFF_HKT='$KICKOFF_HKT' PYTHONPATH=/opt/footbreak /opt/footbreak/.venv/bin/python3 -" <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          from crown.common import parse_time
+          from crown.native_stage_deferred_projection import DeferredProjectionQueue
+          from crown.native_stage_store import NativeStageStore
+
+          state_dir = Path("/var/lib/footbreak/crown")
+          ledger_path = state_dir / "ledger.json"
+          kickoff = parse_time(os.environ["KICKOFF_HKT"])
+          if kickoff is None:
+              raise SystemExit("invalid kickoff_hkt")
+
+          ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+          watches = ledger.get("watch") if isinstance(ledger.get("watch"), dict) else {}
+          store = NativeStageStore(state_dir)
+          queue = DeferredProjectionQueue(state_dir)
+          rows = []
+
+          for match_id, watch in watches.items():
+              if not isinstance(watch, dict):
+                  continue
+              watch_kickoff = parse_time(
+                  watch.get("kickoff_hkt") or watch.get("kickoff_utc") or watch.get("kickoff")
+              )
+              if watch_kickoff is None or abs((watch_kickoff - kickoff).total_seconds()) > 1:
+                  continue
+
+              native = store.read(str(match_id))
+              history = native.get("attempt_history", []) if isinstance(native, dict) else []
+              t5_history = [
+                  item for item in history
+                  if isinstance(item, dict) and item.get("stage") == "T-5"
+              ]
+              terminal = [
+                  item for item in t5_history
+                  if item.get("state") in {"COMMITTED", "FAILED", "DATA_MISSING", "EXPIRED"}
+              ]
+              projection = queue.read(str(match_id), "T-5")
+              legacy_t5 = [
+                  item for item in (watch.get("stages") or [])
+                  if isinstance(item, dict) and item.get("stage") == "T-5"
+              ]
+              shard_path = store.path_for(str(match_id))
+              queue_path = queue.path_for(str(match_id), "T-5")
+              rows.append({
+                  "match_id": str(match_id),
+                  "fixture": {
+                      "league": watch.get("league"),
+                      "home": watch.get("home"),
+                      "away": watch.get("away"),
+                      "kickoff_hkt": watch_kickoff.isoformat(),
+                  },
+                  "native": {
+                      "present": isinstance(native, dict),
+                      "latest_terminal_state": terminal[-1].get("state") if terminal else None,
+                      "committed_attempt_count": sum(
+                          1 for item in terminal if item.get("state") == "COMMITTED"
+                      ),
+                      "snapshot_present": bool(
+                          isinstance(native, dict)
+                          and isinstance(native.get("snapshots"), dict)
+                          and isinstance(native["snapshots"].get("T-5"), dict)
+                      ),
+                      "shard_bytes": shard_path.stat().st_size if shard_path.is_file() else None,
+                  },
+                  "projection": {
+                      "present": isinstance(projection, dict),
+                      "state": projection.get("state") if isinstance(projection, dict) else None,
+                      "attempt_count": len(projection.get("attempts") or [])
+                          if isinstance(projection, dict) else 0,
+                      "queue_bytes": queue_path.stat().st_size if queue_path.is_file() else None,
+                  },
+                  "legacy": {
+                      "t5_count": len(legacy_t5),
+                      "status": legacy_t5[-1].get("status") if legacy_t5 else None,
+                  },
+              })
+
+          rows.sort(key=lambda row: (row["fixture"]["league"] or "", row["match_id"]))
+          summary = {
+              "fixture_count": len(rows),
+              "native_committed": sum(
+                  1 for row in rows
+                  if row["native"]["latest_terminal_state"] == "COMMITTED"
+                  and row["native"]["snapshot_present"]
+                  and row["native"]["committed_attempt_count"] == 1
+              ),
+              "projection_completed": sum(
+                  1 for row in rows if row["projection"]["state"] == "COMPLETED"
+              ),
+              "legacy_t5_present": sum(
+                  1 for row in rows if row["legacy"]["t5_count"] == 1
+              ),
+              "pending_projection_count": len(queue.pending_items()),
+          }
+          print(json.dumps({
+              "read_only": True,
+              "provider_calls_made": 0,
+              "writes_performed": 0,
+              "kickoff_hkt": kickoff.isoformat(),
+              "summary": summary,
+              "rows": rows,
+          }, ensure_ascii=False, indent=2))
+
+          if not rows:
+              raise SystemExit("no fixtures found for kickoff")
+          if not (
+              summary["native_committed"] == len(rows)
+              and summary["projection_completed"] == len(rows)
+              and summary["legacy_t5_present"] == len(rows)
+          ):
+              raise SystemExit("natural batch acceptance failed")
+          PY
+
+      - name: Read latest Crown tick result
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            'sudo systemctl show crown-tick.service --no-pager \
+              -p Result -p ExecMainStatus -p ExecMainStartTimestamp \
+              -p ExecMainExitTimestamp -p ActiveState -p SubState'
