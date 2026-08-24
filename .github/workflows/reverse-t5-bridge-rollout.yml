@@ -42,7 +42,7 @@ jobs:
           ROLLOUT_ACTION: ${{ inputs.action }}
         run: |
           ssh "$DEPLOY_USER@$DEPLOY_HOST" \
-            "sudo ROLLOUT_ACTION='$ROLLOUT_ACTION' bash -s" <<'REMOTE'
+            "sudo ROLLOUT_ACTION='$ROLLOUT_ACTION' bash -s" <<'REMOTE' | tee /tmp/reverse-t5-status.log
           set -euo pipefail
 
           env_file=/etc/footbreak-crown.env
@@ -174,3 +174,9 @@ jobs:
           }, ensure_ascii=False))
           PY
           REMOTE
+          {
+            echo '## Production reverse T-5 bridge evidence'
+            echo '```text'
+            cat /tmp/reverse-t5-status.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
