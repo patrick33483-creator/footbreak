@@ -277,6 +277,30 @@ class FootbreakWilsonNotificationTest(unittest.TestCase):
         self.assertNotIn("bilateral T-5", message)
         self.assertEqual(saved["bilateral_decision_alerts"], [first["decision_id"], second["decision_id"]])
 
+    def test_bilateral_low_odds_formatter_shows_both_prices_minimum_and_no_bet(self):
+        """A complete pair below the frozen minimum is a notified no-bet, not an outage."""
+        decision = bilateral_decision()
+        decision.update({
+            "signal_quote": 1.75,
+            "counterpart_quote": 1.84,
+            "counterpart_reason": None,
+            "minimum_odds": 1.92,
+            "decision": "NO_BET_LOW_ODDS",
+            "chosen_execution_book": None,
+        })
+        message = notify._bilateral_decision_message(decision)
+        self.assertIsNotNone(message)
+        for expected in (
+            "馬會訊號 @1.75",
+            "皇冠對照 @1.84",
+            "最低 1.92",
+            "賠率不足，所以不投注",
+            "平台：—",
+        ):
+            self.assertIn(expected, message)
+        self.assertNotIn("對照收集失敗", message)
+        self.assertNotIn("模擬投注", message)
+
     def test_bilateral_groups_are_separate_for_different_fixture_or_platform(self):
         first = bilateral_decision()
         other_fixture = dict(first, decision_id="bilateral|other|HIL|T-5", fixture="other",

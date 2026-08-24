@@ -246,7 +246,8 @@ def _footbreak_execution_evidence(
             "mapping": {
                 key: value for key, value in (card.get("mapping") or {}).items()
                 if key in {"path", "reason", "titan_to_hkjc_score",
-                           "titan_to_hkjc_reason", "orientation"}
+                           "titan_to_hkjc_reason", "hkjc_identity_source",
+                           "hkjc_identity_resolved_at", "orientation"}
             },
         }
         stage_journals = {}
@@ -427,10 +428,21 @@ def merge_predictions(
                 continue
             # A stage update replaces the current card, but retains any
             # dashboard-only fields absent from a thinner later snapshot.
-            merged[match_id] = (previous or {}) | {
+            incoming = {
                 key: value for key, value in row.items()
                 if key != "_quote_refresh_only"
             }
+            # A deadline-owned native tick deliberately carries no HKJC
+            # provider data.  Once a noncritical sweep has established one
+            # strict cross-book identity, a later ``None`` from that isolated
+            # tick must not erase it.
+            if (
+                previous is not None
+                and previous.get("hkjc_match_id")
+                and not incoming.get("hkjc_match_id")
+            ):
+                incoming.pop("hkjc_match_id", None)
+            merged[match_id] = (previous or {}) | incoming
     output = list(merged.values())
     output.sort(key=lambda row: (_prediction_time(row) or now, str(row.get("match_id") or "")))
     save_predictions(config, output)

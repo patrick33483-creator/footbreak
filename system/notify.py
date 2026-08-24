@@ -652,7 +652,11 @@ def _bilateral_decision_fields(row):
         counterpart_line = f"皇冠對照：未能確認（{esc(reason)}）"
     decisions = {
         "PAPER_SIMULATION": "模擬投注",
-        "NO_BET_LOW_ODDS": "不投注：賠率不足",
+        # This is an immutable cross-book decision, not the native Wilson
+        # observation wording.  State the causal order explicitly so a
+        # complete pair of quotes below the frozen minimum can never be read
+        # as a missing-quote/collector failure or a purchase instruction.
+        "NO_BET_LOW_ODDS": "賠率不足，所以不投注",
         "COUNTERPART_UNAVAILABLE": "對照收集失敗；保留原生訊號決定",
     }
     decision = decisions.get(str(row.get("decision")))
