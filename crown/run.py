@@ -26,6 +26,7 @@ _TICK_POSTPROCESS_MAX_SECONDS = 4.0
 _TICK_POSTPROCESS_TEARDOWN_MARGIN_SECONDS = 1.0
 _TICK_NOTIFICATION_MIN_SECONDS = 6.0
 _TICK_ENGINE_TEARDOWN_MARGIN_SECONDS = 0.25
+_REVERSE_T5_DRAIN_MAX_SECONDS = 4.0
 
 
 def _write_tick_health(config, result: dict[str, object]) -> None:
@@ -293,6 +294,55 @@ def _run_tick_postprocess(config, max_seconds: float) -> tuple[str, str | None]:
             process.join(timeout=0.05)
 
 
+def _reverse_t5_drain_process(send, config) -> None:
+    """Run restart-safe bridge work in a killable non-deadline child only."""
+    try:
+        from .reverse_t5_bridge import drain_pending_jobs
+        send.send(("complete", drain_pending_jobs(config)))
+    except BaseException as exc:
+        send.send(("error", type(exc).__name__))
+    finally:
+        send.close()
+
+
+def _run_reverse_t5_drain(config, max_seconds: float = _REVERSE_T5_DRAIN_MAX_SECONDS) -> tuple[str, str | None]:
+    """Bound an existing server pass's bridge drain and always reap its child.
+
+    This is deliberately never called by the deadline-owned tick.  Sweep,
+    settlement, and other existing non-deadline server passes provide durable
+    recovery ownership.  The parent terminates/reaps the non-daemon child, so
+    interpreter shutdown cannot wait for it.
+    """
+    if max_seconds <= 0.0 or os.name != "posix":
+        return "deferred", None
+    context = multiprocessing.get_context("fork")
+    receiver, sender = context.Pipe(duplex=False)
+    process = context.Process(
+        target=_reverse_t5_drain_process,
+        args=(sender, config),
+        name="crown-reverse-t5-drain",
+    )
+    process.daemon = False
+    process.start()
+    sender.close()
+    try:
+        if not receiver.poll(max_seconds):
+            return "deferred", None
+        try:
+            status, _payload = receiver.recv()
+        except EOFError:
+            return "error", "WorkerExited"
+        return str(status), None
+    finally:
+        receiver.close()
+        if process.is_alive():
+            process.terminate()
+        process.join(timeout=0.10)
+        if process.is_alive():
+            process.kill()
+            process.join(timeout=0.10)
+
+
 def _exception_origin(exc: BaseException) -> dict[str, object]:
     """Return only a repository-relative failure origin, never exception data."""
     for frame in reversed(traceback.extract_tb(exc.__traceback__)):
@@ -382,6 +432,18 @@ def main() -> int:
         write_dashboard_data(config)
         print(result)
         return 0
+    if args.mode == "sweep":
+        # Existing non-deadline server ownership for durable reverse-T-5 jobs.
+        # The bounded/reaped child may be killed without losing work: a
+        # RUNNING/PENDING job is revalidated and recovered on the next sweep.
+        try:
+            status, detail = _run_reverse_t5_drain(config)
+            result["reverse_t5_bridge_drain"] = status
+            if detail:
+                result["reverse_t5_bridge_warning"] = detail
+        except BaseException as exc:
+            result["reverse_t5_bridge_drain"] = "error"
+            result["reverse_t5_bridge_warning"] = type(exc).__name__
     if args.mode == "first-look-reconcile":
         # This worker owns only the bounded native-ID completeness repair and
         # its atomic stage/attempt commit.  Full dashboard/history publication

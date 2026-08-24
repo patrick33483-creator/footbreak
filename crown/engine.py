@@ -43,6 +43,7 @@ from .titan import TitanClient
 from . import tick_timing_probe as _timing
 from . import native_stage_shadow as _native_shadow
 from . import native_stage_cutover as _native_cutover
+from .reverse_t5_bridge import enqueue_committed_t5
 
 
 _FIRST_LOOK_RECONCILE_MAX_FIXTURES = 30
@@ -1977,6 +1978,14 @@ def _commit_stage_predictions(
             prediction["stages"] = list(
                 ledger["watch"].get(match_id, {}).get("stages") or []
             )
+            # The reverse bridge receives a durable idempotent work item in
+            # the same native write as the T-5 snapshot.  This is constant
+            # local bookkeeping only: provider work/matching/evaluation are
+            # drained later by the protected non-deadline server pass.
+            if stage == "T-5" and not prior_stage:
+                enqueue_committed_t5(
+                    ledger, (ledger.get("watch") or {}).get(match_id) or {},
+                )
             committed_predictions.append(prediction)
             if stage in {"首預", "T-30", "T-5"}:
                 # This only records which native stage was durably committed.

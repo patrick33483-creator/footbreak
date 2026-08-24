@@ -16,7 +16,7 @@ from typing import Any, Iterable
 
 from analysis import bilateral_decision as bilateral
 from analysis.granular_conditions import MARKET_LABELS, MARKETS
-from analysis.wilson_portfolio import _audit_selection, _native_t5, _selected
+from analysis.wilson_portfolio import _audit_selection, _native_match_rows, _native_t5, _selected
 from analysis.wilson_validation import (
     DECISION_STAGE, FIXED_STAKE, FIXTURE_MARKET_CAP, FIXTURE_STAKE_CAP,
     STARTING_BANKROLL, admission_arithmetic,
@@ -106,6 +106,15 @@ def ensure_namespace(ledger: dict[str, Any]) -> dict[str, Any]:
     ns.setdefault("fixture_market_cap", FIXTURE_MARKET_CAP)
     ns.setdefault("bets", [])
     ns.setdefault("audit", [])
+    # These rows are deliberately outside the Wilson and simulation paths.
+    # They make a post-commit board observation restart-safe without allowing
+    # a missing history, price, or identity to masquerade as a decision.
+    ns.setdefault("research_observations", [])
+    # The immutable bilateral decision/outbox collections are required even
+    # for research-only outcomes: a detached reverse worker may later merge
+    # either kind of isolated result into a previously untouched namespace.
+    # Reuse the contract owner rather than duplicating its schema defaults.
+    bilateral.ensure_namespace(ns)
     return ns
 
 
@@ -118,6 +127,113 @@ def _audit(
         "status": status, "reason": reason, **evidence,
     }]
     ns["audit"] = ns["audit"][-1600:]
+
+
+def record_research_observation(
+    ns: dict[str, Any],
+    *,
+    fixture: str,
+    market: str,
+    reason: str,
+    hkjc_match_id: str | None = None,
+    side: str | None = None,
+    line: float | None = None,
+    stage_at: str | None = None,
+    captured_at: str | None = None,
+) -> dict[str, Any]:
+    """Append one idempotent, non-decision bridge observation.
+
+    It intentionally has no condition signature, Wilson arithmetic, outbox,
+    stake, or simulation status.  This is the only persistence path available
+    to a reverse worker when it cannot prove a complete existing condition and
+    an exact fresh counterpart quote.
+    """
+    if not isinstance(ns, dict):
+        raise ValueError("crown reciprocal namespace must be an object")
+    ns.setdefault("research_observations", [])
+    if not isinstance(ns["research_observations"], list):
+        raise ValueError("research observations must be an array")
+    row = {
+        "system": "crown", "match_id": fixture, "hkjc_match_id": hkjc_match_id,
+        "market": market, "side": side, "line": line, "stage_at": stage_at,
+        "captured_at": captured_at, "status": "RESEARCH_ONLY", "reason": reason,
+    }
+    # A retry necessarily has a later board capture time.  It must still
+    # identify the same rejected native evidence rather than append audit
+    # noise after every restart.  Capture/record times remain useful metadata,
+    # but are explicitly not part of the stable research identity.
+    fingerprint = json.dumps({
+        key: row.get(key) for key in (
+            "system", "match_id", "hkjc_match_id", "market", "side", "line",
+            "stage_at", "status", "reason",
+        )
+    }, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    for existing in ns["research_observations"]:
+        if isinstance(existing, dict) and existing.get("fingerprint") == fingerprint:
+            return existing
+    committed = {"fingerprint": fingerprint, "recorded_at": iso_hkt(), **row}
+    ns["research_observations"].append(committed)
+    ns["research_observations"] = ns["research_observations"][-1600:]
+    return committed
+
+
+def _provided_hkjc_quote(
+    quotes: Iterable[dict[str, Any]],
+    hkjc_id: str, market: str,
+    side: str,
+    line: float,
+    captured_at: datetime,
+    kickoff: datetime,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Read an independently captured public-board quote without backdating it.
+
+    A reverse worker necessarily observes the counterpart *after* the native
+    T-5 commit.  Therefore freshness is measured from its own board capture,
+    while Crown's source timestamp remains independently frozen in the native
+    T-5 signal.  Exact market, orientation, and Asian line still remain
+    mandatory.
+    """
+    expected = str(hkjc_id or "").strip()
+    if not expected:
+        return None, "hkjc_fixture_identity_missing_or_ambiguous"
+    exact_rows = []
+    rows = []
+    for row in quotes:
+        if not isinstance(row, dict):
+            continue
+        qline = _number(row.get("line", row.get("condition")))
+        if (
+            str(row.get("code") or "").upper() == market
+            and str(row.get("side") or "").upper() == side
+            and qline is not None and abs(qline - line) <= 1e-8
+        ):
+            exact_rows.append(row)
+            identity = row.get("fixture_identity")
+            if not isinstance(identity, dict) or str(identity.get("hkjc_match_id") or "").strip() != expected:
+                continue
+            rows.append(row)
+    if len(rows) != 1:
+        if len(exact_rows) == 1:
+            return None, "hkjc_fixture_identity_mismatch"
+        return None, "hkjc_exact_market_side_line_missing_or_ambiguous"
+    row = rows[0]
+    odds, observed = _number(row.get("odds")), _time(row.get("observed_at"))
+    if odds is None or odds <= 1:
+        return None, "hkjc_execution_odds_invalid_or_missing"
+    if str(row.get("source") or "").strip().lower() not in HKJC_SOURCE:
+        return None, "hkjc_execution_source_invalid_or_missing"
+    if observed is None:
+        return None, "hkjc_execution_timestamp_missing"
+    if observed > captured_at or observed >= kickoff or captured_at >= kickoff:
+        return None, "hkjc_execution_post_kickoff_or_capture_timestamp_invalid"
+    if (captured_at - observed).total_seconds() > FRESHNESS_SECONDS:
+        return None, "hkjc_execution_quote_stale_at_capture"
+    return {
+        "odds": odds, "observed_at": row.get("observed_at"),
+        "source": row.get("source"), "fixture_identity": copy.deepcopy(
+            row.get("fixture_identity") or {},
+        ),
+    }, None
 
 
 def _exact_hkjc_quote(
@@ -208,6 +324,11 @@ def _native_crown_signal(
 
 def evaluate_new_t5(
     ledger: dict[str, Any], watch: dict[str, Any], *, ranking: Iterable[dict[str, Any]] | None,
+    counterpart_quotes: Iterable[dict[str, Any]] | None = None,
+    counterpart_captured_at: str | None = None,
+    counterpart_unavailable_reason: str | None = None,
+    require_complete_history: bool = False,
+    record_native_observation: bool = True,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     ns, created = ensure_namespace(ledger), []
     bilateral.ensure_namespace(ns)
@@ -225,9 +346,35 @@ def evaluate_new_t5(
         or decision_time is None or decision_time >= kickoff
     ):
         _audit(ns, fixture, "*", "not_first_native_pre_kickoff_t5_or_ranking_missing"); return [], ns["audit"][-1:]
+    if require_complete_history:
+        # Use the same immutable-stage extractor as the native Wilson path:
+        # a label alone is not evidence.  Every stage must have one selected,
+        # source-timestamped pre-kickoff native quote before a multi-stage
+        # formal condition can enter the bilateral decision path.
+        stage_rows = _native_match_rows(watch, _time)
+        stages = {str(row.get("stage") or "") for row in stage_rows}
+        if stages != {"首預", "T-30", "T-5"}:
+            record_research_observation(
+                ns, fixture=fixture, market="*", reason="footbreak_three_stage_history_incomplete",
+                hkjc_match_id=str(watch.get("hkjc_match_id") or "") or None,
+                stage_at=stage_at.isoformat(), captured_at=counterpart_captured_at,
+            )
+            _audit(ns, fixture, "*", "footbreak_three_stage_history_incomplete",
+                   status="RESEARCH_ONLY")
+            return [], ns["audit"][-1:]
+    else:
+        stage_rows = [{"match_id": fixture, "stage": DECISION_STAGE, "kickoff": watch.get("kickoff"),
+                       "predicted_at": current.get("ts"), "market_predictions": current.get("market_predictions") or []}]
+    captured_time = _time(counterpart_captured_at) if counterpart_quotes is not None else None
+    if counterpart_quotes is not None and captured_time is None:
+        record_research_observation(
+            ns, fixture=fixture, market="*", reason="hkjc_capture_timestamp_missing",
+            hkjc_match_id=str(watch.get("hkjc_match_id") or "") or None,
+            stage_at=stage_at.isoformat(), captured_at=counterpart_captured_at,
+        )
+        _audit(ns, fixture, "*", "hkjc_capture_timestamp_missing", status="RESEARCH_ONLY")
+        return [], ns["audit"][-1:]
     hkjc_id = str(watch.get("hkjc_match_id") or "")
-    stage_rows = [{"match_id": fixture, "stage": DECISION_STAGE, "kickoff": watch.get("kickoff"),
-                   "predicted_at": current.get("ts"), "market_predictions": current.get("market_predictions") or []}]
     formal_candidates = formal_registry_candidates(ledger, "crown", now=decision_at)
     if not formal_candidates:
         _audit(ns, fixture, "*", "formal_condition_registry_unavailable"); return [], ns["audit"][-1:]
@@ -245,7 +392,13 @@ def evaluate_new_t5(
         admissions, reason = matching_admissions("crown", market, signal, matched, stage_at=str(current.get("ts") or ""))
         if not admissions:
             _audit(ns, fixture, market, reason or "crown_condition_not_matched"); continue
-        quote, quote_reason = _exact_hkjc_quote(hkjc_id, market, side, line, stage_at, kickoff)
+        quote, quote_reason = (
+            _provided_hkjc_quote(
+                counterpart_quotes, hkjc_id, market, side, line, captured_time, kickoff,
+            )
+            if counterpart_quotes is not None
+            else _exact_hkjc_quote(hkjc_id, market, side, line, stage_at, kickoff)
+        )
         for admission in admissions:
             signature = str(admission.get("signature") or "")
             if not isinstance(conditions.get(signature), dict):
@@ -256,6 +409,16 @@ def evaluate_new_t5(
             )
             if native_adjusted is None:
                 _audit(ns, fixture, market, native_reason or "active_evidence_unavailable"); continue
+            if counterpart_quotes is not None and quote is None:
+                record_research_observation(
+                    ns, fixture=fixture, market=market,
+                    reason=counterpart_unavailable_reason or quote_reason or "hkjc_counterpart_unavailable",
+                    hkjc_match_id=hkjc_id or None, side=side, line=line,
+                    stage_at=stage_at.isoformat(), captured_at=counterpart_captured_at,
+                )
+                _audit(ns, fixture, market, counterpart_unavailable_reason or quote_reason or "hkjc_counterpart_unavailable",
+                       status="RESEARCH_ONLY")
+                continue
             # Crown's formal-condition identity and validation evidence are
             # determined by its own native T-5 signal.  A better exact HKJC
             # counterpart may permit a *separate* paper execution, but it
@@ -266,7 +429,7 @@ def evaluate_new_t5(
                 _audit(ns, fixture, market, "crown_signal_line_invalid"); continue
             native_adjusted["stage_at"] = stage_at.isoformat()
             native_observation = None
-            if not native_adjusted["arithmetic"].get("passes"):
+            if record_native_observation and not native_adjusted["arithmetic"].get("passes"):
                 native_observation = record_match_observation(
                     ledger, "crown", watch, market, signal, native_adjusted,
                     now=stage_at.isoformat(), market_label=MARKET_LABELS[market],
