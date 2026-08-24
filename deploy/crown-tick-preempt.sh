@@ -65,7 +65,7 @@ then
   # can commit/record its bounded terminal outcome concurrently with the
   # direct-ID deadline tick.  Killing it created an un-auditable SIGTERM
   # failure at exactly :10 while the tick was still able to run.
-  /usr/bin/systemctl stop --no-block crown-round-update.service crown-sweep.service crown-settle.service
+  /usr/bin/systemctl stop --no-block crown-round-update.service crown-sweep.service crown-settle.service crown-reverse-t5-drain.service
   echo "Crown urgent timed stage due; blocking slow jobs preempted"
 else
   status=$?

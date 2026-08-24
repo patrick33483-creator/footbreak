@@ -208,5 +208,7 @@ cat <<'EOF'
   /opt/footbreak/.venv/bin/python -m crown.run tick --dry-run
 確認 PinnAPI、配對、資料時效及模擬注後才可:
   systemctl enable --now crown-round-update.timer crown-first-look-reconcile.timer crown-tick.timer crown-sweep.timer crown-settle.timer crown-reverse-t5-drain.timer
+反向 T-5 比價仍預設關閉。驗證 dedicated worker timer 後，才在
+  /etc/footbreak-crown.env 設 CROWN_REVERSE_T5_BRIDGE_ENABLED=1
 ═══════════════════════════════════════════════════
 EOF

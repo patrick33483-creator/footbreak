@@ -136,8 +136,21 @@ class ReconciliationEnablementTests(unittest.TestCase):
         self.assertIn("if crown_is_enabled; then", health)
         self.assertIn("crown-reverse-t5-drain.timer", health)
         self.assertIn("crown-reverse-t5-drain.service", health)
+        self.assertIn("reverse_t5_bridge_is_enabled", health)
+        self.assertIn("consecutive worker timeouts", health)
+        self.assertIn("worker liveness is not required", health)
         self.assertIn("Crown timers are not required", health)
         self.assertIn("if crown_is_enabled; then", reconcile)
+
+    def test_reverse_bridge_flag_and_rollout_workflow_document_the_dedicated_worker(self) -> None:
+        example = (ROOT / "deploy" / "footbreak-crown.env.example").read_text(encoding="utf-8")
+        setup = (ROOT / "deploy" / "setup.sh").read_text(encoding="utf-8")
+        workflow = (ROOT / ".github/workflows/reverse-t5-bridge-rollout.yml").read_text(encoding="utf-8")
+        self.assertIn("CROWN_REVERSE_T5_BRIDGE_ENABLED=0", example)
+        self.assertIn("CROWN_REVERSE_T5_BRIDGE_ENABLED=1", setup)
+        self.assertIn("crown-reverse-t5-drain.timer", workflow)
+        self.assertIn("crown-reverse-t5-drain.service", workflow)
+        self.assertIn("reverse_t5_bridge_worker_triggered=yes", workflow)
 
 
 if __name__ == "__main__":

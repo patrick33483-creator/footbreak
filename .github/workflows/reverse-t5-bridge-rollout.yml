@@ -78,17 +78,18 @@ jobs:
           [ -n "$value" ] || value=0
           printf 'reverse_t5_bridge_enabled=%s\n' "$value"
 
-          printf 'crown_sweep_timer_active=%s\n' \
-            "$(systemctl is-active crown-sweep.timer || true)"
-          printf 'crown_sweep_timer_enabled=%s\n' \
-            "$(systemctl is-enabled crown-sweep.timer || true)"
-          printf 'crown_tick_timer_active=%s\n' \
-            "$(systemctl is-active crown-tick.timer || true)"
-          printf 'crown_tick_timer_enabled=%s\n' \
-            "$(systemctl is-enabled crown-tick.timer || true)"
+          for unit in crown-reverse-t5-drain.timer crown-reverse-t5-drain.service; do
+            safe_name="$(printf '%s' "$unit" | tr '.-' '__')"
+            printf 'reverse_t5_%s_active=%s\n' "$safe_name" \
+              "$(systemctl is-active "$unit" || true)"
+            printf 'reverse_t5_%s_enabled=%s\n' "$safe_name" \
+              "$(systemctl is-enabled "$unit" || true)"
+          done
 
           if [ "$ROLLOUT_ACTION" = enable ]; then
-            systemctl start --no-block crown-sweep.service
-            echo "reverse_t5_bridge_sweep_triggered=yes"
+            systemctl is-enabled --quiet crown-reverse-t5-drain.timer
+            systemctl is-active --quiet crown-reverse-t5-drain.timer
+            systemctl start --no-block crown-reverse-t5-drain.service
+            echo "reverse_t5_bridge_worker_triggered=yes"
           fi
           REMOTE

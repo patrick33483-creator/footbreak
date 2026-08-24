@@ -30,7 +30,7 @@ _TICK_ENGINE_TEARDOWN_MARGIN_SECONDS = 0.25
 # only a short recovery attempt; neither is allowed on the native tick path.
 _REVERSE_T5_DRAIN_SWEEP_MAX_SECONDS = 4.0
 _REVERSE_T5_DRAIN_SERVICE_MAX_SECONDS = 15.0
-_REVERSE_T5_DRAIN_MAX_JOBS = 3
+_REVERSE_T5_DRAIN_MAX_JOBS = 1
 # Keep the upstream first-look card publication bounded and independent from
 # the durable reconciliation commit.
 _FIRST_LOOK_PROJECTION_MAX_SECONDS = 5.0
@@ -359,9 +359,8 @@ def _reverse_t5_drain_process(send, config) -> None:
     """Run restart-safe bridge work in a killable non-deadline child only."""
     try:
         from .reverse_t5_bridge import drain_pending_jobs
-        # A worker invocation makes deliberately small, durable forward
-        # progress.  This bounds slow strict matching while each completed
-        # fixture is merged before the next one begins.
+        # One fixture per killable child provides a strict per-job wall-clock
+        # bound and fair retry rotation after a reaped matcher/provider stall.
         send.send((
             "complete",
             drain_pending_jobs(config, max_jobs=_REVERSE_T5_DRAIN_MAX_JOBS),
@@ -394,9 +393,11 @@ def _run_reverse_t5_drain(
     process.daemon = False
     process.start()
     sender.close()
+    timed_out = False
     try:
         if not receiver.poll(max_seconds):
-            return "deferred", None
+            timed_out = True
+            return "deferred", "worker_timeout"
         try:
             status, _payload = receiver.recv()
         except EOFError:
@@ -410,6 +411,16 @@ def _run_reverse_t5_drain(
         if process.is_alive():
             process.kill()
             process.join(timeout=0.10)
+        if timed_out:
+            # The parent owns the only reliable timeout observation because
+            # the child may have been killed before it could write telemetry.
+            # Write it only after the child is gone, so it cannot race a
+            # normal-completion telemetry update.
+            try:
+                from .reverse_t5_bridge import record_worker_timeout
+                record_worker_timeout(config)
+            except BaseException:
+                pass
 
 
 def _exception_origin(exc: BaseException) -> dict[str, object]:
@@ -472,7 +483,9 @@ def main() -> int:
         except BaseException as exc:
             status, detail = "error", type(exc).__name__
         result = {
-            "ok": status != "error",
+            # A reaped timeout is intentionally non-success.  It is neither a
+            # duplicate-lock exit (75) nor a healthy no-job completion.
+            "ok": status == "complete",
             "mode": "reverse-t5-drain",
             "reverse_t5_bridge_drain": status,
             "real_betting_enabled": False,

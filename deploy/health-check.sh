@@ -37,6 +37,13 @@ crown_is_enabled() {
   esac
 }
 
+reverse_t5_bridge_is_enabled() {
+  case "${CROWN_REVERSE_T5_BRIDGE_ENABLED:-0}" in
+    1|true|TRUE|yes|YES|on|ON) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 echo "=== production health $(TZ=Asia/Hong_Kong date '+%F %T %Z') ==="
 
 for unit in \
@@ -57,7 +64,7 @@ for unit in \
 done
 
 if crown_is_enabled; then
-  for unit in crown-round-update.timer crown-first-look-reconcile.timer crown-tick.timer crown-sweep.timer crown-settle.timer crown-reverse-t5-drain.timer; do
+  for unit in crown-round-update.timer crown-first-look-reconcile.timer crown-tick.timer crown-sweep.timer crown-settle.timer; do
     systemctl is-enabled --quiet "$unit" || {
       state="$(systemctl is-enabled "$unit" 2>&1 || true)"
       echo "FAIL timer $unit enabled_state=$state" >&2
@@ -72,6 +79,66 @@ if crown_is_enabled; then
   done
 else
   echo "OK Crown validation gate disabled; Crown timers are not required"
+fi
+
+if crown_is_enabled && reverse_t5_bridge_is_enabled; then
+  unit=crown-reverse-t5-drain.timer
+  systemctl is-enabled --quiet "$unit" || {
+    state="$(systemctl is-enabled "$unit" 2>&1 || true)"
+    echo "FAIL timer $unit enabled_state=$state" >&2
+    exit 1
+  }
+  systemctl is-active --quiet "$unit" || {
+    systemctl show "$unit" -p LoadState -p ActiveState -p SubState -p Result
+    echo "FAIL timer $unit is not active" >&2
+    exit 1
+  }
+  echo "OK enabled reverse T-5 bridge timer $unit"
+  # This local-only check reports only timing/status aggregates.  It never
+  # reads provider board content or fixture identities.  No job is healthy;
+  # an enabled bridge with an age-violating retryable job or repeated reaped
+  # children is not.
+  python3 - "${CROWN_STATE_DIR:-/var/lib/footbreak/crown}" <<'PY'
+import json
+import sys
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+state = Path(sys.argv[1])
+now = datetime.now(timezone(timedelta(hours=8)))
+def parse(value):
+    try:
+        value = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        return value.replace(tzinfo=now.tzinfo) if value.tzinfo is None else value.astimezone(now.tzinfo)
+    except (TypeError, ValueError):
+        return None
+try:
+    ledger = json.loads((state / "ledger.json").read_text(encoding="utf-8"))
+except (OSError, ValueError, TypeError):
+    ledger = {}
+jobs = ((ledger.get("crown_reverse_t5_bridge") or {}).get("jobs") or []) if isinstance(ledger, dict) else []
+ages = [
+    (now - stage_at).total_seconds()
+    for job in jobs if isinstance(job, dict)
+    and str(job.get("state") or "") in {"PENDING", "RUNNING"}
+    for stage_at in [parse(job.get("stage_at"))] if stage_at is not None
+]
+if ages and max(ages) > 60:
+    raise SystemExit("FAIL enabled reverse T-5 bridge has aged retryable work")
+try:
+    telemetry = json.loads((state / "reverse-t5-bridge-health.json").read_text(encoding="utf-8"))
+except (OSError, ValueError, TypeError):
+    telemetry = {}
+try:
+    timeouts = int((telemetry or {}).get("consecutive_timeouts") or 0) if isinstance(telemetry, dict) else 0
+except (TypeError, ValueError):
+    timeouts = 0
+if timeouts >= 2:
+    raise SystemExit("FAIL enabled reverse T-5 bridge has consecutive worker timeouts")
+print("OK enabled reverse T-5 bridge telemetry", f"retryable_jobs={len(ages)}", f"consecutive_timeouts={timeouts}")
+PY
+elif crown_is_enabled; then
+  echo "OK reverse T-5 bridge rollout flag disabled; worker liveness is not required"
 fi
 
 if systemctl is-active --quiet footbreak-t30.timer ||
@@ -280,7 +347,10 @@ services=(
   footbreak-result-reconcile.service
 )
 if crown_is_enabled; then
-  services+=(crown-tick.service crown-sweep.service crown-settle.service crown-reverse-t5-drain.service)
+  services+=(crown-tick.service crown-sweep.service crown-settle.service)
+  if reverse_t5_bridge_is_enabled; then
+    services+=(crown-reverse-t5-drain.service)
+  fi
 fi
 for service in "${services[@]}"; do
   result="$(systemctl show "$service" -p Result --value)"

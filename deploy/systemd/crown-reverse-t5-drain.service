@@ -3,14 +3,18 @@ Description=足破 · 皇冠 reverse T-5 durable bridge worker
 After=network-online.target
 Wants=network-online.target
 OnFailure=footbreak-incident-alert@%n.service
+# Native T-5 has priority over this optional remote/matching worker.  A marker
+# prevents a new invocation and the preempt helper stops an in-flight one;
+# durable RUNNING jobs are fairly reclaimed on a later timer pass.
+ConditionPathExists=!/run/crown-t5-priority
 
 [Service]
 Type=oneshot
 WorkingDirectory=/opt/footbreak
-# This is intentionally independent of native tick preemption and has no
-# priority-marker condition: it may finish/recover a durable bridge job while
-# a native T-5 tick is urgent.  The bridge's own nonblocking drain lock
-# prevents duplicate consumers.
+# A residual enabled unit must be harmless after rollback to an older checkout
+# whose parser lacks this mode: a false ExecCondition skips cleanly rather than
+# turning every timer firing into an argparse failure/incident loop.
+ExecCondition=/bin/grep -Fq '"reverse-t5-drain"' /opt/footbreak/crown/run.py
 ExecStart=/opt/footbreak/deploy/crown-run.sh reverse-t5-drain
 TimeoutStartSec=20
 TimeoutStopSec=2
