@@ -94,49 +94,13 @@ if crown_is_enabled && reverse_t5_bridge_is_enabled; then
     exit 1
   }
   echo "OK enabled reverse T-5 bridge timer $unit"
-  # This local-only check reports only timing/status aggregates.  It never
-  # reads provider board content or fixture identities.  No job is healthy;
-  # an enabled bridge with an age-violating retryable job or repeated reaped
-  # children is not.
-  python3 - "${CROWN_STATE_DIR:-/var/lib/footbreak/crown}" <<'PY'
-import json
-import sys
-from datetime import datetime, timedelta, timezone
-from pathlib import Path
-
-state = Path(sys.argv[1])
-now = datetime.now(timezone(timedelta(hours=8)))
-def parse(value):
-    try:
-        value = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-        return value.replace(tzinfo=now.tzinfo) if value.tzinfo is None else value.astimezone(now.tzinfo)
-    except (TypeError, ValueError):
-        return None
-try:
-    ledger = json.loads((state / "ledger.json").read_text(encoding="utf-8"))
-except (OSError, ValueError, TypeError):
-    ledger = {}
-jobs = ((ledger.get("crown_reverse_t5_bridge") or {}).get("jobs") or []) if isinstance(ledger, dict) else []
-ages = [
-    (now - stage_at).total_seconds()
-    for job in jobs if isinstance(job, dict)
-    and str(job.get("state") or "") in {"PENDING", "RUNNING"}
-    for stage_at in [parse(job.get("stage_at"))] if stage_at is not None
-]
-if ages and max(ages) > 60:
-    raise SystemExit("FAIL enabled reverse T-5 bridge has aged retryable work")
-try:
-    telemetry = json.loads((state / "reverse-t5-bridge-health.json").read_text(encoding="utf-8"))
-except (OSError, ValueError, TypeError):
-    telemetry = {}
-try:
-    timeouts = int((telemetry or {}).get("consecutive_timeouts") or 0) if isinstance(telemetry, dict) else 0
-except (TypeError, ValueError):
-    timeouts = 0
-if timeouts >= 2:
-    raise SystemExit("FAIL enabled reverse T-5 bridge has consecutive worker timeouts")
-print("OK enabled reverse T-5 bridge telemetry", f"retryable_jobs={len(ages)}", f"consecutive_timeouts={timeouts}")
-PY
+  # This local-only liveness check reads timing/status aggregates only.  The
+  # enablement marker permits one bounded rollout grace, but a skipped service
+  # condition cannot refresh it; afterwards every enabled worker needs a
+  # recent parseable successful completion (a no-job pass counts).
+  PYTHONPATH="$APP_DIR${PYTHONPATH:+:$PYTHONPATH}" \
+  CROWN_STATE_DIR="${CROWN_STATE_DIR:-/var/lib/footbreak/crown}" \
+    "$APP_DIR/.venv/bin/python3" -m crown.reverse_t5_bridge_health check
 elif crown_is_enabled; then
   echo "OK reverse T-5 bridge rollout flag disabled; worker liveness is not required"
 fi

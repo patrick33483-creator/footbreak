@@ -119,6 +119,9 @@ class ReconciliationEnablementTests(unittest.TestCase):
     def test_deploy_and_health_follow_the_same_validation_gate(self) -> None:
         update = (ROOT / "deploy" / "update.sh").read_text(encoding="utf-8")
         health = (ROOT / "deploy" / "health-check.sh").read_text(encoding="utf-8")
+        bridge_health = (ROOT / "crown" / "reverse_t5_bridge_health.py").read_text(
+            encoding="utf-8",
+        )
         reconcile = RECONCILE.read_text(encoding="utf-8")
         self.assertIn("crown_is_enabled_in_config", update)
         self.assertIn("systemctl reenable \"$timer\"", update)
@@ -137,7 +140,9 @@ class ReconciliationEnablementTests(unittest.TestCase):
         self.assertIn("crown-reverse-t5-drain.timer", health)
         self.assertIn("crown-reverse-t5-drain.service", health)
         self.assertIn("reverse_t5_bridge_is_enabled", health)
-        self.assertIn("consecutive worker timeouts", health)
+        self.assertIn("consecutive worker timeouts", bridge_health)
+        self.assertIn("reverse_t5_bridge_health check", health)
+        self.assertIn("recent parseable successful completion", health)
         self.assertIn("worker liveness is not required", health)
         self.assertIn("Crown timers are not required", health)
         self.assertIn("if crown_is_enabled; then", reconcile)
@@ -150,7 +155,13 @@ class ReconciliationEnablementTests(unittest.TestCase):
         self.assertIn("CROWN_REVERSE_T5_BRIDGE_ENABLED=1", setup)
         self.assertIn("crown-reverse-t5-drain.timer", workflow)
         self.assertIn("crown-reverse-t5-drain.service", workflow)
-        self.assertIn("reverse_t5_bridge_worker_triggered=yes", workflow)
+        self.assertIn("reverse_t5_bridge_health mark-enabled", workflow)
+        self.assertIn("reverse_t5_bridge_health mark-disabled", workflow)
+        self.assertIn("reverse_t5_bridge_health check --require-completion", workflow)
+        self.assertIn("deferred_native_priority", workflow)
+        self.assertIn("reverse_t5_bridge_worker_triggered=completed", workflow)
+        self.assertIn("sync_reverse_t5_bridge_enablement_marker", (ROOT / "deploy" / "update.sh").read_text(encoding="utf-8"))
+        self.assertIn("reverse_t5_bridge_health mark-enabled", (ROOT / "deploy" / "enable-crown.sh").read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

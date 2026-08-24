@@ -45,8 +45,12 @@ jobs:
             "sudo ROLLOUT_ACTION='$ROLLOUT_ACTION' bash -s" <<'REMOTE'
           set -euo pipefail
 
+          cd /opt/footbreak
           env_file=/etc/footbreak-crown.env
           key=CROWN_REVERSE_T5_BRIDGE_ENABLED
+          state_dir=/var/lib/footbreak/crown
+          python=/opt/footbreak/.venv/bin/python3
+          [ -x "$python" ] || python=python3
 
           case "$ROLLOUT_ACTION" in
             status)
@@ -64,6 +68,11 @@ jobs:
               install -o root -g root -m 600 "$tmp" "$env_file"
               rm -f "$tmp"
               trap - EXIT
+              if [ "$ROLLOUT_ACTION" = enable ]; then
+                CROWN_STATE_DIR="$state_dir" "$python" -m crown.reverse_t5_bridge_health mark-enabled
+              else
+                CROWN_STATE_DIR="$state_dir" "$python" -m crown.reverse_t5_bridge_health mark-disabled
+              fi
               ;;
             *)
               echo "Unsupported action: $ROLLOUT_ACTION" >&2
@@ -89,7 +98,18 @@ jobs:
           if [ "$ROLLOUT_ACTION" = enable ]; then
             systemctl is-enabled --quiet crown-reverse-t5-drain.timer
             systemctl is-active --quiet crown-reverse-t5-drain.timer
-            systemctl start --no-block crown-reverse-t5-drain.service
-            echo "reverse_t5_bridge_worker_triggered=yes"
+            if [ -e /run/crown-t5-priority ]; then
+              # The service condition deliberately skips optional bridge work
+              # while native T-5 owns the state lock.  Do not extend rollout
+              # grace for this skip; the timer will retry after priority clears.
+              echo "reverse_t5_bridge_worker_triggered=deferred_native_priority"
+            else
+              # Type=oneshot start waits for a real completion.  A timeout or
+              # service error remains non-success; require actual completion
+              # telemetry rather than accepting a condition-skip false green.
+              systemctl start crown-reverse-t5-drain.service
+              CROWN_STATE_DIR="$state_dir" "$python" -m crown.reverse_t5_bridge_health check --require-completion
+              echo "reverse_t5_bridge_worker_triggered=completed"
+            fi
           fi
           REMOTE

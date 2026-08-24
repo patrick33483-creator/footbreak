@@ -34,6 +34,10 @@ _JOB_LIMIT = 1600
 # budget, and ordinary scheduler jitter without allowing a boot catch-up or a
 # repeatedly stalled queue to pair a stale native signal with a current board.
 MAX_STAGE_AGE_SECONDS = 60
+# The 15-second dedicated service normally completes several fast local
+# matches.  It claims/merges each item immediately (never a bulk RUNNING
+# batch), so a later stall leaves only that current job retryable.
+MAX_JOBS_PER_DRAIN = 12
 _REMOTE_TIMEOUT_SECONDS = 1.0
 _SELLABLE_STATUSES = {"SELLING", "SELLINGSTARTED", "AVAILABLE"}
 _MARKETS = ("HDC", "HIL", "CHL")
@@ -514,42 +518,46 @@ def _merge_completed(
         return completed
 
 
-def drain_pending_jobs(config: Settings, *, max_jobs: int = 1) -> dict[str, int]:
+def drain_pending_jobs(
+    config: Settings, *, max_jobs: int = MAX_JOBS_PER_DRAIN,
+) -> dict[str, int]:
     """Drain durable jobs from a bounded, killable post-commit child.
 
-    Callers must put this function behind a killable outer process.  Exactly
-    one least-recently-attempted fixture is claimed, fetched, evaluated, and
-    merged per invocation.  That makes the outer child a per-job killable
-    bound and prevents a repeatedly stalled first fixture from bulk-claiming
-    and starving unrelated jobs.
+    Callers must put this function behind a killable outer process.  Up to the
+    documented small cap are handled serially, but every item is claimed,
+    fetched/evaluated, and merged before the next claim.  That preserves
+    normal fast-job throughput while leaving only the current item RUNNING if
+    the reaped outer child hits its wall-clock limit.
     """
     if not is_enabled():
         return {"claimed": 0, "completed": 0}
+    try:
+        limit = max(1, min(int(max_jobs), MAX_JOBS_PER_DRAIN))
+    except (TypeError, ValueError):
+        limit = MAX_JOBS_PER_DRAIN
     with _drain_lock(config) as acquired:
         if not acquired:
             return {"claimed": 0, "completed": 0}
-        # ``max_jobs`` is retained for backward-compatible callers, but this
-        # worker intentionally accepts only one job per killable invocation.
-        del max_jobs
         _record_worker_telemetry(config, status="started")
-        snapshot = _claim_one_snapshot(config)
-        if snapshot is None:
-            result = {"claimed": 0, "completed": 0}
-            _record_worker_telemetry(config, status="complete", **result)
-            return result
-        # Explicitly recheck the age before any remote I/O, even though claim
-        # validated it.  This protects a process that was descheduled between
-        # the short state transaction and the board request.
-        ledger = load_ledger(config)
-        _watch, reason = _job_is_current_at(ledger, snapshot["job"])
-        if _watch is None:
-            completed = _merge_completed(config, snapshot["job"], {}, now=datetime.now(HKT))
-            result = {"claimed": 1, "completed": completed}
-            _record_worker_telemetry(config, status="complete", **result)
-            return result
-        matches, events, observed_at = _fetch_board()
-        outcome = _evaluate_snapshot(snapshot, matches, events, observed_at)
-        completed = _merge_completed(config, snapshot["job"], outcome)
-        result = {"claimed": 1, "completed": completed}
+        result = {"claimed": 0, "completed": 0}
+        for _ in range(limit):
+            snapshot = _claim_one_snapshot(config)
+            if snapshot is None:
+                break
+            result["claimed"] += 1
+            # Explicitly recheck the age before any remote I/O, even though
+            # claim validated it.  This protects a process that was
+            # descheduled between the short state transaction and the board
+            # request.
+            ledger = load_ledger(config)
+            _watch, _reason = _job_is_current_at(ledger, snapshot["job"])
+            if _watch is None:
+                result["completed"] += _merge_completed(
+                    config, snapshot["job"], {}, now=datetime.now(HKT),
+                )
+                continue
+            matches, events, observed_at = _fetch_board()
+            outcome = _evaluate_snapshot(snapshot, matches, events, observed_at)
+            result["completed"] += _merge_completed(config, snapshot["job"], outcome)
         _record_worker_telemetry(config, status="complete", **result)
         return result

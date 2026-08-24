@@ -349,7 +349,7 @@ class ReverseT5DurabilityTests(unittest.TestCase):
             self.assertIn("native-urgent", load_ledger(config)["watch"])
 
     @unittest.skipUnless(os.name == "posix", "requires fork")
-    def test_one_fixture_worker_retries_fairly_after_first_job_timeout(self) -> None:
+    def test_stalled_first_job_next_service_invocation_selects_another_job(self) -> None:
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {bridge.ENV_ENABLED: "1"}, clear=False):
             config = replace(settings(), state_dir=Path(directory))
             one, two = watch("crown-1"), watch("crown-2")
@@ -381,20 +381,14 @@ class ReverseT5DurabilityTests(unittest.TestCase):
             }
             self.assertEqual(jobs, {"crown-1": "RUNNING", "crown-2": "PENDING"})
 
-            def complete_retry(snapshot, *_args):
-                fixture = snapshot["job"]["match_id"]
-                return {
-                    "research_observations": [{
-                        "fingerprint": f"observation-{fixture}",
-                        "fixture": fixture,
-                    }],
-                }
-
             with patch.object(bridge, "_fetch_board", return_value=([], [], stamp())), \
-                 patch.object(bridge, "_evaluate_snapshot", side_effect=complete_retry):
-                retried = bridge.drain_pending_jobs(config)
+                 patch.object(bridge, "_evaluate_snapshot", side_effect=first_always_stalls):
+                # The fresh pending row wins fair ordering before the reaped
+                # RUNNING row.  The service may later reach/stall c1 again,
+                # but c2's durable outcome proves forward progress.
+                status, detail = crown_run._run_reverse_t5_drain(config, 0.75)
 
-            self.assertEqual(retried, {"claimed": 1, "completed": 1})
+            self.assertEqual((status, detail), ("deferred", "worker_timeout"))
             durable = load_ledger(config)
             jobs = {
                 row["match_id"]: row["state"]
@@ -473,15 +467,17 @@ class ReverseT5DurabilityTests(unittest.TestCase):
             def evaluate(snapshot, *_args):
                 fixture = snapshot["job"]["match_id"]
                 if fixture == "crown-0":
-                    time.sleep(1.0)
+                    time.sleep(3.0)
                 return {"research_observations": [{"fingerprint": f"fair-{fixture}"}]}
 
             with patch.object(bridge, "_fetch_board", return_value=([], [], stamp())), \
                  patch.object(bridge, "_evaluate_snapshot", side_effect=evaluate):
                 status, detail = crown_run._run_reverse_t5_drain(config, 0.08)
                 self.assertEqual((status, detail), ("deferred", "worker_timeout"))
-                for _ in range(3):
-                    self.assertEqual(crown_run._run_reverse_t5_drain(config, 0.50)[0], "complete")
+                # A realistic subsequent envelope completes all three fast
+                # fixtures before it reaches the repeatedly stalled row.
+                status, detail = crown_run._run_reverse_t5_drain(config, 1.50)
+                self.assertEqual((status, detail), ("deferred", "worker_timeout"))
 
             jobs = {
                 row["match_id"]: row["state"]
@@ -491,6 +487,35 @@ class ReverseT5DurabilityTests(unittest.TestCase):
             self.assertEqual(
                 [jobs[f"crown-{number}"] for number in range(1, 4)],
                 ["COMPLETED", "COMPLETED", "COMPLETED"],
+            )
+
+    def test_normal_service_envelope_completes_four_fast_jobs_without_bulk_claiming(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+            os.environ, {bridge.ENV_ENABLED: "1"}, clear=False,
+        ):
+            config = replace(settings(), state_dir=Path(directory))
+            values = [watch(f"crown-fast-{number}") for number in range(4)]
+            ledger = ledger_for(*values)
+            for value in values:
+                bridge.enqueue_committed_t5(ledger, value)
+            save_ledger(config, ledger)
+
+            def evaluate(snapshot, *_args):
+                fixture = snapshot["job"]["match_id"]
+                return {"research_observations": [{"fingerprint": f"fast-{fixture}"}]}
+
+            with patch.object(bridge, "_fetch_board", return_value=([], [], stamp())), \
+                 patch.object(bridge, "_evaluate_snapshot", side_effect=evaluate):
+                status, detail = crown_run._run_reverse_t5_drain(config, 2.0)
+
+            self.assertEqual((status, detail), ("complete", None))
+            jobs = load_ledger(config)[bridge.JOB_NAMESPACE]["jobs"]
+            self.assertTrue(all(row["state"] == "COMPLETED" for row in jobs))
+            telemetry = json.loads(
+                bridge.worker_telemetry_path(config).read_text(encoding="utf-8"),
+            )
+            self.assertEqual(
+                (telemetry["claimed"], telemetry["completed"]), (4, 4),
             )
 
 
@@ -598,7 +623,8 @@ class ReverseT5LifecycleTests(unittest.TestCase):
             self.assertEqual(order, ["native_commit", "native_notification"])
 
     def test_worker_batch_cap_is_small_and_service_budget_is_independent(self) -> None:
-        self.assertEqual(crown_run._REVERSE_T5_DRAIN_MAX_JOBS, 1)
+        self.assertEqual(crown_run._REVERSE_T5_DRAIN_MAX_JOBS, 12)
+        self.assertEqual(bridge.MAX_JOBS_PER_DRAIN, 12)
         self.assertEqual(crown_run._REVERSE_T5_DRAIN_SERVICE_MAX_SECONDS, 15.0)
 
     def test_dedicated_mode_timeout_is_non_success(self) -> None:
