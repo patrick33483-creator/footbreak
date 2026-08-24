@@ -27,6 +27,9 @@ _TICK_POSTPROCESS_TEARDOWN_MARGIN_SECONDS = 1.0
 _TICK_NOTIFICATION_MIN_SECONDS = 6.0
 _TICK_ENGINE_TEARDOWN_MARGIN_SECONDS = 0.25
 _REVERSE_T5_DRAIN_MAX_SECONDS = 4.0
+_TICK_REVERSE_T5_DRAIN_MIN_SECONDS = 4.0
+_TICK_REVERSE_T5_DRAIN_MAX_SECONDS = 2.5
+_TICK_REVERSE_T5_DRAIN_TEARDOWN_MARGIN_SECONDS = 1.0
 
 
 def _write_tick_health(config, result: dict[str, object]) -> None:
@@ -306,12 +309,12 @@ def _reverse_t5_drain_process(send, config) -> None:
 
 
 def _run_reverse_t5_drain(config, max_seconds: float = _REVERSE_T5_DRAIN_MAX_SECONDS) -> tuple[str, str | None]:
-    """Bound an existing server pass's bridge drain and always reap its child.
+    """Bound a post-commit bridge drain and always reap its child.
 
-    This is deliberately never called by the deadline-owned tick.  Sweep,
-    settlement, and other existing non-deadline server passes provide durable
-    recovery ownership.  The parent terminates/reaps the non-daemon child, so
-    interpreter shutdown cannot wait for it.
+    Native tick persistence and its priority notification are complete before
+    the tick caller invokes this helper.  Sweep remains the restart-recovery
+    owner.  The parent terminates/reaps the non-daemon child, so provider or
+    matching work can neither hold native state nor delay interpreter shutdown.
     """
     if max_seconds <= 0.0 or os.name != "posix":
         return "deferred", None
@@ -489,6 +492,35 @@ def main() -> int:
             # Signals are notification-only. A transport failure leaves the
             # durable outbox unacknowledged for the next safe tick.
             result["notification_warning"] = f"telegram_{type(exc).__name__}"
+        # Native stage persistence and the priority notification attempt are
+        # complete.  Use only genuine leftover tick budget for the reverse
+        # quote job that the same T-5 commit just enqueued.  The child is
+        # killable/reaped and the durable job remains retryable on timeout.
+        # A newly-created bilateral outbox row is intentionally delivered by
+        # the next tick, preserving native direct/Wilson notification priority.
+        try:
+            from .reverse_t5_bridge import is_enabled as reverse_t5_enabled
+
+            remaining = tick_deadline - time.monotonic()
+            if (
+                reverse_t5_enabled()
+                and remaining >= _TICK_REVERSE_T5_DRAIN_MIN_SECONDS
+            ):
+                status, detail = _run_reverse_t5_drain(
+                    config,
+                    min(
+                        _TICK_REVERSE_T5_DRAIN_MAX_SECONDS,
+                        remaining - _TICK_REVERSE_T5_DRAIN_TEARDOWN_MARGIN_SECONDS,
+                    ),
+                )
+                result["reverse_t5_bridge_drain"] = status
+                if detail:
+                    result["reverse_t5_bridge_warning"] = detail
+            elif reverse_t5_enabled():
+                result["reverse_t5_bridge_drain"] = "deferred_tick_deadline"
+        except BaseException as exc:
+            result["reverse_t5_bridge_drain"] = "error"
+            result["reverse_t5_bridge_warning"] = type(exc).__name__
         # The native stage, ledger and prediction card are already durable.
         # Launch the optional persisted-state sidecar only after the bounded
         # Telegram attempt, never from the deadline-owned engine child and

@@ -319,6 +319,69 @@ class ReverseT5DurabilityTests(unittest.TestCase):
                 self.assertFalse(child.is_alive())
             self.assertIn("native-urgent", load_ledger(config)["watch"])
 
+    @unittest.skipUnless(os.name == "posix", "requires fork")
+    def test_bounded_batch_persists_each_completed_job_before_later_timeout(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {bridge.ENV_ENABLED: "1"}, clear=False):
+            config = replace(settings(), state_dir=Path(directory))
+            one, two = watch("crown-1"), watch("crown-2")
+            ledger = ledger_for(one, two)
+            bridge.enqueue_committed_t5(ledger, one)
+            bridge.enqueue_committed_t5(ledger, two)
+            save_ledger(config, ledger)
+
+            def first_then_stall(snapshot, *_args):
+                fixture = snapshot["job"]["match_id"]
+                if fixture == "crown-2":
+                    time.sleep(2.0)
+                return {
+                    "research_observations": [{
+                        "fingerprint": f"observation-{fixture}",
+                        "fixture": fixture,
+                    }],
+                }
+
+            with patch.object(bridge, "_fetch_board", return_value=([], [], stamp())), \
+                 patch.object(bridge, "_evaluate_snapshot", side_effect=first_then_stall):
+                status, detail = crown_run._run_reverse_t5_drain(config, 0.35)
+
+            self.assertEqual((status, detail), ("deferred", None))
+            durable = load_ledger(config)
+            jobs = {
+                row["match_id"]: row["state"]
+                for row in durable[bridge.JOB_NAMESPACE]["jobs"]
+            }
+            self.assertEqual(jobs, {"crown-1": "COMPLETED", "crown-2": "RUNNING"})
+            observations = durable[reciprocal.NAMESPACE]["research_observations"]
+            self.assertEqual(
+                [row["fingerprint"] for row in observations],
+                ["observation-crown-1"],
+            )
+
+            def complete_retry(snapshot, *_args):
+                fixture = snapshot["job"]["match_id"]
+                return {
+                    "research_observations": [{
+                        "fingerprint": f"observation-{fixture}",
+                        "fixture": fixture,
+                    }],
+                }
+
+            with patch.object(bridge, "_fetch_board", return_value=([], [], stamp())), \
+                 patch.object(bridge, "_evaluate_snapshot", side_effect=complete_retry):
+                retried = bridge.drain_pending_jobs(config)
+
+            self.assertEqual(retried, {"claimed": 1, "completed": 1})
+            durable = load_ledger(config)
+            jobs = {
+                row["match_id"]: row["state"]
+                for row in durable[bridge.JOB_NAMESPACE]["jobs"]
+            }
+            self.assertEqual(jobs, {"crown-1": "COMPLETED", "crown-2": "COMPLETED"})
+            self.assertEqual(
+                [row["fingerprint"] for row in durable[reciprocal.NAMESPACE]["research_observations"]],
+                ["observation-crown-1", "observation-crown-2"],
+            )
+
 
 class ReverseT5LifecycleTests(unittest.TestCase):
     @unittest.skipUnless(os.name == "posix", "requires fork")
@@ -340,14 +403,56 @@ class ReverseT5LifecycleTests(unittest.TestCase):
             time.sleep(0.15)
             self.assertFalse(marker.exists())
 
-    def test_tick_has_no_reverse_provider_or_worker_callsite(self) -> None:
-        # The deadline-owned runtime contains no bridge worker/provider work.
-        # The sole drain invocation is visibly guarded by the non-deadline
-        # sweep pass in main(), while the T-5 commit only enqueues locally.
+    def test_tick_engine_has_no_reverse_provider_or_worker_callsite(self) -> None:
+        # The deadline-owned engine remains provider-isolated.  Main may use
+        # only a bounded post-commit child after native persistence and the
+        # priority notification attempt; sweep remains the recovery owner.
         self.assertNotIn("_run_reverse_t5_drain", inspect.getsource(crown_run._run_tick_engine))
         main = inspect.getsource(crown_run.main)
-        self.assertEqual(main.count("_run_reverse_t5_drain(config)"), 1)
+        self.assertEqual(main.count("_run_reverse_t5_drain("), 2)
         self.assertIn('if args.mode == "sweep":', main)
+        self.assertLess(
+            main.index("_run_tick_notification("),
+            main.rindex("_run_reverse_t5_drain("),
+        )
+
+    def test_tick_reverse_drain_is_post_commit_bounded_and_failure_isolated(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = replace(
+                settings(), state_dir=Path(directory), web_root=Path(directory) / "web",
+            )
+            order: list[str] = []
+
+            def engine(*_args):
+                order.append("native_commit")
+                return {"ok": True, "mode": "tick", "fresh_condition_predictions": []}
+
+            def notify(*_args):
+                order.append("native_notification")
+                return "complete", None
+
+            def drain(_config, budget):
+                order.append("reverse_drain")
+                self.assertGreater(budget, 0)
+                self.assertLessEqual(budget, crown_run._TICK_REVERSE_T5_DRAIN_MAX_SECONDS)
+                return "error", "SyntheticFailure"
+
+            with patch.dict(os.environ, {bridge.ENV_ENABLED: "1"}), \
+                 patch.object(crown_run, "settings", return_value=config), \
+                 patch.object(crown_run, "_tick_pass_deadline_seconds", return_value=30), \
+                 patch.object(crown_run, "_run_tick_engine", side_effect=engine), \
+                 patch.object(crown_run, "_run_tick_notification", side_effect=notify), \
+                 patch.object(crown_run, "_run_reverse_t5_drain", side_effect=drain), \
+                 patch.object(crown_run, "_run_tick_postprocess", return_value=("complete", None)), \
+                 patch.object(crown_run, "schedule_footbreak_execution_evidence_projection"), \
+                 patch.object(crown_run, "_write_tick_health"), \
+                 patch("sys.argv", ["crown.run", "tick"]):
+                self.assertEqual(crown_run.main(), 0)
+
+            self.assertEqual(
+                order,
+                ["native_commit", "native_notification", "reverse_drain"],
+            )
 
 
 if __name__ == "__main__":

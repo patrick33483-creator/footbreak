@@ -397,10 +397,10 @@ def _merge_completed(config: Settings, outcomes: list[tuple[dict[str, Any], dict
 
 
 def drain_pending_jobs(config: Settings, *, max_jobs: int = _MAX_DRAIN_JOBS) -> dict[str, int]:
-    """Drain durable jobs from a non-deadline server pass.
+    """Drain durable jobs from a bounded, killable post-commit child.
 
-    Callers must put this function behind a killable outer process.  It never
-    runs from the native tick and it owns no native-state work beyond two brief
+    Callers must put this function behind a killable outer process.  It owns no
+    native-stage work and holds native state only for two brief
     snapshot/revalidation merges.
     """
     if not is_enabled():
@@ -412,8 +412,12 @@ def drain_pending_jobs(config: Settings, *, max_jobs: int = _MAX_DRAIN_JOBS) -> 
         if not snapshots:
             return {"claimed": 0, "completed": 0}
         matches, events, observed_at = _fetch_board()
-        outcomes = [
-            (item["job"], _evaluate_snapshot(item, matches, events, observed_at))
-            for item in snapshots
-        ]
-        return {"claimed": len(snapshots), "completed": _merge_completed(config, outcomes)}
+        completed = 0
+        for item in snapshots:
+            outcome = _evaluate_snapshot(item, matches, events, observed_at)
+            # Commit progress after each detached evaluation.  A bounded parent
+            # may terminate this worker while a later fixture is slow; earlier
+            # completed evidence must remain durable while untouched RUNNING
+            # jobs stay safely reclaimable on the next pass.
+            completed += _merge_completed(config, [(item["job"], outcome)])
+        return {"claimed": len(snapshots), "completed": completed}
