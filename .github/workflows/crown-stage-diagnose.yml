@@ -149,7 +149,15 @@ jobs:
           from crown.common import HKT, parse_time
           from crown.config import settings
           from crown.hkjc import event_from_match, fetch_matches
-          from crown.matching import Event, same_event_for_hkjc
+          from crown.matching import (
+              KICKOFF_TOLERANCE_SECONDS,
+              Event,
+              _score,
+              canonical_league_key,
+              canonical_team_key,
+              qualifiers,
+              same_event_for_hkjc,
+          )
           from crown.state import load_ledger, load_predictions
 
           started = time.monotonic()
@@ -162,6 +170,7 @@ jobs:
           watches = ledger.get("watch", {}) if isinstance(ledger, dict) else {}
           now = datetime.now(HKT)
           reasons = Counter()
+          low_similarity_examples = []
           eligible = matched = 0
           for card in predictions:
               if not isinstance(card, dict):
@@ -188,6 +197,61 @@ jobs:
                   matched += 1
               else:
                   reasons[str(result.reason or "unmatched")] += 1
+                  if result.reason == "team_name_similarity_below_floor":
+                      candidates = []
+                      for candidate in events:
+                          if abs((candidate.kickoff - kickoff).total_seconds()) > KICKOFF_TOLERANCE_SECONDS:
+                              continue
+                          if qualifiers(Event(
+                              match_id,
+                              str(watch.get("league") or ""),
+                              str(watch.get("home") or ""),
+                              str(watch.get("away") or ""),
+                              kickoff,
+                              None,
+                          )) != qualifiers(candidate):
+                              continue
+                          score, names, league = _score(
+                              Event(
+                                  match_id,
+                                  str(watch.get("league") or ""),
+                                  str(watch.get("home") or ""),
+                                  str(watch.get("away") or ""),
+                                  kickoff,
+                                  None,
+                              ),
+                              candidate,
+                              False,
+                              canonical_team_key,
+                              canonical_league_key,
+                              True,
+                          )
+                          candidates.append((score, names, league, candidate))
+                      candidates.sort(key=lambda item: item[0], reverse=True)
+                      if candidates:
+                          score, names, league, candidate = candidates[0]
+                          low_similarity_examples.append({
+                              "target": {
+                                  "league": str(watch.get("league") or ""),
+                                  "home": str(watch.get("home") or ""),
+                                  "away": str(watch.get("away") or ""),
+                                  "kickoff": kickoff.isoformat(),
+                              },
+                              "best_hkjc": {
+                                  "league": candidate.league,
+                                  "home": candidate.home,
+                                  "away": candidate.away,
+                                  "kickoff": candidate.kickoff.isoformat(),
+                                  "official_team_ids_present": bool(
+                                      isinstance(candidate.extra, dict)
+                                      and candidate.extra.get("home_team_id")
+                                      and candidate.extra.get("away_team_id")
+                                  ),
+                              },
+                              "combined_score": round(score, 3),
+                              "minimum_team_score": round(names, 3),
+                              "league_score": round(league, 3),
+                          })
           print(json.dumps({
               "read_only": True,
               "state_writes": False,
@@ -197,6 +261,7 @@ jobs:
               "eligible_unresolved_predictions": eligible,
               "strict_matches": matched,
               "rejection_reasons": dict(reasons),
+              "low_similarity_examples": low_similarity_examples[:10],
           }, ensure_ascii=False, sort_keys=True))
           PY
 
