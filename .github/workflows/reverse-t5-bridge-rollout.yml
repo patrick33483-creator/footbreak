@@ -103,7 +103,10 @@ jobs:
           env PYTHONPATH=/opt/footbreak /opt/footbreak/.venv/bin/python3 - <<'PY'
           import json
           from collections import Counter
+          from datetime import datetime, timedelta
           from pathlib import Path
+
+          from crown.common import HKT, parse_time
 
           ledger_path = Path("/var/lib/footbreak/crown/ledger.json")
           try:
@@ -118,6 +121,27 @@ jobs:
           reciprocal = ledger.get("crown_hkjc_execution_test") or {}
           jobs = jobs_ns.get("jobs") if isinstance(jobs_ns, dict) else []
           jobs = jobs if isinstance(jobs, list) else []
+          now = datetime.now(HKT)
+          upcoming = []
+          for match_id, watch in (ledger.get("watch") or {}).items():
+              if not isinstance(watch, dict):
+                  continue
+              kickoff = parse_time(watch.get("kickoff_hkt") or watch.get("kickoff"))
+              if kickoff is None or not (now < kickoff <= now + timedelta(hours=24)):
+                  continue
+              stages = watch.get("stages") if isinstance(watch.get("stages"), list) else []
+              if any(
+                  isinstance(stage, dict) and stage.get("stage") == "T-5"
+                  for stage in stages
+              ):
+                  continue
+              upcoming.append({
+                  "match_id": str(watch.get("match_id") or match_id),
+                  "fixture": f"{watch.get('home', '')} vs {watch.get('away', '')}",
+                  "kickoff_hkt": kickoff.isoformat(),
+                  "minutes_to_t5": round((kickoff - now).total_seconds() / 60 - 5, 1),
+              })
+          upcoming.sort(key=lambda row: row["kickoff_hkt"])
 
           print(json.dumps({
               "reverse_t5_bridge": {
@@ -146,6 +170,7 @@ jobs:
                       "decisions", "decision_outbox", "bets",
                   )
               },
+              "next_native_t5_windows": upcoming[:8],
           }, ensure_ascii=False))
           PY
           REMOTE
