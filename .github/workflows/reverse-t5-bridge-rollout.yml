@@ -91,4 +91,61 @@ jobs:
             systemctl start --no-block crown-sweep.service
             echo "reverse_t5_bridge_sweep_triggered=yes"
           fi
+
+          for _ in $(seq 1 14); do
+            [ "$(systemctl is-active crown-sweep.service || true)" != active ] && break
+            sleep 5
+          done
+          printf 'crown_sweep_service_state=%s\n' \
+            "$(systemctl is-active crown-sweep.service || true)"
+          systemctl show crown-sweep.service -p Result -p ExecMainStatus --no-pager
+
+          env PYTHONPATH=/opt/footbreak /opt/footbreak/.venv/bin/python3 - <<'PY'
+          import json
+          from collections import Counter
+          from pathlib import Path
+
+          ledger_path = Path("/var/lib/footbreak/crown/ledger.json")
+          try:
+              ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+          except Exception as exc:
+              print(json.dumps({
+                  "reverse_t5_bridge_ledger_error": type(exc).__name__,
+              }))
+              raise SystemExit(0)
+
+          jobs_ns = ledger.get("crown_reverse_t5_bridge") or {}
+          reciprocal = ledger.get("crown_hkjc_execution_test") or {}
+          jobs = jobs_ns.get("jobs") if isinstance(jobs_ns, dict) else []
+          jobs = jobs if isinstance(jobs, list) else []
+
+          print(json.dumps({
+              "reverse_t5_bridge": {
+                  "schema_version": jobs_ns.get("schema_version"),
+                  "jobs": len(jobs),
+                  "job_states": dict(Counter(
+                      str(row.get("state") or "UNKNOWN")
+                      for row in jobs if isinstance(row, dict)
+                  )),
+                  "latest_job": next((
+                      {
+                          "state": str(row.get("state") or ""),
+                          "stage_at": str(row.get("stage_at") or ""),
+                          "completed_at": str(row.get("completed_at") or ""),
+                          "last_attempt_reason": str(
+                              ((row.get("attempts") or [{}])[-1] or {}).get("reason") or ""
+                          ),
+                      }
+                      for row in reversed(jobs) if isinstance(row, dict)
+                  ), None),
+              },
+              "reciprocal_isolated": {
+                  key: len(reciprocal.get(key) or [])
+                  for key in (
+                      "research_observations", "counterpart_attempts",
+                      "decisions", "decision_outbox", "bets",
+                  )
+              },
+          }, ensure_ascii=False))
+          PY
           REMOTE
