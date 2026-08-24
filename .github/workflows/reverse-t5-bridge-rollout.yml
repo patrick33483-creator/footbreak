@@ -1,0 +1,94 @@
+name: 皇冠 T-5 反向馬會比價 Rollout
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 執行動作
+        required: true
+        default: status
+        type: choice
+        options:
+          - status
+          - enable
+          - disable
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+jobs:
+  rollout:
+    name: 核對或切換反向比價
+    runs-on: ubuntu-24.04
+    steps:
+      - name: 設定 SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: 更新並核對伺服器旗標
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          ROLLOUT_ACTION: ${{ inputs.action }}
+        run: |
+          ssh "$DEPLOY_USER@$DEPLOY_HOST" \
+            "sudo ROLLOUT_ACTION='$ROLLOUT_ACTION' bash -s" <<'REMOTE'
+          set -euo pipefail
+
+          env_file=/etc/footbreak-crown.env
+          key=CROWN_REVERSE_T5_BRIDGE_ENABLED
+
+          case "$ROLLOUT_ACTION" in
+            status)
+              ;;
+            enable|disable)
+              value=0
+              [ "$ROLLOUT_ACTION" = enable ] && value=1
+              tmp="$(mktemp)"
+              trap 'rm -f "$tmp"' EXIT
+              if [ -f "$env_file" ]; then
+                awk -v key="$key" 'index($0, key "=") != 1 { print }' \
+                  "$env_file" > "$tmp"
+              fi
+              printf '%s=%s\n' "$key" "$value" >> "$tmp"
+              install -o root -g root -m 600 "$tmp" "$env_file"
+              rm -f "$tmp"
+              trap - EXIT
+              ;;
+            *)
+              echo "Unsupported action: $ROLLOUT_ACTION" >&2
+              exit 2
+              ;;
+          esac
+
+          value="$(
+            awk -F= -v key="$key" '$1 == key { value=$2 } END { print value }' \
+              "$env_file"
+          )"
+          [ -n "$value" ] || value=0
+          printf 'reverse_t5_bridge_enabled=%s\n' "$value"
+
+          printf 'crown_sweep_timer_active=%s\n' \
+            "$(systemctl is-active crown-sweep.timer || true)"
+          printf 'crown_sweep_timer_enabled=%s\n' \
+            "$(systemctl is-enabled crown-sweep.timer || true)"
+          printf 'crown_tick_timer_active=%s\n' \
+            "$(systemctl is-active crown-tick.timer || true)"
+          printf 'crown_tick_timer_enabled=%s\n' \
+            "$(systemctl is-enabled crown-tick.timer || true)"
+
+          if [ "$ROLLOUT_ACTION" = enable ]; then
+            systemctl start --no-block crown-sweep.service
+            echo "reverse_t5_bridge_sweep_triggered=yes"
+          fi
+          REMOTE
