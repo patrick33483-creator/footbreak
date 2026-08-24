@@ -15,6 +15,7 @@ from .engine import _tick_pass_deadline_seconds, run
 from .footbreak_identity_reconciliation import (
     schedule_hkjc_identity_reconciliation,
 )
+from .reverse_t5_bridge import schedule_reverse_t5_bridge
 from .notify import notify_new
 from .prediction_history import archive_watch_fast, update_history
 from .state import load_ledger, schedule_footbreak_execution_evidence_projection
@@ -436,6 +437,16 @@ def main() -> int:
         schedule_footbreak_execution_evidence_projection(
             config, result.get("evidence_projection_stages") or [],
         )
+        # A reverse HKJC board lookup is intentionally launched only from the
+        # parent, after the durable native commit and the normal bounded
+        # Telegram pass.  It is an isolated sidecar: launch/provider/lock
+        # failure cannot change this tick's native result or notification.
+        try:
+            result["reverse_t5_bridge_scheduled"] = schedule_reverse_t5_bridge(
+                config, result.get("fresh_condition_predictions") or [],
+            )
+        except BaseException:
+            result["reverse_t5_bridge_scheduled"] = False
     try:
         if args.mode == "tick":
             # Tick has a sub-minute service cap.  Archive its committed stage
