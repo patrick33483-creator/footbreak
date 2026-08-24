@@ -131,6 +131,75 @@ jobs:
             "$DEPLOY_USER@$DEPLOY_HOST" \
             'sudo journalctl -u crown-first-look-reconcile.service --since "2026-08-24 21:55:00" --no-pager -o cat | tail -n 80'
 
+      - name: 純讀取診斷 HKJC board 與 strict matcher
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            'sudo env FOOTBREAK_REMOTE_TIMEOUT_SECONDS=8 PYTHONPATH=/opt/footbreak /opt/footbreak/.venv/bin/python3 -' <<'PY'
+          import json
+          import time
+          from collections import Counter
+          from datetime import datetime
+
+          from crown.common import HKT, parse_time
+          from crown.config import settings
+          from crown.hkjc import event_from_match, fetch_matches
+          from crown.matching import Event, same_event_for_hkjc
+          from crown.state import load_ledger, load_predictions
+
+          started = time.monotonic()
+          rows = fetch_matches()
+          elapsed = round(time.monotonic() - started, 3)
+          events = [event for row in rows if (event := event_from_match(row)) is not None]
+          config = settings()
+          ledger = load_ledger(config)
+          predictions = load_predictions(config)
+          watches = ledger.get("watch", {}) if isinstance(ledger, dict) else {}
+          now = datetime.now(HKT)
+          reasons = Counter()
+          eligible = matched = 0
+          for card in predictions:
+              if not isinstance(card, dict):
+                  continue
+              match_id = str(card.get("match_id") or card.get("titan_match_id") or "").strip()
+              watch = watches.get(match_id)
+              if not match_id or not isinstance(watch, dict):
+                  continue
+              if card.get("hkjc_match_id") or watch.get("hkjc_match_id"):
+                  continue
+              kickoff = parse_time(watch.get("kickoff_hkt") or watch.get("kickoff"))
+              if kickoff is None or kickoff <= now:
+                  continue
+              eligible += 1
+              result = same_event_for_hkjc(Event(
+                  match_id,
+                  str(watch.get("league") or ""),
+                  str(watch.get("home") or ""),
+                  str(watch.get("away") or ""),
+                  kickoff,
+                  None,
+              ), events)
+              if result.event is not None and not result.reversed:
+                  matched += 1
+              else:
+                  reasons[str(result.reason or "unmatched")] += 1
+          print(json.dumps({
+              "read_only": True,
+              "state_writes": False,
+              "elapsed_seconds": elapsed,
+              "hkjc_board_rows": len(rows),
+              "hkjc_valid_events": len(events),
+              "eligible_unresolved_predictions": eligible,
+              "strict_matches": matched,
+              "rejection_reasons": dict(reasons),
+          }, ensure_ascii=False, sort_keys=True))
+          PY
+
       - name: 明確要求後重啟皇冠 T-5 worker
         if: ${{ inputs.restart_t5_worker == 'yes' }}
         env:
