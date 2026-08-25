@@ -75,7 +75,7 @@ jobs:
           import sys
 
           lock_path, ledger_path = sys.argv[1:3]
-          signal.alarm(30)
+          signal.alarm(180)
           lock_fd = os.open(lock_path, os.O_RDWR | os.O_NOFOLLOW)
           try:
               fcntl.flock(lock_fd, fcntl.LOCK_EX)
@@ -90,18 +90,43 @@ jobs:
           sys.stdout.buffer.write(payload)
           PY
           }
+          set +e
           capture_locked \
             /var/lock/footbreak.lock \
             /opt/footbreak/system/sim_ledger.json \
-            audit-input/footbreak-ledger.json
+            audit-input/footbreak-ledger.json &
+          footbreak_pid=$!
           capture_locked \
             /var/lib/footbreak/crown/.state.lock \
             /var/lib/footbreak/crown/ledger.json \
-            audit-input/crown-ledger.json
-          python3 -m json.tool audit-input/footbreak-ledger.json >/dev/null
-          python3 -m json.tool audit-input/crown-ledger.json >/dev/null
-          sha256sum audit-input/footbreak-ledger.json audit-input/crown-ledger.json \
-            > ledger-sha256.txt
+            audit-input/crown-ledger.json &
+          crown_pid=$!
+          wait "$footbreak_pid"
+          footbreak_rc=$?
+          wait "$crown_pid"
+          crown_rc=$?
+          if [ "$footbreak_rc" -eq 0 ]; then
+            python3 -m json.tool audit-input/footbreak-ledger.json >/dev/null
+            footbreak_rc=$?
+          fi
+          if [ "$crown_rc" -eq 0 ]; then
+            python3 -m json.tool audit-input/crown-ledger.json >/dev/null
+            crown_rc=$?
+          fi
+          : > ledger-sha256.txt
+          if [ "$footbreak_rc" -eq 0 ]; then
+            if ! sha256sum audit-input/footbreak-ledger.json >> ledger-sha256.txt; then
+              footbreak_rc=2
+            fi
+          fi
+          if [ "$crown_rc" -eq 0 ]; then
+            if ! sha256sum audit-input/crown-ledger.json >> ledger-sha256.txt; then
+              crown_rc=2
+            fi
+          fi
+          printf 'footbreak_capture_rc=%s\n' "$footbreak_rc" >> "$GITHUB_OUTPUT"
+          printf 'crown_capture_rc=%s\n' "$crown_rc" >> "$GITHUB_OUTPUT"
+          set -e
 
       - name: Remove SSH credentials
         if: always()
@@ -149,6 +174,8 @@ jobs:
         env:
           AUDITED_COMMIT: c18050edd0b0727308dc16bbe5e44bd2cd14dec1
           CAPTURE_OUTCOME: ${{ steps.capture.outcome }}
+          FOOTBREAK_CAPTURE_RC: ${{ steps.capture.outputs.footbreak_capture_rc }}
+          CROWN_CAPTURE_RC: ${{ steps.capture.outputs.crown_capture_rc }}
           FOOTBREAK_RC: ${{ steps.registry.outputs.footbreak_rc }}
           CROWN_RC: ${{ steps.registry.outputs.crown_rc }}
         run: |
@@ -199,6 +226,10 @@ jobs:
               "audited_commit": os.environ["AUDITED_COMMIT"],
               "captured_at_utc": datetime.now(timezone.utc).isoformat(),
               "capture_outcome": os.environ.get("CAPTURE_OUTCOME"),
+              "capture_exit_codes": {
+                  "footbreak": exit_code(os.environ.get("FOOTBREAK_CAPTURE_RC")),
+                  "crown": exit_code(os.environ.get("CROWN_CAPTURE_RC")),
+              },
               "ledger_sha256": hashes,
               "exit_codes": {
                   "footbreak": exit_code(os.environ.get("FOOTBREAK_RC")),
@@ -256,11 +287,14 @@ jobs:
         if: always()
         env:
           CAPTURE_OUTCOME: ${{ steps.capture.outcome }}
+          FOOTBREAK_CAPTURE_RC: ${{ steps.capture.outputs.footbreak_capture_rc }}
+          CROWN_CAPTURE_RC: ${{ steps.capture.outputs.crown_capture_rc }}
           FOOTBREAK_RC: ${{ steps.registry.outputs.footbreak_rc }}
           CROWN_RC: ${{ steps.registry.outputs.crown_rc }}
         run: |
           python3 - <<'PY'
           import json
+          import re
           from pathlib import Path
 
           for system in ("footbreak", "crown"):
@@ -278,7 +312,25 @@ jobs:
               recovery = data.get("recovery")
               if not isinstance(recovery, dict) or recovery.get("implemented") is not False:
                   raise SystemExit(f"{system}: recovery isolation is not proven")
+
+          hashes = {}
+          for line in Path("ledger-sha256.txt").read_text(encoding="utf-8").splitlines():
+              parts = line.split()
+              if len(parts) != 2:
+                  raise SystemExit("malformed ledger hash line")
+              digest, path = parts
+              basename = Path(path).name
+              if basename in hashes:
+                  raise SystemExit(f"duplicate ledger hash: {basename}")
+              hashes[basename] = digest
+          expected = {"footbreak-ledger.json", "crown-ledger.json"}
+          if set(hashes) != expected:
+              raise SystemExit("ledger hash set mismatch")
+          if any(re.fullmatch(r"[0-9a-f]{64}", digest) is None for digest in hashes.values()):
+              raise SystemExit("invalid ledger SHA-256")
           PY
           test "$CAPTURE_OUTCOME" = "success"
+          test "$FOOTBREAK_CAPTURE_RC" -eq 0
+          test "$CROWN_CAPTURE_RC" -eq 0
           test "$FOOTBREAK_RC" -eq 0
           test "$CROWN_RC" -eq 0
