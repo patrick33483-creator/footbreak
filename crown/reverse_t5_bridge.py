@@ -34,10 +34,10 @@ _JOB_LIMIT = 1600
 # budget, and ordinary scheduler jitter without allowing a boot catch-up or a
 # repeatedly stalled queue to pair a stale native signal with a current board.
 MAX_STAGE_AGE_SECONDS = 60
-# The 15-second dedicated service normally completes several fast local
-# matches.  It claims/merges each item immediately (never a bulk RUNNING
-# batch), so a later stall leaves only that current job retryable.
-MAX_JOBS_PER_DRAIN = 12
+# A drain may visit at most the retained job window.  This is a defensive
+# corruption guard, not a service-throughput policy: the 15-second killable
+# parent is the real wall-clock bound and fast supported fixture batches must
+# not be split by an arbitrary small count.
 _REMOTE_TIMEOUT_SECONDS = 1.0
 _SELLABLE_STATUSES = {"SELLING", "SELLINGSTARTED", "AVAILABLE"}
 _MARKETS = ("HDC", "HIL", "CHL")
@@ -330,8 +330,9 @@ def _last_attempt_at(job: dict[str, Any]) -> datetime | None:
 
 def _claim_one_snapshot(
     config: Settings, *, now: datetime | None = None,
+    board_observed_at: datetime | None = None,
 ) -> dict[str, Any] | None:
-    """Fairly claim exactly one fresh job immediately before its evaluation."""
+    """Fairly claim one current job whose native stage predates this board."""
     now = now or datetime.now(HKT)
     with state_lock(config, timeout_seconds=0.20) as acquired:
         if not acquired:
@@ -349,6 +350,14 @@ def _claim_one_snapshot(
             if watch is None:
                 _terminalize(job, reason)
                 changed = True
+                continue
+            stage_at = parse_time(job.get("stage_at"))
+            # A job that arrived while the shared board request was in flight
+            # must wait for the next board.  It may not evaluate a quote that
+            # was observed before its committed native T-5 evidence.
+            if board_observed_at is not None and (
+                stage_at is None or stage_at > board_observed_at
+            ):
                 continue
             # Reaped RUNNING rows are retryable.  Least-recently-attempted
             # ordering prevents a repeatedly slow early row from permanently
@@ -382,6 +391,37 @@ def _claim_one_snapshot(
     return snapshot
 
 
+def _prepare_eligible_jobs(config: Settings, *, now: datetime | None = None) -> bool:
+    """Terminalize stale rows and report whether a current row merits one fetch.
+
+    This short state transaction is intentionally not a claim.  It lets a
+    no-job or boot-catch-up invocation avoid provider I/O while preserving the
+    strict age check immediately before the one shared board request.
+    """
+    now = now or datetime.now(HKT)
+    with state_lock(config, timeout_seconds=0.20) as acquired:
+        if not acquired:
+            return False
+        ledger = load_ledger(config)
+        ns = _ensure_jobs(ledger)
+        changed = False
+        eligible = False
+        for job in ns["jobs"]:
+            if not isinstance(job, dict):
+                continue
+            if str(job.get("state") or "") not in {"PENDING", "RUNNING"}:
+                continue
+            _watch, reason = _job_is_current_at(ledger, job, now=now)
+            if _watch is None:
+                _terminalize(job, reason)
+                changed = True
+            else:
+                eligible = True
+        if changed:
+            save_ledger(config, ledger)
+        return eligible
+
+
 def _fetch_board() -> tuple[list[dict[str, Any]], list[Event], str]:
     previous_timeout = os.environ.get("FOOTBREAK_REMOTE_TIMEOUT_SECONDS")
     os.environ["FOOTBREAK_REMOTE_TIMEOUT_SECONDS"] = str(_REMOTE_TIMEOUT_SECONDS)
@@ -394,7 +434,9 @@ def _fetch_board() -> tuple[list[dict[str, Any]], list[Event], str]:
             os.environ["FOOTBREAK_REMOTE_TIMEOUT_SECONDS"] = previous_timeout
     rows = [row for row in matches if isinstance(row, dict)]
     events = [event_from_match(row) for row in rows]
-    return rows, [event for event in events if event is not None], iso_hkt()
+    # Keep microseconds here: the board ordering guard must not turn a T-5
+    # committed later in the same wall-clock second into a pre-capture quote.
+    return rows, [event for event in events if event is not None], datetime.now(HKT).isoformat()
 
 
 def _evaluate_snapshot(snapshot: dict[str, Any], matches: list[dict[str, Any]], events: list[Event], observed_at: str) -> dict[str, Any]:
@@ -519,29 +561,44 @@ def _merge_completed(
 
 
 def drain_pending_jobs(
-    config: Settings, *, max_jobs: int = MAX_JOBS_PER_DRAIN,
+    config: Settings, *, max_jobs: int = _JOB_LIMIT,
 ) -> dict[str, int]:
     """Drain durable jobs from a bounded, killable post-commit child.
 
-    Callers must put this function behind a killable outer process.  Up to the
-    documented small cap are handled serially, but every item is claimed,
-    fetched/evaluated, and merged before the next claim.  That preserves
-    normal fast-job throughput while leaving only the current item RUNNING if
-    the reaped outer child hits its wall-clock limit.
+    Callers must put this function behind a killable outer process.  One HKJC
+    board is fetched per eligible invocation, then jobs already covered by
+    that immutable board are fairly claimed, evaluated, and merged one at a
+    time until the queue is exhausted or the outer service parent reaps the
+    child.  ``_JOB_LIMIT`` is only a defensive retained-state ceiling; normal
+    throughput is bounded by the service wall clock, never a small job count.
     """
     if not is_enabled():
         return {"claimed": 0, "completed": 0}
     try:
-        limit = max(1, min(int(max_jobs), MAX_JOBS_PER_DRAIN))
+        limit = max(1, min(int(max_jobs), _JOB_LIMIT))
     except (TypeError, ValueError):
-        limit = MAX_JOBS_PER_DRAIN
+        limit = _JOB_LIMIT
     with _drain_lock(config) as acquired:
         if not acquired:
             return {"claimed": 0, "completed": 0}
         _record_worker_telemetry(config, status="started")
         result = {"claimed": 0, "completed": 0}
+        # Check freshness immediately before the single provider request.  A
+        # stale-only queue is terminalized without any remote board fetch.
+        if not _prepare_eligible_jobs(config):
+            _record_worker_telemetry(config, status="complete", **result)
+            return result
+        matches, events, observed_at = _fetch_board()
+        board_observed_at = parse_time(observed_at)
+        if board_observed_at is None:
+            # _fetch_board owns this local timestamp, but fail closed rather
+            # than letting an unparseable capture label pre-stage quotes.
+            _record_worker_telemetry(config, status="complete", **result)
+            return result
         for _ in range(limit):
-            snapshot = _claim_one_snapshot(config)
+            snapshot = _claim_one_snapshot(
+                config, board_observed_at=board_observed_at,
+            )
             if snapshot is None:
                 break
             result["claimed"] += 1
@@ -556,7 +613,6 @@ def drain_pending_jobs(
                     config, snapshot["job"], {}, now=datetime.now(HKT),
                 )
                 continue
-            matches, events, observed_at = _fetch_board()
             outcome = _evaluate_snapshot(snapshot, matches, events, observed_at)
             result["completed"] += _merge_completed(config, snapshot["job"], outcome)
         _record_worker_telemetry(config, status="complete", **result)

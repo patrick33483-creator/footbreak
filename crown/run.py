@@ -30,10 +30,6 @@ _TICK_ENGINE_TEARDOWN_MARGIN_SECONDS = 0.25
 # only a short recovery attempt; neither is allowed on the native tick path.
 _REVERSE_T5_DRAIN_SWEEP_MAX_SECONDS = 4.0
 _REVERSE_T5_DRAIN_SERVICE_MAX_SECONDS = 15.0
-# The bridge claims/merges each job in turn.  Fast fixtures may make bounded
-# progress across this service envelope; a stall leaves only its current item
-# RUNNING for fair retry in the next invocation.
-_REVERSE_T5_DRAIN_MAX_JOBS = 12
 # Keep the upstream first-look card publication bounded and independent from
 # the durable reconciliation commit.
 _FIRST_LOOK_PROJECTION_MAX_SECONDS = 5.0
@@ -362,12 +358,13 @@ def _reverse_t5_drain_process(send, config) -> None:
     """Run restart-safe bridge work in a killable non-deadline child only."""
     try:
         from .reverse_t5_bridge import drain_pending_jobs
-        # The child serially claims then merges each item; it never bulk-claims
-        # a queue.  A reaped matcher/provider stall can therefore strand only
-        # its current job while fast earlier items remain durable.
+        # The child fetches one immutable board, then serially claims and
+        # merges jobs; it never bulk-claims a queue.  A reaped matcher stall
+        # can therefore strand only its current job while fast earlier items
+        # remain durable.
         send.send((
             "complete",
-            drain_pending_jobs(config, max_jobs=_REVERSE_T5_DRAIN_MAX_JOBS),
+            drain_pending_jobs(config),
         ))
     except BaseException as exc:
         send.send(("error", type(exc).__name__))

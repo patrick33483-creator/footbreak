@@ -163,6 +163,55 @@ class ReconciliationEnablementTests(unittest.TestCase):
         self.assertIn("sync_reverse_t5_bridge_enablement_marker", (ROOT / "deploy" / "update.sh").read_text(encoding="utf-8"))
         self.assertIn("reverse_t5_bridge_health mark-enabled", (ROOT / "deploy" / "enable-crown.sh").read_text(encoding="utf-8"))
 
+    def test_enable_crown_parses_quoted_and_whitespace_padded_bridge_flag_values(self) -> None:
+        script = ROOT / "deploy" / "enable-crown.sh"
+        cases = (
+            ('  CROWN_REVERSE_T5_BRIDGE_ENABLED = "1"  \n', "mark-enabled"),
+            ("export CROWN_REVERSE_T5_BRIDGE_ENABLED = 'true'\n", "mark-enabled"),
+            ('CROWN_REVERSE_T5_BRIDGE_ENABLED = "on"\n', "mark-enabled"),
+            ('CROWN_REVERSE_T5_BRIDGE_ENABLED = "0"\n', "mark-disabled"),
+            ("CROWN_REVERSE_T5_BRIDGE_ENABLED = 'false'\n", "mark-disabled"),
+        )
+        for flag_line, expected in cases:
+            with self.subTest(flag_line=flag_line):
+                with tempfile.TemporaryDirectory() as directory:
+                    sandbox = Path(directory)
+                    bin_dir = sandbox / "bin"
+                    bin_dir.mkdir()
+                    capture = sandbox / "python-calls"
+                    crown_env = sandbox / "footbreak-crown.env"
+                    crown_env.write_text(flag_line, encoding="utf-8")
+                    for name, body in {
+                        "systemctl": "#!/usr/bin/env bash\nexit 0\n",
+                        "chown": "#!/usr/bin/env bash\nexit 0\n",
+                        "python3": (
+                            "#!/usr/bin/env bash\n"
+                            "printf '%s\\n' \"$*\" >> \"$ENABLE_CROWN_PYTHON_CALLS\"\n"
+                        ),
+                    }.items():
+                        path = bin_dir / name
+                        path.write_text(body, encoding="utf-8")
+                        path.chmod(0o755)
+                    result = subprocess.run(
+                        ["bash", str(script)],
+                        env={
+                            **os.environ,
+                            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+                            "CROWN_ENV_FILE": str(crown_env),
+                            "CROWN_STATE_DIR": str(sandbox / "state"),
+                            "ENABLE_CROWN_PYTHON_CALLS": str(capture),
+                        },
+                        text=True,
+                        capture_output=True,
+                        check=False,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    calls = capture.read_text(encoding="utf-8")
+                    self.assertIn(
+                        f"crown.reverse_t5_bridge_health {expected}",
+                        calls,
+                    )
+
 
 if __name__ == "__main__":
     unittest.main()

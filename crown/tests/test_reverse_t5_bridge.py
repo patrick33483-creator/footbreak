@@ -463,20 +463,26 @@ class ReverseT5DurabilityTests(unittest.TestCase):
             for value in values:
                 bridge.enqueue_committed_t5(ledger, value)
             save_ledger(config, ledger)
+            first_claimed = __import__("multiprocessing").get_context("fork").Event()
 
             def evaluate(snapshot, *_args):
                 fixture = snapshot["job"]["match_id"]
                 if fixture == "crown-0":
-                    time.sleep(3.0)
+                    # Synchronize the setup rather than relying on a short
+                    # parent/child startup race to create a durable RUNNING
+                    # first job.
+                    first_claimed.set()
+                    time.sleep(4.0)
                 return {"research_observations": [{"fingerprint": f"fair-{fixture}"}]}
 
             with patch.object(bridge, "_fetch_board", return_value=([], [], stamp())), \
                  patch.object(bridge, "_evaluate_snapshot", side_effect=evaluate):
-                status, detail = crown_run._run_reverse_t5_drain(config, 0.08)
+                status, detail = crown_run._run_reverse_t5_drain(config, 1.0)
                 self.assertEqual((status, detail), ("deferred", "worker_timeout"))
+                self.assertTrue(first_claimed.is_set())
                 # A realistic subsequent envelope completes all three fast
                 # fixtures before it reaches the repeatedly stalled row.
-                status, detail = crown_run._run_reverse_t5_drain(config, 1.50)
+                status, detail = crown_run._run_reverse_t5_drain(config, 2.0)
                 self.assertEqual((status, detail), ("deferred", "worker_timeout"))
 
             jobs = {
@@ -489,34 +495,111 @@ class ReverseT5DurabilityTests(unittest.TestCase):
                 ["COMPLETED", "COMPLETED", "COMPLETED"],
             )
 
-    def test_normal_service_envelope_completes_four_fast_jobs_without_bulk_claiming(self) -> None:
+    def test_normal_service_envelope_completes_twenty_six_fast_jobs_from_one_board(self) -> None:
         with tempfile.TemporaryDirectory() as directory, patch.dict(
             os.environ, {bridge.ENV_ENABLED: "1"}, clear=False,
         ):
             config = replace(settings(), state_dir=Path(directory))
-            values = [watch(f"crown-fast-{number}") for number in range(4)]
+            values = [watch(f"crown-fast-{number:02}") for number in range(26)]
             ledger = ledger_for(*values)
             for value in values:
                 bridge.enqueue_committed_t5(ledger, value)
             save_ledger(config, ledger)
+            context = __import__("multiprocessing").get_context("fork")
+            fetches = context.Value("i", 0)
 
             def evaluate(snapshot, *_args):
                 fixture = snapshot["job"]["match_id"]
                 return {"research_observations": [{"fingerprint": f"fast-{fixture}"}]}
 
-            with patch.object(bridge, "_fetch_board", return_value=([], [], stamp())), \
+            def fetch_board():
+                with fetches.get_lock():
+                    fetches.value += 1
+                return [], [], stamp()
+
+            with patch.object(bridge, "_fetch_board", side_effect=fetch_board), \
                  patch.object(bridge, "_evaluate_snapshot", side_effect=evaluate):
-                status, detail = crown_run._run_reverse_t5_drain(config, 2.0)
+                # Exercise the actual forked service helper, not the internal
+                # evaluator.  The production 15-second envelope, rather than
+                # a small job-count cap, owns fast-batch throughput.
+                status, detail = crown_run._run_reverse_t5_drain(config, 5.0)
 
             self.assertEqual((status, detail), ("complete", None))
             jobs = load_ledger(config)[bridge.JOB_NAMESPACE]["jobs"]
             self.assertTrue(all(row["state"] == "COMPLETED" for row in jobs))
+            self.assertEqual(fetches.value, 1)
             telemetry = json.loads(
                 bridge.worker_telemetry_path(config).read_text(encoding="utf-8"),
             )
             self.assertEqual(
-                (telemetry["claimed"], telemetry["completed"]), (4, 4),
+                (telemetry["claimed"], telemetry["completed"]), (26, 26),
             )
+
+    @unittest.skipUnless(os.name == "posix", "requires fork")
+    def test_timeout_preserves_partial_progress_and_only_current_job_running(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+            os.environ, {bridge.ENV_ENABLED: "1"}, clear=False,
+        ):
+            config = replace(settings(), state_dir=Path(directory))
+            values = [watch(f"crown-partial-{number:02}") for number in range(26)]
+            ledger = ledger_for(*values)
+            for value in values:
+                bridge.enqueue_committed_t5(ledger, value)
+            save_ledger(config, ledger)
+            context = __import__("multiprocessing").get_context("fork")
+            fetches = context.Value("i", 0)
+            fast_evaluations = context.Value("i", 0)
+            slow_item_started = context.Event()
+
+            def fetch_board():
+                with fetches.get_lock():
+                    fetches.value += 1
+                return [], [], stamp()
+
+            def evaluate(snapshot, *_args):
+                with fast_evaluations.get_lock():
+                    fast_evaluations.value += 1
+                    ordinal = fast_evaluations.value
+                if ordinal > 2:
+                    slow_item_started.set()
+                    time.sleep(5.0)
+                fixture = snapshot["job"]["match_id"]
+                return {"research_observations": [{"fingerprint": f"partial-{fixture}"}]}
+
+            with patch.object(bridge, "_fetch_board", side_effect=fetch_board), \
+                 patch.object(bridge, "_evaluate_snapshot", side_effect=evaluate):
+                status, detail = crown_run._run_reverse_t5_drain(config, 4.0)
+
+            self.assertEqual((status, detail), ("deferred", "worker_timeout"))
+            self.assertTrue(slow_item_started.is_set())
+            jobs = load_ledger(config)[bridge.JOB_NAMESPACE]["jobs"]
+            states = {row["match_id"]: row["state"] for row in jobs}
+            self.assertEqual(sum(state == "COMPLETED" for state in states.values()), 2)
+            self.assertEqual(sum(state == "RUNNING" for state in states.values()), 1)
+            self.assertEqual(fetches.value, 1)
+
+    def test_board_snapshot_never_evaluates_a_stage_committed_after_capture(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+            os.environ, {bridge.ENV_ENABLED: "1"}, clear=False,
+        ):
+            config = replace(settings(), state_dir=Path(directory))
+            captured_at = datetime.now(HKT)
+            value = watch()
+            value["stages"][-1]["ts"] = (captured_at + timedelta(seconds=10)).isoformat()
+            ledger = ledger_for(value)
+            bridge.enqueue_committed_t5(ledger, value)
+            save_ledger(config, ledger)
+            with patch.object(
+                bridge, "_fetch_board", return_value=([], [], captured_at.isoformat()),
+            ), patch.object(
+                bridge, "_evaluate_snapshot",
+                side_effect=AssertionError("pre-stage board was evaluated"),
+            ):
+                self.assertEqual(
+                    bridge.drain_pending_jobs(config), {"claimed": 0, "completed": 0},
+                )
+            job = load_ledger(config)[bridge.JOB_NAMESPACE]["jobs"][0]
+            self.assertEqual(job["state"], "PENDING")
 
 
 class ReverseT5LifecycleTests(unittest.TestCase):
@@ -622,10 +705,13 @@ class ReverseT5LifecycleTests(unittest.TestCase):
 
             self.assertEqual(order, ["native_commit", "native_notification"])
 
-    def test_worker_batch_cap_is_small_and_service_budget_is_independent(self) -> None:
-        self.assertEqual(crown_run._REVERSE_T5_DRAIN_MAX_JOBS, 12)
-        self.assertEqual(bridge.MAX_JOBS_PER_DRAIN, 12)
+    def test_worker_uses_service_budget_not_an_artificial_small_batch_cap(self) -> None:
+        self.assertEqual(bridge._JOB_LIMIT, 1600)
         self.assertEqual(crown_run._REVERSE_T5_DRAIN_SERVICE_MAX_SECONDS, 15.0)
+        self.assertNotIn(
+            "_REVERSE_T5_DRAIN_MAX_JOBS",
+            inspect.getsource(crown_run._reverse_t5_drain_process),
+        )
 
     def test_dedicated_mode_timeout_is_non_success(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

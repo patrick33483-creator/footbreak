@@ -40,14 +40,20 @@ systemctl daemon-reload
 python="$APP_DIR/.venv/bin/python3"
 [ -x "$python" ] || python=python3
 bridge_value="$(
-  awk -F= '
-    /^[[:space:]]*(export[[:space:]]+)?CROWN_REVERSE_T5_BRIDGE_ENABLED[[:space:]]*=/ {
-      value=$0
-      sub(/^[^=]*=/, "", value)
-    }
-    END { print value }
-  ' "$ENV_FILE"
+  grep -E '^[[:space:]]*(export[[:space:]]+)?CROWN_REVERSE_T5_BRIDGE_ENABLED[[:space:]]*=' \
+    "$ENV_FILE" | tail -n 1 | sed 's/^[^=]*=//' || true
 )"
+# Match update.sh's privileged, non-sourcing parser.  The runtime wrapper
+# accepts quoted shell values, so lifecycle metadata must make the same choice.
+bridge_value="${bridge_value#"${bridge_value%%[![:space:]]*}"}"
+bridge_value="${bridge_value%"${bridge_value##*[![:space:]]}"}"
+if [ "${bridge_value#\'}" != "$bridge_value" ] && [ "${bridge_value%\'}" != "$bridge_value" ]; then
+  bridge_value="${bridge_value#\'}"
+  bridge_value="${bridge_value%\'}"
+elif [ "${bridge_value#\"}" != "$bridge_value" ] && [ "${bridge_value%\"}" != "$bridge_value" ]; then
+  bridge_value="${bridge_value#\"}"
+  bridge_value="${bridge_value%\"}"
+fi
 case "$bridge_value" in
   1|true|TRUE|yes|YES|on|ON)
     PYTHONPATH="$APP_DIR${PYTHONPATH:+:$PYTHONPATH}" \
