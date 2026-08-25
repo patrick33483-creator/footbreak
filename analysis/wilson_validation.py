@@ -413,6 +413,7 @@ def _ensure_evidence_versions(
             frozen["pending_rollover_progress"] = {
                 "eligible_decided": 0, "required": ROLLOVER_BATCH_SIZE,
                 "display": f"0/{ROLLOVER_BATCH_SIZE}",
+                "eligible_hits": 0, "accuracy": None,
                 "initial_migration_full_cohort": True,
             }
     active = versions[-1]
@@ -1020,6 +1021,7 @@ def _project_frozen_ranking_evidence(
             pending = {
                 "eligible_decided": 0, "required": ROLLOVER_BATCH_SIZE,
                 "display": f"0/{ROLLOVER_BATCH_SIZE}",
+                "eligible_hits": 0, "accuracy": None,
             }
         last_batch = (frozen.get("rollover_audit") or [])[-1] if isinstance(
             frozen.get("rollover_audit"), list
@@ -1039,6 +1041,8 @@ def _project_frozen_ranking_evidence(
         # may call it a progress counter or blend it into new prospective work.
         current["validation_progress"] = {
             "pending_decided": int(pending.get("eligible_decided") or 0),
+            "pending_hits": int(pending.get("eligible_hits") or 0),
+            "pending_accuracy": _number(pending.get("accuracy")),
             "required": int(pending.get("required") or ROLLOVER_BATCH_SIZE),
             "display": str(pending.get("display") or f"0/{ROLLOVER_BATCH_SIZE}"),
         }
@@ -1299,8 +1303,11 @@ def _rollover_condition(
         )
         last_excluded = excluded
         if len(eligible) < ROLLOVER_BATCH_SIZE:
+            pending_hits = sum(int(item["hit"]) for item in eligible)
             frozen["pending_rollover_progress"] = {
                 "eligible_decided": len(eligible),
+                "eligible_hits": pending_hits,
+                "accuracy": pending_hits / len(eligible) if eligible else None,
                 "required": ROLLOVER_BATCH_SIZE,
                 "display": f"{len(eligible)}/{ROLLOVER_BATCH_SIZE}",
                 "excluded": excluded,
@@ -1314,8 +1321,11 @@ def _rollover_condition(
             len(eligible) > ROLLOVER_BATCH_SIZE
             and batch[-1]["stage_at"] == eligible[ROLLOVER_BATCH_SIZE]["stage_at"]
         ):
+            pending_hits = sum(int(item["hit"]) for item in eligible)
             frozen["pending_rollover_progress"] = {
                 "eligible_decided": len(eligible),
+                "eligible_hits": pending_hits,
+                "accuracy": pending_hits / len(eligible),
                 "required": ROLLOVER_BATCH_SIZE,
                 "display": f"{len(eligible)}/{ROLLOVER_BATCH_SIZE}",
                 "excluded": excluded,
