@@ -10,6 +10,7 @@ from analysis.wilson_validation import (
     CONDITION_AUDIT_LIMIT,
     _evidence_values,
     _version_hash,
+    create_production_identity_manifest,
     project_condition_funnel,
 )
 
@@ -127,8 +128,8 @@ def frozen_condition(value: dict, number: int) -> tuple[str, dict]:
 
 class WilsonConditionFunnelTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.signature, primary = frozen_condition(definition("HDC"), 7)
-        self.other_signature, secondary = frozen_condition(definition("HIL"), 2)
+        self.signature, primary = frozen_condition(definition("HDC"), 2)
+        self.other_signature, secondary = frozen_condition(definition("HIL"), 1)
         self.active = primary["evidence_versions"][0]
         self.valid_hash = "1" * 64
         duplicate_hash = "2" * 64
@@ -159,18 +160,33 @@ class WilsonConditionFunnelTests(unittest.TestCase):
                 "audit": [
                     {"match_id": "fixture-1", "market": "HDC", "status": "CREATED",
                      "reason": "wilson_candidate_frozen",
-                     "frozen_condition_signature": self.signature},
+                     "ts": "2026-08-22T10:01:00+08:00",
+                     "frozen_condition_signature": self.signature,
+                     "wilson_admission": {
+                         "signature": self.signature, "evidence_version": 1,
+                         "evidence_hash": self.active["evidence_hash"],
+                         "stage_at": "2026-08-22T10:00:00+08:00",
+                     }},
                     {"match_id": "fixture-1", "market": "HDC", "status": "SKIPPED",
                      "reason": "idempotent_existing_market",
                      "frozen_condition_signature": self.signature},
                     {"match_id": "fixture-2", "market": "HDC", "status": "MATCHED_NO_BET",
                      "reason": "wilson_gate_not_passed",
-                     "frozen_condition_signature": self.signature},
+                     "ts": "2026-08-22T10:01:00+08:00", "evidence_version": 1,
+                     "frozen_condition_signature": self.signature,
+                     "wilson_admission": {
+                         "signature": self.signature, "evidence_version": 1,
+                         "evidence_hash": self.active["evidence_hash"],
+                         "stage_at": "2026-08-22T10:00:00+08:00",
+                     }},
                     {"match_id": "global", "market": "*", "status": "SKIPPED",
                      "reason": "not_first_native_pre_kickoff_t5"},
                 ],
             },
         }
+        create_production_identity_manifest(
+            self.ledger, "footbreak", explicit_authorization=True,
+        )
 
     def row(self, ledger: dict | None = None, index: int = 1) -> dict:
         return project_condition_funnel(ledger or self.ledger, "footbreak")["conditions"][index]
@@ -209,11 +225,9 @@ class WilsonConditionFunnelTests(unittest.TestCase):
     def test_definition_signature_drift_hides_current_identity(self) -> None:
         tampered = copy.deepcopy(self.ledger)
         tampered["wilson_validation"]["conditions"][self.signature]["definition"]["market"] = "CHL"
-        row = self.row(tampered)
-        self.assertFalse(row["identity_available"])
-        self.assertIsNone(row["condition_signature"])
-        self.assertIsNone(row["definition"])
-        self.assertEqual(row["unavailable_reason"], "frozen_condition_signature_mismatch")
+        payload = project_condition_funnel(tampered, "footbreak")
+        self.assertEqual(payload["conditions"], [])
+        self.assertIsNotNone(payload["unavailable_reason"])
 
     def test_corrupt_chain_hash_and_active_pointers_fail_closed(self) -> None:
         mutations = {
@@ -227,10 +241,9 @@ class WilsonConditionFunnelTests(unittest.TestCase):
             with self.subTest(name=name):
                 tampered = copy.deepcopy(self.ledger)
                 mutate(tampered["wilson_validation"]["conditions"][self.signature])
-                row = self.row(tampered)
-                self.assertFalse(row["identity_available"])
-                self.assertIsNone(row["active_evidence"]["version"])
-                self.assertFalse(row["stages"]["settled_valid_evidence"]["available"])
+                payload = project_condition_funnel(tampered, "footbreak")
+                self.assertEqual(payload["conditions"], [])
+                self.assertIsNotNone(payload["unavailable_reason"])
 
     def test_prior_hash_sequence_and_cumulative_arithmetic_are_verified(self) -> None:
         valid = copy.deepcopy(self.ledger)
@@ -258,7 +271,9 @@ class WilsonConditionFunnelTests(unittest.TestCase):
                 tampered_frozen = tampered["wilson_validation"]["conditions"][self.signature]
                 tampered_frozen["active_evidence_hash"] = tampered_second["evidence_hash"]
                 tampered_frozen["active_evidence"] = active_pointer(tampered_second)
-                self.assertFalse(self.row(tampered)["identity_available"])
+                self.assertEqual(
+                    project_condition_funnel(tampered, "footbreak")["conditions"], [],
+                )
 
     def test_impossible_or_inexact_progress_is_unavailable(self) -> None:
         cases = [
@@ -301,7 +316,7 @@ class WilsonConditionFunnelTests(unittest.TestCase):
         frozen["evidence_versions"] = [newer]
         frozen["active_evidence_hash"] = newer["evidence_hash"]
         frozen["active_evidence"] = active_pointer(newer)
-        self.assertFalse(self.row(stale)["stages"]["current_rollover_progress"]["available"])
+        self.assertEqual(project_condition_funnel(stale, "footbreak")["conditions"], [])
 
     def test_settlement_requires_exact_admitted_version_and_hash(self) -> None:
         for mode in ("missing", "fake"):
@@ -338,9 +353,202 @@ class WilsonConditionFunnelTests(unittest.TestCase):
         self.assertEqual(payload["unavailable_reason"], "frozen_condition_registry_malformed")
 
         duplicate_number = copy.deepcopy(self.ledger)
-        duplicate_number["wilson_validation"]["conditions"][self.signature]["condition_number"] = 2
+        duplicate_number["wilson_validation"]["conditions"][self.signature]["condition_number"] = 1
         payload = project_condition_funnel(duplicate_number, "footbreak")
         self.assertEqual(payload["unavailable_reason"], "frozen_condition_number_registry_malformed")
+
+    def test_manifest_is_explicit_deterministic_immutable_and_required(self) -> None:
+        missing = copy.deepcopy(self.ledger)
+        missing["wilson_validation"].pop("production_identity_manifest")
+        payload = project_condition_funnel(missing, "footbreak")
+        self.assertEqual(
+            payload["unavailable_reason"],
+            "production_identity_manifest_unavailable_or_mismatch",
+        )
+        with self.assertRaises(ValueError):
+            create_production_identity_manifest(missing, "footbreak")
+        created = create_production_identity_manifest(
+            missing, "footbreak", explicit_authorization=True,
+        )
+        self.assertEqual(created, self.ledger["wilson_validation"]["production_identity_manifest"])
+        self.assertTrue(created["immutable"])
+        self.assertEqual(created["schema_version"], 1)
+        self.assertEqual(created["manifest_version"], "wilson-production-identity-v1")
+        self.assertEqual(
+            create_production_identity_manifest(
+                missing, "footbreak", explicit_authorization=True,
+            ),
+            created,
+        )
+        missing["wilson_validation"]["production_identity_manifest"]["entries"][0][
+            "condition_number"
+        ] = 999
+        with self.assertRaises(ValueError):
+            create_production_identity_manifest(
+                missing, "footbreak", explicit_authorization=True,
+            )
+
+    def test_manifest_rejects_swaps_arbitrary_numbers_order_and_entry_tampering(self) -> None:
+        attacks = []
+        swapped = copy.deepcopy(self.ledger)
+        first, second = swapped["wilson_validation"]["condition_order"]
+        conditions = swapped["wilson_validation"]["conditions"]
+        conditions[first]["condition_number"], conditions[second]["condition_number"] = (
+            conditions[second]["condition_number"], conditions[first]["condition_number"],
+        )
+        attacks.append(swapped)
+        arbitrary = copy.deepcopy(self.ledger)
+        arbitrary["wilson_validation"]["conditions"][self.signature]["condition_number"] = 999
+        attacks.append(arbitrary)
+        reordered = copy.deepcopy(self.ledger)
+        reordered["wilson_validation"]["condition_order"].reverse()
+        attacks.append(reordered)
+        for key in ("missing", "extra", "definition_hash", "initial_evidence_hash"):
+            value = copy.deepcopy(self.ledger)
+            entries = value["wilson_validation"]["production_identity_manifest"]["entries"]
+            if key == "missing":
+                entries.pop()
+            elif key == "extra":
+                entries.append(copy.deepcopy(entries[0]))
+            else:
+                entries[0][key] = "f" * 64
+            attacks.append(value)
+        for attack in attacks:
+            with self.subTest(index=attacks.index(attack)):
+                payload = project_condition_funnel(attack, "footbreak")
+                self.assertEqual(payload["conditions"], [])
+                self.assertIsNotNone(payload["unavailable_reason"])
+
+    def test_rewritten_initial_evidence_cannot_self_authenticate(self) -> None:
+        tampered = copy.deepcopy(self.ledger)
+        frozen = tampered["wilson_validation"]["conditions"][self.signature]
+        version = frozen["evidence_versions"][0]
+        version["cumulative_hits"] = version["cumulative_decided"] = 1
+        values = _evidence_values(1, 1)
+        version["wilson95_lower_raw"] = values["wilson95_lower_raw"]
+        version["minimum_acceptable_odds_raw"] = values["minimum_acceptable_odds_raw"]
+        version["minimum_acceptable_odds_display"] = values["display"]["minimum_acceptable_odds"]
+        version["evidence_hash"] = _version_hash(version)
+        frozen["active_evidence_hash"] = version["evidence_hash"]
+        frozen["active_evidence"] = active_pointer(version)
+        payload = project_condition_funnel(tampered, "footbreak")
+        self.assertEqual(
+            payload["unavailable_reason"],
+            "production_identity_manifest_unavailable_or_mismatch",
+        )
+
+    def test_typed_formal_identity_normalization_precedes_all_counts(self) -> None:
+        identical = copy.deepcopy(self.ledger)
+        duplicate = copy.deepcopy(identical["bets"][0])
+        identical["bets"].append(duplicate)
+        pending = identical["wilson_validation"]["conditions"][self.signature][
+            "pending_rollover_progress"
+        ]
+        pending.update(eligible_decided=0, eligible_hits=0, accuracy=None, display="0/20")
+        row = self.row(identical)
+        self.assertEqual(row["stages"]["recorded_formal_evidence"]["count"], 4)
+        self.assertEqual(row["stages"]["settled_valid_evidence"]["count"], 0)
+        by_code = {item["code"]: item for item in row["rejections"]["items"]}
+        self.assertEqual(
+            by_code["duplicate_or_conflicting_formal_identity"]["count"], 2,
+        )
+
+        conflict = copy.deepcopy(self.ledger)
+        conflict["bets"] = [
+            formal_row(self.signature, "same-id", "8" * 64, self.active,
+                       result="Won", status="SETTLED"),
+            formal_row(self.signature, "same-id", "9" * 64, self.active,
+                       result="Lost", status="SETTLED"),
+        ]
+        conflict["wilson_validation"]["observations"] = []
+        pending = conflict["wilson_validation"]["conditions"][self.signature][
+            "pending_rollover_progress"
+        ]
+        pending.update(eligible_decided=0, eligible_hits=0, accuracy=None, display="0/20")
+        row = self.row(conflict)
+        self.assertEqual(row["stages"]["recorded_formal_evidence"]["count"], 0)
+        self.assertEqual(row["stages"]["settled_valid_evidence"]["count"], 0)
+        self.assertEqual(row["stages"]["current_rollover_progress"]["display"], "0/20")
+        by_code = {item["code"]: item for item in row["rejections"]["items"]}
+        self.assertEqual(
+            by_code["duplicate_or_conflicting_formal_identity"]["count"], 2,
+        )
+
+        result_conflict = copy.deepcopy(self.ledger)
+        result_conflict["bets"] = [
+            formal_row(self.signature, "same-id", "8" * 64, self.active,
+                       result="Won", status="SETTLED"),
+            formal_row(self.signature, "same-id", "8" * 64, self.active,
+                       result="Lost", status="SETTLED"),
+        ]
+        result_conflict["wilson_validation"]["observations"] = []
+        pending = result_conflict["wilson_validation"]["conditions"][self.signature][
+            "pending_rollover_progress"
+        ]
+        pending.update(eligible_decided=0, eligible_hits=0, accuracy=None, display="0/20")
+        row = self.row(result_conflict)
+        self.assertEqual(row["stages"]["recorded_formal_evidence"]["count"], 0)
+        self.assertEqual(row["stages"]["settled_valid_evidence"]["count"], 0)
+
+        cross_class = copy.deepcopy(self.ledger)
+        cross_class["bets"] = [
+            formal_row(self.signature, "typed-id", "8" * 64, self.active),
+        ]
+        cross_class["wilson_validation"]["observations"] = [
+            formal_row(
+                self.signature, "typed-id", "9" * 64, self.active, observation=True,
+            ),
+        ]
+        row = self.row(cross_class)
+        self.assertEqual(row["stages"]["recorded_formal_evidence"]["count"], 2)
+        self.assertEqual(row["stages"]["recorded_formal_evidence"]["formal_bets"], 1)
+        self.assertEqual(row["stages"]["recorded_formal_evidence"]["formal_observations"], 1)
+
+    def test_exact_matches_exclude_boundary_and_integrity_rejections(self) -> None:
+        ledger = copy.deepcopy(self.ledger)
+        ledger["wilson_validation"]["audit"].extend([
+            {"ts": "2020-01-01T00:00:00+08:00", "match_id": "ancient",
+             "market": "HDC", "status": "SKIPPED",
+             "reason": "stage_not_strictly_after_evidence_activation_boundary",
+             "frozen_condition_signature": self.signature},
+            {"match_id": "invalid", "market": "HDC", "status": "SKIPPED",
+             "reason": "active_evidence_unavailable",
+             "frozen_condition_signature": self.signature},
+        ])
+        self.assertEqual(
+            self.row(ledger)["stages"]["exact_condition_matches"]["count"], 2,
+        )
+
+    def test_impossible_evidence_chronology_fails_closed(self) -> None:
+        cases = []
+        created_before_boundary = copy.deepcopy(self.ledger)
+        frozen = created_before_boundary["wilson_validation"]["conditions"][self.signature]
+        frozen["evidence_versions"][0]["created_at"] = "2020-01-01T00:00:00+08:00"
+        frozen["active_evidence"] = active_pointer(frozen["evidence_versions"][0])
+        cases.append(created_before_boundary)
+
+        for mode in ("equal_boundary", "regressed_boundary", "regressed_created"):
+            value = copy.deepcopy(self.ledger)
+            frozen = value["wilson_validation"]["conditions"][self.signature]
+            second = next_evidence(self.signature, frozen["evidence_versions"][0])
+            if mode == "equal_boundary":
+                second["activation_boundary_at"] = frozen["evidence_versions"][0][
+                    "activation_boundary_at"
+                ]
+            elif mode == "regressed_boundary":
+                second["activation_boundary_at"] = "2020-01-01T00:00:00+08:00"
+            else:
+                second["created_at"] = "2020-01-01T00:00:00+08:00"
+            second["evidence_hash"] = _version_hash(second)
+            frozen["evidence_versions"].append(second)
+            frozen["active_evidence_version"] = 2
+            frozen["active_evidence_hash"] = second["evidence_hash"]
+            frozen["active_evidence"] = active_pointer(second)
+            cases.append(value)
+        for value in cases:
+            self.assertEqual(
+                project_condition_funnel(value, "footbreak")["conditions"], [],
+            )
 
     def test_malformed_schema_and_formal_containers_fail_closed(self) -> None:
         for mutation in (
