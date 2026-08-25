@@ -3344,9 +3344,6 @@ class CrownSafetyTests(unittest.TestCase):
             ledger["watch"] = {
                 "durable-first-look": {
                     "match_id": "durable-first-look",
-                    "league": "英格蘭U21",
-                    "home": "保頓U21",
-                    "away": "屈福特U21",
                     "kickoff_hkt": kickoff,
                     "titan_match_id": "998877",
                     "stages": [{

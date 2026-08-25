@@ -64,20 +64,45 @@ def _dashboard_watch_card(watch: dict[str, Any]) -> dict[str, Any] | None:
     """
     if not isinstance(watch, dict):
         return None
-    match_id = str(watch.get("match_id") or "").strip()
-    kickoff = parse_time(watch.get("kickoff_hkt") or watch.get("kickoff"))
+    rows = watch.get("stages")
+    first_looks = [
+        row for row in rows if isinstance(row, dict) and row.get("stage") == "首預"
+    ] if isinstance(rows, list) else []
+    if len(first_looks) != 1:
+        return None
+    first_look_seed = first_looks[0]
+    top_match_id = str(watch.get("match_id") or "").strip()
+    stage_match_id = str(first_look_seed.get("match_id") or "").strip()
+    if top_match_id and stage_match_id and top_match_id != stage_match_id:
+        return None
+    match_id = top_match_id or stage_match_id
+    top_kickoff_raw = watch.get("kickoff_hkt") or watch.get("kickoff")
+    stage_kickoff_raw = (
+        first_look_seed.get("kickoff_hkt") or first_look_seed.get("kickoff")
+    )
+    top_kickoff = parse_time(top_kickoff_raw)
+    stage_kickoff = parse_time(stage_kickoff_raw)
+    if top_kickoff is not None and stage_kickoff is not None and top_kickoff != stage_kickoff:
+        return None
+    kickoff_raw = top_kickoff_raw or stage_kickoff_raw
+    kickoff = top_kickoff or stage_kickoff
     if not match_id or kickoff is None or not in_current_period(kickoff):
         return None
     identity = {
         "match_id": match_id,
-        "league": watch.get("league"),
-        "home": watch.get("home"),
-        "away": watch.get("away"),
-        "kickoff_hkt": watch.get("kickoff_hkt") or watch.get("kickoff"),
+        "league": watch.get("league") or first_look_seed.get("league"),
+        "home": watch.get("home") or first_look_seed.get("home"),
+        "away": watch.get("away") or first_look_seed.get("away"),
+        "kickoff_hkt": kickoff_raw,
     }
     if any(not str(identity.get(key) or "").strip() for key in ("league", "home", "away")):
         return None
-    snapshots = _native_watch_stages(identity, watch)
+    # Legacy watches can predate top-level identity denormalisation.  Validate
+    # against a local identity-complete copy without mutating durable state.
+    identity_watch = copy.deepcopy(watch)
+    identity_watch["match_id"] = match_id
+    identity_watch["kickoff_hkt"] = kickoff_raw
+    snapshots = _native_watch_stages(identity, identity_watch)
     first_look = snapshots.get("首預")
     if first_look is None or not str(first_look.get("status") or "").strip():
         return None
