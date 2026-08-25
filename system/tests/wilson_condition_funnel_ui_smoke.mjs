@@ -26,7 +26,7 @@ function assert(condition, message) {
 }
 
 const signature = 'a'.repeat(24);
-const html = render({
+const validation = {
   condition_funnel: {
     schema_version: 1,
     read_only: true,
@@ -81,7 +81,8 @@ const html = render({
       },
     }],
   },
-});
+};
+const html = render(validation);
 
 assert(html.includes('data-testid="wilson-condition-funnel"'), 'funnel test id');
 assert(html.includes('data-testid="wilson-condition-4"'), 'condition test id');
@@ -97,6 +98,34 @@ assert(html.includes('可能已截斷；最近最多 1600 audit entries'), 'boun
 assert(html.includes('模擬注 5 · 觀察 3'), 'formal evidence split');
 assert(html.includes('完全相同條件吻合，但賠率未通過 Wilson 門檻'), 'supported rejection');
 assert(!html.includes('provider'), 'no provider payload rendering');
+
+const partialExact = structuredClone(validation);
+partialExact.condition_funnel.conditions[0].stages.exact_condition_matches = {
+  available: false,
+  availability: 'partial',
+  count: null,
+  verified_count: 1,
+  legacy_unverifiable_count: 2,
+  truncation_possible: false,
+  reason: 'legacy_or_invalid_exact_match_binding',
+};
+const partialExactHtml = render(partialExact);
+assert(partialExactHtml.includes('部分可驗證：1；舊紀錄未能驗證 2'), 'partial exact coverage is explicit');
+assert(partialExactHtml.includes('不會顯示成完整計數'), 'partial exact stage is not presented as complete');
+
+const partialRecorded = structuredClone(validation);
+partialRecorded.condition_funnel.conditions[0].stages.recorded_formal_evidence = {
+  available: false,
+  availability: 'partial',
+  count: null,
+  verified_count: 4,
+  legacy_unverifiable_count: 1,
+  formal_bets: 3,
+  formal_observations: 1,
+  reason: 'legacy_or_invalid_formal_row_identity',
+};
+const partialRecordedHtml = render(partialRecorded);
+assert(partialRecordedHtml.includes('部分可驗證：4；舊紀錄未能驗證 1'), 'partial formal ID coverage is explicit');
 
 const stale = render({ rollover: { conditions: { old: { pending_progress: { display: '2/20' } } } } });
 assert(stale.includes('漏斗資料未可用；不會由舊摘要或即時資料推算。'), 'stale payload fails closed');

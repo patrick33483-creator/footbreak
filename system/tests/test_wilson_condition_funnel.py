@@ -112,9 +112,18 @@ def formal_row(signature: str, identity: str | None, fixture_hash: str, admitted
     arithmetic = admission_arithmetic(
         admitted["cumulative_hits"], admitted["cumulative_decided"], odds,
     )
+    canonical_identity = (
+        f"{fixture_hash}|{market}|T-5|{signature}|low-odds"
+        if observation else
+        f"{fixture_hash}|{market}|T-5|wilson-test-strategy-v1"
+    )
     return {
-        "bet_id": None if observation else identity,
-        "observation_id": identity if observation else None,
+        "bet_id": None if observation else (
+            canonical_identity if identity is not None else None
+        ),
+        "observation_id": (
+            canonical_identity if observation and identity is not None else None
+        ),
         "portfolio": "footbreak_wilson_observations" if observation else "footbreak_wilson_test",
         "strategy": "wilson-test-strategy-v1", "formal_bet": not observation,
         "match_id": fixture_hash, "market": market, "code": market,
@@ -178,8 +187,6 @@ class WilsonConditionFunnelTests(unittest.TestCase):
                 formal_row(self.signature, "pending", "3" * 64, self.active),
                 formal_row(self.signature, "dup-a", duplicate_hash, self.active,
                            result="Lost", status="SETTLED"),
-                formal_row(self.signature, "dup-b", duplicate_hash, self.active,
-                           result="Won", status="SETTLED"),
             ],
             "wilson_validation": {
                 "schema_version": 2, "system": "footbreak",
@@ -189,6 +196,8 @@ class WilsonConditionFunnelTests(unittest.TestCase):
                 "observations": [
                     formal_row(self.signature, "refunded", "4" * 64, self.active,
                                result="Refunded", status="SETTLED", observation=True),
+                    formal_row(self.signature, "dup-b", duplicate_hash, self.active,
+                               result="Won", status="SETTLED", observation=True),
                 ],
                 "audit": [
                     {"match_id": "fixture-1", "market": "HDC", "status": "CREATED",
@@ -201,6 +210,9 @@ class WilsonConditionFunnelTests(unittest.TestCase):
                          "evidence_hash": self.active["evidence_hash"],
                          "native_stage_at": "2026-08-22T10:00:00+08:00",
                          "definition_hash": _canonical_hash(primary["definition"]),
+                         "fixture_market_hash": _fixture_market_hash(
+                             "footbreak", "fixture-1", "HDC",
+                         ),
                      }},
                     {"match_id": "fixture-1", "market": "HDC", "status": "SKIPPED",
                      "reason": "idempotent_existing_market",
@@ -215,6 +227,9 @@ class WilsonConditionFunnelTests(unittest.TestCase):
                          "evidence_hash": self.active["evidence_hash"],
                          "native_stage_at": "2026-08-22T10:00:00+08:00",
                          "definition_hash": _canonical_hash(primary["definition"]),
+                         "fixture_market_hash": _fixture_market_hash(
+                             "footbreak", "fixture-2", "HDC",
+                         ),
                      }},
                     {"match_id": "global", "market": "*", "status": "SKIPPED",
                      "reason": "not_first_native_pre_kickoff_t5"},
@@ -250,8 +265,8 @@ class WilsonConditionFunnelTests(unittest.TestCase):
         self.assertFalse(stages["exact_condition_matches"]["truncation_possible"])
         self.assertEqual(stages["exact_condition_matches"]["count"], 2)
         self.assertEqual(stages["recorded_formal_evidence"]["count"], 5)
-        self.assertEqual(stages["recorded_formal_evidence"]["formal_bets"], 4)
-        self.assertEqual(stages["recorded_formal_evidence"]["formal_observations"], 1)
+        self.assertEqual(stages["recorded_formal_evidence"]["formal_bets"], 3)
+        self.assertEqual(stages["recorded_formal_evidence"]["formal_observations"], 2)
         self.assertEqual(stages["settled_valid_evidence"]["count"], 1)
         self.assertEqual(stages["current_rollover_progress"]["display"], "1/20")
 
@@ -543,6 +558,7 @@ class WilsonConditionFunnelTests(unittest.TestCase):
             {
                 "schema_version", "condition_signature", "evidence_version",
                 "evidence_hash", "native_stage_at", "definition_hash",
+                "fixture_market_hash",
             },
         )
         projected = self.row(ledger)
@@ -553,6 +569,60 @@ class WilsonConditionFunnelTests(unittest.TestCase):
             projected["stages"]["recorded_formal_evidence"]["count"], 1
         )
 
+        low_ledger = copy.deepcopy(self.ledger)
+        low_ledger["bets"] = []
+        low_namespace = low_ledger["wilson_validation"]
+        low_namespace["observations"] = []
+        low_namespace["audit"] = []
+        low_namespace["conditions"][self.signature][
+            "pending_rollover_progress"
+        ].update(
+            eligible_decided=0, eligible_hits=0, accuracy=None, display="0/20"
+        )
+        low_watch = copy.deepcopy(watch)
+        low_watch["match_id"] = "evaluate-low-odds"
+        low_watch["stages"][0]["market_predictions"][0]["odds"] = 1.1
+        with (
+            patch(
+                "analysis.wilson_portfolio.formal_registry_candidates",
+                return_value=[{"persisted": True}],
+            ),
+            patch(
+                "analysis.wilson_portfolio.match_formal_registry",
+                return_value={"evaluate-low-odds": [{"persisted": True}]},
+            ),
+            patch(
+                "analysis.wilson_portfolio.matching_admissions",
+                side_effect=admissions,
+            ),
+        ):
+            low_created, low_audit = evaluate(
+                low_ledger,
+                low_watch,
+                system="footbreak",
+                market_labels={"HDC": "讓球", "HIL": "入球", "CHL": "角球"},
+                parse_time=parse_time,
+                now="2026-08-22T10:01:00+08:00",
+                ranking=None,
+            )
+        self.assertEqual(low_created, [])
+        low_successful = next(
+            row for row in low_audit if row["status"] == "MATCHED_NO_BET"
+        )
+        self.assertEqual(
+            low_successful["exact_match_binding"]["fixture_market_hash"],
+            _fixture_market_hash(
+                "footbreak", "evaluate-low-odds", "HDC",
+            ),
+        )
+        low_projected = self.row(low_ledger)
+        self.assertEqual(
+            low_projected["stages"]["exact_condition_matches"]["count"], 1
+        )
+        self.assertEqual(
+            low_projected["stages"]["recorded_formal_evidence"]["count"], 1
+        )
+
     def test_identityless_formal_rows_are_excluded_with_diagnostic(self) -> None:
         ledger = copy.deepcopy(self.ledger)
         ledger["bets"].extend([
@@ -560,7 +630,11 @@ class WilsonConditionFunnelTests(unittest.TestCase):
             formal_row(self.signature, None, "9" * 64, self.active),
         ])
         row = self.row(ledger)
-        self.assertEqual(row["stages"]["recorded_formal_evidence"]["count"], 5)
+        recorded = row["stages"]["recorded_formal_evidence"]
+        self.assertEqual(recorded["availability"], "partial")
+        self.assertIsNone(recorded["count"])
+        self.assertEqual(recorded["verified_count"], 5)
+        self.assertEqual(recorded["legacy_unverifiable_count"], 2)
         by_code = {item["code"]: item for item in row["rejections"]["items"]}
         self.assertEqual(by_code["missing_formal_row_identity"]["count"], 2)
 
@@ -705,7 +779,7 @@ class WilsonConditionFunnelTests(unittest.TestCase):
         conflict["bets"] = [
             formal_row(self.signature, "same-id", "8" * 64, self.active,
                        result="Won", status="SETTLED"),
-            formal_row(self.signature, "same-id", "9" * 64, self.active,
+            formal_row(self.signature, "same-id", "8" * 64, self.active,
                        result="Lost", status="SETTLED"),
         ]
         conflict["wilson_validation"]["observations"] = []
@@ -766,6 +840,84 @@ class WilsonConditionFunnelTests(unittest.TestCase):
         self.assertEqual(
             self.row(ledger)["stages"]["exact_condition_matches"]["count"], 2,
         )
+
+    def test_legacy_or_invalid_exact_outcomes_are_explicitly_partial(self) -> None:
+        for mode in ("all_legacy", "mixed", "mutated_fixture_market"):
+            with self.subTest(mode=mode):
+                ledger = copy.deepcopy(self.ledger)
+                outcomes = [
+                    row for row in ledger["wilson_validation"]["audit"]
+                    if row.get("status") in {"CREATED", "MATCHED_NO_BET"}
+                ]
+                if mode == "all_legacy":
+                    for audit in outcomes:
+                        audit.pop("exact_match_binding")
+                    expected_verified, expected_legacy = 0, 2
+                elif mode == "mixed":
+                    outcomes[0].pop("exact_match_binding")
+                    expected_verified, expected_legacy = 1, 1
+                else:
+                    outcomes[0]["match_id"] = "different-fixture"
+                    outcomes[0]["market"] = "CHL"
+                    expected_verified, expected_legacy = 1, 1
+                exact = self.row(ledger)["stages"]["exact_condition_matches"]
+                self.assertFalse(exact["available"])
+                self.assertEqual(exact["availability"], "partial")
+                self.assertIsNone(exact["count"])
+                self.assertEqual(exact["verified_count"], expected_verified)
+                self.assertEqual(
+                    exact["legacy_unverifiable_count"], expected_legacy,
+                )
+                self.assertEqual(
+                    exact["reason"], "legacy_or_invalid_exact_match_binding",
+                )
+
+    def test_exact_binding_recomputes_fixture_market_and_definition_market(self) -> None:
+        for mutation in (
+            lambda audit: audit["exact_match_binding"].__setitem__(
+                "fixture_market_hash", "f" * 64,
+            ),
+            lambda audit: audit.__setitem__("market", "HIL"),
+            lambda audit: audit.__setitem__("match_id", "forged-fixture"),
+        ):
+            with self.subTest(mutation=mutation):
+                ledger = copy.deepcopy(self.ledger)
+                mutation(ledger["wilson_validation"]["audit"][0])
+                exact = self.row(ledger)["stages"]["exact_condition_matches"]
+                self.assertEqual(exact["availability"], "partial")
+                self.assertEqual(exact["verified_count"], 1)
+                self.assertEqual(exact["legacy_unverifiable_count"], 1)
+
+    def test_forged_distinct_formal_ids_cannot_inflate_recorded_count(self) -> None:
+        for source, index, field in (
+            ("bets", 0, "bet_id"),
+            ("observations", 0, "observation_id"),
+        ):
+            with self.subTest(source=source):
+                ledger = copy.deepcopy(self.ledger)
+                container = (
+                    ledger["bets"] if source == "bets"
+                    else ledger["wilson_validation"]["observations"]
+                )
+                forged = copy.deepcopy(container[index])
+                forged[field] = "forged-distinct-id"
+                container.append(forged)
+                row = self.row(ledger)
+                recorded = row["stages"]["recorded_formal_evidence"]
+                self.assertFalse(recorded["available"])
+                self.assertEqual(recorded["availability"], "partial")
+                self.assertIsNone(recorded["count"])
+                self.assertEqual(recorded["verified_count"], 5)
+                self.assertEqual(recorded["legacy_unverifiable_count"], 1)
+                by_code = {
+                    item["code"]: item for item in row["rejections"]["items"]
+                }
+                self.assertEqual(
+                    by_code["invalid_formal_row_identity"]["count"], 1,
+                )
+                self.assertEqual(
+                    row["stages"]["settled_valid_evidence"]["count"], 1,
+                )
 
     def test_impossible_evidence_chronology_fails_closed(self) -> None:
         cases = []

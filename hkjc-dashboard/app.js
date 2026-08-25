@@ -1906,8 +1906,14 @@ function validWilsonFunnelPayload(funnel) {
     if (!requiredStages.every((key) => {
       const item = row.stages[key];
       if (!item || typeof item !== 'object' || typeof item.available !== 'boolean'
-          || !['available', 'bounded', 'unavailable'].includes(item.availability)) return false;
-      if (item.available) {
+          || !['available', 'bounded', 'partial', 'unavailable'].includes(item.availability)) return false;
+      if (item.availability === 'partial') {
+        if (!['exact_condition_matches', 'recorded_formal_evidence'].includes(key)
+            || item.available || item.count !== null || !item.reason
+            || !Number.isInteger(item.verified_count) || item.verified_count < 0
+            || !Number.isInteger(item.legacy_unverifiable_count)
+            || item.legacy_unverifiable_count <= 0) return false;
+      } else if (item.available) {
         if (!Number.isInteger(item.count) || item.count < 0 || item.availability === 'unavailable') return false;
       } else if (item.count !== null || item.availability !== 'unavailable' || !item.reason) return false;
       return true;
@@ -1941,8 +1947,11 @@ function wilsonRolloverCard(validation) {
       : '尚未有已凍結條件；新結果不會以舊驗證紀錄追溯補入。'
   }</div></section>`;
   const stage = (stages, key, label, note = '') => {
-    const item = stages?.[key] || {}, unavailable = item.available !== true;
-    const value = unavailable ? '未能可靠重建' : (
+    const item = stages?.[key] || {}, partial = item.availability === 'partial';
+    const unavailable = item.available !== true;
+    const value = partial
+      ? `部分可驗證：${Math.trunc(numeric(item.verified_count) || 0)}；舊紀錄未能驗證 ${Math.trunc(numeric(item.legacy_unverifiable_count) || 0)}`
+      : unavailable ? '未能可靠重建' : (
       key === 'current_rollover_progress'
         ? item.display
         : `${numeric(item.count) == null ? 0 : Math.trunc(numeric(item.count))}${item.availability === 'bounded' ? '（保留窗口）' : ''}`
@@ -1979,9 +1988,15 @@ function wilsonRolloverCard(validation) {
       const rejections = Array.isArray(row.rejections?.items) ? row.rejections.items : [];
       const omitted = numeric(row.rejections?.omitted_reason_kinds) || 0;
       const exactStage = stages.exact_condition_matches || {};
-      const exactNote = exactStage.availability === 'bounded' && exactStage.truncation_possible === true
+      const exactNote = exactStage.availability === 'partial'
+        ? '部分 audit 缺少或未通過新證據綁定；不會顯示成完整計數'
+        : exactStage.availability === 'bounded' && exactStage.truncation_possible === true
         ? `可能已截斷；最近最多 ${numeric(exactStage.window_limit) || 1600} audit entries`
         : (exactStage.available === true ? '完整保留 audit；未見截斷' : 'audit 完整性未能驗證');
+      const recordedStage = stages.recorded_formal_evidence || {};
+      const recordedNote = recordedStage.availability === 'partial'
+        ? `已驗證 ${numeric(recordedStage.verified_count) || 0} · 舊識別碼未能驗證 ${numeric(recordedStage.legacy_unverifiable_count) || 0}`
+        : `模擬注 ${numeric(recordedStage.formal_bets) || 0} · 觀察 ${numeric(recordedStage.formal_observations) || 0}`;
       return `<details class="wilson-condition" data-testid="wilson-condition-${Number.isInteger(row.condition_number) ? row.condition_number : 'unavailable'}">
         <summary>
           <span class="wilson-condition-title">${esc(wilsonConditionLabel(row.condition_number))}</span>
@@ -1998,7 +2013,7 @@ function wilsonRolloverCard(validation) {
           <div class="wilson-funnel-grid">
             ${stage(stages, 'eligible_post_activation_t5_observations', '啟用後合資格 T-5', '吻合前沒有條件歸屬')}
             ${stage(stages, 'exact_condition_matches', '完全相同條件吻合', exactNote)}
-            ${stage(stages, 'recorded_formal_evidence', '已記錄正式證據', `模擬注 ${numeric(stages.recorded_formal_evidence?.formal_bets) || 0} · 觀察 ${numeric(stages.recorded_formal_evidence?.formal_observations) || 0}`)}
+            ${stage(stages, 'recorded_formal_evidence', '已記錄正式證據', recordedNote)}
             ${stage(stages, 'settled_valid_evidence', '已結算有效證據', '唯一、二元判定、界線後')}
             ${stage(stages, 'current_rollover_progress', '目前 x/20', '只顯示已保存 rollover 進度')}
           </div>

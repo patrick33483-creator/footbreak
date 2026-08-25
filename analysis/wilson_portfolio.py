@@ -8,7 +8,8 @@ from typing import Any, Callable, Iterable
 from .granular_conditions import MARKETS, _role
 from .wilson_validation import (
     CONDITION_AUDIT_LIMIT, DECISION_STAGE, FIXED_STAKE, FIXTURE_MARKET_CAP, FIXTURE_STAKE_CAP,
-    _canonical_hash, apply_active_evidence, commit_bet, ensure_namespace, matching_admissions,
+    _canonical_hash, _fixture_market_hash, apply_active_evidence, commit_bet,
+    ensure_namespace, matching_admissions,
     record_match_observation, formal_registry_candidates, match_formal_registry,
 )
 
@@ -130,7 +131,9 @@ def _audit_selection(market: str, row: dict[str, Any]) -> tuple[str | None, floa
     return role, selected_line, f"{role or '—'} {selected_line:g}" if selected_line is not None else (role or "—")
 
 
-def _exact_match_binding(admission: dict[str, Any]) -> dict[str, Any]:
+def _exact_match_binding(
+    admission: dict[str, Any], *, system: str, fixture: str, market: str,
+) -> dict[str, Any]:
     """Bounded diagnostic proof for a successful structural match."""
     return {
         "schema_version": 1,
@@ -139,6 +142,7 @@ def _exact_match_binding(admission: dict[str, Any]) -> dict[str, Any]:
         "evidence_hash": admission.get("evidence_hash"),
         "native_stage_at": admission.get("stage_at"),
         "definition_hash": _canonical_hash(admission.get("definition")),
+        "fixture_market_hash": _fixture_market_hash(system, fixture, market),
     }
 
 
@@ -248,7 +252,9 @@ def evaluate(
                 "frozen_condition_signature": adjusted["signature"],
                 "wilson_admission": adjusted["arithmetic"],
                 "evidence_version": adjusted.get("evidence_version"),
-                "exact_match_binding": _exact_match_binding(adjusted),
+                "exact_match_binding": _exact_match_binding(
+                    adjusted, system=system, fixture=fixture, market=market,
+                ),
                 "observation_id": observation.get("observation_id") if observation else None,
             })
         if not accepted:
@@ -277,7 +283,9 @@ def evaluate(
                       "bet_id": bet["bet_id"], "frozen_condition_signature": bet["frozen_condition_signature"],
                       "condition_number": bet.get("condition_number"),
                       "wilson_admission": bet["wilson_admission"],
-                      "exact_match_binding": _exact_match_binding(admission)})
+                      "exact_match_binding": _exact_match_binding(
+                          admission, system=system, fixture=fixture, market=market,
+                      )})
         # The caller owns one atomic ledger append after all markets pass.
     ns["audit"] = (ns.get("audit") or []) + [{"ts": now, "match_id": fixture, **row} for row in audit]
     ns["audit"] = ns["audit"][-CONDITION_AUDIT_LIMIT:]

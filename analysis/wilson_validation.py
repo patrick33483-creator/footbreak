@@ -61,6 +61,9 @@ FUNNEL_SETTLEMENT_REJECTIONS = {
     "missing_formal_row_identity": (
         "evidence_integrity", "正式紀錄缺少不可變識別碼",
     ),
+    "invalid_formal_row_identity": (
+        "evidence_integrity", "正式紀錄識別碼不符合正式建立規則",
+    ),
     "invalid_formal_admission_binding": (
         "evidence_integrity", "正式紀錄與凍結條件或入場證據無法驗證",
     ),
@@ -1693,6 +1696,7 @@ def project_condition_funnel(
         version_by_number = {row["version"]: row for row in versions}
 
         exact_keys: set[tuple[str, str]] = set()
+        legacy_unverifiable_exact = 0
         audit_rejections: dict[str, int] = {}
         if audit_availability != "unavailable":
             for row in retained_audit:
@@ -1725,10 +1729,15 @@ def project_condition_funnel(
                     and set(binding) == {
                         "schema_version", "condition_signature", "evidence_version",
                         "evidence_hash", "native_stage_at", "definition_hash",
+                        "fixture_market_hash",
                     }
                     and binding.get("schema_version") == 1
                     and binding.get("condition_signature") == signature
                     and binding.get("definition_hash") == _canonical_hash(definition)
+                    and definition.get("market") == market
+                    and market in {"HDC", "HIL", "CHL"}
+                    and binding.get("fixture_market_hash")
+                    == _fixture_market_hash(system, fixture, market)
                     and audit_evidence is not None
                     and binding.get("evidence_hash") == audit_evidence["evidence_hash"]
                     and _strictly_after(
@@ -1747,6 +1756,8 @@ def project_condition_funnel(
                     and fixture and market and market != "*"
                 ):
                     exact_keys.add((fixture, market))
+                elif exact_outcome:
+                    legacy_unverifiable_exact += 1
                 reason = str(row.get("reason") or "")
                 if reason in FUNNEL_AUDIT_REJECTIONS:
                     audit_rejections[reason] = audit_rejections.get(reason, 0) + 1
@@ -1765,7 +1776,21 @@ def project_condition_funnel(
             if not isinstance(raw_identity, str) or not raw_identity.strip():
                 settlement_rejections["missing_formal_row_identity"] += 1
                 continue
-            identity = ("observation" if observation else "bet", raw_identity)
+            fixture = row.get("match_id")
+            market = row.get("market")
+            expected_identity = (
+                f"{fixture}|{market}|{DECISION_STAGE}|{signature}|low-odds"
+                if observation else
+                f"{fixture}|{market}|{DECISION_STAGE}|{STRATEGY}"
+            )
+            if (
+                not isinstance(fixture, str) or not fixture
+                or market not in {"HDC", "HIL", "CHL"}
+                or raw_identity != expected_identity
+            ):
+                settlement_rejections["invalid_formal_row_identity"] += 1
+                continue
+            identity = ("observation" if observation else "bet", expected_identity)
             grouped_identities.setdefault(identity, []).append(row)
 
         normalized_rows: list[
@@ -1924,6 +1949,21 @@ def project_condition_funnel(
                 "window_limit": CONDITION_AUDIT_LIMIT,
                 "truncation_possible": False,
                 "reason": audit_reason,
+                "verified_count": None,
+                "legacy_unverifiable_count": None,
+            }
+        elif legacy_unverifiable_exact:
+            exact_stage = {
+                "available": False,
+                "availability": "partial",
+                "count": None,
+                "scope": "partially_verified_condition_attributed_audit",
+                "retained_audit_entries": len(retained_audit),
+                "window_limit": CONDITION_AUDIT_LIMIT,
+                "truncation_possible": audit_truncated,
+                "reason": "legacy_or_invalid_exact_match_binding",
+                "verified_count": len(exact_keys),
+                "legacy_unverifiable_count": legacy_unverifiable_exact,
             }
         else:
             exact_stage = {
@@ -1938,7 +1978,32 @@ def project_condition_funnel(
                 "window_limit": CONDITION_AUDIT_LIMIT,
                 "truncation_possible": audit_truncated,
                 "reason": None,
+                "verified_count": len(exact_keys),
+                "legacy_unverifiable_count": 0,
             }
+
+        identity_unverifiable = (
+            settlement_rejections["missing_formal_row_identity"]
+            + settlement_rejections["invalid_formal_row_identity"]
+        )
+        recorded_stage = {
+            "available": not bool(identity_unverifiable),
+            "availability": "partial" if identity_unverifiable else "available",
+            "count": None if identity_unverifiable else len(normalized_rows),
+            "verified_count": len(normalized_rows),
+            "legacy_unverifiable_count": identity_unverifiable,
+            "formal_bets": recorded_bets,
+            "formal_observations": recorded_observations,
+            "scope": (
+                "partially_verified_canonical_formal_row_identities"
+                if identity_unverifiable
+                else "persisted_signature_bound_identified_formal_rows"
+            ),
+            "reason": (
+                "legacy_or_invalid_formal_row_identity"
+                if identity_unverifiable else None
+            ),
+        }
 
         output.append({
             "condition_number": number,
@@ -1957,14 +2022,7 @@ def project_condition_funnel(
             "stages": {
                 "eligible_post_activation_t5_observations": copy.deepcopy(unavailable_upstream),
                 "exact_condition_matches": exact_stage,
-                "recorded_formal_evidence": {
-                    "available": True,
-                    "availability": "available",
-                    "count": len(normalized_rows),
-                    "formal_bets": recorded_bets,
-                    "formal_observations": recorded_observations,
-                    "scope": "persisted_signature_bound_identified_formal_rows",
-                },
+                "recorded_formal_evidence": recorded_stage,
                 "settled_valid_evidence": {
                     "available": True,
                     "availability": "available",
