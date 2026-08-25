@@ -12,7 +12,8 @@ from analysis.wilson_validation import (
     BINARY_DECIDED_RESULTS, BINARY_HIT_RESULTS, DECISION_STAGE, EDGE_BUFFER,
     MIN_DECIDED, ROLLOVER_BATCH_SIZE, SCHEMA_VERSION, STRATEGY,
     _eligible_rollover_rows, _fixture_market_hash, _time, _version_hash, condition_signature,
-    formal_matcher_axes, portfolio_name, wilson95,
+    _formal_marker_shape_valid, _formal_stage_provenance_valid, formal_matcher_axes,
+    portfolio_name, wilson95,
 )
 SYSTEMS=("footbreak","crown")
 
@@ -33,7 +34,7 @@ def _activity(ledger:dict[str,Any],ns:dict[str,Any],system:str)->tuple[list[dict
  bets=ledger.get("bets"); obs=ns.get("observations", [])
  if not isinstance(bets,list) or not isinstance(obs,list): return [],[]
  good_bets=[r for r in bets if isinstance(r,dict) and r.get("portfolio")==portfolio_name(system) and r.get("strategy")==STRATEGY]
- good_obs=[r for r in obs if isinstance(r,dict) and r.get("portfolio")==f"{system}_wilson_observations" and r.get("strategy")==STRATEGY and r.get("formal_bet") is False and r.get("stage")==DECISION_STAGE and r.get("first_native_pre_kickoff_t5") is True and isinstance(r.get("rollover_provenance"),dict) and r.get("status") in {"PENDING","SETTLED","VOIDED"}]
+ good_obs=[r for r in obs if isinstance(r,dict) and r.get("portfolio")==f"{system}_wilson_observations" and r.get("strategy")==STRATEGY and r.get("formal_bet") is False and _formal_stage_provenance_valid(r,system) and r.get("status") in {"PENDING","SETTLED","VOIDED"}]
  return good_bets,good_obs
 
 def build_manifest(ledger:Any,system:str)->dict[str,Any]:
@@ -237,14 +238,12 @@ def build_manifest(ledger:Any,system:str)->dict[str,Any]:
     )
     if (
         not isinstance(marker,dict)
+        or not _formal_marker_shape_valid(marker)
         or marker.get("condition_signature")!=sig
         or marker.get("system")!=system
-        or _int(marker.get("schema_version")) != 1
-        or marker.get("native_pre_kickoff_t5") is not True
+        or not _formal_stage_provenance_valid(activity,system)
         or bool(activity.get("post_hoc_backfill"))
         or bool(activity.get("exclude_from_simulation"))
-        or activity.get("stage") != DECISION_STAGE
-        or activity.get("first_native_pre_kickoff_t5") is not True
         or marker_version is None
         or row_version is None
         or marker_version != row_version
@@ -260,7 +259,7 @@ def build_manifest(ledger:Any,system:str)->dict[str,Any]:
      activity_rejections["invalid_signature_definition_or_evidence_binding"] += 1
      continue
     if _time(marker.get("stage_at")) is None:
-     activity_rejections["invalid_native_t5_timestamp"] += 1
+     activity_rejections["invalid_native_stage_timestamp"] += 1
      continue
     stage_time = _time(marker.get("stage_at"))
     admitted_boundary = _time(admitted.get("activation_boundary_at")) if isinstance(admitted, dict) else None
@@ -373,7 +372,7 @@ def build_manifest(ledger:Any,system:str)->dict[str,Any]:
     rr.append("invalid_last_rollover_count")
    for reason in set(rr): reasons[reason]+=1
    statuses=Counter(str(x.get("status")) for x in qualified)
-   rows.append({"condition_number":number,"order_position":position,"signature":sig,"definition":definition,"definition_hash":canonical_hash(definition) if definition else None,"market":definition.get("market"),"path":definition.get("path"),"decision_stage":definition.get("stage"),"path_terminal_stage":str(definition.get("path") or "").split("→")[-1] or None,"active_evidence_version":active.get("version"),"active_evidence_hash":active.get("evidence_hash"),"activation_boundary":active.get("activation_boundary_at"),"prospective_x20":{"hits":pending_hits,"decided":len(pending),"target":ROLLOVER_BATCH_SIZE,"excluded":excluded},"formal_rows":len(qualified),"formal_status_counts":dict(sorted(statuses.items())),"rejected_same_signature_activity":sum(activity_rejections.values()),"activity_rejection_reasons":dict(sorted(activity_rejections.items())),"current_matcher_can_structurally_admit":axes is not None,"safely_recoverable_missed_rows":0,"recovery_status":"HARD_DISABLED","rejection_reasons":sorted(set(rr)),"valid":not rr})
+   rows.append({"condition_number":number,"order_position":position,"signature":sig,"definition":definition,"definition_hash":canonical_hash(definition) if definition else None,"market":definition.get("market"),"path":definition.get("path"),"decision_stage":definition.get("stage"),"path_terminal_stage":str(definition.get("path") or "").split("→")[-1] or None,"active_evidence_version":active.get("version"),"active_evidence_hash":active.get("evidence_hash"),"activation_boundary":active.get("activation_boundary_at"),"prospective_x20":{"hits":pending_hits,"decided":len(pending),"target":ROLLOVER_BATCH_SIZE,"excluded":excluded},"formal_rows":len(qualified),"formal_status_counts":dict(sorted(statuses.items())),"rejected_same_signature_activity":sum(activity_rejections.values()),"activity_rejection_reasons":dict(sorted(activity_rejections.items())),"own_stage_matcher_can_structurally_admit":definition_axes is not None,"current_matcher_can_structurally_admit":axes is not None,"safely_recoverable_missed_rows":0,"recovery_status":"HARD_DISABLED","rejection_reasons":sorted(set(rr)),"valid":not rr})
   good_numbers=[x for x in numbers if x is not None]
   if len(good_numbers)!=len(numbers) or len(good_numbers)!=len(set(good_numbers)): reasons["invalid_or_duplicate_condition_number"]+=1
   out={"schema":"wilson-registry-manifest-v2","system":system,"namespace_schema_version":ns.get("schema_version"),"namespace_activation_at":ns.get("activation_at"),"condition_count":len(rows),"decision_stage_counts":dict(sorted(Counter(str(r.get("decision_stage") or "MISSING") for r in rows).items())),"conditions":rows,"rejection_reasons":dict(sorted(reasons.items())),"valid":not reasons,"recovery":{"implemented":False,"mode":"audit-only","safely_recoverable_missed_rows":0,"reason":"Recovery is hard-disabled."}}

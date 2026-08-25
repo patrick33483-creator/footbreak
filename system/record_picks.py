@@ -18,6 +18,7 @@ if ROOT not in sys.path:
 from analysis.learning_store import LearningStore
 from condition_portfolio import (
     AUDIT_LIMIT, DECISION_STAGE, LOG_LIMIT, STARTING_BANKROLL, evaluate_new_t5,
+    evaluate_stage as evaluate_wilson_stage,
 )
 from probability_research import evaluate_new_t5 as evaluate_probability_research
 from analysis.wilson_validation import ensure_namespace, recompute_namespace
@@ -446,6 +447,13 @@ def _process_optional_job(ledger, job, *, now, changes):
                 "at": now, "status": "UNAVAILABLE",
                 "reason": f"crown_sidecar_local_error:{type(exc).__name__}",
             }
+        ranking = _load_frozen_ranking()
+        # The optional job exists in the same atomic write as the native row,
+        # and is drained only after that write has completed.
+        evaluate_wilson_stage(
+            ledger, watch, stage, history_path=Path(ACCURACY_HISTORY),
+            ranking=ranking if isinstance(ranking, list) else None,
+        )
         return
     if stage != BET_STAGE:
         return

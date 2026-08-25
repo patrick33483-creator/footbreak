@@ -1034,17 +1034,13 @@ def _project_last_merged_batch_rows(
         marker = row.get("rollover_provenance")
         if not (
             row.get("status") == "SETTLED"
-            and row.get("stage") == DECISION_STAGE
-            and row.get("first_native_pre_kickoff_t5") is True
+            and _formal_stage_provenance_valid(row, system)
             and not row.get("post_hoc_backfill")
             and not row.get("exclude_from_simulation")
             and str(row.get("frozen_condition_signature") or "") == signature
             and row.get("result") in BINARY_DECIDED_RESULTS
             and isinstance(marker, dict)
-            and marker.get("schema_version") == 1
-            and marker.get("system") == system
             and marker.get("condition_signature") == signature
-            and marker.get("native_pre_kickoff_t5") is True
             and marker.get("fixture_market_hash") in wanted
         ):
             continue
@@ -1538,8 +1534,7 @@ def _validate_formal_admission_binding(
         or (row.get("code") is not None and row.get("code") != market)
         or (observation and row.get("formal_bet") is not False)
         or (not observation and row.get("formal_bet") is False)
-        or row.get("stage") != DECISION_STAGE
-        or row.get("first_native_pre_kickoff_t5") is not True
+        or not _formal_stage_provenance_valid(row, system)
         or row.get("post_hoc_backfill") not in (None, False)
         or row.get("exclude_from_simulation") not in (None, False)
         or row.get("frozen_condition_signature") != signature
@@ -1549,21 +1544,13 @@ def _validate_formal_admission_binding(
         or admitted is None
         or row.get("evidence_hash") != admitted.get("evidence_hash")
         or not isinstance(marker, dict)
+        or not _formal_marker_shape_valid(marker)
         or row.get("native_stage_at") != marker.get("stage_at")
         or not isinstance(historical, dict)
         or _strict_int(historical.get("hits")) != admitted.get("cumulative_hits")
         or _strict_int(historical.get("decided")) != admitted.get("cumulative_decided")
         or historical.get("evidence_version") != evidence_version
         or historical.get("evidence_hash") != admitted.get("evidence_hash")
-        or set(marker) != {
-            "schema_version", "system", "condition_signature",
-            "native_pre_kickoff_t5", "stage_at", "fixture_market_hash",
-            "admitted_evidence_version", "admitted_evidence_hash",
-        }
-        or marker.get("schema_version") != 1
-        or marker.get("system") != system
-        or marker.get("condition_signature") != signature
-        or marker.get("native_pre_kickoff_t5") is not True
         or marker.get("admitted_evidence_version") != evidence_version
         or marker.get("admitted_evidence_hash") != admitted.get("evidence_hash")
         or marker.get("fixture_market_hash")
@@ -1593,7 +1580,10 @@ def _validate_formal_admission_binding(
     if (
         not isinstance(arithmetic, dict)
         or expected_arithmetic is None
-        or arithmetic.get("passes") is not (not observation)
+        or (
+            row.get("stage") == DECISION_STAGE
+            and arithmetic.get("passes") is not (not observation)
+        )
         or any(
             (
                 arithmetic.get(key) != expected_arithmetic.get(key)
@@ -1719,7 +1709,10 @@ def project_condition_funnel(
                     )
                     or (
                         row.get("status") == "MATCHED_NO_BET"
-                        and row.get("reason") == "wilson_gate_not_passed"
+                        and row.get("reason") in {
+                            "wilson_gate_not_passed",
+                            "early_stage_formal_observation",
+                        }
                     )
                 )
                 binding = row.get("exact_match_binding")
@@ -1732,14 +1725,33 @@ def project_condition_funnel(
                     binding.get("native_stage_at") if isinstance(binding, dict) else None
                 )
                 audit_ts, audit_stage_time = _time(row.get("ts")), _time(audit_stage_at)
-                exact_evidence_valid = (
-                    isinstance(binding, dict)
-                    and set(binding) == {
+                binding_stage = (
+                    binding.get("decision_stage")
+                    if isinstance(binding, dict)
+                    and binding.get("schema_version") == 2
+                    else DECISION_STAGE
+                )
+                binding_keys_valid = (
+                    set(binding) == {
                         "schema_version", "condition_signature", "evidence_version",
                         "evidence_hash", "native_stage_at", "definition_hash",
                         "fixture_market_hash",
                     }
+                    if isinstance(binding, dict)
                     and binding.get("schema_version") == 1
+                    else isinstance(binding, dict)
+                    and set(binding) == {
+                        "schema_version", "condition_signature", "evidence_version",
+                        "evidence_hash", "native_stage_at", "definition_hash",
+                        "fixture_market_hash", "decision_stage",
+                    }
+                )
+                exact_evidence_valid = (
+                    isinstance(binding, dict)
+                    and binding_keys_valid
+                    and binding.get("schema_version") in {1, 2}
+                    and binding_stage == definition.get("stage")
+                    and str(definition.get("path") or "").split("→")[-1] == binding_stage
                     and binding.get("condition_signature") == signature
                     and binding.get("definition_hash") == _canonical_hash(definition)
                     and definition.get("market") == market
@@ -1787,7 +1799,8 @@ def project_condition_funnel(
             fixture = row.get("match_id")
             market = row.get("market")
             expected_identity = (
-                f"{fixture}|{market}|{DECISION_STAGE}|{signature}|low-odds"
+                f"{fixture}|{market}|{row.get('stage')}|{signature}|"
+                f"{'low-odds' if row.get('stage') == DECISION_STAGE else 'formal-observation'}"
                 if observation else
                 f"{fixture}|{market}|{DECISION_STAGE}|{STRATEGY}"
             )
@@ -2145,9 +2158,7 @@ def active_observations(ledger: dict[str, Any], system: str) -> list[dict[str, A
         and row.get("portfolio") == f"{system}_wilson_observations"
         and row.get("strategy") == STRATEGY
         and row.get("formal_bet") is False
-        and row.get("stage") == DECISION_STAGE
-        and row.get("first_native_pre_kickoff_t5") is True
-        and isinstance(row.get("rollover_provenance"), dict)
+        and _formal_stage_provenance_valid(row, system)
         and row.get("status") in {"PENDING", "SETTLED", "VOIDED"}
     ]
 
@@ -2179,8 +2190,20 @@ def _fixture_market_hash(system: str, fixture: str, market: str) -> str:
 
 def _rollover_marker(
     system: str, fixture: str, market: str, signature: str, stage_at: str,
-    evidence_version: dict[str, Any],
+    evidence_version: dict[str, Any], *, decision_stage: str = DECISION_STAGE,
 ) -> dict[str, Any]:
+    if decision_stage != DECISION_STAGE:
+        return {
+            "schema_version": 2,
+            "system": system,
+            "condition_signature": signature,
+            "decision_stage": decision_stage,
+            "first_native_pre_kickoff_stage": True,
+            "stage_at": stage_at,
+            "fixture_market_hash": _fixture_market_hash(system, fixture, market),
+            "admitted_evidence_version": evidence_version.get("version"),
+            "admitted_evidence_hash": evidence_version.get("evidence_hash"),
+        }
     return {
         "schema_version": 1,
         "system": system,
@@ -2191,6 +2214,69 @@ def _rollover_marker(
         "admitted_evidence_version": evidence_version.get("version"),
         "admitted_evidence_hash": evidence_version.get("evidence_hash"),
     }
+
+
+def _formal_stage_provenance_valid(row: dict[str, Any], system: str) -> bool:
+    """Accept legacy T-5 provenance or exact stage-aware v2 provenance."""
+    marker = row.get("rollover_provenance")
+    if not isinstance(marker, dict):
+        return False
+    schema_version = marker.get("schema_version")
+    if (
+        isinstance(schema_version, bool)
+        or not isinstance(schema_version, int)
+    ):
+        return False
+    stage = str(row.get("stage") or "")
+    if schema_version == 1:
+        # Preserve the exact legacy reader contract for existing T-5 rows.
+        return (
+            stage == DECISION_STAGE
+            and row.get("first_native_pre_kickoff_t5") is True
+            and marker.get("native_pre_kickoff_t5") is True
+            and marker.get("system") == system
+            and marker.get("condition_signature")
+            == row.get("frozen_condition_signature")
+        )
+    definition = row.get("frozen_condition_definition")
+    if not isinstance(definition, dict):
+        return False
+    if (
+        stage not in {"首預", "T-30", "T-5"}
+        or str(definition.get("stage") or definition.get("decision") or "") != stage
+        or str(definition.get("path") or "").split("→")[-1] != stage
+        or marker.get("system") != system
+        or marker.get("condition_signature")
+        != row.get("frozen_condition_signature")
+        or marker.get("stage_at") != row.get("native_stage_at")
+        or marker.get("fixture_market_hash") != _fixture_market_hash(
+            system, str(row.get("match_id") or ""),
+            str(row.get("market") or row.get("code") or ""),
+        )
+    ):
+        return False
+    return (
+        schema_version == 2
+        and marker.get("decision_stage") == stage
+        and marker.get("first_native_pre_kickoff_stage") is True
+        and row.get("first_native_pre_kickoff_stage") is True
+    )
+
+
+def _formal_marker_shape_valid(marker: dict[str, Any]) -> bool:
+    """Require canonical immutable marker fields in audits/funnel binding."""
+    common = {
+        "schema_version", "system", "condition_signature", "stage_at",
+        "fixture_market_hash", "admitted_evidence_version",
+        "admitted_evidence_hash",
+    }
+    if marker.get("schema_version") == 1:
+        return set(marker) == common | {"native_pre_kickoff_t5"}
+    if marker.get("schema_version") == 2:
+        return set(marker) == common | {
+            "decision_stage", "first_native_pre_kickoff_stage",
+        }
+    return False
 
 
 def _eligible_rollover_rows(
@@ -2214,13 +2300,9 @@ def _eligible_rollover_rows(
         if str(row.get("frozen_condition_signature") or "") != signature:
             continue
         marker = row.get("rollover_provenance")
-        if not isinstance(marker, dict) or not (
-            marker.get("schema_version") == 1
-            and marker.get("system") == system
+        if not (
+            _formal_stage_provenance_valid(row, system)
             and marker.get("condition_signature") == signature
-            and marker.get("native_pre_kickoff_t5") is True
-            and row.get("stage") == DECISION_STAGE
-            and row.get("first_native_pre_kickoff_t5") is True
             and not row.get("post_hoc_backfill")
             and not row.get("exclude_from_simulation")
         ):
@@ -2573,6 +2655,7 @@ def record_match_observation(
     ledger: dict[str, Any], system: str, watch: dict[str, Any], market: str,
     selected: dict[str, Any], admission: dict[str, Any], *, now: str,
     market_label: str, selected_role: str | None, selected_line: float,
+    decision_stage: str = DECISION_STAGE,
 ) -> dict[str, Any] | None:
     """Persist a matched Wilson condition which did not become a formal bet.
 
@@ -2582,14 +2665,19 @@ def record_match_observation(
     exact execution price is below its admission minimum.
     """
     arithmetic = admission.get("arithmetic")
-    if not isinstance(arithmetic, dict) or arithmetic.get("passes"):
+    if (
+        decision_stage not in {"首預", "T-30", "T-5"}
+        or not isinstance(arithmetic, dict)
+        or (decision_stage == DECISION_STAGE and arithmetic.get("passes"))
+    ):
         return None
     fixture = str(watch.get("match_id") or "")
     if not fixture:
         return None
     frozen = freeze_condition(ledger, system, admission, now=now)
     signature = str(admission["signature"])
-    observation_id = f"{fixture}|{market}|{DECISION_STAGE}|{signature}|low-odds"
+    kind = "low-odds" if decision_stage == DECISION_STAGE else "formal-observation"
+    observation_id = f"{fixture}|{market}|{decision_stage}|{signature}|{kind}"
     ns = ensure_namespace(ledger, system, now=now)
     observations = ns.setdefault("observations", [])
     if not isinstance(observations, list):
@@ -2607,8 +2695,19 @@ def record_match_observation(
         "strategy": STRATEGY,
         "formal_bet": False,
         "simulation_only": True,
-        "bet_status": "NO_BET_LOW_ODDS",
-        "no_bet_reason": "因賠率不足，不投注",
+        **(
+            {}
+            if decision_stage == DECISION_STAGE
+            else {"real_betting_enabled": False}
+        ),
+        "bet_status": (
+            "NO_BET_LOW_ODDS"
+            if decision_stage == DECISION_STAGE else "FORMAL_OBSERVATION"
+        ),
+        "no_bet_reason": (
+            "因賠率不足，不投注"
+            if decision_stage == DECISION_STAGE else "早段正式觀察，不投注"
+        ),
         "match_id": fixture,
         # Crown's exact reciprocal HKJC comparison is allowed only through
         # this persisted identity bridge; no title/team matching is permitted.
@@ -2627,9 +2726,13 @@ def record_match_observation(
         "selected_role": selected_role,
         "odds": arithmetic.get("actual_decimal_odds_raw"),
         "condition": selected.get("line", selected.get("condition")),
-        "stage": DECISION_STAGE,
+        "stage": decision_stage,
         "status": "PENDING",
-        "first_native_pre_kickoff_t5": True,
+        **(
+            {"first_native_pre_kickoff_t5": True}
+            if decision_stage == DECISION_STAGE
+            else {"first_native_pre_kickoff_stage": True}
+        ),
         "created_at": now,
         "native_stage_at": admission.get("stage_at"),
         "frozen_condition_signature": signature,
@@ -2642,11 +2745,19 @@ def record_match_observation(
         "rollover_provenance": _rollover_marker(
             system, fixture, market, signature, str(admission.get("stage_at") or now),
             active_evidence_version(frozen, migration_boundary=ns["activation_at"]) or {},
+            decision_stage=decision_stage,
         ),
         "history": [{
-            "ts": now, "stage": DECISION_STAGE,
-            "action": "Wilson 正式條件驗證觀察建立（低賠率不投注）",
-            "bet_status": "NO_BET_LOW_ODDS",
+            "ts": now, "stage": decision_stage,
+            "action": (
+                "Wilson 正式條件驗證觀察建立（低賠率不投注）"
+                if decision_stage == DECISION_STAGE
+                else "Wilson 早段正式條件驗證觀察建立（不投注）"
+            ),
+            "bet_status": (
+                "NO_BET_LOW_ODDS"
+                if decision_stage == DECISION_STAGE else "FORMAL_OBSERVATION"
+            ),
         }],
     }
     observations.append(row)

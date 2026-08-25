@@ -10,7 +10,10 @@ from unittest.mock import patch
 from crown.condition_portfolio import FIXED_STAKE, STARTING_BANKROLL, STRATEGY, evaluate_new_t5
 from crown.config import settings
 from crown.dashboard_data import build
-from crown.ledger import _market_predictions, condition_bets, recompute_stats, sync_prediction
+from crown.ledger import (
+    _market_predictions, condition_bets, reconcile_pending_formal_admissions,
+    recompute_stats, sync_prediction,
+)
 from crown.settle import _settle
 from crown.state import save_ledger
 
@@ -231,6 +234,95 @@ class ConditionPortfolioTests(unittest.TestCase):
         self.assertEqual(stats["turnover"], 500)
         self.assertEqual(stats["pnl"], 250)
         self.assertEqual(len(condition_bets(ledger)), 1)
+
+    def test_early_stage_is_marked_then_reconciled_without_bet_or_notification(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = replace(
+                self.config, state_dir=Path(directory), telegram_enabled=False,
+            )
+            prediction = {
+                "match_id": "early-durable", "league": "L",
+                "home": "A", "away": "B",
+                "kickoff_hkt": "2099-08-01T20:00:00+08:00",
+                "stage": "首預", "status": "PREDICTION_READY",
+                "forecast_candidates": [{
+                    "code": "HIL", "side": "H", "line": 2.5, "odds": 1.5,
+                    "observed_at": "2099-08-01T18:00:00+08:00",
+                    "source": "titan007-crown-id-3",
+                }],
+            }
+            ledger = {
+                "bankroll": 50000, "bets": [], "watch": {},
+                "log": [], "stats": {},
+            }
+            self.assertEqual(
+                sync_prediction(
+                    ledger, prediction, config, defer_formal_admission=True,
+                ),
+                [],
+            )
+            snapshot = ledger["watch"]["early-durable"]["stages"][0]
+            self.assertTrue(snapshot["formal_admission_pending"])
+            self.assertEqual(ledger["bets"], [])
+
+            calls = []
+
+            def observation(value, card, _config, stage, **_kwargs):
+                calls.append(stage)
+                value["wilson_validation"].setdefault("observations", []).append({
+                    "observation_id": "crown-early-once", "match_id": card["match_id"],
+                    "stage": stage, "formal_bet": False,
+                })
+                return [], []
+
+            with patch("crown.ledger.evaluate_wilson_stage", side_effect=observation):
+                self.assertEqual(
+                    reconcile_pending_formal_admissions(ledger, config), [],
+                )
+                self.assertEqual(
+                    reconcile_pending_formal_admissions(ledger, config), [],
+                )
+            self.assertEqual(calls, ["首預"])
+            self.assertFalse(snapshot["formal_admission_pending"])
+            self.assertEqual(ledger["bets"], [])
+            self.assertEqual(
+                ledger["native_t5_direct_notifications"]["outbox"], [],
+            )
+
+    def test_early_stage_reconciliation_crash_remains_retryable(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = replace(self.config, state_dir=Path(directory))
+            ledger = {
+                "bankroll": 50000, "bets": [], "watch": {},
+                "log": [], "stats": {},
+            }
+            prediction = {
+                "match_id": "early-retry", "league": "L", "home": "A", "away": "B",
+                "kickoff_hkt": "2099-08-01T20:00:00+08:00",
+                "stage": "T-30", "status": "PREDICTION_READY",
+                "forecast_candidates": [{
+                    "code": "HDC", "side": "H", "line": -0.25, "odds": 1.8,
+                    "observed_at": "2099-08-01T19:20:00+08:00",
+                    "source": "titan007-crown-id-3",
+                }],
+            }
+            sync_prediction(
+                ledger, prediction, config, defer_formal_admission=True,
+            )
+            snapshot = ledger["watch"]["early-retry"]["stages"][0]
+            with patch(
+                "crown.ledger.evaluate_wilson_stage",
+                side_effect=RuntimeError("matcher crash"),
+            ):
+                reconcile_pending_formal_admissions(ledger, config)
+            self.assertTrue(snapshot["formal_admission_pending"])
+            with patch(
+                "crown.ledger.evaluate_wilson_stage", return_value=([], []),
+            ) as evaluate:
+                reconcile_pending_formal_admissions(ledger, config)
+                reconcile_pending_formal_admissions(ledger, config)
+            self.assertEqual(evaluate.call_count, 1)
+            self.assertFalse(snapshot["formal_admission_pending"])
 
     def test_canonical_settlement_for_three_markets(self) -> None:
         cases = [

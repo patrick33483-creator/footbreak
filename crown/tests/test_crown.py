@@ -2484,10 +2484,9 @@ class CrownSafetyTests(unittest.TestCase):
             commit.assert_called_once()
             self.assertEqual(len(commit.call_args.args[2]), 2)
             recompute.assert_called_once()
-            # A write-ahead attempt is intentionally persisted before the
-            # atomic native snapshot commit, so a timeout can never look like
-            # a successful-but-missing T-5.
-            self.assertEqual(save.call_count, 2)
+            # Write-ahead attempt, atomic native snapshot, then the optional
+            # post-commit Wilson consumer are three separate durable writes.
+            self.assertEqual(save.call_count, 3)
 
             self.assertTrue(result["fast_t5_bulk"])
             self.assertEqual(result["predictions"], 2)

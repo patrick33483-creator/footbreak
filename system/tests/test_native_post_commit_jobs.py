@@ -87,6 +87,58 @@ class NativePostCommitJobTests(unittest.TestCase):
             self.assertEqual(saved["native_stage_attempts"][-1]["status"], "COMMITTED")
             self.assertEqual(saved["native_post_commit_jobs"][-1]["status"], "COMPLETED")
 
+    def test_first_look_wilson_observation_runs_after_commit_without_changes(self):
+        kickoff = datetime.now(record_picks.HKT) + timedelta(hours=2)
+        ledger = {
+            "watch": {
+                "m1": {
+                    "match_id": "m1", "league": "測試聯賽",
+                    "home": "主隊", "away": "客隊",
+                    "kickoff": kickoff.isoformat(), "stages": [],
+                },
+            },
+        }
+        result = self._result(kickoff, "", stage="首預")
+        with tempfile.TemporaryDirectory() as directory:
+            ledger_path = Path(directory, "sim_ledger.json")
+            ledger_path.write_text(json.dumps(ledger), encoding="utf-8")
+            Path(directory, "predictions.json").write_text(
+                json.dumps([result]), encoding="utf-8",
+            )
+            durable = []
+
+            def evaluate_after_save(_ledger, watch, stage, **_kwargs):
+                saved = json.loads(ledger_path.read_text(encoding="utf-8"))
+                durable.append((
+                    saved["watch"]["m1"]["stages"][0]["stage"],
+                    saved["native_post_commit_jobs"][-1]["status"],
+                    stage,
+                ))
+                _ledger["wilson_validation"].setdefault("observations", []).append({
+                    "observation_id": "early-formal-once",
+                    "match_id": "m1", "stage": "首預", "formal_bet": False,
+                })
+                return [], []
+
+            with patch.object(record_picks, "HERE", directory), \
+                 patch.object(record_picks, "LEDGER", str(ledger_path)), \
+                 patch.object(record_picks, "prefetch_crown_bridge", return_value={}), \
+                 patch.object(
+                     record_picks, "evaluate_wilson_stage",
+                     side_effect=evaluate_after_save,
+                 ) as evaluate:
+                changes, _notes, _ = self._run_sync(directory)
+                self._run_sync(directory)
+            self.assertEqual(durable, [("首預", "PENDING", "首預")])
+            self.assertEqual(evaluate.call_count, 1)
+            self.assertEqual(changes, [])
+            saved = json.loads(ledger_path.read_text(encoding="utf-8"))
+            self.assertEqual(saved["bets"], [])
+            self.assertEqual(
+                saved["wilson_validation"]["observations"][0]["observation_id"],
+                "early-formal-once",
+            )
+
     def test_evaluator_crash_retries_from_committed_snapshot_once_without_missing_observation(self):
         kickoff = datetime.now(record_picks.HKT) + timedelta(minutes=20)
         ledger, attempt = self._ledger_with_started_attempt(kickoff, stage="T-5")

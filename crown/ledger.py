@@ -10,7 +10,10 @@ from analysis.learning_store import LearningStore
 
 from .common import HKT, iso_hkt, parse_time, read_json
 from .config import Settings
-from .condition_portfolio import FIXED_STAKE, STARTING_BANKROLL, STRATEGY, evaluate_new_t5
+from .condition_portfolio import (
+    FIXED_STAKE, STARTING_BANKROLL, STRATEGY, evaluate_new_t5,
+    evaluate_stage as evaluate_wilson_stage,
+)
 from . import challenger_v2
 from .direct_t5_outbox import (
     ensure_namespace as ensure_direct_t5_outbox,
@@ -545,6 +548,7 @@ def sync_prediction(
     *,
     defer_auxiliary_recompute: bool = False,
     deadline_critical_snapshot: bool = False,
+    defer_formal_admission: bool = False,
 ) -> list[str]:
     """Persist a stage and create only newly-observed eligible T-5 condition bets."""
     ledger.setdefault("bets", [])
@@ -684,14 +688,13 @@ def sync_prediction(
                 "updated_at": stored.get("ts"),
                 "reason": None if _completed_stage_row(stored) else record.get("reason"),
             })
-    if deadline_critical_snapshot:
+    if deadline_critical_snapshot or defer_formal_admission or stage != "T-5":
         # The stage itself is now durable, with its native quote/timestamp and
         # terminal attempt state.  Never run condition, research, execution,
         # notification, or aggregate consumers on the write-ahead path.
-        # A completed T-5 retains an explicit marker so the authoritative
-        # evidence reconciler can resume only from this immutable pre-kickoff
-        # stage record; it never creates or reprices a stage after kickoff.
-        if stage == "T-5" and _completed_stage_row(stored):
+        # Every completed native stage retains an explicit marker so the
+        # authoritative post-save reconciler evaluates only durable evidence.
+        if _completed_stage_row(stored) and not existing_was_completed:
             stored["formal_admission_pending"] = True
         return []
     # Validation admission is singular: only the very first persisted native
@@ -723,7 +726,10 @@ def sync_prediction(
     # durable audit records.
     ledger["bets"].extend(created)
     observation_rows = list(
-        ((ledger.get("wilson_validation") or {}).get("observations") or [])
+        row for row in (
+            (ledger.get("wilson_validation") or {}).get("observations") or []
+        )
+        if isinstance(row, dict) and row.get("stage") == "T-5"
     )
     # The legacy native direct policy was broader than formal Wilson matching
     # but still exact: HDC must agree across 首預/T-30/T-5.  Record that
@@ -746,6 +752,75 @@ def sync_prediction(
             for bet in created
         ])
     return [str(bet["bet_id"]) for bet in created]
+
+
+def reconcile_pending_formal_admissions(
+    ledger: dict[str, Any], config: Settings,
+) -> list[str]:
+    """Consume durable native-stage markers without provider or notification I/O."""
+    history = read_json(config.state_dir / "prediction_history.json", {})
+    cached_ranking = (
+        ((history.get("stats") or {}).get("granular_conditions") or {}).get("ranking")
+        if isinstance(history, dict) else None
+    )
+    ranking = cached_ranking if isinstance(cached_ranking, list) else None
+    emitted: list[str] = []
+    for watch in (ledger.get("watch") or {}).values():
+        if not isinstance(watch, dict):
+            continue
+        for snapshot in watch.get("stages") or []:
+            if (
+                not isinstance(snapshot, dict)
+                or snapshot.get("formal_admission_pending") is not True
+                or not _completed_stage_row(snapshot)
+            ):
+                continue
+            stage = str(snapshot.get("stage") or "")
+            if stage not in STAGES:
+                continue
+            try:
+                created, audit = (
+                    evaluate_new_t5(
+                        ledger, watch, config, ranking=ranking,
+                    )
+                    if stage == "T-5"
+                    else evaluate_wilson_stage(
+                        ledger, watch, config, stage, ranking=ranking,
+                    )
+                )
+            except Exception:
+                # Keep the durable marker for the next authoritative pass.
+                continue
+            if stage == "T-5":
+                ledger["bets"].extend(created)
+                snapshot["wilson_validation"] = {
+                    "strategy": STRATEGY, "stage": "T-5", "audit": audit,
+                }
+                observation_rows = list(
+                    row for row in (
+                        (ledger.get("wilson_validation") or {}).get("observations") or []
+                    )
+                    if isinstance(row, dict) and row.get("stage") == "T-5"
+                )
+                record_new_native_t5(
+                    ledger, watch, snapshot,
+                    formal_rows=list(created) + observation_rows,
+                )
+                challenger_v2.evaluate_new_t5(ledger, watch, snapshot)
+                challenger_v2.recompute(ledger[challenger_v2.NAMESPACE], ledger)
+                for bet in created:
+                    ledger.setdefault("log", []).append({
+                        "ts": bet["created_at"], "action": "Wilson 模擬注建立",
+                        "bet_id": bet["bet_id"], "match_id": watch.get("match_id"),
+                        "market": bet["market_label"],
+                        "condition": bet.get("frozen_condition_definition", {}).get(
+                            "path", "凍結條件",
+                        ),
+                    })
+                    emitted.append(str(bet["bet_id"]))
+            snapshot["formal_admission_pending"] = False
+            snapshot["formal_admission_completed_at"] = iso_hkt()
+    return emitted
 
 def _portfolio_stats(bets: list[dict[str, Any]], bankroll: float) -> dict[str, Any]:
     settled = [bet for bet in bets if bet.get("status") == "SETTLED"]

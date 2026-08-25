@@ -19,6 +19,7 @@ from .ledger import (
     due_stage_jobs,
     ensure_stage_jobs,
     market_entry_thresholds,
+    reconcile_pending_formal_admissions,
     recompute_stats,
     stage_for,
     stages_due,
@@ -1973,6 +1974,7 @@ def _commit_stage_predictions(
                     mode == "tick"
                     and (stage == "T-30" or prediction.get("status") == "DATA_MISSING")
                 ),
+                defer_formal_admission=True,
             )
             emitted.extend(created)
             prediction["stages"] = list(
@@ -2004,12 +2006,6 @@ def _commit_stage_predictions(
         # preserve that evidence and can be rebuilt by ordinary reconciliation.
         # Keep formal T-5 recomputation in-line until its own persistence path
         # is split, because it owns the active frozen observation projection.
-        if any(
-            str(prediction.get("stage") or "") == "T-5"
-            and prediction.get("status") != "DATA_MISSING"
-            for prediction in committed_predictions
-        ):
-            recompute_stats(ledger, config)
         ledger["log"].append({
             "ts": iso_hkt(), "kind": mode, "n_changes": len(emitted),
             "changes": emitted or ["今次無模擬注動作"], "simulation_only": True,
@@ -2019,6 +2015,34 @@ def _commit_stage_predictions(
         save_ledger(config, ledger)
         _timing.record("commit_stage_predictions_after_save_ledger", deadline=deadline)
         retained = merge_predictions(config, committed_predictions)
+    # Release the deadline-critical native lock before any optional matching.
+    # A competing native writer therefore always has a preemption point.
+    with state_lock(config, timeout_seconds=0.5) as acquired:
+        if acquired:
+            ledger = load_ledger(config)
+            pending = any(
+                isinstance(row, dict)
+                and row.get("formal_admission_pending") is True
+                for watch in (ledger.get("watch") or {}).values()
+                if isinstance(watch, dict)
+                for row in watch.get("stages") or []
+            )
+            if pending:
+                pending_t5 = any(
+                    isinstance(row, dict)
+                    and row.get("formal_admission_pending") is True
+                    and row.get("stage") == "T-5"
+                    for watch in (ledger.get("watch") or {}).values()
+                    if isinstance(watch, dict)
+                    for row in watch.get("stages") or []
+                )
+                emitted.extend(reconcile_pending_formal_admissions(ledger, config))
+                if pending_t5:
+                    recompute_stats(ledger, config)
+                if ledger.get("log"):
+                    ledger["log"][-1]["n_changes"] = len(emitted)
+                    ledger["log"][-1]["changes"] = emitted or ["今次無模擬注動作"]
+                save_ledger(config, ledger)
     if mode != "tick":
         schedule_footbreak_execution_evidence_projection(
             config, evidence_projection_stages,
@@ -3077,7 +3101,9 @@ def run(
                 for row in ((ledger.get("watch") or {}).get(match_id, {}).get("stages") or [])
                 if isinstance(row, dict)
             )
-            emitted += sync_prediction(ledger, prediction, config)
+            emitted += sync_prediction(
+                ledger, prediction, config, defer_formal_admission=True,
+            )
             prediction["stages"] = list(
                 ledger["watch"].get(str(prediction["match_id"]), {}).get("stages") or []
             )
@@ -3090,12 +3116,37 @@ def run(
                 if isinstance(row, dict)
             ):
                 fresh_condition_predictions.append({"match_id": match_id, "stage": stage})
-        recompute_stats(ledger, config)
         ledger["log"].append({"ts": iso_hkt(), "kind": mode, "n_changes": len(emitted),
                               "changes": emitted or ["今次無模擬注動作"], "simulation_only": True})
         ledger["log"] = ledger["log"][-100:]
         save_ledger(config, ledger)
         retained = merge_predictions(config, predictions)
+    with state_lock(config, timeout_seconds=0.5) as acquired:
+        if acquired:
+            ledger = load_ledger(config)
+            pending = any(
+                isinstance(row, dict)
+                and row.get("formal_admission_pending") is True
+                for watch in (ledger.get("watch") or {}).values()
+                if isinstance(watch, dict)
+                for row in watch.get("stages") or []
+            )
+            if pending:
+                pending_t5 = any(
+                    isinstance(row, dict)
+                    and row.get("formal_admission_pending") is True
+                    and row.get("stage") == "T-5"
+                    for watch in (ledger.get("watch") or {}).values()
+                    if isinstance(watch, dict)
+                    for row in watch.get("stages") or []
+                )
+                emitted += reconcile_pending_formal_admissions(ledger, config)
+                if pending_t5:
+                    recompute_stats(ledger, config)
+                if ledger.get("log"):
+                    ledger["log"][-1]["n_changes"] = len(emitted)
+                    ledger["log"][-1]["changes"] = emitted or ["今次無模擬注動作"]
+                save_ledger(config, ledger)
     if mode not in {"tick", "first-look-reconcile"}:
         schedule_footbreak_execution_evidence_projection(
             config, evidence_projection_stages,

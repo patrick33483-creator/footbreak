@@ -68,20 +68,35 @@ def _selected(
     return row, None
 
 
-def _native_t5(watch: dict[str, Any], stage: dict[str, Any], parse_time: Callable[[Any], datetime | None]) -> bool:
+def _native_stage(
+    watch: dict[str, Any], stage: dict[str, Any],
+    parse_time: Callable[[Any], datetime | None], decision_stage: str,
+) -> bool:
     rows = [row for row in watch.get("stages") or []
-            if isinstance(row, dict) and row.get("stage") == DECISION_STAGE]
+            if isinstance(row, dict) and row.get("stage") == decision_stage]
     if len(rows) != 1 or rows[0] is not stage:
         return False
-    if stage.get("post_hoc_backfill") or stage.get("exclude_from_simulation"):
+    if (
+        stage.get("post_hoc_backfill") or stage.get("exclude_from_simulation")
+        or stage.get("status") == "DATA_MISSING"
+    ):
         return False
     saved = _parse(stage.get("ts") or stage.get("source_snapshot_at"), parse_time)
     kickoff = _parse(stage.get("kickoff") or stage.get("kickoff_hkt") or watch.get("kickoff") or watch.get("kickoff_hkt"), parse_time)
     return saved is not None and kickoff is not None and saved < kickoff
 
 
+def _native_t5(
+    watch: dict[str, Any], stage: dict[str, Any],
+    parse_time: Callable[[Any], datetime | None],
+) -> bool:
+    """Compatibility wrapper for the unchanged native T-5 contract."""
+    return _native_stage(watch, stage, parse_time, DECISION_STAGE)
+
+
 def _native_match_rows(
-    watch: dict[str, Any], parse_time: Callable[[Any], datetime | None],
+    watch: dict[str, Any], parse_time: Callable[[Any], datetime | None], *,
+    through_stage: str = DECISION_STAGE,
 ) -> list[dict[str, Any]]:
     """Return only immutable, pre-kickoff native market evidence by stage.
 
@@ -95,7 +110,10 @@ def _native_match_rows(
     if not fixture or kickoff_at is None:
         return []
     result: list[dict[str, Any]] = []
-    for stage_name in ("首預", "T-30", "T-5"):
+    stages = ("首預", "T-30", "T-5")
+    if through_stage not in stages:
+        return []
+    for stage_name in stages[:stages.index(through_stage) + 1]:
         snapshots = [
             row for row in watch.get("stages") or []
             if isinstance(row, dict) and row.get("stage") == stage_name
@@ -104,7 +122,12 @@ def _native_match_rows(
             continue
         stage = snapshots[0]
         saved = _parse(stage.get("ts") or stage.get("source_snapshot_at"), parse_time)
-        if saved is None or saved >= kickoff_at or stage.get("status") == "DATA_MISSING":
+        if (
+            saved is None or saved >= kickoff_at
+            or stage.get("status") == "DATA_MISSING"
+            or stage.get("post_hoc_backfill")
+            or stage.get("exclude_from_simulation")
+        ):
             continue
         selections = []
         for market in MARKETS:
@@ -135,7 +158,10 @@ def _exact_match_binding(
     admission: dict[str, Any], *, system: str, fixture: str, market: str,
 ) -> dict[str, Any]:
     """Bounded diagnostic proof for a successful structural match."""
-    return {
+    decision_stage = str(
+        (admission.get("definition") or {}).get("stage") or DECISION_STAGE
+    )
+    binding = {
         "schema_version": 1,
         "condition_signature": admission.get("signature"),
         "evidence_version": admission.get("evidence_version"),
@@ -144,14 +170,18 @@ def _exact_match_binding(
         "definition_hash": _canonical_hash(admission.get("definition")),
         "fixture_market_hash": _fixture_market_hash(system, fixture, market),
     }
+    if decision_stage != DECISION_STAGE:
+        binding["schema_version"] = 2
+        binding["decision_stage"] = decision_stage
+    return binding
 
 
-def evaluate(
+def evaluate_stage(
     ledger: dict[str, Any], watch: dict[str, Any], *, system: str,
     market_labels: dict[str, str], parse_time: Callable[[Any], datetime | None],
-    now: str, ranking: Iterable[dict[str, Any]] | None,
+    now: str, ranking: Iterable[dict[str, Any]] | None, decision_stage: str,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Admission on one persisted native T-5 only; ranking is treated as frozen input."""
+    """Evaluate one already-persisted native stage against its own identities."""
     ns = ensure_namespace(ledger, system, now=now)
     def rejected(reason: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         row = {"market": "*", "status": "SKIPPED", "reason": reason}
@@ -161,9 +191,17 @@ def evaluate(
 
     fixture = str(watch.get("match_id") or "")
     current = next((row for row in watch.get("stages") or []
-                    if isinstance(row, dict) and row.get("stage") == DECISION_STAGE), None)
-    if not fixture or current is None or not _native_t5(watch, current, parse_time):
-        return rejected("not_first_native_pre_kickoff_t5")
+                    if isinstance(row, dict) and row.get("stage") == decision_stage), None)
+    if (
+        decision_stage not in {"首預", "T-30", "T-5"}
+        or not fixture or current is None
+        or not _native_stage(watch, current, parse_time, decision_stage)
+    ):
+        return rejected(
+            "not_first_native_pre_kickoff_t5"
+            if decision_stage == DECISION_STAGE
+            else f"not_first_native_pre_kickoff_{decision_stage}"
+        )
     if not all(str(watch.get(field) or "").strip() for field in ("league", "home", "away")):
         return rejected("missing_fixture_context_for_public_condition_bet")
     stage_at = str(current.get("ts") or current.get("source_snapshot_at") or now)
@@ -182,9 +220,11 @@ def evaluate(
     # Match all persisted native stages.  A frozen multi-stage tier trajectory
     # must be proven by its own pre-kickoff source timestamp at every stage;
     # only the Wilson execution decision reads the terminal selected price.
-    current_rows = _native_match_rows(watch, parse_time)
+    current_rows = _native_match_rows(
+        watch, parse_time, through_stage=decision_stage,
+    )
     matched = match_formal_registry(
-        current_rows, formal_candidates, system=system, decision_stage=DECISION_STAGE,
+        current_rows, formal_candidates, system=system, decision_stage=decision_stage,
     ).get(fixture, [])
     # A replay of an already committed T-5 must report its durable idempotency
     # outcome before consulting a later evidence-version boundary. It neither
@@ -195,6 +235,7 @@ def evaluate(
     existing_observations = [
         row for row in ((ns.get("observations") or []))
         if isinstance(row, dict) and str(row.get("match_id") or "") == fixture
+        and str(row.get("stage") or "") == decision_stage
     ]
     proposed: list[tuple[str, dict[str, Any], dict[str, Any], str | None, float, str]] = []
     audit: list[dict[str, Any]] = []
@@ -206,7 +247,10 @@ def evaluate(
         if selected is None:
             audit.append({"market": market, "status": "SKIPPED", "reason": reason})
             continue
-        if any(str(row.get("code") or "") == market for row in existing) or any(
+        if (
+            decision_stage == DECISION_STAGE
+            and any(str(row.get("code") or "") == market for row in existing)
+        ) or any(
             str(row.get("code") or row.get("market") or "") == market
             for row in existing_observations
         ):
@@ -237,17 +281,22 @@ def evaluate(
                     "frozen_condition_signature": admission["signature"],
                 })
                 continue
-            if adjusted["arithmetic"].get("passes"):
+            if decision_stage == DECISION_STAGE and adjusted["arithmetic"].get("passes"):
                 accepted.append(adjusted)
                 continue
             observation = record_match_observation(
                 ledger, system, watch, market, selected, adjusted, now=now,
                 market_label=market_labels[market], selected_role=role,
-                selected_line=selected_line,
+                selected_line=selected_line, decision_stage=decision_stage,
             )
             audit.append({
                 "market": market, "status": "MATCHED_NO_BET",
-                "reason": "wilson_gate_not_passed",
+                "reason": (
+                    "wilson_gate_not_passed"
+                    if decision_stage == DECISION_STAGE
+                    else "early_stage_formal_observation"
+                ),
+                "decision_stage": decision_stage,
                 "condition_number": frozen.get("condition_number"),
                 "frozen_condition_signature": adjusted["signature"],
                 "wilson_admission": adjusted["arithmetic"],
@@ -290,3 +339,16 @@ def evaluate(
     ns["audit"] = (ns.get("audit") or []) + [{"ts": now, "match_id": fixture, **row} for row in audit]
     ns["audit"] = ns["audit"][-CONDITION_AUDIT_LIMIT:]
     return created, audit
+
+
+def evaluate(
+    ledger: dict[str, Any], watch: dict[str, Any], *, system: str,
+    market_labels: dict[str, str], parse_time: Callable[[Any], datetime | None],
+    now: str, ranking: Iterable[dict[str, Any]] | None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Compatibility wrapper preserving the existing T-5 evaluator."""
+    return evaluate_stage(
+        ledger, watch, system=system, market_labels=market_labels,
+        parse_time=parse_time, now=now, ranking=ranking,
+        decision_stage=DECISION_STAGE,
+    )

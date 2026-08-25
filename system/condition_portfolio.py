@@ -9,7 +9,7 @@ from analysis.granular_conditions import MARKET_LABELS, mine
 from analysis.wilson_portfolio import _native_t5 as _wilson_native_t5
 from analysis.wilson_portfolio import _selected as _wilson_selected
 from analysis.wilson_portfolio import _audit_selection as _wilson_audit_selection
-from analysis.wilson_portfolio import evaluate
+from analysis.wilson_portfolio import evaluate_stage as _evaluate_stage
 from analysis.wilson_validation import (
     DECISION_STAGE, DISPLAY_NAME, FIXED_STAKE, FIXTURE_MARKET_CAP,
     FIXTURE_STAKE_CAP, STARTING_BANKROLL, STRATEGY, portfolio_name,
@@ -97,5 +97,33 @@ def evaluate_new_t5(
         ranking = project_granular_ranking_evidence(
             ledger, SYSTEM, ranking, now=now,
         )
-    return evaluate(ledger, watch, system=SYSTEM, market_labels=MARKET_LABELS,
-                    parse_time=parse_time, now=now, ranking=ranking)
+    return _evaluate_stage(
+        ledger, watch, system=SYSTEM, market_labels=MARKET_LABELS,
+        parse_time=parse_time, now=now, ranking=ranking,
+        decision_stage=DECISION_STAGE,
+    )
+
+
+def evaluate_stage(
+    ledger: dict[str, Any], watch: dict[str, Any], decision_stage: str,
+    history_path: Path | None = None, *,
+    history_rows: Iterable[dict[str, Any]] | None = None,
+    ranking: Iterable[dict[str, Any]] | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Evaluate an exact committed native stage; T-5 remains compatible."""
+    if decision_stage == DECISION_STAGE:
+        return evaluate_new_t5(
+            ledger, watch, history_path, history_rows=history_rows, ranking=ranking,
+        )
+    if ranking is None and history_rows is not None:
+        ranking = mine(list(history_rows), system=SYSTEM).get("ranking")
+    now = iso_hkt()
+    if ranking is not None:
+        ranking = project_granular_ranking_evidence(
+            ledger, SYSTEM, ranking, now=now,
+        )
+    return _evaluate_stage(
+        ledger, watch, system=SYSTEM, market_labels=MARKET_LABELS,
+        parse_time=parse_time, now=now, ranking=ranking,
+        decision_stage=decision_stage,
+    )
