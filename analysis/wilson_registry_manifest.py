@@ -90,6 +90,8 @@ def build_manifest(ledger:Any,system:str)->dict[str,Any]:
    if not isinstance(history,dict): rr.append("missing_historical_evidence"); history={}
    hh,hd=_int(history.get("hits")),_int(history.get("decided"))
    if hh is None or hd is None or hh<0 or hd<MIN_DECIDED or hh>hd: rr.append("invalid_historical_counts")
+   if "pushes" in history and (_int(history.get("pushes")) is None or _int(history.get("pushes")) < 0):
+    rr.append("invalid_historical_pushes")
    artifact=history.get("artifact")
    if not isinstance(artifact,dict): rr.append("missing_historical_artifact"); artifact={}
    if not _hash64(artifact.get("hash")) or not artifact.get("version") or _time(artifact.get("as_of")) is None: rr.append("invalid_historical_artifact")
@@ -139,15 +141,46 @@ def build_manifest(ledger:Any,system:str)->dict[str,Any]:
           ns.get("granular_ranking_initial_migration_completed_at"),
       ]
       valid_markers = {_time(x) for x in migration_markers if _time(x) is not None}
-      if not isinstance(cohort,dict) or cohort.get("hits")!=bh or cohort.get("decided")!=bd or not (bd and 0<=bh<=bd) or hashes!=[] or boundary not in valid_markers: rr.append("invalid_migration_v2")
+      cohort_hits = _int(cohort.get("hits")) if isinstance(cohort, dict) else None
+      cohort_decided = _int(cohort.get("decided")) if isinstance(cohort, dict) else None
+      cohort_pushes = _int(cohort.get("pushes")) if isinstance(cohort, dict) else None
+      if not isinstance(cohort,dict) or cohort_hits!=bh or cohort_decided!=bd or cohort_pushes is None or cohort_pushes<0 or not (bd and 0<=bh<=bd) or hashes!=[] or boundary not in valid_markers: rr.append("invalid_migration_v2")
      elif bd!=ROLLOVER_BATCH_SIZE or len(hashes)!=ROLLOVER_BATCH_SIZE: rr.append("invalid_ordinary_batch")
     prev=v; prev_boundary=boundary or prev_boundary; prev_created=created or prev_created
    active=versions[-1] if versions and isinstance(versions[-1],dict) else {}
+   if (
+       "active_evidence_version" not in frozen
+       or "active_evidence_hash" not in frozen
+       or "active_evidence" not in frozen
+   ):
+    rr.append("missing_active_evidence_projection")
    if "active_evidence_version" in frozen and (
        _int(frozen.get("active_evidence_version")) is None
        or _int(frozen.get("active_evidence_version")) != _int(active.get("version"))
    ):
     rr.append("invalid_active_evidence_version")
+   if (
+       not _hash64(frozen.get("active_evidence_hash"))
+       or frozen.get("active_evidence_hash") != active.get("evidence_hash")
+   ):
+    rr.append("invalid_active_evidence_hash")
+   expected_active_projection = {
+       key: active.get(key) for key in (
+           "version", "cumulative_hits", "cumulative_decided",
+           "wilson95_lower_raw", "minimum_acceptable_odds_raw",
+           "minimum_acceptable_odds_display", "activation_boundary_at",
+           "created_at", "evidence_hash",
+       )
+   }
+   active_projection = frozen.get("active_evidence")
+   if (
+       not isinstance(active_projection, dict)
+       or active_projection != expected_active_projection
+       or _int(active_projection.get("version")) is None
+       or _int(active_projection.get("cumulative_hits")) is None
+       or _int(active_projection.get("cumulative_decided")) is None
+   ):
+    rr.append("invalid_active_evidence_projection")
    version_by_number = {
        v.get("version"): v for v in versions if isinstance(v, dict)
    }
@@ -187,8 +220,17 @@ def build_manifest(ledger:Any,system:str)->dict[str,Any]:
         isinstance(row_history, dict)
         and immutable_row_history == immutable_baseline
         and isinstance(admitted, dict)
-        and row_history.get("hits") == admitted.get("cumulative_hits")
-        and row_history.get("decided") == admitted.get("cumulative_decided")
+        and _int(row_history.get("hits")) is not None
+        and _int(row_history.get("decided")) is not None
+        and _int(row_history.get("hits")) == _int(admitted.get("cumulative_hits"))
+        and _int(row_history.get("decided")) == _int(admitted.get("cumulative_decided"))
+        and (
+            "pushes" not in row_history
+            or (
+                _int(row_history.get("pushes")) is not None
+                and _int(row_history.get("pushes")) >= 0
+            )
+        )
         and row_history_version is not None
         and row_history_version == _int(admitted.get("version"))
         and row_history.get("evidence_hash") == admitted.get("evidence_hash")
@@ -212,7 +254,8 @@ def build_manifest(ledger:Any,system:str)->dict[str,Any]:
         or activity.get("market", activity.get("code")) != definition.get("market")
         or activity.get("frozen_condition_definition") != definition
         or not history_matches_admitted
-        or activity.get("condition_number") != number
+        or _int(activity.get("condition_number")) is None
+        or _int(activity.get("condition_number")) != number
     ):
      activity_rejections["invalid_signature_definition_or_evidence_binding"] += 1
      continue
@@ -296,7 +339,38 @@ def build_manifest(ledger:Any,system:str)->dict[str,Any]:
    pending=eligible
    pending_hits=sum(x["hit"] for x in pending)
    persisted=frozen.get("pending_rollover_progress")
-   if persisted is not None and (not isinstance(persisted,dict) or persisted.get("eligible_decided")!=len(pending) or persisted.get("eligible_hits")!=pending_hits or persisted.get("required")!=ROLLOVER_BATCH_SIZE): rr.append("pending_progress_mismatch")
+   pending_integer_invalid = False
+   if isinstance(persisted, dict):
+    for key in ("eligible_decided", "eligible_hits", "required", "decided", "hits"):
+     if key in persisted and (
+         _int(persisted.get(key)) is None or _int(persisted.get(key)) < 0
+     ):
+      pending_integer_invalid = True
+    persisted_excluded = persisted.get("excluded")
+    if persisted_excluded is not None and (
+        not isinstance(persisted_excluded, dict)
+        or any(_int(value) is None or _int(value) < 0
+               for value in persisted_excluded.values())
+    ):
+     pending_integer_invalid = True
+   if persisted is not None and (
+       not isinstance(persisted,dict)
+       or pending_integer_invalid
+       or _int(persisted.get("eligible_decided")) is None
+       or _int(persisted.get("eligible_hits")) is None
+       or _int(persisted.get("required")) is None
+       or _int(persisted.get("eligible_decided"))!=len(pending)
+       or _int(persisted.get("eligible_hits"))!=pending_hits
+       or _int(persisted.get("required"))!=ROLLOVER_BATCH_SIZE
+       or ("decided" in persisted and _int(persisted.get("decided")) != len(pending))
+       or ("hits" in persisted and _int(persisted.get("hits")) != pending_hits)
+       or ("excluded" in persisted and persisted.get("excluded") != excluded)
+   ): rr.append("pending_progress_mismatch")
+   if "last_rollover_count" in frozen and (
+       _int(frozen.get("last_rollover_count")) is None
+       or _int(frozen.get("last_rollover_count")) < 0
+   ):
+    rr.append("invalid_last_rollover_count")
    for reason in set(rr): reasons[reason]+=1
    statuses=Counter(str(x.get("status")) for x in qualified)
    rows.append({"condition_number":number,"order_position":position,"signature":sig,"definition":definition,"definition_hash":canonical_hash(definition) if definition else None,"market":definition.get("market"),"path":definition.get("path"),"decision_stage":definition.get("stage"),"path_terminal_stage":str(definition.get("path") or "").split("→")[-1] or None,"active_evidence_version":active.get("version"),"active_evidence_hash":active.get("evidence_hash"),"activation_boundary":active.get("activation_boundary_at"),"prospective_x20":{"hits":pending_hits,"decided":len(pending),"target":ROLLOVER_BATCH_SIZE,"excluded":excluded},"formal_rows":len(qualified),"formal_status_counts":dict(sorted(statuses.items())),"rejected_same_signature_activity":sum(activity_rejections.values()),"activity_rejection_reasons":dict(sorted(activity_rejections.items())),"current_matcher_can_structurally_admit":axes is not None,"safely_recoverable_missed_rows":0,"recovery_status":"HARD_DISABLED","rejection_reasons":sorted(set(rr)),"valid":not rr})

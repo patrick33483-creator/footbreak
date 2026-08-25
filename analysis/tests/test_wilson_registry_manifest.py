@@ -10,7 +10,7 @@ def frozen(system,market,path,stage,number):
  tiers="低" if "→" not in path else "→".join(["低"]*len(path.split("→")))
  key=[f"system={system}",f"market={market}",f"path={path}",f"decision={stage}","direction=x","role=x","bucket=x","tier=低"]
  if "→" in path:key.append(f"tier_path={tiers}")
- d={"system":system,"version":"granular-condition-v1","market":market,"stage":stage,"path":path,"direction":"x","role":"x","line_bucket":"x","odds_tier":"低","movement":"x","odds_trajectory":tiers if "→" in path else "","miner_key":key}; s=definition_signature(d); a={"hash":"a"*64,"version":"v1","as_of":NOW}; return s,{"signature":s,"condition_number":number,"frozen_at":NOW,"definition":d,"historical_evidence":{"hits":50,"decided":80,"artifact":a},"evidence_versions":[ev(s)]}
+ d={"system":system,"version":"granular-condition-v1","market":market,"stage":stage,"path":path,"direction":"x","role":"x","line_bucket":"x","odds_tier":"低","movement":"x","odds_trajectory":tiers if "→" in path else "","miner_key":key}; s=definition_signature(d); a={"hash":"a"*64,"version":"v1","as_of":NOW};v=ev(s);projection={k:v.get(k) for k in ("version","cumulative_hits","cumulative_decided","wilson95_lower_raw","minimum_acceptable_odds_raw","minimum_acceptable_odds_display","activation_boundary_at","created_at","evidence_hash")};return s,{"signature":s,"condition_number":number,"frozen_at":NOW,"definition":d,"historical_evidence":{"hits":50,"decided":80,"artifact":a},"evidence_versions":[v],"active_evidence_version":1,"active_evidence_hash":v["evidence_hash"],"active_evidence":projection}
 def ledger(system="footbreak"):
  items=[frozen(system,"HDC","首預","首預",1),frozen(system,"HIL","首預→T-30","T-30",2),frozen(system,"CHL","首預→T-30→T-5","T-5",3)]; return {"bets":[],"wilson_validation":{"schema_version":2,"system":system,"activation_at":NOW,"condition_order":[x[0] for x in items],"conditions":dict(items),"observations":[],"audit":[]}}
 def rehash(v):v["evidence_hash"]=_version_hash(v)
@@ -82,6 +82,38 @@ class ManifestTest(unittest.TestCase):
   for value in (True,1.0):
    l=ledger();row=add_real(l,"footbreak",1);row["rollover_provenance"]["admitted_evidence_version"]=value;row["evidence_version"]=value;row["frozen_historical_evidence"]["evidence_version"]=value;self.assertRejected(l,"unverifiable_same_signature_activity")
   l=ledger();f=self.first(l);f["evidence_versions"][0]["version"]=1.0;rehash(f["evidence_versions"][0]);self.assertRejected(l,"evidence_version_sequence_mismatch")
+ def test_remaining_integer_bindings_reject_bool_and_float_both_systems(self):
+  for system in ("footbreak","crown"):
+   for field,value in (("condition_number",3.0),("condition_number",True),("hits",50.0),("hits",True),("decided",80.0),("decided",True),("pushes",0.0),("pushes",False)):
+    l=ledger(system);f=self.first(l)
+    if field=="condition_number":f[field]=value
+    else:f["historical_evidence"][field]=value
+    self.assertRejected(l,"condition_number_order_mismatch" if field=="condition_number" else ("invalid_historical_pushes" if field=="pushes" else "invalid_historical_counts"),system)
+   for field,value in (("condition_number",3.0),("condition_number",True),("hits",50.0),("hits",True),("decided",80.0),("decided",True),("pushes",0.0),("pushes",False)):
+    l=ledger(system);row=add_real(l,system,1)
+    if field=="condition_number":row[field]=value
+    else:row["frozen_historical_evidence"][field]=value
+    self.assertRejected(l,"unverifiable_same_signature_activity",system)
+   for field,value in (("eligible_decided",1.0),("eligible_decided",True),("eligible_hits",1.0),("eligible_hits",True),("required",20.0),("required",True)):
+    l=ledger(system);add_real(l,system,1);recompute_namespace(l,system);f=l["wilson_validation"]["conditions"][l["wilson_validation"]["condition_order"][2]];f["pending_rollover_progress"][field]=value;self.assertRejected(l,"pending_progress_mismatch",system)
+   l=ledger(system);add_real(l,system,1);recompute_namespace(l,system);f=l["wilson_validation"]["conditions"][l["wilson_validation"]["condition_order"][2]];f["pending_rollover_progress"]["excluded"]["before_snapshot_boundary"]=False;self.assertRejected(l,"pending_progress_mismatch",system)
+   for value in (1.0,True):
+    l=ledger(system);self.first(l)["last_rollover_count"]=value;self.assertRejected(l,"invalid_last_rollover_count",system)
+ def test_active_tail_hash_and_projection_exact_both_systems(self):
+  for system in ("footbreak","crown"):
+   for mutation,reason in (
+    (lambda f:f.pop("active_evidence_version"),"missing_active_evidence_projection"),
+    (lambda f:f.update(active_evidence_version=1.0),"invalid_active_evidence_version"),
+    (lambda f:f.update(active_evidence_version=True),"invalid_active_evidence_version"),
+    (lambda f:f.pop("active_evidence_hash"),"missing_active_evidence_projection"),
+    (lambda f:f.update(active_evidence_hash="f"*64),"invalid_active_evidence_hash"),
+    (lambda f:f.pop("active_evidence"),"missing_active_evidence_projection"),
+    (lambda f:f.update(active_evidence={"version":999}),"invalid_active_evidence_projection"),
+    (lambda f:f["active_evidence"].update(version=1.0),"invalid_active_evidence_projection"),
+    (lambda f:f["active_evidence"].update(cumulative_decided=True),"invalid_active_evidence_projection"),
+    (lambda f:f["active_evidence"].update(cumulative_hits=999),"invalid_active_evidence_projection"),
+   ):
+    l=ledger(system);f=l["wilson_validation"]["conditions"][l["wilson_validation"]["condition_order"][2]];mutation(f);self.assertRejected(l,reason,system)
  def test_delayed_granular_migration_and_missing_observations_are_valid(self):
   for system in ("footbreak","crown"):
    path="首預→T-30→T-5";tier="低→低→低";ranking=[{"system":system,"market":"HDC","key":[f"system={system}","market=HDC",f"path={path}","decision=T-5","direction=A→A→A","role=主讓","bucket=0.25–0.5","tier=低",f"tier_path={tier}","movement=不變"],"observed_path":path,"decision_stage":"T-5","direction":"A→A→A","role":"主讓","line_bucket":"0.25–0.5","odds_tier":"低","odds_trajectory":tier,"movement":"不變","total":{"hits":141,"decided":231,"pushes":0},"holdout":{"hits":44,"decided":71,"pushes":0},"source_artifact":{"hash":"a"*64,"version":"v1","as_of":"2026-08-19T22:55:00+08:00"}}]
