@@ -410,7 +410,7 @@ class ResultSourceTests(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertIn("styles.css?v=20260815-data-health-condition-research-footbreak-condition-simulation", index)
-        self.assertIn("app.js?v=20260815-data-health-condition-research-footbreak-condition-simulation", index)
+        self.assertIn("app.js?v=20260825-wilson-pending-hit-rate-forecast-v1", index)
         self.assertIn("setInterval(() => refresh(true), 60000)", app)
         self.assertIn('class="history-result-cell"', app)
 
