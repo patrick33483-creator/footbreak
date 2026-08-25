@@ -1516,6 +1516,12 @@ function historyConsensusCards(stats) {
       ? wilsonConditionLabel(item.condition_number)
       : `研究 R#${index + 1}（未凍結；不計前瞻）`;
     const pending = progress.display || `${Number(progress.pending_decided || 0)}/${Number(progress.required || 20)}`;
+    const pendingDecided = Number(progress.pending_decided ?? progress.eligible_decided ?? 0);
+    const pendingHits = Number(progress.pending_hits ?? progress.eligible_hits ?? 0);
+    const pendingAccuracy = numeric(progress.pending_accuracy ?? progress.accuracy);
+    const pendingHitText = pendingDecided > 0 && pendingAccuracy != null
+      ? `暫時命中 ${pendingHits}/${pendingDecided}（${pc(pendingAccuracy, 1)}）`
+      : '暫時未有已判定命中率';
     const batchText = lastBatch.version
       ? (lastBatch.initial_migration_full_cohort
         ? `初始完整驗證已合併 ${lastBatch.batch_hits || 0}/${lastBatch.batch_decided || 0}`
@@ -1530,7 +1536,7 @@ function historyConsensusCards(stats) {
       ${hasFrozenCondition
         ? `<small>活躍證據 v${active.version || '—'} · ${batchText}</small>
       ${evidenceBatchDetails(item)}
-      <small>新前瞻待合併 ${esc(String(pending))}（已判定結果數，非命中率）</small>
+      <small>新前瞻待合併 ${esc(String(pending))} · ${esc(pendingHitText)}</small>
       <small>歷史賠率層 ${esc(item.odds_tier || '—')} · 只使用活躍版本作日後 T-5 Wilson 閘門</small>`
         : '<small>研究卡未有凍結 Wilson 身份；不顯示前瞻累積，亦不會成為 Telegram 或模擬投注依據。</small>'}
     </article>`;

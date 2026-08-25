@@ -321,6 +321,19 @@ class WilsonBatchRolloverTest(unittest.TestCase):
         frozen, active = self._active(ledger)
         self.assertEqual(active["version"], 1)
         self.assertEqual(frozen["pending_rollover_progress"]["display"], "19/20")
+        self.assertEqual(frozen["pending_rollover_progress"]["eligible_hits"], 10)
+        self.assertAlmostEqual(
+            frozen["pending_rollover_progress"]["accuracy"], 10 / 19,
+        )
+        projected = project_granular_ranking_evidence(
+            ledger, "footbreak", [candidate()],
+            now="2026-08-20T01:00:00+08:00",
+        )
+        self.assertEqual(projected[0]["validation_progress"]["pending_decided"], 19)
+        self.assertEqual(projected[0]["validation_progress"]["pending_hits"], 10)
+        self.assertAlmostEqual(
+            projected[0]["validation_progress"]["pending_accuracy"], 10 / 19,
+        )
         self._settled(ledger, 20, result="Won")
         recompute_namespace(ledger, "footbreak")
         frozen, active = self._active(ledger)
@@ -328,6 +341,8 @@ class WilsonBatchRolloverTest(unittest.TestCase):
         self.assertEqual(active["cumulative_decided"], 79)
         self.assertEqual(frozen["rollover_audit"][-1]["batch_decided"], 20)
         self.assertEqual(frozen["pending_rollover_progress"]["display"], "0/20")
+        self.assertEqual(frozen["pending_rollover_progress"]["eligible_hits"], 0)
+        self.assertIsNone(frozen["pending_rollover_progress"]["accuracy"])
 
     def test_low_odds_formal_observation_settles_into_evidence_not_pnl_for_both_systems(self):
         """A native condition match is evidence even when execution is no-bet."""
@@ -600,6 +615,8 @@ class WilsonBatchRolloverTest(unittest.TestCase):
             self.assertAlmostEqual(card["active_evidence"]["wilson95_lower_raw"], .557, places=3)
             self.assertAlmostEqual(card["active_evidence"]["minimum_acceptable_odds_raw"], 1.90, places=2)
             self.assertEqual(card["validation_progress"]["display"], "0/20")
+            self.assertEqual(card["validation_progress"]["pending_hits"], 0)
+            self.assertIsNone(card["validation_progress"]["pending_accuracy"])
             self.assertEqual(
                 card["active_evidence"]["activation_boundary_at"],
                 "2026-08-20T22:00:00+08:00",
@@ -691,6 +708,8 @@ class WilsonBatchRolloverTest(unittest.TestCase):
             source = path.read_text(encoding="utf-8")
             self.assertIn("Wilson 證據版本", source)
             self.assertIn("新前瞻待合併", source)
+            self.assertIn("暫時命中 ${pendingHits}/${pendingDecided}", source)
+            self.assertIn("暫時未有已判定命中率", source)
             self.assertIn("活躍證據 v", source)
 
     def test_last_merged_batch_projects_exact_twenty_rows_and_thirteen_hits(self):
