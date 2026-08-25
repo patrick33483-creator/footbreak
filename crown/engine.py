@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import math
 import multiprocessing
 import os
@@ -12,7 +13,7 @@ from datetime import datetime, timezone
 from multiprocessing.connection import wait as wait_for_connections
 from typing import Any, Callable
 
-from .common import HKT, iso_hkt, parse_time, read_json
+from .common import HKT, iso_hkt, parse_time
 from .config import Settings
 from .hkjc import event_from_match, fetch_matches, flatten_odds
 from .ledger import (
@@ -1938,12 +1939,31 @@ def _optional_save_worker(
         sender.close()
 
 
+def _canonical_ledger_bytes(ledger: dict[str, Any]) -> bytes:
+    """Byte-identical payload emitted by common.write_json_atomic."""
+    return (
+        json.dumps(
+            ledger, ensure_ascii=False, indent=2, sort_keys=True,
+        ) + "\n"
+    ).encode("utf-8")
+
+
+def _durable_commit_matches(
+    config: Settings, intended_bytes: bytes,
+) -> bool:
+    try:
+        return paths(config)["ledger"].read_bytes() == intended_bytes
+    except OSError:
+        return False
+
+
 def _bounded_optional_save(
     config: Settings, ledger: dict[str, Any], *, budget: float,
 ) -> bool:
     """Hard-bound an atomic optional save in a killable forked process."""
     if budget <= 0:
         return False
+    intended_bytes = _canonical_ledger_bytes(ledger)
     started = time.monotonic()
     deadline = started + budget
     # Reserve part of the caller's budget for TERM/KILL/reap rather than
@@ -1970,22 +1990,20 @@ def _bounded_optional_save(
         if process.is_alive():
             process.join()
         receiver.close()
-        return False
+        return _durable_commit_matches(config, intended_bytes)
     acknowledged = False
     try:
         acknowledged = bool(receiver.recv()) if receiver.poll() else False
     except (EOFError, BrokenPipeError, OSError):
         acknowledged = False
     receiver.close()
-    if acknowledged and process.exitcode == 0:
-        return True
-    # Resolve save-before-ack child death while the caller still owns the CAS
-    # lock. Exact durable equality means commit succeeded and emitted IDs may
-    # be returned once; base/other state remains fail-closed and retryable.
-    try:
-        return read_json(paths(config)["ledger"], None) == ledger
-    except Exception:
-        return False
+    # Resolve every outcome—including save-before-ack exit—against the exact
+    # canonical bytes while the caller still owns the CAS lock. Parsed Python
+    # equality is deliberately forbidden (1 and 1.0 are different commits).
+    durable_matches = _durable_commit_matches(config, intended_bytes)
+    return durable_matches and (
+        acknowledged or process.exitcode is not None
+    )
 
 
 def _drain_pending_formal_admissions(

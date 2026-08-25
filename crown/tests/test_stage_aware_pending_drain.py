@@ -5,6 +5,7 @@ import copy
 import os
 import signal
 import multiprocessing
+import json
 import unittest
 from contextlib import contextmanager
 from dataclasses import replace
@@ -16,7 +17,7 @@ from unittest.mock import patch
 from crown import engine
 from crown.common import HKT
 from crown.config import settings
-from crown.state import load_ledger
+from crown.state import load_ledger, paths, save_ledger
 
 
 class StageAwarePendingDrainTests(unittest.TestCase):
@@ -219,6 +220,66 @@ class StageAwarePendingDrainTests(unittest.TestCase):
         self.assertTrue(success)
         self.assertEqual(durable["bets"], intended["bets"])
         self.assertEqual(durable["watch"], intended["watch"])
+
+    def test_numeric_type_difference_is_not_an_exact_durable_commit(self):
+        with TemporaryDirectory() as directory:
+            config = replace(settings(), state_dir=Path(directory))
+            intended = {
+                "bets": [{"bet_id": "typed", "stake": 1}],
+                "watch": {}, "log": [],
+            }
+            paths(config)["ledger"].parent.mkdir(parents=True, exist_ok=True)
+            paths(config)["ledger"].write_text(
+                json.dumps({
+                    "bets": [{"bet_id": "typed", "stake": 1.0}],
+                    "watch": {}, "log": [],
+                }, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            with patch(
+                "crown.engine._optional_save_worker",
+                side_effect=lambda *_args: os._exit(0),
+            ):
+                success = engine._bounded_optional_save(
+                    config, intended, budget=1.0,
+                )
+        self.assertFalse(success)
+
+    def test_save_then_hang_is_verified_and_retry_cannot_duplicate_emit(self):
+        with TemporaryDirectory() as directory:
+            config = replace(settings(), state_dir=Path(directory))
+            intended = {
+                "bets": [{"bet_id": "durable-once"}],
+                "watch": {"m": {
+                    "match_id": "m",
+                    "stages": [{
+                        "stage": "T-5",
+                        "formal_admission_pending": False,
+                        "formal_admission_status": "COMPLETED",
+                    }],
+                }},
+                "log": [],
+            }
+            def save_then_hang(child_config, value, _sender):
+                save_ledger(child_config, value)
+                signal.signal(signal.SIGTERM, signal.SIG_IGN)
+                time.sleep(5)
+            with patch(
+                "crown.engine._optional_save_worker",
+                side_effect=save_then_hang,
+            ):
+                first_success = engine._bounded_optional_save(
+                    config, intended, budget=0.08,
+                )
+            retry_emitted = engine._drain_pending_formal_admissions(
+                config, deadline=time.monotonic() + 0.5,
+            )
+            durable = load_ledger(config)
+        self.assertTrue(first_success)
+        self.assertEqual(
+            [row["bet_id"] for row in durable["bets"]], ["durable-once"],
+        )
+        self.assertEqual(retry_emitted, [])
 
 
 @contextmanager
