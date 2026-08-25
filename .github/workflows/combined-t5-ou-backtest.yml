@@ -335,6 +335,7 @@ jobs:
               ret = unit_return(total, line, side, hk["odds"])
               raw = {
                   **model,
+                  "match_id": match_id,
                   "hk_odds": hk["odds"],
                   "pin_odds": pin["odds"],
                   "pin_opp_odds": pin_opp["odds"],
