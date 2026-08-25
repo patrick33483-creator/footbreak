@@ -237,3 +237,85 @@ jobs:
               }
           print(json.dumps(report, ensure_ascii=False, separators=(",", ":")))
           PY
+
+      - name: 皇冠細分條件距離 1.80 只讀比較
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh "$DEPLOY_USER@$DEPLOY_HOST" \
+            'sudo /opt/footbreak/.venv/bin/python3 -' <<'PY'
+          import json
+          import math
+          from pathlib import Path
+
+          Z = 1.959963984540054
+          EDGE = 0.03
+          TARGET_ODDS = 1.80
+          TARGET_LOWER = 1 / TARGET_ODDS + EDGE
+
+          def lower(hits, decided):
+              p = hits / decided
+              denominator = 1 + Z * Z / decided
+              center = (p + Z * Z / (2 * decided)) / denominator
+              margin = Z * math.sqrt(
+                  (p * (1 - p) + Z * Z / (4 * decided)) / decided
+              ) / denominator
+              return max(0.0, center - margin)
+
+          def minimum_odds(hits, decided):
+              value = lower(hits, decided)
+              return 1 / (value - EDGE) if value > EDGE else None
+
+          def needed_hits(hits, decided, added_decided):
+              for added_hits in range(added_decided + 1):
+                  if minimum_odds(
+                      hits + added_hits, decided + added_decided
+                  ) <= TARGET_ODDS:
+                      return added_hits
+              return None
+
+          ledger = json.loads(Path(
+              "/var/lib/footbreak/crown/ledger.json"
+          ).read_text(encoding="utf-8"))
+          namespace = ledger.get("wilson_validation") or {}
+          rows = []
+          for signature, condition in (namespace.get("conditions") or {}).items():
+              if not isinstance(condition, dict):
+                  continue
+              active = condition.get("active_evidence") or {}
+              try:
+                  hits = int(active["cumulative_hits"])
+                  decided = int(active["cumulative_decided"])
+              except (KeyError, TypeError, ValueError):
+                  continue
+              definition = condition.get("definition") or {}
+              pending = condition.get("pending_rollover_progress") or {}
+              raw_odds = minimum_odds(hits, decided)
+              rows.append({
+                  "condition_number": condition.get("condition_number"),
+                  "label": (condition.get("historical_evidence") or {}).get("label"),
+                  "definition": definition,
+                  "hits": hits,
+                  "decided": decided,
+                  "hit_rate_pct": round(100 * hits / decided, 3),
+                  "wilson_lower_pct": round(100 * lower(hits, decided), 4),
+                  "minimum_odds_raw": round(raw_odds, 6),
+                  "minimum_odds_display": round(raw_odds, 2),
+                  "pending_progress": pending,
+                  "needed_hits_next_20": needed_hits(hits, decided, 20),
+                  "needed_hits_next_40": needed_hits(hits, decided, 40),
+                  "needed_hits_next_60": needed_hits(hits, decided, 60),
+                  "signature": signature,
+              })
+          rows.sort(key=lambda row: (
+              row["minimum_odds_raw"],
+              row["condition_number"] or 999999,
+          ))
+          print(json.dumps({
+              "target_odds": TARGET_ODDS,
+              "target_wilson_lower_pct": round(100 * TARGET_LOWER, 6),
+              "condition_count": len(rows),
+              "conditions": rows,
+          }, ensure_ascii=False, indent=2))
+          PY
