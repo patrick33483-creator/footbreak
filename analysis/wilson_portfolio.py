@@ -7,7 +7,7 @@ from typing import Any, Callable, Iterable
 
 from .granular_conditions import MARKETS, _role
 from .wilson_validation import (
-    DECISION_STAGE, FIXED_STAKE, FIXTURE_MARKET_CAP, FIXTURE_STAKE_CAP,
+    CONDITION_AUDIT_LIMIT, DECISION_STAGE, FIXED_STAKE, FIXTURE_MARKET_CAP, FIXTURE_STAKE_CAP,
     apply_active_evidence, commit_bet, ensure_namespace, matching_admissions,
     record_match_observation, formal_registry_candidates, match_formal_registry,
 )
@@ -140,7 +140,7 @@ def evaluate(
     def rejected(reason: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         row = {"market": "*", "status": "SKIPPED", "reason": reason}
         ns["audit"] = (ns.get("audit") or []) + [{"ts": now, "match_id": str(watch.get("match_id") or ""), **row}]
-        ns["audit"] = ns["audit"][-1600:]
+        ns["audit"] = ns["audit"][-CONDITION_AUDIT_LIMIT:]
         return [], [row]
 
     fixture = str(watch.get("match_id") or "")
@@ -266,5 +266,5 @@ def evaluate(
                       "wilson_admission": bet["wilson_admission"]})
         # The caller owns one atomic ledger append after all markets pass.
     ns["audit"] = (ns.get("audit") or []) + [{"ts": now, "match_id": fixture, **row} for row in audit]
-    ns["audit"] = ns["audit"][-1600:]
+    ns["audit"] = ns["audit"][-CONDITION_AUDIT_LIMIT:]
     return created, audit

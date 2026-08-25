@@ -28,6 +28,7 @@ Z_95 = 1.959963984540054
 LEGACY_STRATEGY = "independent-validation-v1"
 ROLLOVER_BATCH_SIZE = 20
 ROLLOVER_AUDIT_LIMIT = 64
+CONDITION_AUDIT_LIMIT = 1600
 FUNNEL_REJECTION_LIMIT = 8
 BINARY_HIT_RESULTS = {"Won", "Half Won"}
 BINARY_MISS_RESULTS = {"Lost", "Half Lost"}
@@ -55,6 +56,12 @@ FUNNEL_AUDIT_REJECTIONS = {
 }
 
 FUNNEL_SETTLEMENT_REJECTIONS = {
+    "missing_formal_row_identity": (
+        "evidence_integrity", "正式紀錄缺少不可變識別碼",
+    ),
+    "admitted_evidence_version_mismatch": (
+        "evidence_integrity", "正式紀錄的入場證據版本或 hash 無法驗證",
+    ),
     "not_settled": ("settlement_state", "正式紀錄尚未結算"),
     "not_binary_decided": ("settlement_state", "結算不是有效二元判定"),
     "missing_or_invalid_provenance": (
@@ -1162,109 +1169,316 @@ def project_frozen_ranking_evidence(
     return projected
 
 
+def _strict_int(value: Any) -> int | None:
+    """Return a real JSON-style integer, never a bool/coerced string/float."""
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _sha256_hex(value: Any, *, length: int = 64) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == length
+        and all(char in "0123456789abcdef" for char in value)
+    )
+
+
+def _same_optional_number(actual: Any, expected: Any) -> bool:
+    if actual is None or expected is None:
+        return actual is None and expected is None
+    left, right = _number(actual), _number(expected)
+    return (
+        left is not None and right is not None
+        and math.isfinite(left) and math.isfinite(right)
+        and math.isclose(left, right, rel_tol=1e-12, abs_tol=1e-12)
+    )
+
+
+def _funnel_unavailable(system: str, reason: str) -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "read_only": True,
+        "system": system,
+        "condition_count": 0,
+        "conditions": [],
+        "unavailable_reason": reason,
+    }
+
+
+def _validate_frozen_identity_and_chain(
+    frozen: dict[str, Any], signature: str, system: str,
+) -> tuple[dict[str, Any] | None, list[dict[str, Any]] | None, str | None]:
+    """Validate one immutable definition and its complete evidence hash chain."""
+    definition = frozen.get("definition")
+    expected_definition_keys = {
+        "system", "version", "market", "stage", "path", "direction", "role",
+        "line_bucket", "odds_tier", "movement", "odds_trajectory", "miner_key",
+    }
+    if (
+        not isinstance(definition, dict)
+        or set(definition) != expected_definition_keys
+        or definition.get("system") != system
+        or not isinstance(definition.get("version"), str)
+        or not isinstance(definition.get("market"), str)
+        or not isinstance(definition.get("stage"), str)
+        or not isinstance(definition.get("miner_key"), list)
+        or any(not isinstance(item, str) for item in definition["miner_key"])
+    ):
+        return None, None, "frozen_condition_definition_invalid"
+    raw = json.dumps(
+        definition, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    )
+    rebuilt_signature = hashlib.sha256(raw.encode()).hexdigest()[:24]
+    if (
+        not _sha256_hex(signature, length=24)
+        or rebuilt_signature != signature
+        or frozen.get("signature") != signature
+    ):
+        return None, None, "frozen_condition_signature_mismatch"
+
+    versions = frozen.get("evidence_versions")
+    if (
+        not isinstance(versions, list)
+        or not versions
+        or any(not isinstance(row, dict) for row in versions)
+    ):
+        return copy.deepcopy(definition), None, "evidence_version_chain_invalid"
+
+    validated: list[dict[str, Any]] = []
+    previous: dict[str, Any] | None = None
+    previous_boundary: datetime | None = None
+    for index, row in enumerate(versions, start=1):
+        version = _strict_int(row.get("version"))
+        batch_hits = _strict_int(row.get("batch_hits"))
+        batch_decided = _strict_int(row.get("batch_decided"))
+        cumulative_hits = _strict_int(row.get("cumulative_hits"))
+        cumulative_decided = _strict_int(row.get("cumulative_decided"))
+        boundary = _time(row.get("activation_boundary_at"))
+        created_at = _time(row.get("created_at"))
+        hashes = row.get("batch_fixture_market_hashes")
+        if (
+            version != index
+            or row.get("condition_signature") != signature
+            or batch_hits is None or batch_decided is None
+            or cumulative_hits is None or cumulative_decided is None
+            or not 0 <= batch_hits <= batch_decided
+            or not 0 <= cumulative_hits <= cumulative_decided
+            or boundary is None or created_at is None
+            or not isinstance(hashes, list)
+            or any(not _sha256_hex(value) for value in hashes)
+            or len(set(hashes)) != len(hashes)
+            or not _sha256_hex(row.get("evidence_hash"))
+            or row["evidence_hash"] != _version_hash(row)
+        ):
+            return copy.deepcopy(definition), None, "evidence_version_chain_invalid"
+        legacy_batch = (
+            row.get("initial_migration_full_cohort") is True
+            and row.get("batch_fixture_market_ids_unavailable_from_legacy_aggregate") is True
+        )
+        if (
+            (len(hashes) != batch_decided and not legacy_batch)
+            or (legacy_batch and hashes)
+            or (previous_boundary is not None and boundary < previous_boundary)
+        ):
+            return copy.deepcopy(definition), None, "evidence_version_chain_invalid"
+        values = _evidence_values(cumulative_hits, cumulative_decided)
+        if (
+            not _same_optional_number(
+                row.get("wilson95_lower_raw"), values["wilson95_lower_raw"],
+            )
+            or not _same_optional_number(
+                row.get("minimum_acceptable_odds_raw"),
+                values["minimum_acceptable_odds_raw"],
+            )
+        ):
+            return copy.deepcopy(definition), None, "evidence_version_chain_invalid"
+        if previous is None:
+            if (
+                row.get("prior_version") is not None
+                or row.get("prior_evidence_hash") is not None
+            ):
+                return copy.deepcopy(definition), None, "evidence_version_chain_invalid"
+        else:
+            if (
+                row.get("prior_version") != previous["version"]
+                or row.get("prior_evidence_hash") != previous["evidence_hash"]
+                or cumulative_hits != previous["cumulative_hits"] + batch_hits
+                or cumulative_decided != previous["cumulative_decided"] + batch_decided
+            ):
+                return copy.deepcopy(definition), None, "evidence_version_chain_invalid"
+        validated.append(row)
+        previous, previous_boundary = row, boundary
+
+    active = validated[-1]
+    if (
+        _strict_int(frozen.get("active_evidence_version")) != active["version"]
+        or frozen.get("active_evidence_hash") != active["evidence_hash"]
+    ):
+        return copy.deepcopy(definition), None, "active_evidence_pointer_mismatch"
+    pointer = frozen.get("active_evidence")
+    if pointer is not None:
+        pointer_keys = (
+            "version", "cumulative_hits", "cumulative_decided",
+            "wilson95_lower_raw", "minimum_acceptable_odds_raw",
+            "minimum_acceptable_odds_display", "activation_boundary_at",
+            "created_at", "evidence_hash",
+        )
+        if (
+            not isinstance(pointer, dict)
+            or any(key not in pointer for key in pointer_keys)
+            or any(pointer.get(key) != active.get(key) for key in pointer_keys)
+        ):
+            return copy.deepcopy(definition), None, "active_evidence_pointer_mismatch"
+    return copy.deepcopy(definition), validated, None
+
+
+def _unavailable_condition_card(
+    number: int, reason: str,
+) -> dict[str, Any]:
+    stage = {
+        "available": False, "availability": "unavailable", "count": None,
+        "reason": reason,
+    }
+    progress = {
+        **stage, "required": ROLLOVER_BATCH_SIZE, "display": None,
+    }
+    return {
+        "condition_number": number,
+        "identity_available": False,
+        "condition_signature": None,
+        "condition_version": None,
+        "definition": None,
+        "frozen_at": None,
+        "unavailable_reason": reason,
+        "active_evidence": {
+            "version": None, "unavailable_reason": reason,
+        },
+        "stages": {
+            "eligible_post_activation_t5_observations": copy.deepcopy(stage),
+            "exact_condition_matches": copy.deepcopy(stage),
+            "recorded_formal_evidence": copy.deepcopy(stage),
+            "settled_valid_evidence": copy.deepcopy(stage),
+            "current_rollover_progress": progress,
+        },
+        "rejections": {
+            "bounded": True,
+            "visible_limit": FUNNEL_REJECTION_LIMIT,
+            "audit_window_limit": CONDITION_AUDIT_LIMIT,
+            "audit_truncation_possible": False,
+            "items": [],
+            "omitted_reason_kinds": 0,
+        },
+    }
+
+
 def project_condition_funnel(
     ledger: dict[str, Any], system: str,
 ) -> dict[str, Any]:
-    """Return a read-only, fail-closed funnel for every frozen condition.
-
-    Only durable native-stage decisions, immutable condition identities,
-    formal bet/observation rows, settlement provenance, and rollover/audit
-    records are used.  In particular, this projection never calls
-    :func:`ensure_namespace`, repairs a condition, or derives a pre-match
-    condition attribution from mutable watch/ranking data.
-    """
+    """Return a pure, fail-closed funnel from already-durable Wilson evidence."""
     ns = ledger.get(NAMESPACE)
-    unavailable = {
+    if (
+        not isinstance(ns, dict)
+        or ns.get("schema_version") != SCHEMA_VERSION
+        or str(ns.get("system") or "") != system
+    ):
+        return _funnel_unavailable(system, "wilson_namespace_unavailable")
+    conditions = ns.get("conditions")
+    order = ns.get("condition_order")
+    if not isinstance(conditions, dict) or not isinstance(order, list):
+        return _funnel_unavailable(system, "frozen_condition_registry_unavailable")
+    if (
+        any(not isinstance(signature, str) for signature in order)
+        or len(order) != len(set(order))
+        or set(order) != set(conditions)
+        or any(not isinstance(conditions.get(signature), dict) for signature in order)
+    ):
+        return _funnel_unavailable(system, "frozen_condition_registry_malformed")
+    numbers = [
+        _strict_int(conditions[signature].get("condition_number"))
+        for signature in order
+    ]
+    if (
+        any(number is None or number <= 0 for number in numbers)
+        or len(numbers) != len(set(numbers))
+    ):
+        return _funnel_unavailable(system, "frozen_condition_number_registry_malformed")
+
+    bets = ledger.get("bets")
+    observations = ns.get("observations", [])
+    audit = ns.get("audit")
+    if not isinstance(bets, list) or not isinstance(observations, list):
+        return _funnel_unavailable(system, "formal_evidence_containers_malformed")
+    if any(not isinstance(row, dict) for row in bets + observations):
+        return _funnel_unavailable(system, "formal_evidence_rows_malformed")
+    audit_rows_valid = isinstance(audit, list) and all(
+        isinstance(row, dict) for row in audit
+    )
+    retained_audit = list(audit) if audit_rows_valid else []
+    audit_metadata = ns.get("audit_retention")
+    dropped_count = (
+        _strict_int(audit_metadata.get("dropped_count"))
+        if isinstance(audit_metadata, dict) else None
+    )
+    metadata_limit = (
+        _strict_int(audit_metadata.get("retained_limit"))
+        if isinstance(audit_metadata, dict) else None
+    )
+    if not audit_rows_valid or len(retained_audit) > CONDITION_AUDIT_LIMIT:
+        audit_availability = "unavailable"
+        audit_reason = "condition_audit_unavailable_or_malformed"
+        audit_truncated = False
+    elif len(retained_audit) < CONDITION_AUDIT_LIMIT:
+        audit_availability = "available"
+        audit_reason = None
+        audit_truncated = False
+    elif (
+        metadata_limit == CONDITION_AUDIT_LIMIT
+        and dropped_count is not None and dropped_count > 0
+    ):
+        audit_availability = "bounded"
+        audit_reason = None
+        audit_truncated = True
+    else:
+        audit_availability = "unavailable"
+        audit_reason = "condition_audit_completeness_unproven_at_retention_limit"
+        audit_truncated = False
+
+    formal_rows = [
+        row for row in bets
+        if row.get("portfolio") == portfolio_name(system)
+        and row.get("strategy") == STRATEGY
+    ] + [
+        row for row in observations
+        if row.get("portfolio") == f"{system}_wilson_observations"
+        and row.get("strategy") == STRATEGY
+        and row.get("formal_bet") is False
+    ]
+    unavailable_upstream = {
         "available": False,
         "count": None,
         "availability": "unavailable",
         "reason": "condition_attribution_not_persisted_before_exact_match",
     }
-    if not isinstance(ns, dict) or str(ns.get("system") or "") != system:
-        return {
-            "schema_version": 1,
-            "read_only": True,
-            "system": system,
-            "condition_count": 0,
-            "conditions": [],
-            "unavailable_reason": "wilson_namespace_unavailable",
-        }
-    conditions = ns.get("conditions")
-    if not isinstance(conditions, dict):
-        return {
-            "schema_version": 1,
-            "read_only": True,
-            "system": system,
-            "condition_count": 0,
-            "conditions": [],
-            "unavailable_reason": "frozen_condition_registry_unavailable",
-        }
-
-    order = [
-        str(signature) for signature in (ns.get("condition_order") or [])
-        if str(signature) in conditions
-    ]
-    missing = [
-        str(signature) for signature in conditions
-        if str(signature) not in order
-    ]
-    def persisted_number(signature: str) -> int:
-        try:
-            return int((conditions.get(signature) or {}).get("condition_number"))
-        except (TypeError, ValueError):
-            return 10**9
-    missing.sort(key=lambda signature: (persisted_number(signature), signature))
-    signatures = order + missing
-    audit = ns.get("audit")
-    audit_available = isinstance(audit, list)
-    retained_audit = [row for row in (audit or []) if isinstance(row, dict)]
-    audit_limit = 1600
-
-    formal_rows: list[dict[str, Any]] = [
-        row for row in (ledger.get("bets") or [])
-        if isinstance(row, dict)
-        and row.get("portfolio") == portfolio_name(system)
-        and row.get("strategy") == STRATEGY
-    ]
-    observations = ns.get("observations")
-    formal_rows.extend(
-        row for row in (observations or [])
-        if isinstance(row, dict)
-        and row.get("portfolio") == f"{system}_wilson_observations"
-        and row.get("strategy") == STRATEGY
-        and row.get("formal_bet") is False
-    )
 
     output: list[dict[str, Any]] = []
-    for signature in signatures:
-        frozen = conditions.get(signature)
-        if not isinstance(frozen, dict):
-            continue
-        definition = frozen.get("definition")
-        definition = copy.deepcopy(definition) if isinstance(definition, dict) else None
-        versions = frozen.get("evidence_versions")
-        valid_versions = [row for row in (versions or []) if isinstance(row, dict)]
-        active = valid_versions[-1] if valid_versions else None
-        if not (
-            isinstance(active, dict)
-            and str(active.get("condition_signature") or "") == signature
-        ):
-            active = None
-        baseline = valid_versions[0] if valid_versions else None
-        baseline_boundary = (
-            baseline.get("activation_boundary_at")
-            if isinstance(baseline, dict)
-            and str(baseline.get("condition_signature") or "") == signature
-            else None
+    for signature, number in zip(order, numbers):
+        frozen = conditions[signature]
+        definition, versions, invalid_reason = _validate_frozen_identity_and_chain(
+            frozen, signature, system,
         )
+        if invalid_reason is not None or versions is None or definition is None:
+            output.append(_unavailable_condition_card(int(number), invalid_reason or "frozen_identity_unavailable"))
+            continue
+        active = versions[-1]
+        version_by_number = {row["version"]: row for row in versions}
 
-        exact_keys = set()
+        exact_keys: set[tuple[str, str]] = set()
         audit_rejections: dict[str, int] = {}
-        if audit_available:
+        if audit_availability != "unavailable":
             for row in retained_audit:
                 if str(row.get("frozen_condition_signature") or "") != signature:
                     continue
-                fixture, market = str(row.get("match_id") or ""), str(row.get("market") or "")
+                fixture = str(row.get("match_id") or "")
+                market = str(row.get("market") or "")
                 if fixture and market and market != "*":
                     exact_keys.add((fixture, market))
                 reason = str(row.get("reason") or "")
@@ -1275,28 +1489,30 @@ def project_condition_funnel(
             row for row in formal_rows
             if str(row.get("frozen_condition_signature") or "") == signature
         ]
-        recorded_ids = set()
+        settlement_rejections = {
+            code: 0 for code in FUNNEL_SETTLEMENT_REJECTIONS
+        }
+        identified_rows: list[tuple[tuple[str, str], dict[str, Any]]] = []
+        recorded_ids: set[tuple[str, str]] = set()
         recorded_bets = recorded_observations = 0
-        for index, row in enumerate(rows):
-            identity = str(
-                row.get("bet_id") or row.get("observation_id")
-                or f"retained-row-{index}"
-            )
+        for row in rows:
+            observation = row.get("formal_bet") is False
+            raw_identity = row.get("observation_id") if observation else row.get("bet_id")
+            if not isinstance(raw_identity, str) or not raw_identity.strip():
+                settlement_rejections["missing_formal_row_identity"] += 1
+                continue
+            identity = ("observation" if observation else "bet", raw_identity)
+            identified_rows.append((identity, row))
             if identity in recorded_ids:
                 continue
             recorded_ids.add(identity)
-            if row.get("formal_bet") is False:
+            if observation:
                 recorded_observations += 1
             else:
                 recorded_bets += 1
 
-        settlement_rejections = {
-            code: 0 for code in FUNNEL_SETTLEMENT_REJECTIONS
-        }
-        settlement_candidates: dict[str, list[dict[str, Any]]] = {}
-        baseline_time = _time(baseline_boundary)
-        settlement_available = baseline_time is not None
-        for row in rows:
+        settlement_candidates: dict[str, list[tuple[dict[str, Any], dict[str, Any]]]] = {}
+        for _identity, row in identified_rows:
             if row.get("status") != "SETTLED":
                 settlement_rejections["not_settled"] += 1
                 continue
@@ -1314,21 +1530,29 @@ def project_condition_funnel(
                 and row.get("first_native_pre_kickoff_t5") is True
                 and not row.get("post_hoc_backfill")
                 and not row.get("exclude_from_simulation")
-                and isinstance(marker.get("fixture_market_hash"), str)
-                and len(marker["fixture_market_hash"]) == 64
+                and _sha256_hex(marker.get("fixture_market_hash"))
                 and _time(marker.get("stage_at")) is not None
             ):
                 settlement_rejections["missing_or_invalid_provenance"] += 1
                 continue
-            if baseline_time is None or not _strictly_after(
-                marker.get("stage_at"), baseline_boundary,
+            admitted_version = _strict_int(marker.get("admitted_evidence_version"))
+            admitted_hash = marker.get("admitted_evidence_hash")
+            admitted = version_by_number.get(admitted_version)
+            if (
+                admitted is None
+                or not _sha256_hex(admitted_hash)
+                or admitted_hash != admitted["evidence_hash"]
+                or not _strictly_after(
+                    marker.get("stage_at"), admitted.get("activation_boundary_at"),
+                )
             ):
-                settlement_rejections["before_snapshot_boundary"] += 1
+                settlement_rejections["admitted_evidence_version_mismatch"] += 1
                 continue
             settlement_candidates.setdefault(
                 str(marker["fixture_market_hash"]), [],
-            ).append(row)
-        settled_valid = []
+            ).append((row, admitted))
+
+        settled_valid: list[tuple[dict[str, Any], dict[str, Any]]] = []
         for grouped in settlement_candidates.values():
             if len(grouped) != 1:
                 settlement_rejections[
@@ -1337,23 +1561,43 @@ def project_condition_funnel(
                 continue
             settled_valid.append(grouped[0])
 
-        pending = frozen.get("pending_rollover_progress")
-        progress: dict[str, Any]
-        try:
-            progress_count = int(pending.get("eligible_decided"))
-            progress_required = int(pending.get("required"))
-            progress_display = str(pending.get("display") or "")
-            progress_valid = (
-                isinstance(pending, dict)
-                and progress_count >= 0
-                and progress_required == ROLLOVER_BATCH_SIZE
-                and progress_display == f"{progress_count}/{progress_required}"
+        active_pending = [
+            (row, admitted) for row, admitted in settled_valid
+            if admitted["version"] == active["version"]
+            and admitted["evidence_hash"] == active["evidence_hash"]
+            and _strictly_after(
+                row["rollover_provenance"].get("stage_at"),
+                active.get("activation_boundary_at"),
             )
-        except (AttributeError, TypeError, ValueError):
-            progress_count = 0
-            progress_required = ROLLOVER_BATCH_SIZE
-            progress_display = ""
+        ]
+        pending_count = len(active_pending)
+        pending_hits = sum(
+            row.get("result") in BINARY_HIT_RESULTS for row, _admitted in active_pending
+        )
+        pending = frozen.get("pending_rollover_progress")
+        progress_reason = "persisted_rollover_progress_unavailable_or_inconsistent"
+        progress_valid = isinstance(pending, dict)
+        progress_count = _strict_int(pending.get("eligible_decided")) if progress_valid else None
+        progress_hits = _strict_int(pending.get("eligible_hits")) if progress_valid else None
+        progress_required = _strict_int(pending.get("required")) if progress_valid else None
+        progress_display = pending.get("display") if progress_valid else None
+        blocked_reason = pending.get("blocked_reason") if progress_valid else None
+        accuracy = pending.get("accuracy") if progress_valid else None
+        if isinstance(blocked_reason, str) and blocked_reason:
             progress_valid = False
+            progress_reason = "persisted_rollover_progress_blocked"
+        expected_accuracy = pending_hits / pending_count if pending_count else None
+        progress_valid = bool(
+            progress_valid
+            and progress_count is not None
+            and progress_hits is not None
+            and progress_required == ROLLOVER_BATCH_SIZE
+            and 0 <= progress_hits <= progress_count < progress_required
+            and progress_count == pending_count
+            and progress_hits == pending_hits
+            and progress_display == f"{progress_count}/{progress_required}"
+            and _same_optional_number(accuracy, expected_accuracy)
+        )
         if progress_valid:
             progress = {
                 "available": True,
@@ -1361,9 +1605,9 @@ def project_condition_funnel(
                 "count": progress_count,
                 "required": progress_required,
                 "display": progress_display,
-                "eligible_hits": pending.get("eligible_hits"),
-                "blocked_reason": pending.get("blocked_reason"),
-                "source": "persisted_pending_rollover_progress",
+                "eligible_hits": progress_hits,
+                "blocked_reason": None,
+                "source": "validated_persisted_pending_rollover_progress",
             }
         else:
             progress = {
@@ -1372,11 +1616,12 @@ def project_condition_funnel(
                 "count": None,
                 "required": ROLLOVER_BATCH_SIZE,
                 "display": None,
-                "reason": "persisted_rollover_progress_unavailable_or_inconsistent",
+                "reason": progress_reason,
+                "blocked_reason": blocked_reason if isinstance(blocked_reason, str) else None,
             }
 
         rejection_rows = []
-        for source, counts, definitions in (
+        for source_name, counts, definitions in (
             ("retained_condition_audit", audit_rejections, FUNNEL_AUDIT_REJECTIONS),
             ("formal_settlement_evidence", settlement_rejections, FUNNEL_SETTLEMENT_REJECTIONS),
         ):
@@ -1389,78 +1634,83 @@ def project_condition_funnel(
                     "code": code,
                     "label": label,
                     "count": count,
-                    "source": source,
+                    "source": source_name,
                 })
         rejection_rows.sort(key=lambda row: (
             -int(row["count"]), str(row["category"]), str(row["code"]),
         ))
-        omitted_rejection_kinds = max(
-            0, len(rejection_rows) - FUNNEL_REJECTION_LIMIT,
-        )
+        omitted = max(0, len(rejection_rows) - FUNNEL_REJECTION_LIMIT)
+        if audit_availability == "unavailable":
+            exact_stage = {
+                "available": False,
+                "availability": "unavailable",
+                "count": None,
+                "scope": "condition_attributed_audit",
+                "retained_audit_entries": len(retained_audit),
+                "window_limit": CONDITION_AUDIT_LIMIT,
+                "truncation_possible": False,
+                "reason": audit_reason,
+            }
+        else:
+            exact_stage = {
+                "available": True,
+                "availability": audit_availability,
+                "count": len(exact_keys),
+                "scope": (
+                    "proven_truncated_condition_attributed_audit_window"
+                    if audit_truncated else "complete_retained_condition_attributed_audit"
+                ),
+                "retained_audit_entries": len(retained_audit),
+                "window_limit": CONDITION_AUDIT_LIMIT,
+                "truncation_possible": audit_truncated,
+                "reason": None,
+            }
 
         output.append({
-            "condition_number": frozen.get("condition_number"),
+            "condition_number": number,
+            "identity_available": True,
             "condition_signature": signature,
-            "condition_version": (
-                definition.get("version") if isinstance(definition, dict) else None
-            ),
+            "condition_version": definition["version"],
             "definition": definition,
             "frozen_at": frozen.get("frozen_at"),
+            "unavailable_reason": None,
             "active_evidence": {
                 key: copy.deepcopy(active.get(key)) for key in (
                     "version", "evidence_hash", "cumulative_hits",
                     "cumulative_decided", "activation_boundary_at",
                 )
-            } if active is not None else {
-                "version": None,
-                "unavailable_reason": "active_evidence_version_unavailable",
             },
             "stages": {
-                # A condition does not exist on an unmatched native T-5 row.
-                # Assigning those rows to every frozen condition would inflate
-                # the first stage, so absence remains explicit.
-                "eligible_post_activation_t5_observations": copy.deepcopy(unavailable),
-                "exact_condition_matches": {
-                    "available": audit_available,
-                    "availability": "bounded" if audit_available else "unavailable",
-                    "count": len(exact_keys) if audit_available else None,
-                    "scope": "retained_condition_attributed_audit_window",
-                    "retained_audit_entries": len(retained_audit),
-                    "window_limit": audit_limit,
-                    "truncation_possible": len(retained_audit) >= audit_limit,
-                    "reason": None if audit_available else "condition_audit_unavailable",
-                },
+                "eligible_post_activation_t5_observations": copy.deepcopy(unavailable_upstream),
+                "exact_condition_matches": exact_stage,
                 "recorded_formal_evidence": {
                     "available": True,
                     "availability": "available",
                     "count": len(recorded_ids),
                     "formal_bets": recorded_bets,
                     "formal_observations": recorded_observations,
-                    "scope": "persisted_signature_bound_formal_rows",
+                    "scope": "persisted_signature_bound_identified_formal_rows",
                 },
                 "settled_valid_evidence": {
-                    "available": settlement_available,
-                    "availability": "available" if settlement_available else "unavailable",
-                    "count": len(settled_valid) if settlement_available else None,
-                    "hits": (
-                        sum(row.get("result") in BINARY_HIT_RESULTS for row in settled_valid)
-                        if settlement_available else None
+                    "available": True,
+                    "availability": "available",
+                    "count": len(settled_valid),
+                    "hits": sum(
+                        row.get("result") in BINARY_HIT_RESULTS
+                        for row, _admitted in settled_valid
                     ),
-                    "scope": "unique_binary_settled_rows_after_initial_evidence_boundary",
-                    "reason": (
-                        None if settlement_available
-                        else "initial_evidence_boundary_unavailable"
-                    ),
+                    "scope": "unique_binary_rows_exactly_bound_to_validated_admitted_evidence",
+                    "reason": None,
                 },
                 "current_rollover_progress": progress,
             },
             "rejections": {
                 "bounded": True,
                 "visible_limit": FUNNEL_REJECTION_LIMIT,
-                "audit_window_limit": audit_limit,
-                "audit_truncation_possible": len(retained_audit) >= audit_limit,
+                "audit_window_limit": CONDITION_AUDIT_LIMIT,
+                "audit_truncation_possible": audit_truncated,
                 "items": rejection_rows[:FUNNEL_REJECTION_LIMIT],
-                "omitted_reason_kinds": omitted_rejection_kinds,
+                "omitted_reason_kinds": omitted,
             },
         })
     return {
@@ -1468,10 +1718,10 @@ def project_condition_funnel(
         "read_only": True,
         "system": system,
         "condition_count": len(output),
-        "audit_window_limit": audit_limit,
+        "audit_window_limit": CONDITION_AUDIT_LIMIT,
         "conditions": output,
+        "unavailable_reason": None,
     }
-
 
 def project_dashboard_research_matches(
     matches: Iterable[dict[str, Any]],
