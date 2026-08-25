@@ -267,6 +267,50 @@ def _evidence_values(hits: int, decided: int) -> dict[str, Any]:
     }
 
 
+def _pending_rate_forecast(
+    hits: int, decided: int, pending: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Project one full batch if its current pending hit rate holds."""
+    pending_accuracy = _number(pending.get("accuracy"))
+    try:
+        pending_decided = int(pending.get("eligible_decided") or 0)
+        pending_hits = int(pending.get("eligible_hits") or 0)
+        required = int(pending.get("required") or ROLLOVER_BATCH_SIZE)
+    except (TypeError, ValueError):
+        return None
+    if (
+        pending_decided <= 0 or pending_accuracy is None
+        or pending_hits < 0 or pending_hits > pending_decided
+        or not 0.0 <= pending_accuracy <= 1.0 or required <= 0
+    ):
+        return None
+    # Binary outcomes require a whole-number final batch. Round half up so the
+    # server projection is deterministic and matches the explanatory display.
+    projected_batch_hits = min(
+        required, max(0, math.floor(pending_accuracy * required + 0.5)),
+    )
+    values = _evidence_values(
+        hits + projected_batch_hits, decided + required,
+    )
+    return {
+        "basis_pending_hits": pending_hits,
+        "basis_pending_decided": pending_decided,
+        "basis_pending_accuracy": pending_accuracy,
+        "projected_batch_hits": projected_batch_hits,
+        "projected_batch_decided": required,
+        "projected_cumulative_hits": values["hits"],
+        "projected_cumulative_decided": values["decided"],
+        "projected_wilson95_lower_raw": values["wilson95_lower_raw"],
+        "projected_minimum_acceptable_odds_raw": values[
+            "minimum_acceptable_odds_raw"
+        ],
+        "projected_minimum_acceptable_odds_display": values["display"][
+            "minimum_acceptable_odds"
+        ],
+        "method": "current_pending_hit_rate_nearest_whole_batch_hit",
+    }
+
+
 def _version_hash(payload: dict[str, Any]) -> str:
     """Hash only immutable evidence content, never raw fixture/provider ids."""
     hashable = {
@@ -1043,6 +1087,7 @@ def _project_frozen_ranking_evidence(
             "pending_decided": int(pending.get("eligible_decided") or 0),
             "pending_hits": int(pending.get("eligible_hits") or 0),
             "pending_accuracy": _number(pending.get("accuracy")),
+            "if_rate_holds": _pending_rate_forecast(hits, decided, pending),
             "required": int(pending.get("required") or ROLLOVER_BATCH_SIZE),
             "display": str(pending.get("display") or f"0/{ROLLOVER_BATCH_SIZE}"),
         }

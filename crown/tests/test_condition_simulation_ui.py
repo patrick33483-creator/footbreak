@@ -67,7 +67,7 @@ class ConditionSimulationUiTests(unittest.TestCase):
             source = path.read_text(encoding="utf-8")
             cards = source[
                 source.index("function historyConsensusCards"):
-                source.index("function historyConsensusCards") + 2800
+                source.index("function conditionMatchesCard")
             ]
             with self.subTest(path=path):
                 self.assertIn("const hasFrozenCondition", cards)

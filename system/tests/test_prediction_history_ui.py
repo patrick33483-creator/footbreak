@@ -204,7 +204,7 @@ class PredictionHistoryUiTests(unittest.TestCase):
             app = (ROOT / dashboard / "app.js").read_text(encoding="utf-8")
             cards = app[
                 app.index("function historyConsensusCards"):
-                app.index("function historyConsensusCards") + 2800
+                app.index("function conditionMatchesCard")
             ]
             with self.subTest(dashboard=dashboard):
                 self.assertIn(f"const WILSON_CONDITION_SCOPE = '{scope}'", app)
