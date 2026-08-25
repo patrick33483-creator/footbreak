@@ -3310,7 +3310,7 @@ class CrownSafetyTests(unittest.TestCase):
                 write_dashboard_data(config)
             self.assertEqual(ledger_path.read_bytes(), before)
 
-    def test_dashboard_live_board_uses_verified_crown_prices_as_the_master_list(self) -> None:
+    def test_dashboard_live_board_keeps_current_period_cards_without_crown_prices(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             config = replace(settings(), state_dir=root / "private-state", web_root=root / "web")
@@ -3322,11 +3322,17 @@ class CrownSafetyTests(unittest.TestCase):
                 {"match_id": "crown-only", "kickoff_hkt": kickoff, "hkjc_match_id": None,
                  "book_odds": {"crown": [{"market": "HDC"}]}, "status": "DATA_MISSING"},
                 {"match_id": "hkjc-only", "kickoff_hkt": kickoff, "hkjc_match_id": "h1",
-                 "book_odds": {"crown": []}, "status": "DATA_MISSING"},
+                 "book_odds": {"crown": []}, "status": "REFERENCE_READY",
+                 "stages": [{"stage": "首預", "status": "REFERENCE_READY",
+                             "ts": "2026-08-25T12:51:49+08:00"}]},
             ])
             payload = build(config)
-            self.assertEqual([row["match_id"] for row in payload["matches"]], ["crown-only"])
-            self.assertEqual(payload["summary"]["crown_matches"], 1)
+            self.assertEqual(
+                [row["match_id"] for row in payload["matches"]],
+                ["crown-only", "hkjc-only"],
+            )
+            self.assertEqual(payload["matches"][1]["stages"][0]["stage"], "首預")
+            self.assertEqual(payload["summary"]["crown_matches"], 2)
 
     def test_dashboard_publishes_history_rows_only_in_complete_sidecar(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

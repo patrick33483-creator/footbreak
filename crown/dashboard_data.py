@@ -54,12 +54,17 @@ def _dashboard_publish_lock(destination: Path):
 
 
 def _dashboard_matches(config: Settings) -> list[dict[str, Any]]:
-    """Return the persisted current-period Crown cards without remote work."""
+    """Return every persisted current-period Crown card without remote work.
+
+    A Crown quote is stage evidence, not fixture-discovery eligibility.  Cards
+    whose current quote is unavailable must stay on the work board so their
+    immutable first-look/T-30/T-5 state remains visible and the browser can
+    render its existing "odds unavailable" treatment.
+    """
     return [
         row for row in load_predictions(config)
         if (kickoff := parse_time(row.get("kickoff_hkt") or row.get("kickoff"))) is not None
         and in_current_period(kickoff)
-        and bool((row.get("book_odds") or {}).get("crown"))
     ]
 
 
