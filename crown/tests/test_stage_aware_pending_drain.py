@@ -1,0 +1,85 @@
+from __future__ import annotations
+
+import time
+import unittest
+from contextlib import contextmanager
+from dataclasses import replace
+from datetime import datetime, timedelta
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
+
+from crown import engine
+from crown.common import HKT
+from crown.config import settings
+
+
+class StageAwarePendingDrainTests(unittest.TestCase):
+    def test_deadline_bounds_optional_work_outside_state_lock(self):
+        future = datetime.now(HKT) + timedelta(hours=2)
+        ledger = {"bets": [], "watch": {}, "log": []}
+        depth = {"value": 0}
+        seen = {}
+
+        @contextmanager
+        def tracked_lock(*_args, **_kwargs):
+            depth["value"] += 1
+            try:
+                yield True
+            finally:
+                depth["value"] -= 1
+
+        def fake_sync(value, _prediction, _config, **_kwargs):
+            value["watch"].setdefault("m1", {"stages": []})["stages"].append({
+                "stage": "首預", "formal_admission_pending": True,
+            })
+            return []
+
+        def slow_reconcile(value, _config):
+            seen["lock_depth"] = depth["value"]
+            time.sleep(0.12)
+            value["watch"]["m1"]["stages"][0]["formal_admission_pending"] = False
+            return []
+
+        prediction = {
+            "match_id": "m1", "kickoff_hkt": future.isoformat(),
+            "stage": "首預", "status": "PREDICTION_READY",
+        }
+        with TemporaryDirectory() as directory:
+            config = replace(settings(), state_dir=Path(directory))
+            deadline = time.monotonic() + 0.02
+            started = time.monotonic()
+            with patch("crown.engine.state_lock", side_effect=tracked_lock), \
+                 patch("crown.engine.load_ledger", return_value=ledger), \
+                 patch("crown.engine.load_predictions", return_value=[]), \
+                 patch("crown.engine.save_ledger"), \
+                 patch("crown.engine.merge_predictions", return_value=[]), \
+                 patch("crown.engine.sync_prediction", side_effect=fake_sync), \
+                 patch(
+                     "crown.engine.reconcile_pending_formal_admissions",
+                     side_effect=slow_reconcile,
+                 ):
+                engine._commit_stage_predictions(
+                    config, "tick", [prediction], deadline=deadline,
+                )
+            elapsed = time.monotonic() - started
+        self.assertIn(seen.get("lock_depth"), (None, 0))
+        self.assertLess(elapsed, 0.08)
+
+    def test_empty_batch_still_attempts_bounded_pending_drain(self):
+        with TemporaryDirectory() as directory:
+            config = replace(settings(), state_dir=Path(directory))
+            with patch("crown.engine.load_predictions", return_value=[]), \
+                 patch(
+                     "crown.engine.reconcile_pending_formal_admissions",
+                     return_value=[],
+                 ) as reconcile:
+                result = engine._commit_stage_predictions(
+                    config, "tick", [], deadline=time.monotonic() + 1,
+                )
+        self.assertEqual(result, ([], [], [], 0))
+        reconcile.assert_called_once()
+
+
+if __name__ == "__main__":
+    unittest.main()

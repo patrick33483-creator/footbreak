@@ -126,6 +126,7 @@ def formal_row(signature: str, identity: str | None, fixture_hash: str, admitted
         ),
         "portfolio": "footbreak_wilson_observations" if observation else "footbreak_wilson_test",
         "strategy": "wilson-test-strategy-v1", "formal_bet": not observation,
+        "simulation_only": True, "real_betting_enabled": False,
         "match_id": fixture_hash, "market": market, "code": market,
         "kickoff": kickoff,
         "created_at": created_at, "admission_at": created_at,

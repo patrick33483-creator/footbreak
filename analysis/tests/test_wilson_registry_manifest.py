@@ -19,7 +19,7 @@ def add_real(l,system,i,result="Won"):
  a={"signature":s,"definition":copy.deepcopy(f["definition"]),"history":copy.deepcopy(f["historical_evidence"]),"arithmetic":admission_arithmetic(f["historical_evidence"]["hits"],f["historical_evidence"]["decided"],odds)}
  a,reason=apply_active_evidence(l,system,a,stage_at=stage,now=stage);assert reason is None
  r=commit_bet(l,system,{"match_id":f"fixture-{i}","kickoff":"2026-08-22T00:00:00+08:00"},"CHL",{"side":"H","line":0,"odds":odds},a,now=stage,market_label="角球",selected_label="角球",selected_role="home",selected_line=0);assert r
- r.update(status="SETTLED",result=result,pnl=1,settled_at=stage);l["bets"].append(r);return r
+ r.update(status="SETTLED",result=result,pnl=1,settled_at="2026-08-22T01:00:00+08:00");l["bets"].append(r);return r
 class ManifestTest(unittest.TestCase):
  def assertRejected(self,l,reason,system="footbreak"):
   m=build_manifest(l,system); self.assertFalse(m["valid"],m); self.assertIn(reason,m["rejection_reasons"])

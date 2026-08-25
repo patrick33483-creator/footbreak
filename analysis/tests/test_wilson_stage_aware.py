@@ -10,6 +10,7 @@ from analysis.wilson_portfolio import evaluate_stage
 from analysis.wilson_registry_manifest import build_manifest
 from analysis.wilson_validation import (
     _evidence_values,
+    _fixture_market_hash,
     _version_hash,
     active_observations,
     create_production_identity_manifest,
@@ -191,6 +192,21 @@ class StageAwareWilsonTests(unittest.TestCase):
         self.assertEqual(repeated, [])
         self.assertEqual(len(active_observations(value, "footbreak")), 1)
 
+    def test_production_shaped_condition_three_keeps_number_and_identity(self):
+        value = ledger()
+        value["wilson_validation"]["conditions"][SIGNATURE]["condition_number"] = 3
+        self.evaluate(value, watch())
+        row = active_observations(value, "footbreak")[0]
+        self.assertEqual(row["condition_number"], 3)
+        self.assertEqual(row["frozen_condition_signature"], SIGNATURE)
+        self.assertEqual(
+            hashlib.sha256(json.dumps(
+                row["frozen_condition_definition"], ensure_ascii=False,
+                sort_keys=True, separators=(",", ":"),
+            ).encode()).hexdigest(),
+            DEFINITION_HASH,
+        )
+
     def test_stage_isolation_later_snapshots_cannot_change_first_look(self):
         value = ledger()
         card = watch()
@@ -315,6 +331,76 @@ class StageAwareWilsonTests(unittest.TestCase):
             ),
             {},
         )
+
+    def test_reverse_or_post_snapshot_quote_chronology_never_matches(self):
+        candidate = {
+            "__formal_frozen_signature": "chrono",
+            "key": [
+                "system=crown", "market=HDC", "path=首預→T-30",
+                "decision=T-30", "tier=≥1.70", "direction=A→A",
+                "role=主讓", "bucket=0.25–0.5", "movement=不變",
+                "tier_path=≥1.70→≥1.70",
+            ],
+        }
+        def row(stage, saved, observed):
+            return {
+                "match_id": "chrono", "stage": stage, "kickoff": KICKOFF,
+                "predicted_at": saved,
+                "market_predictions": [{
+                    "code": "HDC", "side": "H", "line": -0.25, "odds": 1.8,
+                    "observed_at": observed,
+                }],
+            }
+        reverse = [
+            row("首預", "2026-08-25T19:40:00+08:00", "2026-08-25T19:39:00+08:00"),
+            row("T-30", "2026-08-25T19:30:00+08:00", "2026-08-25T19:29:00+08:00"),
+        ]
+        post_snapshot = [
+            row("首預", "2026-08-25T18:00:00+08:00", "2026-08-25T18:01:00+08:00"),
+            row("T-30", "2026-08-25T19:30:00+08:00", "2026-08-25T19:29:00+08:00"),
+        ]
+        for rows in (reverse, post_snapshot):
+            self.assertEqual(
+                match_formal_registry(
+                    rows, [candidate], system="crown", decision_stage="T-30",
+                ),
+                {},
+            )
+
+    def test_runtime_rollover_rejects_forged_rows_before_version_mutation(self):
+        value = ledger()
+        self.evaluate(value, watch())
+        template = active_observations(value, "footbreak")[0]
+        forged = []
+        for index in range(20):
+            row = copy.deepcopy(template)
+            fixture = f"forged-{index:02d}"
+            row.update({
+                "match_id": fixture,
+                "observation_id": f"noncanonical-{index}",
+                "status": "SETTLED",
+                "result": "Won",
+                "settled_at": "2026-08-25T09:00:00+08:00",
+                "evidence_version": 999,
+                "evidence_hash": "f" * 64,
+            })
+            row["frozen_historical_evidence"].update({
+                "evidence_version": 999, "evidence_hash": "f" * 64,
+            })
+            row["rollover_provenance"].update({
+                "fixture_market_hash": _fixture_market_hash(
+                    "footbreak", fixture, "HIL",
+                ),
+                "admitted_evidence_version": 999,
+                "admitted_evidence_hash": "f" * 64,
+            })
+            forged.append(row)
+        value["wilson_validation"]["observations"] = forged
+        frozen = value["wilson_validation"]["conditions"][SIGNATURE]
+        before = copy.deepcopy(frozen)
+        recompute_namespace(value, "footbreak")
+        self.assertEqual(frozen, before)
+        self.assertEqual(frozen["active_evidence_version"], 1)
 
 
 if __name__ == "__main__":

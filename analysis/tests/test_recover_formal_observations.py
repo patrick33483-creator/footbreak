@@ -93,10 +93,13 @@ class FormalObservationRecoveryTest(unittest.TestCase):
         self.assertNotIn("stake", row)
         self.assertTrue(row["recovered_formal_observation"]["admitted_without_result_input"])
         frozen = ledger["wilson_validation"]["conditions"][row["frozen_condition_signature"]]
-        self.assertEqual(frozen["pending_rollover_progress"]["display"], "1/20")
+        # Historical recovery rows remain retained migration records, but the
+        # live x20 runtime refuses their non-native settlement timestamp.
+        self.assertNotIn("pending_rollover_progress", frozen)
+        self.assertEqual(len(frozen["evidence_versions"]), 1)
         rerun = recover_system(ledger, history(), "footbreak", apply=True)
         self.assertEqual((rerun["accepted"], rerun["rejected"], rerun["skipped"]), (0, 0, 1))
-        self.assertEqual(frozen["pending_rollover_progress"]["display"], "1/20")
+        self.assertNotIn("pending_rollover_progress", frozen)
 
     def test_missing_normal_grade_and_duplicate_conflict_fail_closed(self):
         missing = recover_system(self._ledger(), history(graded=False), "footbreak", apply=False)

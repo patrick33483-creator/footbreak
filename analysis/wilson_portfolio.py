@@ -110,6 +110,7 @@ def _native_match_rows(
     if not fixture or kickoff_at is None:
         return []
     result: list[dict[str, Any]] = []
+    previous_saved: datetime | None = None
     stages = ("首預", "T-30", "T-5")
     if through_stage not in stages:
         return []
@@ -129,15 +130,25 @@ def _native_match_rows(
             or stage.get("exclude_from_simulation")
         ):
             continue
+        # A multi-stage trajectory is causal only when native commits are
+        # strictly ordered in stage order. Reject the whole panel rather than
+        # silently constructing a shorter path around corrupt chronology.
+        if previous_saved is not None and saved <= previous_saved:
+            return []
         selections = []
         for market in MARKETS:
             selected, _reason = _selected(
                 stage, market, parse_time, fixture_kickoff=kickoff,
             )
-            if selected is not None:
+            observed = (
+                _parse(selected.get("observed_at"), parse_time)
+                if selected is not None else None
+            )
+            if selected is not None and observed is not None and observed <= saved:
                 selections.append(dict(selected))
         if not selections:
             continue
+        previous_saved = saved
         result.append({
             "match_id": fixture, "stage": stage_name, "kickoff": kickoff,
             "predicted_at": str(stage.get("ts") or stage.get("source_snapshot_at")),

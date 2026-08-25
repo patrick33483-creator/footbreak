@@ -1,9 +1,11 @@
 """Crown prediction pass with independent forecasting and strict PinnAPI betting gates."""
 from __future__ import annotations
 
+import copy
 import math
 import multiprocessing
 import os
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
@@ -1910,6 +1912,75 @@ def refresh_current_quotes(config: Settings) -> dict[str, Any]:
     }
 
 
+def _has_pending_formal_admission(ledger: dict[str, Any], stage: str | None = None) -> bool:
+    return any(
+        isinstance(row, dict)
+        and row.get("formal_admission_pending") is True
+        and (stage is None or row.get("stage") == stage)
+        for watch in (ledger.get("watch") or {}).values()
+        if isinstance(watch, dict)
+        for row in watch.get("stages") or []
+    )
+
+
+def _drain_pending_formal_admissions(
+    config: Settings, *, deadline: float | None = None,
+) -> list[str]:
+    """Run bounded optional matching outside the state lock, then CAS-save.
+
+    The worker receives an isolated ledger copy. If it exceeds the remaining
+    budget, it can only mutate that abandoned copy. The final short lock writes
+    results only when the durable ledger is byte-for-byte unchanged since the
+    copy was loaded, preserving native-writer preemption.
+    """
+    remaining = _deadline_remaining(deadline) if deadline is not None else 0.5
+    if remaining <= 0:
+        return []
+    lock_wait = min(0.05, remaining)
+    with state_lock(config, timeout_seconds=lock_wait) as acquired:
+        if not acquired:
+            return []
+        base = load_ledger(config)
+        staged = copy.deepcopy(base)
+    pending_t5 = _has_pending_formal_admission(staged, "T-5")
+    result: dict[str, Any] = {}
+    remaining = _deadline_remaining(deadline) if deadline is not None else 0.5
+    if remaining < 0.05:
+        return []
+
+    def consume() -> None:
+        try:
+            result["emitted"] = reconcile_pending_formal_admissions(staged, config)
+        except Exception as exc:
+            result["error"] = type(exc).__name__
+
+    worker = threading.Thread(target=consume, daemon=True)
+    worker.start()
+    worker.join(max(0.0, remaining))
+    if worker.is_alive() or "error" in result:
+        return []
+    emitted = result.get("emitted")
+    emitted = list(emitted) if isinstance(emitted, (list, tuple)) else []
+    if pending_t5:
+        recompute_stats(staged, config)
+    if staged == base:
+        return emitted
+    remaining = _deadline_remaining(deadline) if deadline is not None else 0.5
+    if remaining <= 0:
+        return []
+    with state_lock(config, timeout_seconds=min(0.05, remaining)) as acquired:
+        if not acquired:
+            return []
+        current = load_ledger(config)
+        if current != base:
+            return []
+        if staged.get("log"):
+            staged["log"][-1]["n_changes"] = len(emitted)
+            staged["log"][-1]["changes"] = emitted or ["今次無模擬注動作"]
+        save_ledger(config, staged)
+    return emitted
+
+
 def _commit_stage_predictions(
     config: Settings,
     mode: str,
@@ -1919,6 +1990,7 @@ def _commit_stage_predictions(
 ) -> tuple[list[str], list[dict[str, str]], list[str], int]:
     """Commit a completed batch while holding the state lock only briefly."""
     if not stage_predictions:
+        _drain_pending_formal_admissions(config, deadline=deadline)
         return [], [], [], len(load_predictions(config))
     _timing.record(
         "commit_stage_predictions_entered", deadline=deadline,
@@ -2015,34 +2087,7 @@ def _commit_stage_predictions(
         save_ledger(config, ledger)
         _timing.record("commit_stage_predictions_after_save_ledger", deadline=deadline)
         retained = merge_predictions(config, committed_predictions)
-    # Release the deadline-critical native lock before any optional matching.
-    # A competing native writer therefore always has a preemption point.
-    with state_lock(config, timeout_seconds=0.5) as acquired:
-        if acquired:
-            ledger = load_ledger(config)
-            pending = any(
-                isinstance(row, dict)
-                and row.get("formal_admission_pending") is True
-                for watch in (ledger.get("watch") or {}).values()
-                if isinstance(watch, dict)
-                for row in watch.get("stages") or []
-            )
-            if pending:
-                pending_t5 = any(
-                    isinstance(row, dict)
-                    and row.get("formal_admission_pending") is True
-                    and row.get("stage") == "T-5"
-                    for watch in (ledger.get("watch") or {}).values()
-                    if isinstance(watch, dict)
-                    for row in watch.get("stages") or []
-                )
-                emitted.extend(reconcile_pending_formal_admissions(ledger, config))
-                if pending_t5:
-                    recompute_stats(ledger, config)
-                if ledger.get("log"):
-                    ledger["log"][-1]["n_changes"] = len(emitted)
-                    ledger["log"][-1]["changes"] = emitted or ["今次無模擬注動作"]
-                save_ledger(config, ledger)
+    emitted.extend(_drain_pending_formal_admissions(config, deadline=deadline))
     if mode != "tick":
         schedule_footbreak_execution_evidence_projection(
             config, evidence_projection_stages,
@@ -2678,10 +2723,13 @@ def run(
                 )
             except Exception:
                 pass
+            pending_emitted = _drain_pending_formal_admissions(
+                config, deadline=tick_deadline,
+            )
             return {
                 "ok": True, "mode": mode, "fast_noop": True,
                 "predictions": 0, "retained_predictions": len(existing_predictions),
-                "simulations_created": 0,
+                "simulations_created": len(pending_emitted),
                 "repaired_stage_jobs": repaired_stage_jobs,
                 "expired_stage_attempts": expired_stage_attempts,
             }
@@ -3121,32 +3169,7 @@ def run(
         ledger["log"] = ledger["log"][-100:]
         save_ledger(config, ledger)
         retained = merge_predictions(config, predictions)
-    with state_lock(config, timeout_seconds=0.5) as acquired:
-        if acquired:
-            ledger = load_ledger(config)
-            pending = any(
-                isinstance(row, dict)
-                and row.get("formal_admission_pending") is True
-                for watch in (ledger.get("watch") or {}).values()
-                if isinstance(watch, dict)
-                for row in watch.get("stages") or []
-            )
-            if pending:
-                pending_t5 = any(
-                    isinstance(row, dict)
-                    and row.get("formal_admission_pending") is True
-                    and row.get("stage") == "T-5"
-                    for watch in (ledger.get("watch") or {}).values()
-                    if isinstance(watch, dict)
-                    for row in watch.get("stages") or []
-                )
-                emitted += reconcile_pending_formal_admissions(ledger, config)
-                if pending_t5:
-                    recompute_stats(ledger, config)
-                if ledger.get("log"):
-                    ledger["log"][-1]["n_changes"] = len(emitted)
-                    ledger["log"][-1]["changes"] = emitted or ["今次無模擬注動作"]
-                save_ledger(config, ledger)
+    emitted += _drain_pending_formal_admissions(config)
     if mode not in {"tick", "first-look-reconcile"}:
         schedule_footbreak_execution_evidence_projection(
             config, evidence_projection_stages,

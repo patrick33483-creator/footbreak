@@ -913,6 +913,41 @@ def match_formal_registry(
     """Match the complete immutable formal identity, including price path."""
     from .granular_conditions import _descriptor, _paths, canonical_panels
 
+    materialized = [row for row in rows if isinstance(row, dict)]
+    by_fixture: dict[str, list[dict[str, Any]]] = {}
+    for row in materialized:
+        by_fixture.setdefault(str(row.get("match_id") or ""), []).append(row)
+    invalid_chronology: set[str] = set()
+    order = {"首預": 0, "T-30": 1, "T-5": 2}
+    for fixture, fixture_rows in by_fixture.items():
+        staged: list[tuple[int, datetime]] = []
+        kickoffs: set[str] = set()
+        for row in fixture_rows:
+            stage = str(row.get("stage") or "")
+            saved = _time(
+                row.get("predicted_at") or row.get("ts")
+                or row.get("source_snapshot_at")
+            )
+            kickoff = _time(row.get("kickoff") or row.get("kickoff_hkt"))
+            if stage in order and saved is not None:
+                staged.append((order[stage], saved))
+            if kickoff is not None:
+                kickoffs.add(kickoff.isoformat())
+            for selected in row.get("market_predictions") or []:
+                if not isinstance(selected, dict) or saved is None:
+                    continue
+                observed = _time(selected.get("observed_at"))
+                if observed is not None and observed > saved:
+                    invalid_chronology.add(fixture)
+        staged.sort()
+        if len(kickoffs) > 1 or any(
+            right[1] <= left[1] for left, right in zip(staged, staged[1:])
+        ):
+            invalid_chronology.add(fixture)
+    materialized = [
+        row for row in materialized
+        if str(row.get("match_id") or "") not in invalid_chronology
+    ]
     candidates = [
         (candidate, formal_matcher_axes(
             candidate, system=system, decision_stage=decision_stage,
@@ -921,7 +956,7 @@ def match_formal_registry(
     ]
     candidates = [(candidate, key) for candidate, key in candidates if key is not None]
     output: dict[str, list[dict[str, Any]]] = {}
-    for panel in canonical_panels(rows, settled_only=False):
+    for panel in canonical_panels(materialized, settled_only=False):
         fixture = str(panel.get("fixture") or "")
         matches: list[dict[str, Any]] = []
         for path in _paths(panel, decision_stage):
@@ -1824,15 +1859,9 @@ def project_condition_funnel(
                 ] += len(grouped)
                 continue
             candidate = grouped[0]
-            admitted, binding_reason = _validate_formal_admission_binding(
-                candidate,
-                observation=identity[0] == "observation",
-                system=system,
-                signature=signature,
-                definition=definition,
-                frozen=frozen,
-                version_by_number=version_by_number,
-                projection_time=projection_time,
+            admitted, binding_reason = validate_formal_row(
+                candidate, system=system, signature=signature, frozen=frozen,
+                projection_time=projection_time, require_settled=False,
             )
             if admitted is None:
                 settlement_rejections[
@@ -1850,6 +1879,15 @@ def project_condition_funnel(
 
         settlement_candidates: dict[str, list[tuple[dict[str, Any], dict[str, Any]]]] = {}
         for _identity, row, admitted in normalized_rows:
+            settled_admitted, settled_reason = validate_formal_row(
+                row, system=system, signature=signature, frozen=frozen,
+                projection_time=projection_time, require_settled=True,
+            )
+            if settled_admitted is None:
+                settlement_rejections[
+                    settled_reason or "missing_or_invalid_provenance"
+                ] += 1
+                continue
             if row.get("status") != "SETTLED":
                 settlement_rejections["not_settled"] += 1
                 continue
@@ -2279,6 +2317,82 @@ def _formal_marker_shape_valid(marker: dict[str, Any]) -> bool:
     return False
 
 
+def validate_formal_row(
+    row: dict[str, Any], *, system: str, signature: str,
+    frozen: dict[str, Any], projection_time: datetime,
+    require_settled: bool = False,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Strict shared validator for runtime rollover, funnel, and registry.
+
+    This is side-effect free. A row must be the exact canonical formal identity
+    admitted against one immutable evidence version before it can influence
+    authoritative x20 state.
+    """
+    definition = frozen.get("definition")
+    versions = frozen.get("evidence_versions")
+    if not isinstance(definition, dict) or not isinstance(versions, list):
+        return None, "invalid_formal_admission_binding"
+    version_by_number = {
+        item.get("version"): item for item in versions
+        if isinstance(item, dict) and _strict_int(item.get("version")) is not None
+    }
+    observation = row.get("formal_bet") is False
+    fixture = row.get("match_id")
+    market = row.get("market") or row.get("code")
+    stage = row.get("stage")
+    identity = row.get("observation_id") if observation else row.get("bet_id")
+    expected_identity = (
+        f"{fixture}|{market}|{stage}|{signature}|"
+        f"{'low-odds' if stage == DECISION_STAGE else 'formal-observation'}"
+        if observation else
+        f"{fixture}|{market}|{DECISION_STAGE}|{STRATEGY}"
+    )
+    if (
+        not isinstance(identity, str)
+        or identity != expected_identity
+        or row.get("strategy") != STRATEGY
+        or row.get("portfolio") != (
+            f"{system}_wilson_observations"
+            if observation else portfolio_name(system)
+        )
+        or (not observation and stage != DECISION_STAGE)
+        or row.get("status") not in {"PENDING", "SETTLED", "VOIDED"}
+        or (
+            not observation and (
+                row.get("simulation_only") is not True
+                or row.get("real_betting_enabled") is not False
+            )
+        )
+    ):
+        return None, "invalid_formal_row_identity"
+    admitted, reason = _validate_formal_admission_binding(
+        row,
+        observation=observation,
+        system=system,
+        signature=signature,
+        definition=definition,
+        frozen=frozen,
+        version_by_number=version_by_number,
+        projection_time=projection_time,
+    )
+    if admitted is None:
+        return None, reason or "invalid_formal_admission_binding"
+    if require_settled and row.get("status") != "SETTLED":
+        return None, "not_settled"
+    if require_settled and row.get("status") == "SETTLED":
+        created_at = _time(row.get("created_at"))
+        kickoff = _time(row.get("kickoff") or row.get("kickoff_hkt"))
+        settled_at = _time(row.get("settled_at"))
+        stage_at = _time((row.get("rollover_provenance") or {}).get("stage_at"))
+        if (
+            created_at is None or kickoff is None or settled_at is None
+            or stage_at is None
+            or not stage_at <= created_at < kickoff <= settled_at <= projection_time
+        ):
+            return None, "missing_or_invalid_provenance"
+    return admitted, None
+
+
 def _eligible_rollover_rows(
     bets: Iterable[dict[str, Any]], system: str, signature: str,
     active: dict[str, Any],
@@ -2352,18 +2466,41 @@ def _eligible_rollover_rows(
 def _rollover_condition(
     frozen: dict[str, Any], bets: Iterable[dict[str, Any]], system: str,
     signature: str, *, now: str, migration_boundary: str,
-) -> None:
+) -> bool:
     """Append deterministic 20-row evidence versions, never edit old ones."""
+    definition = frozen.get("definition")
+    if not isinstance(definition, dict):
+        return False
+    own_stage = str(definition.get("stage") or "")
+    if formal_matcher_axes(
+        {**definition, "key": definition.get("miner_key")},
+        system=system, decision_stage=own_stage,
+    ) is None:
+        return False
+    rows = list(bets)
+    projection_time = _time(now)
+    if projection_time is None:
+        return False
+    # Any malformed same-signature activity blocks the entire condition. It
+    # must never be cherry-picked around to create an authoritative version.
+    for row in rows:
+        admitted, _reason = validate_formal_row(
+            row, system=system, signature=signature, frozen=frozen,
+            projection_time=projection_time,
+            require_settled=row.get("status") == "SETTLED",
+        )
+        if admitted is None:
+            return False
     active = active_evidence_version(
         frozen, migration_boundary=migration_boundary,
     )
     if active is None:
-        return
+        return False
     last_excluded: dict[str, int] = {}
     created = 0
     while True:
         eligible, excluded = _eligible_rollover_rows(
-            bets, system, signature, active,
+            rows, system, signature, active,
         )
         last_excluded = excluded
         if len(eligible) < ROLLOVER_BATCH_SIZE:
@@ -2462,6 +2599,7 @@ def _rollover_condition(
         frozen.setdefault("pending_rollover_progress", {}).setdefault(
             "excluded", last_excluded,
         )
+    return True
 
 
 def apply_active_evidence(
@@ -2515,19 +2653,29 @@ def recompute_namespace(ledger: dict[str, Any], system: str) -> dict[str, Any]:
     observations = active_observations(ledger, system)
     evidence_rows = bets + observations
     grouped: dict[str, list[dict[str, Any]]] = {}
+    raw_grouped: dict[str, list[dict[str, Any]]] = {}
     observation_grouped: dict[str, list[dict[str, Any]]] = {}
     for row in evidence_rows:
         grouped.setdefault(str(row.get("frozen_condition_signature") or ""), []).append(row)
+    for collection in (ledger.get("bets") or [], ns.get("observations") or []):
+        if isinstance(collection, list):
+            for row in collection:
+                if isinstance(row, dict) and row.get("frozen_condition_signature"):
+                    raw_grouped.setdefault(
+                        str(row.get("frozen_condition_signature")), [],
+                    ).append(row)
     for row in observations:
         observation_grouped.setdefault(
             str(row.get("frozen_condition_signature") or ""), []
         ).append(row)
     for signature, frozen in ns["conditions"].items():
         if isinstance(frozen, dict):
-            _rollover_condition(
-                frozen, grouped.get(str(signature), []), system, str(signature), now=_now(),
+            valid_activity = _rollover_condition(
+                frozen, raw_grouped.get(str(signature), []), system, str(signature), now=_now(),
                 migration_boundary=ns["activation_at"],
             )
+            if not valid_activity:
+                continue
             frozen["prospective"] = _prospective(grouped.get(signature, []))
             # Deliberately named separately so any presentation can distinguish
             # evidence observations from the isolated paper-bet/PnL stream.

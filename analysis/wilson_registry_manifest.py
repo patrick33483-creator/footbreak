@@ -6,6 +6,7 @@ manifest; it is never repaired, normalized, or admitted.
 from __future__ import annotations
 import argparse, hashlib, json, math, os, tempfile
 from collections import Counter
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from analysis.wilson_validation import (
@@ -13,7 +14,7 @@ from analysis.wilson_validation import (
     MIN_DECIDED, ROLLOVER_BATCH_SIZE, SCHEMA_VERSION, STRATEGY,
     _eligible_rollover_rows, _fixture_market_hash, _time, _version_hash, condition_signature,
     _formal_marker_shape_valid, _formal_stage_provenance_valid, formal_matcher_axes,
-    portfolio_name, wilson95,
+    portfolio_name, validate_formal_row, wilson95,
 )
 SYSTEMS=("footbreak","crown")
 
@@ -198,6 +199,14 @@ def build_manifest(ledger:Any,system:str)->dict[str,Any]:
     is_observation = activity in good_obs
     if not (is_bet or is_observation):
      activity_rejections["wrong_portfolio_strategy_or_formal_shape"] += 1
+     continue
+    shared_admitted, _shared_reason = validate_formal_row(
+        activity, system=system, signature=sig, frozen=frozen,
+        projection_time=datetime.now(timezone.utc),
+        require_settled=activity.get("status") == "SETTLED",
+    )
+    if shared_admitted is None:
+     activity_rejections["invalid_signature_definition_or_evidence_binding"] += 1
      continue
     if str(activity.get("frozen_condition_signature") or "")!=sig: continue
     marker=activity.get("rollover_provenance")

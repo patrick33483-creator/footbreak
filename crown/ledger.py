@@ -1,6 +1,8 @@
 """Idempotent Crown watch ledger.  It can create simulations, never real bets."""
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 import os
 from datetime import datetime, timedelta, timezone
@@ -22,6 +24,56 @@ from .direct_t5_outbox import (
 from analysis.wilson_validation import (
     active_observations, ensure_namespace, portfolio_name, recompute_namespace, all_settleable_bets,
 )
+
+
+_FORMAL_SNAPSHOT_MUTABLE_FIELDS = {
+    "collection_attempts",
+    "formal_admission_pending",
+    "formal_admission_snapshot_id",
+    "formal_admission_snapshot_hash",
+    "formal_admission_status",
+    "formal_admission_reason",
+    "formal_admission_completed_at",
+    "wilson_validation",
+}
+
+
+def _formal_snapshot_hash(snapshot: dict[str, Any]) -> str:
+    payload = {
+        key: value for key, value in snapshot.items()
+        if key not in _FORMAL_SNAPSHOT_MUTABLE_FIELDS
+    }
+    raw = json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    )
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
+def _formal_snapshot_id(
+    watch: dict[str, Any], snapshot: dict[str, Any], digest: str,
+) -> str:
+    identity = {
+        "match_id": str(watch.get("match_id") or snapshot.get("match_id") or ""),
+        "stage": str(snapshot.get("stage") or ""),
+        "ts": str(snapshot.get("ts") or ""),
+        "snapshot_hash": digest,
+    }
+    raw = json.dumps(
+        identity, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    )
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
+def _bind_formal_snapshot(
+    watch: dict[str, Any], snapshot: dict[str, Any],
+) -> None:
+    digest = _formal_snapshot_hash(snapshot)
+    snapshot["formal_admission_snapshot_id"] = _formal_snapshot_id(
+        watch, snapshot, digest,
+    )
+    snapshot["formal_admission_snapshot_hash"] = digest
+    snapshot["formal_admission_pending"] = True
+    snapshot["formal_admission_status"] = "PENDING"
 
 STAGES = {"首預": 1, "T-30": 2, "T-5": 3}
 SCHEDULED_STAGES = {"T-30": 30, "T-5": 5}
@@ -623,7 +675,7 @@ def sync_prediction(
     # pre-kickoff deadline.  The bounded timed worker commits the snapshot
     # first; ordinary reconciliation may project it later.
     learning = (
-        None if deadline_critical_snapshot
+        None if deadline_critical_snapshot or existing_was_completed
         else _record_learning_snapshot(prediction, snapshot)
     )
     if learning:
@@ -649,12 +701,18 @@ def sync_prediction(
         # its own immutable completion time and may perform the one native T-5
         # admission.  A completed stage, by contrast, cannot be repriced or
         # admitted again.
-        original_ts = existing.get("ts") if existing_was_completed else None
-        if not existing.get("stage_started_at"):
-            existing["stage_started_at"] = existing.get("ts")
-        existing.update(snapshot)
-        if original_ts:
-            existing["ts"] = original_ts
+        if existing_was_completed:
+            # A completed native stage is immutable. A replay may retain only
+            # bounded attempt diagnostics; quote/side/line/source/time/context
+            # can never be rewritten under an already durable admission job.
+            if isinstance(attempt, dict):
+                existing["collection_attempts"] = (
+                    list(existing.get("collection_attempts") or []) + [attempt]
+                )[-8:]
+        else:
+            if not existing.get("stage_started_at"):
+                existing["stage_started_at"] = existing.get("ts")
+            existing.update(snapshot)
     stored = next((
         row for row in stage_rows
         if isinstance(row, dict) and row.get("stage") == stage
@@ -695,7 +753,7 @@ def sync_prediction(
         # Every completed native stage retains an explicit marker so the
         # authoritative post-save reconciler evaluates only durable evidence.
         if _completed_stage_row(stored) and not existing_was_completed:
-            stored["formal_admission_pending"] = True
+            _bind_formal_snapshot(watch, stored)
         return []
     # Validation admission is singular: only the very first persisted native
     # pre-kickoff T-5 may create a bet.  A later quote refresh can enrich the
@@ -755,9 +813,10 @@ def sync_prediction(
 
 
 def reconcile_pending_formal_admissions(
-    ledger: dict[str, Any], config: Settings,
+    ledger: dict[str, Any], config: Settings, *, now: datetime | None = None,
+    max_items: int = 20,
 ) -> list[str]:
-    """Consume durable native-stage markers without provider or notification I/O."""
+    """Consume a bounded set of exact, pre-kickoff durable snapshot jobs."""
     history = read_json(config.state_dir / "prediction_history.json", {})
     cached_ranking = (
         ((history.get("stats") or {}).get("granular_conditions") or {}).get("ranking")
@@ -765,6 +824,8 @@ def reconcile_pending_formal_admissions(
     )
     ranking = cached_ranking if isinstance(cached_ranking, list) else None
     emitted: list[str] = []
+    current = now or datetime.now(HKT)
+    processed = 0
     for watch in (ledger.get("watch") or {}).values():
         if not isinstance(watch, dict):
             continue
@@ -777,6 +838,38 @@ def reconcile_pending_formal_admissions(
                 continue
             stage = str(snapshot.get("stage") or "")
             if stage not in STAGES:
+                continue
+            if processed >= max(0, int(max_items)):
+                return emitted
+            processed += 1
+            kickoff = parse_time(
+                snapshot.get("kickoff_hkt") or snapshot.get("kickoff")
+                or watch.get("kickoff_hkt") or watch.get("kickoff")
+            )
+            if kickoff is None or current >= kickoff:
+                snapshot["formal_admission_pending"] = False
+                snapshot["formal_admission_status"] = "EXPIRED"
+                snapshot["formal_admission_reason"] = (
+                    "kickoff_reached_before_formal_admission"
+                )
+                snapshot["formal_admission_completed_at"] = iso_hkt()
+                continue
+            snapshot_id = snapshot.get("formal_admission_snapshot_id")
+            snapshot_hash = snapshot.get("formal_admission_snapshot_hash")
+            if (
+                not isinstance(snapshot_id, str) or len(snapshot_id) != 64
+                or not isinstance(snapshot_hash, str) or len(snapshot_hash) != 64
+                or snapshot_hash != _formal_snapshot_hash(snapshot)
+                or snapshot_id != _formal_snapshot_id(
+                    watch, snapshot, snapshot_hash,
+                )
+            ):
+                snapshot["formal_admission_pending"] = False
+                snapshot["formal_admission_status"] = "REJECTED"
+                snapshot["formal_admission_reason"] = (
+                    "immutable_formal_snapshot_binding_mismatch"
+                )
+                snapshot["formal_admission_completed_at"] = iso_hkt()
                 continue
             try:
                 created, audit = (
@@ -819,6 +912,7 @@ def reconcile_pending_formal_admissions(
                     })
                     emitted.append(str(bet["bet_id"]))
             snapshot["formal_admission_pending"] = False
+            snapshot["formal_admission_status"] = "COMPLETED"
             snapshot["formal_admission_completed_at"] = iso_hkt()
     return emitted
 

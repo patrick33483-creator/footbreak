@@ -324,6 +324,105 @@ class ConditionPortfolioTests(unittest.TestCase):
             self.assertEqual(evaluate.call_count, 1)
             self.assertFalse(snapshot["formal_admission_pending"])
 
+    def test_completed_stage_replay_cannot_overwrite_bound_quote(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = replace(self.config, state_dir=Path(directory))
+            ledger = {
+                "bankroll": 50000, "bets": [], "watch": {},
+                "log": [], "stats": {},
+            }
+            def prediction(odds, observed):
+                return {
+                    "match_id": "immutable-replay", "league": "L",
+                    "home": "A", "away": "B",
+                    "kickoff_hkt": "2099-08-01T20:00:00+08:00",
+                    "stage": "首預", "status": "PREDICTION_READY",
+                    "forecast_candidates": [{
+                        "code": "HIL", "side": "H", "line": 2.5,
+                        "odds": odds, "observed_at": observed,
+                        "source": "titan007-crown-id-3",
+                    }],
+                }
+            sync_prediction(
+                ledger, prediction(1.5, "2099-08-01T18:00:00+08:00"),
+                config, defer_formal_admission=True,
+            )
+            snapshot = ledger["watch"]["immutable-replay"]["stages"][0]
+            original = (
+                snapshot["ts"], snapshot["market_predictions"][0]["odds"],
+                snapshot["formal_admission_snapshot_id"],
+                snapshot["formal_admission_snapshot_hash"],
+            )
+            sync_prediction(
+                ledger, prediction(2.5, "2099-08-01T18:30:00+08:00"),
+                config, defer_formal_admission=True,
+            )
+            self.assertEqual(
+                (
+                    snapshot["ts"], snapshot["market_predictions"][0]["odds"],
+                    snapshot["formal_admission_snapshot_id"],
+                    snapshot["formal_admission_snapshot_hash"],
+                ),
+                original,
+            )
+            consumed = []
+            with patch(
+                "crown.ledger.evaluate_wilson_stage",
+                side_effect=lambda _l, watch, _c, _s, **_k: (
+                    consumed.append(
+                        watch["stages"][0]["market_predictions"][0]["odds"],
+                    ) or [], []
+                ),
+            ):
+                reconcile_pending_formal_admissions(ledger, config)
+            self.assertEqual(consumed, [1.5])
+
+    def test_snapshot_tamper_and_post_kickoff_t5_expire_without_evaluation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = replace(self.config, state_dir=Path(directory))
+            kickoff = datetime(2099, 8, 1, 20, tzinfo=HKT)
+            base = {
+                "match_id": "bound-t5", "league": "L", "home": "A", "away": "B",
+                "kickoff_hkt": kickoff.isoformat(), "stage": "T-5",
+                "status": "PREDICTION_READY",
+                "forecast_candidates": [{
+                    "code": "HIL", "side": "H", "line": 2.5, "odds": 1.8,
+                    "observed_at": (kickoff - timedelta(minutes=6)).isoformat(),
+                    "source": "titan007-crown-id-3",
+                }],
+            }
+            for mode in ("tamper", "expired"):
+                ledger = {
+                    "bankroll": 50000, "bets": [], "watch": {},
+                    "log": [], "stats": {},
+                }
+                sync_prediction(
+                    ledger, base | {"match_id": f"bound-{mode}"}, config,
+                    defer_formal_admission=True,
+                )
+                snapshot = ledger["watch"][f"bound-{mode}"]["stages"][0]
+                if mode == "tamper":
+                    snapshot["market_predictions"][0]["odds"] = 9.99
+                    current = kickoff - timedelta(hours=1)
+                else:
+                    current = kickoff
+                with patch("crown.ledger.evaluate_new_t5") as evaluate, \
+                     patch("crown.ledger.record_new_native_t5") as outbox:
+                    self.assertEqual(
+                        reconcile_pending_formal_admissions(
+                            ledger, config, now=current,
+                        ),
+                        [],
+                    )
+                evaluate.assert_not_called()
+                outbox.assert_not_called()
+                self.assertEqual(ledger["bets"], [])
+                self.assertFalse(snapshot["formal_admission_pending"])
+                self.assertEqual(
+                    snapshot["formal_admission_status"],
+                    "REJECTED" if mode == "tamper" else "EXPIRED",
+                )
+
     def test_canonical_settlement_for_three_markets(self) -> None:
         cases = [
             ({"code": "HDC", "condition": -0.25, "side": "H"}, {"home_score": 1, "away_score": 0}),

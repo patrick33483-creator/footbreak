@@ -21,12 +21,25 @@ from analysis.migrate_wilson_strategy import migrate_file
 from analysis.wilson_portfolio import _native_t5, _selected
 
 
-def candidate(market="HDC", side="H", line=-0.25, *, hits=41, decided=59, key="example"):
+def candidate(
+    market="HDC", side="H", line=-0.25, *, hits=41, decided=59,
+    key="example", system="footbreak",
+):
+    matcher_key = (
+        [
+            f"system={system}", f"market={market}", "path=首預→T-30→T-5",
+            "decision=T-5", "tier=≥1.70", "direction=A→A→A",
+            "role=主讓", "bucket=0.25–0.5", "movement=不變",
+            "tier_path=≥1.70→≥1.70→≥1.70",
+        ]
+        if key == "example" else [f"system={system}", f"market={market}", key]
+    )
     return {
         "market": market, "selected_side": side, "selected_line": line,
-        "key": ["system=footbreak", f"market={market}", key],
-        "path": "首預→T-30→T-5", "direction": "主讓→主讓→主讓",
+        "key": matcher_key,
+        "path": "首預→T-30→T-5", "direction": "A→A→A",
         "role": "主讓", "line_bucket": "0.25–0.5", "odds_tier": "≥1.70",
+        "odds_trajectory": "≥1.70→≥1.70→≥1.70",
         "movement": "不變", "total": {"hits": hits, "decided": decided, "pushes": 0},
         "label": "HDC，首預→T-30→T-5 all 主讓，主隊讓0.25–0.5，T-5 odds >=1.70，方向不變",
         "source_artifact": {"hash": "frozen-artifact", "version": "v7", "as_of": "2026-08-19T22:55:00+08:00"},
@@ -272,7 +285,7 @@ class WilsonBatchRolloverTest(unittest.TestCase):
 
     def _admission(self, system="footbreak"):
         result, reason = choose_admission(
-            system, "HDC", selected(), [candidate()],
+            system, "HDC", selected(), [candidate(system=system)],
             stage_at="2026-08-20T00:00:00+08:00",
         )
         self.assertEqual(reason, "wilson_pass")
@@ -304,7 +317,7 @@ class WilsonBatchRolloverTest(unittest.TestCase):
         row.update({
             "status": "SETTLED", "result": result,
             "pnl": 450 if result in {"Won", "Half Won"} else -500,
-            "settled_at": stage_at,
+            "settled_at": "2026-08-21T02:00:00+08:00",
         })
         ledger["bets"].append(row)
         return row
@@ -367,8 +380,11 @@ class WilsonBatchRolloverTest(unittest.TestCase):
             assert admission is not None
             # A price below this condition's Wilson minimum is explicitly
             # matched but cannot create a formal paper execution.
-            admission["arithmetic"]["passes"] = False
-            admission["arithmetic"]["actual_decimal_odds_raw"] = 1.20
+            admission["arithmetic"] = admission_arithmetic(
+                admission["history"]["hits"],
+                admission["history"]["decided"],
+                1.20,
+            )
             watch = {
                 "match_id": f"{system}-low-odds", "league": "測試",
                 "home": "主", "away": "客", "kickoff": "2026-08-21T00:00:00+08:00",
@@ -527,6 +543,10 @@ class WilsonBatchRolloverTest(unittest.TestCase):
         # A duplicate fixture-market provenance hash is ambiguous, including
         # when its outcome conflicts. Neither copy is allowed in the batch.
         duplicate = self._settled(ledger, 20, result="Lost")
+        duplicate["match_id"] = "fixture-1"
+        duplicate["bet_id"] = (
+            "fixture-1|HDC|T-5|wilson-test-strategy-v1"
+        )
         duplicate["rollover_provenance"]["fixture_market_hash"] = (
             ledger["bets"][0]["rollover_provenance"]["fixture_market_hash"]
         )
@@ -544,10 +564,13 @@ class WilsonBatchRolloverTest(unittest.TestCase):
         # A row at the current activation boundary is not retrospectively
         # eligible, even if otherwise fully settled and provenance-complete.
         boundary = active["activation_boundary_at"]
+        before = copy.deepcopy(frozen)
         ledger["bets"][1]["rollover_provenance"]["stage_at"] = boundary
         recompute_namespace(ledger, "footbreak")
-        self.assertGreater(
-            frozen["pending_rollover_progress"]["excluded"]["before_snapshot_boundary"], 0,
+        self.assertEqual(frozen["evidence_versions"], before["evidence_versions"])
+        self.assertEqual(
+            frozen["pending_rollover_progress"],
+            before["pending_rollover_progress"],
         )
 
     def test_versions_are_immutable_and_recompute_is_idempotent(self):
