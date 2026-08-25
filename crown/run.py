@@ -30,6 +30,7 @@ _REVERSE_T5_DRAIN_MAX_SECONDS = 4.0
 _TICK_REVERSE_T5_DRAIN_MIN_SECONDS = 4.0
 _TICK_REVERSE_T5_DRAIN_MAX_SECONDS = 2.5
 _TICK_REVERSE_T5_DRAIN_TEARDOWN_MARGIN_SECONDS = 1.0
+_FIRST_LOOK_PROJECTION_MAX_SECONDS = 5.0
 
 
 def _write_tick_health(config, result: dict[str, object]) -> None:
@@ -297,6 +298,60 @@ def _run_tick_postprocess(config, max_seconds: float) -> tuple[str, str | None]:
             process.join(timeout=0.05)
 
 
+def _dashboard_projection_process(send, config) -> None:
+    """Publish only the current Crown card/ledger view from persisted state."""
+    try:
+        write_tick_dashboard_projection(config)
+    except BaseException as exc:
+        send.send(("error", type(exc).__name__))
+    else:
+        send.send(("complete", None))
+    finally:
+        send.close()
+
+
+def _run_dashboard_projection(
+    config, max_seconds: float,
+) -> tuple[str, str | None]:
+    """Hard-bound a local-only public projection after first-look persistence.
+
+    The reconciliation has already committed its immutable first-look cards
+    before this helper starts. A separate process makes publication optional:
+    publish-lock or filesystem contention can delay the browser update, but it
+    can never keep the reconciliation service alive until systemd terminates
+    it or roll back the durable first-look snapshots.
+    """
+    if max_seconds <= 0.0 or os.name != "posix":
+        return "deferred", None
+    context = multiprocessing.get_context("fork")
+    receiver, sender = context.Pipe(duplex=False)
+    process = context.Process(
+        target=_dashboard_projection_process,
+        args=(sender, config),
+    )
+    process.start()
+    sender.close()
+    try:
+        if not receiver.poll(max_seconds):
+            return "deferred", None
+        try:
+            status, detail = receiver.recv()
+        except EOFError:
+            return "error", "worker_exited"
+        return (
+            str(status),
+            str(detail) if detail is not None else None,
+        )
+    finally:
+        receiver.close()
+        if process.is_alive():
+            process.terminate()
+        process.join(timeout=0.05)
+        if process.is_alive():
+            process.kill()
+            process.join(timeout=0.05)
+
+
 def _reverse_t5_drain_process(send, config) -> None:
     """Run restart-safe bridge work in a killable non-deadline child only."""
     try:
@@ -463,7 +518,24 @@ def main() -> int:
             )
         except BaseException:
             result["hkjc_identity_reconciliation_scheduled"] = False
-        result["dashboard_projection"] = "deferred_nonblocking"
+        try:
+            status, detail = _run_dashboard_projection(
+                config, _FIRST_LOOK_PROJECTION_MAX_SECONDS,
+            )
+            if status == "complete":
+                result["dashboard_projection"] = "post_first_look_local_state"
+            elif status == "error":
+                result["dashboard_projection_warning"] = (
+                    f"dashboard_projection_{detail or 'worker_error'}"
+                )
+            else:
+                result["dashboard_projection_warning"] = (
+                    "deferred_first_look_projection_deadline"
+                )
+        except BaseException as exc:
+            result["dashboard_projection_warning"] = (
+                f"dashboard_projection_{type(exc).__name__}"
+            )
         print(result)
         return 0
     ledger = load_ledger(config) if args.mode != "tick" else None
