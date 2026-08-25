@@ -5,11 +5,18 @@ import copy
 import hashlib
 import json
 import unittest
+from datetime import datetime, timedelta
+from unittest.mock import patch
 
+from analysis.wilson_portfolio import evaluate
 from analysis.wilson_validation import (
     CONDITION_AUDIT_LIMIT,
+    _canonical_hash,
     _evidence_values,
+    _expected_production_identity_manifest,
+    _fixture_market_hash,
     _version_hash,
+    admission_arithmetic,
     create_production_identity_manifest,
     project_condition_funnel,
 )
@@ -95,17 +102,43 @@ def formal_row(signature: str, identity: str | None, fixture_hash: str, admitted
                *, result: str | None = None, status: str = "PENDING",
                observation: bool = False, include_admitted: bool = True,
                stage_at: str = "2026-08-22T10:00:00+08:00") -> dict:
+    stage_time = datetime.fromisoformat(stage_at)
+    created_at = (stage_time + timedelta(minutes=1)).isoformat()
+    kickoff = (stage_time + timedelta(minutes=2)).isoformat()
+    settled_at = (stage_time + timedelta(minutes=3)).isoformat()
+    market = "HDC"
+    frozen_definition = definition(market)
+    odds = 1.1 if observation else 2.2
+    arithmetic = admission_arithmetic(
+        admitted["cumulative_hits"], admitted["cumulative_decided"], odds,
+    )
     return {
         "bet_id": None if observation else identity,
         "observation_id": identity if observation else None,
         "portfolio": "footbreak_wilson_observations" if observation else "footbreak_wilson_test",
         "strategy": "wilson-test-strategy-v1", "formal_bet": not observation,
-        "frozen_condition_signature": signature, "stage": "T-5",
+        "match_id": fixture_hash, "market": market, "code": market,
+        "kickoff": kickoff,
+        "created_at": created_at, "admission_at": created_at,
+        "native_stage_at": stage_at,
+        "frozen_condition_signature": signature,
+        "frozen_condition_definition": frozen_definition,
+        "condition_number": 2, "evidence_version": admitted["version"],
+        "evidence_hash": admitted["evidence_hash"], "odds": odds,
+        "frozen_historical_evidence": {
+            "hits": admitted["cumulative_hits"],
+            "decided": admitted["cumulative_decided"],
+            "evidence_version": admitted["version"],
+            "evidence_hash": admitted["evidence_hash"],
+        },
+        "wilson_admission": arithmetic, "stage": "T-5",
         "first_native_pre_kickoff_t5": True, "status": status, "result": result,
         "rollover_provenance": marker(
-            signature, fixture_hash, stage_at, admitted,
+            signature, _fixture_market_hash("footbreak", fixture_hash, market),
+            stage_at, admitted,
             include_admitted=include_admitted,
         ),
+        **({"settled_at": settled_at} if status == "SETTLED" else {}),
     }
 
 
@@ -162,10 +195,12 @@ class WilsonConditionFunnelTests(unittest.TestCase):
                      "reason": "wilson_candidate_frozen",
                      "ts": "2026-08-22T10:01:00+08:00",
                      "frozen_condition_signature": self.signature,
-                     "wilson_admission": {
-                         "signature": self.signature, "evidence_version": 1,
+                     "exact_match_binding": {
+                         "schema_version": 1, "condition_signature": self.signature,
+                         "evidence_version": 1,
                          "evidence_hash": self.active["evidence_hash"],
-                         "stage_at": "2026-08-22T10:00:00+08:00",
+                         "native_stage_at": "2026-08-22T10:00:00+08:00",
+                         "definition_hash": _canonical_hash(primary["definition"]),
                      }},
                     {"match_id": "fixture-1", "market": "HDC", "status": "SKIPPED",
                      "reason": "idempotent_existing_market",
@@ -174,18 +209,25 @@ class WilsonConditionFunnelTests(unittest.TestCase):
                      "reason": "wilson_gate_not_passed",
                      "ts": "2026-08-22T10:01:00+08:00", "evidence_version": 1,
                      "frozen_condition_signature": self.signature,
-                     "wilson_admission": {
-                         "signature": self.signature, "evidence_version": 1,
+                     "exact_match_binding": {
+                         "schema_version": 1, "condition_signature": self.signature,
+                         "evidence_version": 1,
                          "evidence_hash": self.active["evidence_hash"],
-                         "stage_at": "2026-08-22T10:00:00+08:00",
+                         "native_stage_at": "2026-08-22T10:00:00+08:00",
+                         "definition_hash": _canonical_hash(primary["definition"]),
                      }},
                     {"match_id": "global", "market": "*", "status": "SKIPPED",
                      "reason": "not_first_native_pre_kickoff_t5"},
                 ],
             },
         }
+        authorized, _validated, reason = _expected_production_identity_manifest(
+            self.ledger["wilson_validation"], "footbreak",
+        )
+        self.assertIsNone(reason)
+        self.assertIsNotNone(authorized)
         create_production_identity_manifest(
-            self.ledger, "footbreak", explicit_authorization=True,
+            self.ledger, "footbreak", authorized_manifest=authorized,
         )
 
     def row(self, ledger: dict | None = None, index: int = 1) -> dict:
@@ -332,7 +374,184 @@ class WilsonConditionFunnelTests(unittest.TestCase):
                 row = self.row(tampered)
                 self.assertEqual(row["stages"]["settled_valid_evidence"]["count"], 0)
                 codes = {item["code"] for item in row["rejections"]["items"]}
-                self.assertIn("admitted_evidence_version_mismatch", codes)
+                self.assertIn("invalid_formal_admission_binding", codes)
+
+    def test_every_formal_row_requires_complete_immutable_admission_binding(self) -> None:
+        def future_stage(row):
+            row["rollover_provenance"]["stage_at"] = "2099-08-22T10:00:00+08:00"
+            row["native_stage_at"] = "2099-08-22T10:00:00+08:00"
+            row["created_at"] = "2099-08-22T10:01:00+08:00"
+            row["admission_at"] = "2099-08-22T10:01:00+08:00"
+            row["kickoff"] = "2099-08-22T10:02:00+08:00"
+
+        def fake_evidence_pointer(row):
+            row["evidence_version"] = 999
+            row["evidence_hash"] = "f" * 64
+            row["rollover_provenance"]["admitted_evidence_version"] = 999
+            row["rollover_provenance"]["admitted_evidence_hash"] = "f" * 64
+            row["frozen_historical_evidence"]["evidence_version"] = 999
+            row["frozen_historical_evidence"]["evidence_hash"] = "f" * 64
+
+        attacks = {
+            "recomputed_fixture_market_hash": lambda row: row[
+                "rollover_provenance"
+            ].__setitem__("fixture_market_hash", "f" * 64),
+            "missing_rollover_marker": lambda row: row.__setitem__(
+                "rollover_provenance", None
+            ),
+            "top_level_evidence_hash": lambda row: row.__setitem__(
+                "evidence_hash", "f" * 64
+            ),
+            "top_level_native_stage": lambda row: row.__setitem__(
+                "native_stage_at", "2026-08-22T09:59:00+08:00"
+            ),
+            "frozen_history_hash": lambda row: row[
+                "frozen_historical_evidence"
+            ].__setitem__("evidence_hash", "f" * 64),
+            "frozen_definition": lambda row: row[
+                "frozen_condition_definition"
+            ].__setitem__("movement", "tampered"),
+            "wilson_arithmetic": lambda row: row["wilson_admission"].__setitem__(
+                "decided", 81
+            ),
+            "created_before_stage": lambda row: row.__setitem__(
+                "created_at", "2026-08-22T09:59:00+08:00"
+            ),
+            "admission_after_created": lambda row: row.__setitem__(
+                "admission_at", "2026-08-22T10:02:00+08:00"
+            ),
+            "created_after_kickoff": lambda row: row.__setitem__(
+                "created_at", row["kickoff"]
+            ),
+            "impossible_future_stage": future_stage,
+            "nonexistent_evidence_chain_member": fake_evidence_pointer,
+        }
+        for name, attack in attacks.items():
+            with self.subTest(name=name):
+                tampered = copy.deepcopy(self.ledger)
+                attack(tampered["bets"][0])
+                row = self.row(tampered)
+                self.assertEqual(
+                    row["stages"]["recorded_formal_evidence"]["count"], 4
+                )
+                by_code = {
+                    item["code"]: item for item in row["rejections"]["items"]
+                }
+                self.assertEqual(
+                    by_code["invalid_formal_admission_binding"]["count"], 1
+                )
+
+    def test_future_and_impossible_settlement_chronology_are_rejected(self) -> None:
+        for name, settled_at in (
+            ("before_kickoff", "2026-08-22T10:01:30+08:00"),
+            ("future", "2099-08-22T10:03:00+08:00"),
+        ):
+            with self.subTest(name=name):
+                tampered = copy.deepcopy(self.ledger)
+                tampered["bets"][0]["settled_at"] = settled_at
+                row = self.row(tampered)
+                self.assertEqual(
+                    row["stages"]["recorded_formal_evidence"]["count"], 5
+                )
+                self.assertEqual(
+                    row["stages"]["settled_valid_evidence"]["count"], 0
+                )
+                self.assertIn(
+                    "missing_or_invalid_provenance",
+                    {item["code"] for item in row["rejections"]["items"]},
+                )
+
+    def test_actual_evaluate_audit_writer_projects_as_exact_match(self) -> None:
+        ledger = copy.deepcopy(self.ledger)
+        ledger["bets"] = []
+        namespace = ledger["wilson_validation"]
+        namespace["observations"] = []
+        namespace["audit"] = []
+        namespace["conditions"][self.signature]["pending_rollover_progress"].update(
+            eligible_decided=0, eligible_hits=0, accuracy=None, display="0/20"
+        )
+        stage_at = "2026-08-22T10:00:00+08:00"
+        kickoff = "2026-08-22T10:05:00+08:00"
+        watch = {
+            "match_id": "evaluate-fixture",
+            "league": "測試聯賽",
+            "home": "主隊",
+            "away": "客隊",
+            "kickoff": kickoff,
+            "stages": [{
+                "stage": "T-5",
+                "ts": stage_at,
+                "kickoff": kickoff,
+                "market_predictions": [{
+                    "code": "HDC", "side": "H", "line": -0.5, "odds": 2.2,
+                    "quote_source": "persisted-native",
+                    "observed_at": stage_at,
+                }],
+            }],
+        }
+
+        def parse_time(value):
+            return datetime.fromisoformat(value) if isinstance(value, str) else None
+
+        def admissions(_system, _market, selected, _matched, *, stage_at):
+            return ([{
+                "signature": self.signature,
+                "definition": copy.deepcopy(
+                    namespace["conditions"][self.signature]["definition"]
+                ),
+                "history": {
+                    "hits": self.active["cumulative_hits"],
+                    "decided": self.active["cumulative_decided"],
+                    "artifact": {"hash": "persisted"},
+                },
+                "arithmetic": admission_arithmetic(
+                    self.active["cumulative_hits"],
+                    self.active["cumulative_decided"],
+                    selected["odds"],
+                ),
+                "candidate": {},
+            }], "wilson_pass")
+
+        with (
+            patch(
+                "analysis.wilson_portfolio.formal_registry_candidates",
+                return_value=[{"persisted": True}],
+            ),
+            patch(
+                "analysis.wilson_portfolio.match_formal_registry",
+                return_value={"evaluate-fixture": [{"persisted": True}]},
+            ),
+            patch(
+                "analysis.wilson_portfolio.matching_admissions",
+                side_effect=admissions,
+            ),
+        ):
+            created, audit = evaluate(
+                ledger,
+                watch,
+                system="footbreak",
+                market_labels={"HDC": "讓球", "HIL": "入球", "CHL": "角球"},
+                parse_time=parse_time,
+                now="2026-08-22T10:01:00+08:00",
+                ranking=None,
+            )
+        self.assertEqual(len(created), 1)
+        ledger["bets"].extend(created)
+        successful = next(row for row in audit if row["status"] == "CREATED")
+        self.assertEqual(
+            set(successful["exact_match_binding"]),
+            {
+                "schema_version", "condition_signature", "evidence_version",
+                "evidence_hash", "native_stage_at", "definition_hash",
+            },
+        )
+        projected = self.row(ledger)
+        self.assertEqual(
+            projected["stages"]["exact_condition_matches"]["count"], 1
+        )
+        self.assertEqual(
+            projected["stages"]["recorded_formal_evidence"]["count"], 1
+        )
 
     def test_identityless_formal_rows_are_excluded_with_diagnostic(self) -> None:
         ledger = copy.deepcopy(self.ledger)
@@ -367,8 +586,11 @@ class WilsonConditionFunnelTests(unittest.TestCase):
         )
         with self.assertRaises(ValueError):
             create_production_identity_manifest(missing, "footbreak")
+        authorized = copy.deepcopy(
+            self.ledger["wilson_validation"]["production_identity_manifest"]
+        )
         created = create_production_identity_manifest(
-            missing, "footbreak", explicit_authorization=True,
+            missing, "footbreak", authorized_manifest=authorized,
         )
         self.assertEqual(created, self.ledger["wilson_validation"]["production_identity_manifest"])
         self.assertTrue(created["immutable"])
@@ -376,7 +598,7 @@ class WilsonConditionFunnelTests(unittest.TestCase):
         self.assertEqual(created["manifest_version"], "wilson-production-identity-v1")
         self.assertEqual(
             create_production_identity_manifest(
-                missing, "footbreak", explicit_authorization=True,
+                missing, "footbreak", trusted_manifest_hash=created["manifest_hash"],
             ),
             created,
         )
@@ -385,7 +607,33 @@ class WilsonConditionFunnelTests(unittest.TestCase):
         ] = 999
         with self.assertRaises(ValueError):
             create_production_identity_manifest(
-                missing, "footbreak", explicit_authorization=True,
+                missing, "footbreak", authorized_manifest=authorized,
+            )
+
+    def test_manifest_bootstrap_rejects_reordered_or_stale_external_authority(self) -> None:
+        authorized = copy.deepcopy(
+            self.ledger["wilson_validation"]["production_identity_manifest"]
+        )
+        stale = copy.deepcopy(self.ledger)
+        namespace = stale["wilson_validation"]
+        namespace.pop("production_identity_manifest")
+        namespace["condition_order"].reverse()
+        for number, signature in enumerate(namespace["condition_order"], start=1):
+            namespace["conditions"][signature]["condition_number"] = number
+        with self.assertRaisesRegex(ValueError, "authorized.*mismatch"):
+            create_production_identity_manifest(
+                stale, "footbreak", authorized_manifest=authorized,
+            )
+        with self.assertRaisesRegex(ValueError, "trusted.*mismatch"):
+            create_production_identity_manifest(
+                stale, "footbreak", trusted_manifest_hash=authorized["manifest_hash"],
+            )
+        stale_screenshot = copy.deepcopy(authorized)
+        stale_screenshot["entries"].reverse()
+        with self.assertRaisesRegex(ValueError, "authorized.*mismatch"):
+            create_production_identity_manifest(
+                copy.deepcopy(self.ledger), "footbreak",
+                authorized_manifest=stale_screenshot,
             )
 
     def test_manifest_rejects_swaps_arbitrary_numbers_order_and_entry_tampering(self) -> None:

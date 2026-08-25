@@ -8,7 +8,7 @@ from typing import Any, Callable, Iterable
 from .granular_conditions import MARKETS, _role
 from .wilson_validation import (
     CONDITION_AUDIT_LIMIT, DECISION_STAGE, FIXED_STAKE, FIXTURE_MARKET_CAP, FIXTURE_STAKE_CAP,
-    apply_active_evidence, commit_bet, ensure_namespace, matching_admissions,
+    _canonical_hash, apply_active_evidence, commit_bet, ensure_namespace, matching_admissions,
     record_match_observation, formal_registry_candidates, match_formal_registry,
 )
 
@@ -130,6 +130,18 @@ def _audit_selection(market: str, row: dict[str, Any]) -> tuple[str | None, floa
     return role, selected_line, f"{role or '—'} {selected_line:g}" if selected_line is not None else (role or "—")
 
 
+def _exact_match_binding(admission: dict[str, Any]) -> dict[str, Any]:
+    """Bounded diagnostic proof for a successful structural match."""
+    return {
+        "schema_version": 1,
+        "condition_signature": admission.get("signature"),
+        "evidence_version": admission.get("evidence_version"),
+        "evidence_hash": admission.get("evidence_hash"),
+        "native_stage_at": admission.get("stage_at"),
+        "definition_hash": _canonical_hash(admission.get("definition")),
+    }
+
+
 def evaluate(
     ledger: dict[str, Any], watch: dict[str, Any], *, system: str,
     market_labels: dict[str, str], parse_time: Callable[[Any], datetime | None],
@@ -236,6 +248,7 @@ def evaluate(
                 "frozen_condition_signature": adjusted["signature"],
                 "wilson_admission": adjusted["arithmetic"],
                 "evidence_version": adjusted.get("evidence_version"),
+                "exact_match_binding": _exact_match_binding(adjusted),
                 "observation_id": observation.get("observation_id") if observation else None,
             })
         if not accepted:
@@ -263,7 +276,8 @@ def evaluate(
         audit.append({"market": market, "status": "CREATED", "reason": "wilson_candidate_frozen",
                       "bet_id": bet["bet_id"], "frozen_condition_signature": bet["frozen_condition_signature"],
                       "condition_number": bet.get("condition_number"),
-                      "wilson_admission": bet["wilson_admission"]})
+                      "wilson_admission": bet["wilson_admission"],
+                      "exact_match_binding": _exact_match_binding(admission)})
         # The caller owns one atomic ledger append after all markets pass.
     ns["audit"] = (ns.get("audit") or []) + [{"ts": now, "match_id": fixture, **row} for row in audit]
     ns["audit"] = ns["audit"][-CONDITION_AUDIT_LIMIT:]

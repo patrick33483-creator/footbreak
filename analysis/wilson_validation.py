@@ -61,6 +61,9 @@ FUNNEL_SETTLEMENT_REJECTIONS = {
     "missing_formal_row_identity": (
         "evidence_integrity", "正式紀錄缺少不可變識別碼",
     ),
+    "invalid_formal_admission_binding": (
+        "evidence_integrity", "正式紀錄與凍結條件或入場證據無法驗證",
+    ),
     "admitted_evidence_version_mismatch": (
         "evidence_integrity", "正式紀錄的入場證據版本或 hash 無法驗證",
     ),
@@ -1414,16 +1417,18 @@ def _expected_production_identity_manifest(
 
 
 def create_production_identity_manifest(
-    ledger: dict[str, Any], system: str, *, explicit_authorization: bool = False,
+    ledger: dict[str, Any], system: str, *, authorized_manifest: dict[str, Any] | None = None,
+    trusted_manifest_hash: str | None = None,
 ) -> dict[str, Any]:
-    """Persist the production identity root once, never as an implicit repair.
+    """Persist an independently authorized production identity root exactly once.
 
-    The caller must explicitly authorize creation after the frozen registry has
-    been independently audited. Existing manifests are verified and returned
-    unchanged; a mismatch is never overwritten or auto-migrated.
+    Authority must be supplied independently as either the complete canonical
+    manifest document or its trusted expected hash.  The current mutable
+    registry can prove equality with that authority, but can never authorize
+    itself. Existing manifests are verified and never overwritten.
     """
-    if explicit_authorization is not True:
-        raise ValueError("explicit production identity manifest authorization required")
+    if (authorized_manifest is None) == (trusted_manifest_hash is None):
+        raise ValueError("supply exactly one independent manifest authority")
     ns = ledger.get(NAMESPACE)
     if (
         not isinstance(ns, dict)
@@ -1434,6 +1439,22 @@ def create_production_identity_manifest(
     expected, _validated, reason = _expected_production_identity_manifest(ns, system)
     if expected is None:
         raise ValueError(reason or "validated frozen registry required")
+    expected_bytes = json.dumps(
+        expected, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")
+    if authorized_manifest is not None:
+        if not isinstance(authorized_manifest, dict):
+            raise ValueError("authorized production identity manifest must be an object")
+        authorized_bytes = json.dumps(
+            authorized_manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        ).encode("utf-8")
+        if authorized_bytes != expected_bytes:
+            raise ValueError("authorized production identity manifest mismatch")
+    elif (
+        not _sha256_hex(trusted_manifest_hash)
+        or trusted_manifest_hash != expected["manifest_hash"]
+    ):
+        raise ValueError("trusted production identity manifest hash mismatch")
     existing = ns.get("production_identity_manifest")
     if existing is not None:
         if existing != expected:
@@ -1480,6 +1501,101 @@ def _unavailable_condition_card(
             "omitted_reason_kinds": 0,
         },
     }
+
+
+def _validate_formal_admission_binding(
+    row: dict[str, Any], *, observation: bool, system: str, signature: str,
+    definition: dict[str, Any], frozen: dict[str, Any],
+    version_by_number: dict[int, dict[str, Any]], projection_time: datetime,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Validate the immutable native admission before any funnel count."""
+    fixture = row.get("match_id")
+    market = row.get("market")
+    marker = row.get("rollover_provenance")
+    evidence_version = _strict_int(row.get("evidence_version"))
+    admitted = version_by_number.get(evidence_version)
+    stage_at = _time(marker.get("stage_at")) if isinstance(marker, dict) else None
+    created_at = _time(row.get("created_at"))
+    admission_at = _time(row.get("admission_at")) if row.get("admission_at") is not None else None
+    kickoff = _time(row.get("kickoff") or row.get("kickoff_hkt"))
+    condition_number_value = _strict_int(row.get("condition_number"))
+    expected_number = _strict_int(frozen.get("condition_number"))
+    historical = row.get("frozen_historical_evidence")
+    if (
+        not isinstance(fixture, str) or not fixture
+        or market not in {"HDC", "HIL", "CHL"}
+        or (row.get("code") is not None and row.get("code") != market)
+        or (observation and row.get("formal_bet") is not False)
+        or (not observation and row.get("formal_bet") is False)
+        or row.get("stage") != DECISION_STAGE
+        or row.get("first_native_pre_kickoff_t5") is not True
+        or row.get("post_hoc_backfill") not in (None, False)
+        or row.get("exclude_from_simulation") not in (None, False)
+        or row.get("frozen_condition_signature") != signature
+        or row.get("frozen_condition_definition") != definition
+        or definition.get("market") != market
+        or condition_number_value != expected_number
+        or admitted is None
+        or row.get("evidence_hash") != admitted.get("evidence_hash")
+        or not isinstance(marker, dict)
+        or row.get("native_stage_at") != marker.get("stage_at")
+        or not isinstance(historical, dict)
+        or _strict_int(historical.get("hits")) != admitted.get("cumulative_hits")
+        or _strict_int(historical.get("decided")) != admitted.get("cumulative_decided")
+        or historical.get("evidence_version") != evidence_version
+        or historical.get("evidence_hash") != admitted.get("evidence_hash")
+        or set(marker) != {
+            "schema_version", "system", "condition_signature",
+            "native_pre_kickoff_t5", "stage_at", "fixture_market_hash",
+            "admitted_evidence_version", "admitted_evidence_hash",
+        }
+        or marker.get("schema_version") != 1
+        or marker.get("system") != system
+        or marker.get("condition_signature") != signature
+        or marker.get("native_pre_kickoff_t5") is not True
+        or marker.get("admitted_evidence_version") != evidence_version
+        or marker.get("admitted_evidence_hash") != admitted.get("evidence_hash")
+        or marker.get("fixture_market_hash")
+        != _fixture_market_hash(system, fixture, market)
+        or stage_at is None or created_at is None or kickoff is None
+        or not _strictly_after(
+            marker.get("stage_at"), admitted.get("activation_boundary_at"),
+        )
+        or stage_at > created_at
+        or (admission_at is not None and not stage_at <= admission_at <= created_at)
+        or created_at >= kickoff
+        or stage_at >= kickoff
+        or stage_at > projection_time
+        or created_at > projection_time
+    ):
+        return None, "invalid_formal_admission_binding"
+
+    arithmetic = row.get("wilson_admission")
+    expected_arithmetic = admission_arithmetic(
+        admitted["cumulative_hits"], admitted["cumulative_decided"], row.get("odds"),
+    )
+    arithmetic_keys = (
+        "hits", "decided", "hit_rate_raw", "wilson95_lower_raw",
+        "wilson95_upper_raw", "actual_decimal_odds_raw", "break_even_rate_raw",
+        "required_rate_raw", "minimum_acceptable_odds_raw", "passes",
+    )
+    if (
+        not isinstance(arithmetic, dict)
+        or expected_arithmetic is None
+        or arithmetic.get("passes") is not (not observation)
+        or any(
+            (
+                arithmetic.get(key) != expected_arithmetic.get(key)
+                if key in {"hits", "decided", "passes"}
+                else not _same_optional_number(
+                    arithmetic.get(key), expected_arithmetic.get(key),
+                )
+            )
+            for key in arithmetic_keys
+        )
+    ):
+        return None, "invalid_formal_admission_binding"
+    return admitted, None
 
 
 def project_condition_funnel(
@@ -1568,6 +1684,7 @@ def project_condition_funnel(
         "reason": "condition_attribution_not_persisted_before_exact_match",
     }
 
+    projection_time = datetime.now(timezone.utc)
     output: list[dict[str, Any]] = []
     for signature, number in zip(order, numbers):
         frozen = conditions[signature]
@@ -1593,21 +1710,27 @@ def project_condition_funnel(
                         and row.get("reason") == "wilson_gate_not_passed"
                     )
                 )
-                admission = row.get("wilson_admission")
+                binding = row.get("exact_match_binding")
                 audit_version = (
-                    _strict_int(admission.get("evidence_version"))
-                    if isinstance(admission, dict) else None
+                    _strict_int(binding.get("evidence_version"))
+                    if isinstance(binding, dict) else None
                 )
                 audit_evidence = version_by_number.get(audit_version)
                 audit_stage_at = (
-                    admission.get("stage_at") if isinstance(admission, dict) else None
+                    binding.get("native_stage_at") if isinstance(binding, dict) else None
                 )
                 audit_ts, audit_stage_time = _time(row.get("ts")), _time(audit_stage_at)
                 exact_evidence_valid = (
-                    isinstance(admission, dict)
-                    and admission.get("signature") == signature
+                    isinstance(binding, dict)
+                    and set(binding) == {
+                        "schema_version", "condition_signature", "evidence_version",
+                        "evidence_hash", "native_stage_at", "definition_hash",
+                    }
+                    and binding.get("schema_version") == 1
+                    and binding.get("condition_signature") == signature
+                    and binding.get("definition_hash") == _canonical_hash(definition)
                     and audit_evidence is not None
-                    and admission.get("evidence_hash") == audit_evidence["evidence_hash"]
+                    and binding.get("evidence_hash") == audit_evidence["evidence_hash"]
                     and _strictly_after(
                         audit_stage_at, audit_evidence.get("activation_boundary_at"),
                     )
@@ -1645,55 +1768,59 @@ def project_condition_funnel(
             identity = ("observation" if observation else "bet", raw_identity)
             grouped_identities.setdefault(identity, []).append(row)
 
-        normalized_rows: list[tuple[tuple[str, str], dict[str, Any]]] = []
+        normalized_rows: list[
+            tuple[tuple[str, str], dict[str, Any], dict[str, Any]]
+        ] = []
         for identity, grouped in grouped_identities.items():
             if len(grouped) > 1:
                 settlement_rejections[
                     "duplicate_or_conflicting_formal_identity"
                 ] += len(grouped)
                 continue
-            normalized_rows.append((identity, grouped[0]))
-        recorded_bets = sum(identity[0] == "bet" for identity, _row in normalized_rows)
+            candidate = grouped[0]
+            admitted, binding_reason = _validate_formal_admission_binding(
+                candidate,
+                observation=identity[0] == "observation",
+                system=system,
+                signature=signature,
+                definition=definition,
+                frozen=frozen,
+                version_by_number=version_by_number,
+                projection_time=projection_time,
+            )
+            if admitted is None:
+                settlement_rejections[
+                    binding_reason or "invalid_formal_admission_binding"
+                ] += 1
+                continue
+            normalized_rows.append((identity, candidate, admitted))
+        recorded_bets = sum(
+            identity[0] == "bet" for identity, _row, _admitted in normalized_rows
+        )
         recorded_observations = sum(
-            identity[0] == "observation" for identity, _row in normalized_rows
+            identity[0] == "observation"
+            for identity, _row, _admitted in normalized_rows
         )
 
         settlement_candidates: dict[str, list[tuple[dict[str, Any], dict[str, Any]]]] = {}
-        for _identity, row in normalized_rows:
+        for _identity, row, admitted in normalized_rows:
             if row.get("status") != "SETTLED":
                 settlement_rejections["not_settled"] += 1
                 continue
             if row.get("result") not in BINARY_DECIDED_RESULTS:
                 settlement_rejections["not_binary_decided"] += 1
                 continue
-            marker = row.get("rollover_provenance")
-            if not (
-                isinstance(marker, dict)
-                and marker.get("schema_version") == 1
-                and marker.get("system") == system
-                and marker.get("condition_signature") == signature
-                and marker.get("native_pre_kickoff_t5") is True
-                and row.get("stage") == DECISION_STAGE
-                and row.get("first_native_pre_kickoff_t5") is True
-                and not row.get("post_hoc_backfill")
-                and not row.get("exclude_from_simulation")
-                and _sha256_hex(marker.get("fixture_market_hash"))
-                and _time(marker.get("stage_at")) is not None
+            marker = row["rollover_provenance"]
+            created_at = _time(row.get("created_at"))
+            kickoff = _time(row.get("kickoff") or row.get("kickoff_hkt"))
+            settled_at = _time(row.get("settled_at"))
+            if (
+                created_at is None or kickoff is None or settled_at is None
+                or created_at > settled_at
+                or kickoff > settled_at
+                or settled_at > projection_time
             ):
                 settlement_rejections["missing_or_invalid_provenance"] += 1
-                continue
-            admitted_version = _strict_int(marker.get("admitted_evidence_version"))
-            admitted_hash = marker.get("admitted_evidence_hash")
-            admitted = version_by_number.get(admitted_version)
-            if (
-                admitted is None
-                or not _sha256_hex(admitted_hash)
-                or admitted_hash != admitted["evidence_hash"]
-                or not _strictly_after(
-                    marker.get("stage_at"), admitted.get("activation_boundary_at"),
-                )
-            ):
-                settlement_rejections["admitted_evidence_version_mismatch"] += 1
                 continue
             settlement_candidates.setdefault(
                 str(marker["fixture_market_hash"]), [],
@@ -2438,6 +2565,7 @@ def record_match_observation(
         "status": "PENDING",
         "first_native_pre_kickoff_t5": True,
         "created_at": now,
+        "native_stage_at": admission.get("stage_at"),
         "frozen_condition_signature": signature,
         "condition_number": frozen.get("condition_number"),
         "frozen_condition_definition": copy.deepcopy(admission["definition"]),
@@ -2505,7 +2633,8 @@ def commit_bet(
         "stage": DECISION_STAGE, "first_stage": DECISION_STAGE, "status": "PENDING",
         "first_native_pre_kickoff_t5": True,
         "simulation_only": True, "real_betting_enabled": False, "created_at": now,
-        "admission_at": now, "frozen_condition_signature": signature,
+        "admission_at": now, "native_stage_at": stage_at,
+        "frozen_condition_signature": signature,
         "condition_number": frozen.get("condition_number"),
         "frozen_condition_definition": copy.deepcopy(admission["definition"]),
         "frozen_historical_evidence": copy.deepcopy(admission["history"]),
