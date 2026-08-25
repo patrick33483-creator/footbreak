@@ -124,6 +124,10 @@ systemctl daemon-reload
 if crown_is_enabled_in_config; then
   echo "▸ Crown validation gate enabled; starting Crown timers"
   sync_reverse_t5_bridge_enablement_marker
+  # A previously copied or rolled-back optional worker can retain a masked or
+  # disabled unit-file state.  Clear that state before the normal Crown timer
+  # reconciliation so an enabled bridge cannot remain inert.
+  systemctl unmask crown-reverse-t5-drain.timer 2>/dev/null || true
   for timer in crown-round-update.timer crown-first-look-reconcile.timer crown-sweep.timer crown-tick.timer crown-settle.timer crown-reverse-t5-drain.timer; do
     # A copied-in timer can retain a stale disabled unit-file state across a
     # rollback/forward deployment.  Recreate the timers.target link instead
