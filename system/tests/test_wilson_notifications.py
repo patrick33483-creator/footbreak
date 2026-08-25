@@ -8,11 +8,14 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
-from analysis.wilson_validation import admission_arithmetic
-
 SYSTEM = Path(__file__).resolve().parents[1]
 if str(SYSTEM) not in sys.path:
     sys.path.insert(0, str(SYSTEM))
+ROOT = SYSTEM.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+from analysis import bilateral_decision as bilateral
+from analysis.wilson_validation import admission_arithmetic
 import notify
 import record_picks
 
@@ -30,6 +33,8 @@ def bet(strategy="wilson-test-strategy-v1", portfolio="footbreak_wilson_test", *
         "line": -.25, "stage": "T-5", "created_at": created.isoformat(),
         "selected_role": "主讓", "selected_line": -.25, "odds": 1.90, "stake": 500,
         "frozen_condition_definition": {"path": "首預→T-30→T-5 all 主讓"},
+        "frozen_condition_signature": "condition-signature-7",
+        "evidence_version": 3,
         "frozen_historical_evidence": {"hits": 41, "decided": 59, "label": "凍結條件"},
         "wilson_admission": arithmetic, "condition_number": 7,
     }
@@ -50,16 +55,38 @@ def low_odds_observation(*, market="讓球", number=7):
     return row
 
 
-def bilateral_decision(*, kickoff=None):
-    return {
-        "decision_id": "bilateral|fixture|HIL|T-5",
+def bilateral_decision(*, kickoff=None, **overrides):
+    record = {
         "system": "footbreak", "fixture": "fixture",
         "kickoff": kickoff or (datetime.now(HKT) + timedelta(hours=2)).isoformat(),
         "market": "HIL", "side": "H", "line": 2.5, "condition_number": 7,
+        "condition_signature": "condition-signature-7",
+        "evidence_version": 3,
         "league": "England - Premier League", "home": "主隊", "away": "客隊",
         "minimum_odds": 1.92, "signal_quote": 1.75,
         "counterpart_quote": None, "counterpart_reason": "系統未取得原生T-5",
         "decision": "COUNTERPART_UNAVAILABLE", "chosen_execution_book": None,
+        "created_at": datetime.now(HKT).isoformat(),
+    }
+    record.update(overrides)
+    record["decision_id"] = bilateral.decision_id(
+        system=record["system"], fixture=record["fixture"],
+        market=record["market"], side=record["side"], line=record["line"],
+        condition_signature=record["condition_signature"],
+        evidence_version=record["evidence_version"],
+    )
+    namespace = {}
+    committed, _created = bilateral.persist_decision(namespace, record)
+    return committed
+
+
+def bilateral_outbox(decision):
+    return {
+        "outbox_id": "outbox-" + decision["decision_id"],
+        "decision_id": decision["decision_id"],
+        "created_at": decision["created_at"],
+        "notification_required": True,
+        "delivery": "PENDING",
     }
 
 
@@ -205,16 +232,21 @@ class FootbreakWilsonNotificationTest(unittest.TestCase):
             self.assertEqual(record_picks.notify_only({"bets": []}), 3)
         dispatcher.assert_called_once_with({"bets": []})
 
-    def test_native_observation_precedes_bilateral_retry_under_shared_budget(self):
-        low = low_odds_observation()
-        decision = bilateral_decision()
+    def test_bilateral_notice_supersedes_semantically_duplicate_native_observation(self):
+        low = low_odds_observation(market="入球大細")
+        low.update({
+            "code": "HIL", "market": "HIL", "side": "H", "selected_side": "H",
+            "line": 2.5, "selected_line": 2.5, "selected_role": "大",
+        })
+        decision = bilateral_decision(
+            kickoff=low["kickoff"], signal_quote=low["odds"],
+            minimum_odds=low["wilson_admission"]["minimum_acceptable_odds_raw"],
+        )
         ledger = {
             "wilson_validation": {"observations": [low]},
             "footbreak_crown_execution_test": {
                 "decisions": [decision],
-                "decision_outbox": [{
-                    "decision_id": decision["decision_id"], "notification_required": True,
-                }],
+                "decision_outbox": [bilateral_outbox(decision)],
             },
         }
         with tempfile.TemporaryDirectory() as directory:
@@ -223,14 +255,162 @@ class FootbreakWilsonNotificationTest(unittest.TestCase):
                 self.assertEqual(
                     notify.notify_pending_committed_bets(ledger, max_attempts=1, max_seconds=5), 1,
                 )
-                self.assertIn("不投注：賠率不足", sender.call_args.args[0])
-                self.assertEqual(
-                    notify.notify_pending_committed_bets(ledger, max_attempts=1, max_seconds=5), 1,
-                )
                 self.assertIn("對照收集失敗；保留原生訊號決定", sender.call_args.args[0])
+                self.assertIn("皇冠對照：未能確認（系統未取得原生T-5）", sender.call_args.args[0])
+                self.assertNotIn("counterpart_", sender.call_args.args[0])
+                self.assertNotIn("crown_", sender.call_args.args[0])
+                self.assertEqual(
+                    notify.notify_pending_committed_bets(ledger, max_attempts=1, max_seconds=5), 0,
+                )
             persisted = json.loads(Path(state).read_text(encoding="utf-8"))
-        self.assertEqual(persisted["wilson_match_alerts"], [low["observation_id"]])
+        self.assertEqual(persisted.get("wilson_match_alerts", []), [])
         self.assertEqual(persisted["bilateral_decision_alerts"], [decision["decision_id"]])
+
+    def test_opposite_side_or_line_never_suppresses_native_observation(self):
+        low = low_odds_observation(market="入球大細")
+        low.update({
+            "code": "HIL", "market": "HIL", "side": "H", "selected_side": "H",
+            "line": 2.5, "selected_line": 2.5, "selected_role": "大",
+        })
+        decision = bilateral_decision()
+        decision["side"] = "L"
+        decision["line"] = 2.75
+        # Keep the original id/provenance deliberately: this simulates a
+        # corrupted or semantically different row occupying the outbox.
+        ledger = {
+            "wilson_validation": {"observations": [low]},
+            "footbreak_crown_execution_test": {
+                "decisions": [decision],
+                "decision_outbox": [bilateral_outbox(decision)],
+            },
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(notify, "STATE", str(Path(directory, "notify.json"))), \
+                 patch.object(notify, "send") as sender:
+                self.assertEqual(notify.notify_pending_condition_bets(ledger), 1)
+        self.assertIn("不投注：賠率不足", sender.call_args.args[0])
+
+    def test_tampered_or_unrenderable_bilateral_row_fails_open_to_native(self):
+        low = low_odds_observation(market="入球大細")
+        low.update({
+            "code": "HIL", "market": "HIL", "side": "H", "selected_side": "H",
+            "line": 2.5, "selected_line": 2.5, "selected_role": "大",
+        })
+        for label, mutation in (
+            ("bad provenance", lambda row: row.__setitem__("provenance_hash", "tampered")),
+            ("bad formatter", lambda row: row.__setitem__("minimum_odds", "not-a-number")),
+        ):
+            with self.subTest(label=label):
+                decision = bilateral_decision()
+                mutation(decision)
+                ledger = {
+                    "wilson_validation": {"observations": [low]},
+                    "footbreak_crown_execution_test": {
+                        "decisions": [decision],
+                        "decision_outbox": [bilateral_outbox(decision)],
+                    },
+                }
+                with tempfile.TemporaryDirectory() as directory:
+                    with patch.object(notify, "STATE", str(Path(directory, "notify.json"))), \
+                         patch.object(notify, "send") as sender:
+                        self.assertEqual(notify.notify_pending_condition_bets(ledger), 1)
+                self.assertIn("不投注：賠率不足", sender.call_args.args[0])
+
+    def test_machine_reason_is_redacted_even_when_mixed_with_chinese(self):
+        for reason in ("資料 crown_internal_error", "資料crown_internal_error", "資料：crown_internal_error"):
+            with self.subTest(reason=reason):
+                decision = bilateral_decision(counterpart_reason=reason)
+                message = notify._bilateral_decision_message(decision)
+                self.assertIn("皇冠對照：未能確認（未能確認）", message)
+                self.assertNotIn("crown_internal_error", message)
+
+    def test_malformed_bilateral_row_does_not_block_valid_group_row(self):
+        valid = bilateral_decision()
+        malformed = dict(valid, decision_id="broken", minimum_odds="bad")
+        ledger = {"footbreak_crown_execution_test": {
+            "decisions": [valid, malformed],
+            "decision_outbox": [bilateral_outbox(valid), bilateral_outbox(malformed)],
+        }}
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(notify, "STATE", str(Path(directory, "notify.json"))), \
+                 patch.object(notify, "send") as sender:
+                self.assertEqual(notify.notify_pending_bilateral_decisions(ledger), 1)
+        self.assertIn("足破 Wilson 條件 #7", sender.call_args.args[0])
+
+    def test_malformed_outbox_and_tampered_decision_never_suppress_or_dispatch(self):
+        low = low_odds_observation(market="入球大細")
+        low.update({
+            "code": "HIL", "market": "HIL", "side": "H", "selected_side": "H",
+            "line": 2.5, "selected_line": 2.5, "selected_role": "大",
+        })
+        decision = bilateral_decision(
+            kickoff=low["kickoff"], signal_quote=low["odds"],
+            minimum_odds=low["wilson_admission"]["minimum_acceptable_odds_raw"],
+        )
+        malformed_outbox = dict(bilateral_outbox(decision), delivery={"bad": "shape"})
+        ledger = {
+            "wilson_validation": {"observations": [low]},
+            "footbreak_crown_execution_test": {
+                "decisions": [decision], "decision_outbox": [malformed_outbox],
+            },
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(notify, "STATE", str(Path(directory, "notify.json"))), \
+                 patch.object(notify, "send") as sender:
+                self.assertEqual(notify.notify_pending_condition_bets(ledger), 1)
+                self.assertEqual(notify.notify_pending_bilateral_decisions(ledger), 0)
+        self.assertEqual(sender.call_count, 1)
+
+        tampered = dict(decision, provenance_hash="tampered")
+        ledger = {"footbreak_crown_execution_test": {
+            "decisions": [tampered],
+            "decision_outbox": [bilateral_outbox(tampered)],
+        }}
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(notify, "STATE", str(Path(directory, "notify.json"))), \
+                 patch.object(notify, "send") as sender:
+                self.assertEqual(notify.notify_pending_bilateral_decisions(ledger), 0)
+        sender.assert_not_called()
+
+    def test_different_public_fixture_identity_never_suppresses_native(self):
+        low = low_odds_observation(market="入球大細")
+        low.update({
+            "code": "HIL", "market": "HIL", "side": "H", "selected_side": "H",
+            "line": 2.5, "selected_line": 2.5, "selected_role": "大",
+        })
+        decision = bilateral_decision(
+            kickoff=low["kickoff"], signal_quote=low["odds"],
+            minimum_odds=low["wilson_admission"]["minimum_acceptable_odds_raw"],
+            league="Spain - La Liga", home="另一主隊", away="另一客隊",
+        )
+        ledger = {
+            "wilson_validation": {"observations": [low]},
+            "footbreak_crown_execution_test": {
+                "decisions": [decision],
+                "decision_outbox": [bilateral_outbox(decision)],
+            },
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(notify, "STATE", str(Path(directory, "notify.json"))), \
+                 patch.object(notify, "send") as sender:
+                self.assertEqual(notify.notify_pending_condition_bets(ledger), 1)
+        self.assertIn("英格蘭超級聯賽", sender.call_args.args[0])
+
+    def test_native_observation_remains_available_if_bilateral_outbox_is_missing(self):
+        low = low_odds_observation()
+        decision = bilateral_decision()
+        ledger = {
+            "wilson_validation": {"observations": [low]},
+            "footbreak_crown_execution_test": {
+                "decisions": [decision],
+                "decision_outbox": [],
+            },
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(notify, "STATE", str(Path(directory, "notify.json"))), \
+                 patch.object(notify, "send") as sender:
+                self.assertEqual(notify.notify_pending_committed_bets(ledger), 1)
+        self.assertIn("不投注：賠率不足", sender.call_args.args[0])
 
     def test_bilateral_retry_never_sends_after_kickoff(self):
         decision = bilateral_decision(kickoff=(datetime.now(HKT) - timedelta(seconds=1)).isoformat())
@@ -250,15 +430,17 @@ class FootbreakWilsonNotificationTest(unittest.TestCase):
 
     def test_bilateral_fixture_group_has_complete_identity_and_acknowledges_all_conditions(self):
         first = bilateral_decision()
-        second = dict(first, decision_id="bilateral|fixture|CHL|T-5", market="CHL",
-                      side="L", line=10.5, condition_number=8, signal_quote=1.81,
-                      minimum_odds=1.95, decision="NO_BET_LOW_ODDS")
+        second = bilateral_decision(
+            kickoff=first["kickoff"], market="CHL", side="L", line=10.5,
+            condition_number=8, signal_quote=1.81, minimum_odds=1.95,
+            decision="NO_BET_LOW_ODDS",
+        )
         ledger = {
             "footbreak_crown_execution_test": {
                 "decisions": [first, second],
                 "decision_outbox": [
-                    {"decision_id": first["decision_id"], "notification_required": True},
-                    {"decision_id": second["decision_id"], "notification_required": True},
+                    bilateral_outbox(first),
+                    bilateral_outbox(second),
                 ],
             },
         }
@@ -303,15 +485,16 @@ class FootbreakWilsonNotificationTest(unittest.TestCase):
 
     def test_bilateral_groups_are_separate_for_different_fixture_or_platform(self):
         first = bilateral_decision()
-        other_fixture = dict(first, decision_id="bilateral|other|HIL|T-5", fixture="other",
-                             kickoff=(datetime.now(HKT) + timedelta(hours=3)).isoformat(),
-                             home="另一主隊", away="另一客隊", condition_number=8)
-        other_platform = dict(first, decision_id="bilateral|crown|fixture|HIL|T-5", system="crown",
-                              condition_number=9)
+        other_fixture = bilateral_decision(
+            fixture="other",
+            kickoff=(datetime.now(HKT) + timedelta(hours=3)).isoformat(),
+            home="另一主隊", away="另一客隊", condition_number=8,
+        )
+        other_platform = bilateral_decision(system="crown", condition_number=9)
         ledger = {"footbreak_crown_execution_test": {
             "decisions": [first, other_fixture, other_platform],
             "decision_outbox": [
-                {"decision_id": row["decision_id"], "notification_required": True}
+                bilateral_outbox(row)
                 for row in (first, other_fixture, other_platform)
             ],
         }}
@@ -324,12 +507,14 @@ class FootbreakWilsonNotificationTest(unittest.TestCase):
 
     def test_bilateral_group_transport_failure_keeps_every_id_for_one_retry(self):
         first = bilateral_decision()
-        second = dict(first, decision_id="bilateral|fixture|CHL|T-5", market="CHL",
-                      side="L", line=10.5, condition_number=8)
+        second = bilateral_decision(
+            kickoff=first["kickoff"], market="CHL", side="L", line=10.5,
+            condition_number=8,
+        )
         ledger = {"footbreak_crown_execution_test": {
             "decisions": [first, second],
             "decision_outbox": [
-                {"decision_id": row["decision_id"], "notification_required": True}
+                bilateral_outbox(row)
                 for row in (first, second)
             ],
         }}

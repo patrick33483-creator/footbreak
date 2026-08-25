@@ -19,6 +19,7 @@ if str(ROOT / "system") not in sys.path:
     sys.path.insert(0, str(ROOT / "system"))
 
 import crown_execution_test as cross
+import native_stage_state as stage_state
 import notify
 from analysis.wilson_validation import admission_arithmetic, freeze_condition
 from crown import hkjc_execution_test as reciprocal
@@ -60,6 +61,45 @@ def authoritative_betis_card(*, kickoff, observed=None, duplicate=False):
         "current_selected_odds_journal": [copy.deepcopy(row)],
     }
     return [card, copy.deepcopy(card)] if duplicate else [card]
+
+
+def recovery_watch_and_ledger(*, kickoff, at):
+    watch = {
+        "match_id": "fx", "kickoff": kickoff, "league": "Spain - La Liga",
+        "home": "貝迪斯", "away": "皇家蘇斯達", "stages": [],
+    }
+    stage_state.ensure_manifest(
+        watch, origin="first_look", now=cross._time(at) - timedelta(minutes=1),
+    )
+    attempt = stage_state.start_attempt(
+        {"native_stage_attempts": []}, watch, "T-30", now=cross._time(at),
+    )
+    ledger = {"watch": {"fx": watch}, "native_stage_attempts": [attempt]}
+    snapshot = stage_state.enrich_snapshot({
+        "stage": "T-30", "ts": at, "market_predictions": [
+            {"code": "HIL", "side": "H", "line": 2.5},
+        ],
+        "native_snapshot_id": "attempt:" + attempt["attempt_id"],
+    }, watch, "T-30")
+    watch["stages"].append(snapshot)
+    stage_state.finish_attempt(
+        ledger, attempt, "COMMITTED", now=cross._time(at) + timedelta(seconds=1),
+    )
+    first = {
+        "at": stamp(-60), "status": "UNAVAILABLE",
+        "reason": "crown_fixture_not_listed",
+        "counterpart_book": "crown",
+        "hkjc_match_id": "fx",
+        "footbreak_kickoff": kickoff,
+        "footbreak_fixture": {
+            "league": watch["league"], "home": watch["home"], "away": watch["away"],
+        },
+    }
+    watch["counterpart_bridges"] = {"crown": {
+        "schema_version": 3, "counterpart_book": "crown",
+        "first_look": copy.deepcopy(first),
+    }}
+    return watch, ledger, first
 
 
 class CrossEvidenceTests(unittest.TestCase):
@@ -206,6 +246,244 @@ class CrossEvidenceTests(unittest.TestCase):
         self.assertEqual(t30["origin"], "t30_bootstrap_existing_card")
         self.assertNotIn("first_look", watch["counterpart_bridges"]["crown"])
 
+    def test_t30_recovers_after_unresolved_first_look_without_overwriting_history(self):
+        kickoff, at = stamp(30), stamp()
+        watch, ledger, first = recovery_watch_and_ledger(kickoff=kickoff, at=at)
+        with tempfile.TemporaryDirectory() as directory:
+            evidence = Path(directory, "cards.json")
+            evidence.write_text(
+                json.dumps(authoritative_betis_card(kickoff=kickoff, observed=stamp(-1))),
+                encoding="utf-8",
+            )
+            with patch.dict(os.environ, {"FOOTBREAK_CROWN_EXECUTION_EVIDENCE_PATH": str(evidence)}):
+                t30 = cross.prefetch_bridge(watch, stage="T-30", now=at, ledger=ledger)
+                watch["stages"].append({
+                    "stage": "T-5", "ts": at, "market_predictions": [{
+                        "code": "HIL", "side": "H", "line": 2.5, "odds": 1.69,
+                        "source": "hkjc_public_board", "observed_at": stamp(-1),
+                    }],
+                })
+                captured = cross.capture_t5_counterparts(
+                    watch, now=at, ledger=ledger,
+                )
+                quote, reason = cross._crown_quote_for_verified_bridge(
+                    watch, "HIL", "H", 2.5, cross._time(at), cross._time(kickoff),
+                    ledger=ledger,
+                )
+        self.assertEqual(watch["counterpart_bridges"]["crown"]["first_look"], first)
+        self.assertEqual(t30["status"], "RESOLVED")
+        self.assertEqual(t30["origin"], "t30_recovery_after_unresolved_first_look")
+        self.assertEqual(t30["first_look_hash"], cross._record_hash(first))
+        self.assertTrue(t30["native_t30_proof_hash"])
+        self.assertEqual(captured["HIL"]["status"], "AVAILABLE")
+        self.assertIsNone(reason)
+        self.assertEqual(quote["odds"], 1.91)
+
+    def test_t30_recovery_fails_closed_if_first_look_provenance_changes(self):
+        kickoff, at = stamp(30), stamp()
+        watch, ledger, _first = recovery_watch_and_ledger(kickoff=kickoff, at=at)
+        with tempfile.TemporaryDirectory() as directory:
+            evidence = Path(directory, "cards.json")
+            evidence.write_text(
+                json.dumps(authoritative_betis_card(kickoff=kickoff, observed=stamp(-1))),
+                encoding="utf-8",
+            )
+            with patch.dict(os.environ, {"FOOTBREAK_CROWN_EXECUTION_EVIDENCE_PATH": str(evidence)}):
+                cross.prefetch_bridge(watch, stage="T-30", now=at, ledger=ledger)
+                watch["counterpart_bridges"]["crown"]["first_look"]["reason"] = "changed"
+                quote, reason = cross._crown_quote_for_verified_bridge(
+                    watch, "HIL", "H", 2.5, cross._time(at), cross._time(kickoff),
+                    ledger=ledger,
+                )
+        self.assertIsNone(quote)
+        self.assertEqual(reason, "crown_t30_bootstrap_unverified")
+
+    def test_t30_recovery_rejects_tampered_time_identity_context_and_empty_first_look(self):
+        kickoff, at = stamp(30), stamp()
+        for label, tamper in (
+            ("first look time", lambda watch: watch["counterpart_bridges"]["crown"]["first_look"].__setitem__("at", stamp(-30))),
+            ("identity context", lambda watch: watch["counterpart_bridges"]["crown"]["t30"]["identity_context"]["crown"].__setitem__("home", "WRONG TEAM")),
+        ):
+            with self.subTest(label=label):
+                watch, ledger, _first = recovery_watch_and_ledger(kickoff=kickoff, at=at)
+                with tempfile.TemporaryDirectory() as directory:
+                    evidence = Path(directory, "cards.json")
+                    evidence.write_text(
+                        json.dumps(authoritative_betis_card(kickoff=kickoff, observed=stamp(-1))),
+                        encoding="utf-8",
+                    )
+                    with patch.dict(os.environ, {"FOOTBREAK_CROWN_EXECUTION_EVIDENCE_PATH": str(evidence)}):
+                        cross.prefetch_bridge(watch, stage="T-30", now=at, ledger=ledger)
+                        tamper(watch)
+                        quote, reason = cross._crown_quote_for_verified_bridge(
+                            watch, "HIL", "H", 2.5, cross._time(at), cross._time(kickoff),
+                            ledger=ledger,
+                        )
+                self.assertIsNone(quote)
+                self.assertEqual(reason, "crown_t30_bootstrap_unverified")
+
+        watch, ledger, _first = recovery_watch_and_ledger(kickoff=kickoff, at=at)
+        watch["counterpart_bridges"]["crown"]["first_look"] = {}
+        with tempfile.TemporaryDirectory() as directory:
+            evidence = Path(directory, "cards.json")
+            evidence.write_text(
+                json.dumps(authoritative_betis_card(kickoff=kickoff, observed=stamp(-1))),
+                encoding="utf-8",
+            )
+            with patch.dict(os.environ, {"FOOTBREAK_CROWN_EXECUTION_EVIDENCE_PATH": str(evidence)}):
+                result = cross.prefetch_bridge(watch, stage="T-30", now=at, ledger=ledger)
+        self.assertEqual(result["status"], "UNAVAILABLE")
+        self.assertNotEqual(result.get("origin"), cross.T30_RECOVERY_ORIGIN)
+
+    def test_valid_t30_recovery_is_immutable_when_local_evidence_disappears(self):
+        kickoff, at = stamp(30), stamp()
+        watch, ledger, _first = recovery_watch_and_ledger(kickoff=kickoff, at=at)
+        with tempfile.TemporaryDirectory() as directory:
+            evidence = Path(directory, "cards.json")
+            evidence.write_text(
+                json.dumps(authoritative_betis_card(kickoff=kickoff, observed=stamp(-1))),
+                encoding="utf-8",
+            )
+            with patch.dict(os.environ, {"FOOTBREAK_CROWN_EXECUTION_EVIDENCE_PATH": str(evidence)}):
+                recovered = copy.deepcopy(cross.prefetch_bridge(
+                    watch, stage="T-30", now=at, ledger=ledger,
+                ))
+                evidence.unlink()
+                repeated = cross.prefetch_bridge(
+                    watch, stage="T-30", now=stamp(1), ledger=ledger,
+                )
+        self.assertEqual(repeated, recovered)
+        self.assertEqual(
+            watch["counterpart_bridges"]["crown"]["t30"], recovered,
+        )
+
+    def test_t30_recovery_requires_committed_native_attempt(self):
+        kickoff, at = stamp(30), stamp()
+        watch, ledger, _first = recovery_watch_and_ledger(kickoff=kickoff, at=at)
+        ledger["native_stage_attempts"] = [
+            row for row in ledger["native_stage_attempts"]
+            if row.get("status") != "COMMITTED"
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            evidence = Path(directory, "cards.json")
+            evidence.write_text(
+                json.dumps(authoritative_betis_card(kickoff=kickoff, observed=stamp(-1))),
+                encoding="utf-8",
+            )
+            with patch.dict(os.environ, {"FOOTBREAK_CROWN_EXECUTION_EVIDENCE_PATH": str(evidence)}):
+                result = cross.prefetch_bridge(
+                    watch, stage="T-30", now=at, ledger=ledger,
+                )
+        self.assertEqual(result["status"], "UNAVAILABLE")
+        self.assertEqual(result["reason"], "crown_t30_recovery_native_stage_missing")
+
+    def test_t30_recovery_rejects_invalid_manifest_due_and_postkickoff_first_look(self):
+        kickoff, at = stamp(30), stamp()
+        watch, ledger, _first = recovery_watch_and_ledger(kickoff=kickoff, at=at)
+        watch["native_stage_manifest"]["jobs"]["T-30"]["due_at_utc"] = "garbage"
+        watch["stages"][0]["due_at_utc"] = "garbage"
+        for row in ledger["native_stage_attempts"]:
+            row["due_at_utc"] = "garbage"
+        self.assertIsNone(cross._native_t30_proof(ledger, watch))
+
+        watch, ledger, _first = recovery_watch_and_ledger(kickoff=kickoff, at=at)
+        watch["counterpart_bridges"]["crown"]["first_look"]["at"] = (
+            cross._time(kickoff) + timedelta(seconds=1)
+        ).isoformat()
+        proof = cross._native_t30_proof(ledger, watch)
+        self.assertIsNotNone(proof)
+        self.assertFalse(cross._valid_unresolved_first_look(
+            watch, watch["counterpart_bridges"]["crown"]["first_look"],
+            native_t30_at=proof["snapshot_at"],
+        ))
+
+    def test_t30_recovery_rejects_unknown_reason_and_inconsistent_native_times(self):
+        kickoff, at = stamp(30), stamp()
+        watch, ledger, _first = recovery_watch_and_ledger(kickoff=kickoff, at=at)
+        proof = cross._native_t30_proof(ledger, watch)
+        self.assertIsNotNone(proof)
+        watch["counterpart_bridges"]["crown"]["first_look"]["reason"] = "arbitrary_failure"
+        self.assertFalse(cross._valid_unresolved_first_look(
+            watch, watch["counterpart_bridges"]["crown"]["first_look"],
+            native_t30_at=proof["snapshot_at"],
+        ))
+
+        for label, mutate in (
+            ("manifest top kickoff", lambda w, _l: w["native_stage_manifest"].__setitem__(
+                "kickoff_at_utc", stamp(31))),
+            ("snapshot due hkt", lambda w, _l: w["stages"][0].__setitem__(
+                "due_at_hkt", stamp(1))),
+            ("attempt kickoff hkt", lambda _w, l: l["native_stage_attempts"][0].__setitem__(
+                "kickoff_at_hkt", stamp(31))),
+            ("manifest created after start", lambda w, _l: w["native_stage_manifest"].__setitem__(
+                "created_at", stamp(1))),
+        ):
+            with self.subTest(label=label):
+                candidate, candidate_ledger, _first = recovery_watch_and_ledger(
+                    kickoff=kickoff, at=at,
+                )
+                mutate(candidate, candidate_ledger)
+                self.assertIsNone(cross._native_t30_proof(candidate_ledger, candidate))
+
+    def test_post_commit_t5_job_consumes_recovered_bridge_with_ledger(self):
+        kickoff, at = stamp(30), stamp()
+        watch, ledger, _first = recovery_watch_and_ledger(kickoff=kickoff, at=at)
+        t5_snapshot = {
+            "stage": "T-5", "ts": at, "native_snapshot_id": "snapshot:t5",
+            "market_predictions": [{
+                "code": "HIL", "side": "H", "line": 2.5, "odds": 1.69,
+                "source": "hkjc_public_board", "observed_at": stamp(-1),
+            }],
+        }
+        job = {
+            "schema_version": 1, "job_id": "fx:snapshot:t5",
+            "status": "PENDING", "at": at, "match_id": "fx", "stage": "T-5",
+            "snapshot_id": "snapshot:t5", "t5_safe_to_evaluate": False,
+        }
+        ledger["wilson_validation"] = {"audit": []}
+        with tempfile.TemporaryDirectory() as directory:
+            evidence = Path(directory, "cards.json")
+            evidence.write_text(
+                json.dumps(authoritative_betis_card(
+                    kickoff=kickoff, observed=stamp(-1),
+                )),
+                encoding="utf-8",
+            )
+            with patch.dict(os.environ, {
+                "FOOTBREAK_CROWN_EXECUTION_EVIDENCE_PATH": str(evidence),
+            }), patch.object(record_picks, "_record_learning_snapshot", return_value=None):
+                recovered = cross.prefetch_bridge(
+                    watch, stage="T-30", now=at, ledger=ledger,
+                )
+                watch["stages"].append(t5_snapshot)
+                record_picks._process_optional_job(
+                    ledger, job, now=at, changes=[],
+                )
+        self.assertEqual(recovered["status"], "RESOLVED")
+        captured = watch["counterpart_bridges"]["crown"]["t5"]["markets"]["HIL"]
+        self.assertEqual(captured["status"], "AVAILABLE")
+        self.assertEqual(captured["crown_quote"]["odds"], 1.91)
+        self.assertEqual(
+            ledger["wilson_validation"]["audit"][-1]["reason"],
+            "t5_safe_lead_not_met",
+        )
+
+    def test_existing_t30_history_is_never_overwritten(self):
+        kickoff, at = stamp(30), stamp()
+        watch, ledger, _first = recovery_watch_and_ledger(kickoff=kickoff, at=at)
+        historical = {
+            "at": "old", "status": "RESOLVED",
+            "origin": "legacy_valid_history", "marker": "do-not-overwrite",
+        }
+        watch["counterpart_bridges"]["crown"]["t30"] = copy.deepcopy(historical)
+        with patch.object(cross, "_load_local_crown_cards",
+                          side_effect=AssertionError("immutable row must return before provider read")):
+            repeated = cross.prefetch_bridge(
+                watch, stage="T-30", now=at, ledger=ledger,
+            )
+        self.assertEqual(repeated, historical)
+        self.assertEqual(watch["counterpart_bridges"]["crown"]["t30"], historical)
+
     def test_t30_bootstrap_requires_a_durable_native_t30_and_rejects_post_kickoff(self):
         kickoff, at = stamp(120), stamp()
         watch = {
@@ -223,7 +501,7 @@ class CrossEvidenceTests(unittest.TestCase):
                     now=(cross._time(kickoff) + timedelta(seconds=1)).isoformat(),
                 )
         self.assertEqual(missing["reason"], "crown_t30_bootstrap_native_stage_missing")
-        self.assertEqual(late["reason"], "crown_bridge_post_kickoff_rejected")
+        self.assertEqual(late, missing)
         self.assertEqual(late["origin"], "t30_bootstrap_existing_card")
         self.assertNotIn("first_look", watch["counterpart_bridges"]["crown"])
 
