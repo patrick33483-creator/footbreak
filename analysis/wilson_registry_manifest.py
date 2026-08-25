@@ -11,7 +11,7 @@ from typing import Any
 from analysis.wilson_validation import (
     BINARY_DECIDED_RESULTS, BINARY_HIT_RESULTS, DECISION_STAGE, EDGE_BUFFER,
     MIN_DECIDED, ROLLOVER_BATCH_SIZE, SCHEMA_VERSION, STRATEGY,
-    _eligible_rollover_rows, _time, _version_hash, condition_signature,
+    _eligible_rollover_rows, _fixture_market_hash, _time, _version_hash, condition_signature,
     formal_matcher_axes, portfolio_name, wilson95,
 )
 SYSTEMS=("footbreak","crown")
@@ -30,7 +30,7 @@ def _equal(a:Any,b:Any)->bool:
  x,y=_finite(a),_finite(b); return x is not None and y is not None and abs(x-y)<=1e-12
 def _hash64(v:Any)->bool: return isinstance(v,str) and len(v)==64 and all(c in "0123456789abcdef" for c in v)
 def _activity(ledger:dict[str,Any],ns:dict[str,Any],system:str)->tuple[list[dict[str,Any]],list[dict[str,Any]]]:
- bets=ledger.get("bets"); obs=ns.get("observations")
+ bets=ledger.get("bets"); obs=ns.get("observations", [])
  if not isinstance(bets,list) or not isinstance(obs,list): return [],[]
  good_bets=[r for r in bets if isinstance(r,dict) and r.get("portfolio")==portfolio_name(system) and r.get("strategy")==STRATEGY]
  good_obs=[r for r in obs if isinstance(r,dict) and r.get("portfolio")==f"{system}_wilson_observations" and r.get("strategy")==STRATEGY and r.get("formal_bet") is False and r.get("stage")==DECISION_STAGE and r.get("first_native_pre_kickoff_t5") is True and isinstance(r.get("rollover_provenance"),dict) and r.get("status") in {"PENDING","SETTLED","VOIDED"}]
@@ -59,10 +59,10 @@ def build_manifest(ledger:Any,system:str)->dict[str,Any]:
   if set(conditions)-set(order_strings): reasons["condition_missing_from_order"]+=len(set(conditions)-set(order_strings))
   numbers=[]
   if not isinstance(ledger.get("bets"),list): reasons["invalid_bets_type"]+=1
-  if not isinstance(ns.get("observations"),list): reasons["invalid_observations_type"]+=1
+  if "observations" in ns and not isinstance(ns.get("observations"),list): reasons["invalid_observations_type"]+=1
   if not isinstance(ns.get("audit"),list): reasons["invalid_audit_type"]+=1
   good_bets,good_obs=_activity(ledger,ns,system)
-  migration_boundary=ns.get("rollover_migration_at") or ns.get("activation_at")
+  migration_boundary=ns.get("rollover_migration_at") or ns.get("granular_ranking_initial_migration_completed_at") or ns.get("activation_at")
   if _time(migration_boundary) is None: reasons["invalid_migration_boundary"]+=1
   for position,sig in enumerate(order_strings,1):
    rr=[]; frozen=conditions.get(sig)
@@ -90,7 +90,7 @@ def build_manifest(ledger:Any,system:str)->dict[str,Any]:
    if hh is None or hd is None or hh<0 or hd<MIN_DECIDED or hh>hd: rr.append("invalid_historical_counts")
    artifact=history.get("artifact")
    if not isinstance(artifact,dict): rr.append("missing_historical_artifact"); artifact={}
-   if not artifact.get("hash") or not artifact.get("version") or _time(artifact.get("as_of")) is None: rr.append("invalid_historical_artifact")
+   if not _hash64(artifact.get("hash")) or not artifact.get("version") or _time(artifact.get("as_of")) is None: rr.append("invalid_historical_artifact")
    versions=frozen.get("evidence_versions")
    if not isinstance(versions,list) or not versions: rr.append("missing_or_invalid_evidence_versions"); versions=[]
    prev=None; prev_boundary=None; prev_created=None; used_batch_hashes=set()
@@ -131,7 +131,12 @@ def build_manifest(ledger:Any,system:str)->dict[str,Any]:
      migration=(i==2 and v.get("initial_migration_full_cohort") is True and v.get("batch_fixture_market_ids_unavailable_from_legacy_aggregate") is True)
      if migration:
       cohort=v.get("legacy_prospective_cohort");
-      if not isinstance(cohort,dict) or cohort.get("hits")!=bh or cohort.get("decided")!=bd or not (bd and 0<=bh<=bd) or hashes!=[] or _time(v.get("activation_boundary_at"))!=_time(migration_boundary): rr.append("invalid_migration_v2")
+      migration_markers = [
+          ns.get("rollover_migration_at"),
+          ns.get("granular_ranking_initial_migration_completed_at"),
+      ]
+      valid_markers = {_time(x) for x in migration_markers if _time(x) is not None}
+      if not isinstance(cohort,dict) or cohort.get("hits")!=bh or cohort.get("decided")!=bd or not (bd and 0<=bh<=bd) or hashes!=[] or boundary not in valid_markers: rr.append("invalid_migration_v2")
      elif bd!=ROLLOVER_BATCH_SIZE or len(hashes)!=ROLLOVER_BATCH_SIZE: rr.append("invalid_ordinary_batch")
     prev=v; prev_boundary=boundary or prev_boundary; prev_created=created or prev_created
    active=versions[-1] if versions and isinstance(versions[-1],dict) else {}
@@ -168,11 +173,18 @@ def build_manifest(ledger:Any,system:str)->dict[str,Any]:
         or admitted.get("evidence_hash") != marker.get("admitted_evidence_hash")
         or activity.get("market", activity.get("code")) != definition.get("market")
         or activity.get("frozen_condition_definition") != definition
+        or activity.get("frozen_historical_evidence") != history
+        or activity.get("condition_number") != number
     ):
      activity_rejections["invalid_signature_definition_or_evidence_binding"] += 1
      continue
     if _time(marker.get("stage_at")) is None:
      activity_rejections["invalid_native_t5_timestamp"] += 1
+     continue
+    fixture = str(activity.get("match_id") or "")
+    market = str(activity.get("market") or activity.get("code") or "")
+    if not fixture or marker.get("fixture_market_hash") != _fixture_market_hash(system, fixture, market):
+     activity_rejections["fixture_market_hash_mismatch"] += 1
      continue
     if is_bet and (
         activity.get("simulation_only") is not True
@@ -181,8 +193,43 @@ def build_manifest(ledger:Any,system:str)->dict[str,Any]:
      activity_rejections["not_isolated_simulation_bet"] += 1
      continue
     qualified.append(activity)
-   eligible_input=[r for r in qualified if isinstance(r.get("rollover_provenance"),dict) and r["rollover_provenance"].get("admitted_evidence_version")==active.get("version") and r["rollover_provenance"].get("admitted_evidence_hash")==active.get("evidence_hash")]
-   eligible,excluded=_eligible_rollover_rows(eligible_input,system,sig,active) if active else ([],{"missing_or_invalid_provenance":0})
+   if activity_rejections:
+    rr.append("unverifiable_same_signature_activity")
+   # Prove every retained ordinary batch against its exact normalized rows.
+   for v in versions[1:]:
+    if not isinstance(v, dict) or v.get("initial_migration_full_cohort") is True:
+     continue
+    batch_hashes = v.get("batch_fixture_market_hashes")
+    support = [
+        r for r in qualified
+        if isinstance(r.get("rollover_provenance"), dict)
+        and r["rollover_provenance"].get("fixture_market_hash") in (batch_hashes or [])
+        and r.get("status") == "SETTLED"
+        and r.get("result") in BINARY_DECIDED_RESULTS
+    ]
+    by_hash = Counter(r["rollover_provenance"]["fixture_market_hash"] for r in support)
+    ordered_support = sorted(support, key=lambda r: (
+        _time(r["rollover_provenance"]["stage_at"]),
+        r["rollover_provenance"]["fixture_market_hash"],
+    ))
+    ordered_hashes = [r["rollover_provenance"]["fixture_market_hash"] for r in ordered_support]
+    if (
+        not isinstance(batch_hashes, list)
+        or ordered_hashes != batch_hashes
+        or any(by_hash[h] != 1 for h in batch_hashes)
+        or sum(r.get("result") in BINARY_HIT_RESULTS for r in support) != v.get("batch_hits")
+        or not ordered_support
+        or _time(ordered_support[-1]["rollover_provenance"]["stage_at"]) != _time(v.get("activation_boundary_at"))
+        or any(
+            r["rollover_provenance"].get("admitted_evidence_version") != v.get("prior_version")
+            or r["rollover_provenance"].get("admitted_evidence_hash") != v.get("prior_evidence_hash")
+            for r in support
+        )
+    ):
+     rr.append("evidence_batch_rows_unverifiable")
+   # Do not filter by admitted version: production uses the active boundary,
+   # so the six later v1-admitted rows in 26→20+6 remain pending under v2.
+   eligible,excluded=_eligible_rollover_rows(qualified,system,sig,active) if active else ([],{"missing_or_invalid_provenance":0})
    pending=eligible
    pending_hits=sum(x["hit"] for x in pending)
    persisted=frozen.get("pending_rollover_progress")

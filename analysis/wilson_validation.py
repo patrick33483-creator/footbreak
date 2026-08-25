@@ -810,6 +810,7 @@ def formal_matcher_axes(
         "system", "market", "path", "decision", "direction", "role", "bucket",
         "tier",
     }
+    allowed = required | {"movement", "tier_path"}
     result: dict[str, str] = {}
     aliases = {
         "stage": "decision", "decision_stage": "decision",
@@ -830,6 +831,7 @@ def formal_matcher_axes(
         result[key] = value
     if (
         not required.issubset(result)
+        or not set(result).issubset(allowed)
         or result["system"] != system
         or result["market"] not in {"HDC", "HIL", "CHL"}
     ):
