@@ -105,10 +105,16 @@ class CrownRuntimeContractTests(unittest.TestCase):
         service = (
             ROOT / "deploy/systemd/crown-reverse-t5-drain.service"
         ).read_text(encoding="utf-8")
-        baseline = subprocess.run(
-            ["git", "show", "bde4c94:crown/run.py"],
-            cwd=ROOT, check=True, text=True, capture_output=True,
-        ).stdout
+        # Keep this rollback fixture self-contained. GitHub Actions checks out
+        # only the current commit, so an older production commit is not
+        # guaranteed to exist in the local object database.
+        baseline = """
+        parser = argparse.ArgumentParser()
+        parser.add_argument(
+            "mode",
+            choices=("tick", "sweep", "settle", "round-update"),
+        )
+        """
         with tempfile.TemporaryDirectory() as directory:
             legacy_run = Path(directory) / "run.py"
             legacy_run.write_text(baseline, encoding="utf-8")
