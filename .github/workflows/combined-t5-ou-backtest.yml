@@ -43,6 +43,7 @@ jobs:
           import sqlite3
           import statistics
           import unicodedata
+          from pathlib import Path
 
           FB_URI = "file:/var/lib/footbreak/learning/predictions.sqlite?mode=ro"
           RADAR_URI = "file:/opt/odds-radar/data/data.db?mode=ro"
@@ -498,6 +499,156 @@ jobs:
                   "settlement": settlement_label(ret),
               })
 
+          exclusion_flags = (
+              "backfill", "post_hoc", "recovered", "recovery_mode",
+              "settlement_excluded", "exclude_from_settlement",
+          )
+
+          def formal_excluded(row):
+              for key in exclusion_flags:
+                  value = row.get(key)
+                  if value not in (None, False, "", 0, "native"):
+                      return True
+              return str(row.get("prediction_origin") or "native").lower() not in {
+                  "", "native", "live",
+              }
+
+          def formal_settlement_return(settlement, odds):
+              if odds is None:
+                  return None
+              return {
+                  "Won": odds - 1.0,
+                  "Half Won": (odds - 1.0) / 2.0,
+                  "Refunded": 0.0,
+                  "Half Lost": -0.5,
+                  "Lost": -1.0,
+              }.get(str(settlement))
+
+          def formal_rows(path, system):
+              payload = json.loads(Path(path).read_text(encoding="utf-8"))
+              source = []
+              if system == "footbreak":
+                  for match in payload.get("matches") or []:
+                      if not isinstance(match, dict) or formal_excluded(match):
+                          continue
+                      identity = str(
+                          match.get("match_id") or match.get("fixture_id")
+                          or match.get("id") or ""
+                      )
+                      for stage in match.get("stages") or []:
+                          if isinstance(stage, dict):
+                              source.append({
+                                  **match, **stage, "_fixture_identity": identity,
+                              })
+              else:
+                  for row in payload.get("rows") or []:
+                      if not isinstance(row, dict):
+                          continue
+                      source.append({
+                          **row,
+                          "_fixture_identity": str(
+                              row.get("match_id") or row.get("fixture_id")
+                              or row.get("id") or ""
+                          ),
+                      })
+              output = []
+              for row in source:
+                  if formal_excluded(row) or str(row.get("stage") or "") != "T-5":
+                      continue
+                  identity = row.get("_fixture_identity")
+                  if not identity:
+                      continue
+                  kickoff = parse_time(
+                      row.get("kickoff") or row.get("kickoff_hkt")
+                      or row.get("match_time")
+                  )
+                  generated = parse_time(
+                      row.get("predicted_at") or row.get("ts")
+                      or row.get("generated_at") or row.get("stage_at")
+                  )
+                  for grade in row.get("market_grades") or []:
+                      if (
+                          not isinstance(grade, dict)
+                          or formal_excluded(grade)
+                          or str(grade.get("code") or "").upper() != "HIL"
+                          or grade.get("grade_status") != "GRADED"
+                      ):
+                          continue
+                      try:
+                          odds = float(grade.get("odds"))
+                      except (TypeError, ValueError):
+                          odds = None
+                      ret = formal_settlement_return(grade.get("settlement"), odds)
+                      output.append({
+                          "system": system,
+                          "match_id": f"formal:{system}:{identity}",
+                          "fixture_identity": identity,
+                          "kickoff": kickoff or generated or dt.datetime.min.replace(tzinfo=dt.timezone.utc),
+                          "line": line_key(grade.get("line", grade.get("condition"))),
+                          "side": side_key(grade.get("side")),
+                          "hk_odds": odds,
+                          "return": ret,
+                          "settlement": {
+                              "Won": "win", "Half Won": "half_win",
+                              "Refunded": "push", "Half Lost": "half_loss",
+                              "Lost": "loss",
+                          }.get(str(grade.get("settlement"))),
+                      })
+              deduped = {}
+              conflicts = set()
+              for row in output:
+                  key = (row["fixture_identity"], row["line"], row["side"])
+                  signature = (row["settlement"], row["hk_odds"])
+                  if key in deduped and (
+                      deduped[key]["settlement"], deduped[key]["hk_odds"]
+                  ) != signature:
+                      conflicts.add(key)
+                  else:
+                      deduped[key] = row
+              return [
+                  row for key, row in deduped.items()
+                  if key not in conflicts and row["return"] is not None
+                  and row["settlement"] is not None
+              ], len(conflicts)
+
+          formal_footbreak, formal_footbreak_conflicts = formal_rows(
+              "/opt/footbreak/system/accuracy_history.json", "footbreak"
+          )
+          formal_crown, formal_crown_conflicts = formal_rows(
+              "/var/lib/footbreak/crown/prediction_history.json", "crown"
+          )
+          formal_crown_index = {
+              (row["fixture_identity"], row["line"], row["side"]): row
+              for row in formal_crown
+          }
+          formal_agreement = []
+          for foot in formal_footbreak:
+              crown = formal_crown_index.get((
+                  foot["fixture_identity"], foot["line"], foot["side"]
+              ))
+              if crown is None:
+                  continue
+              odds_values = [
+                  value for value in (foot["hk_odds"], crown["hk_odds"])
+                  if value is not None
+              ]
+              if not odds_values or foot["settlement"] != crown["settlement"]:
+                  continue
+              execution_odds = min(odds_values)
+              ret = formal_settlement_return(
+                  {
+                      "win": "Won", "half_win": "Half Won", "push": "Refunded",
+                      "half_loss": "Half Lost", "loss": "Lost",
+                  }[foot["settlement"]],
+                  execution_odds,
+              )
+              formal_agreement.append({
+                  **foot,
+                  "match_id": f'formal-pair:{foot["fixture_identity"]}',
+                  "hk_odds": execution_odds,
+                  "return": ret,
+              })
+
           def percentile(values, q):
               if not values:
                   return None
@@ -558,6 +709,18 @@ jobs:
               ]
 
           strategy_sets = {
+              "formal_footbreak_t5_ou": formal_footbreak,
+              "formal_footbreak_t5_ou_odds_ge_1_70": [
+                  row for row in formal_footbreak if row["hk_odds"] >= 1.70
+              ],
+              "formal_crown_t5_ou": formal_crown,
+              "formal_crown_t5_ou_odds_ge_1_70": [
+                  row for row in formal_crown if row["hk_odds"] >= 1.70
+              ],
+              "formal_footbreak_crown_same_fixture_line_side": formal_agreement,
+              "formal_agreement_odds_ge_1_70": [
+                  row for row in formal_agreement if row["hk_odds"] >= 1.70
+              ],
               "historical_footbreak_t5_ou_recorded_odds": historical_baselines["footbreak"],
               "historical_footbreak_odds_ge_1_70": [
                   row for row in historical_baselines["footbreak"] if row["hk_odds"] >= 1.70
@@ -639,6 +802,13 @@ jobs:
                   "agreement_quote_result_rows": len(agreement),
                   "historical_pair_join_methods": dict(historical_pair_join),
                   "historical_agreement_rows": len(historical_agreement),
+                  "formal_rows": {
+                      "footbreak": len(formal_footbreak),
+                      "crown": len(formal_crown),
+                      "agreement": len(formal_agreement),
+                      "footbreak_conflicts_excluded": formal_footbreak_conflicts,
+                      "crown_conflicts_excluded": formal_crown_conflicts,
+                  },
               },
               "strategies": {
                   name: summarize(rows, int(hashlib.sha256(name.encode()).hexdigest()[:8], 16))
