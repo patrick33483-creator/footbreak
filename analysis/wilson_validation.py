@@ -855,60 +855,68 @@ def formal_registry_candidates(
     return output
 
 
-def match_formal_registry(
-    rows: Iterable[dict[str, Any]], registry: Iterable[dict[str, Any]], *, system: str,
+def formal_matcher_axes(
+    candidate: dict[str, Any], *, system: str,
     decision_stage: str = DECISION_STAGE,
-) -> dict[str, list[dict[str, Any]]]:
-    """Match the complete immutable formal identity, including price path.
-
-    ``tier`` and (for multi-stage conditions) ``tier_path`` are contemporaneous
-    native-observation axes frozen with the condition definition.  They are
-    unrelated to the later Wilson minimum-price execution gate: a formal
-    match still records an observation when its current execution price is
-    too low.
-    """
-    from .granular_conditions import _descriptor, _paths, canonical_panels
-
+) -> dict[str, str] | None:
+    """Return the exact immutable axes accepted by the formal matcher."""
     required = {
         "system", "market", "path", "decision", "direction", "role", "bucket",
         "tier",
     }
+    allowed = required | {"movement", "tier_path"}
+    result: dict[str, str] = {}
+    aliases = {
+        "stage": "decision", "decision_stage": "decision",
+        "observed_path": "path", "odds_tier": "tier",
+        "line_bucket": "bucket", "tier_path": "tier_path",
+        "odds_trajectory": "tier_path",
+    }
+    key_parts = candidate.get("key")
+    if not isinstance(key_parts, list):
+        return None
+    for raw in key_parts:
+        if not isinstance(raw, str) or "=" not in raw:
+            return None
+        key, value = raw.split("=", 1)
+        key, value = aliases.get(key.strip(), key.strip()), value.strip()
+        if not key or not value or (key in result and result[key] != value):
+            return None
+        result[key] = value
+    if (
+        not required.issubset(result)
+        or not set(result).issubset(allowed)
+        or result["system"] != system
+        or result["market"] not in {"HDC", "HIL", "CHL"}
+    ):
+        return None
+    if result["decision"] != decision_stage or result["path"].split("→")[-1] != decision_stage:
+        return None
+    stages = result["path"].split("→")
+    tier_path = result.get("tier_path")
+    if len(stages) > 1:
+        if not tier_path or len(tier_path.split("→")) != len(stages):
+            return None
+        if tier_path.split("→")[-1] != result["tier"]:
+            return None
+    elif tier_path:
+        # A single-stage condition cannot be widened by a synthetic
+        # trajectory field; it is malformed immutable state.
+        return None
+    return result
 
-    def axes(candidate: dict[str, Any]) -> dict[str, str] | None:
-        result: dict[str, str] = {}
-        aliases = {
-            "stage": "decision", "decision_stage": "decision",
-            "observed_path": "path", "odds_tier": "tier",
-            "line_bucket": "bucket", "tier_path": "tier_path",
-            "odds_trajectory": "tier_path",
-        }
-        for raw in candidate.get("key") or []:
-            if not isinstance(raw, str) or "=" not in raw:
-                return None
-            key, value = raw.split("=", 1)
-            key, value = aliases.get(key.strip(), key.strip()), value.strip()
-            if not key or not value or (key in result and result[key] != value):
-                return None
-            result[key] = value
-        if not required.issubset(result) or result["system"] != system:
-            return None
-        if result["decision"] != decision_stage or result["path"].split("→")[-1] != decision_stage:
-            return None
-        stages = result["path"].split("→")
-        tier_path = result.get("tier_path")
-        if len(stages) > 1:
-            if not tier_path or len(tier_path.split("→")) != len(stages):
-                return None
-            if tier_path.split("→")[-1] != result["tier"]:
-                return None
-        elif tier_path:
-            # A single-stage condition cannot be widened by a synthetic
-            # trajectory field; it is malformed immutable state.
-            return None
-        return result
+
+def match_formal_registry(
+    rows: Iterable[dict[str, Any]], registry: Iterable[dict[str, Any]], *, system: str,
+    decision_stage: str = DECISION_STAGE,
+) -> dict[str, list[dict[str, Any]]]:
+    """Match the complete immutable formal identity, including price path."""
+    from .granular_conditions import _descriptor, _paths, canonical_panels
 
     candidates = [
-        (candidate, axes(candidate)) for candidate in registry
+        (candidate, formal_matcher_axes(
+            candidate, system=system, decision_stage=decision_stage,
+        )) for candidate in registry
         if isinstance(candidate, dict) and isinstance(candidate.get("__formal_frozen_signature"), str)
     ]
     candidates = [(candidate, key) for candidate, key in candidates if key is not None]
