@@ -1,0 +1,142 @@
+name: 匯出 T-5 OU 聯合回測資料（只讀）
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: export-t5-ou-backtest-footbreak
+  cancel-in-progress: false
+
+jobs:
+  export:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: 設定 SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: 以 SQLite 唯讀模式匯出 Footbreak 與 Crown T-5 HIL
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          umask 077
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            'sudo /opt/footbreak/.venv/bin/python3 -' \
+            > footbreak-crown-t5-hil.jsonl <<'PY'
+          import json
+          import sqlite3
+
+          uri = "file:/var/lib/footbreak/learning/predictions.sqlite?mode=ro"
+          db = sqlite3.connect(uri, uri=True)
+          db.row_factory = sqlite3.Row
+          db.execute("BEGIN")
+          sql = r"""
+          WITH ranked_snapshots AS (
+            SELECT s.*,
+                   ROW_NUMBER() OVER (
+                     PARTITION BY system, fixture_id, stage
+                     ORDER BY generated_at DESC, snapshot_id DESC
+                   ) AS snapshot_rank
+            FROM prediction_snapshots s
+            WHERE system IN ('footbreak', 'crown')
+              AND stage = 'T-5'
+              AND pre_kickoff = 1
+              AND NOT EXISTS (
+                SELECT 1
+                FROM stage_snapshot_reconciliations r
+                WHERE r.system = s.system
+                  AND r.fixture_id = s.fixture_id
+                  AND r.stage = s.stage
+                  AND r.canonical_snapshot_id != s.snapshot_id
+              )
+          ),
+          ranked_grades AS (
+            SELECT g.*,
+                   ROW_NUMBER() OVER (
+                     PARTITION BY snapshot_id, market, target
+                     ORDER BY grade_attempt DESC, grade_id DESC
+                   ) AS grade_rank
+            FROM grades g
+            WHERE market = 'HIL'
+          )
+          SELECT s.system, s.fixture_id, s.stage, s.generated_at, s.kickoff,
+                 s.model_version, s.payload_json,
+                 g.target, g.state, g.metrics_json
+          FROM ranked_snapshots s
+          JOIN ranked_grades g
+            ON g.snapshot_id = s.snapshot_id
+           AND g.grade_rank = 1
+          WHERE s.snapshot_rank = 1
+            AND g.state = 'GRADED'
+          ORDER BY s.kickoff, s.system, s.fixture_id, g.target
+          """
+
+          identity_keys = (
+              "match_id", "fixture_id", "hkjc_match_id", "hkjc_id",
+              "home", "away", "home_en", "away_en", "league",
+              "pinnapi_event_id", "pinnapi_fixture_identity",
+          )
+          prediction_keys = (
+              "code", "line", "condition", "side", "odds", "probability",
+              "model_prob", "push_prob", "ev", "conviction", "observed_at",
+              "source", "source_updated_at",
+          )
+          metric_keys = (
+              "probability", "target", "hit", "brier", "log_loss",
+              "settlement", "odds", "pnl", "return",
+          )
+
+          for row in db.execute(sql):
+              payload = json.loads(row["payload_json"])
+              metrics = json.loads(row["metrics_json"])
+              candidates = [
+                  p for p in payload.get("market_predictions", [])
+                  if isinstance(p, dict) and p.get("code") == "HIL"
+              ]
+              out = {
+                  "system": row["system"],
+                  "fixture_id": row["fixture_id"],
+                  "stage": row["stage"],
+                  "generated_at": row["generated_at"],
+                  "kickoff": row["kickoff"],
+                  "model_version": row["model_version"],
+                  "target": row["target"],
+                  "state": row["state"],
+                  "identity": {k: payload.get(k) for k in identity_keys if payload.get(k) is not None},
+                  "predictions": [
+                      {k: p.get(k) for k in prediction_keys if p.get(k) is not None}
+                      for p in candidates
+                  ],
+                  "metrics": {
+                      k: metrics.get(k) for k in metric_keys if metrics.get(k) is not None
+                  },
+              }
+              print(json.dumps(out, ensure_ascii=False, separators=(",", ":")))
+
+          db.rollback()
+          db.close()
+          PY
+          test -s footbreak-crown-t5-hil.jsonl
+          sha256sum footbreak-crown-t5-hil.jsonl > footbreak-crown-t5-hil.sha256
+          wc -l footbreak-crown-t5-hil.jsonl
+
+      - name: 上載短期回測資料
+        uses: actions/upload-artifact@v4
+        with:
+          name: footbreak-crown-t5-ou-backtest
+          path: |
+            footbreak-crown-t5-hil.jsonl
+            footbreak-crown-t5-hil.sha256
+          retention-days: 1
+          if-no-files-found: error
