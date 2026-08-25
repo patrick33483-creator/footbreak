@@ -1,0 +1,507 @@
+name: 三源 T-5 OU 聯合回測（只讀）
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: combined-t5-ou-backtest
+  cancel-in-progress: false
+
+jobs:
+  backtest:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: 設定 SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: 執行唯讀聯合回測
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            -o ServerAliveInterval=30 -o ServerAliveCountMax=10 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            'sudo /opt/footbreak/.venv/bin/python3 -' <<'PY'
+          import collections
+          import datetime as dt
+          import hashlib
+          import json
+          import math
+          import random
+          import re
+          import sqlite3
+          import statistics
+          import unicodedata
+
+          FB_URI = "file:/var/lib/footbreak/learning/predictions.sqlite?mode=ro"
+          RADAR_URI = "file:/opt/odds-radar/data/data.db?mode=ro"
+
+          def ro(uri):
+              db = sqlite3.connect(uri, uri=True)
+              db.row_factory = sqlite3.Row
+              db.execute("PRAGMA query_only=ON")
+              db.execute("BEGIN")
+              return db
+
+          def parse_time(value):
+              if value is None:
+                  return None
+              if isinstance(value, (int, float)):
+                  return dt.datetime.fromtimestamp(value / 1000, dt.timezone.utc)
+              text = str(value).strip().replace("Z", "+00:00")
+              try:
+                  parsed = dt.datetime.fromisoformat(text)
+              except ValueError:
+                  return None
+              if parsed.tzinfo is None:
+                  parsed = parsed.replace(tzinfo=dt.timezone(dt.timedelta(hours=8)))
+              return parsed.astimezone(dt.timezone.utc)
+
+          def norm_name(value):
+              text = unicodedata.normalize("NFKC", str(value or "")).lower()
+              return re.sub(r"[^0-9a-z\u3400-\u9fff]+", "", text)
+
+          def line_num(value):
+              if value is None:
+                  return None
+              text = str(value).strip()
+              if "/" in text:
+                  parts = [float(x) for x in text.split("/") if x.strip()]
+                  return sum(parts) / len(parts) if parts else None
+              try:
+                  return float(text)
+              except ValueError:
+                  match = re.search(r"-?\d+(?:\.\d+)?", text)
+                  return float(match.group()) if match else None
+
+          def line_key(value):
+              number = line_num(value)
+              return None if number is None else round(number * 4) / 4
+
+          def side_key(value):
+              value = str(value or "").upper()
+              return {"H": "O", "L": "U", "O": "O", "U": "U"}.get(value)
+
+          def target_parts(target):
+              text = str(target or "")
+              if "|" not in text:
+                  return line_key(text), None
+              condition, side = text.rsplit("|", 1)
+              return line_key(condition), side_key(side)
+
+          def prediction_for(payload, target):
+              target_line, target_side = target_parts(target)
+              candidates = []
+              for item in payload.get("market_predictions") or []:
+                  if not isinstance(item, dict) or item.get("code") != "HIL":
+                      continue
+                  item_line = line_key(item.get("line", item.get("condition")))
+                  item_side = side_key(item.get("side"))
+                  if item_line == target_line and item_side == target_side:
+                      return item
+                  candidates.append(item)
+              return candidates[0] if len(candidates) == 1 else None
+
+          def identity_values(payload, fixture_id):
+              values = {str(fixture_id)}
+              for key in ("match_id", "fixture_id", "hkjc_match_id", "hkjc_id"):
+                  value = payload.get(key)
+                  if value not in (None, ""):
+                      values.add(str(value))
+              return values
+
+          def quarter_parts(line):
+              doubled = line * 2
+              if abs(doubled - round(doubled)) < 1e-9 and int(round(doubled)) % 2:
+                  return (line - 0.25, line + 0.25)
+              return (line,)
+
+          def unit_return(total, line, selection, odds):
+              returns = []
+              for half in quarter_parts(line):
+                  if total == half:
+                      returns.append(0.0)
+                  elif (selection == "O" and total > half) or (selection == "U" and total < half):
+                      returns.append(odds - 1.0)
+                  else:
+                      returns.append(-1.0)
+              return sum(returns) / len(returns)
+
+          def settlement_label(value):
+              if value > 0.01:
+                  return "win" if value > 0.5 else "half_win"
+              if value < -0.01:
+                  return "loss" if value < -0.5 else "half_loss"
+              return "push"
+
+          fb = ro(FB_URI)
+          radar = ro(RADAR_URI)
+
+          fb_sql = """
+          WITH ranked_snapshots AS (
+            SELECT s.*,
+                   ROW_NUMBER() OVER (
+                     PARTITION BY system, fixture_id, stage
+                     ORDER BY generated_at DESC, snapshot_id DESC
+                   ) AS snapshot_rank
+            FROM prediction_snapshots s
+            WHERE system IN ('footbreak', 'crown')
+              AND stage = 'T-5' AND pre_kickoff = 1
+              AND NOT EXISTS (
+                SELECT 1 FROM stage_snapshot_reconciliations r
+                WHERE r.system=s.system AND r.fixture_id=s.fixture_id
+                  AND r.stage=s.stage
+                  AND r.canonical_snapshot_id != s.snapshot_id
+              )
+          ),
+          ranked_grades AS (
+            SELECT g.*,
+                   ROW_NUMBER() OVER (
+                     PARTITION BY snapshot_id, market, target
+                     ORDER BY grade_attempt DESC, grade_id DESC
+                   ) AS grade_rank
+            FROM grades g WHERE market='HIL'
+          )
+          SELECT s.system,s.fixture_id,s.generated_at,s.kickoff,s.payload_json,
+                 g.target,g.metrics_json
+          FROM ranked_snapshots s
+          JOIN ranked_grades g
+            ON g.snapshot_id=s.snapshot_id AND g.grade_rank=1
+          WHERE s.snapshot_rank=1 AND g.state='GRADED'
+          ORDER BY s.kickoff,s.system,s.fixture_id,g.target
+          """
+
+          model_rows = []
+          diagnostics = collections.Counter()
+          for row in fb.execute(fb_sql):
+              payload = json.loads(row["payload_json"])
+              metrics = json.loads(row["metrics_json"])
+              prediction = prediction_for(payload, row["target"])
+              if prediction is None:
+                  diagnostics["model_no_matching_prediction"] += 1
+                  continue
+              kickoff = parse_time(row["kickoff"])
+              generated = parse_time(row["generated_at"])
+              if kickoff is None or generated is None or generated >= kickoff:
+                  diagnostics["model_invalid_time"] += 1
+                  continue
+              line, side = target_parts(row["target"])
+              probability = prediction.get("probability", metrics.get("probability"))
+              try:
+                  probability = float(probability)
+              except (TypeError, ValueError):
+                  probability = None
+              model_rows.append({
+                  "system": row["system"],
+                  "fixture_id": str(row["fixture_id"]),
+                  "ids": identity_values(payload, row["fixture_id"]),
+                  "kickoff": kickoff,
+                  "home": norm_name(payload.get("home_en") or payload.get("home")),
+                  "away": norm_name(payload.get("away_en") or payload.get("away")),
+                  "line": line,
+                  "side": side,
+                  "probability": probability,
+              })
+
+          radar_sql = """
+          SELECT m.id AS match_id,m.hkjc_id,m.home_team,m.away_team,m.kickoff_utc,
+                 q.provider,q.line_key,q.selection,q.decimal_odds,q.is_main,
+                 q.source_updated_at,q.captured_at,q.target_at,
+                 COALESCE(rr.home_score,r.home_score) AS home_score,
+                 COALESCE(rr.away_score,r.away_score) AS away_score
+          FROM research_timeline_snapshots q
+          JOIN matches m ON m.id=q.match_id
+          LEFT JOIN research_results rr ON rr.match_id=m.id
+          LEFT JOIN results r ON r.match_id=m.id
+          WHERE q.stage='T5' AND q.market='OU'
+            AND q.captured_at < m.kickoff_utc
+            AND q.captured_at >= m.kickoff_utc - 300000
+          ORDER BY m.kickoff_utc,m.id,q.provider,q.is_main DESC,
+                   q.line_key,q.selection
+          """
+          radar_matches = {}
+          for row in radar.execute(radar_sql):
+              match_id = str(row["match_id"])
+              match = radar_matches.setdefault(match_id, {
+                  "match_id": match_id,
+                  "hkjc_id": str(row["hkjc_id"] or ""),
+                  "kickoff": parse_time(row["kickoff_utc"]),
+                  "home": norm_name(row["home_team"]),
+                  "away": norm_name(row["away_team"]),
+                  "home_score": row["home_score"],
+                  "away_score": row["away_score"],
+                  "quotes": {},
+              })
+              key = (
+                  str(row["provider"]).lower(),
+                  line_key(row["line_key"]),
+                  side_key(row["selection"]),
+              )
+              candidate = {
+                  "odds": float(row["decimal_odds"]),
+                  "is_main": int(row["is_main"] or 0),
+                  "captured_at": int(row["captured_at"]),
+                  "source_updated_at": row["source_updated_at"],
+              }
+              old = match["quotes"].get(key)
+              if old is None or (candidate["is_main"], -candidate["captured_at"]) > (
+                  old["is_main"], -old["captured_at"]
+              ):
+                  match["quotes"][key] = candidate
+
+          by_id = collections.defaultdict(set)
+          by_fixture = {}
+          for match_id, match in radar_matches.items():
+              by_fixture[match_id] = match
+              for value in (match_id, match["hkjc_id"], match_id.removeprefix("hkjc:")):
+                  if value:
+                      by_id[str(value)].add(match_id)
+
+          def resolve(model):
+              exact = set()
+              for value in model["ids"]:
+                  exact.update(by_id.get(value, set()))
+                  exact.update(by_id.get(value.removeprefix("hkjc:"), set()))
+              if len(exact) == 1:
+                  return next(iter(exact)), "id"
+              candidates = []
+              for match_id, match in radar_matches.items():
+                  if abs((match["kickoff"] - model["kickoff"]).total_seconds()) > 600:
+                      continue
+                  if model["home"] and model["away"]:
+                      if model["home"] == match["home"] and model["away"] == match["away"]:
+                          candidates.append(match_id)
+              if len(candidates) == 1:
+                  return candidates[0], "teams_time"
+              return None, "ambiguous" if candidates or exact else "unmatched"
+
+          mapped = []
+          join_methods = collections.Counter()
+          for model in model_rows:
+              match_id, method = resolve(model)
+              join_methods[method] += 1
+              if match_id:
+                  mapped.append({**model, "radar_match_id": match_id})
+
+          model_index = {}
+          for row in mapped:
+              key = (row["radar_match_id"], row["system"], row["line"], row["side"])
+              model_index.setdefault(key, row)
+
+          quote_eligible = []
+          baseline_by_system = collections.defaultdict(list)
+          for key, model in model_index.items():
+              match_id, system, line, side = key
+              match = radar_matches[match_id]
+              hk = match["quotes"].get(("hkjc", line, side))
+              pin = match["quotes"].get(("pinnacle", line, side))
+              opposite = "U" if side == "O" else "O"
+              pin_opp = match["quotes"].get(("pinnacle", line, opposite))
+              hk_opp = match["quotes"].get(("hkjc", line, opposite))
+              if not hk or not pin or not pin_opp or not hk_opp:
+                  diagnostics[f"{system}_incomplete_quote_pair"] += 1
+                  continue
+              if match["home_score"] is None or match["away_score"] is None:
+                  diagnostics[f"{system}_missing_result"] += 1
+                  continue
+              total = int(match["home_score"]) + int(match["away_score"])
+              ret = unit_return(total, line, side, hk["odds"])
+              raw = {
+                  **model,
+                  "hk_odds": hk["odds"],
+                  "pin_odds": pin["odds"],
+                  "pin_opp_odds": pin_opp["odds"],
+                  "hk_opp_odds": hk_opp["odds"],
+                  "return": ret,
+                  "settlement": settlement_label(ret),
+                  "total": total,
+              }
+              if model["probability"] is not None:
+                  raw["model_ev"] = model["probability"] * hk["odds"] - 1
+              denom = 1 / pin["odds"] + 1 / pin_opp["odds"]
+              raw["pin_no_vig_probability"] = (1 / pin["odds"]) / denom
+              raw["market_ev"] = raw["pin_no_vig_probability"] * hk["odds"] - 1
+              baseline_by_system[system].append(raw)
+
+          agreement = []
+          agreement_keys = set()
+          for key, foot in model_index.items():
+              match_id, system, line, side = key
+              if system != "footbreak":
+                  continue
+              crown = model_index.get((match_id, "crown", line, side))
+              if crown is None:
+                  continue
+              unique = (match_id, line, side)
+              if unique in agreement_keys:
+                  continue
+              agreement_keys.add(unique)
+              match = radar_matches[match_id]
+              hk = match["quotes"].get(("hkjc", line, side))
+              pin = match["quotes"].get(("pinnacle", line, side))
+              opposite = "U" if side == "O" else "O"
+              pin_opp = match["quotes"].get(("pinnacle", line, opposite))
+              hk_opp = match["quotes"].get(("hkjc", line, opposite))
+              if not hk or not pin or not pin_opp or not hk_opp:
+                  diagnostics["agreement_incomplete_quote_pair"] += 1
+                  continue
+              if match["home_score"] is None or match["away_score"] is None:
+                  diagnostics["agreement_missing_result"] += 1
+                  continue
+              total = int(match["home_score"]) + int(match["away_score"])
+              ret = unit_return(total, line, side, hk["odds"])
+              probabilities = [
+                  p for p in (foot["probability"], crown["probability"])
+                  if p is not None
+              ]
+              avg_probability = statistics.mean(probabilities) if probabilities else None
+              denom = 1 / pin["odds"] + 1 / pin_opp["odds"]
+              pin_no_vig = (1 / pin["odds"]) / denom
+              agreement.append({
+                  "match_id": match_id,
+                  "kickoff": match["kickoff"],
+                  "line": line,
+                  "side": side,
+                  "hk_odds": hk["odds"],
+                  "pin_odds": pin["odds"],
+                  "avg_probability": avg_probability,
+                  "model_ev": None if avg_probability is None else avg_probability * hk["odds"] - 1,
+                  "market_ev": pin_no_vig * hk["odds"] - 1,
+                  "return": ret,
+                  "settlement": settlement_label(ret),
+              })
+
+          def percentile(values, q):
+              if not values:
+                  return None
+              values = sorted(values)
+              pos = (len(values) - 1) * q
+              lo, hi = math.floor(pos), math.ceil(pos)
+              if lo == hi:
+                  return values[lo]
+              return values[lo] * (hi - pos) + values[hi] * (pos - lo)
+
+          def wilson(hits, decided, z=1.959963984540054):
+              if decided <= 0:
+                  return [None, None]
+              p = hits / decided
+              den = 1 + z * z / decided
+              centre = p + z * z / (2 * decided)
+              margin = z * math.sqrt(p * (1 - p) / decided + z * z / (4 * decided * decided))
+              return [(centre - margin) / den, (centre + margin) / den]
+
+          def summarize(rows, seed):
+              rows = sorted(rows, key=lambda x: (x["kickoff"], x["match_id"], x["line"], x["side"]))
+              n = len(rows)
+              returns = [row["return"] for row in rows]
+              pnl = sum(returns)
+              equity = peak = drawdown = 0.0
+              labels = collections.Counter(row["settlement"] for row in rows)
+              for value in returns:
+                  equity += value
+                  peak = max(peak, equity)
+                  drawdown = max(drawdown, peak - equity)
+              decided = labels["win"] + labels["half_win"] + labels["half_loss"] + labels["loss"]
+              hits = labels["win"] + labels["half_win"]
+              rng = random.Random(seed)
+              boot = []
+              if n:
+                  for _ in range(10000):
+                      boot.append(sum(returns[rng.randrange(n)] for __ in range(n)) / n)
+              return {
+                  "bets": n,
+                  "unique_fixtures": len({row["match_id"] for row in rows}),
+                  "odds_mean": round(statistics.mean(row["hk_odds"] for row in rows), 4) if n else None,
+                  "settlements": dict(labels),
+                  "unit_pnl": round(pnl, 4),
+                  "roi": round(pnl / n, 6) if n else None,
+                  "roi_bootstrap_95": [
+                      round(percentile(boot, 0.025), 6),
+                      round(percentile(boot, 0.975), 6),
+                  ] if n else [None, None],
+                  "hit_rate_ex_push": round(hits / decided, 6) if decided else None,
+                  "hit_wilson_95": [round(x, 6) for x in wilson(hits, decided)] if decided else [None, None],
+                  "max_drawdown_units": round(drawdown, 4),
+              }
+
+          def with_common_filters(rows):
+              return [
+                  row for row in rows
+                  if row["hk_odds"] >= 1.70 and row["hk_odds"] >= row["pin_odds"]
+              ]
+
+          strategy_sets = {
+              "footbreak_t5_ou_with_complete_radar_quotes": baseline_by_system["footbreak"],
+              "footbreak_plus_hkjc_ge_pinnacle_and_odds_ge_1_70": with_common_filters(
+                  baseline_by_system["footbreak"]
+              ),
+              "crown_t5_ou_with_complete_radar_quotes": baseline_by_system["crown"],
+              "crown_plus_hkjc_ge_pinnacle_and_odds_ge_1_70": with_common_filters(
+                  baseline_by_system["crown"]
+              ),
+              "footbreak_crown_same_line_same_side": agreement,
+              "agreement_plus_hkjc_ge_pinnacle_and_odds_ge_1_70": with_common_filters(agreement),
+              "agreement_plus_price_and_model_ev_ge_3pct": [
+                  row for row in with_common_filters(agreement)
+                  if row.get("model_ev") is not None and row["model_ev"] >= 0.03
+              ],
+              "agreement_plus_price_and_model_ev_ge_5pct": [
+                  row for row in with_common_filters(agreement)
+                  if row.get("model_ev") is not None and row["model_ev"] >= 0.05
+              ],
+              "agreement_plus_price_and_pinnacle_no_vig_ev_ge_3pct": [
+                  row for row in with_common_filters(agreement)
+                  if row["market_ev"] >= 0.03
+              ],
+          }
+
+          report = {
+              "definition": {
+                  "market": "T-5 goals OU only",
+                  "execution_odds": "HKJC T5 exact line and side",
+                  "radar_role": "quote benchmark, not a prediction model",
+                  "settlement": "Asian quarter-line unit return",
+                  "join": "stable ID, else exact normalized teams plus kickoff within 10 minutes",
+                  "bootstrap": "10000 fixture-row resamples, deterministic seed",
+              },
+              "coverage": {
+                  "model_rows": len(model_rows),
+                  "model_rows_by_system": dict(collections.Counter(r["system"] for r in model_rows)),
+                  "radar_matches_with_t5_ou_rows": len(radar_matches),
+                  "mapped_model_rows": len(mapped),
+                  "join_methods": dict(join_methods),
+                  "diagnostics": dict(diagnostics),
+                  "agreement_quote_result_rows": len(agreement),
+              },
+              "strategies": {
+                  name: summarize(rows, int(hashlib.sha256(name.encode()).hexdigest()[:8], 16))
+                  for name, rows in strategy_sets.items()
+              },
+              "limitations": [
+                  "Radar T5 is the first captured quote inside the final five-minute window, not necessarily exactly T-5.",
+                  "No closing quote exists in this extract, so CLV is not reported.",
+                  "Threshold variants are shown together and are exploratory, not independent confirmations.",
+                  "Bootstrap intervals are unstable for small samples and do not correct for strategy selection.",
+              ],
+              "generated_at_utc": dt.datetime.now(dt.timezone.utc).isoformat(),
+          }
+          print("COMBINED_T5_OU_BACKTEST_JSON_BEGIN")
+          print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
+          print("COMBINED_T5_OU_BACKTEST_JSON_END")
+
+          fb.rollback()
+          radar.rollback()
+          fb.close()
+          radar.close()
+          PY
