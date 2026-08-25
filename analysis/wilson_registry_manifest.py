@@ -160,11 +160,33 @@ def build_manifest(ledger:Any,system:str)->dict[str,Any]:
     if str(activity.get("frozen_condition_signature") or "")!=sig: continue
     marker=activity.get("rollover_provenance")
     admitted = version_by_number.get(marker.get("admitted_evidence_version")) if isinstance(marker,dict) else None
+    row_history = activity.get("frozen_historical_evidence")
+    immutable_row_history = (
+        {k: v for k, v in row_history.items()
+         if k not in {"hits", "decided", "evidence_version", "evidence_hash"}}
+        if isinstance(row_history, dict) else None
+    )
+    immutable_baseline = {
+        k: v for k, v in history.items()
+        if k not in {"hits", "decided", "evidence_version", "evidence_hash"}
+    }
+    history_matches_admitted = (
+        isinstance(row_history, dict)
+        and immutable_row_history == immutable_baseline
+        and isinstance(admitted, dict)
+        and row_history.get("hits") == admitted.get("cumulative_hits")
+        and row_history.get("decided") == admitted.get("cumulative_decided")
+        and row_history.get("evidence_version") == admitted.get("version")
+        and row_history.get("evidence_hash") == admitted.get("evidence_hash")
+    )
     if (
         not isinstance(marker,dict)
         or marker.get("condition_signature")!=sig
         or marker.get("system")!=system
+        or marker.get("schema_version") != 1
         or marker.get("native_pre_kickoff_t5") is not True
+        or bool(activity.get("post_hoc_backfill"))
+        or bool(activity.get("exclude_from_simulation"))
         or activity.get("stage") != DECISION_STAGE
         or activity.get("first_native_pre_kickoff_t5") is not True
         or marker.get("admitted_evidence_version")!=activity.get("evidence_version")
@@ -173,7 +195,7 @@ def build_manifest(ledger:Any,system:str)->dict[str,Any]:
         or admitted.get("evidence_hash") != marker.get("admitted_evidence_hash")
         or activity.get("market", activity.get("code")) != definition.get("market")
         or activity.get("frozen_condition_definition") != definition
-        or activity.get("frozen_historical_evidence") != history
+        or not history_matches_admitted
         or activity.get("condition_number") != number
     ):
      activity_rejections["invalid_signature_definition_or_evidence_binding"] += 1
@@ -195,38 +217,38 @@ def build_manifest(ledger:Any,system:str)->dict[str,Any]:
     qualified.append(activity)
    if activity_rejections:
     rr.append("unverifiable_same_signature_activity")
-   # Prove every retained ordinary batch against its exact normalized rows.
+   # Replay production eligibility sequentially. Rows retain their immutable
+   # original admission version even when one recomputation creates v2 and v3.
+   prior = versions[0] if versions and isinstance(versions[0], dict) else None
    for v in versions[1:]:
-    if not isinstance(v, dict) or v.get("initial_migration_full_cohort") is True:
+    if not isinstance(v, dict):
+     continue
+    if v.get("initial_migration_full_cohort") is True:
+     prior = v
      continue
     batch_hashes = v.get("batch_fixture_market_hashes")
-    support = [
-        r for r in qualified
-        if isinstance(r.get("rollover_provenance"), dict)
-        and r["rollover_provenance"].get("fixture_market_hash") in (batch_hashes or [])
-        and r.get("status") == "SETTLED"
-        and r.get("result") in BINARY_DECIDED_RESULTS
-    ]
-    by_hash = Counter(r["rollover_provenance"]["fixture_market_hash"] for r in support)
-    ordered_support = sorted(support, key=lambda r: (
-        _time(r["rollover_provenance"]["stage_at"]),
-        r["rollover_provenance"]["fixture_market_hash"],
-    ))
-    ordered_hashes = [r["rollover_provenance"]["fixture_market_hash"] for r in ordered_support]
+    eligible_for_prior, _batch_excluded = (
+        _eligible_rollover_rows(qualified, system, sig, prior)
+        if isinstance(prior, dict) else ([], {})
+    )
+    support = eligible_for_prior[:ROLLOVER_BATCH_SIZE]
+    ordered_hashes = [item["fixture_market_hash"] for item in support]
+    ambiguous_boundary = (
+        len(eligible_for_prior) > ROLLOVER_BATCH_SIZE
+        and support
+        and support[-1]["stage_at"] == eligible_for_prior[ROLLOVER_BATCH_SIZE]["stage_at"]
+    )
     if (
         not isinstance(batch_hashes, list)
         or ordered_hashes != batch_hashes
-        or any(by_hash[h] != 1 for h in batch_hashes)
-        or sum(r.get("result") in BINARY_HIT_RESULTS for r in support) != v.get("batch_hits")
-        or not ordered_support
-        or _time(ordered_support[-1]["rollover_provenance"]["stage_at"]) != _time(v.get("activation_boundary_at"))
-        or any(
-            r["rollover_provenance"].get("admitted_evidence_version") != v.get("prior_version")
-            or r["rollover_provenance"].get("admitted_evidence_hash") != v.get("prior_evidence_hash")
-            for r in support
-        )
+        or len(support) != ROLLOVER_BATCH_SIZE
+        or ambiguous_boundary
+        or sum(item["hit"] for item in support) != v.get("batch_hits")
+        or not support
+        or _time(support[-1]["stage_at"]) != _time(v.get("activation_boundary_at"))
     ):
      rr.append("evidence_batch_rows_unverifiable")
+    prior = v
    # Do not filter by admitted version: production uses the active boundary,
    # so the six later v1-admitted rows in 26→20+6 remain pending under v2.
    eligible,excluded=_eligible_rollover_rows(qualified,system,sig,active) if active else ([],{"missing_or_invalid_provenance":0})

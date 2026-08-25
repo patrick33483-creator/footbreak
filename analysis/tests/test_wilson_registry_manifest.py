@@ -2,7 +2,7 @@ from __future__ import annotations
 import copy,json,os,subprocess,tempfile,unittest
 from pathlib import Path
 from analysis.wilson_registry_manifest import build_manifest,definition_signature
-from analysis.wilson_validation import EDGE_BUFFER,_fixture_market_hash,_version_hash,wilson95,STRATEGY,portfolio_name,recompute_namespace,ensure_namespace,project_granular_ranking_evidence
+from analysis.wilson_validation import EDGE_BUFFER,_fixture_market_hash,_version_hash,wilson95,STRATEGY,portfolio_name,recompute_namespace,ensure_namespace,project_granular_ranking_evidence,admission_arithmetic,apply_active_evidence,commit_bet
 NOW="2026-08-20T00:00:00+08:00"
 def ev(sig,h=50,d=80):
  lo=wilson95(h,d)[0]; v={"condition_signature":sig,"version":1,"prior_version":None,"prior_evidence_hash":None,"batch_fixture_market_hashes":[],"batch_hits":0,"batch_decided":0,"cumulative_hits":h,"cumulative_decided":d,"wilson95_lower_raw":lo,"minimum_acceptable_odds_raw":1/(lo-EDGE_BUFFER),"activation_boundary_at":NOW,"created_at":NOW,"migration_baseline":True}; v["evidence_hash"]=_version_hash(v); return v
@@ -14,6 +14,12 @@ def frozen(system,market,path,stage,number):
 def ledger(system="footbreak"):
  items=[frozen(system,"HDC","首預","首預",1),frozen(system,"HIL","首預→T-30","T-30",2),frozen(system,"CHL","首預→T-30→T-5","T-5",3)]; return {"bets":[],"wilson_validation":{"schema_version":2,"system":system,"activation_at":NOW,"condition_order":[x[0] for x in items],"conditions":dict(items),"observations":[],"audit":[]}}
 def rehash(v):v["evidence_hash"]=_version_hash(v)
+def add_real(l,system,i,result="Won"):
+ ns=l["wilson_validation"];s=ns["condition_order"][2];f=ns["conditions"][s];stage=f"2026-08-21T{i//60:02d}:{i%60:02d}:00+08:00";odds=2.5
+ a={"signature":s,"definition":copy.deepcopy(f["definition"]),"history":copy.deepcopy(f["historical_evidence"]),"arithmetic":admission_arithmetic(f["historical_evidence"]["hits"],f["historical_evidence"]["decided"],odds)}
+ a,reason=apply_active_evidence(l,system,a,stage_at=stage,now=stage);assert reason is None
+ r=commit_bet(l,system,{"match_id":f"fixture-{i}","kickoff":"2026-08-22T00:00:00+08:00"},"CHL",{"side":"H","line":0,"odds":odds},a,now=stage,market_label="角球",selected_label="角球",selected_role="home",selected_line=0);assert r
+ r.update(status="SETTLED",result=result,pnl=1,settled_at=stage);l["bets"].append(r);return r
 class ManifestTest(unittest.TestCase):
  def assertRejected(self,l,reason,system="footbreak"):
   m=build_manifest(l,system); self.assertFalse(m["valid"],m); self.assertIn(reason,m["rejection_reasons"])
@@ -39,14 +45,29 @@ class ManifestTest(unittest.TestCase):
   for mutate in (lambda d:(d.update(market="XYZ"),d.update(miner_key=[x.replace("market=HDC","market=XYZ") for x in d["miner_key"]])),lambda d:d.update(miner_key=["system=footbreak","market=HDC"]),lambda d:d["miner_key"].append("tier_path=低")):
    l=ledger();f=self.first(l);mutate(f["definition"]);old=f["signature"];new=definition_signature(f["definition"]);f["signature"]=new;l["wilson_validation"]["condition_order"][0]=new;l["wilson_validation"]["conditions"]={new:f,**{k:v for k,v in l["wilson_validation"]["conditions"].items() if k!=old}};f["evidence_versions"][0]["condition_signature"]=new;rehash(f["evidence_versions"][0]);self.assertRejected(l,"invalid_formal_matcher_axes")
  def test_activity_exact_qualification_refunds_duplicates_and_x20(self):
-  l=ledger();s=l["wilson_validation"]["condition_order"][2];f=l["wilson_validation"]["conditions"][s];a=f["evidence_versions"][0];marker={"schema_version":1,"system":"footbreak","condition_signature":s,"native_pre_kickoff_t5":True,"stage_at":"2026-08-21T00:00:00+08:00","fixture_market_hash":_fixture_market_hash("footbreak","fixture-1","CHL"),"admitted_evidence_version":1,"admitted_evidence_hash":a["evidence_hash"]};base={"portfolio":portfolio_name("footbreak"),"strategy":STRATEGY,"frozen_condition_signature":s,"condition_number":3,"frozen_condition_definition":f["definition"],"frozen_historical_evidence":f["historical_evidence"],"match_id":"fixture-1","market":"CHL","stage":"T-5","first_native_pre_kickoff_t5":True,"simulation_only":True,"real_betting_enabled":False,"rollover_provenance":marker,"evidence_version":1,"evidence_hash":a["evidence_hash"],"status":"SETTLED","result":"Won"};l["bets"]=[base,{**base,"portfolio":"crown_wilson_test"},{**base,"strategy":"foreign"},{**base,"result":"Refunded"}];m=build_manifest(l,"footbreak");r=m["conditions"][2];self.assertEqual(r["formal_rows"],2);self.assertEqual(r["prospective_x20"]["decided"],1);self.assertEqual(r["prospective_x20"]["hits"],1);self.assertGreaterEqual(r["rejected_same_signature_activity"],2);self.assertEqual(r["safely_recoverable_missed_rows"],0)
+  l=ledger();base=add_real(l,"footbreak",1);l["bets"] += [{**base,"portfolio":"crown_wilson_test"},{**base,"strategy":"foreign"},{**base,"result":"Refunded"}];m=build_manifest(l,"footbreak");r=m["conditions"][2];self.assertEqual(r["formal_rows"],2);self.assertEqual(r["prospective_x20"]["decided"],1);self.assertEqual(r["prospective_x20"]["hits"],1);self.assertGreaterEqual(r["rejected_same_signature_activity"],2);self.assertEqual(r["safely_recoverable_missed_rows"],0)
  def test_production_26_becomes_20_plus_6(self):
   for system in ("footbreak","crown"):
-   l=ledger(system);s=l["wilson_validation"]["condition_order"][2];f=l["wilson_validation"]["conditions"][s];v=f["evidence_versions"][0];rows=[]
-   for i in range(1,27):
-    fixture=f"fixture-{i}"; market="CHL"; marker={"schema_version":1,"system":system,"condition_signature":s,"native_pre_kickoff_t5":True,"stage_at":f"2026-08-21T00:{i:02d}:00+08:00","fixture_market_hash":_fixture_market_hash(system,fixture,market),"admitted_evidence_version":1,"admitted_evidence_hash":v["evidence_hash"]}
-    rows.append({"portfolio":portfolio_name(system),"strategy":STRATEGY,"frozen_condition_signature":s,"condition_number":3,"frozen_condition_definition":f["definition"],"frozen_historical_evidence":f["historical_evidence"],"match_id":fixture,"market":market,"stage":"T-5","first_native_pre_kickoff_t5":True,"simulation_only":True,"real_betting_enabled":False,"rollover_provenance":marker,"evidence_version":1,"evidence_hash":v["evidence_hash"],"status":"SETTLED","result":"Won" if i%2 else "Lost"})
-   l["bets"]=rows;recompute_namespace(l,system);m=build_manifest(l,system);r=m["conditions"][2];self.assertTrue(m["valid"],m);self.assertEqual(r["prospective_x20"]["decided"],6);self.assertEqual(r["prospective_x20"]["hits"],3)
+   l=ledger(system)
+   for i in range(1,27):add_real(l,system,i,"Won" if i%2 else "Lost")
+   recompute_namespace(l,system);m=build_manifest(l,system);r=m["conditions"][2];self.assertTrue(m["valid"],m);self.assertEqual(r["prospective_x20"]["decided"],6);self.assertEqual(r["prospective_x20"]["hits"],3)
+ def test_production_40_rows_create_two_supported_versions(self):
+  for system in ("footbreak","crown"):
+   l=ledger(system)
+   for i in range(1,41):add_real(l,system,i,"Won" if i%2 else "Lost")
+   recompute_namespace(l,system);m=build_manifest(l,system);self.assertTrue(m["valid"],m);f=l["wilson_validation"]["conditions"][l["wilson_validation"]["condition_order"][2]];self.assertEqual(len(f["evidence_versions"]),3);self.assertEqual(m["conditions"][2]["prospective_x20"]["decided"],0)
+ def test_merged_batch_provenance_tampering_rejects(self):
+  for mutation in ("schema","post_hoc","excluded","status","result"):
+   l=ledger()
+   for i in range(1,21):add_real(l,"footbreak",i,"Won" if i%2 else "Lost")
+   recompute_namespace(l,"footbreak")
+   for row in l["bets"]:
+    if mutation=="schema":row["rollover_provenance"]["schema_version"]=999
+    elif mutation=="post_hoc":row["post_hoc_backfill"]=True
+    elif mutation=="excluded":row["exclude_from_simulation"]=True
+   if mutation=="status":l["bets"][0]["status"]="VOIDED"
+   if mutation=="result":l["bets"][0]["result"]="Refunded"
+   self.assertRejected(l,"unverifiable_same_signature_activity" if mutation in {"schema","post_hoc","excluded"} else "evidence_batch_rows_unverifiable")
  def test_delayed_granular_migration_and_missing_observations_are_valid(self):
   for system in ("footbreak","crown"):
    path="首預→T-30→T-5";tier="低→低→低";ranking=[{"system":system,"market":"HDC","key":[f"system={system}","market=HDC",f"path={path}","decision=T-5","direction=A→A→A","role=主讓","bucket=0.25–0.5","tier=低",f"tier_path={tier}","movement=不變"],"observed_path":path,"decision_stage":"T-5","direction":"A→A→A","role":"主讓","line_bucket":"0.25–0.5","odds_tier":"低","odds_trajectory":tier,"movement":"不變","total":{"hits":141,"decided":231,"pushes":0},"holdout":{"hits":44,"decided":71,"pushes":0},"source_artifact":{"hash":"a"*64,"version":"v1","as_of":"2026-08-19T22:55:00+08:00"}}]
