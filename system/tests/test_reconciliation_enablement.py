@@ -158,9 +158,12 @@ class ReconciliationEnablementTests(unittest.TestCase):
         self.assertIn("reverse_t5_bridge_health mark-enabled", workflow)
         self.assertIn("reverse_t5_bridge_health mark-disabled", workflow)
         self.assertIn("reverse_t5_bridge_health check --require-completion", workflow)
+        self.assertIn("systemctl enable --now crown-reverse-t5-drain.timer", workflow)
+        self.assertIn("systemctl disable --now crown-reverse-t5-drain.timer", workflow)
         self.assertIn("deferred_native_priority", workflow)
         self.assertIn("reverse_t5_bridge_worker_triggered=completed", workflow)
         self.assertIn("sync_reverse_t5_bridge_enablement_marker", (ROOT / "deploy" / "update.sh").read_text(encoding="utf-8"))
+        self.assertIn("systemctl unmask crown-reverse-t5-drain.timer", (ROOT / "deploy" / "update.sh").read_text(encoding="utf-8"))
         self.assertIn("reverse_t5_bridge_health mark-enabled", (ROOT / "deploy" / "enable-crown.sh").read_text(encoding="utf-8"))
 
     def test_enable_crown_parses_quoted_and_whitespace_padded_bridge_flag_values(self) -> None:

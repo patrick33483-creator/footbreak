@@ -70,8 +70,13 @@ jobs:
               trap - EXIT
               if [ "$ROLLOUT_ACTION" = enable ]; then
                 CROWN_STATE_DIR="$state_dir" "$python" -m crown.reverse_t5_bridge_health mark-enabled
+                systemctl unmask crown-reverse-t5-drain.timer 2>/dev/null || true
+                systemctl enable --now crown-reverse-t5-drain.timer
               else
                 CROWN_STATE_DIR="$state_dir" "$python" -m crown.reverse_t5_bridge_health mark-disabled
+                systemctl disable --now crown-reverse-t5-drain.timer
+                systemctl stop crown-reverse-t5-drain.service 2>/dev/null || true
+                systemctl reset-failed crown-reverse-t5-drain.service 2>/dev/null || true
               fi
               ;;
             *)
