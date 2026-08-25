@@ -5,7 +5,7 @@ jobs:
   evidence:
     runs-on: ubuntu-24.04
     steps:
-      - name: Read durable stages and dashboard projection
+      - name: Read Vizela U23 T5 evidence
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
@@ -15,21 +15,88 @@ jobs:
           printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
-          ssh -o ServerAliveInterval=20 "$DEPLOY_USER@$DEPLOY_HOST" 'python3 - <<"PY"
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            'sudo env PYTHONPATH=/opt/footbreak /opt/footbreak/.venv/bin/python3 -' <<'PY'
           import json
           from datetime import datetime
           from pathlib import Path
+
           from crown.common import HKT
-          ids = {"2965008", "2965009", "3045634"}
-          ledger=json.loads(Path("/var/lib/footbreak/crown/ledger.json").read_text())
-          cards={str(x.get("match_id")):x for x in json.loads(Path("/var/lib/footbreak/crown/predictions.json").read_text()) if isinstance(x,dict)}
-          public=json.loads(Path("/var/www/crown/data.json").read_text())
-          result=[]
-          for mid in sorted(ids):
-              item=ledger.get("watch",{}).get(mid,{})
-              card=cards.get(mid,{})
-              result.append({"match_id":mid,"fixture":f"{item.get('home','')} vs {item.get('away','')}","kickoff":item.get("kickoff") or item.get("kickoff_hkt"),"stages":[{"stage":s.get("stage"),"status":s.get("status"),"ts":s.get("ts"),"odds_status":s.get("odds_status")} for s in item.get("stages",[]) if isinstance(s,dict) and s.get("stage") in {"首預","T-30","T-5"}],"card_status":card.get("status")})
-          print(json.dumps({"at":datetime.now(HKT).isoformat(),"fixtures":result,"dashboard_keys":list(public)[:30],"dashboard_timestamp":public.get("generated_at") or public.get("generated_at_hkt") or public.get("updated_at") or public.get("timestamp"),"dashboard_mtime":datetime.fromtimestamp(Path("/var/www/crown/data.json").stat().st_mtime,HKT).isoformat()},ensure_ascii=False))
-          PY'
-          systemctl show crown-tick.timer crown-tick.service footbreak-server-health-monitor.timer --no-pager -p ActiveState -p SubState -p Result -p LastTriggerUSec -p NextElapseUSecRealtime
-          journalctl -u crown-tick.service -u footbreak-server-health-monitor.service --since '2026-08-21 20:05:00' --no-pager -o short-iso | tail -120
+
+          NEEDLES = ("維塞島", "維薛拿", "Vizela")
+          PATHS = {
+              "public": "/var/www/crown/data.json",
+              "cards": "/var/lib/footbreak/crown/predictions.json",
+              "ledger": "/var/lib/footbreak/crown/ledger.json",
+              "history": "/var/lib/footbreak/crown/prediction_history.json",
+          }
+
+          def read(path):
+              return json.loads(Path(path).read_text(encoding="utf-8"))
+
+          def text(value):
+              try:
+                  return json.dumps(value, ensure_ascii=False)
+              except Exception:
+                  return str(value)
+
+          def matches(value):
+              blob = text(value)
+              return any(needle.lower() in blob.lower() for needle in NEEDLES)
+
+          def rows(value):
+              if isinstance(value, list):
+                  return [row for row in value if isinstance(row, dict) and matches(row)]
+              if isinstance(value, dict):
+                  direct = [row for row in value.values() if isinstance(row, dict) and matches(row)]
+                  nested = []
+                  for key in ("matches", "predictions", "history", "rows", "watch"):
+                      candidate = value.get(key)
+                      if isinstance(candidate, list):
+                          nested.extend(row for row in candidate if isinstance(row, dict) and matches(row))
+                      elif isinstance(candidate, dict):
+                          nested.extend(row for row in candidate.values() if isinstance(row, dict) and matches(row))
+                  return direct + nested
+              return []
+
+          def compact(row):
+              keep = (
+                  "match_id", "fixture_id", "league", "home", "away", "kickoff",
+                  "kickoff_hkt", "stage", "status", "prediction_status",
+                  "conviction", "no_bet_reason", "current_odds_status",
+                  "current_selected_odds_journal", "stages", "condition_matches",
+                  "wilson_matches", "selected_market", "selected_role",
+                  "selected_line", "selected_odds", "market", "line", "odds",
+                  "odds_status", "ts", "updated_at",
+              )
+              return {key: row.get(key) for key in keep if key in row}
+
+          payload = {}
+          for name, path in PATHS.items():
+              source = read(path)
+              found = rows(source)
+              unique = []
+              seen = set()
+              for row in found:
+                  marker = (
+                      str(row.get("match_id") or row.get("fixture_id") or ""),
+                      str(row.get("stage") or ""),
+                      str(row.get("ts") or row.get("updated_at") or ""),
+                  )
+                  if marker in seen:
+                      continue
+                  seen.add(marker)
+                  unique.append(compact(row))
+              payload[name] = {
+                  "path_mtime_hkt": datetime.fromtimestamp(Path(path).stat().st_mtime, HKT).isoformat(),
+                  "matches": unique[-20:],
+              }
+
+          print(json.dumps({
+              "checked_at_hkt": datetime.now(HKT).isoformat(),
+              "mode": "read_only",
+              "query": list(NEEDLES),
+              "sources": payload,
+          }, ensure_ascii=False, indent=2))
+          PY
