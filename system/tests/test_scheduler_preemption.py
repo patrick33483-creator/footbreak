@@ -186,6 +186,15 @@ class SchedulerPreemptionTests(unittest.TestCase):
             "systemctl stop --no-block crown-round-update.service crown-first-look-reconcile.service",
             helper,
         )
+        self.assertIn("crown-reverse-t5-drain.service", helper)
+        reverse = (
+            ROOT / "deploy/systemd/crown-reverse-t5-drain.service"
+        ).read_text(encoding="utf-8")
+        self.assertIn("ConditionPathExists=!/run/crown-t5-priority", reverse)
+        self.assertIn(
+            "ConditionPathExists=!/run/crown-t5-priority",
+            reverse.split("[Service]", 1)[0],
+        )
         for name in ("crown-sweep.service", "crown-settle.service"):
             slow = (ROOT / "deploy/systemd" / name).read_text(encoding="utf-8")
             self.assertIn("ConditionPathExists=!/run/crown-t5-priority", slow)

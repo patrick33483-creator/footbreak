@@ -132,7 +132,11 @@ systemctl enable --now crown-dashboard-api.service footbreak-dashboard-api.servi
 # 首次安裝只放好服務，憑證及手動驗證完成前絕不自動掃描。
 systemctl disable --now footbreak-tick.timer footbreak-t30.timer footbreak-sweep.timer footbreak-settle.timer footbreak-result-reconcile.timer 2>/dev/null || true
 # Crown 更要預設停用；升版亦只會保留目前的 enable/disable 狀態。
-systemctl disable --now crown-round-update.timer crown-first-look-reconcile.timer crown-tick.timer crown-sweep.timer crown-settle.timer 2>/dev/null || true
+systemctl disable --now crown-round-update.timer crown-first-look-reconcile.timer crown-tick.timer crown-sweep.timer crown-settle.timer crown-reverse-t5-drain.timer 2>/dev/null || true
+# Fresh setup is default-off for the bridge too.  Clear any copied lifecycle
+# telemetry so a future explicit enable receives only its own bounded grace.
+(cd "$APP_DIR" && CROWN_STATE_DIR="$CROWN_STATE_DIR" \
+  "$APP_DIR/.venv/bin/python3" -m crown.reverse_t5_bridge_health mark-disabled)
 # 回測預設停用，需先成功建立基線再啟用。
 systemctl disable --now footbreak-backtest.timer 2>/dev/null || true
 # This monitor is local/read-only: unlike prediction timers it makes no
@@ -207,6 +211,8 @@ cat <<'EOF'
   /opt/footbreak/.venv/bin/python -m unittest discover -s /opt/footbreak/crown/tests -t /opt/footbreak
   /opt/footbreak/.venv/bin/python -m crown.run tick --dry-run
 確認 PinnAPI、配對、資料時效及模擬注後才可:
-  systemctl enable --now crown-round-update.timer crown-first-look-reconcile.timer crown-tick.timer crown-sweep.timer crown-settle.timer
+  systemctl enable --now crown-round-update.timer crown-first-look-reconcile.timer crown-tick.timer crown-sweep.timer crown-settle.timer crown-reverse-t5-drain.timer
+反向 T-5 比價仍預設關閉。驗證 dedicated worker timer 後，才在
+  /etc/footbreak-crown.env 設 CROWN_REVERSE_T5_BRIDGE_ENABLED=1
 ═══════════════════════════════════════════════════
 EOF

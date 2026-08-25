@@ -119,18 +119,98 @@ class ReconciliationEnablementTests(unittest.TestCase):
     def test_deploy_and_health_follow_the_same_validation_gate(self) -> None:
         update = (ROOT / "deploy" / "update.sh").read_text(encoding="utf-8")
         health = (ROOT / "deploy" / "health-check.sh").read_text(encoding="utf-8")
+        bridge_health = (ROOT / "crown" / "reverse_t5_bridge_health.py").read_text(
+            encoding="utf-8",
+        )
         reconcile = RECONCILE.read_text(encoding="utf-8")
         self.assertIn("crown_is_enabled_in_config", update)
         self.assertIn("systemctl reenable \"$timer\"", update)
         self.assertIn("was not enabled after reenable", update)
         self.assertIn(
             "systemctl disable --now crown-round-update.timer crown-first-look-reconcile.timer crown-sweep.timer "
-            "crown-tick.timer crown-settle.timer",
+            "crown-tick.timer crown-settle.timer crown-reverse-t5-drain.timer",
             update,
         )
+        enable = (ROOT / "deploy" / "enable-crown.sh").read_text(encoding="utf-8")
+        setup = (ROOT / "deploy" / "setup.sh").read_text(encoding="utf-8")
+        self.assertIn("crown-reverse-t5-drain.timer", update)
+        self.assertIn("crown-reverse-t5-drain.timer", enable)
+        self.assertIn("crown-reverse-t5-drain.timer", setup)
         self.assertIn("if crown_is_enabled; then", health)
+        self.assertIn("crown-reverse-t5-drain.timer", health)
+        self.assertIn("crown-reverse-t5-drain.service", health)
+        self.assertIn("reverse_t5_bridge_is_enabled", health)
+        self.assertIn("consecutive worker timeouts", bridge_health)
+        self.assertIn("reverse_t5_bridge_health check", health)
+        self.assertIn("recent parseable successful completion", health)
+        self.assertIn("worker liveness is not required", health)
         self.assertIn("Crown timers are not required", health)
         self.assertIn("if crown_is_enabled; then", reconcile)
+
+    def test_reverse_bridge_flag_and_rollout_workflow_document_the_dedicated_worker(self) -> None:
+        example = (ROOT / "deploy" / "footbreak-crown.env.example").read_text(encoding="utf-8")
+        setup = (ROOT / "deploy" / "setup.sh").read_text(encoding="utf-8")
+        workflow = (ROOT / ".github/workflows/reverse-t5-bridge-rollout.yml").read_text(encoding="utf-8")
+        self.assertIn("CROWN_REVERSE_T5_BRIDGE_ENABLED=0", example)
+        self.assertIn("CROWN_REVERSE_T5_BRIDGE_ENABLED=1", setup)
+        self.assertIn("crown-reverse-t5-drain.timer", workflow)
+        self.assertIn("crown-reverse-t5-drain.service", workflow)
+        self.assertIn("reverse_t5_bridge_health mark-enabled", workflow)
+        self.assertIn("reverse_t5_bridge_health mark-disabled", workflow)
+        self.assertIn("reverse_t5_bridge_health check --require-completion", workflow)
+        self.assertIn("deferred_native_priority", workflow)
+        self.assertIn("reverse_t5_bridge_worker_triggered=completed", workflow)
+        self.assertIn("sync_reverse_t5_bridge_enablement_marker", (ROOT / "deploy" / "update.sh").read_text(encoding="utf-8"))
+        self.assertIn("reverse_t5_bridge_health mark-enabled", (ROOT / "deploy" / "enable-crown.sh").read_text(encoding="utf-8"))
+
+    def test_enable_crown_parses_quoted_and_whitespace_padded_bridge_flag_values(self) -> None:
+        script = ROOT / "deploy" / "enable-crown.sh"
+        cases = (
+            ('  CROWN_REVERSE_T5_BRIDGE_ENABLED = "1"  \n', "mark-enabled"),
+            ("export CROWN_REVERSE_T5_BRIDGE_ENABLED = 'true'\n", "mark-enabled"),
+            ('CROWN_REVERSE_T5_BRIDGE_ENABLED = "on"\n', "mark-enabled"),
+            ('CROWN_REVERSE_T5_BRIDGE_ENABLED = "0"\n', "mark-disabled"),
+            ("CROWN_REVERSE_T5_BRIDGE_ENABLED = 'false'\n", "mark-disabled"),
+        )
+        for flag_line, expected in cases:
+            with self.subTest(flag_line=flag_line):
+                with tempfile.TemporaryDirectory() as directory:
+                    sandbox = Path(directory)
+                    bin_dir = sandbox / "bin"
+                    bin_dir.mkdir()
+                    capture = sandbox / "python-calls"
+                    crown_env = sandbox / "footbreak-crown.env"
+                    crown_env.write_text(flag_line, encoding="utf-8")
+                    for name, body in {
+                        "systemctl": "#!/usr/bin/env bash\nexit 0\n",
+                        "chown": "#!/usr/bin/env bash\nexit 0\n",
+                        "python3": (
+                            "#!/usr/bin/env bash\n"
+                            "printf '%s\\n' \"$*\" >> \"$ENABLE_CROWN_PYTHON_CALLS\"\n"
+                        ),
+                    }.items():
+                        path = bin_dir / name
+                        path.write_text(body, encoding="utf-8")
+                        path.chmod(0o755)
+                    result = subprocess.run(
+                        ["bash", str(script)],
+                        env={
+                            **os.environ,
+                            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+                            "CROWN_ENV_FILE": str(crown_env),
+                            "CROWN_STATE_DIR": str(sandbox / "state"),
+                            "ENABLE_CROWN_PYTHON_CALLS": str(capture),
+                        },
+                        text=True,
+                        capture_output=True,
+                        check=False,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    calls = capture.read_text(encoding="utf-8")
+                    self.assertIn(
+                        f"crown.reverse_t5_bridge_health {expected}",
+                        calls,
+                    )
 
 
 if __name__ == "__main__":

@@ -37,6 +37,13 @@ crown_is_enabled() {
   esac
 }
 
+reverse_t5_bridge_is_enabled() {
+  case "${CROWN_REVERSE_T5_BRIDGE_ENABLED:-0}" in
+    1|true|TRUE|yes|YES|on|ON) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 echo "=== production health $(TZ=Asia/Hong_Kong date '+%F %T %Z') ==="
 
 for unit in \
@@ -72,6 +79,30 @@ if crown_is_enabled; then
   done
 else
   echo "OK Crown validation gate disabled; Crown timers are not required"
+fi
+
+if crown_is_enabled && reverse_t5_bridge_is_enabled; then
+  unit=crown-reverse-t5-drain.timer
+  systemctl is-enabled --quiet "$unit" || {
+    state="$(systemctl is-enabled "$unit" 2>&1 || true)"
+    echo "FAIL timer $unit enabled_state=$state" >&2
+    exit 1
+  }
+  systemctl is-active --quiet "$unit" || {
+    systemctl show "$unit" -p LoadState -p ActiveState -p SubState -p Result
+    echo "FAIL timer $unit is not active" >&2
+    exit 1
+  }
+  echo "OK enabled reverse T-5 bridge timer $unit"
+  # This local-only liveness check reads timing/status aggregates only.  The
+  # enablement marker permits one bounded rollout grace, but a skipped service
+  # condition cannot refresh it; afterwards every enabled worker needs a
+  # recent parseable successful completion (a no-job pass counts).
+  PYTHONPATH="$APP_DIR${PYTHONPATH:+:$PYTHONPATH}" \
+  CROWN_STATE_DIR="${CROWN_STATE_DIR:-/var/lib/footbreak/crown}" \
+    "$APP_DIR/.venv/bin/python3" -m crown.reverse_t5_bridge_health check
+elif crown_is_enabled; then
+  echo "OK reverse T-5 bridge rollout flag disabled; worker liveness is not required"
 fi
 
 if systemctl is-active --quiet footbreak-t30.timer ||
@@ -281,6 +312,9 @@ services=(
 )
 if crown_is_enabled; then
   services+=(crown-tick.service crown-sweep.service crown-settle.service)
+  if reverse_t5_bridge_is_enabled; then
+    services+=(crown-reverse-t5-drain.service)
+  fi
 fi
 for service in "${services[@]}"; do
   result="$(systemctl show "$service" -p Result --value)"
@@ -317,7 +351,8 @@ for service in "${services[@]}"; do
   case "$service:$status" in
     footbreak-tick.service:75|footbreak-settle.service:75|\
     footbreak-result-reconcile.service:75|\
-    crown-tick.service:75|crown-sweep.service:75|crown-settle.service:75)
+    crown-tick.service:75|crown-sweep.service:75|crown-settle.service:75|\
+    crown-reverse-t5-drain.service:75)
       expected_preemption=true
       ;;
   esac

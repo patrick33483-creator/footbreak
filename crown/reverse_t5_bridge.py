@@ -1,11 +1,12 @@
 """Durable, post-commit Crown T-5 to HKJC public-board bridge.
 
 The deadline-owned native T-5 transaction only appends a tiny idempotent job.
-An existing non-deadline Crown server pass later drains that job in a separately
-bounded child.  Provider I/O, fixture matching, formal-condition evaluation,
-and counterpart selection all run from an immutable snapshot *outside* the
-shared native state lock.  The final lock reacquires only long enough to
-revalidate the exact persisted T-5 evidence and merge isolated outcomes.
+A dedicated non-deadline Crown server worker drains that job in a separately
+bounded child; sweep retains only safe recovery coverage.  Provider I/O,
+fixture matching, formal-condition evaluation, and counterpart selection all
+run from an immutable snapshot *outside* the shared native state lock.  The
+final lock reacquires only long enough to revalidate the exact persisted T-5
+evidence and merge isolated outcomes.
 """
 from __future__ import annotations
 
@@ -19,7 +20,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable
 
-from .common import HKT, iso_hkt, parse_time
+from .common import HKT, iso_hkt, parse_time, read_json, write_json_atomic
 from .config import Settings
 from .hkjc import event_from_match, fetch_matches
 from .matching import Event, same_event_for_hkjc
@@ -28,7 +29,15 @@ from .state import load_ledger, save_ledger, state_lock
 ENV_ENABLED = "CROWN_REVERSE_T5_BRIDGE_ENABLED"
 JOB_NAMESPACE = "crown_reverse_t5_bridge"
 _JOB_LIMIT = 1600
-_MAX_DRAIN_JOBS = 12
+# T-5 comparison evidence is useful only close to the committed native stage.
+# 60 seconds permits the 30-second server cadence, one 15-second service
+# budget, and ordinary scheduler jitter without allowing a boot catch-up or a
+# repeatedly stalled queue to pair a stale native signal with a current board.
+MAX_STAGE_AGE_SECONDS = 60
+# A drain may visit at most the retained job window.  This is a defensive
+# corruption guard, not a service-throughput policy: the 15-second killable
+# parent is the real wall-clock bound and fast supported fixture batches must
+# not be split by an arbitrary small count.
 _REMOTE_TIMEOUT_SECONDS = 1.0
 _SELLABLE_STATUSES = {"SELLING", "SELLINGSTARTED", "AVAILABLE"}
 _MARKETS = ("HDC", "HIL", "CHL")
@@ -182,6 +191,13 @@ def _target(watch: dict[str, Any]) -> Event | None:
 
 
 def _job_is_current(ledger: dict[str, Any], job: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
+    return _job_is_current_at(ledger, job)
+
+
+def _job_is_current_at(
+    ledger: dict[str, Any], job: dict[str, Any], *, now: datetime | None = None,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Validate immutable native evidence and the strict reverse-T-5 age cap."""
     fixture = str(job.get("match_id") or "")
     watch = (ledger.get("watch") or {}).get(fixture)
     if not isinstance(watch, dict):
@@ -191,10 +207,16 @@ def _job_is_current(ledger: dict[str, Any], job: dict[str, Any]) -> tuple[dict[s
     fingerprint = t5_evidence_fingerprint(watch)
     if not fingerprint or fingerprint != str(job.get("t5_evidence_fingerprint") or ""):
         return None, "native_t5_evidence_changed_or_missing"
+    now = now or datetime.now(HKT)
+    stage_at = parse_time(job.get("stage_at"))
+    # Missing/unparseable timestamps cannot prove a fresh T-5 observation and
+    # fail closed using the same durable reason as an over-age bridge job.
+    if stage_at is None or (now - stage_at).total_seconds() > MAX_STAGE_AGE_SECONDS:
+        return None, "reverse_t5_stage_too_old"
     kickoff = parse_time(watch.get("kickoff_hkt") or watch.get("kickoff"))
     if kickoff is None:
         return None, "native_kickoff_missing"
-    if kickoff <= datetime.now(HKT):
+    if kickoff <= now:
         return None, "native_t5_job_expired"
     return watch, None
 
@@ -205,6 +227,79 @@ def _append_attempt(job: dict[str, Any], state: str, reason: str | None = None) 
         attempts = job["attempts"] = []
     attempts.append({"at": iso_hkt(), "state": state, "reason": reason})
     job["attempts"] = attempts[-24:]
+
+
+def _terminal_state(reason: str | None) -> str:
+    return (
+        "EXPIRED"
+        if reason in {"native_t5_job_expired", "reverse_t5_stage_too_old"}
+        else "CANCELLED"
+    )
+
+
+def _terminalize(job: dict[str, Any], reason: str | None) -> None:
+    job["state"] = _terminal_state(reason)
+    job["completed_at"] = iso_hkt()
+    _append_attempt(job, job["state"], reason)
+
+
+def worker_telemetry_path(config: Settings) -> Path:
+    """Return the local-only bounded worker health record path."""
+    return Path(config.state_dir) / "reverse-t5-bridge-health.json"
+
+
+def _oldest_retryable_stage_at(ledger: dict[str, Any]) -> str | None:
+    ns = ledger.get(JOB_NAMESPACE) if isinstance(ledger, dict) else None
+    jobs = ns.get("jobs") if isinstance(ns, dict) else None
+    values = [
+        str(job.get("stage_at"))
+        for job in jobs or []
+        if isinstance(job, dict)
+        and str(job.get("state") or "") in {"PENDING", "RUNNING"}
+        and parse_time(job.get("stage_at")) is not None
+    ]
+    return min(values) if values else None
+
+
+def _record_worker_telemetry(
+    config: Settings, *, status: str, claimed: int | None = None,
+    completed: int | None = None,
+) -> None:
+    """Persist compact liveness only; never include provider or fixture data."""
+    path = worker_telemetry_path(config)
+    current = read_json(path, {})
+    data = current if isinstance(current, dict) else {}
+    at = iso_hkt()
+    data["last_status"] = status
+    if status == "started":
+        data["last_started"] = at
+    elif status == "timeout":
+        data["last_timeout"] = at
+        try:
+            previous_timeouts = int(data.get("consecutive_timeouts") or 0)
+        except (TypeError, ValueError):
+            previous_timeouts = 0
+        data["consecutive_timeouts"] = max(0, previous_timeouts) + 1
+    else:
+        data["last_completed"] = at
+        data["consecutive_timeouts"] = 0
+    if claimed is not None:
+        data["claimed"] = int(claimed)
+    if completed is not None:
+        data["completed"] = int(completed)
+    try:
+        data["oldest_pending_stage_at"] = _oldest_retryable_stage_at(
+            load_ledger(config),
+        )
+        write_json_atomic(path, data)
+    except OSError:
+        # Telemetry must not alter durable bridge retry semantics.
+        pass
+
+
+def record_worker_timeout(config: Settings) -> None:
+    """Record an outer-child timeout after the parent has reaped that child."""
+    _record_worker_telemetry(config, status="timeout")
 
 
 @contextmanager
@@ -224,44 +319,107 @@ def _drain_lock(config: Settings):
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
-def _claim_snapshot(config: Settings, *, max_jobs: int) -> list[dict[str, Any]]:
-    """Take only compact immutable input copies while briefly holding state."""
+def _last_attempt_at(job: dict[str, Any]) -> datetime | None:
+    values = [
+        parse_time(row.get("at"))
+        for row in job.get("attempts") or []
+        if isinstance(row, dict)
+    ]
+    return max((value for value in values if value is not None), default=None)
+
+
+def _claim_one_snapshot(
+    config: Settings, *, now: datetime | None = None,
+    board_observed_at: datetime | None = None,
+) -> dict[str, Any] | None:
+    """Fairly claim one current job whose native stage predates this board."""
+    now = now or datetime.now(HKT)
     with state_lock(config, timeout_seconds=0.20) as acquired:
         if not acquired:
-            return []
+            return None
         ledger = load_ledger(config)
         ns = _ensure_jobs(ledger)
-        claimed: list[dict[str, Any]] = []
+        candidates: list[tuple[tuple[bool, datetime, str], dict[str, Any], dict[str, Any]]] = []
         changed = False
         for job in ns["jobs"]:
-            if len(claimed) >= max_jobs or not isinstance(job, dict):
+            if not isinstance(job, dict):
                 continue
             if str(job.get("state") or "") not in {"PENDING", "RUNNING"}:
                 continue
-            watch, reason = _job_is_current(ledger, job)
+            watch, reason = _job_is_current_at(ledger, job, now=now)
             if watch is None:
-                job["state"] = "EXPIRED" if reason == "native_t5_job_expired" else "CANCELLED"
-                job["completed_at"] = iso_hkt()
-                _append_attempt(job, job["state"], reason)
+                _terminalize(job, reason)
                 changed = True
                 continue
-            # A terminated prior worker leaves RUNNING behind.  The separate
-            # drain lock proves no live bridge worker can be concurrent here,
-            # so it is safely recovered as a new attempt.
+            stage_at = parse_time(job.get("stage_at"))
+            # A job that arrived while the shared board request was in flight
+            # must wait for the next board.  It may not evaluate a quote that
+            # was observed before its committed native T-5 evidence.
+            if board_observed_at is not None and (
+                stage_at is None or stage_at > board_observed_at
+            ):
+                continue
+            # Reaped RUNNING rows are retryable.  Least-recently-attempted
+            # ordering prevents a repeatedly slow early row from permanently
+            # starving later PENDING/RUNNING fixtures.
+            attempted = _last_attempt_at(job)
+            candidates.append((
+                (
+                    attempted is not None,
+                    attempted or datetime.min.replace(tzinfo=HKT),
+                    str(job.get("job_id") or ""),
+                ),
+                job,
+                watch,
+            ))
+        snapshot = None
+        if candidates:
+            _sort, job, watch = min(candidates, key=lambda item: item[0])
             job["state"] = "RUNNING"
             job["claimed_at"] = iso_hkt()
             _append_attempt(job, "RUNNING", None)
-            claimed.append({
+            snapshot = {
                 "job": copy.deepcopy(job),
                 "watch": copy.deepcopy(watch),
                 # Formal condition matching needs only immutable Wilson state;
                 # no native top-level mutable portfolio data is copied/mutated.
                 "wilson_validation": copy.deepcopy(ledger.get("wilson_validation") or {}),
-            })
+            }
             changed = True
         if changed:
             save_ledger(config, ledger)
-    return claimed
+    return snapshot
+
+
+def _prepare_eligible_jobs(config: Settings, *, now: datetime | None = None) -> bool:
+    """Terminalize stale rows and report whether a current row merits one fetch.
+
+    This short state transaction is intentionally not a claim.  It lets a
+    no-job or boot-catch-up invocation avoid provider I/O while preserving the
+    strict age check immediately before the one shared board request.
+    """
+    now = now or datetime.now(HKT)
+    with state_lock(config, timeout_seconds=0.20) as acquired:
+        if not acquired:
+            return False
+        ledger = load_ledger(config)
+        ns = _ensure_jobs(ledger)
+        changed = False
+        eligible = False
+        for job in ns["jobs"]:
+            if not isinstance(job, dict):
+                continue
+            if str(job.get("state") or "") not in {"PENDING", "RUNNING"}:
+                continue
+            _watch, reason = _job_is_current_at(ledger, job, now=now)
+            if _watch is None:
+                _terminalize(job, reason)
+                changed = True
+            else:
+                eligible = True
+        if changed:
+            save_ledger(config, ledger)
+        return eligible
 
 
 def _fetch_board() -> tuple[list[dict[str, Any]], list[Event], str]:
@@ -276,7 +434,9 @@ def _fetch_board() -> tuple[list[dict[str, Any]], list[Event], str]:
             os.environ["FOOTBREAK_REMOTE_TIMEOUT_SECONDS"] = previous_timeout
     rows = [row for row in matches if isinstance(row, dict)]
     events = [event_from_match(row) for row in rows]
-    return rows, [event for event in events if event is not None], iso_hkt()
+    # Keep microseconds here: the board ordering guard must not turn a T-5
+    # committed later in the same wall-clock second into a pre-capture quote.
+    return rows, [event for event in events if event is not None], datetime.now(HKT).isoformat()
 
 
 def _evaluate_snapshot(snapshot: dict[str, Any], matches: list[dict[str, Any]], events: list[Event], observed_at: str) -> dict[str, Any]:
@@ -363,7 +523,10 @@ def _merge_isolated_namespace(ledger: dict[str, Any], outcome: dict[str, Any]) -
             current[key] = current[key][-limit:]
 
 
-def _merge_completed(config: Settings, outcomes: list[tuple[dict[str, Any], dict[str, Any]]]) -> int:
+def _merge_completed(
+    config: Settings, claimed: dict[str, Any], outcome: dict[str, Any],
+    *, now: datetime | None = None,
+) -> int:
     """Revalidate T-5 evidence and atomically merge already-computed outcomes."""
     with state_lock(config, timeout_seconds=0.20) as acquired:
         if not acquired:
@@ -371,53 +534,86 @@ def _merge_completed(config: Settings, outcomes: list[tuple[dict[str, Any], dict
         ledger = load_ledger(config)
         ns = _ensure_jobs(ledger)
         jobs = {str(job.get("job_id") or ""): job for job in ns["jobs"] if isinstance(job, dict)}
-        completed = 0
         changed = False
-        for claimed, outcome in outcomes:
-            job_id = str(claimed.get("job_id") or "")
-            job = jobs.get(job_id)
-            if not isinstance(job, dict) or str(job.get("state") or "") != "RUNNING":
-                continue
-            _watch, reason = _job_is_current(ledger, job)
+        job_id = str(claimed.get("job_id") or "")
+        job = jobs.get(job_id)
+        completed = 0
+        if isinstance(job, dict) and str(job.get("state") or "") == "RUNNING":
+            # This second age check is deliberately immediately before the
+            # isolated merge.  A slow board/matcher may cross 60 seconds after
+            # the pre-fetch claim, in which case no decision/outbox/bet is
+            # created from stale T-5 evidence.
+            _watch, reason = _job_is_current_at(ledger, job, now=now)
             if _watch is None:
-                job["state"] = "EXPIRED" if reason == "native_t5_job_expired" else "CANCELLED"
-                job["completed_at"] = iso_hkt()
-                _append_attempt(job, job["state"], reason)
+                _terminalize(job, reason)
                 changed = True
-                continue
-            _merge_isolated_namespace(ledger, outcome)
-            job["state"] = "COMPLETED"
-            job["completed_at"] = iso_hkt()
-            _append_attempt(job, "COMPLETED", None)
-            completed += 1
+            else:
+                _merge_isolated_namespace(ledger, outcome)
+                job["state"] = "COMPLETED"
+                job["completed_at"] = iso_hkt()
+                _append_attempt(job, "COMPLETED", None)
+                completed = 1
+                changed = True
             changed = True
         if changed:
             save_ledger(config, ledger)
         return completed
 
 
-def drain_pending_jobs(config: Settings, *, max_jobs: int = _MAX_DRAIN_JOBS) -> dict[str, int]:
+def drain_pending_jobs(
+    config: Settings, *, max_jobs: int = _JOB_LIMIT,
+) -> dict[str, int]:
     """Drain durable jobs from a bounded, killable post-commit child.
 
-    Callers must put this function behind a killable outer process.  It owns no
-    native-stage work and holds native state only for two brief
-    snapshot/revalidation merges.
+    Callers must put this function behind a killable outer process.  One HKJC
+    board is fetched per eligible invocation, then jobs already covered by
+    that immutable board are fairly claimed, evaluated, and merged one at a
+    time until the queue is exhausted or the outer service parent reaps the
+    child.  ``_JOB_LIMIT`` is only a defensive retained-state ceiling; normal
+    throughput is bounded by the service wall clock, never a small job count.
     """
     if not is_enabled():
         return {"claimed": 0, "completed": 0}
+    try:
+        limit = max(1, min(int(max_jobs), _JOB_LIMIT))
+    except (TypeError, ValueError):
+        limit = _JOB_LIMIT
     with _drain_lock(config) as acquired:
         if not acquired:
             return {"claimed": 0, "completed": 0}
-        snapshots = _claim_snapshot(config, max_jobs=max(1, min(_MAX_DRAIN_JOBS, max_jobs)))
-        if not snapshots:
-            return {"claimed": 0, "completed": 0}
+        _record_worker_telemetry(config, status="started")
+        result = {"claimed": 0, "completed": 0}
+        # Check freshness immediately before the single provider request.  A
+        # stale-only queue is terminalized without any remote board fetch.
+        if not _prepare_eligible_jobs(config):
+            _record_worker_telemetry(config, status="complete", **result)
+            return result
         matches, events, observed_at = _fetch_board()
-        completed = 0
-        for item in snapshots:
-            outcome = _evaluate_snapshot(item, matches, events, observed_at)
-            # Commit progress after each detached evaluation.  A bounded parent
-            # may terminate this worker while a later fixture is slow; earlier
-            # completed evidence must remain durable while untouched RUNNING
-            # jobs stay safely reclaimable on the next pass.
-            completed += _merge_completed(config, [(item["job"], outcome)])
-        return {"claimed": len(snapshots), "completed": completed}
+        board_observed_at = parse_time(observed_at)
+        if board_observed_at is None:
+            # _fetch_board owns this local timestamp, but fail closed rather
+            # than letting an unparseable capture label pre-stage quotes.
+            _record_worker_telemetry(config, status="complete", **result)
+            return result
+        for _ in range(limit):
+            snapshot = _claim_one_snapshot(
+                config, board_observed_at=board_observed_at,
+            )
+            if snapshot is None:
+                break
+            result["claimed"] += 1
+            # Explicitly recheck the age before any remote I/O, even though
+            # claim validated it.  This protects a process that was
+            # descheduled between the short state transaction and the board
+            # request.
+            ledger = load_ledger(config)
+            _watch, _reason = _job_is_current_at(ledger, snapshot["job"])
+            if _watch is None:
+                result["completed"] += _merge_completed(
+                    config, snapshot["job"], {}, now=datetime.now(HKT),
+                )
+                continue
+            outcome = _evaluate_snapshot(snapshot, matches, events, observed_at)
+            result["completed"] += _merge_completed(config, snapshot["job"], outcome)
+        _record_worker_telemetry(config, status="complete", **result)
+        return result

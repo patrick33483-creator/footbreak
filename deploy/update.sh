@@ -33,6 +33,42 @@ crown_is_enabled_in_config() {
   esac
 }
 
+reverse_t5_bridge_is_enabled_in_config() {
+  # Match crown-run.sh's source order without sourcing secrets in this
+  # privileged updater.  The marker is lifecycle metadata only.
+  local file line value=""
+  for file in /etc/footbreak.env /etc/footbreak-crown.env; do
+    [ -r "$file" ] || continue
+    line="$(grep -E '^[[:space:]]*(export[[:space:]]+)?CROWN_REVERSE_T5_BRIDGE_ENABLED[[:space:]]*=' "$file" | tail -n 1 || true)"
+    [ -n "$line" ] || continue
+    value="${line#*=}"
+    value="${value#"${value%%[![:space:]]*}"}"
+    value="${value%"${value##*[![:space:]]}"}"
+    if [ "${value#\'}" != "$value" ] && [ "${value%\'}" != "$value" ]; then
+      value="${value#\'}"
+      value="${value%\'}"
+    elif [ "${value#\"}" != "$value" ] && [ "${value%\"}" != "$value" ]; then
+      value="${value#\"}"
+      value="${value%\"}"
+    fi
+  done
+  case "$value" in
+    1|true|TRUE|yes|YES|on|ON) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+sync_reverse_t5_bridge_enablement_marker() {
+  local command="mark-disabled"
+  if crown_is_enabled_in_config && reverse_t5_bridge_is_enabled_in_config; then
+    command="mark-enabled"
+  fi
+  local python="$APP_DIR/.venv/bin/python3"
+  [ -x "$python" ] || python=python3
+  CROWN_STATE_DIR="${CROWN_STATE_DIR:-/var/lib/footbreak/crown}" \
+    "$python" -m crown.reverse_t5_bridge_health "$command"
+}
+
 sync_crown_web_root() {
   # Only the static nginx tree is made readable.  Never recurse into
   # /var/lib/footbreak/crown, which is private runtime state.
@@ -87,7 +123,8 @@ systemctl daemon-reload
 # stopped until an operator explicitly enables it.
 if crown_is_enabled_in_config; then
   echo "▸ Crown validation gate enabled; starting Crown timers"
-  for timer in crown-round-update.timer crown-first-look-reconcile.timer crown-sweep.timer crown-tick.timer crown-settle.timer; do
+  sync_reverse_t5_bridge_enablement_marker
+  for timer in crown-round-update.timer crown-first-look-reconcile.timer crown-sweep.timer crown-tick.timer crown-settle.timer crown-reverse-t5-drain.timer; do
     # A copied-in timer can retain a stale disabled unit-file state across a
     # rollback/forward deployment.  Recreate the timers.target link instead
     # of trusting `restart` to imply persistence; health-check verifies the
@@ -110,9 +147,10 @@ if crown_is_enabled_in_config; then
   done
 else
   echo "▸ Crown validation gate disabled; stopping Crown timers"
-  systemctl disable --now crown-round-update.timer crown-first-look-reconcile.timer crown-sweep.timer crown-tick.timer crown-settle.timer 2>/dev/null || true
-  systemctl stop crown-round-update.service crown-first-look-reconcile.service crown-sweep.service crown-tick.service crown-settle.service 2>/dev/null || true
-  systemctl reset-failed crown-round-update.service crown-first-look-reconcile.service crown-sweep.service crown-tick.service crown-settle.service 2>/dev/null || true
+  sync_reverse_t5_bridge_enablement_marker
+  systemctl disable --now crown-round-update.timer crown-first-look-reconcile.timer crown-sweep.timer crown-tick.timer crown-settle.timer crown-reverse-t5-drain.timer 2>/dev/null || true
+  systemctl stop crown-round-update.service crown-first-look-reconcile.service crown-sweep.service crown-tick.service crown-settle.service crown-reverse-t5-drain.service 2>/dev/null || true
+  systemctl reset-failed crown-round-update.service crown-first-look-reconcile.service crown-sweep.service crown-tick.service crown-settle.service crown-reverse-t5-drain.service 2>/dev/null || true
 fi
 # Settlement is deliberately separate from the latency-sensitive tick.  T-30
 # and T-5 now share one ordered queue, so the old second timer is retired

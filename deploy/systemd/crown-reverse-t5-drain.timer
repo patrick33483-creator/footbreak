@@ -1,0 +1,14 @@
+[Unit]
+Description=足破 · 皇冠 reverse T-5 durable bridge worker every 30 seconds
+
+[Timer]
+# The calendar anchor makes missed boot-time work persistent; the inactive
+# cadence then gives bounded bridge retries roughly every 30 seconds.
+OnCalendar=*-*-* *:*:00
+OnUnitInactiveSec=30s
+AccuracySec=1s
+Persistent=true
+Unit=crown-reverse-t5-drain.service
+
+[Install]
+WantedBy=timers.target
