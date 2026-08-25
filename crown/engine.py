@@ -1923,6 +1923,45 @@ def _has_pending_formal_admission(ledger: dict[str, Any], stage: str | None = No
     )
 
 
+def _optional_save_worker(
+    config: Settings, ledger: dict[str, Any], sender: Any,
+) -> None:
+    try:
+        save_ledger(config, ledger)
+        sender.send(True)
+    except Exception:
+        try:
+            sender.send(False)
+        except Exception:
+            pass
+    finally:
+        sender.close()
+
+
+def _bounded_optional_save(
+    config: Settings, ledger: dict[str, Any], *, budget: float,
+) -> bool:
+    """Hard-bound an atomic optional save in a killable forked process."""
+    if budget <= 0:
+        return False
+    context = multiprocessing.get_context("fork")
+    receiver, sender = context.Pipe(duplex=False)
+    process = context.Process(
+        target=_optional_save_worker, args=(config, ledger, sender),
+    )
+    process.start()
+    sender.close()
+    process.join(budget)
+    if process.is_alive():
+        process.terminate()
+        process.join(0.1)
+        receiver.close()
+        return False
+    success = bool(receiver.recv()) if receiver.poll() else False
+    receiver.close()
+    return success and process.exitcode == 0
+
+
 def _drain_pending_formal_admissions(
     config: Settings, *, deadline: float | None = None,
 ) -> list[str]:
@@ -2046,12 +2085,45 @@ def _drain_pending_formal_admissions(
                             "kickoff_reached_before_formal_admission_persist"
                         )
                         row["formal_admission_completed_at"] = iso_hkt()
-            save_ledger(config, expired)
+            remaining = (
+                _deadline_remaining(deadline) if deadline is not None else 0.5
+            )
+            _bounded_optional_save(
+                config, expired, budget=max(0.0, remaining - 0.01),
+            )
             return []
         if staged.get("log"):
             staged["log"][-1]["n_changes"] = len(emitted)
             staged["log"][-1]["changes"] = emitted or ["今次無模擬注動作"]
-        save_ledger(config, staged)
+        remaining = (
+            _deadline_remaining(deadline) if deadline is not None else 0.5
+        )
+        completed_t5_kickoffs = [
+            parse_time(
+                row.get("kickoff_hkt") or row.get("kickoff")
+                or watch.get("kickoff_hkt") or watch.get("kickoff")
+            )
+            for watch in (staged.get("watch") or {}).values()
+            if isinstance(watch, dict)
+            for row in watch.get("stages") or []
+            if isinstance(row, dict)
+            and row.get("stage") == "T-5"
+            and row.get("formal_admission_status") == "COMPLETED"
+        ]
+        completed_t5_kickoffs = [
+            value for value in completed_t5_kickoffs if value is not None
+        ]
+        save_budget = remaining - 0.01
+        if completed_t5_kickoffs:
+            save_budget = min(
+                save_budget,
+                (min(completed_t5_kickoffs) - datetime.now(HKT)).total_seconds()
+                - kickoff_safety_margin,
+            )
+        if not _bounded_optional_save(
+            config, staged, budget=max(0.0, save_budget),
+        ):
+            return []
     return emitted
 
 

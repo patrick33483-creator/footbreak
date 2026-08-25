@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+import copy
 import unittest
 from contextlib import contextmanager
 from dataclasses import replace
@@ -117,6 +118,53 @@ class StageAwarePendingDrainTests(unittest.TestCase):
         self.assertLess(elapsed, 0.07)
         self.assertEqual(emitted, [])
         save.assert_not_called()
+
+    def test_slow_final_atomic_save_cannot_publish_t5_across_kickoff(self):
+        kickoff = datetime.now(HKT) + timedelta(seconds=0.25)
+        snapshot_id = "a" * 64
+        base = {
+            "bets": [], "log": [],
+            "watch": {"m": {
+                "match_id": "m", "kickoff": kickoff.isoformat(),
+                "kickoff_hkt": kickoff.isoformat(),
+                "stages": [{
+                    "stage": "T-5", "formal_admission_pending": True,
+                    "formal_admission_status": "PENDING",
+                    "formal_admission_snapshot_id": snapshot_id,
+                }],
+            }},
+        }
+        def consume(staged, _config):
+            row = staged["watch"]["m"]["stages"][0]
+            row["formal_admission_pending"] = False
+            row["formal_admission_status"] = "COMPLETED"
+            staged["bets"].append({"bet_id": "must-not-persist"})
+            return ["must-not-persist"]
+
+        saved = {}
+        def slow_save(_config, value):
+            time.sleep(0.35)
+            saved["ledger"] = copy.deepcopy(value)
+            saved["at"] = datetime.now(HKT)
+
+        with TemporaryDirectory() as directory:
+            config = replace(settings(), state_dir=Path(directory))
+            with patch("crown.engine.state_lock", side_effect=lambda *_a, **_k: _lock()), \
+                 patch("crown.engine.load_ledger", return_value=base), \
+                 patch(
+                     "crown.engine.reconcile_pending_formal_admissions",
+                     side_effect=consume,
+                 ), \
+                 patch("crown.engine.recompute_stats", return_value={}), \
+                 patch("crown.engine.save_ledger", side_effect=slow_save):
+                started = time.monotonic()
+                emitted = engine._drain_pending_formal_admissions(
+                    config, deadline=time.monotonic() + 1,
+                )
+                elapsed = time.monotonic() - started
+        self.assertEqual(emitted, [])
+        self.assertLess(elapsed, 0.30)
+        self.assertNotIn("ledger", saved)
 
 
 @contextmanager

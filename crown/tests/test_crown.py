@@ -2484,9 +2484,9 @@ class CrownSafetyTests(unittest.TestCase):
             commit.assert_called_once()
             self.assertEqual(len(commit.call_args.args[2]), 2)
             recompute.assert_called_once()
-            # Write-ahead attempt, atomic native snapshot, then the optional
-            # post-commit Wilson consumer are three separate durable writes.
-            self.assertEqual(save.call_count, 3)
+            # Parent writes the attempt and native snapshot. The optional
+            # formal result uses a separate hard-bounded atomic-save process.
+            self.assertEqual(save.call_count, 2)
 
             self.assertTrue(result["fast_t5_bulk"])
             self.assertEqual(result["predictions"], 2)
