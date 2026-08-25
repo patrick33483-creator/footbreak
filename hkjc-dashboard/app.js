@@ -1875,22 +1875,81 @@ function crownExecutionTestCard(portfolio) {
 }
 
 function wilsonRolloverCard(validation) {
-  const rollover = validation?.rollover || {};
-  const rows = Object.values(rollover.conditions || {}).filter((row) => row && typeof row === 'object')
-    .sort((a, b) => (numeric(a.condition_number) || 999999) - (numeric(b.condition_number) || 999999));
-  if (!rows.length) return `<section class="card"><h2 class="card-h">Wilson 證據版本</h2><div class="empty2">尚未有已凍結條件；新結果不會以舊驗證紀錄追溯補入。</div></section>`;
-  return `<section class="card" data-testid="wilson-evidence-rollover"><h2 class="card-h">Wilson 證據版本 <span class="sub">每個完全相同條件獨立累積；20 個新已判定結果才建立新版本</span></h2>
-    <div class="tbl-wrap"><table class="t"><thead><tr><th>條件</th><th>有效證據</th><th>Wilson / 最低賠率</th><th>最近合併</th><th>下一批進度</th></tr></thead><tbody>${rows.map((row) => {
-      const active = row.active_evidence || {}, last = row.last_merged_batch || {}, pending = row.pending_progress || {};
-      const version = numeric(active.version) == null ? '—' : `v${Math.trunc(numeric(active.version))}`;
-      const total = `${numeric(active.cumulative_hits) || 0}/${numeric(active.cumulative_decided) || 0}`;
-      const lower = pc(active.wilson95_lower_raw, 1);
-      const minimum = numeric(active.minimum_acceptable_odds_display) == null ? f2(active.minimum_acceptable_odds_raw) : String(active.minimum_acceptable_odds_display);
-      const batch = numeric(last.batch_decided) ? `${numeric(last.batch_hits) || 0}/${numeric(last.batch_decided)}${last.initial_migration_full_cohort ? '（初始完整驗證 cohort）' : ''}` : '—';
-      const progress = pending.display || `${numeric(pending.eligible_decided) || 0}/${numeric(pending.required) || 20}`;
-      return `<tr><td>${esc(wilsonConditionLabel(row.condition_number))}</td><td>${esc(version)} · ${esc(total)}</td><td>下限 ${esc(lower)} · 最低 ${esc(minimum)}</td><td>${esc(batch)}</td><td><b>${esc(progress)}</b></td></tr>`;
-    }).join('')}</tbody></table></div>
-    <p class="mx-note">「命中 x/y」是已判定命中率，不是批次進度；批次只看最右欄 x/20。公開面板只顯示不可逆 fixture-market 摘要，不顯示供應商或賽事 ID。</p></section>`;
+  const hasFunnel = validation?.condition_funnel && typeof validation.condition_funnel === 'object';
+  const funnel = validation?.condition_funnel || {};
+  const rows = Array.isArray(funnel.conditions) ? funnel.conditions.filter((row) =>
+    row && typeof row === 'object'
+  ).sort((a, b) => (numeric(a.condition_number) || 999999) - (numeric(b.condition_number) || 999999)) : [];
+  if (!rows.length) return `<section class="card" data-testid="wilson-condition-funnel"><h2 class="card-h">Wilson 證據版本／條件漏斗</h2><div class="empty2">${
+    !hasFunnel || funnel.unavailable_reason
+      ? '漏斗資料未可用；不會由舊摘要或即時資料推算。'
+      : '尚未有已凍結條件；新結果不會以舊驗證紀錄追溯補入。'
+  }</div></section>`;
+  const stage = (stages, key, label, note = '') => {
+    const item = stages?.[key] || {}, unavailable = item.available !== true;
+    const value = unavailable ? '未能可靠重建' : (
+      key === 'current_rollover_progress'
+        ? item.display
+        : `${numeric(item.count) == null ? 0 : Math.trunc(numeric(item.count))}${item.availability === 'bounded' ? '（保留窗口）' : ''}`
+    );
+    return `<div class="wilson-funnel-stage ${unavailable ? 'is-unavailable' : ''}">
+      <span class="wilson-funnel-stage-label">${esc(label)}</span>
+      <strong>${esc(value || '未能可靠重建')}</strong>
+      ${note ? `<small>${esc(note)}</small>` : ''}
+    </div>`;
+  };
+  const axes = [
+    ['market', '市場'], ['stage', '決策時點'], ['path', '路徑'],
+    ['direction', '方向'], ['role', '角色'], ['line_bucket', '盤口層'],
+    ['odds_tier', '賠率層'], ['movement', '走勢'], ['odds_trajectory', '賠率軌跡'],
+  ];
+  return `<section class="card" data-testid="wilson-condition-funnel">
+    <h2 class="card-h">Wilson 證據版本／條件漏斗 <span class="sub">唯讀 · 完全相同凍結條件 · 預設收合</span></h2>
+    <p class="mx-note">只使用已保存的原生階段、凍結條件、正式觀察／模擬注、結算、rollover 與 audit 證據。完全吻合之前沒有可保存的條件歸屬，因此第一層會誠實標示「未能可靠重建」，不會把所有 T-5 推算到每個條件。</p>
+    <div class="wilson-condition-list">${rows.map((row) => {
+      const active = row.active_evidence || {}, stages = row.stages || {};
+      const signature = String(row.condition_signature || '');
+      const activeVersion = numeric(active.version) == null ? '版本未可用' : `證據 v${Math.trunc(numeric(active.version))}`;
+      const cumulative = numeric(active.cumulative_decided) == null
+        ? '累計證據未可用'
+        : `${numeric(active.cumulative_hits) || 0}/${Math.trunc(numeric(active.cumulative_decided))}`;
+      const progress = stages.current_rollover_progress?.available === true
+        ? stages.current_rollover_progress.display
+        : 'x/20 未可用';
+      const definition = row.definition || {};
+      const definitions = axes.filter(([key]) => definition[key] != null && definition[key] !== '')
+        .map(([key, label]) => `<div><span>${esc(label)}</span><b>${esc(publicText(definition[key]))}</b></div>`).join('');
+      const rejections = Array.isArray(row.rejections?.items) ? row.rejections.items : [];
+      const omitted = numeric(row.rejections?.omitted_reason_kinds) || 0;
+      return `<details class="wilson-condition" data-testid="wilson-condition-${esc(row.condition_number || signature)}">
+        <summary>
+          <span class="wilson-condition-title">${esc(wilsonConditionLabel(row.condition_number))}</span>
+          <span class="wilson-condition-version">${esc(activeVersion)} · ${esc(cumulative)}</span>
+          <span class="wilson-condition-progress">${esc(progress)}</span>
+        </summary>
+        <div class="wilson-condition-body">
+          <div class="wilson-condition-identity">
+            <div><span>條件版本</span><b>${esc(row.condition_version || '未可用')}</b></div>
+            <div><span>完整 signature</span><code>${esc(signature || '未可用')}</code></div>
+            <div><span>證據 hash</span><code>${esc(active.evidence_hash || '未可用')}</code></div>
+          </div>
+          <div class="wilson-definition-grid">${definitions || '<div><span>凍結定義</span><b>未可用</b></div>'}</div>
+          <div class="wilson-funnel-grid">
+            ${stage(stages, 'eligible_post_activation_t5_observations', '啟用後合資格 T-5', '吻合前沒有條件歸屬')}
+            ${stage(stages, 'exact_condition_matches', '完全相同條件吻合', '只計保留 audit 窗口')}
+            ${stage(stages, 'recorded_formal_evidence', '已記錄正式證據', `模擬注 ${numeric(stages.recorded_formal_evidence?.formal_bets) || 0} · 觀察 ${numeric(stages.recorded_formal_evidence?.formal_observations) || 0}`)}
+            ${stage(stages, 'settled_valid_evidence', '已結算有效證據', '唯一、二元判定、界線後')}
+            ${stage(stages, 'current_rollover_progress', '目前 x/20', '只顯示已保存 rollover 進度')}
+          </div>
+          <h3 class="sub-h">有證據支持的拒絕原因</h3>
+          ${rejections.length ? `<div class="wilson-rejections">${rejections.map((item) =>
+            `<div><span>${esc(item.label || item.code || '其他安全拒絕')}</span><b>${numeric(item.count) || 0}</b><small>${esc(item.source === 'retained_condition_audit' ? '保留 audit 窗口' : '正式結算證據')}</small></div>`
+          ).join('')}${omitted ? `<p>另有 ${omitted} 類低頻原因未顯示。</p>` : ''}</div>` : '<div class="empty2 compact">保留證據內未有可歸屬到此條件的拒絕原因。</div>'}
+        </div>
+      </details>`;
+    }).join('')}</div>
+    <p class="mx-note">「已結算有效證據」是條件初始證據界線後、具原生 T-5 provenance 的唯一二元結果；「目前 x/20」只讀取已保存的 pending rollover progress。audit 計數有保留窗口上限，並非全歷史推算。</p>
+  </section>`;
 }
 
 function probabilityResearchCard(research) {

@@ -733,6 +733,13 @@ def write_empty_bootstrap(out_path):
             "observations": [],
             "retired_v1": {},
             "historical_discovery_archive": {},
+            "condition_funnel": {
+                "schema_version": 1,
+                "read_only": True,
+                "system": "footbreak",
+                "condition_count": 0,
+                "conditions": [],
+            },
         },
         "probability_research": {
             "schema_version": None,
@@ -934,6 +941,8 @@ def main(out_path=None):
                     "last_sweep": (_ns.get("sweeps") or [None])[-1]}
         except Exception:
             pass
+    from analysis.wilson_validation import project_condition_funnel
+    condition_funnel = project_condition_funnel(led, "footbreak")
     ledger = {
         "bankroll": bank,
         "bets": [_public_bet(bet) for bet in sorted(bets, key=lambda b: b.get("kickoff") or "")],
@@ -971,6 +980,7 @@ def main(out_path=None):
             ],
             "retired_v1": (led.get("wilson_validation") or {}).get("retired_v1") or {},
             "historical_discovery_archive": (led.get("wilson_validation") or {}).get("retired_v1") or {},
+            "condition_funnel": condition_funnel,
         },
         # A separate research projection.  It is deliberately not a bet
         # portfolio, cannot alter v1 stats/PnL, and carries no notification

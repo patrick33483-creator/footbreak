@@ -28,9 +28,45 @@ Z_95 = 1.959963984540054
 LEGACY_STRATEGY = "independent-validation-v1"
 ROLLOVER_BATCH_SIZE = 20
 ROLLOVER_AUDIT_LIMIT = 64
+FUNNEL_REJECTION_LIMIT = 8
 BINARY_HIT_RESULTS = {"Won", "Half Won"}
 BINARY_MISS_RESULTS = {"Lost", "Half Lost"}
 BINARY_DECIDED_RESULTS = BINARY_HIT_RESULTS | BINARY_MISS_RESULTS
+
+FUNNEL_AUDIT_REJECTIONS = {
+    "stage_not_strictly_after_evidence_activation_boundary": (
+        "evidence_boundary", "T-5 不在目前證據版本啟用界線之後",
+    ),
+    "active_evidence_unavailable": (
+        "evidence_integrity", "有效證據版本未可用",
+    ),
+    "active_evidence_arithmetic_invalid": (
+        "evidence_integrity", "有效證據無法形成正式 Wilson 算術",
+    ),
+    "wilson_gate_not_passed": (
+        "execution_gate", "完全相同條件吻合，但賠率未通過 Wilson 門檻",
+    ),
+    "idempotent_existing_market": (
+        "duplicate_guard", "相同賽事市場已有正式紀錄",
+    ),
+    "fixture_cap_reached": (
+        "portfolio_guard", "每場市場或注碼上限已達",
+    ),
+}
+
+FUNNEL_SETTLEMENT_REJECTIONS = {
+    "not_settled": ("settlement_state", "正式紀錄尚未結算"),
+    "not_binary_decided": ("settlement_state", "結算不是有效二元判定"),
+    "missing_or_invalid_provenance": (
+        "evidence_integrity", "缺少或無效的原生 T-5 證據標記",
+    ),
+    "before_snapshot_boundary": (
+        "evidence_boundary", "T-5 不在條件初始證據界線之後",
+    ),
+    "duplicate_or_conflicting_fixture_market": (
+        "duplicate_guard", "fixture-market 證據重複或互相衝突",
+    ),
+}
 
 
 def _number(value: Any) -> float | None:
@@ -1124,6 +1160,317 @@ def project_frozen_ranking_evidence(
             card.get("last_merged_batch"),
         )
     return projected
+
+
+def project_condition_funnel(
+    ledger: dict[str, Any], system: str,
+) -> dict[str, Any]:
+    """Return a read-only, fail-closed funnel for every frozen condition.
+
+    Only durable native-stage decisions, immutable condition identities,
+    formal bet/observation rows, settlement provenance, and rollover/audit
+    records are used.  In particular, this projection never calls
+    :func:`ensure_namespace`, repairs a condition, or derives a pre-match
+    condition attribution from mutable watch/ranking data.
+    """
+    ns = ledger.get(NAMESPACE)
+    unavailable = {
+        "available": False,
+        "count": None,
+        "availability": "unavailable",
+        "reason": "condition_attribution_not_persisted_before_exact_match",
+    }
+    if not isinstance(ns, dict) or str(ns.get("system") or "") != system:
+        return {
+            "schema_version": 1,
+            "read_only": True,
+            "system": system,
+            "condition_count": 0,
+            "conditions": [],
+            "unavailable_reason": "wilson_namespace_unavailable",
+        }
+    conditions = ns.get("conditions")
+    if not isinstance(conditions, dict):
+        return {
+            "schema_version": 1,
+            "read_only": True,
+            "system": system,
+            "condition_count": 0,
+            "conditions": [],
+            "unavailable_reason": "frozen_condition_registry_unavailable",
+        }
+
+    order = [
+        str(signature) for signature in (ns.get("condition_order") or [])
+        if str(signature) in conditions
+    ]
+    missing = [
+        str(signature) for signature in conditions
+        if str(signature) not in order
+    ]
+    def persisted_number(signature: str) -> int:
+        try:
+            return int((conditions.get(signature) or {}).get("condition_number"))
+        except (TypeError, ValueError):
+            return 10**9
+    missing.sort(key=lambda signature: (persisted_number(signature), signature))
+    signatures = order + missing
+    audit = ns.get("audit")
+    audit_available = isinstance(audit, list)
+    retained_audit = [row for row in (audit or []) if isinstance(row, dict)]
+    audit_limit = 1600
+
+    formal_rows: list[dict[str, Any]] = [
+        row for row in (ledger.get("bets") or [])
+        if isinstance(row, dict)
+        and row.get("portfolio") == portfolio_name(system)
+        and row.get("strategy") == STRATEGY
+    ]
+    observations = ns.get("observations")
+    formal_rows.extend(
+        row for row in (observations or [])
+        if isinstance(row, dict)
+        and row.get("portfolio") == f"{system}_wilson_observations"
+        and row.get("strategy") == STRATEGY
+        and row.get("formal_bet") is False
+    )
+
+    output: list[dict[str, Any]] = []
+    for signature in signatures:
+        frozen = conditions.get(signature)
+        if not isinstance(frozen, dict):
+            continue
+        definition = frozen.get("definition")
+        definition = copy.deepcopy(definition) if isinstance(definition, dict) else None
+        versions = frozen.get("evidence_versions")
+        valid_versions = [row for row in (versions or []) if isinstance(row, dict)]
+        active = valid_versions[-1] if valid_versions else None
+        if not (
+            isinstance(active, dict)
+            and str(active.get("condition_signature") or "") == signature
+        ):
+            active = None
+        baseline = valid_versions[0] if valid_versions else None
+        baseline_boundary = (
+            baseline.get("activation_boundary_at")
+            if isinstance(baseline, dict)
+            and str(baseline.get("condition_signature") or "") == signature
+            else None
+        )
+
+        exact_keys = set()
+        audit_rejections: dict[str, int] = {}
+        if audit_available:
+            for row in retained_audit:
+                if str(row.get("frozen_condition_signature") or "") != signature:
+                    continue
+                fixture, market = str(row.get("match_id") or ""), str(row.get("market") or "")
+                if fixture and market and market != "*":
+                    exact_keys.add((fixture, market))
+                reason = str(row.get("reason") or "")
+                if reason in FUNNEL_AUDIT_REJECTIONS:
+                    audit_rejections[reason] = audit_rejections.get(reason, 0) + 1
+
+        rows = [
+            row for row in formal_rows
+            if str(row.get("frozen_condition_signature") or "") == signature
+        ]
+        recorded_ids = set()
+        recorded_bets = recorded_observations = 0
+        for index, row in enumerate(rows):
+            identity = str(
+                row.get("bet_id") or row.get("observation_id")
+                or f"retained-row-{index}"
+            )
+            if identity in recorded_ids:
+                continue
+            recorded_ids.add(identity)
+            if row.get("formal_bet") is False:
+                recorded_observations += 1
+            else:
+                recorded_bets += 1
+
+        settlement_rejections = {
+            code: 0 for code in FUNNEL_SETTLEMENT_REJECTIONS
+        }
+        settlement_candidates: dict[str, list[dict[str, Any]]] = {}
+        baseline_time = _time(baseline_boundary)
+        settlement_available = baseline_time is not None
+        for row in rows:
+            if row.get("status") != "SETTLED":
+                settlement_rejections["not_settled"] += 1
+                continue
+            if row.get("result") not in BINARY_DECIDED_RESULTS:
+                settlement_rejections["not_binary_decided"] += 1
+                continue
+            marker = row.get("rollover_provenance")
+            if not (
+                isinstance(marker, dict)
+                and marker.get("schema_version") == 1
+                and marker.get("system") == system
+                and marker.get("condition_signature") == signature
+                and marker.get("native_pre_kickoff_t5") is True
+                and row.get("stage") == DECISION_STAGE
+                and row.get("first_native_pre_kickoff_t5") is True
+                and not row.get("post_hoc_backfill")
+                and not row.get("exclude_from_simulation")
+                and isinstance(marker.get("fixture_market_hash"), str)
+                and len(marker["fixture_market_hash"]) == 64
+                and _time(marker.get("stage_at")) is not None
+            ):
+                settlement_rejections["missing_or_invalid_provenance"] += 1
+                continue
+            if baseline_time is None or not _strictly_after(
+                marker.get("stage_at"), baseline_boundary,
+            ):
+                settlement_rejections["before_snapshot_boundary"] += 1
+                continue
+            settlement_candidates.setdefault(
+                str(marker["fixture_market_hash"]), [],
+            ).append(row)
+        settled_valid = []
+        for grouped in settlement_candidates.values():
+            if len(grouped) != 1:
+                settlement_rejections[
+                    "duplicate_or_conflicting_fixture_market"
+                ] += len(grouped)
+                continue
+            settled_valid.append(grouped[0])
+
+        pending = frozen.get("pending_rollover_progress")
+        progress: dict[str, Any]
+        try:
+            progress_count = int(pending.get("eligible_decided"))
+            progress_required = int(pending.get("required"))
+            progress_display = str(pending.get("display") or "")
+            progress_valid = (
+                isinstance(pending, dict)
+                and progress_count >= 0
+                and progress_required == ROLLOVER_BATCH_SIZE
+                and progress_display == f"{progress_count}/{progress_required}"
+            )
+        except (AttributeError, TypeError, ValueError):
+            progress_count = 0
+            progress_required = ROLLOVER_BATCH_SIZE
+            progress_display = ""
+            progress_valid = False
+        if progress_valid:
+            progress = {
+                "available": True,
+                "availability": "available",
+                "count": progress_count,
+                "required": progress_required,
+                "display": progress_display,
+                "eligible_hits": pending.get("eligible_hits"),
+                "blocked_reason": pending.get("blocked_reason"),
+                "source": "persisted_pending_rollover_progress",
+            }
+        else:
+            progress = {
+                "available": False,
+                "availability": "unavailable",
+                "count": None,
+                "required": ROLLOVER_BATCH_SIZE,
+                "display": None,
+                "reason": "persisted_rollover_progress_unavailable_or_inconsistent",
+            }
+
+        rejection_rows = []
+        for source, counts, definitions in (
+            ("retained_condition_audit", audit_rejections, FUNNEL_AUDIT_REJECTIONS),
+            ("formal_settlement_evidence", settlement_rejections, FUNNEL_SETTLEMENT_REJECTIONS),
+        ):
+            for code, count in counts.items():
+                if count <= 0:
+                    continue
+                category, label = definitions[code]
+                rejection_rows.append({
+                    "category": category,
+                    "code": code,
+                    "label": label,
+                    "count": count,
+                    "source": source,
+                })
+        rejection_rows.sort(key=lambda row: (
+            -int(row["count"]), str(row["category"]), str(row["code"]),
+        ))
+        omitted_rejection_kinds = max(
+            0, len(rejection_rows) - FUNNEL_REJECTION_LIMIT,
+        )
+
+        output.append({
+            "condition_number": frozen.get("condition_number"),
+            "condition_signature": signature,
+            "condition_version": (
+                definition.get("version") if isinstance(definition, dict) else None
+            ),
+            "definition": definition,
+            "frozen_at": frozen.get("frozen_at"),
+            "active_evidence": {
+                key: copy.deepcopy(active.get(key)) for key in (
+                    "version", "evidence_hash", "cumulative_hits",
+                    "cumulative_decided", "activation_boundary_at",
+                )
+            } if active is not None else {
+                "version": None,
+                "unavailable_reason": "active_evidence_version_unavailable",
+            },
+            "stages": {
+                # A condition does not exist on an unmatched native T-5 row.
+                # Assigning those rows to every frozen condition would inflate
+                # the first stage, so absence remains explicit.
+                "eligible_post_activation_t5_observations": copy.deepcopy(unavailable),
+                "exact_condition_matches": {
+                    "available": audit_available,
+                    "availability": "bounded" if audit_available else "unavailable",
+                    "count": len(exact_keys) if audit_available else None,
+                    "scope": "retained_condition_attributed_audit_window",
+                    "retained_audit_entries": len(retained_audit),
+                    "window_limit": audit_limit,
+                    "truncation_possible": len(retained_audit) >= audit_limit,
+                    "reason": None if audit_available else "condition_audit_unavailable",
+                },
+                "recorded_formal_evidence": {
+                    "available": True,
+                    "availability": "available",
+                    "count": len(recorded_ids),
+                    "formal_bets": recorded_bets,
+                    "formal_observations": recorded_observations,
+                    "scope": "persisted_signature_bound_formal_rows",
+                },
+                "settled_valid_evidence": {
+                    "available": settlement_available,
+                    "availability": "available" if settlement_available else "unavailable",
+                    "count": len(settled_valid) if settlement_available else None,
+                    "hits": (
+                        sum(row.get("result") in BINARY_HIT_RESULTS for row in settled_valid)
+                        if settlement_available else None
+                    ),
+                    "scope": "unique_binary_settled_rows_after_initial_evidence_boundary",
+                    "reason": (
+                        None if settlement_available
+                        else "initial_evidence_boundary_unavailable"
+                    ),
+                },
+                "current_rollover_progress": progress,
+            },
+            "rejections": {
+                "bounded": True,
+                "visible_limit": FUNNEL_REJECTION_LIMIT,
+                "audit_window_limit": audit_limit,
+                "audit_truncation_possible": len(retained_audit) >= audit_limit,
+                "items": rejection_rows[:FUNNEL_REJECTION_LIMIT],
+                "omitted_reason_kinds": omitted_rejection_kinds,
+            },
+        })
+    return {
+        "schema_version": 1,
+        "read_only": True,
+        "system": system,
+        "condition_count": len(output),
+        "audit_window_limit": audit_limit,
+        "conditions": output,
+    }
 
 
 def project_dashboard_research_matches(
