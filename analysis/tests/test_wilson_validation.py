@@ -797,6 +797,69 @@ class WilsonBatchRolloverTest(unittest.TestCase):
         self.assertNotIn("fixture_market_hash", serialized)
         self.assertNotIn("rollover_provenance", serialized)
 
+    def test_pending_batch_projects_exact_thirteen_rows_and_nine_hits_for_both_systems(self):
+        for system in ("footbreak", "crown"):
+            ledger = {"bets": []}
+            for index in range(1, 14):
+                self._settled(
+                    ledger, index, system=system,
+                    result="Won" if index <= 9 else "Lost",
+                )
+            recompute_namespace(ledger, system)
+            frozen, _active = self._active(ledger)
+            projected_candidate = (
+                candidate(system=system)
+                if system == "footbreak"
+                else copy.deepcopy(frozen["definition"])
+            )
+            if system == "crown":
+                projected_candidate["key"] = copy.deepcopy(
+                    projected_candidate.pop("miner_key"),
+                )
+                projected = project_frozen_ranking_evidence(
+                    ledger, system, [projected_candidate],
+                )
+            else:
+                projected = project_granular_ranking_evidence(
+                    ledger, system, [projected_candidate],
+                    now="2026-08-22T00:00:00+08:00",
+                )
+
+            detail = projected[0]["pending_rollover_evidence"]
+            self.assertTrue(detail["complete"])
+            self.assertEqual(detail["expected_decided"], 13)
+            self.assertEqual(detail["expected_hits"], 9)
+            self.assertEqual(detail["required"], 20)
+            self.assertEqual(len(detail["rows"]), 13)
+            self.assertEqual(sum(row["hit"] for row in detail["rows"]), 9)
+            self.assertEqual(detail["rows"][0]["home"], "主")
+            self.assertEqual(detail["rows"][0]["away"], "客")
+            serialized = json.dumps(detail, ensure_ascii=False)
+            self.assertNotIn("fixture-", serialized)
+            self.assertNotIn("fixture_market_hash", serialized)
+            self.assertNotIn("rollover_provenance", serialized)
+
+    def test_pending_batch_detail_fails_closed_when_summary_does_not_match_rows(self):
+        ledger = {"bets": []}
+        for index in range(1, 14):
+            self._settled(
+                ledger, index, result="Won" if index <= 9 else "Lost",
+            )
+        recompute_namespace(ledger, "footbreak")
+        frozen, _active = self._active(ledger)
+        frozen["pending_rollover_progress"]["eligible_hits"] = 10
+
+        projected = project_granular_ranking_evidence(
+            ledger, "footbreak", [candidate()],
+            now="2026-08-22T00:00:00+08:00",
+        )
+        detail = projected[0]["pending_rollover_evidence"]
+        self.assertFalse(detail["complete"])
+        self.assertEqual(detail["rows"], [])
+        self.assertEqual(
+            detail["unavailable_reason"], "pending_row_identity_mismatch",
+        )
+
     def test_crown_read_only_projection_includes_batch_rows_without_mutating_ledger(self):
         ledger = {"bets": []}
         for index in range(1, 21):

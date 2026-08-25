@@ -1004,7 +1004,112 @@ def project_granular_ranking_evidence(
             str(card.get("condition_signature") or ""),
             card.get("last_merged_batch"),
         )
+        card["pending_rollover_evidence"] = _project_pending_rollover_rows(
+            ledger,
+            system,
+            str(card.get("condition_signature") or ""),
+            card.get("active_evidence"),
+            card.get("pending_progress"),
+        )
     return projected
+
+
+def _dashboard_evidence_row(row: dict[str, Any]) -> dict[str, Any]:
+    """Return only the safe, user-facing fields for one evidence observation."""
+    return {
+        "stage": row.get("stage"),
+        "league": row.get("league"),
+        "home": row.get("home"),
+        "away": row.get("away"),
+        "kickoff": row.get("kickoff"),
+        "market": row.get("market") or row.get("code"),
+        "market_label": row.get("market_label"),
+        "selected_role": row.get("selected_role"),
+        "selected_side": row.get("selected_side") or row.get("side"),
+        "selected_line": row.get("selected_line", row.get("line")),
+        "odds": row.get("odds"),
+        "result": row.get("result"),
+        "settled_at": row.get("settled_at"),
+        "hit": row.get("result") in BINARY_HIT_RESULTS,
+    }
+
+
+def _project_pending_rollover_rows(
+    ledger: dict[str, Any], system: str, signature: str,
+    active: Any, pending: Any,
+) -> dict[str, Any] | None:
+    """Resolve the current not-yet-merged cohort to safe dashboard rows.
+
+    The authoritative pending counter is persisted by ``_rollover_condition``.
+    This read-only projection independently rebuilds the same eligible cohort
+    and exposes it only when row count and hit count exactly match that counter.
+    """
+    if not isinstance(active, dict) or not isinstance(pending, dict):
+        return None
+    try:
+        expected_decided = int(pending.get("eligible_decided") or 0)
+        expected_hits = int(pending.get("eligible_hits") or 0)
+        required = int(pending.get("required") or ROLLOVER_BATCH_SIZE)
+    except (TypeError, ValueError):
+        return {
+            "expected_decided": 0, "expected_hits": 0,
+            "required": ROLLOVER_BATCH_SIZE, "rows": [], "complete": False,
+            "unavailable_reason": "malformed_pending_summary",
+        }
+    if (
+        expected_decided < 0
+        or expected_hits < 0
+        or expected_hits > expected_decided
+        or required <= 0
+    ):
+        return {
+            "expected_decided": expected_decided,
+            "expected_hits": expected_hits,
+            "required": required,
+            "rows": [],
+            "complete": False,
+            "unavailable_reason": "malformed_pending_summary",
+        }
+
+    namespace = ledger.get(NAMESPACE)
+    observations = (
+        namespace.get("observations") or []
+        if isinstance(namespace, dict) and namespace.get("system") == system else []
+    )
+    candidates = [
+        row for row in (ledger.get("bets") or [])
+        if isinstance(row, dict)
+        and row.get("portfolio") == portfolio_name(system)
+        and row.get("strategy") == STRATEGY
+    ] + [
+        row for row in observations
+        if isinstance(row, dict)
+        and row.get("portfolio") == f"{system}_wilson_observations"
+        and row.get("strategy") == STRATEGY
+        and row.get("formal_bet") is False
+    ]
+    eligible, _excluded = _eligible_rollover_rows(
+        candidates, system, signature, active,
+    )
+    rows = [_dashboard_evidence_row(item["row"]) for item in eligible]
+    actual_hits = sum(bool(row["hit"]) for row in rows)
+    if len(rows) != expected_decided or actual_hits != expected_hits:
+        return {
+            "expected_decided": expected_decided,
+            "expected_hits": expected_hits,
+            "required": required,
+            "rows": [],
+            "complete": False,
+            "unavailable_reason": "pending_row_identity_mismatch",
+        }
+    return {
+        "expected_decided": expected_decided,
+        "expected_hits": expected_hits,
+        "required": required,
+        "rows": rows,
+        "complete": True,
+        "unavailable_reason": None,
+    }
 
 
 def _project_last_merged_batch_rows(
@@ -1091,21 +1196,7 @@ def _project_last_merged_batch_rows(
     rows: list[dict[str, Any]] = []
     for value in hashes:
         row = matched[value][0]
-        rows.append({
-            "league": row.get("league"),
-            "home": row.get("home"),
-            "away": row.get("away"),
-            "kickoff": row.get("kickoff"),
-            "market": row.get("market") or row.get("code"),
-            "market_label": row.get("market_label"),
-            "selected_role": row.get("selected_role"),
-            "selected_side": row.get("selected_side") or row.get("side"),
-            "selected_line": row.get("selected_line", row.get("line")),
-            "odds": row.get("odds"),
-            "result": row.get("result"),
-            "settled_at": row.get("settled_at"),
-            "hit": row.get("result") in BINARY_HIT_RESULTS,
-        })
+        rows.append(_dashboard_evidence_row(row))
     if sum(bool(row["hit"]) for row in rows) != expected_hits:
         return {
             "version": version, "expected_decided": expected_decided,
@@ -1215,6 +1306,13 @@ def project_frozen_ranking_evidence(
             system,
             str(card.get("condition_signature") or ""),
             card.get("last_merged_batch"),
+        )
+        card["pending_rollover_evidence"] = _project_pending_rollover_rows(
+            ledger,
+            system,
+            str(card.get("condition_signature") or ""),
+            card.get("active_evidence"),
+            card.get("pending_progress"),
         )
     return projected
 

@@ -1476,7 +1476,7 @@ function evidenceBatchDetails(item) {
         <span class="evidence-batch-index">${index + 1}</span>
         <span class="evidence-batch-match">
           <b>${esc(row.home || '—')} <span>vs</span> ${esc(row.away || '—')}</b>
-          <small>${esc(row.kickoff ? hkStamp(row.kickoff) : '時間未提供')} · ${esc(leagueDisplay(row.league || '—'))}</small>
+          <small>${row.stage ? `${esc(publicText(row.stage))} · ` : ''}${esc(row.kickoff ? hkStamp(row.kickoff) : '時間未提供')} · ${esc(leagueDisplay(row.league || '—'))}</small>
         </span>
         <span class="evidence-batch-market">
           <b>${esc(market)}${selection ? ` · ${esc(selection)}` : ''}</b>
@@ -1494,6 +1494,57 @@ function evidenceBatchDetails(item) {
       <span class="evidence-batch-summary">${hits} 命中 · ${misses} 未中 <i aria-hidden="true">＋</i></span>
     </summary>
     <div class="evidence-batch-panel" data-testid="evidence-batch-list-${testKey}">
+      ${complete ? `<ol>${rows}</ol>` : rows}
+    </div>
+  </details>`;
+}
+
+function pendingEvidenceDetails(item, progress, pendingHitText) {
+  const detail = item.pending_rollover_evidence || {};
+  const conditionNumber = Number(item.condition_number);
+  const testKey = Number.isInteger(conditionNumber) ? conditionNumber : 'unknown';
+  const decided = Number(detail.expected_decided || 0);
+  const hits = Number(detail.expected_hits || 0);
+  const required = Number(detail.required || progress.required || 20);
+  const display = progress.display || `${decided}/${required}`;
+  if (decided <= 0) {
+    return `<small>新前瞻待合併 ${esc(String(display))} · ${esc(pendingHitText)}</small>`;
+  }
+  const complete = detail.complete === true
+    && Array.isArray(detail.rows)
+    && detail.rows.length === decided;
+  const rows = complete
+    ? detail.rows.map((row, index) => {
+      const line = numeric(row.selected_line);
+      const odds = numeric(row.odds);
+      const selection = [
+        publicText(row.selected_role || row.selected_side || ''),
+        line == null ? '' : historyQuarterLine(line),
+      ].filter(Boolean).join(' ');
+      const market = publicText(row.market_label || MKT[row.market] || row.market || '—');
+      const outcome = row.hit === true ? '命中' : '未中';
+      return `<li class="evidence-batch-row" data-testid="pending-evidence-row-${testKey}-${index + 1}">
+        <span class="evidence-batch-index">${index + 1}</span>
+        <span class="evidence-batch-match">
+          <b>${esc(row.home || '—')} <span>vs</span> ${esc(row.away || '—')}</b>
+          <small>${row.stage ? `${esc(publicText(row.stage))} · ` : ''}${esc(row.kickoff ? hkStamp(row.kickoff) : '時間未提供')} · ${esc(leagueDisplay(row.league || '—'))}</small>
+        </span>
+        <span class="evidence-batch-market">
+          <b>${esc(market)}${selection ? ` · ${esc(selection)}` : ''}</b>
+          <small>${odds != null && odds > 1 ? `賠率 ${odds.toFixed(2)}` : '賠率未提供'}</small>
+        </span>
+        <span class="evidence-batch-result ${row.hit === true ? 'is-hit' : 'is-miss'}">${outcome}</span>
+      </li>`;
+    }).join('')
+    : `<p class="evidence-batch-unavailable" data-testid="pending-evidence-unavailable-${testKey}">
+        待合併計數未能逐場精確對回目前批次。為免撈錯條件或版本，暫不顯示明細。
+      </p>`;
+  return `<details class="evidence-batch pending-evidence-batch" data-testid="pending-evidence-${testKey}">
+    <summary data-testid="pending-evidence-toggle-${testKey}">
+      <span>新前瞻待合併 ${esc(String(display))}</span>
+      <span class="evidence-batch-summary">${hits}/${decided} 命中（${pc(hits / decided, 1)}） <i aria-hidden="true">＋</i></span>
+    </summary>
+    <div class="evidence-batch-panel" data-testid="pending-evidence-list-${testKey}">
       ${complete ? `<ol>${rows}</ol>` : rows}
     </div>
   </details>`;
@@ -1541,7 +1592,7 @@ function historyConsensusCards(stats) {
       ${hasFrozenCondition
         ? `<small>活躍證據 v${active.version || '—'} · ${batchText}</small>
       ${evidenceBatchDetails(item)}
-      <small>新前瞻待合併 ${esc(String(pending))} · ${esc(pendingHitText)}</small>
+      ${pendingEvidenceDetails(item, progress, pendingHitText)}
       ${forecastText}
       <small>歷史賠率層 ${esc(item.odds_tier || '—')} · 只使用活躍版本作日後 T-5 Wilson 閘門</small>`
         : '<small>研究卡未有凍結 Wilson 身份；不顯示前瞻累積，亦不會成為 Telegram 或模擬投注依據。</small>'}

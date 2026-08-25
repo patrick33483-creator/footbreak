@@ -239,6 +239,26 @@ class PredictionHistoryUiTests(unittest.TestCase):
                 self.assertIn("@media (max-width: 900px)", css)
                 self.assertIn(".evidence-batch-row { grid-template-columns: 22px minmax(0, 1fr) auto; }", css)
 
+    def test_both_pending_batches_expand_to_exact_match_rows(self) -> None:
+        for dashboard in ("hkjc-dashboard", "crown/dashboard"):
+            app = (ROOT / dashboard / "app.js").read_text(encoding="utf-8")
+            helper = app[
+                app.index("function pendingEvidenceDetails"):
+                app.index("function historyConsensusCards")
+            ]
+
+            with self.subTest(dashboard=dashboard):
+                self.assertIn("item.pending_rollover_evidence", helper)
+                self.assertIn('<details class="evidence-batch pending-evidence-batch"', helper)
+                self.assertNotIn("<details open", helper)
+                self.assertIn('data-testid="pending-evidence-toggle-', helper)
+                self.assertIn('data-testid="pending-evidence-row-', helper)
+                self.assertIn("新前瞻待合併 ${esc(String(display))}", helper)
+                self.assertIn("${hits}/${decided} 命中（${pc(hits / decided, 1)}）", helper)
+                self.assertIn("publicText(row.stage)", helper)
+                self.assertIn("為免撈錯條件或版本，暫不顯示明細", helper)
+                self.assertIn("${pendingEvidenceDetails(item, progress, pendingHitText)}", app)
+
     def test_crown_dashboard_renders_stage_completeness_monitor(self) -> None:
         root = ROOT / "crown" / "dashboard"
         app = (root / "app.js").read_text(encoding="utf-8")
