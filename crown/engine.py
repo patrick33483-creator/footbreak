@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from multiprocessing.connection import wait as wait_for_connections
 from typing import Any, Callable
 
-from .common import HKT, iso_hkt, parse_time
+from .common import HKT, iso_hkt, parse_time, read_json
 from .config import Settings
 from .hkjc import event_from_match, fetch_matches, flatten_odds
 from .ledger import (
@@ -39,7 +39,7 @@ from .matching import (
 from .pinnapi import PinnapiClient
 from .period import in_current_period, in_future_round_update_window
 from .state import (
-    load_ledger, load_predictions, merge_predictions, save_ledger, save_predictions, state_lock,
+    load_ledger, load_predictions, merge_predictions, paths, save_ledger, save_predictions, state_lock,
     schedule_footbreak_execution_evidence_projection,
 )
 from .titan import TitanClient
@@ -1944,6 +1944,12 @@ def _bounded_optional_save(
     """Hard-bound an atomic optional save in a killable forked process."""
     if budget <= 0:
         return False
+    started = time.monotonic()
+    deadline = started + budget
+    # Reserve part of the caller's budget for TERM/KILL/reap rather than
+    # adding a fixed cleanup delay after the advertised timeout.
+    cleanup_reserve = min(0.02, max(0.005, budget * 0.25))
+    work_deadline = max(started, deadline - cleanup_reserve)
     context = multiprocessing.get_context("fork")
     receiver, sender = context.Pipe(duplex=False)
     process = context.Process(
@@ -1951,15 +1957,35 @@ def _bounded_optional_save(
     )
     process.start()
     sender.close()
-    process.join(budget)
+    process.join(max(0.0, work_deadline - time.monotonic()))
     if process.is_alive():
         process.terminate()
-        process.join(0.1)
+        term_remaining = max(0.0, deadline - time.monotonic())
+        process.join(min(term_remaining, cleanup_reserve / 2))
+        if process.is_alive():
+            process.kill()
+            process.join(max(0.0, deadline - time.monotonic()))
+        # SIGKILL cannot be ignored. Always reap before returning/releasing the
+        # parent's state lock, even if scheduler latency exhausts the budget.
+        if process.is_alive():
+            process.join()
         receiver.close()
         return False
-    success = bool(receiver.recv()) if receiver.poll() else False
+    acknowledged = False
+    try:
+        acknowledged = bool(receiver.recv()) if receiver.poll() else False
+    except (EOFError, BrokenPipeError, OSError):
+        acknowledged = False
     receiver.close()
-    return success and process.exitcode == 0
+    if acknowledged and process.exitcode == 0:
+        return True
+    # Resolve save-before-ack child death while the caller still owns the CAS
+    # lock. Exact durable equality means commit succeeded and emitted IDs may
+    # be returned once; base/other state remains fail-closed and retryable.
+    try:
+        return read_json(paths(config)["ledger"], None) == ledger
+    except Exception:
+        return False
 
 
 def _drain_pending_formal_admissions(

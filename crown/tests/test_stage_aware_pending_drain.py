@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import time
 import copy
+import os
+import signal
+import multiprocessing
 import unittest
 from contextlib import contextmanager
 from dataclasses import replace
@@ -13,6 +16,7 @@ from unittest.mock import patch
 from crown import engine
 from crown.common import HKT
 from crown.config import settings
+from crown.state import load_ledger
 
 
 class StageAwarePendingDrainTests(unittest.TestCase):
@@ -165,6 +169,56 @@ class StageAwarePendingDrainTests(unittest.TestCase):
         self.assertEqual(emitted, [])
         self.assertLess(elapsed, 0.30)
         self.assertNotIn("ledger", saved)
+
+    def test_sigterm_resistant_save_is_killed_and_reaped_within_budget(self):
+        with TemporaryDirectory() as directory:
+            marker = Path(directory) / "late-write"
+            config = replace(settings(), state_dir=Path(directory))
+            def stubborn(_config, _value):
+                signal.signal(signal.SIGTERM, signal.SIG_IGN)
+                time.sleep(0.25)
+                marker.write_text("late", encoding="utf-8")
+            started = time.monotonic()
+            with patch("crown.engine.save_ledger", side_effect=stubborn):
+                success = engine._bounded_optional_save(
+                    config, {"late": True}, budget=0.04,
+                )
+            elapsed = time.monotonic() - started
+            children_on_return = [
+                child.pid for child in multiprocessing.active_children()
+            ]
+            time.sleep(0.30)
+            late_exists = marker.exists()
+        self.assertFalse(success)
+        self.assertLess(elapsed, 0.08)
+        self.assertEqual(children_on_return, [])
+        self.assertFalse(late_exists)
+
+    def test_save_before_ack_exit_is_verified_from_durable_ledger(self):
+        with TemporaryDirectory() as directory:
+            config = replace(settings(), state_dir=Path(directory))
+            intended = {
+                "bets": [{"bet_id": "durable-once"}],
+                "watch": {"m": {"stages": [{
+                    "stage": "T-5", "formal_admission_pending": False,
+                    "formal_admission_status": "COMPLETED",
+                }]}},
+                "log": [],
+            }
+            def save_then_exit(child_config, value, _sender):
+                engine.save_ledger(child_config, value)
+                os._exit(0)
+            with patch(
+                "crown.engine._optional_save_worker",
+                side_effect=save_then_exit,
+            ):
+                success = engine._bounded_optional_save(
+                    config, intended, budget=1.0,
+                )
+            durable = load_ledger(config)
+        self.assertTrue(success)
+        self.assertEqual(durable["bets"], intended["bets"])
+        self.assertEqual(durable["watch"], intended["watch"])
 
 
 @contextmanager
