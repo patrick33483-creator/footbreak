@@ -247,7 +247,11 @@ jobs:
             'sudo /opt/footbreak/.venv/bin/python3 -' <<'PY'
           import json
           import math
+          import sys
           from pathlib import Path
+
+          sys.path.insert(0, "/opt/footbreak")
+          from analysis.wilson_validation import _eligible_rollover_rows
 
           Z = 1.959963984540054
           EDGE = 0.03
@@ -279,6 +283,7 @@ jobs:
               "/var/lib/footbreak/crown/ledger.json"
           ).read_text(encoding="utf-8"))
           namespace = ledger.get("wilson_validation") or {}
+          bets = ledger.get("bets") or []
           rows = []
           for signature, condition in (namespace.get("conditions") or {}).items():
               if not isinstance(condition, dict):
@@ -292,6 +297,11 @@ jobs:
               definition = condition.get("definition") or {}
               pending = condition.get("pending_rollover_progress") or {}
               raw_odds = minimum_odds(hits, decided)
+              eligible, _ = _eligible_rollover_rows(
+                  bets, "crown", signature, active,
+              )
+              pending_hits = sum(int(row["hit"]) for row in eligible)
+              next20 = needed_hits(hits, decided, 20)
               rows.append({
                   "condition_number": condition.get("condition_number"),
                   "label": (condition.get("historical_evidence") or {}).get("label"),
@@ -303,7 +313,14 @@ jobs:
                   "minimum_odds_raw": round(raw_odds, 6),
                   "minimum_odds_display": round(raw_odds, 2),
                   "pending_progress": pending,
-                  "needed_hits_next_20": needed_hits(hits, decided, 20),
+                  "pending_hits": pending_hits,
+                  "pending_decided_verified": len(eligible),
+                  "needed_hits_next_20": next20,
+                  "remaining_hits_needed_in_current_batch": (
+                      max(0, next20 - pending_hits)
+                      if next20 is not None else None
+                  ),
+                  "remaining_decisions_in_current_batch": 20 - len(eligible),
                   "needed_hits_next_40": needed_hits(hits, decided, 40),
                   "needed_hits_next_60": needed_hits(hits, decided, 60),
                   "signature": signature,
