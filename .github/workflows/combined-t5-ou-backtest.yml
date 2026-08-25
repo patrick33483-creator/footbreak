@@ -184,8 +184,10 @@ jobs:
 
           model_rows = []
           diagnostics = collections.Counter()
+          payload_key_counts = collections.Counter()
           for row in fb.execute(fb_sql):
               payload = json.loads(row["payload_json"])
+              payload_key_counts.update(payload.keys())
               metrics = json.loads(row["metrics_json"])
               prediction = prediction_for(payload, row["target"])
               if prediction is None:
@@ -207,8 +209,16 @@ jobs:
                   "fixture_id": str(row["fixture_id"]),
                   "ids": identity_values(payload, row["fixture_id"]),
                   "kickoff": kickoff,
-                  "home": norm_name(payload.get("home_en") or payload.get("home")),
-                  "away": norm_name(payload.get("away_en") or payload.get("away")),
+                  "home": norm_name(
+                      payload.get("home_en") or payload.get("home")
+                      or (payload.get("match") or {}).get("home_en")
+                      or (payload.get("match") or {}).get("home")
+                  ),
+                  "away": norm_name(
+                      payload.get("away_en") or payload.get("away")
+                      or (payload.get("match") or {}).get("away_en")
+                      or (payload.get("match") or {}).get("away")
+                  ),
                   "line": line,
                   "side": side,
                   "probability": probability,
@@ -284,6 +294,12 @@ jobs:
                           candidates.append(match_id)
               if len(candidates) == 1:
                   return candidates[0], "teams_time"
+              time_only = [
+                  match_id for match_id, match in radar_matches.items()
+                  if abs((match["kickoff"] - model["kickoff"]).total_seconds()) <= 90
+              ]
+              if len(time_only) == 1:
+                  return time_only[0], "unique_kickoff"
               return None, "ambiguous" if candidates or exact else "unmatched"
 
           mapped = []
@@ -478,7 +494,23 @@ jobs:
               "coverage": {
                   "model_rows": len(model_rows),
                   "model_rows_by_system": dict(collections.Counter(r["system"] for r in model_rows)),
+                  "model_rows_with_both_team_names": sum(
+                      1 for row in model_rows if row["home"] and row["away"]
+                  ),
+                  "model_kickoff_range": [
+                      min((row["kickoff"] for row in model_rows), default=None).isoformat()
+                      if model_rows else None,
+                      max((row["kickoff"] for row in model_rows), default=None).isoformat()
+                      if model_rows else None,
+                  ],
+                  "common_model_payload_keys": payload_key_counts.most_common(20),
                   "radar_matches_with_t5_ou_rows": len(radar_matches),
+                  "radar_kickoff_range": [
+                      min((row["kickoff"] for row in radar_matches.values()), default=None).isoformat()
+                      if radar_matches else None,
+                      max((row["kickoff"] for row in radar_matches.values()), default=None).isoformat()
+                      if radar_matches else None,
+                  ],
                   "mapped_model_rows": len(mapped),
                   "join_methods": dict(join_methods),
                   "diagnostics": dict(diagnostics),
