@@ -117,4 +117,84 @@ jobs:
               echo "reverse_t5_bridge_worker_triggered=completed"
             fi
           fi
+
+          CROWN_STATE_DIR="$state_dir" "$python" - <<'PY'
+          import json
+          from collections import Counter
+          from datetime import datetime
+          from pathlib import Path
+
+          from crown.common import HKT, parse_time, read_json
+
+          state_dir = Path("/var/lib/footbreak/crown")
+          ledger = read_json(state_dir / "ledger.json", {})
+          namespace = (
+              ledger.get("crown_reverse_t5_bridge") or {}
+              if isinstance(ledger, dict) else {}
+          )
+          jobs = [
+              row for row in namespace.get("jobs") or []
+              if isinstance(row, dict)
+          ]
+          marker = read_json(state_dir / "reverse-t5-bridge-enabled.json", {})
+          enabled_at = (
+              parse_time(marker.get("enabled_at"))
+              if isinstance(marker, dict) else None
+          )
+          post_enable = [
+              row for row in jobs
+              if enabled_at is not None
+              and (parse_time(row.get("stage_at")) or datetime.min.replace(tzinfo=HKT))
+              >= enabled_at
+          ]
+          states = Counter(str(row.get("state") or "UNKNOWN") for row in jobs)
+          post_enable_states = Counter(
+              str(row.get("state") or "UNKNOWN") for row in post_enable
+          )
+          reasons = Counter(
+              str((row.get("attempts") or [{}])[-1].get("reason") or "none")
+              for row in post_enable
+              if row.get("attempts")
+          )
+          telemetry = read_json(
+              state_dir / "reverse-t5-bridge-health.json", {},
+          )
+          completed_at = (
+              parse_time(telemetry.get("last_completed"))
+              if isinstance(telemetry, dict) else None
+          )
+          completion_age = (
+              max(0.0, (datetime.now(HKT) - completed_at).total_seconds())
+              if completed_at is not None else None
+          )
+          summary = {
+              "reverse_t5_safe_evidence": True,
+              "jobs_total": len(jobs),
+              "job_states": dict(sorted(states.items())),
+              "post_enable_jobs": len(post_enable),
+              "post_enable_states": dict(sorted(post_enable_states.items())),
+              "post_enable_terminal_reasons": dict(sorted(reasons.items())),
+              "worker_last_status": (
+                  telemetry.get("last_status")
+                  if isinstance(telemetry, dict) else None
+              ),
+              "worker_last_claimed": (
+                  telemetry.get("claimed")
+                  if isinstance(telemetry, dict) else None
+              ),
+              "worker_last_completed": (
+                  telemetry.get("completed")
+                  if isinstance(telemetry, dict) else None
+              ),
+              "worker_completion_age_seconds": (
+                  round(completion_age, 1)
+                  if completion_age is not None else None
+              ),
+              "worker_consecutive_timeouts": (
+                  telemetry.get("consecutive_timeouts")
+                  if isinstance(telemetry, dict) else None
+              ),
+          }
+          print(json.dumps(summary, ensure_ascii=True, sort_keys=True))
+          PY
           REMOTE
