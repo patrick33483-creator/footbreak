@@ -5,6 +5,7 @@
 通知流程不受此模組影響。
 """
 import datetime as dt
+import hashlib
 import html
 import json
 import math
@@ -508,6 +509,159 @@ _CROWN_COMPARISON_REASONS = {
 }
 
 
+def _public_crown_reason(reason):
+    """Translate reviewed reasons and never expose internal machine tokens."""
+    text = str(reason or "").strip()
+    if text in _CROWN_COMPARISON_REASONS:
+        return _CROWN_COMPARISON_REASONS[text]
+    # Free-form provider text is never trusted.  Permit only exact reviewed
+    # public phrases; attached ASCII identifiers otherwise bypass Unicode
+    # word-boundary checks (for example 資料crown_internal_error).
+    reviewed = set(_CROWN_COMPARISON_REASONS.values()) | {"系統未取得原生T-5"}
+    if text in reviewed:
+        return text
+    return "未能確認"
+
+
+def _canonical_bilateral_row(row):
+    return json.dumps(
+        {key: value for key, value in row.items() if key != "provenance_hash"},
+        ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str,
+    )
+
+
+def _bilateral_line_number(value):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _validated_pending_bilateral_notices(namespace):
+    """Return only canonical, renderable one-decision/one-outbox entries."""
+    from analysis.bilateral_decision import decision_id
+
+    if not isinstance(namespace, dict):
+        return {}
+    decisions_raw = namespace.get("decisions")
+    outbox_raw = namespace.get("decision_outbox")
+    if not isinstance(decisions_raw, list) or not isinstance(outbox_raw, list):
+        return {}
+    decisions: dict[str, list[dict]] = {}
+    outboxes: dict[str, list[dict]] = {}
+    for row in decisions_raw:
+        if isinstance(row, dict):
+            decisions.setdefault(str(row.get("decision_id") or ""), []).append(row)
+    for row in outbox_raw:
+        if isinstance(row, dict):
+            outboxes.setdefault(str(row.get("decision_id") or ""), []).append(row)
+    valid = {}
+    for ident, candidates in decisions.items():
+        notices = outboxes.get(ident) or []
+        if not ident or len(candidates) != 1 or len(notices) != 1:
+            continue
+        row, outbox = candidates[0], notices[0]
+        line = _bilateral_line_number(row.get("line"))
+        signature = str(row.get("condition_signature") or "")
+        evidence_version = row.get("evidence_version")
+        if (
+            line is None or not signature or evidence_version in (None, "")
+            or ident != decision_id(
+                system=str(row.get("system") or ""),
+                fixture=str(row.get("fixture") or ""),
+                market=str(row.get("market") or "").upper(),
+                side=str(row.get("side") or "").upper(),
+                line=line, condition_signature=signature,
+                evidence_version=evidence_version,
+            )
+            or str(row.get("provenance_hash") or "") != hashlib.sha256(
+                _canonical_bilateral_row(row).encode("utf-8")
+            ).hexdigest()
+        ):
+            continue
+        created = _parse_time(row.get("created_at"))
+        outbox_created = _parse_time(outbox.get("created_at"))
+        if (
+            created is None or outbox_created is None or created != outbox_created
+            or str(outbox.get("outbox_id") or "") != f"outbox-{ident}"
+            or outbox.get("notification_required") is not True
+            or str(outbox.get("delivery") or "") != "PENDING"
+        ):
+            continue
+        fields = _bilateral_decision_fields(row)
+        if fields is None or _bilateral_decision_message(row) is None:
+            continue
+        valid[ident] = {"decision": row, "outbox": outbox, "fields": fields}
+    return valid
+
+
+def _native_condition_semantics(bet):
+    arithmetic = bet.get("wilson_admission") if isinstance(bet.get("wilson_admission"), dict) else {}
+    kickoff = _future_kickoff(bet.get("kickoff"))
+    line = _bilateral_line_number(bet.get("line", bet.get("selected_line")))
+    signal = _finite_positive(bet.get("odds"))
+    minimum = _finite_positive(arithmetic.get("minimum_acceptable_odds_raw"))
+    try:
+        number = int(bet.get("condition_number"))
+    except (TypeError, ValueError):
+        return None
+    market_code = str(bet.get("market") or bet.get("code") or "").upper()
+    side_code = str(bet.get("side") or bet.get("selected_side") or "").upper()
+    league = traditional_chinese_league(bet.get("league"))
+    home, away = str(bet.get("home") or "").strip(), str(bet.get("away") or "").strip()
+    if (
+        kickoff is None or line is None or signal is None or minimum is None
+        or market_code not in MARKET_LABELS or not league or not home or not away
+        or side_code not in ({"H", "A"} if market_code == "HDC" else {"H", "L"})
+    ):
+        return None
+    return {
+        "fixture": str(bet.get("match_id") or "").strip(),
+        "kickoff": kickoff, "league": league, "home": home, "away": away,
+        "market_code": market_code, "side_code": side_code, "line": line,
+        "number": number, "signal": signal, "minimum": minimum,
+    }
+
+
+def _matching_renderable_bilateral_notice(namespace, bet):
+    """Return a complete duplicate decision only when every identity gate holds."""
+    from analysis.bilateral_decision import decision_id
+
+    native = _native_condition_semantics(bet)
+    if native is None:
+        return None
+    fixture = native["fixture"]
+    market = native["market_code"]
+    side = native["side_code"]
+    signature = str(bet.get("frozen_condition_signature") or "")
+    evidence_version = bet.get("evidence_version")
+    line = native["line"]
+    if (
+        not fixture or market not in MARKET_LABELS or not side or not signature
+        or evidence_version in (None, "") or line is None
+    ):
+        return None
+    expected_id = decision_id(
+        system="footbreak", fixture=fixture, market=market, side=side,
+        line=line, condition_signature=signature, evidence_version=evidence_version,
+    )
+    entry = _validated_pending_bilateral_notices(namespace).get(expected_id)
+    if not isinstance(entry, dict):
+        return None
+    decision, fields = entry["decision"], entry["fields"]
+    exact_text = all(fields[key] == native[key] for key in (
+        "fixture", "kickoff", "league", "home", "away",
+        "market_code", "side_code", "number",
+    ))
+    exact_numbers = all(abs(fields[key] - native[key]) <= 1e-8 for key in (
+        "line", "signal", "minimum",
+    ))
+    if not exact_text or not exact_numbers:
+        return None
+    return decision
+
+
 def _crown_counterpart(bet):
     """Return one local, exact-only Crown comparison for a Wilson alert.
 
@@ -521,7 +675,7 @@ def _crown_counterpart(bet):
         quote = persisted.get("crown_quote") if isinstance(persisted.get("crown_quote"), dict) else None
         reason = persisted.get("reason")
         if quote is None:
-            return None, f"皇冠對照：未能確認（{_CROWN_COMPARISON_REASONS.get(reason, '未能確認')}）"
+            return None, f"皇冠對照：未能確認（{_public_crown_reason(reason)}）"
         odds = _finite_positive(quote.get("odds"))
         if odds is None:
             return None, "皇冠對照：未能確認（賠率未能確認）"
@@ -558,7 +712,7 @@ def _crown_counterpart(bet):
         # optional local comparison reader is unavailable.
         quote, reason = None, "crown_local_evidence_unavailable"
     if quote is None:
-        return None, f"皇冠對照：未能確認（{_CROWN_COMPARISON_REASONS.get(reason, '未能確認')}）"
+        return None, f"皇冠對照：未能確認（{_public_crown_reason(reason)}）"
     odds = _finite_positive(quote.get("odds"))
     if odds is None:
         return None, "皇冠對照：未能確認（賠率未能確認）"
@@ -649,7 +803,8 @@ def _bilateral_decision_fields(row):
         reason = str(row.get("counterpart_reason") or "").strip()
         if not reason:
             return None
-        counterpart_line = f"皇冠對照：未能確認（{esc(reason)}）"
+        public_reason = _public_crown_reason(reason)
+        counterpart_line = f"皇冠對照：未能確認（{esc(public_reason)}）"
     decisions = {
         "PAPER_SIMULATION": "模擬投注",
         # This is an immutable cross-book decision, not the native Wilson
@@ -673,6 +828,8 @@ def _bilateral_decision_fields(row):
         "away": away,
         "number": number,
         "line": line,
+        "market_code": str(row.get("market") or "").upper(),
+        "side_code": side,
         "market": market,
         "side": side_label,
         "signal": signal,
@@ -726,25 +883,24 @@ def notify_pending_bilateral_decisions(ledger, *, max_attempts=8, max_seconds=No
     del decision_for_bet
     budget = _budget or _NotificationBudget(max_attempts, max_seconds)
     ns = ledger.get("footbreak_crown_execution_test") or {}
-    decisions = {str(row.get("decision_id")): row for row in ns.get("decisions") or []
-                 if isinstance(row, dict)}
+    valid = _validated_pending_bilateral_notices(ns)
     state = load_state()
     sent = set(map(str, state.get("bilateral_decision_alerts") or []))
     order = list(state.get("bilateral_decision_alerts") or [])
     groups = {}
-    for outbox in ns.get("decision_outbox") or []:
-        if not isinstance(outbox, dict) or not outbox.get("notification_required"):
-            continue
-        ident = str(outbox.get("decision_id") or "")
+    for ident, entry in valid.items():
         if not ident or ident in sent:
             continue
-        row = decisions.get(ident)
-        if not isinstance(row, dict):
-            continue
-        # Do not merge across books even if their provider fixture IDs happen
-        # to be equal.  A fixture group is one platform's immutable decision
-        # records from this pending pass.
-        group_key = (str(row.get("system") or ""), str(row.get("fixture") or ""))
+        row, fields = entry["decision"], entry["fields"]
+        # Validate each immutable row before grouping.  One malformed row must
+        # never make an otherwise deliverable fixture group disappear.
+        # Do not merge records whose public fixture identity differs.  This
+        # prevents one corrupted team/kickoff row from blocking valid rows.
+        group_key = (
+            str(row.get("system") or ""), fields["fixture"],
+            fields["kickoff"].isoformat(), fields["league"],
+            fields["home"], fields["away"],
+        )
         groups.setdefault(group_key, []).append((ident, row))
     count = 0
     for _group_key, entries in groups.items():
@@ -802,13 +958,13 @@ def notify_pending_condition_bets(ledger, bet_ids=None, *, max_attempts=8,
         # New bilateral T-5s have a dedicated immutable decision outbox; do
         # not let this legacy formatter re-read or recompute a counterpart.
         try:
-            from analysis.bilateral_decision import decision_for_bet
-            if bet.get("bet_id") and decision_for_bet(
-                ledger.get("footbreak_crown_execution_test") or {}, bet, "footbreak"
-            ):
+            bilateral_ns = ledger.get("footbreak_crown_execution_test") or {}
+            if _matching_renderable_bilateral_notice(bilateral_ns, bet) is not None:
                 continue
         except Exception:
-            continue
+            # Fail open to the native alert.  Optional bilateral corruption or
+            # import failure must never turn a valid Wilson alert into silence.
+            pass
         text = (_condition_bet_message(bet, _condition_prospective(ledger, bet))
                 if bet.get("bet_id") else _condition_observation_message(bet))
         if text is None:

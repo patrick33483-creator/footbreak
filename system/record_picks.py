@@ -440,7 +440,7 @@ def _process_optional_job(ledger, job, *, now, changes):
     if stage in {"首預", "T-30"}:
         field = "first_look" if stage == "首預" else "t30"
         try:
-            prefetch_crown_bridge(watch, stage=stage, now=now)
+            prefetch_crown_bridge(watch, stage=stage, now=now, ledger=ledger)
         except Exception as exc:
             watch.setdefault("counterpart_bridges", {}).setdefault("crown", {})[field] = {
                 "at": now, "status": "UNAVAILABLE",
@@ -450,7 +450,7 @@ def _process_optional_job(ledger, job, *, now, changes):
     if stage != BET_STAGE:
         return
     try:
-        capture_t5_counterparts(watch, now=now)
+        capture_t5_counterparts(watch, now=now, ledger=ledger)
     except Exception as exc:
         watch.setdefault("counterpart_bridges", {}).setdefault("crown", {})["t5"] = {
             "at": now, "markets": {}, "reason": f"crown_sidecar_local_error:{type(exc).__name__}",

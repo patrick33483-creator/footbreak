@@ -36,6 +36,7 @@ HKT = timezone(timedelta(hours=8))
 BRIDGE_KICKOFF_TOLERANCE_SECONDS = 10 * 60
 T30_KICKOFF_REVERIFY_TOLERANCE_SECONDS = 1
 T30_BOOTSTRAP_ORIGIN = "t30_bootstrap_existing_card"
+T30_RECOVERY_ORIGIN = "t30_recovery_after_unresolved_first_look"
 
 # These are reviewed display aliases, not a discovery mechanism.  They are
 # used only to validate a card which already carries the same authoritative
@@ -307,8 +308,158 @@ def _has_native_stage(watch: dict[str, Any], stage: str) -> bool:
     )
 
 
+def _record_hash(value: dict[str, Any]) -> str:
+    return hashlib.sha256(json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str,
+    ).encode("utf-8")).hexdigest()
+
+
+def _valid_unresolved_first_look(
+    watch: dict[str, Any], first: Any, *, native_t30_at: Any = None,
+) -> bool:
+    if not isinstance(first, dict) or first.get("status") != "UNAVAILABLE":
+        return False
+    allowed_reasons = {
+        "crown_local_evidence_too_large",
+        "crown_local_evidence_unavailable",
+        "crown_local_evidence_invalid",
+        "crown_fixture_identity_incomplete",
+        "crown_collector_unavailable",
+        "crown_fixture_not_listed",
+        "crown_fixture_identity_ambiguous",
+        "crown_fixture_kickoff_identity_mismatch",
+        "crown_fixture_team_or_league_identity_mismatch",
+    }
+    fixture = first.get("footbreak_fixture")
+    first_at = _time(first.get("at"))
+    t30_at = _time(native_t30_at)
+    kickoff = _time(watch.get("kickoff"))
+    return (
+        first_at is not None and t30_at is not None and kickoff is not None
+        and first_at < t30_at < kickoff
+        and str(first.get("reason") or "") in allowed_reasons
+        and str(first.get("counterpart_book") or "") == "crown"
+        and str(first.get("hkjc_match_id") or "") == str(watch.get("match_id") or "")
+        and _same_timestamp(
+            first.get("footbreak_kickoff"), watch.get("kickoff"),
+            tolerance_seconds=0,
+        )
+        and isinstance(fixture, dict)
+        and all(str(fixture.get(key) or "") == str(watch.get(key) or "")
+                for key in ("league", "home", "away"))
+    )
+
+
+def _native_t30_proof(
+    ledger: dict[str, Any] | None, watch: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Bind recovery to one manifest-backed snapshot and COMMITTED attempt."""
+    if not isinstance(ledger, dict):
+        return None
+    manifest = watch.get("native_stage_manifest")
+    identity = manifest.get("identity") if isinstance(manifest, dict) else None
+    jobs = manifest.get("jobs") if isinstance(manifest, dict) else None
+    job = jobs.get("T-30") if isinstance(jobs, dict) else None
+    fixture = str(watch.get("match_id") or "")
+    kickoff = _time(watch.get("kickoff"))
+    manifest_kickoff = _time(identity.get("kickoff_at_utc")) if isinstance(identity, dict) else None
+    manifest_top_kickoff = _time(manifest.get("kickoff_at_utc")) if isinstance(manifest, dict) else None
+    manifest_kickoff_hkt = _time(manifest.get("kickoff_at_hkt")) if isinstance(manifest, dict) else None
+    manifest_created = _time(manifest.get("created_at")) if isinstance(manifest, dict) else None
+    due_utc = _time(job.get("due_at_utc")) if isinstance(job, dict) else None
+    due_hkt = _time(job.get("due_at_hkt")) if isinstance(job, dict) else None
+    expected_due = kickoff - timedelta(minutes=30) if kickoff is not None else None
+    if (
+        not fixture or kickoff is None or manifest_kickoff is None
+        or not isinstance(manifest, dict) or manifest.get("schema_version") != 1
+        or str(manifest.get("origin") or "") not in {
+            "first_look", "migration_existing_future_card",
+        }
+        or manifest_created is None or manifest_created >= kickoff
+        or manifest_top_kickoff is None or manifest_kickoff_hkt is None
+        or not _same_timestamp(manifest_kickoff, manifest_top_kickoff, tolerance_seconds=0)
+        or not _same_timestamp(manifest_kickoff, manifest_kickoff_hkt, tolerance_seconds=0)
+        or str(identity.get("hkjc_match_id") or "") != fixture
+        or not _same_timestamp(kickoff, manifest_kickoff, tolerance_seconds=0)
+        or not isinstance(job, dict)
+        or job.get("stage") != "T-30"
+        or due_utc is None or due_hkt is None or expected_due is None
+        or not _same_timestamp(due_utc, due_hkt, tolerance_seconds=0)
+        or not _same_timestamp(due_utc, expected_due, tolerance_seconds=0)
+    ):
+        return None
+    snapshots = [
+        row for row in watch.get("stages") or []
+        if isinstance(row, dict) and row.get("stage") == "T-30"
+    ]
+    if len(snapshots) != 1:
+        return None
+    snapshot = snapshots[0]
+    snapshot_at = _time(snapshot.get("ts"))
+    snapshot_kickoff_hkt = _time(snapshot.get("kickoff_at_hkt"))
+    snapshot_due_utc = _time(snapshot.get("due_at_utc"))
+    snapshot_due_hkt = _time(snapshot.get("due_at_hkt"))
+    snapshot_id = str(snapshot.get("native_snapshot_id") or "")
+    attempt_id = snapshot_id.removeprefix("attempt:") if snapshot_id.startswith("attempt:") else ""
+    if (
+        not attempt_id
+        or snapshot_at is None or snapshot_at < due_utc or snapshot_at >= kickoff
+        or str(snapshot.get("match_id") or "") != fixture
+        or not _same_timestamp(
+            snapshot.get("kickoff_at_utc"), identity.get("kickoff_at_utc"),
+            tolerance_seconds=0,
+        )
+        or snapshot_kickoff_hkt is None
+        or not _same_timestamp(snapshot_kickoff_hkt, kickoff, tolerance_seconds=0)
+        or snapshot_due_utc is None or snapshot_due_hkt is None
+        or not _same_timestamp(snapshot_due_utc, due_utc, tolerance_seconds=0)
+        or not _same_timestamp(snapshot_due_hkt, due_utc, tolerance_seconds=0)
+    ):
+        return None
+    attempt_events = [
+        row for row in ledger.get("native_stage_attempts") or []
+        if isinstance(row, dict)
+        and str(row.get("attempt_id") or "") == attempt_id
+        and row.get("stage") == "T-30"
+        and str(row.get("hkjc_match_id") or "") == fixture
+        and _same_timestamp(
+            row.get("kickoff_at_utc"), identity.get("kickoff_at_utc"),
+            tolerance_seconds=0,
+        )
+        and _same_timestamp(row.get("kickoff_at_hkt"), kickoff, tolerance_seconds=0)
+        and _same_timestamp(row.get("due_at_utc"), due_utc, tolerance_seconds=0)
+        and _same_timestamp(row.get("due_at_hkt"), due_utc, tolerance_seconds=0)
+    ]
+    if (
+        len(attempt_events) != 2
+        or [row.get("status") for row in attempt_events] != ["STARTED", "COMMITTED"]
+    ):
+        return None
+    started_at = _time(attempt_events[0].get("at"))
+    committed_at = _time(attempt_events[1].get("at"))
+    if (
+        started_at is None or committed_at is None
+        or manifest_created > started_at
+        or started_at < due_utc or started_at > snapshot_at
+        or committed_at < snapshot_at or committed_at >= kickoff
+    ):
+        return None
+    proof = {
+        "manifest_identity": copy.deepcopy(identity),
+        "manifest_job": copy.deepcopy(job),
+        "manifest_origin": manifest.get("origin"),
+        "manifest_created_at": manifest.get("created_at"),
+        "snapshot": copy.deepcopy(snapshot),
+        "attempts": copy.deepcopy(attempt_events),
+    }
+    return {
+        "record": proof, "hash": _record_hash(proof),
+        "snapshot_at": snapshot_at,
+    }
+
+
 def _verified_t30_bootstrap(
-    watch: dict[str, Any], t30: dict[str, Any],
+    watch: dict[str, Any], t30: dict[str, Any], ledger: dict[str, Any] | None = None,
 ) -> bool:
     """Validate the narrowly allowed existing-card T-30 bridge.
 
@@ -318,9 +469,26 @@ def _verified_t30_bootstrap(
     bridge hash and validated display context.  It is intentionally not a
     substitute for a normal first-look record on newly created cards.
     """
+    origin = t30.get("origin")
+    first = (((watch.get("counterpart_bridges") or {}).get("crown") or {}).get("first_look"))
+    if origin == T30_BOOTSTRAP_ORIGIN:
+        valid_transition = not isinstance(first, dict)
+    elif origin == T30_RECOVERY_ORIGIN:
+        native_proof = _native_t30_proof(ledger, watch)
+        valid_transition = (
+            isinstance(native_proof, dict)
+            and _valid_unresolved_first_look(
+                watch, first, native_t30_at=native_proof.get("snapshot_at"),
+            )
+            and t30.get("first_look_recorded") is True
+            and t30.get("first_look_hash") == _record_hash(first)
+            and t30.get("native_t30_proof_hash") == native_proof.get("hash")
+        )
+    else:
+        valid_transition = False
     if (
         t30.get("status") != "RESOLVED"
-        or t30.get("origin") != T30_BOOTSTRAP_ORIGIN
+        or not valid_transition
         or str(t30.get("hkjc_match_id") or "") != str(watch.get("match_id") or "")
         or not str(t30.get("crown_match_id") or "").strip()
         or t30.get("identity_confidence") != "authoritative_hkjc_id_unique"
@@ -337,14 +505,26 @@ def _verified_t30_bootstrap(
         crown_kickoff,
     ).encode("utf-8")).hexdigest()
     context = t30.get("identity_context")
+    crown_fixture = t30.get("crown_fixture")
+    context_ok, expected_context = _identity_context(
+        watch, crown_fixture if isinstance(crown_fixture, dict) else {},
+    )
+    expected_delta = abs((crown_kickoff - footbreak_kickoff).total_seconds())
     return (
         t30.get("bridge_id") == expected
         and isinstance(context, dict)
-        and context.get("status") == "VALIDATED"
+        and context_ok
+        and context == expected_context
+        and expected_delta <= BRIDGE_KICKOFF_TOLERANCE_SECONDS
+        and _num(t30.get("kickoff_delta_seconds")) is not None
+        and abs(float(t30["kickoff_delta_seconds"]) - expected_delta) <= 1e-3
     )
 
 
-def prefetch_bridge(watch: dict[str, Any], *, stage: str = "T-30", now: str | None = None) -> dict[str, Any]:
+def prefetch_bridge(
+    watch: dict[str, Any], *, stage: str = "T-30", now: str | None = None,
+    ledger: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Persist first-look identity and T-30 exact-market evidence, locally only.
 
     A T-30 call may bootstrap *only* a card that was durably created before
@@ -355,10 +535,15 @@ def prefetch_bridge(watch: dict[str, Any], *, stage: str = "T-30", now: str | No
     now = now or _iso_now()
     now_time = _time(now)
     kickoff = _time(watch.get("kickoff"))
-    cards, error = _load_local_crown_cards()
     root = watch.setdefault("counterpart_bridges", {}).setdefault(
         "crown", {"schema_version": 3, "counterpart_book": "crown"},
     )
+    persisted_t30 = root.get("t30")
+    if stage == "T-30" and isinstance(persisted_t30, dict):
+        # Every persisted T-30 is immutable historical evidence.  Consumers
+        # validate it fail-closed; a later provider read can never rewrite it.
+        return persisted_t30
+    cards, error = _load_local_crown_cards()
     if kickoff is None or now_time is None:
         value = {"at": now, "status": "UNAVAILABLE", "reason": "crown_fixture_identity_incomplete"}
     elif now_time >= kickoff:
@@ -370,8 +555,21 @@ def prefetch_bridge(watch: dict[str, Any], *, stage: str = "T-30", now: str | No
     if stage == "首預":
         root["first_look"] = value
         return value
-    first = root.get("first_look") if isinstance(root.get("first_look"), dict) else {}
+    original_first = root.get("first_look")
+    first = original_first if isinstance(original_first, dict) else {}
     bootstrap = not isinstance(root.get("first_look"), dict)
+    recovery_candidate = (
+        isinstance(original_first, dict)
+        and original_first.get("status") == "UNAVAILABLE"
+        and value.get("status") == "RESOLVED"
+    )
+    native_proof = _native_t30_proof(ledger, watch) if recovery_candidate else None
+    recovery = (
+        recovery_candidate and isinstance(native_proof, dict)
+        and _valid_unresolved_first_look(
+            watch, original_first, native_t30_at=native_proof.get("snapshot_at"),
+        )
+    )
     if bootstrap and not _has_native_stage(watch, "T-30"):
         # This function is normally called immediately after record_picks has
         # atomically stored a genuine native T-30.  Do not make it usable as a
@@ -390,9 +588,28 @@ def prefetch_bridge(watch: dict[str, Any], *, stage: str = "T-30", now: str | No
             "origin": T30_BOOTSTRAP_ORIGIN,
             "first_look_recorded": False,
         }
+    elif recovery_candidate and not recovery:
+        value = {
+            "at": now, "status": "UNAVAILABLE",
+            "reason": "crown_t30_recovery_native_stage_missing",
+            "origin": T30_RECOVERY_ORIGIN,
+            "first_look_recorded": True,
+            "first_look_hash": _record_hash(original_first),
+        }
+    elif recovery:
+        # Preserve the failed first-look record as historical evidence.  A
+        # genuine native T-30 may recover only through the same authoritative
+        # fixture-id, kickoff, team and league checks used by the legacy
+        # bootstrap path.
+        value = value | {
+            "origin": T30_RECOVERY_ORIGIN,
+            "first_look_recorded": True,
+            "first_look_hash": _record_hash(original_first),
+            "native_t30_proof_hash": native_proof["hash"],
+        }
     # T-30 must re-verify precisely the ID/card chosen at first look.  Never
     # replace a prior bridge with a later fuzzy/name-only candidate.
-    if not bootstrap and value.get("status") == "RESOLVED" and (
+    if not bootstrap and not recovery and value.get("status") == "RESOLVED" and (
         first.get("status") != "RESOLVED"
         or first.get("crown_match_id") != value.get("crown_match_id")
         or first.get("bridge_id") != value.get("bridge_id")
@@ -558,7 +775,7 @@ def _crown_quote_for_exact_fixture(
 
 def _crown_quote_for_verified_bridge(
     watch: dict[str, Any], market: str, side: str, line: float,
-    stage_at: datetime, kickoff: datetime,
+    stage_at: datetime, kickoff: datetime, ledger: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any] | None, str | None]:
     """Use a normal first-look bridge or one verified existing-card bootstrap."""
     bridge = ((watch.get("counterpart_bridges") or {}).get("crown") or {})
@@ -567,21 +784,27 @@ def _crown_quote_for_verified_bridge(
     bootstrap_marked = not isinstance(first, dict) and isinstance(t30, dict) and (
         t30.get("origin") == T30_BOOTSTRAP_ORIGIN
     )
+    recovery_marked = (
+        isinstance(first, dict)
+        and first.get("status") != "RESOLVED"
+        and isinstance(t30, dict)
+        and t30.get("origin") == T30_RECOVERY_ORIGIN
+    )
     # A genuine T-30 bootstrap can itself fail closed (no fixture, ambiguous
     # identity, kickoff mismatch, etc.).  Retain that already-persisted fact
     # at T-5; do not mislabel a valid UNAVAILABLE bootstrap record as a forged
     # bridge.  Only a claimed *resolved* bootstrap needs the extra integrity
     # verification below.
-    if bootstrap_marked and t30.get("status") != "RESOLVED":
+    if (bootstrap_marked or recovery_marked) and t30.get("status") != "RESOLVED":
         return None, str(t30.get("reason") or "crown_t30_bridge_missing_or_unresolved")
-    bootstrap = bootstrap_marked and t30.get("status") == "RESOLVED"
-    if bootstrap and not _verified_t30_bootstrap(watch, t30):
+    transition = (bootstrap_marked or recovery_marked) and t30.get("status") == "RESOLVED"
+    if transition and not _verified_t30_bootstrap(watch, t30, ledger):
         return None, "crown_t30_bootstrap_unverified"
-    if not bootstrap and (not isinstance(first, dict) or first.get("status") != "RESOLVED"):
+    if not transition and (not isinstance(first, dict) or first.get("status") != "RESOLVED"):
         return None, "crown_first_look_bridge_missing_or_unresolved"
     if not isinstance(t30, dict) or t30.get("status") != "RESOLVED":
         return None, "crown_t30_bridge_missing_or_unresolved"
-    if not bootstrap and first.get("crown_match_id") != t30.get("crown_match_id"):
+    if not transition and first.get("crown_match_id") != t30.get("crown_match_id"):
         return None, "crown_t30_bridge_changed"
     mapping = (t30.get("market_mappings") or {}).get(market)
     if not isinstance(mapping, dict) or mapping.get("status") != "AVAILABLE":
@@ -597,7 +820,10 @@ def _crown_quote_for_verified_bridge(
     )
 
 
-def capture_t5_counterparts(watch: dict[str, Any], *, now: str | None = None) -> dict[str, dict[str, Any]]:
+def capture_t5_counterparts(
+    watch: dict[str, Any], *, now: str | None = None,
+    ledger: dict[str, Any] | None = None,
+) -> dict[str, dict[str, Any]]:
     """Persist T-5 comparison evidence independently of formal admission.
 
     It is an execution/presentation artifact only: neither a missing bridge
@@ -640,7 +866,9 @@ def capture_t5_counterparts(watch: dict[str, Any], *, now: str | None = None) ->
         if line is None or not _valid_side(market, side):
             output[market] = {"status": "UNAVAILABLE", "reason": "hkjc_signal_line_or_side_invalid"}
             continue
-        quote, reason = _crown_quote_for_verified_bridge(watch, market, side, line, stage_at, kickoff)
+        quote, reason = _crown_quote_for_verified_bridge(
+            watch, market, side, line, stage_at, kickoff, ledger=ledger,
+        )
         output[market] = {
             "status": "AVAILABLE" if quote else "UNAVAILABLE",
             "reason": reason, "market": market, "side": side, "line": line,
@@ -752,7 +980,7 @@ def evaluate_new_t5(
         if not admissions:
             audit.append({"market": market, "status": "SKIPPED", "reason": reason}); continue
         quote, quote_reason = _crown_quote_for_verified_bridge(
-            watch, market, side, line, stage_at, kickoff,
+            watch, market, side, line, stage_at, kickoff, ledger,
         )
         for admission in admissions:
             signature = str(admission["signature"])
