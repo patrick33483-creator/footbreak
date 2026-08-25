@@ -3842,7 +3842,7 @@ class CrownSafetyTests(unittest.TestCase):
         self.assertIn("nextStageText(m, mm)", app)
         self.assertNotIn("? '○ 唔買' : '○ 等 T-5'", app)
         self.assertIn(
-            "app.js?v=20260820-condition-simulation-dashboard-boot-recovery-v1",
+            "app.js?v=20260825-wilson-pending-hit-rate-forecast-v1",
             index,
         )
 
@@ -5149,7 +5149,7 @@ class CrownSafetyTests(unittest.TestCase):
             index,
         )
         self.assertIn(
-            "app.js?v=20260820-condition-simulation-dashboard-boot-recovery-v1",
+            "app.js?v=20260825-wilson-pending-hit-rate-forecast-v1",
             index,
         )
         self.assertIn("const HISTORY_STAGE_RANK = { '首預': 1, 'T-30': 2, 'T-5': 3 };", app)
