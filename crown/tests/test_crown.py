@@ -3334,6 +3334,83 @@ class CrownSafetyTests(unittest.TestCase):
             self.assertEqual(payload["matches"][1]["stages"][0]["stage"], "首預")
             self.assertEqual(payload["summary"]["crown_matches"], 2)
 
+    def test_dashboard_recovers_current_period_card_from_committed_first_look_watch(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = replace(settings(), state_dir=root / "private-state", web_root=root / "web")
+            kickoff = (period_bounds()[0] + timedelta(hours=2)).isoformat()
+            first_look_at = (parse_time(kickoff) - timedelta(hours=3)).isoformat()
+            ledger = load_ledger(config)
+            ledger["watch"] = {
+                "durable-first-look": {
+                    "match_id": "durable-first-look",
+                    "league": "英格蘭U21",
+                    "home": "保頓U21",
+                    "away": "屈福特U21",
+                    "kickoff_hkt": kickoff,
+                    "titan_match_id": "998877",
+                    "stages": [{
+                        "match_id": "durable-first-look",
+                        "league": "英格蘭U21",
+                        "home": "保頓U21",
+                        "away": "屈福特U21",
+                        "kickoff_hkt": kickoff,
+                        "stage": "首預",
+                        "status": "PREDICTION_READY",
+                        "ts": first_look_at,
+                        "pick": "主勝",
+                        "market_predictions": [{"code": "HDC", "side": "H", "line": -0.25}],
+                    }],
+                },
+            }
+            save_ledger(config, ledger)
+
+            payload = build(config)
+
+            self.assertEqual(payload["summary"]["crown_matches"], 1)
+            recovered = payload["matches"][0]
+            self.assertEqual(recovered["match_id"], "durable-first-look")
+            self.assertEqual(recovered["stage"], "首預")
+            self.assertEqual(recovered["status"], "PREDICTION_READY")
+            self.assertEqual(recovered["pick"], "主勝")
+            self.assertEqual(recovered["book_odds"], {"crown": []})
+            self.assertEqual([row["stage"] for row in recovered["stages"]], ["首預"])
+
+    def test_dashboard_does_not_publish_watch_shell_without_committed_first_look(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = replace(settings(), state_dir=root / "private-state", web_root=root / "web")
+            kickoff = (period_bounds()[0] + timedelta(hours=2)).isoformat()
+            ledger = load_ledger(config)
+            ledger["watch"] = {
+                "scheduler-shell": {
+                    "match_id": "scheduler-shell",
+                    "league": "英格蘭U21",
+                    "home": "主隊",
+                    "away": "客隊",
+                    "kickoff_hkt": kickoff,
+                    "stages": [],
+                },
+                "t30-without-first-look": {
+                    "match_id": "t30-without-first-look",
+                    "league": "英格蘭U21",
+                    "home": "主隊二",
+                    "away": "客隊二",
+                    "kickoff_hkt": kickoff,
+                    "stages": [{
+                        "stage": "T-30",
+                        "status": "PREDICTION_READY",
+                        "ts": (parse_time(kickoff) - timedelta(minutes=30)).isoformat(),
+                    }],
+                },
+            }
+            save_ledger(config, ledger)
+
+            payload = build(config)
+
+            self.assertEqual(payload["matches"], [])
+            self.assertEqual(payload["summary"]["crown_matches"], 0)
+
     def test_dashboard_publishes_history_rows_only_in_complete_sidecar(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -53,32 +53,101 @@ def _dashboard_publish_lock(destination: Path):
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
-def _dashboard_matches(config: Settings) -> list[dict[str, Any]]:
-    """Return every persisted current-period Crown card without remote work.
+def _dashboard_watch_card(watch: dict[str, Any]) -> dict[str, Any] | None:
+    """Recover one current-period card from a committed first-look watch.
+
+    A watch is eligible only after ``sync_prediction`` has persisted an
+    identity-complete first-look snapshot.  This deliberately excludes empty
+    scheduler shells and malformed/ambiguous stage state while allowing the
+    public board to recover when the replaceable ``predictions.json`` cache is
+    stale or incomplete.
+    """
+    if not isinstance(watch, dict):
+        return None
+    match_id = str(watch.get("match_id") or "").strip()
+    kickoff = parse_time(watch.get("kickoff_hkt") or watch.get("kickoff"))
+    if not match_id or kickoff is None or not in_current_period(kickoff):
+        return None
+    identity = {
+        "match_id": match_id,
+        "league": watch.get("league"),
+        "home": watch.get("home"),
+        "away": watch.get("away"),
+        "kickoff_hkt": watch.get("kickoff_hkt") or watch.get("kickoff"),
+    }
+    if any(not str(identity.get(key) or "").strip() for key in ("league", "home", "away")):
+        return None
+    snapshots = _native_watch_stages(identity, watch)
+    first_look = snapshots.get("首預")
+    if first_look is None or not str(first_look.get("status") or "").strip():
+        return None
+
+    latest_stage = max(snapshots, key=STAGES.__getitem__)
+    card = copy.deepcopy(snapshots[latest_stage])
+    for key, value in watch.items():
+        if key != "stages" and value is not None:
+            card[key] = copy.deepcopy(value)
+    card.update(identity)
+    card["stage"] = latest_stage
+    card["status"] = snapshots[latest_stage].get("status")
+    card["stages"] = [
+        snapshots[stage] for stage in STAGES if stage in snapshots
+    ]
+    if not isinstance(card.get("book_odds"), dict):
+        card["book_odds"] = {"crown": []}
+    card.setdefault("current_odds_status", "missing")
+    card.setdefault(
+        "current_odds_reason",
+        "durable_first_look_projection_without_current_quote",
+    )
+    return card
+
+
+def _dashboard_matches(
+    config: Settings,
+    ledger: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """Return every committed current-period Crown card without remote work.
 
     A Crown quote is stage evidence, not fixture-discovery eligibility.  Cards
     whose current quote is unavailable must stay on the work board so their
     immutable first-look/T-30/T-5 state remains visible and the browser can
-    render its existing "odds unavailable" treatment.
+    render its existing "odds unavailable" treatment.  ``predictions.json`` is
+    the rich cache; an identity-complete durable watch with a committed first
+    look is the safe recovery source when that cache omits a fixture.
     """
-    return [
+    cards = [
         row for row in load_predictions(config)
         if (kickoff := parse_time(row.get("kickoff_hkt") or row.get("kickoff"))) is not None
         and in_current_period(kickoff)
     ]
+    known = {
+        str(row.get("match_id") or "").strip()
+        for row in cards if isinstance(row, dict)
+    }
+    watches = ledger.get("watch") if isinstance(ledger, dict) else None
+    if not isinstance(watches, dict):
+        return cards
+    for watch in watches.values():
+        recovered = _dashboard_watch_card(watch)
+        if recovered is None or recovered["match_id"] in known:
+            continue
+        cards.append(recovered)
+        known.add(recovered["match_id"])
+    return cards
 
 
 def _native_watch_stages(
     card: dict[str, Any],
     watch: dict[str, Any],
 ) -> dict[str, dict[str, Any]]:
-    """Return only verifiable native snapshots for one already-persisted card.
+    """Return only verifiable native snapshots for one identity-matched card.
 
     The watch ledger is authoritative for native stage completion, but it is
-    not a fixture discovery source.  A projection therefore needs an existing
-    Crown card with the same immutable identity and kickoff.  Timed stages
-    additionally need their persisted pre-kickoff timestamp and status.  Bad
-    state is ignored rather than repaired or replayed into the public board.
+    accepted only when the supplied card carries the same immutable identity
+    and kickoff.  Timed stages additionally need their persisted pre-kickoff
+    timestamp and status.  Bad state is ignored rather than repaired or
+    replayed into the public board.
     """
     match_id = str(card.get("match_id") or "").strip()
     if not match_id or str(watch.get("match_id") or "").strip() != match_id:
@@ -122,11 +191,11 @@ def _project_authoritative_watch_stages(
 ) -> list[dict[str, Any]]:
     """Overlay durable native stages onto stale cards without changing state.
 
-    ``predictions.json`` remains the card/discovery source while
-    ``ledger.watch`` is the source for committed stage snapshots.  This narrow,
-    pure projection closes the interval where their atomic writes were
-    interrupted or a fast-noop tick retained an older card.  It never creates
-    a card, stage, history row, bet, or provider request.
+    ``predictions.json`` supplies rich cards while ``ledger.watch`` supplies
+    committed stage snapshots and can recover a missing first-look card before
+    this function runs.  This narrow, pure projection closes the interval where
+    their atomic writes were interrupted or a fast-noop tick retained an older
+    card.  It never creates a stage, history row, bet, or provider request.
     """
     watches = ledger.get("watch") if isinstance(ledger, dict) else None
     if not isinstance(watches, dict):
@@ -328,11 +397,11 @@ def _rebase_live_dashboard_payload(
 ) -> dict[str, Any]:
     """Rebase one public payload onto the latest committed native ledger state.
 
-    This is intentionally local and read-only.  It never discovers fixtures,
-    creates stages, changes lifecycle evidence, or invokes a provider.  The
-    prediction card remains the fixture source; the matching durable watch
-    entry replaces only verified native stage facts.  ``generated_at`` is set
-    only after this latest durable-state read has been incorporated.
+    This is intentionally local and read-only.  It never invokes a provider,
+    creates stages, or changes lifecycle evidence.  Rich prediction cards are
+    retained, while an identity-complete durable first-look watch can recover a
+    card omitted by the replaceable cache.  ``generated_at`` is set only after
+    this latest durable-state read has been incorporated.
     """
     existing = {
         str(row.get("match_id") or ""): row
@@ -340,7 +409,7 @@ def _rebase_live_dashboard_payload(
         if isinstance(row, dict) and row.get("match_id")
     }
     seeded = []
-    for card in _dashboard_matches(config):
+    for card in _dashboard_matches(config, ledger):
         old = dict(existing.get(str(card.get("match_id") or ""), {}))
         if clear_research_matches:
             old.pop("condition_matches", None)
@@ -559,7 +628,7 @@ def _build_payloads(config: Settings) -> tuple[dict[str, Any], dict[str, Any]]:
     """
     ledger = load_ledger(config)
     matches = _project_authoritative_watch_stages(
-        _dashboard_matches(config), ledger,
+        _dashboard_matches(config, ledger), ledger,
     )
     prediction_history = read_json(
         config.state_dir / "prediction_history.json",
