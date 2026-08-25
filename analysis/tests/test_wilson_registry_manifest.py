@@ -68,6 +68,20 @@ class ManifestTest(unittest.TestCase):
    if mutation=="status":l["bets"][0]["status"]="VOIDED"
    if mutation=="result":l["bets"][0]["result"]="Refunded"
    self.assertRejected(l,"unverifiable_same_signature_activity" if mutation in {"schema","post_hoc","excluded"} else "evidence_batch_rows_unverifiable")
+ def test_admitted_snapshot_temporal_window_for_both_systems(self):
+  for system in ("footbreak","crown"):
+   l=ledger(system)
+   for i in range(1,21):add_real(l,system,i,"Won" if i%2 else "Lost")
+   recompute_namespace(l,system);f=l["wilson_validation"]["conditions"][l["wilson_validation"]["condition_order"][2]];v2=f["evidence_versions"][1];row=l["bets"][0];marker=row["rollover_provenance"];marker["admitted_evidence_version"]=2;marker["admitted_evidence_hash"]=v2["evidence_hash"];row["evidence_version"]=2;row["evidence_hash"]=v2["evidence_hash"];h=row["frozen_historical_evidence"];h.update(hits=v2["cumulative_hits"],decided=v2["cumulative_decided"],evidence_version=2,evidence_hash=v2["evidence_hash"]);self.assertRejected(l,"unverifiable_same_signature_activity",system)
+   l=ledger(system);row=add_real(l,system,1);row["rollover_provenance"]["stage_at"]=NOW;self.assertRejected(l,"unverifiable_same_signature_activity",system)
+ def test_strict_integer_schema_and_version_identities(self):
+  for value in (True,2.0):
+   l=ledger();l["wilson_validation"]["schema_version"]=value;self.assertRejected(l,"unsupported_namespace_schema")
+  for value in (True,1.0):
+   l=ledger();row=add_real(l,"footbreak",1);row["rollover_provenance"]["schema_version"]=value;self.assertRejected(l,"unverifiable_same_signature_activity")
+  for value in (True,1.0):
+   l=ledger();row=add_real(l,"footbreak",1);row["rollover_provenance"]["admitted_evidence_version"]=value;row["evidence_version"]=value;row["frozen_historical_evidence"]["evidence_version"]=value;self.assertRejected(l,"unverifiable_same_signature_activity")
+  l=ledger();f=self.first(l);f["evidence_versions"][0]["version"]=1.0;rehash(f["evidence_versions"][0]);self.assertRejected(l,"evidence_version_sequence_mismatch")
  def test_delayed_granular_migration_and_missing_observations_are_valid(self):
   for system in ("footbreak","crown"):
    path="首預→T-30→T-5";tier="低→低→低";ranking=[{"system":system,"market":"HDC","key":[f"system={system}","market=HDC",f"path={path}","decision=T-5","direction=A→A→A","role=主讓","bucket=0.25–0.5","tier=低",f"tier_path={tier}","movement=不變"],"observed_path":path,"decision_stage":"T-5","direction":"A→A→A","role":"主讓","line_bucket":"0.25–0.5","odds_tier":"低","odds_trajectory":tier,"movement":"不變","total":{"hits":141,"decided":231,"pushes":0},"holdout":{"hits":44,"decided":71,"pushes":0},"source_artifact":{"hash":"a"*64,"version":"v1","as_of":"2026-08-19T22:55:00+08:00"}}]

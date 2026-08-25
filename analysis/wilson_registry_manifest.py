@@ -43,7 +43,9 @@ def build_manifest(ledger:Any,system:str)->dict[str,Any]:
   if not isinstance(ledger,dict): raise ValueError("ledger_not_object")
   ns=ledger.get("wilson_validation")
   if not isinstance(ns,dict): raise ValueError("missing_or_invalid_wilson_namespace")
-  if ns.get("schema_version")!=SCHEMA_VERSION: reasons["unsupported_namespace_schema"]+=1
+  if _int(ns.get("schema_version"))!=SCHEMA_VERSION: reasons["unsupported_namespace_schema"]+=1
+  if "granular_ranking_initial_migration_version" in ns and _int(ns.get("granular_ranking_initial_migration_version")) != 1:
+   reasons["invalid_granular_migration_version"] += 1
   if ns.get("system")!=system: reasons["system_mismatch"]+=1
   if _time(ns.get("activation_at")) is None: reasons["invalid_namespace_activation_at"]+=1
   conditions=ns.get("conditions"); order=ns.get("condition_order")
@@ -120,13 +122,14 @@ def build_manifest(ledger:Any,system:str)->dict[str,Any]:
     expected=None if invalid_counts or not cd else wilson95(ch,cd)[0]
     minimum=1/(expected-EDGE_BUFFER) if expected is not None and expected>EDGE_BUFFER else None
     if not invalid_counts and (not _equal(v.get("wilson95_lower_raw"),expected) or (minimum is None and v.get("minimum_acceptable_odds_raw") is not None) or (minimum is not None and not _equal(v.get("minimum_acceptable_odds_raw"),minimum))): rr.append("evidence_arithmetic_mismatch")
+    prior_version = v.get("prior_version")
     if i==1:
-     if v.get("prior_version") is not None or v.get("prior_evidence_hash") is not None or bh!=0 or bd!=0 or hashes!=[]: rr.append("invalid_v1_baseline")
+     if prior_version is not None or v.get("prior_evidence_hash") is not None or bh!=0 or bd!=0 or hashes!=[]: rr.append("invalid_v1_baseline")
      expected_boundary=artifact.get("as_of") or frozen.get("frozen_at") or migration_boundary
      if hh!=ch or hd!=cd: rr.append("historical_v1_counts_mismatch")
      if _time(expected_boundary) is None or _time(expected_boundary)!=boundary: rr.append("historical_v1_boundary_mismatch")
     else:
-     if prev is None or v.get("prior_version")!=prev.get("version") or v.get("prior_evidence_hash")!=prev.get("evidence_hash"): rr.append("evidence_prior_pointer_mismatch")
+     if prev is None or _int(prior_version) is None or _int(prior_version)!=_int(prev.get("version")) or v.get("prior_evidence_hash")!=prev.get("evidence_hash"): rr.append("evidence_prior_pointer_mismatch")
      if prev and None not in (ch,cd,bh,bd) and (ch!=prev.get("cumulative_hits",0)+bh or cd!=prev.get("cumulative_decided",0)+bd): rr.append("evidence_cumulative_mismatch")
      migration=(i==2 and v.get("initial_migration_full_cohort") is True and v.get("batch_fixture_market_ids_unavailable_from_legacy_aggregate") is True)
      if migration:
@@ -140,6 +143,11 @@ def build_manifest(ledger:Any,system:str)->dict[str,Any]:
      elif bd!=ROLLOVER_BATCH_SIZE or len(hashes)!=ROLLOVER_BATCH_SIZE: rr.append("invalid_ordinary_batch")
     prev=v; prev_boundary=boundary or prev_boundary; prev_created=created or prev_created
    active=versions[-1] if versions and isinstance(versions[-1],dict) else {}
+   if "active_evidence_version" in frozen and (
+       _int(frozen.get("active_evidence_version")) is None
+       or _int(frozen.get("active_evidence_version")) != _int(active.get("version"))
+   ):
+    rr.append("invalid_active_evidence_version")
    version_by_number = {
        v.get("version"): v for v in versions if isinstance(v, dict)
    }
@@ -159,7 +167,12 @@ def build_manifest(ledger:Any,system:str)->dict[str,Any]:
      continue
     if str(activity.get("frozen_condition_signature") or "")!=sig: continue
     marker=activity.get("rollover_provenance")
-    admitted = version_by_number.get(marker.get("admitted_evidence_version")) if isinstance(marker,dict) else None
+    marker_version = _int(marker.get("admitted_evidence_version")) if isinstance(marker,dict) else None
+    row_version = _int(activity.get("evidence_version"))
+    row_history_version = _int(
+        activity.get("frozen_historical_evidence", {}).get("evidence_version")
+    ) if isinstance(activity.get("frozen_historical_evidence"), dict) else None
+    admitted = version_by_number.get(marker_version) if marker_version is not None else None
     row_history = activity.get("frozen_historical_evidence")
     immutable_row_history = (
         {k: v for k, v in row_history.items()
@@ -176,20 +189,23 @@ def build_manifest(ledger:Any,system:str)->dict[str,Any]:
         and isinstance(admitted, dict)
         and row_history.get("hits") == admitted.get("cumulative_hits")
         and row_history.get("decided") == admitted.get("cumulative_decided")
-        and row_history.get("evidence_version") == admitted.get("version")
+        and row_history_version is not None
+        and row_history_version == _int(admitted.get("version"))
         and row_history.get("evidence_hash") == admitted.get("evidence_hash")
     )
     if (
         not isinstance(marker,dict)
         or marker.get("condition_signature")!=sig
         or marker.get("system")!=system
-        or marker.get("schema_version") != 1
+        or _int(marker.get("schema_version")) != 1
         or marker.get("native_pre_kickoff_t5") is not True
         or bool(activity.get("post_hoc_backfill"))
         or bool(activity.get("exclude_from_simulation"))
         or activity.get("stage") != DECISION_STAGE
         or activity.get("first_native_pre_kickoff_t5") is not True
-        or marker.get("admitted_evidence_version")!=activity.get("evidence_version")
+        or marker_version is None
+        or row_version is None
+        or marker_version != row_version
         or marker.get("admitted_evidence_hash")!=activity.get("evidence_hash")
         or not isinstance(admitted, dict)
         or admitted.get("evidence_hash") != marker.get("admitted_evidence_hash")
@@ -202,6 +218,31 @@ def build_manifest(ledger:Any,system:str)->dict[str,Any]:
      continue
     if _time(marker.get("stage_at")) is None:
      activity_rejections["invalid_native_t5_timestamp"] += 1
+     continue
+    stage_time = _time(marker.get("stage_at"))
+    admitted_boundary = _time(admitted.get("activation_boundary_at")) if isinstance(admitted, dict) else None
+    admitted_created = _time(admitted.get("created_at")) if isinstance(admitted, dict) else None
+    later_versions = [
+        v for v in versions if isinstance(v, dict)
+        and _int(v.get("version")) is not None
+        and _int(v.get("version")) > marker_version
+    ]
+    if (
+        admitted_boundary is None
+        or admitted_created is None
+        or stage_time <= admitted_boundary
+        or admitted_created > stage_time
+        or any(
+            _time(v.get("created_at")) is None
+            or _time(v.get("activation_boundary_at")) is None
+            or (
+                _time(v.get("created_at")) <= stage_time
+                and stage_time >= _time(v.get("activation_boundary_at"))
+            )
+            for v in later_versions
+        )
+    ):
+     activity_rejections["stage_outside_admitted_version_window"] += 1
      continue
     fixture = str(activity.get("match_id") or "")
     market = str(activity.get("market") or activity.get("code") or "")
