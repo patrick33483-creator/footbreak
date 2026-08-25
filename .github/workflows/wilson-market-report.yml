@@ -30,3 +30,99 @@ jobs:
               /opt/footbreak/analysis/wilson_market_report.py \
               --footbreak /opt/footbreak/system/accuracy_history.json \
               --crown /var/lib/footbreak/crown/prediction_history.json"
+
+      - name: 只讀檢查 production 前端與資料投影
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          set -euo pipefail
+          cd /opt/footbreak
+
+          echo "deployed_commit=$(git rev-parse HEAD)"
+          for asset in /var/www/crown/app.js /opt/footbreak/crown/dashboard/app.js; do
+            printf '%s_pending_hit_text=' "$asset"
+            if grep -Fq '暫時命中 ${pendingHits}/${pendingDecided}' "$asset"; then
+              echo present
+            else
+              echo missing
+            fi
+            printf '%s_forecast_text=' "$asset"
+            if grep -Fq '合併後 Wilson 最低要求賠率預計' "$asset"; then
+              echo present
+            else
+              echo missing
+            fi
+          done
+
+          /opt/footbreak/.venv/bin/python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          target = Path("/var/www/crown/data.json")
+          payload = json.loads(target.read_text(encoding="utf-8"))
+          print(f"dashboard_generated_at={payload.get('generated_at')}")
+
+          rows = []
+
+          def walk(value, path="root"):
+              if isinstance(value, dict):
+                  progress = value.get("validation_progress")
+                  if not isinstance(progress, dict):
+                      progress = value.get("pending_progress")
+                  if isinstance(progress, dict):
+                      rows.append(
+                          {
+                              "path": path,
+                              "condition_number": value.get("condition_number"),
+                              "display": progress.get("display"),
+                              "pending_decided": progress.get(
+                                  "pending_decided",
+                                  progress.get("eligible_decided"),
+                              ),
+                              "pending_hits": progress.get(
+                                  "pending_hits",
+                                  progress.get("eligible_hits"),
+                              ),
+                              "pending_accuracy": progress.get(
+                                  "pending_accuracy",
+                                  progress.get("accuracy"),
+                              ),
+                              "forecast": progress.get("if_rate_holds"),
+                          }
+                      )
+                  for key, child in value.items():
+                      walk(child, f"{path}.{key}")
+              elif isinstance(value, list):
+                  for index, child in enumerate(value):
+                      walk(child, f"{path}[{index}]")
+
+          walk(payload)
+          print(f"progress_row_count={len(rows)}")
+          matching = [row for row in rows if row["display"] == "7/20"]
+          print(f"seven_of_twenty_row_count={len(matching)}")
+          for row in matching:
+              forecast = row["forecast"] if isinstance(row["forecast"], dict) else {}
+              print(
+                  json.dumps(
+                      {
+                          "path": row["path"],
+                          "condition_number": row["condition_number"],
+                          "display": row["display"],
+                          "pending_decided": row["pending_decided"],
+                          "pending_hits": row["pending_hits"],
+                          "pending_accuracy": row["pending_accuracy"],
+                          "projected_batch_hits": forecast.get("projected_batch_hits"),
+                          "projected_batch_decided": forecast.get("projected_batch_decided"),
+                          "projected_minimum_acceptable_odds_display": forecast.get(
+                              "projected_minimum_acceptable_odds_display"
+                          ),
+                      },
+                      ensure_ascii=False,
+                      sort_keys=True,
+                  )
+              )
+          PY
+          REMOTE
