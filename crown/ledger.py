@@ -1,6 +1,7 @@
 """Idempotent Crown watch ledger.  It can create simulations, never real bets."""
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import math
@@ -31,6 +32,7 @@ _FORMAL_SNAPSHOT_MUTABLE_FIELDS = {
     "formal_admission_pending",
     "formal_admission_snapshot_id",
     "formal_admission_snapshot_hash",
+    "formal_admission_watch_context_hash",
     "formal_admission_status",
     "formal_admission_reason",
     "formal_admission_completed_at",
@@ -51,15 +53,31 @@ def _formal_snapshot_hash(snapshot: dict[str, Any]) -> str:
 
 def _formal_snapshot_id(
     watch: dict[str, Any], snapshot: dict[str, Any], digest: str,
+    context_hash: str,
 ) -> str:
     identity = {
         "match_id": str(watch.get("match_id") or snapshot.get("match_id") or ""),
         "stage": str(snapshot.get("stage") or ""),
         "ts": str(snapshot.get("ts") or ""),
         "snapshot_hash": digest,
+        "watch_context_hash": context_hash,
     }
     raw = json.dumps(
         identity, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    )
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
+def _formal_watch_context_hash(watch: dict[str, Any]) -> str:
+    context = {
+        key: watch.get(key) for key in (
+            "match_id", "league", "home", "away", "kickoff", "kickoff_hkt",
+            "hkjc_match_id", "native_fixture_id", "titan_match_id",
+            "pinnapi_event_id", "matching_version", "prediction_era",
+        )
+    }
+    raw = json.dumps(
+        context, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
     )
     return hashlib.sha256(raw.encode()).hexdigest()
 
@@ -68,10 +86,12 @@ def _bind_formal_snapshot(
     watch: dict[str, Any], snapshot: dict[str, Any],
 ) -> None:
     digest = _formal_snapshot_hash(snapshot)
+    context_hash = _formal_watch_context_hash(watch)
     snapshot["formal_admission_snapshot_id"] = _formal_snapshot_id(
-        watch, snapshot, digest,
+        watch, snapshot, digest, context_hash,
     )
     snapshot["formal_admission_snapshot_hash"] = digest
+    snapshot["formal_admission_watch_context_hash"] = context_hash
     snapshot["formal_admission_pending"] = True
     snapshot["formal_admission_status"] = "PENDING"
 
@@ -856,12 +876,15 @@ def reconcile_pending_formal_admissions(
                 continue
             snapshot_id = snapshot.get("formal_admission_snapshot_id")
             snapshot_hash = snapshot.get("formal_admission_snapshot_hash")
+            context_hash = snapshot.get("formal_admission_watch_context_hash")
             if (
                 not isinstance(snapshot_id, str) or len(snapshot_id) != 64
                 or not isinstance(snapshot_hash, str) or len(snapshot_hash) != 64
+                or not isinstance(context_hash, str) or len(context_hash) != 64
                 or snapshot_hash != _formal_snapshot_hash(snapshot)
+                or context_hash != _formal_watch_context_hash(watch)
                 or snapshot_id != _formal_snapshot_id(
-                    watch, snapshot, snapshot_hash,
+                    watch, snapshot, snapshot_hash, context_hash,
                 )
             ):
                 snapshot["formal_admission_pending"] = False
@@ -871,6 +894,7 @@ def reconcile_pending_formal_admissions(
                 )
                 snapshot["formal_admission_completed_at"] = iso_hkt()
                 continue
+            before_evaluation = copy.deepcopy(ledger)
             try:
                 created, audit = (
                     evaluate_new_t5(
@@ -884,6 +908,29 @@ def reconcile_pending_formal_admissions(
             except Exception:
                 # Keep the durable marker for the next authoritative pass.
                 continue
+            # Revalidate at the execution/persistence boundary, not only
+            # before matcher entry. A job that crosses kickoff discards every
+            # staged evaluator mutation before becoming terminally expired.
+            final_now = current if now is not None else datetime.now(HKT)
+            if final_now >= kickoff:
+                ledger.clear()
+                ledger.update(before_evaluation)
+                restored_watch = (ledger.get("watch") or {}).get(
+                    str(watch.get("match_id") or ""),
+                )
+                restored = next((
+                    row for row in ((restored_watch or {}).get("stages") or [])
+                    if isinstance(row, dict)
+                    and row.get("formal_admission_snapshot_id") == snapshot_id
+                ), None)
+                if isinstance(restored, dict):
+                    restored["formal_admission_pending"] = False
+                    restored["formal_admission_status"] = "EXPIRED"
+                    restored["formal_admission_reason"] = (
+                        "kickoff_crossed_during_formal_admission"
+                    )
+                    restored["formal_admission_completed_at"] = iso_hkt()
+                return []
             if stage == "T-5":
                 ledger["bets"].extend(created)
                 snapshot["wilson_validation"] = {

@@ -80,6 +80,49 @@ class StageAwarePendingDrainTests(unittest.TestCase):
         self.assertEqual(result, ([], [], [], 0))
         reconcile.assert_called_once()
 
+    def test_slow_recompute_is_inside_worker_deadline_and_never_saves(self):
+        base = {
+            "bets": [],
+            "watch": {"m": {"stages": [{
+                "stage": "T-5", "formal_admission_pending": True,
+            }]}},
+            "log": [],
+        }
+        def consume(staged, _config):
+            staged["watch"]["m"]["stages"][0][
+                "formal_admission_pending"
+            ] = False
+            return []
+
+        def slow_recompute(staged, _config):
+            time.sleep(0.12)
+            staged["stats"] = {"done": True}
+            return staged["stats"]
+
+        with TemporaryDirectory() as directory:
+            config = replace(settings(), state_dir=Path(directory))
+            started = time.monotonic()
+            with patch("crown.engine.state_lock", side_effect=lambda *_a, **_k: _lock()), \
+                 patch("crown.engine.load_ledger", return_value=base), \
+                 patch(
+                     "crown.engine.reconcile_pending_formal_admissions",
+                     side_effect=consume,
+                 ), \
+                 patch("crown.engine.recompute_stats", side_effect=slow_recompute), \
+                 patch("crown.engine.save_ledger") as save:
+                emitted = engine._drain_pending_formal_admissions(
+                    config, deadline=started + 0.07,
+                )
+            elapsed = time.monotonic() - started
+        self.assertLess(elapsed, 0.07)
+        self.assertEqual(emitted, [])
+        save.assert_not_called()
+
+
+@contextmanager
+def _lock():
+    yield True
+
 
 if __name__ == "__main__":
     unittest.main()

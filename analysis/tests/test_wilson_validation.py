@@ -6,6 +6,8 @@ import json
 import tempfile
 import unittest
 import subprocess
+from datetime import datetime, timedelta
+from unittest.mock import patch
 from pathlib import Path
 
 from analysis.wilson_validation import (
@@ -306,7 +308,10 @@ class WilsonBatchRolloverTest(unittest.TestCase):
             admission["signature"] = signature
         watch = {
             "match_id": f"fixture-{index}", "league": "測試", "home": "主",
-            "away": "客", "kickoff": "2026-08-21T00:00:00+08:00",
+            "away": "客",
+            "kickoff": (
+                datetime.fromisoformat(stage_at) + timedelta(hours=1)
+            ).isoformat(),
         }
         row = commit_bet(
             ledger, system, watch, "HDC", selected(), admission, now=stage_at,
@@ -317,7 +322,9 @@ class WilsonBatchRolloverTest(unittest.TestCase):
         row.update({
             "status": "SETTLED", "result": result,
             "pnl": 450 if result in {"Won", "Half Won"} else -500,
-            "settled_at": "2026-08-21T02:00:00+08:00",
+            "settled_at": (
+                datetime.fromisoformat(stage_at) + timedelta(hours=2)
+            ).isoformat(),
         })
         ledger["bets"].append(row)
         return row
@@ -470,7 +477,11 @@ class WilsonBatchRolloverTest(unittest.TestCase):
         ledger = {"bets": []}
         for index in range(1, 21):
             self._settled(ledger, index, result="Won")
-        recompute_namespace(ledger, "footbreak")
+        with patch(
+            "analysis.wilson_validation._now",
+            return_value="2026-08-25T12:00:00+08:00",
+        ):
+            recompute_namespace(ledger, "footbreak")
         frozen, active = self._active(ledger)
         self.assertEqual(active["version"], 2)
         signature = frozen["signature"]
@@ -489,7 +500,13 @@ class WilsonBatchRolloverTest(unittest.TestCase):
 
         # Roll forward to v3 with 20 more settled bets on the SAME condition.
         for index in range(21, 41):
-            self._settled(ledger, index, result="Won")
+            self._settled(
+                ledger, index, result="Won",
+                stage_at=(
+                    datetime.fromisoformat(v2_before["created_at"])
+                    + timedelta(minutes=index)
+                ).isoformat(),
+            )
         recompute_namespace(ledger, "footbreak")
         frozen, active = self._active(ledger)
         self.assertEqual(active["version"], 3)
@@ -835,10 +852,14 @@ class WilsonBatchRolloverTest(unittest.TestCase):
         for index in range(1, 21):
             self._settled(ledger, index, result="Lost")
         recompute_namespace(ledger, "footbreak")
+        frozen, active = self._active(ledger)
+        decision_at = (
+            datetime.fromisoformat(active["created_at"]) + timedelta(minutes=1)
+        ).isoformat()
         admission, reason = apply_active_evidence(
             ledger, "footbreak", self._admission(),
-            stage_at="2026-08-20T21:00:00+08:00",
-            now="2026-08-20T21:00:00+08:00",
+            stage_at=decision_at,
+            now=decision_at,
         )
         self.assertIsNone(reason)
         assert admission is not None

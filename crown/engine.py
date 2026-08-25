@@ -1945,24 +1945,45 @@ def _drain_pending_formal_admissions(
     pending_t5 = _has_pending_formal_admission(staged, "T-5")
     result: dict[str, Any] = {}
     remaining = _deadline_remaining(deadline) if deadline is not None else 0.5
-    if remaining < 0.05:
+    final_commit_reserve = 0.05
+    kickoff_safety_margin = 0.05
+    worker_budget = remaining - final_commit_reserve
+    pending_kickoffs = [
+        parse_time(
+            row.get("kickoff_hkt") or row.get("kickoff")
+            or watch.get("kickoff_hkt") or watch.get("kickoff")
+        )
+        for watch in (staged.get("watch") or {}).values()
+        if isinstance(watch, dict)
+        for row in watch.get("stages") or []
+        if isinstance(row, dict)
+        and row.get("formal_admission_pending") is True
+    ]
+    pending_kickoffs = [value for value in pending_kickoffs if value is not None]
+    if pending_kickoffs:
+        worker_budget = min(
+            worker_budget,
+            (min(pending_kickoffs) - datetime.now(HKT)).total_seconds()
+            - kickoff_safety_margin,
+        )
+    if worker_budget < 0.01:
         return []
 
     def consume() -> None:
         try:
             result["emitted"] = reconcile_pending_formal_admissions(staged, config)
+            if pending_t5:
+                recompute_stats(staged, config)
         except Exception as exc:
             result["error"] = type(exc).__name__
 
     worker = threading.Thread(target=consume, daemon=True)
     worker.start()
-    worker.join(max(0.0, remaining))
+    worker.join(max(0.0, worker_budget))
     if worker.is_alive() or "error" in result:
         return []
     emitted = result.get("emitted")
     emitted = list(emitted) if isinstance(emitted, (list, tuple)) else []
-    if pending_t5:
-        recompute_stats(staged, config)
     if staged == base:
         return emitted
     remaining = _deadline_remaining(deadline) if deadline is not None else 0.5
@@ -1973,6 +1994,59 @@ def _drain_pending_formal_admissions(
             return []
         current = load_ledger(config)
         if current != base:
+            return []
+        # Final execution-time proof: if a T-5 completed on the staged copy
+        # but its immutable kickoff has now arrived, discard every optional
+        # staged mutation and persist only a terminal expiry from the base.
+        crossed_ids: set[str] = set()
+        final_now = datetime.now(HKT)
+        for watch in (base.get("watch") or {}).values():
+            if not isinstance(watch, dict):
+                continue
+            for row in watch.get("stages") or []:
+                if (
+                    not isinstance(row, dict)
+                    or row.get("stage") != "T-5"
+                    or row.get("formal_admission_pending") is not True
+                ):
+                    continue
+                snapshot_id = row.get("formal_admission_snapshot_id")
+                kickoff = parse_time(
+                    row.get("kickoff_hkt") or row.get("kickoff")
+                    or watch.get("kickoff_hkt") or watch.get("kickoff")
+                )
+                staged_row = next((
+                    candidate
+                    for staged_watch in (staged.get("watch") or {}).values()
+                    if isinstance(staged_watch, dict)
+                    for candidate in staged_watch.get("stages") or []
+                    if isinstance(candidate, dict)
+                    and candidate.get("formal_admission_snapshot_id") == snapshot_id
+                ), None)
+                if (
+                    isinstance(snapshot_id, str)
+                    and kickoff is not None and final_now >= kickoff
+                    and isinstance(staged_row, dict)
+                    and staged_row.get("formal_admission_status") == "COMPLETED"
+                ):
+                    crossed_ids.add(snapshot_id)
+        if crossed_ids:
+            expired = copy.deepcopy(base)
+            for watch in (expired.get("watch") or {}).values():
+                if not isinstance(watch, dict):
+                    continue
+                for row in watch.get("stages") or []:
+                    if (
+                        isinstance(row, dict)
+                        and row.get("formal_admission_snapshot_id") in crossed_ids
+                    ):
+                        row["formal_admission_pending"] = False
+                        row["formal_admission_status"] = "EXPIRED"
+                        row["formal_admission_reason"] = (
+                            "kickoff_reached_before_formal_admission_persist"
+                        )
+                        row["formal_admission_completed_at"] = iso_hkt()
+            save_ledger(config, expired)
             return []
         if staged.get("log"):
             staged["log"][-1]["n_changes"] = len(emitted)

@@ -158,6 +158,7 @@ def frozen_condition(value: dict, number: int) -> tuple[str, dict]:
     frozen = {
         "signature": signature, "condition_number": number,
         "frozen_at": "2026-08-20T01:00:00+08:00", "definition": copy.deepcopy(value),
+        "historical_evidence": {"hits": 51, "decided": 80},
         "evidence_versions": [version], "active_evidence_version": 1,
         "active_evidence_hash": version["evidence_hash"],
         "active_evidence": active_pointer(version),
@@ -518,7 +519,6 @@ class WilsonConditionFunnelTests(unittest.TestCase):
                 "history": {
                     "hits": self.active["cumulative_hits"],
                     "decided": self.active["cumulative_decided"],
-                    "artifact": {"hash": "persisted"},
                 },
                 "arithmetic": admission_arithmetic(
                     self.active["cumulative_hits"],

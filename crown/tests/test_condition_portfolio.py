@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tempfile
+import time
 import unittest
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -377,6 +378,54 @@ class ConditionPortfolioTests(unittest.TestCase):
                 reconcile_pending_formal_admissions(ledger, config)
             self.assertEqual(consumed, [1.5])
 
+    def test_watch_context_tamper_rejects_bound_job_before_evaluation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = replace(self.config, state_dir=Path(directory))
+            ledger = {
+                "bankroll": 50000, "bets": [], "watch": {},
+                "log": [], "stats": {},
+            }
+            prediction = {
+                "match_id": "context-bound", "league": "Original League",
+                "home": "Original Home", "away": "Original Away",
+                "hkjc_match_id": "HK-ORIGINAL",
+                "titan_match_id": "TITAN-ORIGINAL",
+                "pinnapi_event_id": "PIN-ORIGINAL",
+                "kickoff_hkt": "2099-08-01T20:00:00+08:00",
+                "stage": "首預", "status": "PREDICTION_READY",
+                "forecast_candidates": [{
+                    "code": "HIL", "side": "H", "line": 2.5, "odds": 1.5,
+                    "observed_at": "2099-08-01T18:00:00+08:00",
+                    "source": "titan007-crown-id-3",
+                }],
+            }
+            sync_prediction(
+                ledger, prediction, config, defer_formal_admission=True,
+            )
+            card = ledger["watch"]["context-bound"]
+            card.update({
+                "league": "Tampered League",
+                "home": "Tampered Home",
+                "away": "Tampered Away",
+                "hkjc_match_id": "HK-TAMPERED",
+                "native_fixture_id": "NATIVE-TAMPERED",
+                "titan_match_id": "TITAN-TAMPERED",
+                "pinnapi_event_id": "PIN-TAMPERED",
+                "kickoff": "2099-08-01T21:00:00+08:00",
+                "kickoff_hkt": "2099-08-01T21:00:00+08:00",
+            })
+            with patch("crown.ledger.evaluate_wilson_stage") as evaluate:
+                emitted = reconcile_pending_formal_admissions(ledger, config)
+            snapshot = card["stages"][0]
+            evaluate.assert_not_called()
+            self.assertEqual(emitted, [])
+            self.assertFalse(snapshot["formal_admission_pending"])
+            self.assertEqual(snapshot["formal_admission_status"], "REJECTED")
+            self.assertEqual(
+                snapshot["formal_admission_reason"],
+                "immutable_formal_snapshot_binding_mismatch",
+            )
+
     def test_snapshot_tamper_and_post_kickoff_t5_expire_without_evaluation(self):
         with tempfile.TemporaryDirectory() as directory:
             config = replace(self.config, state_dir=Path(directory))
@@ -422,6 +471,64 @@ class ConditionPortfolioTests(unittest.TestCase):
                     snapshot["formal_admission_status"],
                     "REJECTED" if mode == "tamper" else "EXPIRED",
                 )
+
+    def test_t5_crossing_kickoff_discards_all_evaluator_and_outbox_changes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = replace(self.config, state_dir=Path(directory))
+            kickoff = datetime.now(HKT) + timedelta(seconds=0.15)
+            ledger = {
+                "bankroll": 50000, "bets": [], "watch": {},
+                "log": [], "stats": {},
+            }
+            prediction = {
+                "match_id": "cross-kickoff", "league": "L",
+                "home": "A", "away": "B",
+                "kickoff_hkt": kickoff.isoformat(), "stage": "T-5",
+                "status": "PREDICTION_READY",
+                "forecast_candidates": [{
+                    "code": "HIL", "side": "H", "line": 2.5, "odds": 1.8,
+                    "observed_at": (kickoff - timedelta(minutes=6)).isoformat(),
+                    "source": "titan007-crown-id-3",
+                }],
+            }
+            sync_prediction(
+                ledger, prediction, config, defer_formal_admission=True,
+            )
+            fake_bet = {
+                "bet_id": "cross-kickoff-bet",
+                "created_at": datetime.now(HKT).isoformat(),
+                "market_label": "入球大細",
+                "frozen_condition_definition": {"path": "T-5"},
+            }
+            def delayed(*_args, **_kwargs):
+                # Also simulate an evaluator-side observation mutation that
+                # must be rolled back with the returned bet.
+                _args[0].setdefault("wilson_validation", {}).setdefault(
+                    "observations", [],
+                ).append({"observation_id": "must-be-discarded"})
+                time.sleep(0.20)
+                return [fake_bet], []
+
+            with patch(
+                "crown.ledger.evaluate_new_t5", side_effect=delayed,
+            ) as evaluate, patch(
+                "crown.ledger.record_new_native_t5",
+            ) as outbox, patch(
+                "crown.ledger.challenger_v2.evaluate_new_t5",
+            ) as challenger:
+                emitted = reconcile_pending_formal_admissions(ledger, config)
+            snapshot = ledger["watch"]["cross-kickoff"]["stages"][0]
+            self.assertEqual(evaluate.call_count, 1)
+            self.assertEqual(emitted, [])
+            self.assertEqual(ledger["bets"], [])
+            self.assertEqual(
+                (ledger.get("wilson_validation") or {}).get("observations") or [],
+                [],
+            )
+            outbox.assert_not_called()
+            challenger.assert_not_called()
+            self.assertFalse(snapshot["formal_admission_pending"])
+            self.assertEqual(snapshot["formal_admission_status"], "EXPIRED")
 
     def test_canonical_settlement_for_three_markets(self) -> None:
         cases = [

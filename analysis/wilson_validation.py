@@ -1563,6 +1563,21 @@ def _validate_formal_admission_binding(
     condition_number_value = _strict_int(row.get("condition_number"))
     expected_number = _strict_int(frozen.get("condition_number"))
     historical = row.get("frozen_historical_evidence")
+    baseline_history = frozen.get("historical_evidence")
+    immutable_historical = (
+        {
+            key: value for key, value in historical.items()
+            if key not in {"hits", "decided", "evidence_version", "evidence_hash"}
+        }
+        if isinstance(historical, dict) else None
+    )
+    immutable_baseline = (
+        {
+            key: value for key, value in baseline_history.items()
+            if key not in {"hits", "decided", "evidence_version", "evidence_hash"}
+        }
+        if isinstance(baseline_history, dict) else None
+    )
     if (
         not isinstance(fixture, str) or not fixture
         or market not in {"HDC", "HIL", "CHL"}
@@ -1582,6 +1597,8 @@ def _validate_formal_admission_binding(
         or not _formal_marker_shape_valid(marker)
         or row.get("native_stage_at") != marker.get("stage_at")
         or not isinstance(historical, dict)
+        or not isinstance(baseline_history, dict)
+        or immutable_historical != immutable_baseline
         or _strict_int(historical.get("hits")) != admitted.get("cumulative_hits")
         or _strict_int(historical.get("decided")) != admitted.get("cumulative_decided")
         or historical.get("evidence_version") != evidence_version
@@ -1600,6 +1617,22 @@ def _validate_formal_admission_binding(
         or stage_at >= kickoff
         or stage_at > projection_time
         or created_at > projection_time
+        or _time(admitted.get("created_at")) is None
+        or _time(admitted.get("created_at")) > stage_at
+        or any(
+            _time(later.get("created_at")) is None
+            or _time(later.get("activation_boundary_at")) is None
+            or (
+                _strict_int(later.get("version")) is not None
+                and _strict_int(later.get("version")) > evidence_version
+                and _time(later.get("created_at")) <= stage_at
+                and stage_at >= _time(later.get("activation_boundary_at"))
+            )
+            for later in version_by_number.values()
+            if isinstance(later, dict)
+            and _strict_int(later.get("version")) is not None
+            and _strict_int(later.get("version")) > evidence_version
+        )
     ):
         return None, "invalid_formal_admission_binding"
 
@@ -2621,6 +2654,13 @@ def apply_active_evidence(
     )
     if active is None:
         return None, "active_evidence_unavailable"
+    active_created = _time(active.get("created_at"))
+    decision_time = _time(stage_at)
+    if (
+        active_created is None or decision_time is None
+        or active_created > decision_time
+    ):
+        return None, "evidence_version_not_created_at_decision_time"
     if existed and not _strictly_after(stage_at, active.get("activation_boundary_at")):
         return None, "stage_not_strictly_after_evidence_activation_boundary"
     arithmetic = admission_arithmetic(

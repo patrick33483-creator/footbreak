@@ -12,6 +12,7 @@ from analysis.wilson_validation import (
     _evidence_values,
     _fixture_market_hash,
     _version_hash,
+    admission_arithmetic,
     active_observations,
     create_production_identity_manifest,
     formal_matcher_axes,
@@ -163,6 +164,39 @@ class StageAwareWilsonTests(unittest.TestCase):
             ranking=None,
             decision_stage=stage,
         )
+
+    @staticmethod
+    def canonical_clone(
+        template, index, stage_at, version, evidence_hash, hits, decided,
+    ):
+        row = copy.deepcopy(template)
+        fixture = f"parity-{version}-{index:02d}"
+        row.update({
+            "match_id": fixture,
+            "observation_id": (
+                f"{fixture}|HIL|首預|{SIGNATURE}|formal-observation"
+            ),
+            "status": "SETTLED", "result": "Won",
+            "settled_at": "2026-08-25T21:00:00+08:00",
+            "native_stage_at": stage_at,
+            "evidence_version": version, "evidence_hash": evidence_hash,
+        })
+        row["rollover_provenance"].update({
+            "stage_at": stage_at,
+            "fixture_market_hash": _fixture_market_hash(
+                "footbreak", fixture, "HIL",
+            ),
+            "admitted_evidence_version": version,
+            "admitted_evidence_hash": evidence_hash,
+        })
+        row["frozen_historical_evidence"].update({
+            "hits": hits, "decided": decided,
+            "evidence_version": version, "evidence_hash": evidence_hash,
+        })
+        row["wilson_admission"] = admission_arithmetic(
+            hits, decided, row["odds"],
+        )
+        return row
 
     def test_condition_three_natural_first_look_observation_and_idempotence(self):
         value = ledger()
@@ -401,6 +435,58 @@ class StageAwareWilsonTests(unittest.TestCase):
         recompute_namespace(value, "footbreak")
         self.assertEqual(frozen, before)
         self.assertEqual(frozen["active_evidence_version"], 1)
+
+    def test_runtime_rejects_immutable_historical_artifact_mismatch(self):
+        value = ledger()
+        self.evaluate(value, watch())
+        template = active_observations(value, "footbreak")[0]
+        frozen = value["wilson_validation"]["conditions"][SIGNATURE]
+        v1 = frozen["evidence_versions"][0]
+        rows = [
+            self.canonical_clone(
+                template, index, f"2026-08-25T10:{index:02d}:00+08:00",
+                1, v1["evidence_hash"], 94, 141,
+            )
+            for index in range(20)
+        ]
+        for row in rows:
+            row["frozen_historical_evidence"]["artifact"]["version"] = "tampered"
+        value["wilson_validation"]["observations"] = rows
+        before = copy.deepcopy(frozen)
+        recompute_namespace(value, "footbreak")
+        self.assertEqual(frozen, before)
+
+    def test_runtime_rejects_evidence_version_before_creation_window(self):
+        value = ledger()
+        self.evaluate(value, watch())
+        template = active_observations(value, "footbreak")[0]
+        frozen = value["wilson_validation"]["conditions"][SIGNATURE]
+        v1 = frozen["evidence_versions"][0]
+        first = [
+            self.canonical_clone(
+                template, index, f"2026-08-25T10:{index:02d}:00+08:00",
+                1, v1["evidence_hash"], 94, 141,
+            )
+            for index in range(20)
+        ]
+        value["wilson_validation"]["observations"] = first
+        recompute_namespace(value, "footbreak")
+        self.assertEqual(frozen["active_evidence_version"], 2)
+        v2 = frozen["evidence_versions"][1]
+        second = [
+            self.canonical_clone(
+                template, 20 + index,
+                f"2026-08-25T10:{20 + index:02d}:00+08:00",
+                2, v2["evidence_hash"],
+                v2["cumulative_hits"], v2["cumulative_decided"],
+            )
+            for index in range(20)
+        ]
+        value["wilson_validation"]["observations"] = first + second
+        before = copy.deepcopy(frozen)
+        recompute_namespace(value, "footbreak")
+        self.assertEqual(frozen, before)
+        self.assertEqual(frozen["active_evidence_version"], 2)
 
 
 if __name__ == "__main__":
