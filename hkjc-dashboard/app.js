@@ -1522,6 +1522,11 @@ function historyConsensusCards(stats) {
     const pendingHitText = pendingDecided > 0 && pendingAccuracy != null
       ? `暫時命中 ${pendingHits}/${pendingDecided}（${pc(pendingAccuracy, 1)}）`
       : '暫時未有已判定命中率';
+    const forecast = progress.if_rate_holds || {};
+    const forecastOdds = numeric(forecast.projected_minimum_acceptable_odds_display);
+    const forecastText = forecastOdds != null
+      ? `<small>按目前命中率推算：整批約 ${esc(String(forecast.projected_batch_hits))}/${esc(String(forecast.projected_batch_decided))}，合併後 Wilson 最低要求賠率預計 ${esc(f2(forecastOdds))}（未合併估算）</small>`
+      : '';
     const batchText = lastBatch.version
       ? (lastBatch.initial_migration_full_cohort
         ? `初始完整驗證已合併 ${lastBatch.batch_hits || 0}/${lastBatch.batch_decided || 0}`
@@ -1537,6 +1542,7 @@ function historyConsensusCards(stats) {
         ? `<small>活躍證據 v${active.version || '—'} · ${batchText}</small>
       ${evidenceBatchDetails(item)}
       <small>新前瞻待合併 ${esc(String(pending))} · ${esc(pendingHitText)}</small>
+      ${forecastText}
       <small>歷史賠率層 ${esc(item.odds_tier || '—')} · 只使用活躍版本作日後 T-5 Wilson 閘門</small>`
         : '<small>研究卡未有凍結 Wilson 身份；不顯示前瞻累積，亦不會成為 Telegram 或模擬投注依據。</small>'}
     </article>`;

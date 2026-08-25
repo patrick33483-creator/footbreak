@@ -334,6 +334,17 @@ class WilsonBatchRolloverTest(unittest.TestCase):
         self.assertAlmostEqual(
             projected[0]["validation_progress"]["pending_accuracy"], 10 / 19,
         )
+        forecast = projected[0]["validation_progress"]["if_rate_holds"]
+        self.assertEqual(forecast["projected_batch_hits"], 11)
+        self.assertEqual(forecast["projected_batch_decided"], 20)
+        self.assertEqual(forecast["projected_cumulative_hits"], 52)
+        self.assertEqual(forecast["projected_cumulative_decided"], 79)
+        self.assertAlmostEqual(
+            forecast["projected_minimum_acceptable_odds_raw"],
+            admission_arithmetic(52, 79, 1.90)[
+                "minimum_acceptable_odds_raw"
+            ],
+        )
         self._settled(ledger, 20, result="Won")
         recompute_namespace(ledger, "footbreak")
         frozen, active = self._active(ledger)
@@ -710,6 +721,9 @@ class WilsonBatchRolloverTest(unittest.TestCase):
             self.assertIn("新前瞻待合併", source)
             self.assertIn("暫時命中 ${pendingHits}/${pendingDecided}", source)
             self.assertIn("暫時未有已判定命中率", source)
+            self.assertIn("按目前命中率推算：整批約", source)
+            self.assertIn("合併後 Wilson 最低要求賠率預計", source)
+            self.assertIn("（未合併估算）", source)
             self.assertIn("活躍證據 v", source)
 
     def test_last_merged_batch_projects_exact_twenty_rows_and_thirteen_hits(self):
