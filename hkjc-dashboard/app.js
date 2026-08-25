@@ -1874,23 +1874,158 @@ function crownExecutionTestCard(portfolio) {
   </section>`;
 }
 
+function validWilsonFunnelPayload(funnel) {
+  if (!funnel || typeof funnel !== 'object' || Array.isArray(funnel)
+      || funnel.schema_version !== 1 || funnel.read_only !== true
+      || funnel.system !== 'footbreak' || !Number.isInteger(funnel.condition_count)
+      || funnel.condition_count < 0 || !Array.isArray(funnel.conditions)
+      || funnel.condition_count !== funnel.conditions.length) return false;
+  if (funnel.unavailable_reason) return funnel.condition_count === 0;
+  const requiredStages = [
+    'eligible_post_activation_t5_observations', 'exact_condition_matches',
+    'recorded_formal_evidence', 'settled_valid_evidence', 'current_rollover_progress',
+  ];
+  const numbers = new Set();
+  return funnel.conditions.every((row) => {
+    if (!row || typeof row !== 'object' || Array.isArray(row)
+        || !Number.isInteger(row.condition_number) || row.condition_number <= 0
+        || numbers.has(row.condition_number) || typeof row.identity_available !== 'boolean'
+        || !row.stages || typeof row.stages !== 'object'
+        || !row.rejections || typeof row.rejections !== 'object'
+        || !Array.isArray(row.rejections.items)
+        || !Number.isInteger(row.rejections.visible_limit)
+        || !Number.isInteger(row.rejections.omitted_reason_kinds)) return false;
+    numbers.add(row.condition_number);
+    if (row.identity_available) {
+      if (!/^[0-9a-f]{24}$/.test(row.condition_signature || '')
+          || !row.definition || typeof row.definition !== 'object'
+          || !row.active_evidence || !Number.isInteger(row.active_evidence.version)
+          || !/^[0-9a-f]{64}$/.test(row.active_evidence.evidence_hash || '')) return false;
+    } else if (row.condition_signature !== null || row.definition !== null
+               || row.active_evidence?.version !== null || !row.unavailable_reason) return false;
+    if (!requiredStages.every((key) => {
+      const item = row.stages[key];
+      if (!item || typeof item !== 'object' || typeof item.available !== 'boolean'
+          || !['available', 'bounded', 'partial', 'unavailable'].includes(item.availability)) return false;
+      if (item.availability === 'partial') {
+        if (!['exact_condition_matches', 'recorded_formal_evidence'].includes(key)
+            || item.available || item.count !== null || !item.reason
+            || !Number.isInteger(item.verified_count) || item.verified_count < 0
+            || !Number.isInteger(item.legacy_unverifiable_count)
+            || item.legacy_unverifiable_count <= 0) return false;
+      } else if (item.available) {
+        if (!Number.isInteger(item.count) || item.count < 0 || item.availability === 'unavailable') return false;
+      } else if (item.count !== null || item.availability !== 'unavailable' || !item.reason) return false;
+      return true;
+    })) return false;
+    const progress = row.stages.current_rollover_progress;
+    if (progress.required !== 20) return false;
+    if (progress.available && (
+      progress.count >= 20 || progress.display !== `${progress.count}/20`
+      || !Number.isInteger(progress.eligible_hits)
+      || progress.eligible_hits < 0 || progress.eligible_hits > progress.count
+    )) return false;
+    const exact = row.stages.exact_condition_matches;
+    if (exact.availability === 'bounded' && exact.truncation_possible !== true) return false;
+    return row.rejections.items.every((item) =>
+      item && typeof item === 'object' && typeof item.code === 'string'
+      && typeof item.category === 'string' && Number.isInteger(item.count) && item.count > 0
+    );
+  });
+}
+
 function wilsonRolloverCard(validation) {
-  const rollover = validation?.rollover || {};
-  const rows = Object.values(rollover.conditions || {}).filter((row) => row && typeof row === 'object')
-    .sort((a, b) => (numeric(a.condition_number) || 999999) - (numeric(b.condition_number) || 999999));
-  if (!rows.length) return `<section class="card"><h2 class="card-h">Wilson 證據版本</h2><div class="empty2">尚未有已凍結條件；新結果不會以舊驗證紀錄追溯補入。</div></section>`;
-  return `<section class="card" data-testid="wilson-evidence-rollover"><h2 class="card-h">Wilson 證據版本 <span class="sub">每個完全相同條件獨立累積；20 個新已判定結果才建立新版本</span></h2>
-    <div class="tbl-wrap"><table class="t"><thead><tr><th>條件</th><th>有效證據</th><th>Wilson / 最低賠率</th><th>最近合併</th><th>下一批進度</th></tr></thead><tbody>${rows.map((row) => {
-      const active = row.active_evidence || {}, last = row.last_merged_batch || {}, pending = row.pending_progress || {};
-      const version = numeric(active.version) == null ? '—' : `v${Math.trunc(numeric(active.version))}`;
-      const total = `${numeric(active.cumulative_hits) || 0}/${numeric(active.cumulative_decided) || 0}`;
-      const lower = pc(active.wilson95_lower_raw, 1);
-      const minimum = numeric(active.minimum_acceptable_odds_display) == null ? f2(active.minimum_acceptable_odds_raw) : String(active.minimum_acceptable_odds_display);
-      const batch = numeric(last.batch_decided) ? `${numeric(last.batch_hits) || 0}/${numeric(last.batch_decided)}${last.initial_migration_full_cohort ? '（初始完整驗證 cohort）' : ''}` : '—';
-      const progress = pending.display || `${numeric(pending.eligible_decided) || 0}/${numeric(pending.required) || 20}`;
-      return `<tr><td>${esc(wilsonConditionLabel(row.condition_number))}</td><td>${esc(version)} · ${esc(total)}</td><td>下限 ${esc(lower)} · 最低 ${esc(minimum)}</td><td>${esc(batch)}</td><td><b>${esc(progress)}</b></td></tr>`;
-    }).join('')}</tbody></table></div>
-    <p class="mx-note">「命中 x/y」是已判定命中率，不是批次進度；批次只看最右欄 x/20。公開面板只顯示不可逆 fixture-market 摘要，不顯示供應商或賽事 ID。</p></section>`;
+  const rawFunnel = validation?.condition_funnel;
+  const hasFunnel = validWilsonFunnelPayload(rawFunnel);
+  const funnel = hasFunnel ? rawFunnel : {};
+  const rows = Array.isArray(funnel.conditions) ? funnel.conditions.filter((row) =>
+    row && typeof row === 'object'
+  ).sort((a, b) => (numeric(a.condition_number) || 999999) - (numeric(b.condition_number) || 999999)) : [];
+  if (!rows.length) return `<section class="card" data-testid="wilson-condition-funnel"><h2 class="card-h">Wilson 證據版本／條件漏斗</h2><div class="empty2">${
+    !hasFunnel || funnel.unavailable_reason
+      ? '漏斗資料未可用；不會由舊摘要或即時資料推算。'
+      : '尚未有已凍結條件；新結果不會以舊驗證紀錄追溯補入。'
+  }</div></section>`;
+  const stage = (stages, key, label, note = '') => {
+    const item = stages?.[key] || {}, partial = item.availability === 'partial';
+    const unavailable = item.available !== true;
+    const value = partial
+      ? `部分可驗證：${Math.trunc(numeric(item.verified_count) || 0)}；舊紀錄未能驗證 ${Math.trunc(numeric(item.legacy_unverifiable_count) || 0)}`
+      : unavailable ? '未能可靠重建' : (
+      key === 'current_rollover_progress'
+        ? item.display
+        : `${numeric(item.count) == null ? 0 : Math.trunc(numeric(item.count))}${item.availability === 'bounded' ? '（保留窗口）' : ''}`
+    );
+    return `<div class="wilson-funnel-stage ${unavailable ? 'is-unavailable' : ''}">
+      <span class="wilson-funnel-stage-label">${esc(label)}</span>
+      <strong>${esc(value || '未能可靠重建')}</strong>
+      ${note ? `<small>${esc(note)}</small>` : ''}
+    </div>`;
+  };
+  const axes = [
+    ['market', '市場'], ['stage', '決策時點'], ['path', '路徑'],
+    ['direction', '方向'], ['role', '角色'], ['line_bucket', '盤口層'],
+    ['odds_tier', '賠率層'], ['movement', '走勢'], ['odds_trajectory', '賠率軌跡'],
+  ];
+  return `<section class="card" data-testid="wilson-condition-funnel">
+    <h2 class="card-h">Wilson 證據版本／條件漏斗 <span class="sub">唯讀 · 完全相同凍結條件 · 預設收合</span></h2>
+    <p class="mx-note">只使用已保存的原生階段、凍結條件、正式觀察／模擬注、結算、rollover 與 audit 證據。完全吻合之前沒有可保存的條件歸屬，因此第一層會誠實標示「未能可靠重建」，不會把所有 T-5 推算到每個條件。</p>
+    <div class="wilson-condition-list">${rows.map((row) => {
+      const active = row.active_evidence || {}, stages = row.stages || {};
+      const identityAvailable = row.identity_available === true;
+      const signature = String(row.condition_signature || '');
+      const activeVersion = identityAvailable && numeric(active.version) != null
+        ? `證據 v${Math.trunc(numeric(active.version))}` : '身份／證據未可用';
+      const cumulative = numeric(active.cumulative_decided) == null
+        ? '累計證據未可用'
+        : `${numeric(active.cumulative_hits) || 0}/${Math.trunc(numeric(active.cumulative_decided))}`;
+      const progress = stages.current_rollover_progress?.available === true
+        ? stages.current_rollover_progress.display
+        : 'x/20 未可用';
+      const definition = row.definition || {};
+      const definitions = axes.filter(([key]) => definition[key] != null && definition[key] !== '')
+        .map(([key, label]) => `<div><span>${esc(label)}</span><b>${esc(publicText(definition[key]))}</b></div>`).join('');
+      const rejections = Array.isArray(row.rejections?.items) ? row.rejections.items : [];
+      const omitted = numeric(row.rejections?.omitted_reason_kinds) || 0;
+      const exactStage = stages.exact_condition_matches || {};
+      const exactNote = exactStage.availability === 'partial'
+        ? '部分 audit 缺少或未通過新證據綁定；不會顯示成完整計數'
+        : exactStage.availability === 'bounded' && exactStage.truncation_possible === true
+        ? `可能已截斷；最近最多 ${numeric(exactStage.window_limit) || 1600} audit entries`
+        : (exactStage.available === true ? '完整保留 audit；未見截斷' : 'audit 完整性未能驗證');
+      const recordedStage = stages.recorded_formal_evidence || {};
+      const recordedNote = recordedStage.availability === 'partial'
+        ? `已驗證 ${numeric(recordedStage.verified_count) || 0} · 舊識別碼未能驗證 ${numeric(recordedStage.legacy_unverifiable_count) || 0}`
+        : `模擬注 ${numeric(recordedStage.formal_bets) || 0} · 觀察 ${numeric(recordedStage.formal_observations) || 0}`;
+      return `<details class="wilson-condition" data-testid="wilson-condition-${Number.isInteger(row.condition_number) ? row.condition_number : 'unavailable'}">
+        <summary>
+          <span class="wilson-condition-title">${esc(wilsonConditionLabel(row.condition_number))}</span>
+          <span class="wilson-condition-version">${esc(activeVersion)} · ${esc(cumulative)}</span>
+          <span class="wilson-condition-progress">${esc(progress)}</span>
+        </summary>
+        <div class="wilson-condition-body">
+          <div class="wilson-condition-identity">
+            <div><span>條件版本</span><b>${esc(identityAvailable ? row.condition_version : '未可用')}</b></div>
+            <div><span>完整 signature</span><code>${esc(signature || '未可用')}</code></div>
+            <div><span>證據 hash</span><code>${esc(active.evidence_hash || '未可用')}</code></div>
+          </div>
+          <div class="wilson-definition-grid">${definitions || '<div><span>凍結定義</span><b>未可用</b></div>'}</div>
+          <div class="wilson-funnel-grid">
+            ${stage(stages, 'eligible_post_activation_t5_observations', '啟用後合資格 T-5', '吻合前沒有條件歸屬')}
+            ${stage(stages, 'exact_condition_matches', '完全相同條件吻合', exactNote)}
+            ${stage(stages, 'recorded_formal_evidence', '已記錄正式證據', recordedNote)}
+            ${stage(stages, 'settled_valid_evidence', '已結算有效證據', '唯一、二元判定、界線後')}
+            ${stage(stages, 'current_rollover_progress', '目前 x/20', '只顯示已保存 rollover 進度')}
+          </div>
+          <h3 class="sub-h">有證據支持的拒絕原因</h3>
+          ${rejections.length ? `<div class="wilson-rejections">${rejections.map((item) =>
+            `<div><span>${esc(item.label || item.code || '其他安全拒絕')}</span><b>${numeric(item.count) || 0}</b><small>${esc(item.source === 'retained_condition_audit' ? '保留 audit 窗口' : '正式結算證據')}</small></div>`
+          ).join('')}${omitted ? `<p>另有 ${omitted} 類低頻原因未顯示。</p>` : ''}</div>` : '<div class="empty2 compact">保留證據內未有可歸屬到此條件的拒絕原因。</div>'}
+        </div>
+      </details>`;
+    }).join('')}</div>
+    <p class="mx-note">各欄是不同保存範圍的獨立證據計數，不假設單調漏斗。「已結算有效證據」須精確吻合入場證據版本／hash；「目前 x/20」須與目前有效版本後的可驗證行完全一致。audit 只有在保存 metadata 證明截斷時才標示為有界。</p>
+  </section>`;
 }
 
 function probabilityResearchCard(research) {

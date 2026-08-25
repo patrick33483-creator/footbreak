@@ -1,0 +1,146 @@
+/* Pure-render smoke tests for the collapsed Footbreak Wilson condition funnel. */
+import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
+const source = readFileSync(resolve(ROOT, 'hkjc-dashboard', 'app.js'), 'utf8');
+const start = source.indexOf('function validWilsonFunnelPayload(funnel) {');
+const end = source.indexOf('\nfunction probabilityResearchCard(', start);
+if (start < 0 || end < 0) throw new Error('Wilson funnel renderer not found');
+
+const numeric = (value) =>
+  value == null || value === '' || !Number.isFinite(Number(value)) ? null : Number(value);
+const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (character) =>
+  ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]);
+const publicText = (value) => String(value ?? '');
+const wilsonConditionLabel = (value) => `條件 ${value}`;
+const factory = new Function(
+  'numeric', 'esc', 'publicText', 'wilsonConditionLabel',
+  `${source.slice(start, end)}\nreturn wilsonRolloverCard;`,
+);
+const render = factory(numeric, esc, publicText, wilsonConditionLabel);
+
+function assert(condition, message) {
+  if (!condition) throw new Error(`FAIL ${message}`);
+}
+
+const signature = 'a'.repeat(24);
+const validation = {
+  condition_funnel: {
+    schema_version: 1,
+    read_only: true,
+    system: 'footbreak',
+    condition_count: 1,
+    unavailable_reason: null,
+    conditions: [{
+      condition_number: 4,
+      identity_available: true,
+      condition_signature: signature,
+      condition_version: 'granular-condition-v1',
+      definition: {
+        market: 'HDC', stage: 'T-5', path: '首預→T-30→T-5',
+        role: '主讓', line_bucket: '-0.75~-0.25', odds_tier: '1.70–1.89',
+      },
+      active_evidence: {
+        version: 3, evidence_hash: 'e'.repeat(64),
+        cumulative_hits: 53, cumulative_decided: 80,
+      },
+      stages: {
+        eligible_post_activation_t5_observations: {
+          available: false, availability: 'unavailable', count: null,
+          reason: 'condition_attribution_not_persisted_before_exact_match',
+        },
+        exact_condition_matches: {
+          available: true, availability: 'bounded', count: 9,
+          truncation_possible: true, window_limit: 1600,
+        },
+        recorded_formal_evidence: {
+          available: true, availability: 'available', count: 8,
+          formal_bets: 5, formal_observations: 3,
+        },
+        settled_valid_evidence: {
+          available: true, availability: 'available', count: 7, hits: 5,
+        },
+        current_rollover_progress: {
+          available: true, availability: 'available', count: 7,
+          required: 20, display: '7/20', eligible_hits: 5,
+        },
+      },
+      rejections: {
+        bounded: true,
+        visible_limit: 8,
+        items: [{
+          code: 'wilson_gate_not_passed',
+          category: 'execution_gate',
+          label: '完全相同條件吻合，但賠率未通過 Wilson 門檻',
+          count: 3,
+          source: 'retained_condition_audit',
+        }],
+        omitted_reason_kinds: 0,
+      },
+    }],
+  },
+};
+const html = render(validation);
+
+assert(html.includes('data-testid="wilson-condition-funnel"'), 'funnel test id');
+assert(html.includes('data-testid="wilson-condition-4"'), 'condition test id');
+assert(html.includes('<details class="wilson-condition"'), 'semantic collapsed disclosure');
+assert(!html.includes('<details class="wilson-condition" open'), 'conditions default collapsed');
+assert(html.includes('證據 v3 · 53/80'), 'active evidence version and cumulative evidence');
+assert(html.includes('7/20'), 'persisted current x/20');
+assert(html.includes(signature), 'full immutable signature');
+assert(html.includes('granular-condition-v1'), 'condition definition version');
+assert(html.includes('未能可靠重建'), 'unavailable upstream count');
+assert(html.includes('9（保留窗口）'), 'bounded exact-match count');
+assert(html.includes('可能已截斷；最近最多 1600 audit entries'), 'bounded label requires truncation proof');
+assert(html.includes('模擬注 5 · 觀察 3'), 'formal evidence split');
+assert(html.includes('完全相同條件吻合，但賠率未通過 Wilson 門檻'), 'supported rejection');
+assert(!html.includes('provider'), 'no provider payload rendering');
+
+const partialExact = structuredClone(validation);
+partialExact.condition_funnel.conditions[0].stages.exact_condition_matches = {
+  available: false,
+  availability: 'partial',
+  count: null,
+  verified_count: 1,
+  legacy_unverifiable_count: 2,
+  truncation_possible: false,
+  reason: 'legacy_or_invalid_exact_match_binding',
+};
+const partialExactHtml = render(partialExact);
+assert(partialExactHtml.includes('部分可驗證：1；舊紀錄未能驗證 2'), 'partial exact coverage is explicit');
+assert(partialExactHtml.includes('不會顯示成完整計數'), 'partial exact stage is not presented as complete');
+
+const partialRecorded = structuredClone(validation);
+partialRecorded.condition_funnel.conditions[0].stages.recorded_formal_evidence = {
+  available: false,
+  availability: 'partial',
+  count: null,
+  verified_count: 4,
+  legacy_unverifiable_count: 1,
+  formal_bets: 3,
+  formal_observations: 1,
+  reason: 'legacy_or_invalid_formal_row_identity',
+};
+const partialRecordedHtml = render(partialRecorded);
+assert(partialRecordedHtml.includes('部分可驗證：4；舊紀錄未能驗證 1'), 'partial formal ID coverage is explicit');
+
+const stale = render({ rollover: { conditions: { old: { pending_progress: { display: '2/20' } } } } });
+assert(stale.includes('漏斗資料未可用；不會由舊摘要或即時資料推算。'), 'stale payload fails closed');
+assert(!stale.includes('2/20'), 'stale rollover summary is not inferred into funnel');
+
+for (const malformed of [
+  {},
+  { schema_version: 1, read_only: true, system: 'footbreak', condition_count: 0 },
+  { schema_version: 1, read_only: true, system: 'footbreak', condition_count: 1, conditions: [] },
+  { schema_version: 1, read_only: true, system: 'footbreak', condition_count: 0, conditions: {}, unavailable_reason: null },
+  { schema_version: 1, read_only: true, system: 'footbreak', condition_count: 1, conditions: [{}], unavailable_reason: null },
+]) {
+  const result = render({ condition_funnel: malformed });
+  assert(result.includes('漏斗資料未可用；不會由舊摘要或即時資料推算。'), 'malformed payload fails closed');
+  assert(!result.includes('尚未有已凍結條件'), 'malformed payload never resembles legitimate empty state');
+}
+
+console.log('Wilson condition funnel UI smoke checks passed');

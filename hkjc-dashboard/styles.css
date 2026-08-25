@@ -536,6 +536,94 @@ table.t.bets td.good { color: var(--good); } table.t.bets td.amber { color: var(
 .stpill.settled { color: var(--good); }
 .stpill.voided { color: var(--ink-4); }
 
+/* Wilson 凍結條件漏斗 */
+.wilson-condition-list { display: grid; gap: var(--s2); margin-top: var(--s4); }
+.wilson-condition {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--bg-2);
+  overflow: clip;
+}
+.wilson-condition > summary {
+  min-height: 48px;
+  display: grid;
+  grid-template-columns: minmax(130px, .8fr) minmax(180px, 1fr) auto;
+  align-items: center;
+  gap: var(--s3);
+  padding: var(--s3) var(--s4);
+  cursor: pointer;
+  color: var(--ink-2);
+}
+.wilson-condition > summary:hover { background: var(--panel-2); color: var(--ink); }
+.wilson-condition > summary::marker { color: var(--amber); }
+.wilson-condition-title { color: var(--ink); font-weight: 700; }
+.wilson-condition-version,
+.wilson-condition-progress { font-family: var(--mono); font-size: var(--text-xs); }
+.wilson-condition-progress {
+  min-width: 72px;
+  padding: var(--s1) var(--s2);
+  border: 1px solid var(--amber-dim);
+  border-radius: var(--radius-sm);
+  color: var(--amber);
+  text-align: center;
+}
+.wilson-condition-body { display: grid; gap: var(--s4); padding: var(--s4); border-top: 1px solid var(--line); }
+.wilson-condition-identity { display: grid; gap: var(--s2); }
+.wilson-condition-identity > div { display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: var(--s3); }
+.wilson-condition-identity span,
+.wilson-definition-grid span { color: var(--ink-4); font-size: var(--text-xs); }
+.wilson-condition-identity b,
+.wilson-condition-identity code,
+.wilson-definition-grid b { color: var(--ink-2); font: 500 var(--text-xs)/1.5 var(--mono); overflow-wrap: anywhere; }
+.wilson-definition-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: var(--s2); }
+.wilson-definition-grid > div { padding: var(--s2) var(--s3); border: 1px solid var(--line-soft); border-radius: var(--radius-sm); }
+.wilson-definition-grid span,
+.wilson-definition-grid b { display: block; }
+.wilson-funnel-grid { display: grid; grid-template-columns: repeat(5, minmax(130px, 1fr)); gap: var(--s2); }
+.wilson-funnel-stage {
+  position: relative;
+  min-width: 0;
+  padding: var(--s3);
+  border: 1px solid color-mix(in oklab, var(--good) 35%, var(--line));
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+}
+.wilson-funnel-stage:not(:last-child)::after {
+  content: "›";
+  position: absolute;
+  right: calc(var(--s2) * -1);
+  top: 50%;
+  z-index: 1;
+  translate: 50% -50%;
+  color: var(--ink-4);
+  font: 700 var(--text-lg)/1 var(--mono);
+}
+.wilson-funnel-stage.is-unavailable { border-style: dashed; border-color: var(--line); }
+.wilson-funnel-stage-label,
+.wilson-funnel-stage strong,
+.wilson-funnel-stage small { display: block; }
+.wilson-funnel-stage-label { min-height: 2.7em; color: var(--ink-3); font-size: var(--text-xs); }
+.wilson-funnel-stage strong { margin-top: var(--s2); color: var(--good); font: 700 var(--text-sm)/1.35 var(--mono); overflow-wrap: anywhere; }
+.wilson-funnel-stage.is-unavailable strong { color: var(--warn); font-family: var(--sans); }
+.wilson-funnel-stage small { margin-top: var(--s1); color: var(--ink-4); font-size: var(--text-xs); }
+.wilson-rejections { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: var(--s2); }
+.wilson-rejections > div { display: grid; grid-template-columns: 1fr auto; gap: var(--s1) var(--s3); padding: var(--s2) var(--s3); border-left: 3px solid var(--warn); background: var(--panel); }
+.wilson-rejections span { color: var(--ink-2); font-size: var(--text-xs); }
+.wilson-rejections b { color: var(--warn); font: 700 var(--text-sm)/1.4 var(--mono); }
+.wilson-rejections small { grid-column: 1 / -1; color: var(--ink-4); font-size: var(--text-xs); }
+.wilson-rejections p { color: var(--ink-4); font-size: var(--text-xs); }
+.empty2.compact { padding: var(--s4); }
+@media (max-width: 920px) {
+  .wilson-funnel-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .wilson-funnel-stage::after { display: none; }
+}
+@media (max-width: 620px) {
+  .wilson-condition > summary { grid-template-columns: 1fr auto; }
+  .wilson-condition-version { grid-column: 1 / -1; }
+  .wilson-condition-identity > div { grid-template-columns: 1fr; gap: var(--s1); }
+  .wilson-funnel-grid { grid-template-columns: 1fr; }
+}
+
 /* ─── 全量純預測紀錄 ───────────────────── */
 .history-note { margin-bottom: var(--s4); }
 .history-summary-label {

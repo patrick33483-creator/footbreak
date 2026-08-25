@@ -28,9 +28,63 @@ Z_95 = 1.959963984540054
 LEGACY_STRATEGY = "independent-validation-v1"
 ROLLOVER_BATCH_SIZE = 20
 ROLLOVER_AUDIT_LIMIT = 64
+CONDITION_AUDIT_LIMIT = 1600
+FUNNEL_REJECTION_LIMIT = 8
+PRODUCTION_IDENTITY_MANIFEST_SCHEMA_VERSION = 1
+PRODUCTION_IDENTITY_MANIFEST_VERSION = "wilson-production-identity-v1"
 BINARY_HIT_RESULTS = {"Won", "Half Won"}
 BINARY_MISS_RESULTS = {"Lost", "Half Lost"}
 BINARY_DECIDED_RESULTS = BINARY_HIT_RESULTS | BINARY_MISS_RESULTS
+
+FUNNEL_AUDIT_REJECTIONS = {
+    "stage_not_strictly_after_evidence_activation_boundary": (
+        "evidence_boundary", "T-5 不在目前證據版本啟用界線之後",
+    ),
+    "active_evidence_unavailable": (
+        "evidence_integrity", "有效證據版本未可用",
+    ),
+    "active_evidence_arithmetic_invalid": (
+        "evidence_integrity", "有效證據無法形成正式 Wilson 算術",
+    ),
+    "wilson_gate_not_passed": (
+        "execution_gate", "完全相同條件吻合，但賠率未通過 Wilson 門檻",
+    ),
+    "idempotent_existing_market": (
+        "duplicate_guard", "相同賽事市場已有正式紀錄",
+    ),
+    "fixture_cap_reached": (
+        "portfolio_guard", "每場市場或注碼上限已達",
+    ),
+}
+
+FUNNEL_SETTLEMENT_REJECTIONS = {
+    "missing_formal_row_identity": (
+        "evidence_integrity", "正式紀錄缺少不可變識別碼",
+    ),
+    "invalid_formal_row_identity": (
+        "evidence_integrity", "正式紀錄識別碼不符合正式建立規則",
+    ),
+    "invalid_formal_admission_binding": (
+        "evidence_integrity", "正式紀錄與凍結條件或入場證據無法驗證",
+    ),
+    "admitted_evidence_version_mismatch": (
+        "evidence_integrity", "正式紀錄的入場證據版本或 hash 無法驗證",
+    ),
+    "not_settled": ("settlement_state", "正式紀錄尚未結算"),
+    "not_binary_decided": ("settlement_state", "結算不是有效二元判定"),
+    "missing_or_invalid_provenance": (
+        "evidence_integrity", "缺少或無效的原生 T-5 證據標記",
+    ),
+    "before_snapshot_boundary": (
+        "evidence_boundary", "T-5 不在條件初始證據界線之後",
+    ),
+    "duplicate_or_conflicting_fixture_market": (
+        "duplicate_guard", "fixture-market 證據重複或互相衝突",
+    ),
+    "duplicate_or_conflicting_formal_identity": (
+        "duplicate_guard", "相同正式識別碼的紀錄重複或互相衝突",
+    ),
+}
 
 
 def _number(value: Any) -> float | None:
@@ -1126,6 +1180,881 @@ def project_frozen_ranking_evidence(
     return projected
 
 
+def _strict_int(value: Any) -> int | None:
+    """Return a real JSON-style integer, never a bool/coerced string/float."""
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _sha256_hex(value: Any, *, length: int = 64) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == length
+        and all(char in "0123456789abcdef" for char in value)
+    )
+
+
+def _same_optional_number(actual: Any, expected: Any) -> bool:
+    if actual is None or expected is None:
+        return actual is None and expected is None
+    left, right = _number(actual), _number(expected)
+    return (
+        left is not None and right is not None
+        and math.isfinite(left) and math.isfinite(right)
+        and math.isclose(left, right, rel_tol=1e-12, abs_tol=1e-12)
+    )
+
+
+def _funnel_unavailable(system: str, reason: str) -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "read_only": True,
+        "system": system,
+        "condition_count": 0,
+        "conditions": [],
+        "unavailable_reason": reason,
+    }
+
+
+def _validate_frozen_identity_and_chain(
+    frozen: dict[str, Any], signature: str, system: str,
+) -> tuple[dict[str, Any] | None, list[dict[str, Any]] | None, str | None]:
+    """Validate one immutable definition and its complete evidence hash chain."""
+    definition = frozen.get("definition")
+    expected_definition_keys = {
+        "system", "version", "market", "stage", "path", "direction", "role",
+        "line_bucket", "odds_tier", "movement", "odds_trajectory", "miner_key",
+    }
+    if (
+        not isinstance(definition, dict)
+        or set(definition) != expected_definition_keys
+        or definition.get("system") != system
+        or not isinstance(definition.get("version"), str)
+        or not isinstance(definition.get("market"), str)
+        or not isinstance(definition.get("stage"), str)
+        or not isinstance(definition.get("miner_key"), list)
+        or any(not isinstance(item, str) for item in definition["miner_key"])
+    ):
+        return None, None, "frozen_condition_definition_invalid"
+    raw = json.dumps(
+        definition, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    )
+    rebuilt_signature = hashlib.sha256(raw.encode()).hexdigest()[:24]
+    if (
+        not _sha256_hex(signature, length=24)
+        or rebuilt_signature != signature
+        or frozen.get("signature") != signature
+    ):
+        return None, None, "frozen_condition_signature_mismatch"
+
+    versions = frozen.get("evidence_versions")
+    if (
+        not isinstance(versions, list)
+        or not versions
+        or any(not isinstance(row, dict) for row in versions)
+    ):
+        return copy.deepcopy(definition), None, "evidence_version_chain_invalid"
+
+    validated: list[dict[str, Any]] = []
+    previous: dict[str, Any] | None = None
+    previous_boundary: datetime | None = None
+    previous_created_at: datetime | None = None
+    for index, row in enumerate(versions, start=1):
+        version = _strict_int(row.get("version"))
+        batch_hits = _strict_int(row.get("batch_hits"))
+        batch_decided = _strict_int(row.get("batch_decided"))
+        cumulative_hits = _strict_int(row.get("cumulative_hits"))
+        cumulative_decided = _strict_int(row.get("cumulative_decided"))
+        boundary = _time(row.get("activation_boundary_at"))
+        created_at = _time(row.get("created_at"))
+        hashes = row.get("batch_fixture_market_hashes")
+        if (
+            version != index
+            or row.get("condition_signature") != signature
+            or batch_hits is None or batch_decided is None
+            or cumulative_hits is None or cumulative_decided is None
+            or not 0 <= batch_hits <= batch_decided
+            or not 0 <= cumulative_hits <= cumulative_decided
+            or boundary is None or created_at is None
+            or created_at < boundary
+            or not isinstance(hashes, list)
+            or any(not _sha256_hex(value) for value in hashes)
+            or len(set(hashes)) != len(hashes)
+            or not _sha256_hex(row.get("evidence_hash"))
+            or row["evidence_hash"] != _version_hash(row)
+        ):
+            return copy.deepcopy(definition), None, "evidence_version_chain_invalid"
+        legacy_batch = (
+            row.get("initial_migration_full_cohort") is True
+            and row.get("batch_fixture_market_ids_unavailable_from_legacy_aggregate") is True
+        )
+        legacy_cohort = row.get("legacy_prospective_cohort")
+        legacy_batch_valid = (
+            legacy_batch
+            and index == 2
+            and previous is not None
+            and previous.get("version") == 1
+            and previous.get("migration_baseline") is True
+            and created_at == boundary
+            and isinstance(legacy_cohort, dict)
+            and set(legacy_cohort) == {"hits", "decided", "pushes"}
+            and _strict_int(legacy_cohort.get("hits")) == batch_hits
+            and _strict_int(legacy_cohort.get("decided")) == batch_decided
+            and _strict_int(legacy_cohort.get("pushes")) is not None
+            and legacy_cohort["pushes"] >= 0
+        )
+        if (
+            (len(hashes) != batch_decided and not legacy_batch)
+            or (legacy_batch and hashes)
+            or (legacy_batch and not legacy_batch_valid)
+            or (
+                not legacy_batch
+                and (
+                    row.get("initial_migration_full_cohort") is not None
+                    or row.get("batch_fixture_market_ids_unavailable_from_legacy_aggregate") is not None
+                    or row.get("legacy_prospective_cohort") is not None
+                )
+            )
+            or (previous_boundary is not None and boundary < previous_boundary)
+            or (previous_created_at is not None and created_at < previous_created_at)
+            or (
+                previous_boundary is not None
+                and boundary == previous_boundary
+                and not legacy_batch
+            )
+        ):
+            return copy.deepcopy(definition), None, "evidence_version_chain_invalid"
+        values = _evidence_values(cumulative_hits, cumulative_decided)
+        if (
+            not _same_optional_number(
+                row.get("wilson95_lower_raw"), values["wilson95_lower_raw"],
+            )
+            or not _same_optional_number(
+                row.get("minimum_acceptable_odds_raw"),
+                values["minimum_acceptable_odds_raw"],
+            )
+        ):
+            return copy.deepcopy(definition), None, "evidence_version_chain_invalid"
+        if previous is None:
+            if (
+                row.get("prior_version") is not None
+                or row.get("prior_evidence_hash") is not None
+            ):
+                return copy.deepcopy(definition), None, "evidence_version_chain_invalid"
+        else:
+            if (
+                row.get("prior_version") != previous["version"]
+                or row.get("prior_evidence_hash") != previous["evidence_hash"]
+                or cumulative_hits != previous["cumulative_hits"] + batch_hits
+                or cumulative_decided != previous["cumulative_decided"] + batch_decided
+            ):
+                return copy.deepcopy(definition), None, "evidence_version_chain_invalid"
+        validated.append(row)
+        previous, previous_boundary, previous_created_at = row, boundary, created_at
+
+    active = validated[-1]
+    if (
+        _strict_int(frozen.get("active_evidence_version")) != active["version"]
+        or frozen.get("active_evidence_hash") != active["evidence_hash"]
+    ):
+        return copy.deepcopy(definition), None, "active_evidence_pointer_mismatch"
+    pointer = frozen.get("active_evidence")
+    if pointer is not None:
+        pointer_keys = (
+            "version", "cumulative_hits", "cumulative_decided",
+            "wilson95_lower_raw", "minimum_acceptable_odds_raw",
+            "minimum_acceptable_odds_display", "activation_boundary_at",
+            "created_at", "evidence_hash",
+        )
+        if (
+            not isinstance(pointer, dict)
+            or any(key not in pointer for key in pointer_keys)
+            or any(pointer.get(key) != active.get(key) for key in pointer_keys)
+        ):
+            return copy.deepcopy(definition), None, "active_evidence_pointer_mismatch"
+    return copy.deepcopy(definition), validated, None
+
+
+def _expected_production_identity_manifest(
+    ns: dict[str, Any], system: str,
+) -> tuple[dict[str, Any] | None, dict[str, tuple[dict[str, Any], list[dict[str, Any]]]] | None, str | None]:
+    """Build the deterministic identity root from an already-frozen registry."""
+    conditions, order = ns.get("conditions"), ns.get("condition_order")
+    if not isinstance(conditions, dict) or not isinstance(order, list):
+        return None, None, "frozen_condition_registry_unavailable"
+    if (
+        not order
+        or any(not isinstance(signature, str) for signature in order)
+        or len(order) != len(set(order))
+        or set(order) != set(conditions)
+        or any(not isinstance(conditions.get(signature), dict) for signature in order)
+    ):
+        return None, None, "frozen_condition_registry_malformed"
+
+    entries: list[dict[str, Any]] = []
+    validated: dict[str, tuple[dict[str, Any], list[dict[str, Any]]]] = {}
+    for expected_number, signature in enumerate(order, start=1):
+        frozen = conditions[signature]
+        number = _strict_int(frozen.get("condition_number"))
+        if number != expected_number:
+            return None, None, "frozen_condition_number_registry_malformed"
+        definition, versions, reason = _validate_frozen_identity_and_chain(
+            frozen, signature, system,
+        )
+        if reason is not None or definition is None or versions is None:
+            return None, None, reason or "frozen_identity_unavailable"
+        validated[signature] = (definition, versions)
+        entries.append({
+            "condition_number": number,
+            "condition_signature": signature,
+            "definition_hash": _canonical_hash(definition),
+            "initial_evidence_hash": versions[0]["evidence_hash"],
+        })
+    body = {
+        "schema_version": PRODUCTION_IDENTITY_MANIFEST_SCHEMA_VERSION,
+        "manifest_version": PRODUCTION_IDENTITY_MANIFEST_VERSION,
+        "system": system,
+        "immutable": True,
+        "entries": entries,
+    }
+    return {**body, "manifest_hash": _canonical_hash(body)}, validated, None
+
+
+def create_production_identity_manifest(
+    ledger: dict[str, Any], system: str, *, authorized_manifest: dict[str, Any] | None = None,
+    trusted_manifest_hash: str | None = None,
+) -> dict[str, Any]:
+    """Persist an independently authorized production identity root exactly once.
+
+    Authority must be supplied independently as either the complete canonical
+    manifest document or its trusted expected hash.  The current mutable
+    registry can prove equality with that authority, but can never authorize
+    itself. Existing manifests are verified and never overwritten.
+    """
+    if (authorized_manifest is None) == (trusted_manifest_hash is None):
+        raise ValueError("supply exactly one independent manifest authority")
+    ns = ledger.get(NAMESPACE)
+    if (
+        not isinstance(ns, dict)
+        or ns.get("schema_version") != SCHEMA_VERSION
+        or ns.get("system") != system
+    ):
+        raise ValueError("validated Wilson namespace required")
+    expected, _validated, reason = _expected_production_identity_manifest(ns, system)
+    if expected is None:
+        raise ValueError(reason or "validated frozen registry required")
+    expected_bytes = json.dumps(
+        expected, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")
+    if authorized_manifest is not None:
+        if not isinstance(authorized_manifest, dict):
+            raise ValueError("authorized production identity manifest must be an object")
+        authorized_bytes = json.dumps(
+            authorized_manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        ).encode("utf-8")
+        if authorized_bytes != expected_bytes:
+            raise ValueError("authorized production identity manifest mismatch")
+    elif (
+        not _sha256_hex(trusted_manifest_hash)
+        or trusted_manifest_hash != expected["manifest_hash"]
+    ):
+        raise ValueError("trusted production identity manifest hash mismatch")
+    existing = ns.get("production_identity_manifest")
+    if existing is not None:
+        if existing != expected:
+            raise ValueError("immutable production identity manifest mismatch")
+        return copy.deepcopy(existing)
+    ns["production_identity_manifest"] = copy.deepcopy(expected)
+    return copy.deepcopy(expected)
+
+
+def _unavailable_condition_card(
+    number: int, reason: str,
+) -> dict[str, Any]:
+    stage = {
+        "available": False, "availability": "unavailable", "count": None,
+        "reason": reason,
+    }
+    progress = {
+        **stage, "required": ROLLOVER_BATCH_SIZE, "display": None,
+    }
+    return {
+        "condition_number": number,
+        "identity_available": False,
+        "condition_signature": None,
+        "condition_version": None,
+        "definition": None,
+        "frozen_at": None,
+        "unavailable_reason": reason,
+        "active_evidence": {
+            "version": None, "unavailable_reason": reason,
+        },
+        "stages": {
+            "eligible_post_activation_t5_observations": copy.deepcopy(stage),
+            "exact_condition_matches": copy.deepcopy(stage),
+            "recorded_formal_evidence": copy.deepcopy(stage),
+            "settled_valid_evidence": copy.deepcopy(stage),
+            "current_rollover_progress": progress,
+        },
+        "rejections": {
+            "bounded": True,
+            "visible_limit": FUNNEL_REJECTION_LIMIT,
+            "audit_window_limit": CONDITION_AUDIT_LIMIT,
+            "audit_truncation_possible": False,
+            "items": [],
+            "omitted_reason_kinds": 0,
+        },
+    }
+
+
+def _validate_formal_admission_binding(
+    row: dict[str, Any], *, observation: bool, system: str, signature: str,
+    definition: dict[str, Any], frozen: dict[str, Any],
+    version_by_number: dict[int, dict[str, Any]], projection_time: datetime,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Validate the immutable native admission before any funnel count."""
+    fixture = row.get("match_id")
+    market = row.get("market")
+    marker = row.get("rollover_provenance")
+    evidence_version = _strict_int(row.get("evidence_version"))
+    admitted = version_by_number.get(evidence_version)
+    stage_at = _time(marker.get("stage_at")) if isinstance(marker, dict) else None
+    created_at = _time(row.get("created_at"))
+    admission_at = _time(row.get("admission_at")) if row.get("admission_at") is not None else None
+    kickoff = _time(row.get("kickoff") or row.get("kickoff_hkt"))
+    condition_number_value = _strict_int(row.get("condition_number"))
+    expected_number = _strict_int(frozen.get("condition_number"))
+    historical = row.get("frozen_historical_evidence")
+    if (
+        not isinstance(fixture, str) or not fixture
+        or market not in {"HDC", "HIL", "CHL"}
+        or (row.get("code") is not None and row.get("code") != market)
+        or (observation and row.get("formal_bet") is not False)
+        or (not observation and row.get("formal_bet") is False)
+        or row.get("stage") != DECISION_STAGE
+        or row.get("first_native_pre_kickoff_t5") is not True
+        or row.get("post_hoc_backfill") not in (None, False)
+        or row.get("exclude_from_simulation") not in (None, False)
+        or row.get("frozen_condition_signature") != signature
+        or row.get("frozen_condition_definition") != definition
+        or definition.get("market") != market
+        or condition_number_value != expected_number
+        or admitted is None
+        or row.get("evidence_hash") != admitted.get("evidence_hash")
+        or not isinstance(marker, dict)
+        or row.get("native_stage_at") != marker.get("stage_at")
+        or not isinstance(historical, dict)
+        or _strict_int(historical.get("hits")) != admitted.get("cumulative_hits")
+        or _strict_int(historical.get("decided")) != admitted.get("cumulative_decided")
+        or historical.get("evidence_version") != evidence_version
+        or historical.get("evidence_hash") != admitted.get("evidence_hash")
+        or set(marker) != {
+            "schema_version", "system", "condition_signature",
+            "native_pre_kickoff_t5", "stage_at", "fixture_market_hash",
+            "admitted_evidence_version", "admitted_evidence_hash",
+        }
+        or marker.get("schema_version") != 1
+        or marker.get("system") != system
+        or marker.get("condition_signature") != signature
+        or marker.get("native_pre_kickoff_t5") is not True
+        or marker.get("admitted_evidence_version") != evidence_version
+        or marker.get("admitted_evidence_hash") != admitted.get("evidence_hash")
+        or marker.get("fixture_market_hash")
+        != _fixture_market_hash(system, fixture, market)
+        or stage_at is None or created_at is None or kickoff is None
+        or not _strictly_after(
+            marker.get("stage_at"), admitted.get("activation_boundary_at"),
+        )
+        or stage_at > created_at
+        or (admission_at is not None and not stage_at <= admission_at <= created_at)
+        or created_at >= kickoff
+        or stage_at >= kickoff
+        or stage_at > projection_time
+        or created_at > projection_time
+    ):
+        return None, "invalid_formal_admission_binding"
+
+    arithmetic = row.get("wilson_admission")
+    expected_arithmetic = admission_arithmetic(
+        admitted["cumulative_hits"], admitted["cumulative_decided"], row.get("odds"),
+    )
+    arithmetic_keys = (
+        "hits", "decided", "hit_rate_raw", "wilson95_lower_raw",
+        "wilson95_upper_raw", "actual_decimal_odds_raw", "break_even_rate_raw",
+        "required_rate_raw", "minimum_acceptable_odds_raw", "passes",
+    )
+    if (
+        not isinstance(arithmetic, dict)
+        or expected_arithmetic is None
+        or arithmetic.get("passes") is not (not observation)
+        or any(
+            (
+                arithmetic.get(key) != expected_arithmetic.get(key)
+                if key in {"hits", "decided", "passes"}
+                else not _same_optional_number(
+                    arithmetic.get(key), expected_arithmetic.get(key),
+                )
+            )
+            for key in arithmetic_keys
+        )
+    ):
+        return None, "invalid_formal_admission_binding"
+    return admitted, None
+
+
+def project_condition_funnel(
+    ledger: dict[str, Any], system: str,
+) -> dict[str, Any]:
+    """Return a pure, fail-closed funnel from already-durable Wilson evidence."""
+    ns = ledger.get(NAMESPACE)
+    if (
+        not isinstance(ns, dict)
+        or ns.get("schema_version") != SCHEMA_VERSION
+        or str(ns.get("system") or "") != system
+    ):
+        return _funnel_unavailable(system, "wilson_namespace_unavailable")
+    conditions = ns.get("conditions")
+    order = ns.get("condition_order")
+    expected_manifest, validated_registry, registry_reason = (
+        _expected_production_identity_manifest(ns, system)
+    )
+    if expected_manifest is None or validated_registry is None:
+        return _funnel_unavailable(
+            system, registry_reason or "frozen_condition_registry_unavailable",
+        )
+    manifest = ns.get("production_identity_manifest")
+    if (
+        not isinstance(manifest, dict)
+        or json.dumps(manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        != json.dumps(expected_manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    ):
+        return _funnel_unavailable(system, "production_identity_manifest_unavailable_or_mismatch")
+    numbers = [conditions[signature]["condition_number"] for signature in order]
+
+    bets = ledger.get("bets")
+    observations = ns.get("observations", [])
+    audit = ns.get("audit")
+    if not isinstance(bets, list) or not isinstance(observations, list):
+        return _funnel_unavailable(system, "formal_evidence_containers_malformed")
+    if any(not isinstance(row, dict) for row in bets + observations):
+        return _funnel_unavailable(system, "formal_evidence_rows_malformed")
+    audit_rows_valid = isinstance(audit, list) and all(
+        isinstance(row, dict) for row in audit
+    )
+    retained_audit = list(audit) if audit_rows_valid else []
+    audit_metadata = ns.get("audit_retention")
+    dropped_count = (
+        _strict_int(audit_metadata.get("dropped_count"))
+        if isinstance(audit_metadata, dict) else None
+    )
+    metadata_limit = (
+        _strict_int(audit_metadata.get("retained_limit"))
+        if isinstance(audit_metadata, dict) else None
+    )
+    if not audit_rows_valid or len(retained_audit) > CONDITION_AUDIT_LIMIT:
+        audit_availability = "unavailable"
+        audit_reason = "condition_audit_unavailable_or_malformed"
+        audit_truncated = False
+    elif len(retained_audit) < CONDITION_AUDIT_LIMIT:
+        audit_availability = "available"
+        audit_reason = None
+        audit_truncated = False
+    elif (
+        metadata_limit == CONDITION_AUDIT_LIMIT
+        and dropped_count is not None and dropped_count > 0
+    ):
+        audit_availability = "bounded"
+        audit_reason = None
+        audit_truncated = True
+    else:
+        audit_availability = "unavailable"
+        audit_reason = "condition_audit_completeness_unproven_at_retention_limit"
+        audit_truncated = False
+
+    formal_rows = [
+        row for row in bets
+        if row.get("portfolio") == portfolio_name(system)
+        and row.get("strategy") == STRATEGY
+    ] + [
+        row for row in observations
+        if row.get("portfolio") == f"{system}_wilson_observations"
+        and row.get("strategy") == STRATEGY
+        and row.get("formal_bet") is False
+    ]
+    unavailable_upstream = {
+        "available": False,
+        "count": None,
+        "availability": "unavailable",
+        "reason": "condition_attribution_not_persisted_before_exact_match",
+    }
+
+    projection_time = datetime.now(timezone.utc)
+    output: list[dict[str, Any]] = []
+    for signature, number in zip(order, numbers):
+        frozen = conditions[signature]
+        definition, versions = validated_registry[signature]
+        active = versions[-1]
+        version_by_number = {row["version"]: row for row in versions}
+
+        exact_keys: set[tuple[str, str]] = set()
+        legacy_unverifiable_exact = 0
+        audit_rejections: dict[str, int] = {}
+        if audit_availability != "unavailable":
+            for row in retained_audit:
+                if str(row.get("frozen_condition_signature") or "") != signature:
+                    continue
+                fixture = str(row.get("match_id") or "")
+                market = str(row.get("market") or "")
+                exact_outcome = (
+                    (
+                        row.get("status") == "CREATED"
+                        and row.get("reason") == "wilson_candidate_frozen"
+                    )
+                    or (
+                        row.get("status") == "MATCHED_NO_BET"
+                        and row.get("reason") == "wilson_gate_not_passed"
+                    )
+                )
+                binding = row.get("exact_match_binding")
+                audit_version = (
+                    _strict_int(binding.get("evidence_version"))
+                    if isinstance(binding, dict) else None
+                )
+                audit_evidence = version_by_number.get(audit_version)
+                audit_stage_at = (
+                    binding.get("native_stage_at") if isinstance(binding, dict) else None
+                )
+                audit_ts, audit_stage_time = _time(row.get("ts")), _time(audit_stage_at)
+                exact_evidence_valid = (
+                    isinstance(binding, dict)
+                    and set(binding) == {
+                        "schema_version", "condition_signature", "evidence_version",
+                        "evidence_hash", "native_stage_at", "definition_hash",
+                        "fixture_market_hash",
+                    }
+                    and binding.get("schema_version") == 1
+                    and binding.get("condition_signature") == signature
+                    and binding.get("definition_hash") == _canonical_hash(definition)
+                    and definition.get("market") == market
+                    and market in {"HDC", "HIL", "CHL"}
+                    and binding.get("fixture_market_hash")
+                    == _fixture_market_hash(system, fixture, market)
+                    and audit_evidence is not None
+                    and binding.get("evidence_hash") == audit_evidence["evidence_hash"]
+                    and _strictly_after(
+                        audit_stage_at, audit_evidence.get("activation_boundary_at"),
+                    )
+                    and audit_ts is not None
+                    and audit_stage_time is not None
+                    and audit_ts >= audit_stage_time
+                    and (
+                        row.get("status") != "MATCHED_NO_BET"
+                        or _strict_int(row.get("evidence_version")) == audit_version
+                    )
+                )
+                if (
+                    exact_outcome and exact_evidence_valid
+                    and fixture and market and market != "*"
+                ):
+                    exact_keys.add((fixture, market))
+                elif exact_outcome:
+                    legacy_unverifiable_exact += 1
+                reason = str(row.get("reason") or "")
+                if reason in FUNNEL_AUDIT_REJECTIONS:
+                    audit_rejections[reason] = audit_rejections.get(reason, 0) + 1
+
+        rows = [
+            row for row in formal_rows
+            if str(row.get("frozen_condition_signature") or "") == signature
+        ]
+        settlement_rejections = {
+            code: 0 for code in FUNNEL_SETTLEMENT_REJECTIONS
+        }
+        grouped_identities: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        for row in rows:
+            observation = row.get("formal_bet") is False
+            raw_identity = row.get("observation_id") if observation else row.get("bet_id")
+            if not isinstance(raw_identity, str) or not raw_identity.strip():
+                settlement_rejections["missing_formal_row_identity"] += 1
+                continue
+            fixture = row.get("match_id")
+            market = row.get("market")
+            expected_identity = (
+                f"{fixture}|{market}|{DECISION_STAGE}|{signature}|low-odds"
+                if observation else
+                f"{fixture}|{market}|{DECISION_STAGE}|{STRATEGY}"
+            )
+            if (
+                not isinstance(fixture, str) or not fixture
+                or market not in {"HDC", "HIL", "CHL"}
+                or raw_identity != expected_identity
+            ):
+                settlement_rejections["invalid_formal_row_identity"] += 1
+                continue
+            identity = ("observation" if observation else "bet", expected_identity)
+            grouped_identities.setdefault(identity, []).append(row)
+
+        normalized_rows: list[
+            tuple[tuple[str, str], dict[str, Any], dict[str, Any]]
+        ] = []
+        for identity, grouped in grouped_identities.items():
+            if len(grouped) > 1:
+                settlement_rejections[
+                    "duplicate_or_conflicting_formal_identity"
+                ] += len(grouped)
+                continue
+            candidate = grouped[0]
+            admitted, binding_reason = _validate_formal_admission_binding(
+                candidate,
+                observation=identity[0] == "observation",
+                system=system,
+                signature=signature,
+                definition=definition,
+                frozen=frozen,
+                version_by_number=version_by_number,
+                projection_time=projection_time,
+            )
+            if admitted is None:
+                settlement_rejections[
+                    binding_reason or "invalid_formal_admission_binding"
+                ] += 1
+                continue
+            normalized_rows.append((identity, candidate, admitted))
+        recorded_bets = sum(
+            identity[0] == "bet" for identity, _row, _admitted in normalized_rows
+        )
+        recorded_observations = sum(
+            identity[0] == "observation"
+            for identity, _row, _admitted in normalized_rows
+        )
+
+        settlement_candidates: dict[str, list[tuple[dict[str, Any], dict[str, Any]]]] = {}
+        for _identity, row, admitted in normalized_rows:
+            if row.get("status") != "SETTLED":
+                settlement_rejections["not_settled"] += 1
+                continue
+            if row.get("result") not in BINARY_DECIDED_RESULTS:
+                settlement_rejections["not_binary_decided"] += 1
+                continue
+            marker = row["rollover_provenance"]
+            created_at = _time(row.get("created_at"))
+            kickoff = _time(row.get("kickoff") or row.get("kickoff_hkt"))
+            settled_at = _time(row.get("settled_at"))
+            if (
+                created_at is None or kickoff is None or settled_at is None
+                or created_at > settled_at
+                or kickoff > settled_at
+                or settled_at > projection_time
+            ):
+                settlement_rejections["missing_or_invalid_provenance"] += 1
+                continue
+            settlement_candidates.setdefault(
+                str(marker["fixture_market_hash"]), [],
+            ).append((row, admitted))
+
+        settled_valid: list[tuple[dict[str, Any], dict[str, Any]]] = []
+        for grouped in settlement_candidates.values():
+            if len(grouped) != 1:
+                settlement_rejections[
+                    "duplicate_or_conflicting_fixture_market"
+                ] += len(grouped)
+                continue
+            settled_valid.append(grouped[0])
+
+        active_pending = [
+            (row, admitted) for row, admitted in settled_valid
+            if admitted["version"] == active["version"]
+            and admitted["evidence_hash"] == active["evidence_hash"]
+            and _strictly_after(
+                row["rollover_provenance"].get("stage_at"),
+                active.get("activation_boundary_at"),
+            )
+        ]
+        pending_count = len(active_pending)
+        pending_hits = sum(
+            row.get("result") in BINARY_HIT_RESULTS for row, _admitted in active_pending
+        )
+        pending = frozen.get("pending_rollover_progress")
+        progress_reason = "persisted_rollover_progress_unavailable_or_inconsistent"
+        progress_valid = isinstance(pending, dict)
+        progress_count = _strict_int(pending.get("eligible_decided")) if progress_valid else None
+        progress_hits = _strict_int(pending.get("eligible_hits")) if progress_valid else None
+        progress_required = _strict_int(pending.get("required")) if progress_valid else None
+        progress_display = pending.get("display") if progress_valid else None
+        blocked_reason = pending.get("blocked_reason") if progress_valid else None
+        accuracy = pending.get("accuracy") if progress_valid else None
+        if isinstance(blocked_reason, str) and blocked_reason:
+            progress_valid = False
+            progress_reason = "persisted_rollover_progress_blocked"
+        expected_accuracy = pending_hits / pending_count if pending_count else None
+        progress_valid = bool(
+            progress_valid
+            and progress_count is not None
+            and progress_hits is not None
+            and progress_required == ROLLOVER_BATCH_SIZE
+            and 0 <= progress_hits <= progress_count < progress_required
+            and progress_count == pending_count
+            and progress_hits == pending_hits
+            and progress_display == f"{progress_count}/{progress_required}"
+            and _same_optional_number(accuracy, expected_accuracy)
+        )
+        if progress_valid:
+            progress = {
+                "available": True,
+                "availability": "available",
+                "count": progress_count,
+                "required": progress_required,
+                "display": progress_display,
+                "eligible_hits": progress_hits,
+                "blocked_reason": None,
+                "source": "validated_persisted_pending_rollover_progress",
+            }
+        else:
+            progress = {
+                "available": False,
+                "availability": "unavailable",
+                "count": None,
+                "required": ROLLOVER_BATCH_SIZE,
+                "display": None,
+                "reason": progress_reason,
+                "blocked_reason": blocked_reason if isinstance(blocked_reason, str) else None,
+            }
+
+        rejection_rows = []
+        for source_name, counts, definitions in (
+            ("retained_condition_audit", audit_rejections, FUNNEL_AUDIT_REJECTIONS),
+            ("formal_settlement_evidence", settlement_rejections, FUNNEL_SETTLEMENT_REJECTIONS),
+        ):
+            for code, count in counts.items():
+                if count <= 0:
+                    continue
+                category, label = definitions[code]
+                rejection_rows.append({
+                    "category": category,
+                    "code": code,
+                    "label": label,
+                    "count": count,
+                    "source": source_name,
+                })
+        rejection_rows.sort(key=lambda row: (
+            -int(row["count"]), str(row["category"]), str(row["code"]),
+        ))
+        omitted = max(0, len(rejection_rows) - FUNNEL_REJECTION_LIMIT)
+        if audit_availability == "unavailable":
+            exact_stage = {
+                "available": False,
+                "availability": "unavailable",
+                "count": None,
+                "scope": "condition_attributed_audit",
+                "retained_audit_entries": len(retained_audit),
+                "window_limit": CONDITION_AUDIT_LIMIT,
+                "truncation_possible": False,
+                "reason": audit_reason,
+                "verified_count": None,
+                "legacy_unverifiable_count": None,
+            }
+        elif legacy_unverifiable_exact:
+            exact_stage = {
+                "available": False,
+                "availability": "partial",
+                "count": None,
+                "scope": "partially_verified_condition_attributed_audit",
+                "retained_audit_entries": len(retained_audit),
+                "window_limit": CONDITION_AUDIT_LIMIT,
+                "truncation_possible": audit_truncated,
+                "reason": "legacy_or_invalid_exact_match_binding",
+                "verified_count": len(exact_keys),
+                "legacy_unverifiable_count": legacy_unverifiable_exact,
+            }
+        else:
+            exact_stage = {
+                "available": True,
+                "availability": audit_availability,
+                "count": len(exact_keys),
+                "scope": (
+                    "proven_truncated_condition_attributed_audit_window"
+                    if audit_truncated else "complete_retained_condition_attributed_audit"
+                ),
+                "retained_audit_entries": len(retained_audit),
+                "window_limit": CONDITION_AUDIT_LIMIT,
+                "truncation_possible": audit_truncated,
+                "reason": None,
+                "verified_count": len(exact_keys),
+                "legacy_unverifiable_count": 0,
+            }
+
+        identity_unverifiable = (
+            settlement_rejections["missing_formal_row_identity"]
+            + settlement_rejections["invalid_formal_row_identity"]
+        )
+        recorded_stage = {
+            "available": not bool(identity_unverifiable),
+            "availability": "partial" if identity_unverifiable else "available",
+            "count": None if identity_unverifiable else len(normalized_rows),
+            "verified_count": len(normalized_rows),
+            "legacy_unverifiable_count": identity_unverifiable,
+            "formal_bets": recorded_bets,
+            "formal_observations": recorded_observations,
+            "scope": (
+                "partially_verified_canonical_formal_row_identities"
+                if identity_unverifiable
+                else "persisted_signature_bound_identified_formal_rows"
+            ),
+            "reason": (
+                "legacy_or_invalid_formal_row_identity"
+                if identity_unverifiable else None
+            ),
+        }
+
+        output.append({
+            "condition_number": number,
+            "identity_available": True,
+            "condition_signature": signature,
+            "condition_version": definition["version"],
+            "definition": definition,
+            "frozen_at": frozen.get("frozen_at"),
+            "unavailable_reason": None,
+            "active_evidence": {
+                key: copy.deepcopy(active.get(key)) for key in (
+                    "version", "evidence_hash", "cumulative_hits",
+                    "cumulative_decided", "activation_boundary_at",
+                )
+            },
+            "stages": {
+                "eligible_post_activation_t5_observations": copy.deepcopy(unavailable_upstream),
+                "exact_condition_matches": exact_stage,
+                "recorded_formal_evidence": recorded_stage,
+                "settled_valid_evidence": {
+                    "available": True,
+                    "availability": "available",
+                    "count": len(settled_valid),
+                    "hits": sum(
+                        row.get("result") in BINARY_HIT_RESULTS
+                        for row, _admitted in settled_valid
+                    ),
+                    "scope": "unique_binary_rows_exactly_bound_to_validated_admitted_evidence",
+                    "reason": None,
+                },
+                "current_rollover_progress": progress,
+            },
+            "rejections": {
+                "bounded": True,
+                "visible_limit": FUNNEL_REJECTION_LIMIT,
+                "audit_window_limit": CONDITION_AUDIT_LIMIT,
+                "audit_truncation_possible": audit_truncated,
+                "items": rejection_rows[:FUNNEL_REJECTION_LIMIT],
+                "omitted_reason_kinds": omitted,
+            },
+        })
+    return {
+        "schema_version": 1,
+        "read_only": True,
+        "system": system,
+        "condition_count": len(output),
+        "audit_window_limit": CONDITION_AUDIT_LIMIT,
+        "conditions": output,
+        "unavailable_reason": None,
+    }
+
 def project_dashboard_research_matches(
     matches: Iterable[dict[str, Any]],
 ) -> list[dict[str, Any]]:
@@ -1694,6 +2623,7 @@ def record_match_observation(
         "status": "PENDING",
         "first_native_pre_kickoff_t5": True,
         "created_at": now,
+        "native_stage_at": admission.get("stage_at"),
         "frozen_condition_signature": signature,
         "condition_number": frozen.get("condition_number"),
         "frozen_condition_definition": copy.deepcopy(admission["definition"]),
@@ -1761,7 +2691,8 @@ def commit_bet(
         "stage": DECISION_STAGE, "first_stage": DECISION_STAGE, "status": "PENDING",
         "first_native_pre_kickoff_t5": True,
         "simulation_only": True, "real_betting_enabled": False, "created_at": now,
-        "admission_at": now, "frozen_condition_signature": signature,
+        "admission_at": now, "native_stage_at": stage_at,
+        "frozen_condition_signature": signature,
         "condition_number": frozen.get("condition_number"),
         "frozen_condition_definition": copy.deepcopy(admission["definition"]),
         "frozen_historical_evidence": copy.deepcopy(admission["history"]),
