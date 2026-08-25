@@ -30,3 +30,210 @@ jobs:
               /opt/footbreak/analysis/wilson_market_report.py \
               --footbreak /opt/footbreak/system/accuracy_history.json \
               --crown /var/lib/footbreak/crown/prediction_history.json"
+
+      - name: 信念大於 58 已結算預測只讀分析
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh "$DEPLOY_USER@$DEPLOY_HOST" \
+            'sudo /opt/footbreak/.venv/bin/python3 -' <<'PY'
+          import json
+          import math
+          from collections import Counter, defaultdict
+          from pathlib import Path
+
+          THRESHOLD = 58.0
+          STAGE_ORDER = {"首預": 0, "T-30": 1, "T-5": 2}
+
+          def finite(value):
+              try:
+                  number = float(value)
+              except (TypeError, ValueError):
+                  return None
+              return number if math.isfinite(number) else None
+
+          def market_summary(rows):
+              grades = [
+                  grade
+                  for row in rows
+                  for grade in row.get("market_grades", [])
+                  if isinstance(grade, dict) and grade.get("grade_status") == "GRADED"
+              ]
+              decided = [grade for grade in grades if grade.get("hit") is not None]
+              hits = sum(grade.get("hit") is True for grade in decided)
+              return {
+                  "graded": len(grades),
+                  "decided": len(decided),
+                  "hits": hits,
+                  "pushes": len(grades) - len(decided),
+                  "hit_rate": round(hits / len(decided), 6) if decided else None,
+                  "settlements": dict(sorted(Counter(
+                      str(grade.get("settlement") or "unknown") for grade in grades
+                  ).items())),
+              }
+
+          def wdl_summary(rows):
+              decided = [row for row in rows if row.get("wdl_hit") is not None]
+              hits = sum(bool(row.get("wdl_hit")) for row in decided)
+              return {
+                  "decided": len(decided),
+                  "hits": hits,
+                  "hit_rate": round(hits / len(decided), 6) if decided else None,
+              }
+
+          def summarize(rows):
+              confidences = [row["confidence"] for row in rows]
+              by_market = {}
+              for code in ("HDC", "HIL", "CHL"):
+                  projected = []
+                  for row in rows:
+                      grades = [
+                          grade for grade in row.get("market_grades", [])
+                          if isinstance(grade, dict) and grade.get("code") == code
+                      ]
+                      projected.append({**row, "market_grades": grades})
+                  by_market[code] = market_summary(projected)
+              return {
+                  "stage_rows": len(rows),
+                  "unique_fixtures": len({row["fixture_id"] for row in rows}),
+                  "confidence": {
+                      "min": min(confidences) if confidences else None,
+                      "mean": round(sum(confidences) / len(confidences), 3) if confidences else None,
+                      "max": max(confidences) if confidences else None,
+                  },
+                  "wdl": wdl_summary(rows),
+                  "markets_all": market_summary(rows),
+                  "by_market": by_market,
+              }
+
+          def latest(rows):
+              selected = {}
+              for row in rows:
+                  current = selected.get(row["fixture_id"])
+                  rank = (
+                      STAGE_ORDER.get(row["stage"], -1),
+                      str(row.get("predicted_at") or ""),
+                  )
+                  if current is None or rank > current[0]:
+                      selected[row["fixture_id"]] = (rank, row)
+              return [item[1] for item in selected.values()]
+
+          def footbreak_rows():
+              data = json.loads(Path(
+                  "/opt/footbreak/system/accuracy_history.json"
+              ).read_text(encoding="utf-8"))
+              output = []
+              for match in data.get("matches", []):
+                  if not isinstance(match, dict):
+                      continue
+                  for stage in match.get("stages", []):
+                      if not isinstance(stage, dict):
+                          continue
+                      confidence = finite(stage.get("conf"))
+                      if confidence is None:
+                          continue
+                      output.append({
+                          "fixture_id": str(match.get("match_id") or ""),
+                          "kickoff": match.get("kickoff"),
+                          "stage": str(stage.get("stage") or ""),
+                          "predicted_at": stage.get("predicted_at"),
+                          "confidence": confidence,
+                          "wdl_hit": stage.get("wdl_hit"),
+                          "market_grades": stage.get("market_grades") or [],
+                          "excluded": bool(
+                              stage.get("post_hoc_backfill")
+                              or stage.get("post_hoc")
+                              or stage.get("backfill")
+                          ),
+                      })
+              return data.get("generated_at"), output
+
+          def crown_rows():
+              data = json.loads(Path(
+                  "/var/lib/footbreak/crown/prediction_history.json"
+              ).read_text(encoding="utf-8"))
+              output = []
+              for row in data.get("rows", []):
+                  if not isinstance(row, dict):
+                      continue
+                  confidence = finite(row.get("conviction"))
+                  if confidence is None:
+                      continue
+                  output.append({
+                      "fixture_id": str(row.get("match_id") or ""),
+                      "kickoff": row.get("kickoff"),
+                      "stage": str(row.get("stage") or ""),
+                      "predicted_at": row.get("predicted_at"),
+                      "confidence": confidence,
+                      "wdl_hit": row.get("correct"),
+                      "market_grades": row.get("market_grades") or [],
+                      "excluded": bool(
+                          row.get("post_hoc_backfill")
+                          or row.get("exclude_from_primary_statistics")
+                          or row.get("result_status") == "不計"
+                      ),
+                  })
+              return data.get("generated_at"), output
+
+          report = {
+              "report": "confidence_strictly_over_58_settled_predictions_v1",
+              "threshold": {"operator": ">", "value": THRESHOLD},
+              "filters": {
+                  "settled_only": True,
+                  "post_hoc_excluded": True,
+                  "odds_filter": False,
+                  "bet_filter": False,
+                  "primary_unit": "latest_available_stage_per_fixture_then_threshold",
+                  "stage_detail_unit": "graded_stage_rows",
+              },
+              "systems": {},
+          }
+          for name, loader in (("footbreak", footbreak_rows), ("crown", crown_rows)):
+              generated_at, raw = loader()
+              eligible = [row for row in raw if not row["excluded"]]
+              primary = [
+                  row for row in latest(eligible)
+                  if row["confidence"] > THRESHOLD
+                  and (
+                      row.get("wdl_hit") is not None
+                      or any(
+                          isinstance(grade, dict)
+                          and grade.get("grade_status") == "GRADED"
+                          for grade in row.get("market_grades", [])
+                      )
+                  )
+              ]
+              stage_rows = [
+                  row for row in eligible
+                  if row["confidence"] > THRESHOLD
+                  and (
+                      row.get("wdl_hit") is not None
+                      or any(
+                          isinstance(grade, dict)
+                          and grade.get("grade_status") == "GRADED"
+                          for grade in row.get("market_grades", [])
+                      )
+                  )
+              ]
+              report["systems"][name] = {
+                  "source_generated_at": generated_at,
+                  "primary": summarize(primary),
+                  "by_stage": {
+                      stage: summarize([row for row in stage_rows if row["stage"] == stage])
+                      for stage in ("首預", "T-30", "T-5")
+                  },
+                  "all_stage_observations": summarize(stage_rows),
+                  "kickoff_range": {
+                      "first": min(
+                          (str(row["kickoff"]) for row in primary if row.get("kickoff")),
+                          default=None,
+                      ),
+                      "last": max(
+                          (str(row["kickoff"]) for row in primary if row.get("kickoff")),
+                          default=None,
+                      ),
+                  },
+              }
+          print(json.dumps(report, ensure_ascii=False, separators=(",", ":")))
+          PY
