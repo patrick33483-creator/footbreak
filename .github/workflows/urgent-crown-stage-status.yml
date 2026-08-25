@@ -22,7 +22,7 @@ jobs:
           from datetime import datetime
           from pathlib import Path
 
-          from crown.common import HKT
+          from crown.common import HKT, parse_time
 
           NEEDLES = ("維塞島", "維薛拿", "Vizela")
           PATHS = {
@@ -43,7 +43,19 @@ jobs:
 
           def matches(value):
               blob = text(value)
-              return any(needle.lower() in blob.lower() for needle in NEEDLES)
+              if any(needle.lower() in blob.lower() for needle in NEEDLES):
+                  return True
+              if not isinstance(value, dict):
+                  return False
+              kickoff = parse_time(value.get("kickoff_hkt") or value.get("kickoff"))
+              if kickoff is None:
+                  return False
+              kickoff = kickoff.astimezone(HKT)
+              return (
+                  kickoff.date().isoformat() == "2026-08-26"
+                  and kickoff.hour == 0
+                  and kickoff.minute <= 10
+              )
 
           def rows(value):
               if isinstance(value, list):
