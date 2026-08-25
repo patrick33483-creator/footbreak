@@ -204,6 +204,14 @@ jobs:
                   probability = float(probability)
               except (TypeError, ValueError):
                   probability = None
+              try:
+                  selected_odds = float(prediction.get("odds"))
+              except (TypeError, ValueError):
+                  selected_odds = None
+              try:
+                  target_value = float(metrics.get("target"))
+              except (TypeError, ValueError):
+                  target_value = None
               model_rows.append({
                   "system": row["system"],
                   "fixture_id": str(row["fixture_id"]),
@@ -222,6 +230,8 @@ jobs:
                   "line": line,
                   "side": side,
                   "probability": probability,
+                  "selected_odds": selected_odds,
+                  "target_value": target_value,
               })
 
           radar_sql = """
@@ -399,6 +409,95 @@ jobs:
                   "settlement": settlement_label(ret),
               })
 
+          def grade_unit_return(target, odds):
+              if target is None or odds is None:
+                  return None
+              if target >= 0.999:
+                  return odds - 1.0
+              if target >= 0.749:
+                  return (odds - 1.0) / 2.0
+              if target >= 0.499:
+                  return 0.0
+              if target >= 0.249:
+                  return -0.5
+              return -1.0
+
+          historical_baselines = collections.defaultdict(list)
+          for row in model_rows:
+              ret = grade_unit_return(row["target_value"], row["selected_odds"])
+              if ret is None:
+                  continue
+              historical_baselines[row["system"]].append({
+                  **row,
+                  "match_id": f'{row["system"]}:{row["fixture_id"]}',
+                  "hk_odds": row["selected_odds"],
+                  "return": ret,
+                  "settlement": settlement_label(ret),
+              })
+
+          crown_rows = [row for row in model_rows if row["system"] == "crown"]
+          historical_pair_join = collections.Counter()
+          historical_agreement = []
+          historical_seen = set()
+          for foot in (row for row in model_rows if row["system"] == "footbreak"):
+              candidates = []
+              for crown in crown_rows:
+                  if crown["line"] != foot["line"] or crown["side"] != foot["side"]:
+                      continue
+                  shared_id = bool(foot["ids"] & crown["ids"])
+                  same_named_fixture = (
+                      foot["home"] and foot["away"]
+                      and foot["home"] == crown["home"]
+                      and foot["away"] == crown["away"]
+                      and abs((foot["kickoff"] - crown["kickoff"]).total_seconds()) <= 600
+                  )
+                  if shared_id or same_named_fixture:
+                      candidates.append((crown, "id" if shared_id else "teams_time"))
+              if len(candidates) != 1:
+                  historical_pair_join["ambiguous" if candidates else "unmatched"] += 1
+                  continue
+              crown, method = candidates[0]
+              historical_pair_join[method] += 1
+              unique = (foot["fixture_id"], crown["fixture_id"], foot["line"], foot["side"])
+              if unique in historical_seen:
+                  continue
+              historical_seen.add(unique)
+              odds_values = [
+                  value for value in (foot["selected_odds"], crown["selected_odds"])
+                  if value is not None
+              ]
+              if not odds_values:
+                  diagnostics["historical_agreement_missing_odds"] += 1
+                  continue
+              execution_odds = min(odds_values)
+              target_values = [
+                  value for value in (foot["target_value"], crown["target_value"])
+                  if value is not None
+              ]
+              if not target_values or max(target_values) - min(target_values) > 0.001:
+                  diagnostics["historical_agreement_grade_mismatch"] += 1
+                  continue
+              ret = grade_unit_return(target_values[0], execution_odds)
+              probabilities = [
+                  value for value in (foot["probability"], crown["probability"])
+                  if value is not None
+              ]
+              avg_probability = statistics.mean(probabilities) if probabilities else None
+              historical_agreement.append({
+                  "match_id": f'pair:{foot["fixture_id"]}:{crown["fixture_id"]}',
+                  "kickoff": max(foot["kickoff"], crown["kickoff"]),
+                  "line": foot["line"],
+                  "side": foot["side"],
+                  "hk_odds": execution_odds,
+                  "avg_probability": avg_probability,
+                  "model_ev": (
+                      None if avg_probability is None
+                      else avg_probability * execution_odds - 1.0
+                  ),
+                  "return": ret,
+                  "settlement": settlement_label(ret),
+              })
+
           def percentile(values, q):
               if not values:
                   return None
@@ -459,6 +558,28 @@ jobs:
               ]
 
           strategy_sets = {
+              "historical_footbreak_t5_ou_recorded_odds": historical_baselines["footbreak"],
+              "historical_footbreak_odds_ge_1_70": [
+                  row for row in historical_baselines["footbreak"] if row["hk_odds"] >= 1.70
+              ],
+              "historical_crown_t5_ou_recorded_odds": historical_baselines["crown"],
+              "historical_crown_odds_ge_1_70": [
+                  row for row in historical_baselines["crown"] if row["hk_odds"] >= 1.70
+              ],
+              "historical_footbreak_crown_same_line_same_side": historical_agreement,
+              "historical_agreement_odds_ge_1_70": [
+                  row for row in historical_agreement if row["hk_odds"] >= 1.70
+              ],
+              "historical_agreement_odds_ge_1_70_model_ev_ge_3pct": [
+                  row for row in historical_agreement
+                  if row["hk_odds"] >= 1.70
+                  and row["model_ev"] is not None and row["model_ev"] >= 0.03
+              ],
+              "historical_agreement_odds_ge_1_70_model_ev_ge_5pct": [
+                  row for row in historical_agreement
+                  if row["hk_odds"] >= 1.70
+                  and row["model_ev"] is not None and row["model_ev"] >= 0.05
+              ],
               "footbreak_t5_ou_with_complete_radar_quotes": baseline_by_system["footbreak"],
               "footbreak_plus_hkjc_ge_pinnacle_and_odds_ge_1_70": with_common_filters(
                   baseline_by_system["footbreak"]
@@ -516,6 +637,8 @@ jobs:
                   "join_methods": dict(join_methods),
                   "diagnostics": dict(diagnostics),
                   "agreement_quote_result_rows": len(agreement),
+                  "historical_pair_join_methods": dict(historical_pair_join),
+                  "historical_agreement_rows": len(historical_agreement),
               },
               "strategies": {
                   name: summarize(rows, int(hashlib.sha256(name.encode()).hexdigest()[:8], 16))
