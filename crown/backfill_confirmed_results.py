@@ -265,9 +265,6 @@ def _validate_row(
     titan_id = row.get("titan_match_id")
     if titan_id is not None and str(titan_id) != expected["match_id"]:
         errors.append("titan_match_id")
-    for field in ("home", "away"):
-        if row.get(field) != expected[field]:
-            errors.append(field)
     kickoff = parse_time(row.get("kickoff"))
     if kickoff is None or kickoff != expected["kickoff"]:
         errors.append("kickoff")
@@ -288,6 +285,11 @@ def _validate_row(
         "match_id": expected["match_id"],
         "identity": {
             "home": row["home"], "away": row["away"],
+            "fixture_home": expected["home"], "fixture_away": expected["away"],
+            "team_names_match": (
+                row.get("home") == expected["home"]
+                and row.get("away") == expected["away"]
+            ),
             "kickoff": row["kickoff"], "market": row["code"],
             "side": row["side"], "line": row["condition"],
         },
@@ -427,7 +429,8 @@ def _apply_to_copy(
     output = copy.deepcopy(ledger)
     source = f"{SOURCE_PREFIX}{fixture_sha256[:16]}"
     targets_by_id = {
-        detail["row_id"]: fixture for fixture, _row, detail in plan["targets"]
+        detail["row_id"]: (fixture, detail)
+        for fixture, _row, detail in plan["targets"]
     }
     changes: list[dict[str, Any]] = []
     for location, row in _ledger_rows(output):
@@ -436,9 +439,10 @@ def _apply_to_copy(
             ("bet_id", "observation_id", "research_id") if row.get(field)
         ]
         row_id = row_id_candidates[0] if len(row_id_candidates) == 1 else ""
-        fixture = targets_by_id.get(row_id)
-        if fixture is None:
+        target = targets_by_id.get(row_id)
+        if target is None:
             continue
+        fixture, detail = target
         expected = fixture["_identity"]
         before = {field: copy.deepcopy(row.get(field)) for field in SETTLEMENT_FIELDS}
         if not _settle(row, {
@@ -455,6 +459,7 @@ def _apply_to_copy(
             "location": location,
             "row_id": row_id,
             "match_id": expected["match_id"],
+            "identity": copy.deepcopy(detail["identity"]),
             "before": before,
             "after": {
                 field: copy.deepcopy(row.get(field)) for field in SETTLEMENT_FIELDS

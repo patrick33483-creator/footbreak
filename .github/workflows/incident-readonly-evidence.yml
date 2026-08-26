@@ -251,7 +251,7 @@ jobs:
           set -euo pipefail
           git merge-base --is-ancestor \
             "21ab43ccd31e86f752d89250f0fa6ee0ff93c737" HEAD
-          echo "4ca4d58f3faae45ce22d0c2f4bbbcae16497b9def351cddaf8f7925841e589d7  crown/backfill_confirmed_results.py" \
+          echo "b8fb0ca635909a117b48a8c8fbf951e606e95d5c6f0c7f95bf034460b14a417b  crown/backfill_confirmed_results.py" \
             | sha256sum --check --strict
           echo "6e996b0c8caf7330b39885afc4d3fd03ba9cc9b4d084364050d4f2542991d3d1  deploy/backfill/fixtures_42_verified.json" \
             | sha256sum --check --strict

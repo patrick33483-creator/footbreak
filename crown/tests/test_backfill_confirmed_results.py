@@ -218,13 +218,32 @@ class ConfirmedResultBackfillTests(unittest.TestCase):
     def test_identity_mismatch_fails_closed_without_backup_or_write(self) -> None:
         ledger_path = self.config.state_dir / "ledger.json"
         ledger = load_ledger(self.config)
-        ledger["bets"][0]["home"] = "wrong exact home"
+        ledger["bets"][0]["kickoff"] = "2026-08-30T00:00:00+08:00"
         save_ledger(self.config, ledger)
         before = ledger_path.read_bytes()
         with self.assertRaisesRegex(BackfillError, "row_identity_mismatch"):
             self._run()
         self.assertEqual(ledger_path.read_bytes(), before)
         self.assertFalse((self.config.state_dir / "backups").exists())
+
+    def test_confirmed_team_aliases_are_audited_but_durable_identity_stays_exact(
+        self,
+    ) -> None:
+        ledger = load_ledger(self.config)
+        ledger["bets"][0]["home"] = "provider home alias"
+        ledger["bets"][0]["away"] = "provider away alias"
+        save_ledger(self.config, ledger)
+
+        report = self._run()
+        detail = next(
+            change for change in report["changes"]
+            if change["row_id"] == ledger["bets"][0]["bet_id"]
+        )
+        self.assertEqual(report["counts"]["changed_rows"], 66)
+        self.assertEqual(detail["match_id"], self.fixtures[0]["match_id"])
+        self.assertFalse(detail["identity"]["team_names_match"])
+        self.assertEqual(detail["identity"]["home"], "provider home alias")
+        self.assertEqual(detail["identity"]["fixture_home"], self.fixtures[0]["home"])
 
     def test_conflict_cannot_be_relabelled_confirmed(self) -> None:
         fixtures = copy.deepcopy(self.fixtures)
