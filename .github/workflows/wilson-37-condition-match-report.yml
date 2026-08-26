@@ -116,6 +116,15 @@ jobs:
                           "odds": row.get("odds"),
                           "status": row.get("status"),
                           "result": row.get("result"),
+                          "hkjc_match_id": row.get("hkjc_match_id"),
+                          "titan_match_id": row.get("titan_match_id"),
+                          "pinnapi_event_id": row.get("pinnapi_event_id"),
+                          "last_settlement_attempt_at": row.get(
+                              "last_settlement_attempt_at"
+                          ),
+                          "settlement_pending_reason": row.get(
+                              "settlement_pending_reason"
+                          ),
                           "admitted_evidence_version": row.get("admitted_evidence_version"),
                           "formal_identity_present": bool(
                               row.get("bet_id") or row.get("observation_id")
