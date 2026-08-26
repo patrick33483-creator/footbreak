@@ -18,6 +18,7 @@ class ReconciliationEnablementTests(unittest.TestCase):
         self.addCleanup(self._directory.cleanup)
         (self.directory / "deploy").mkdir()
         (self.directory / ".venv" / "bin").mkdir(parents=True)
+        (self.directory / "bin").mkdir()
         (self.directory / "deploy" / "run.sh").write_text(
             "#!/usr/bin/env bash\nexit 0\n", encoding="utf-8"
         )
@@ -35,6 +36,10 @@ class ReconciliationEnablementTests(unittest.TestCase):
             "  exit 42\n"
             "fi\n"
             "if [[ \"${1:-}\" == */verify-result-integrity.py ]] && "
+            "[[ \"${INTEGRITY_ALWAYS_FAIL:-0}\" == 1 ]]; then\n"
+            "  exit 1\n"
+            "fi\n"
+            "if [[ \"${1:-}\" == */verify-result-integrity.py ]] && "
             "[[ -n \"${INTEGRITY_FAIL_ONCE_FILE:-}\" ]] && "
             "[[ ! -e \"$INTEGRITY_FAIL_ONCE_FILE\" ]]; then\n"
             "  touch \"$INTEGRITY_FAIL_ONCE_FILE\"\n"
@@ -43,10 +48,16 @@ class ReconciliationEnablementTests(unittest.TestCase):
             "exit 0\n",
             encoding="utf-8",
         )
+        (self.directory / "bin" / "sleep").write_text(
+            "#!/usr/bin/env bash\n"
+            "printf '%s\\n' \"$1\" >> \"$SLEEP_CAPTURE\"\n",
+            encoding="utf-8",
+        )
         for executable in (
             self.directory / "deploy" / "run.sh",
             self.directory / "deploy" / "crown-run.sh",
             self.directory / ".venv" / "bin" / "python3",
+            self.directory / "bin" / "sleep",
         ):
             executable.chmod(0o755)
         self.footbreak_env = self.directory / "footbreak.env"
@@ -59,24 +70,35 @@ class ReconciliationEnablementTests(unittest.TestCase):
         *,
         extra_footbreak_env: str = "",
         integrity_fail_once: bool = False,
+        integrity_always_fail: bool = False,
+        integrity_attempts: str = "3",
+        integrity_retry_delay: str = "0",
     ) -> subprocess.CompletedProcess[str]:
         self.crown_env.write_text(
             f"CROWN_ENABLED={crown_enabled}\n", encoding="utf-8"
         )
         self.footbreak_env.write_text(extra_footbreak_env, encoding="utf-8")
         called = self.directory / "crown-called"
+        sleep_capture = self.directory / "sleep-capture"
+        sleep_capture.unlink(missing_ok=True)
         environment = {
             **os.environ,
+            "PATH": f"{self.directory / 'bin'}:{os.environ['PATH']}",
             "APP_DIR": str(self.directory),
             "FOOTBREAK_ENV_FILE": str(self.footbreak_env),
             "CROWN_ENV_FILE": str(self.crown_env),
             "CROWN_CALLED": str(called),
             "LEARNING_DB": str(self.directory / "absent.sqlite"),
+            "INTEGRITY_AUDIT_ATTEMPTS": integrity_attempts,
+            "INTEGRITY_AUDIT_RETRY_DELAY_SECONDS": integrity_retry_delay,
+            "SLEEP_CAPTURE": str(sleep_capture),
         }
         if integrity_fail_once:
             environment["INTEGRITY_FAIL_ONCE_FILE"] = str(
                 self.directory / "integrity-failed-once"
             )
+        if integrity_always_fail:
+            environment["INTEGRITY_ALWAYS_FAIL"] = "1"
         result = subprocess.run(
             ["bash", str(RECONCILE)],
             cwd=self.directory,
@@ -86,6 +108,11 @@ class ReconciliationEnablementTests(unittest.TestCase):
             check=False,
         )
         result.crown_called = called.exists()  # type: ignore[attr-defined]
+        result.sleep_calls = (  # type: ignore[attr-defined]
+            sleep_capture.read_text(encoding="utf-8").splitlines()
+            if sleep_capture.exists()
+            else []
+        )
         return result
 
     def test_disabled_crown_is_a_successful_no_provider_reconciliation(self) -> None:
@@ -110,6 +137,63 @@ class ReconciliationEnablementTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("transient failure; retrying attempt=2/3", result.stderr)
         self.assertIn("Prediction-history integrity audit OK", result.stdout)
+
+    def test_persistent_integrity_failure_remains_fail_closed(self) -> None:
+        result = self.run_reconciler("0", integrity_always_fail=True)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("retrying attempt=3/3", result.stderr)
+        self.assertIn("Prediction-history integrity audit failed rc=1", result.stderr)
+
+    def test_integrity_attempt_override_accepts_only_bounded_canonical_decimal(self) -> None:
+        for raw, expected_attempts in (
+            ("1", 1),
+            ("24", 24),
+            ("0", 12),
+            ("25", 12),
+            ("abc", 12),
+            ("08", 12),
+            ("09", 12),
+            ("010", 12),
+            ("9223372036854775808", 12),
+            ("18446744073709551616", 12),
+        ):
+            with self.subTest(raw=raw):
+                result = self.run_reconciler(
+                    "0",
+                    integrity_always_fail=True,
+                    integrity_attempts=raw,
+                )
+                self.assertEqual(result.returncode, 1)
+                if expected_attempts == 1:
+                    self.assertNotIn("transient failure; retrying", result.stderr)
+                else:
+                    self.assertIn(
+                        f"retrying attempt={expected_attempts}/{expected_attempts}",
+                        result.stderr,
+                    )
+                self.assertIn(
+                    "Prediction-history integrity audit failed rc=1",
+                    result.stderr,
+                )
+
+    def test_integrity_retry_delay_override_is_lexically_bounded(self) -> None:
+        for raw, expected_delay in (
+            ("0", "0"),
+            ("15", "15"),
+            ("16", "5"),
+            ("010", "5"),
+            ("9223372036854775808", "5"),
+            ("18446744073709551616", "5"),
+        ):
+            with self.subTest(raw=raw):
+                result = self.run_reconciler(
+                    "0",
+                    integrity_always_fail=True,
+                    integrity_attempts="2",
+                    integrity_retry_delay=raw,
+                )
+                self.assertEqual(result.returncode, 1)
+                self.assertEqual(result.sleep_calls, [expected_delay])
 
     def test_integrity_verifier_is_independent_of_service_working_directory(self) -> None:
         result = self.run_reconciler("0")

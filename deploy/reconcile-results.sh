@@ -111,17 +111,33 @@ fi
 
 if [ "$crown_history_shape_ready" -eq 1 ]; then
   echo "=== $(TZ=Asia/Hong_Kong date '+%F %T') prediction-history integrity audit ==="
+  # Crown's minute tick may atomically replace the browser-safe ledger while
+  # this 15-minute job is reading the matching versioned history sidecar.  The
+  # verifier must remain strict, but give that bounded publication race enough
+  # time to finish instead of freezing a stale failed systemd result.  Test and
+  # emergency overrides are range checked so a bad environment cannot create
+  # an unbounded service.
+  integrity_attempts="${INTEGRITY_AUDIT_ATTEMPTS:-12}"
+  integrity_retry_delay="${INTEGRITY_AUDIT_RETRY_DELAY_SECONDS:-5}"
+  case "$integrity_attempts" in
+    1|2|3|4|5|6|7|8|9|10|11|12|13|14|15|16|17|18|19|20|21|22|23|24) ;;
+    *) integrity_attempts=12 ;;
+  esac
+  case "$integrity_retry_delay" in
+    0|1|2|3|4|5|6|7|8|9|10|11|12|13|14|15) ;;
+    *) integrity_retry_delay=5 ;;
+  esac
   integrity_rc=1
-  for integrity_attempt in 1 2 3; do
+  for ((integrity_attempt = 1; integrity_attempt <= integrity_attempts; integrity_attempt++)); do
     PYTHONPATH="$APP_DIR" "$APP_DIR/.venv/bin/python3" \
       "$APP_DIR/deploy/verify-result-integrity.py"
     integrity_rc=$?
     if [ "$integrity_rc" -eq 0 ]; then
       break
     fi
-    if [ "$integrity_attempt" -lt 3 ]; then
-      echo "Prediction-history integrity audit transient failure; retrying attempt=$((integrity_attempt + 1))/3" >&2
-      sleep 2
+    if [ "$integrity_attempt" -lt "$integrity_attempts" ]; then
+      echo "Prediction-history integrity audit transient failure; retrying attempt=$((integrity_attempt + 1))/$integrity_attempts" >&2
+      sleep "$integrity_retry_delay"
     fi
   done
   if [ "$integrity_rc" -ne 0 ]; then
