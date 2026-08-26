@@ -214,7 +214,12 @@ systemctl is-active --quiet footbreak-server-health-monitor.timer || {
   echo "ERROR: footbreak-server-health-monitor.timer did not restart" >&2
   exit 1
 }
-systemctl reenable telegram-silence-monitor.timer
+# First installation must create the timers.target symlink explicitly.  A
+# daemon-reloaded but never-enabled timer can report loaded/active for the
+# current boot while remaining disabled across reboot, so do not rely on a
+# restart or the earlier grouped enable call.
+systemctl unmask telegram-silence-monitor.timer 2>/dev/null || true
+systemctl enable --now telegram-silence-monitor.timer
 systemctl restart telegram-silence-monitor.timer
 systemctl start telegram-silence-monitor.service
 systemctl is-enabled --quiet telegram-silence-monitor.timer || {

@@ -157,6 +157,7 @@ class TelegramSilenceMonitorTests(unittest.TestCase):
         self.assertIn("TG_SILENCE_MONITOR_SECONDS=3600", service)
         self.assertIn("OnUnitActiveSec=5min", timer)
         self.assertIn("telegram-silence-monitor.timer", update)
+        self.assertIn("enable --now telegram-silence-monitor.timer", update)
         self.assertNotIn("pplx", service.lower() + timer.lower())
 
 
