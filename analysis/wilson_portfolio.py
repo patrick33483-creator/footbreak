@@ -1,6 +1,8 @@
 """Shared admission adapter for the Wilson simulation portfolio."""
 from __future__ import annotations
 
+import copy
+
 import math
 from datetime import datetime, timezone
 from typing import Any, Callable, Iterable
@@ -258,6 +260,24 @@ def evaluate_stage(
         if selected is None:
             audit.append({"market": market, "status": "SKIPPED", "reason": reason})
             continue
+        selected = copy.deepcopy(selected)
+        if (
+            current.get("formal_admission_snapshot_id")
+            and current.get("formal_admission_snapshot_hash")
+        ):
+            selected["native_snapshot_binding"] = {
+                "schema_version": 1,
+                "system": system,
+                "snapshot_id": current["formal_admission_snapshot_id"],
+                "snapshot_hash": current["formal_admission_snapshot_hash"],
+            }
+        elif current.get("native_snapshot_id") and current.get("native_snapshot_hash"):
+            selected["native_snapshot_binding"] = {
+                "schema_version": 1,
+                "system": system,
+                "snapshot_id": current["native_snapshot_id"],
+                "snapshot_hash": current["native_snapshot_hash"],
+            }
         if (
             decision_stage == DECISION_STAGE
             and any(str(row.get("code") or "") == market for row in existing)

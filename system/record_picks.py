@@ -4,6 +4,7 @@
 歷史細緻條件建立 HK$1,000 模擬注。T-30、重跑和歷史回填永不建注。
 """
 import json
+import hashlib
 import os
 import sys
 import tempfile
@@ -21,6 +22,7 @@ from condition_portfolio import (
     evaluate_stage as evaluate_wilson_stage,
 )
 from probability_research import evaluate_new_t5 as evaluate_probability_research
+from analysis.quarter_line import from_dixon_coles
 from analysis.wilson_validation import ensure_namespace, recompute_namespace
 from settle import condition_bets, recompute
 from crown_execution_test import (
@@ -91,7 +93,19 @@ def _slim_adjs(adjs):
     return out
 
 
-def _market_predictions(candidates, observed_at=None):
+def _quarter_line_settlement_profile(candidate, model):
+    if str(candidate.get("code") or "").upper() != "HIL":
+        return None
+    return from_dixon_coles(
+        line=candidate.get("line", candidate.get("condition")),
+        side=candidate.get("side"),
+        lh=(model or {}).get("lh"),
+        la=(model or {}).get("la"),
+        rho=(model or {}).get("rho"),
+    )
+
+
+def _market_predictions(candidates, observed_at=None, quarter_line_model=None):
     """每個市場保留一個與賠率/EV無關的正式方向。
 
     主線優先；同一條主線兩邊之中，揀模型條件勝率較高的一邊。完整盤口
@@ -119,6 +133,9 @@ def _market_predictions(candidates, observed_at=None):
             odds_valid = False
         quote_observed_at = best.get("observed_at") or best.get("source_at") or observed_at
         quote_complete = odds_valid and quote_observed_at is not None
+        settlement_profile = _quarter_line_settlement_profile(
+            best, quarter_line_model,
+        )
         output.append({
             "code": code,
             "market": best.get("market"),
@@ -154,6 +171,10 @@ def _market_predictions(candidates, observed_at=None):
             "push_probability": best.get("push"),
             "is_main": bool(best.get("is_main")),
             "source": best.get("source") or "hkjc_public_board",
+            **(
+                {"quarter_line_settlement": settlement_profile}
+                if settlement_profile is not None else {}
+            ),
         })
     return sorted(output, key=lambda row: row["code"])
 
@@ -195,7 +216,9 @@ def _snap(r, now):
         verdict = "偏向"          # 有正值方向,但信念未夠
     else:
         verdict = "無傾向"
-    market_predictions = _market_predictions(cands, r.get("selected_odds_observed_at"))
+    market_predictions = _market_predictions(
+        cands, r.get("selected_odds_observed_at"), r.get("quarter_line_model"),
+    )
     odds_journal = _odds_journal(r, market_predictions)
     missing_odds = [item for item in odds_journal if item["odds_status"] != "available"]
     return {
@@ -244,6 +267,7 @@ def _snap(r, now):
         "open": r.get("open"),
         "now": r.get("now"),
         "final": r.get("final"),
+        "quarter_line_model": r.get("quarter_line_model"),
         "movement": r.get("movement"),
         "adjustments": _slim_adjs(r.get("adjustments")),
         "mults": r.get("mults"),
@@ -385,7 +409,16 @@ def _job_snapshot_id(match_id, snapshot, result):
 def _enqueue_optional_job(ledger, match_id, snapshot, result, *, now, t5_safe_to_evaluate):
     """Journal deferred consumers with the immutable native snapshot."""
     snapshot_id = _job_snapshot_id(match_id, snapshot, result)
+    snapshot_payload = {
+        key: value for key, value in snapshot.items()
+        if key not in {"native_snapshot_id", "native_snapshot_hash"}
+    }
+    snapshot_hash = hashlib.sha256(json.dumps(
+        snapshot_payload, ensure_ascii=False, sort_keys=True,
+        separators=(",", ":"), default=str,
+    ).encode()).hexdigest()
     snapshot["native_snapshot_id"] = snapshot_id
+    snapshot["native_snapshot_hash"] = snapshot_hash
     job_id = f"{match_id}:{snapshot_id}"
     previous = _latest_optional_jobs(ledger).get(job_id)
     if isinstance(previous, dict):
@@ -428,6 +461,24 @@ def _job_watch_snapshot(ledger, job):
     return watch, snapshot
 
 
+def _native_snapshot_hash_valid(snapshot):
+    expected = snapshot.get("native_snapshot_hash")
+    if expected is None:
+        # Jobs created before native snapshot hashing retain their v1 semantics.
+        return True
+    if not isinstance(expected, str) or len(expected) != 64:
+        return False
+    payload = {
+        key: value for key, value in snapshot.items()
+        if key not in {"native_snapshot_id", "native_snapshot_hash"}
+    }
+    actual = hashlib.sha256(json.dumps(
+        payload, ensure_ascii=False, sort_keys=True,
+        separators=(",", ":"), default=str,
+    ).encode()).hexdigest()
+    return actual == expected
+
+
 def _load_frozen_ranking():
     try:
         payload = json.loads(Path(GRANULAR_RANKING).read_text(encoding="utf-8"))
@@ -446,6 +497,8 @@ def _process_optional_job(ledger, job, *, now, changes):
     watch, snapshot = _job_watch_snapshot(ledger, job)
     if not isinstance(watch, dict) or not isinstance(snapshot, dict):
         raise ValueError("native_snapshot_missing_for_optional_job")
+    if not _native_snapshot_hash_valid(snapshot):
+        raise ValueError("native_snapshot_hash_mismatch")
     stage, match_id = str(job.get("stage") or ""), str(job.get("match_id") or "")
     # Learning is deliberately a side effect of a committed immutable snapshot,
     # never a prerequisite for the native stage transaction.

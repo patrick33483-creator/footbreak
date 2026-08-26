@@ -287,8 +287,14 @@ def _active_existing_admission(
     active = frozen.get("active_evidence") if isinstance(frozen, dict) else None
     if not isinstance(active, dict):
         return None, "active_wilson_condition_unavailable"
-    arithmetic = admission_arithmetic(int(active.get("cumulative_hits", 0)),
-                                     int(active.get("cumulative_decided", 0)), execution_odds)
+    arithmetic = admission_arithmetic(
+        int(active.get("cumulative_hits", 0)),
+        int(active.get("cumulative_decided", 0)),
+        execution_odds,
+        settlement_profile=(admission.get("arithmetic") or {}).get(
+            "settlement_profile"
+        ),
+    )
     if arithmetic is None:
         return None, "active_evidence_arithmetic_invalid"
     updated = copy.deepcopy(admission)

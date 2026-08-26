@@ -204,6 +204,7 @@ def build_manifest(ledger:Any,system:str)->dict[str,Any]:
         activity, system=system, signature=sig, frozen=frozen,
         projection_time=datetime.now(timezone.utc),
         require_settled=activity.get("status") == "SETTLED",
+        ledger=ledger,
     )
     if shared_admitted is None:
      activity_rejections["invalid_signature_definition_or_evidence_binding"] += 1

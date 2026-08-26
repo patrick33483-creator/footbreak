@@ -358,6 +358,14 @@ def _market_predictions(
             # probability must never be reused as Kelly p against its price.
             "probability_source": best.get("reference"),
             "probability_observed_at": best.get("probability_observed_at"),
+            **(
+                {
+                    "quarter_line_settlement":
+                    copy.deepcopy(best.get("quarter_line_settlement"))
+                }
+                if isinstance(best.get("quarter_line_settlement"), dict)
+                else {}
+            ),
             # Keep the historical learning-source field backward compatible;
             # quote_source is the provider evidence for the selected price.
             # A missing provenance must remain missing.  In particular, do not
@@ -766,13 +774,22 @@ def sync_prediction(
                 "updated_at": stored.get("ts"),
                 "reason": None if _completed_stage_row(stored) else record.get("reason"),
             })
+    if (
+        stage == "T-5" and _completed_stage_row(stored)
+        and not existing_was_completed
+        and not stored.get("formal_admission_snapshot_id")
+    ):
+        _bind_formal_snapshot(watch, stored)
     if deadline_critical_snapshot or defer_formal_admission or stage != "T-5":
         # The stage itself is now durable, with its native quote/timestamp and
         # terminal attempt state.  Never run condition, research, execution,
         # notification, or aggregate consumers on the write-ahead path.
         # Every completed native stage retains an explicit marker so the
         # authoritative post-save reconciler evaluates only durable evidence.
-        if _completed_stage_row(stored) and not existing_was_completed:
+        if (
+            _completed_stage_row(stored) and not existing_was_completed
+            and not stored.get("formal_admission_snapshot_id")
+        ):
             _bind_formal_snapshot(watch, stored)
         return []
     # Validation admission is singular: only the very first persisted native

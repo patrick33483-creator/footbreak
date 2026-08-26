@@ -1077,6 +1077,9 @@ def _active_existing_admission(
     arithmetic = admission_arithmetic(
         int(active.get("cumulative_hits", 0)), int(active.get("cumulative_decided", 0)),
         execution_odds,
+        settlement_profile=(admission.get("arithmetic") or {}).get(
+            "settlement_profile"
+        ),
     )
     if arithmetic is None:
         return None, "active_evidence_arithmetic_invalid"

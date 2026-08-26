@@ -548,6 +548,25 @@ class CrownSafetyTests(unittest.TestCase):
         self.assertNotIn("ev", hdc)
         self.assertNotIn("kelly_raw", hdc)
 
+    def test_single_complete_quarter_line_freezes_settlement_profile(self) -> None:
+        config = replace(settings(), source_max_age_seconds=90)
+        prices = [
+            {"market": "HIL", "line": 2.75, "selection": "H",
+             "odds": 1.66, "source_at": 1000},
+            {"market": "HIL", "line": 2.75, "selection": "L",
+             "odds": 2.18, "source_at": 1000},
+        ]
+        forecasts, reasons = _crown_market_forecasts(prices, config, 1001)
+        self.assertEqual(reasons, ["no_complete_current_crown_HDC"])
+        self.assertEqual(len(forecasts), 1)
+        profile = forecasts[0]["quarter_line_settlement"]
+        self.assertEqual(profile["line"], 2.75)
+        self.assertEqual(
+            profile["method"], "native_t5_market_implied_poisson",
+        )
+        self.assertEqual(profile["source"]["over_odds"], 1.66)
+        self.assertEqual(profile["source"]["under_odds"], 2.18)
+
     def test_unmapped_pinnapi_still_records_crown_forecast_but_never_bets(self) -> None:
         config = replace(settings(), source_max_age_seconds=90)
         kickoff = self.now + timedelta(minutes=5)
