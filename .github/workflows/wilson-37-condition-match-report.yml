@@ -2,6 +2,9 @@ name: Wilson 37-condition match report (read-only)
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - diagnose/wilson-37-report-20260826
 
 permissions:
   contents: read
