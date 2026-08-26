@@ -93,6 +93,42 @@ jobs:
           eligible, excluded = _eligible_rollover_rows(
               valid, "footbreak", signature, active,
           )
+          loose_eligible, loose_excluded = _eligible_rollover_rows(
+              raw, "footbreak", signature, active,
+          )
+          loose_rows = []
+          for item in loose_eligible:
+              row = item["row"]
+              admitted, reason = validate_formal_row(
+                  row,
+                  system="footbreak",
+                  signature=signature,
+                  frozen=frozen,
+                  projection_time=projection_time,
+                  require_settled=True,
+                  ledger=ledger,
+              )
+              marker = row.get("rollover_provenance") or {}
+              loose_rows.append({
+                  "league": row.get("league"),
+                  "home": row.get("home"),
+                  "away": row.get("away"),
+                  "kickoff": row.get("kickoff") or row.get("kickoff_hkt"),
+                  "stage": row.get("stage"),
+                  "market": row.get("market") or row.get("code"),
+                  "selected_role": row.get("selected_role"),
+                  "selected_side": row.get("selected_side") or row.get("side"),
+                  "selected_line": row.get("selected_line", row.get("line")),
+                  "odds": row.get("odds"),
+                  "result": row.get("result"),
+                  "formal_validation": "valid" if admitted is not None else reason,
+                  "admitted_evidence_version": row.get("admitted_evidence_version"),
+                  "marker_evidence_version": marker.get("evidence_version"),
+                  "formal_identity_present": bool(
+                      row.get("bet_id") or row.get("observation_id")
+                  ),
+                  "fixture_market_hash": item["fixture_market_hash"],
+              })
           binding = frozen.get("prospective_matcher_binding")
           epoch = frozen.get("prospective_matcher_epoch")
           epoch_progress = (
@@ -192,6 +228,15 @@ jobs:
                       for fixture_hash, _row in binding_candidates
                   }),
               },
+              "loose_rollover_reconstruction": {
+                  "eligible": len(loose_eligible),
+                  "eligible_hits": sum(
+                      item["row"].get("result") in BINARY_HIT_RESULTS
+                      for item in loose_eligible
+                  ),
+                  "excluded": loose_excluded,
+                  "rows": loose_rows,
+              },
               "eligible_public_rows": public_rows,
           }, ensure_ascii=False, indent=2))
           PY
@@ -208,6 +253,7 @@ jobs:
           summary = data["summary"]
           reconstructed = data["reconstruction"]
           clean_epoch = data["clean_epoch_reconstruction"]
+          loose = data["loose_rollover_reconstruction"]
           published = data["published_detail"]
           rows = data["eligible_public_rows"]
 
@@ -239,6 +285,12 @@ jobs:
                   f"{clean_epoch['binding_pending_rows'] - clean_epoch['binding_pending_hits']} 失**；"
                   f"獨立賽事市場身份 {clean_epoch['unique_fixture_market_hashes']}"
               ),
+              (
+                  "- 舊 rollover eligibility 重播："
+                  f"**{loose['eligible']} 場，"
+                  f"{loose['eligible_hits']} 中，"
+                  f"{loose['eligible'] - loose['eligible_hits']} 失**"
+              ),
               "",
           ]
           if reconstructed["invalid_reasons"]:
@@ -255,12 +307,12 @@ jobs:
                   "",
               ])
           lines.extend([
-              "## 嚴格合資格逐場名單",
+              "## 舊 rollover eligibility 逐場候選",
               "",
-              "| # | 賽事 | 開賽 | 階段 | 市場／選擇 | 賠率 | 結果 |",
-              "|---:|---|---|---|---|---:|---|",
+              "| # | 賽事 | 開賽 | 階段 | 市場／選擇 | 賠率 | 結果 | 正式驗證 |",
+              "|---:|---|---|---|---|---:|---|---|",
           ])
-          for index, row in enumerate(rows, 1):
+          for index, row in enumerate(loose["rows"], 1):
               match = " vs ".join(
                   value or "?"
                   for value in (row.get("home"), row.get("away"))
@@ -279,7 +331,7 @@ jobs:
               )
               lines.append(
                   "| {index} | {match} | {kickoff} | {stage} | "
-                  "{selection} | {odds} | {result} |".format(
+                  "{selection} | {odds} | {result} | {validation} |".format(
                       index=index,
                       match=match.replace("|", "\\|"),
                       kickoff=str(row.get("kickoff") or "?").replace("|", "\\|"),
@@ -287,6 +339,9 @@ jobs:
                       selection=(selection or "?").replace("|", "\\|"),
                       odds=row.get("odds") if row.get("odds") is not None else "?",
                       result=str(row.get("result") or "?").replace("|", "\\|"),
+                      validation=str(
+                          row.get("formal_validation") or "?"
+                      ).replace("|", "\\|"),
                   )
               )
           lines.extend([
