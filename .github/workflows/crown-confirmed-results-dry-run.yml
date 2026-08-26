@@ -1,0 +1,162 @@
+name: Crown confirmed results production dry-run
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - hotfix/pending-detail-legacy-cohort-20260826
+    paths:
+      - .github/workflows/crown-confirmed-results-dry-run.yml
+      - crown/backfill_confirmed_results.py
+      - deploy/backfill/fixtures_42_verified.json
+
+permissions:
+  contents: read
+
+concurrency:
+  group: crown-confirmed-results-production-dry-run
+  cancel-in-progress: false
+
+jobs:
+  dry-run:
+    name: Validate confirmed results against a production ledger snapshot
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: hotfix/pending-detail-legacy-cohort-20260826
+
+      - name: Verify reviewed inputs
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor \
+            "21ab43ccd31e86f752d89250f0fa6ee0ff93c737" HEAD
+          echo "487f5382aec935b7be752e462633309bf848f95d79ab20dbfabde4f20598d817  crown/backfill_confirmed_results.py" \
+            | sha256sum --check --strict
+          echo "6e996b0c8caf7330b39885afc4d3fd03ba9cc9b4d084364050d4f2542991d3d1  deploy/backfill/fixtures_42_verified.json" \
+            | sha256sum --check --strict
+
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: Run against an isolated production ledger snapshot
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          target="$DEPLOY_USER@$DEPLOY_HOST"
+          remote_dir="$(ssh -o BatchMode=yes -o ConnectTimeout=20 "$target" \
+            'umask 077; mktemp -d /tmp/crown-confirmed-results-dry-run.XXXXXX')"
+          cleanup() {
+            ssh -o BatchMode=yes -o ConnectTimeout=20 "$target" \
+              "sudo rm -rf -- $(printf '%q' "$remote_dir")" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          git archive --format=tar HEAD crown analysis \
+            | ssh -o BatchMode=yes -o ConnectTimeout=20 "$target" \
+                "tar -xf - -C $(printf '%q' "$remote_dir")"
+          scp -q deploy/backfill/fixtures_42_verified.json \
+            "$target:$remote_dir/fixtures_42_verified.json"
+
+          ssh -o BatchMode=yes -o ConnectTimeout=20 "$target" \
+            "sudo env REMOTE_DIR=$(printf '%q' "$remote_dir") \
+              PYTHONPATH=$(printf '%q' "$remote_dir") \
+              /opt/footbreak/.venv/bin/python3 -s" \
+            > crown-confirmed-results-production-dry-run.json <<'PY'
+          import hashlib
+          import json
+          import os
+          import shutil
+          from pathlib import Path
+
+          from crown.backfill_confirmed_results import execute
+          from crown.config import settings
+          from dataclasses import replace
+
+          remote_dir = Path(os.environ["REMOTE_DIR"])
+          production_ledger = Path("/var/lib/footbreak/crown/ledger.json")
+          snapshot_state = remote_dir / "state"
+          snapshot_state.mkdir(mode=0o700)
+          snapshot_ledger = snapshot_state / "ledger.json"
+
+          before_raw = production_ledger.read_bytes()
+          before_sha = hashlib.sha256(before_raw).hexdigest()
+          shutil.copyfile(production_ledger, snapshot_ledger)
+          snapshot_ledger.chmod(0o600)
+
+          config = replace(settings(), state_dir=snapshot_state)
+          manifest_path = remote_dir / "dry-run-manifest.json"
+          result = execute(
+              config,
+              remote_dir / "fixtures_42_verified.json",
+              apply=False,
+              manifest_path=manifest_path,
+          )
+
+          after_raw = production_ledger.read_bytes()
+          after_sha = hashlib.sha256(after_raw).hexdigest()
+          if before_sha != after_sha or before_raw != after_raw:
+              raise SystemExit("production_ledger_changed_during_dry_run")
+
+          output = {
+              "reviewed_commit": "21ab43ccd31e86f752d89250f0fa6ee0ff93c737",
+              "production_ledger_before_sha256": before_sha,
+              "production_ledger_after_sha256": after_sha,
+              "production_ledger_byte_unchanged": True,
+              "dry_run": result,
+          }
+          print(json.dumps(output, ensure_ascii=False, indent=2, sort_keys=True))
+          PY
+
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          path = Path("crown-confirmed-results-production-dry-run.json")
+          result = json.loads(path.read_text(encoding="utf-8"))
+          dry_run = result["dry_run"]
+          counts = dry_run["counts"]
+          assert result["production_ledger_byte_unchanged"] is True
+          assert result["production_ledger_before_sha256"] == result["production_ledger_after_sha256"]
+          assert dry_run["mode"] == "dry-run"
+          assert dry_run["safe_to_apply"] is True
+          assert dry_run["applied"] is False
+          assert counts["fixtures"] == 42
+          assert counts["confirmed_fixtures"] == 34
+          assert counts["conflict_fixtures"] == 8
+          assert counts["confirmed_rows"] == 66
+          assert counts["pending_rows_before"] == 66
+          assert counts["already_applied_rows"] == 0
+          assert counts["changed_rows"] == 66
+          assert counts["conflict_rows_unchanged"] == 17
+          assert dry_run["side_effects"] == {
+              "provider_calls": 0,
+              "telegram_calls": 0,
+              "dashboard_publications": 0,
+          }
+          print(json.dumps({
+              "safe_to_apply": dry_run["safe_to_apply"],
+              "counts": counts,
+              "side_effects": dry_run["side_effects"],
+              "production_ledger_byte_unchanged": True,
+          }, ensure_ascii=False, sort_keys=True))
+          PY
+
+      - name: Upload dry-run evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: crown-confirmed-results-production-dry-run
+          path: crown-confirmed-results-production-dry-run.json
+          if-no-files-found: error
+          retention-days: 30
