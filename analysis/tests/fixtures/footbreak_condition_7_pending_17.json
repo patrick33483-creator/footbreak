@@ -1,0 +1,27 @@
+{
+  "schema": "wilson-pending-detail-regression-v1",
+  "system": "footbreak",
+  "condition_number": 7,
+  "expected_decided": 17,
+  "expected_hits": 9,
+  "required": 20,
+  "fixtures": [
+    {"index": 1, "result": "Won"},
+    {"index": 2, "result": "Won"},
+    {"index": 3, "result": "Won"},
+    {"index": 4, "result": "Won"},
+    {"index": 5, "result": "Won"},
+    {"index": 6, "result": "Won"},
+    {"index": 7, "result": "Won"},
+    {"index": 8, "result": "Won"},
+    {"index": 9, "result": "Won"},
+    {"index": 10, "result": "Lost"},
+    {"index": 11, "result": "Lost"},
+    {"index": 12, "result": "Lost"},
+    {"index": 13, "result": "Lost"},
+    {"index": 14, "result": "Lost"},
+    {"index": 15, "result": "Lost"},
+    {"index": 16, "result": "Lost"},
+    {"index": 17, "result": "Lost"}
+  ]
+}

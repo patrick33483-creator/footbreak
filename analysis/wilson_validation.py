@@ -1014,9 +1014,11 @@ def project_granular_ranking_evidence(
     return projected
 
 
-def _dashboard_evidence_row(row: dict[str, Any]) -> dict[str, Any]:
+def _dashboard_evidence_row(
+    row: dict[str, Any], *, evidence_identity: str | None = None,
+) -> dict[str, Any]:
     """Return only the safe, user-facing fields for one evidence observation."""
-    return {
+    projected = {
         "stage": row.get("stage"),
         "league": row.get("league"),
         "home": row.get("home"),
@@ -1032,6 +1034,9 @@ def _dashboard_evidence_row(row: dict[str, Any]) -> dict[str, Any]:
         "settled_at": row.get("settled_at"),
         "hit": row.get("result") in BINARY_HIT_RESULTS,
     }
+    if evidence_identity is not None:
+        projected["evidence_identity"] = evidence_identity
+    return projected
 
 
 def _project_pending_rollover_rows(
@@ -1072,26 +1077,51 @@ def _project_pending_rollover_rows(
         }
 
     namespace = ledger.get(NAMESPACE)
-    observations = (
-        namespace.get("observations") or []
-        if isinstance(namespace, dict) and namespace.get("system") == system else []
+    frozen = (
+        (namespace.get("conditions") or {}).get(signature)
+        if isinstance(namespace, dict)
+        and namespace.get("system") == system
+        and isinstance(namespace.get("conditions"), dict)
+        else None
     )
-    candidates = [
-        row for row in (ledger.get("bets") or [])
-        if isinstance(row, dict)
-        and row.get("portfolio") == portfolio_name(system)
-        and row.get("strategy") == STRATEGY
-    ] + [
-        row for row in observations
-        if isinstance(row, dict)
-        and row.get("portfolio") == f"{system}_wilson_observations"
-        and row.get("strategy") == STRATEGY
-        and row.get("formal_bet") is False
-    ]
+    projection_time = _time(_now())
+    if not isinstance(frozen, dict) or projection_time is None:
+        return {
+            "expected_decided": expected_decided,
+            "expected_hits": expected_hits,
+            "required": required,
+            "rows": [], "complete": False,
+            "unavailable_reason": "pending_condition_identity_unavailable",
+        }
+    # Match the authoritative rollover writer's row/container contract before
+    # rebuilding the cohort.  A legacy or malformed same-signature row must
+    # never be borrowed merely because its loose provenance marker looks
+    # similar to condition #7.
+    candidates: list[dict[str, Any]] = []
+    for row in active_bets(ledger, system) + active_observations(ledger, system):
+        if str(row.get("frozen_condition_signature") or "") != signature:
+            continue
+        admitted, _reason = validate_formal_row(
+            row, system=system, signature=signature, frozen=frozen,
+            projection_time=projection_time, require_settled=True,
+        )
+        if admitted is not None:
+            candidates.append(row)
     eligible, _excluded = _eligible_rollover_rows(
         candidates, system, signature, active,
     )
-    rows = [_dashboard_evidence_row(item["row"]) for item in eligible]
+    rows = [
+        _dashboard_evidence_row(
+            item["row"],
+            evidence_identity=_canonical_hash({
+                "system": system,
+                "condition_signature": signature,
+                "evidence_hash": active.get("evidence_hash"),
+                "fixture_market_hash": item["fixture_market_hash"],
+            }),
+        )
+        for item in eligible
+    ]
     actual_hits = sum(bool(row["hit"]) for row in rows)
     if len(rows) != expected_decided or actual_hits != expected_hits:
         return {
