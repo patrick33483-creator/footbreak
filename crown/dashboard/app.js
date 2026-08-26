@@ -30,7 +30,7 @@ const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const DASHBOARD_FETCH_TIMEOUT_MS = Math.max(
   250,
-  Math.min(15000, numeric(window.__CROWN_FETCH_TIMEOUT_MS__) || 6000),
+  Math.min(15000, numeric(window.__CROWN_FETCH_TIMEOUT_MS__) || 15000),
 );
 
 const TAG = { 'T-5': 'tag-t5', 'T-30': 'tag-t30', '首預': 'tag-t60', '待入窗': 'tag-wait', '已開賽': 'tag-none' };
