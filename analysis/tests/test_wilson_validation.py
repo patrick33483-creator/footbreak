@@ -1303,10 +1303,11 @@ class WilsonBatchRolloverTest(unittest.TestCase):
             frozen["pending_rollover_progress"]["eligible_hits"], 4,
         )
 
-        # Three rows retain the pre-binding empty definition while the rest
-        # already use the current immutable schema.
+        # Three rows retain the production legacy shape: their exact native
+        # stage remains in rollover provenance but the later top-level mirror
+        # is absent.  The rest already use the current immutable schema.
         for row in rows[:3]:
-            row["frozen_condition_definition"] = {}
+            row.pop("native_stage_at")
 
         detail = project_granular_ranking_evidence(
             ledger, "footbreak", [*seeds, candidate()],
@@ -1333,6 +1334,17 @@ class WilsonBatchRolloverTest(unittest.TestCase):
         self.assertEqual(
             blocked["unavailable_reason"], "pending_row_identity_mismatch",
         )
+
+        conflicting_stage = copy.deepcopy(ledger)
+        conflicting_stage["bets"][0]["native_stage_at"] = (
+            "2026-08-20T23:59:59+08:00"
+        )
+        blocked = project_granular_ranking_evidence(
+            conflicting_stage, "footbreak", [*seeds, candidate()],
+            now="2026-08-22T00:00:00+08:00",
+        )[-1]["pending_rollover_evidence"]
+        self.assertFalse(blocked["complete"])
+        self.assertEqual(blocked["rows"], [])
 
         # A duplicate losing fixture plus a unique losing replacement keeps
         # the same 7/20 and 4/7 aggregates.  The changed selector exclusions
@@ -1388,7 +1400,7 @@ class WilsonBatchRolloverTest(unittest.TestCase):
         ]
         recompute_namespace(ledger, "crown")
         for row in rows[:3]:
-            row["frozen_condition_definition"] = {}
+            row.pop("native_stage_at")
 
         frozen_rows = list(
             ledger["wilson_validation"]["conditions"].values(),
