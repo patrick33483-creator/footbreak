@@ -1,0 +1,12 @@
+[Unit]
+Description=Check Telegram silence every five minutes
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=5min
+AccuracySec=15s
+Persistent=true
+Unit=telegram-silence-monitor.service
+
+[Install]
+WantedBy=timers.target

@@ -141,7 +141,7 @@ systemctl disable --now crown-round-update.timer crown-first-look-reconcile.time
 systemctl disable --now footbreak-backtest.timer 2>/dev/null || true
 # This monitor is local/read-only: unlike prediction timers it makes no
 # provider request, so it is safe and useful before the first live validation.
-systemctl enable --now footbreak-server-health-monitor.timer
+systemctl enable --now footbreak-server-health-monitor.timer telegram-silence-monitor.timer
 
 install -m 0644 "$APP_DIR/deploy/nginx-footbreak.conf" /etc/nginx/sites-available/footbreak
 ln -sf /etc/nginx/sites-available/footbreak /etc/nginx/sites-enabled/footbreak

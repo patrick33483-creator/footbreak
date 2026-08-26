@@ -173,7 +173,7 @@ fi
 systemctl enable --now \
   footbreak-tick.timer footbreak-sweep.timer footbreak-settle.timer \
   footbreak-result-reconcile.timer footbreak-dashboard-self-heal.timer \
-  footbreak-server-health-monitor.timer
+  footbreak-server-health-monitor.timer telegram-silence-monitor.timer
 # An already-active timer keeps its previous next-elapse calculation after a
 # unit-file update on some systemd versions. Restart it explicitly so a
 # 30-minute installation becomes the new 15-minute schedule immediately.
@@ -212,6 +212,21 @@ systemctl is-active --quiet footbreak-server-health-monitor.timer || {
   systemctl show footbreak-server-health-monitor.timer \
     -p LoadState -p ActiveState -p SubState -p Result
   echo "ERROR: footbreak-server-health-monitor.timer did not restart" >&2
+  exit 1
+}
+systemctl reenable telegram-silence-monitor.timer
+systemctl restart telegram-silence-monitor.timer
+systemctl start telegram-silence-monitor.service
+systemctl is-enabled --quiet telegram-silence-monitor.timer || {
+  systemctl show telegram-silence-monitor.timer \
+    -p LoadState -p ActiveState -p SubState -p UnitFileState -p Result
+  echo "ERROR: telegram-silence-monitor.timer did not become enabled" >&2
+  exit 1
+}
+systemctl is-active --quiet telegram-silence-monitor.timer || {
+  systemctl show telegram-silence-monitor.timer \
+    -p LoadState -p ActiveState -p SubState -p Result
+  echo "ERROR: telegram-silence-monitor.timer did not restart" >&2
   exit 1
 }
 systemctl enable crown-dashboard-api.service footbreak-dashboard-api.service
