@@ -1264,37 +1264,48 @@ def _project_pending_rollover_rows(
             candidates.append(row)
         else:
             rejected.append((row, reason))
-    eligible, _excluded = _eligible_rollover_rows(
+    eligible, selected_excluded = _eligible_rollover_rows(
         candidates, system, signature, active,
     )
-    # Production Footbreak condition #7 predates the immutable
-    # ``evidence_version`` admission binding.  Its persisted 17/20 counter was
-    # created by the same deterministic rollover selector below, and the
-    # historical rows still retain exact formal identity, condition signature,
-    # stage provenance and unique fixture-market hashes.  Reconstruct only
-    # that one known compatibility cohort when every row is rejected solely
-    # for the later admission-binding schema and the result exactly agrees
-    # with the already-durable counter.  Rows rejected for chronology,
-    # provenance, settlement or any other reason can never fill the cohort.
-    if (
-        not eligible
-        and system == "footbreak"
-        and _strict_int(frozen.get("condition_number")) == 7
-        and expected_decided > 0
-    ):
-        legacy_binding_rows = [
-            row for row, reason in rejected
-            if reason == "invalid_formal_admission_binding"
-        ]
-        legacy_eligible, _legacy_excluded = _eligible_rollover_rows(
-            legacy_binding_rows, system, signature, active,
+    # Some durable pending cohorts straddle the introduction of the immutable
+    # frozen-condition definition binding.  Recover only the exact legacy
+    # shape: the stored definition is empty and changing that one field to the
+    # already-frozen definition makes the whole row pass the current validator,
+    # including chronology, evidence version/hash, arithmetic and settlement.
+    # Mix those proven legacy rows with current rows, then expose the cohort
+    # only when the deterministic selector still agrees exactly with the
+    # durable pending count, hit count and selector-exclusion counters.  Any
+    # other legacy difference, duplicate, conflict or extra row remains
+    # fail-closed.
+    if expected_decided > 0:
+        legacy_binding_rows: list[dict[str, Any]] = []
+        for row, reason in rejected:
+            if (
+                reason != "invalid_formal_admission_binding"
+                or row.get("frozen_condition_definition") != {}
+            ):
+                continue
+            repaired = copy.deepcopy(row)
+            repaired["frozen_condition_definition"] = copy.deepcopy(
+                frozen.get("definition"),
+            )
+            admitted, repaired_reason = validate_formal_row(
+                repaired, system=system, signature=signature, frozen=frozen,
+                projection_time=projection_time, require_settled=True,
+                ledger=ledger,
+            )
+            if admitted is not None and repaired_reason is None:
+                legacy_binding_rows.append(row)
+        compatible_eligible, compatible_excluded = _eligible_rollover_rows(
+            [*candidates, *legacy_binding_rows], system, signature, active,
         )
         if (
-            len(legacy_eligible) == expected_decided
-            and sum(bool(item["hit"]) for item in legacy_eligible)
+            len(compatible_eligible) == expected_decided
+            and sum(bool(item["hit"]) for item in compatible_eligible)
             == expected_hits
         ):
-            eligible = legacy_eligible
+            eligible = compatible_eligible
+            selected_excluded = compatible_excluded
     rows = [
         _dashboard_evidence_row(
             item["row"],
@@ -1308,7 +1319,16 @@ def _project_pending_rollover_rows(
         for item in eligible
     ]
     actual_hits = sum(bool(row["hit"]) for row in rows)
-    if len(rows) != expected_decided or actual_hits != expected_hits:
+    expected_excluded = pending.get("excluded")
+    selector_exclusions_match = (
+        isinstance(expected_excluded, dict)
+        and expected_excluded == selected_excluded
+    )
+    if (
+        len(rows) != expected_decided
+        or actual_hits != expected_hits
+        or not selector_exclusions_match
+    ):
         return {
             "expected_decided": expected_decided,
             "expected_hits": expected_hits,
