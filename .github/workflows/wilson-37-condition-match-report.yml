@@ -152,6 +152,12 @@ jobs:
           }, ensure_ascii=False, indent=2))
           PY
 
+      - name: Print report data
+        run: |
+          printf '%s\n' 'WILSON_REPORT_JSON_BEGIN'
+          cat wilson-37-condition-match-report.json
+          printf '%s\n' 'WILSON_REPORT_JSON_END'
+
       - name: Upload report data
         uses: actions/upload-artifact@v4
         with:
