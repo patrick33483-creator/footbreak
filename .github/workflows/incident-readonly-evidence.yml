@@ -368,6 +368,8 @@ jobs:
               "safe_to_apply": dry_run["safe_to_apply"],
               "counts": counts,
               "side_effects": dry_run["side_effects"],
+              "production_ledger_before_sha256": result["production_ledger_before_sha256"],
+              "production_ledger_after_sha256": result["production_ledger_after_sha256"],
               "production_ledger_byte_unchanged": True,
           }, ensure_ascii=False, sort_keys=True))
           PY
