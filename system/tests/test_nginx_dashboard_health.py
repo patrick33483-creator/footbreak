@@ -59,7 +59,7 @@ class NginxDashboardHealthTests(unittest.TestCase):
                 "prediction_history": {"stats": {"graded": 1}, "rows": [row]},
             }), encoding="utf-8")
             (crown_dir / "history.json").write_text(json.dumps({
-                "schema_version": "crown-history-v1",
+                "schema_version": "crown-history-v2",
                 "history_data_version": "crown-v1",
                 "prediction_history": {"stats": {}, "rows": [row]},
             }), encoding="utf-8")

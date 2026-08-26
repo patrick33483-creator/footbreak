@@ -384,10 +384,65 @@ def assert_crown_publication_matches(
     projected_history = copy.deepcopy(crown_history)
     normalize_history(projected_history)
     raw_rows = rows(projected_history)
-    public_ledger = crown_public.get("ledger") or {}
-    projected_rows = overlay_rows(
-        project_watch_rows(raw_rows, public_ledger), "crown",
-    )
+    if crown_public_history is None:
+        # Archived inline-history snapshots predate immutable sidecars.
+        public_ledger = crown_public.get("ledger") or {}
+        bound_ranking = None
+        bound_watch_rows = None
+    else:
+        from crown.dashboard_data import (
+            HISTORY_ARTIFACT_SCHEMA,
+            history_artifact_version,
+        )
+
+        assert crown_public_history.get("schema_version") == HISTORY_ARTIFACT_SCHEMA, (
+            "Crown history sidecar schema mismatch"
+        )
+        bound_ranking = crown_public_history.get("wilson_ranking_projection")
+        assert isinstance(bound_ranking, list) and all(
+            isinstance(row, dict) for row in bound_ranking
+        ), (
+            "Crown history sidecar Wilson ranking binding missing"
+        )
+        bound_watch_rows = crown_public_history.get("watch_projection_rows")
+        assert isinstance(bound_watch_rows, list) and all(
+            isinstance(row, dict) for row in bound_watch_rows
+        ), (
+            "Crown history sidecar watch row binding missing"
+        )
+        expected_version = history_artifact_version(
+            crown_public_history.get("prediction_history") or {},
+            bound_ranking,
+            bound_watch_rows,
+        )
+        assert crown_public_history.get("history_data_version") == expected_version, (
+            "Crown history sidecar content hash mismatch"
+        )
+        assert crown_public.get("history_data_version") == expected_version, (
+            "Crown boot/history sidecar version mismatch"
+        )
+        assert crown_public.get("history_data_url") == f"history-{expected_version}.json", (
+            "Crown history sidecar content-addressed filename mismatch"
+        )
+        public_ledger = {}
+    if bound_watch_rows is None:
+        watch_projected_rows = project_watch_rows(raw_rows, public_ledger)
+    else:
+        watch_projected_rows = copy.deepcopy(raw_rows)
+        existing = {
+            (str(row.get("match_id") or ""), str(row.get("stage") or ""))
+            for row in watch_projected_rows
+            if isinstance(row, dict)
+        }
+        for row in bound_watch_rows:
+            key = (str(row.get("match_id") or ""), str(row.get("stage") or ""))
+            if all(key) and key not in existing:
+                watch_projected_rows.append(copy.deepcopy(row))
+                existing.add(key)
+        holder = {"rows": watch_projected_rows, "stats": {}}
+        normalize_history(holder)
+        watch_projected_rows = holder["rows"]
+    projected_rows = overlay_rows(watch_projected_rows, "crown")
     projected_stats = calculate_stats(
         projected_rows,
         comparable_era=PREDICTION_ERA,
@@ -403,13 +458,16 @@ def assert_crown_publication_matches(
 
     granular = projected_stats.get("granular_conditions")
     if isinstance(granular, dict):
-        raw_ranking = granular.get("ranking") or []
-        granular["ranking"] = project_granular_ranking_evidence(
-            copy.deepcopy(public_ledger),
-            "crown",
-            raw_ranking,
-            now=str(crown_public.get("generated_at") or ""),
-        )
+        if bound_ranking is None:
+            raw_ranking = granular.get("ranking") or []
+            granular["ranking"] = project_granular_ranking_evidence(
+                copy.deepcopy(public_ledger),
+                "crown",
+                raw_ranking,
+                now=str(crown_public.get("generated_at") or ""),
+            )
+        else:
+            granular["ranking"] = copy.deepcopy(bound_ranking)
     public_rows = rows(public_history)
     assert len(public_rows) == len(projected_rows), (
         "Crown public/projected prediction row count mismatch",

@@ -463,7 +463,7 @@ def dashboard_sidecar_mismatch(system: str, dashboard: Path) -> int:
     if sidecar.parent != dashboard.parent.resolve():
         return 1
     value = _json(sidecar, None)
-    schema = "crown-history-v1" if system == "crown" else "footbreak-history-v1"
+    schema = "crown-history-v2" if system == "crown" else "footbreak-history-v1"
     if not isinstance(value, dict) or value.get("schema_version") != schema:
         return 1
     if value.get("history_data_version") != expected:

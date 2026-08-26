@@ -38,12 +38,15 @@ def write_json(path: Path, value: object) -> None:
 def valid_dashboard(path: Path, system: str) -> None:
     version = f"{system}-history-test"
     sidecar = path.parent / "history.json"
+    history_schema = (
+        "crown-history-v2" if system == "crown" else "footbreak-history-v1"
+    )
     write_json(path, {
         "history_data_url": "history.json",
         "history_data_version": version,
     })
     write_json(sidecar, {
-        "schema_version": f"{system}-history-v1",
+        "schema_version": history_schema,
         "history_data_version": version,
         "prediction_history": {"rows": []},
     })

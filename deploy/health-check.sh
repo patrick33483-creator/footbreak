@@ -566,7 +566,7 @@ for missing in accuracy.get("missing_results") or []:
 crown_matches = crown.get("matches") or crown.get("predictions") or []
 print(f"OK Crown dashboard matches={len(crown_matches)}")
 crown_history = resolve_history(
-    "Crown", crown_path, crown, "crown-history-v1"
+    "Crown", crown_path, crown, "crown-history-v2"
 )
 crown_rows = crown_history.get("rows") or []
 crown_invalid = invalid_market_predictions(crown_rows)

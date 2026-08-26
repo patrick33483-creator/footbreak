@@ -80,7 +80,7 @@ const main = {
   history_data_version: 'history-v1',
 };
 const artifact = {
-  schema_version: 'crown-history-v1', generated_at: main.generated_at,
+  schema_version: 'crown-history-v2', generated_at: main.generated_at,
   history_data_version: 'history-v1', prediction_history: { rows, stats },
 };
 

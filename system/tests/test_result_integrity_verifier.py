@@ -57,9 +57,11 @@ class ResultIntegrityVerifierTests(unittest.TestCase):
                 "history_data_version": "crown-v1",
             }), encoding="utf-8")
             paths["crown_public_history"].write_text(json.dumps({
-                "schema_version": "crown-history-v1",
+                "schema_version": "crown-history-v2",
                 "history_data_version": "crown-v1",
                 "prediction_history": {"stats": {}, "rows": []},
+                "wilson_ranking_projection": [],
+                "watch_projection_rows": [],
             }), encoding="utf-8")
             calls = []
 
@@ -236,6 +238,36 @@ class ResultIntegrityVerifierTests(unittest.TestCase):
         }
         verify.assert_crown_publication_matches(raw, public)
 
+        from crown.dashboard_data import (
+            HISTORY_ARTIFACT_SCHEMA,
+            history_artifact_version,
+        )
+
+        bound_ranking = copy.deepcopy(
+            public["prediction_history"]["stats"]["granular_conditions"]["ranking"]
+        )
+        version = history_artifact_version(
+            public["prediction_history"],
+            bound_ranking,
+            projected,
+        )
+        sidecar = {
+            "schema_version": HISTORY_ARTIFACT_SCHEMA,
+            "history_data_version": version,
+            "prediction_history": copy.deepcopy(public["prediction_history"]),
+            "wilson_ranking_projection": bound_ranking,
+            "watch_projection_rows": copy.deepcopy(projected),
+        }
+        sidecar_boot = {
+            "history_data_url": f"history-{version}.json",
+            "history_data_version": version,
+            "ledger": {"watch": {}},
+            "prediction_history": {
+                "stats": copy.deepcopy(public["prediction_history"]["stats"]),
+            },
+        }
+        verify.assert_crown_publication_matches(raw, sidecar_boot, sidecar)
+
     def test_crown_publication_compares_the_active_wilson_ranking_projection(self):
         raw = {"rows": [], "stats": {}}
         calculated = calculate_stats([], comparable_era=PREDICTION_ERA)
@@ -279,6 +311,75 @@ class ResultIntegrityVerifierTests(unittest.TestCase):
             return_value=projected_ranking,
         ), self.assertRaises(AssertionError):
             verify.assert_crown_publication_matches(raw, tampered_other_stat)
+
+    def test_crown_sidecar_uses_its_bound_ranking_after_boot_advances(self):
+        raw = {"rows": [], "stats": {}}
+        public_stats = calculate_stats([], comparable_era=PREDICTION_ERA)
+        from crown.dashboard_data import (
+            HISTORY_ARTIFACT_SCHEMA,
+            history_artifact_version,
+        )
+
+        bound_ranking = []
+        version = history_artifact_version(
+            {"rows": [], "stats": public_stats},
+            bound_ranking,
+            [],
+        )
+        sidecar = {
+            "schema_version": HISTORY_ARTIFACT_SCHEMA,
+            "history_data_version": version,
+            "wilson_ranking_projection": bound_ranking,
+            "watch_projection_rows": [],
+            "prediction_history": {"rows": [], "stats": public_stats},
+        }
+        advanced_boot_ledger = {"watch": {"later": {
+            "match_id": "later",
+            "league": "League",
+            "home": "Home",
+            "away": "Away",
+            "kickoff": "2026-08-30T01:00:00+08:00",
+            "stages": [{
+                "match_id": "later",
+                "stage": "首預",
+                "ts": "2026-08-29T18:00:00+08:00",
+                "market_predictions": [{
+                    "code": "HDC", "line": -0.5, "side": "H",
+                }],
+            }],
+        }}}
+        public = {
+            "history_data_url": f"history-{version}.json",
+            "history_data_version": version,
+            "ledger": advanced_boot_ledger,
+            "prediction_history": {"stats": public_stats},
+        }
+
+        verify.assert_crown_publication_matches(raw, public, sidecar)
+
+        missing_binding = copy.deepcopy(sidecar)
+        missing_binding.pop("wilson_ranking_projection")
+        with self.assertRaisesRegex(
+            AssertionError, "Wilson ranking binding missing"
+        ):
+            verify.assert_crown_publication_matches(raw, public, missing_binding)
+
+        missing_watch_binding = copy.deepcopy(sidecar)
+        missing_watch_binding.pop("watch_projection_rows")
+        with self.assertRaisesRegex(
+            AssertionError, "watch row binding missing"
+        ):
+            verify.assert_crown_publication_matches(raw, public, missing_watch_binding)
+
+        tampered = copy.deepcopy(sidecar)
+        tampered["prediction_history"]["stats"]["graded"] = 999
+        with self.assertRaisesRegex(AssertionError, "content hash mismatch"):
+            verify.assert_crown_publication_matches(raw, public, tampered)
+
+        wrong_name = copy.deepcopy(public)
+        wrong_name["history_data_url"] = "history-wrong.json"
+        with self.assertRaisesRegex(AssertionError, "content-addressed filename mismatch"):
+            verify.assert_crown_publication_matches(raw, wrong_name, sidecar)
 
     def test_market_stats_respects_reported_model_version_scope(self):
         current = {
