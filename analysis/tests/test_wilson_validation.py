@@ -1259,6 +1259,188 @@ class WilsonBatchRolloverTest(unittest.TestCase):
         self.assertFalse(blocked["complete"])
         self.assertEqual(blocked["rows"], [])
 
+    def test_condition_fourteen_projects_exact_mixed_binding_pending_cohort(self):
+        ledger = {"bets": []}
+        seeds = []
+        for index in range(1, 14):
+            seed = copy.deepcopy(candidate())
+            seed["line_bucket"] = f"seed-{index}"
+            seed["key"] = [
+                (
+                    f"bucket=seed-{index}"
+                    if value.startswith("bucket=") else value
+                )
+                for value in seed["key"]
+            ]
+            seeds.append(seed)
+        projected = project_granular_ranking_evidence(
+            ledger, "footbreak", [*seeds, candidate()],
+            now="2026-08-20T00:00:00+08:00",
+        )
+        target = next(
+            row for row in projected
+            if row.get("line_bucket") == candidate()["line_bucket"]
+        )
+        self.assertEqual(target["condition_number"], 14)
+
+        rows = [
+            self._settled(
+                ledger, index,
+                result="Won" if index <= 4 else "Lost",
+                system="footbreak",
+            )
+            for index in range(1, 8)
+        ]
+        recompute_namespace(ledger, "footbreak")
+        frozen = next(
+            row for row in ledger["wilson_validation"]["conditions"].values()
+            if row.get("condition_number") == 14
+        )
+        self.assertEqual(
+            frozen["pending_rollover_progress"]["display"], "7/20",
+        )
+        self.assertEqual(
+            frozen["pending_rollover_progress"]["eligible_hits"], 4,
+        )
+
+        # Three rows retain the pre-binding empty definition while the rest
+        # already use the current immutable schema.
+        for row in rows[:3]:
+            row["frozen_condition_definition"] = {}
+
+        detail = project_granular_ranking_evidence(
+            ledger, "footbreak", [*seeds, candidate()],
+            now="2026-08-22T00:00:00+08:00",
+        )[-1]["pending_rollover_evidence"]
+        self.assertTrue(detail["complete"])
+        self.assertEqual(
+            (detail["expected_decided"], detail["expected_hits"]), (7, 4),
+        )
+        self.assertEqual(len(detail["rows"]), 7)
+        self.assertEqual(sum(row["hit"] for row in detail["rows"]), 4)
+
+        # Repairing the definition must not hide any second defect.  A changed
+        # quote no longer matches the immutable Wilson arithmetic and the
+        # projection therefore stays unavailable.
+        tampered = copy.deepcopy(ledger)
+        tampered["bets"][0]["odds"] = 9.99
+        blocked = project_granular_ranking_evidence(
+            tampered, "footbreak", [*seeds, candidate()],
+            now="2026-08-22T00:00:00+08:00",
+        )[-1]["pending_rollover_evidence"]
+        self.assertFalse(blocked["complete"])
+        self.assertEqual(blocked["rows"], [])
+        self.assertEqual(
+            blocked["unavailable_reason"], "pending_row_identity_mismatch",
+        )
+
+        # A duplicate losing fixture plus a unique losing replacement keeps
+        # the same 7/20 and 4/7 aggregates.  The changed selector exclusions
+        # must still block the projection.
+        duplicate_substitution = copy.deepcopy(ledger)
+        duplicate_substitution["bets"].append(
+            copy.deepcopy(duplicate_substitution["bets"][-1]),
+        )
+        replacement = copy.deepcopy(duplicate_substitution["bets"][-1])
+        old_match_id = replacement["match_id"]
+        replacement["match_id"] = "aggregate-preserving-replacement"
+        replacement["bet_id"] = replacement["bet_id"].replace(
+            old_match_id, replacement["match_id"], 1,
+        )
+        replacement["rollover_provenance"]["fixture_market_hash"] = (
+            _fixture_market_hash(
+                "footbreak", replacement["match_id"], replacement["market"],
+            )
+        )
+        duplicate_substitution["bets"].append(replacement)
+        blocked = project_granular_ranking_evidence(
+            duplicate_substitution, "footbreak", [*seeds, candidate()],
+            now="2026-08-22T00:00:00+08:00",
+        )[-1]["pending_rollover_evidence"]
+        self.assertFalse(blocked["complete"])
+        self.assertEqual(blocked["rows"], [])
+
+    def test_crown_condition_fourteen_projects_mixed_binding_pending_cohort(self):
+        ledger = {"bets": []}
+        seeds = []
+        for index in range(1, 14):
+            seed = copy.deepcopy(candidate(system="crown"))
+            seed["line_bucket"] = f"seed-{index}"
+            seed["key"] = [
+                (
+                    f"bucket=seed-{index}"
+                    if value.startswith("bucket=") else value
+                )
+                for value in seed["key"]
+            ]
+            seeds.append(seed)
+        project_granular_ranking_evidence(
+            ledger, "crown", [*seeds, candidate(system="crown")],
+            now="2026-08-20T00:00:00+08:00",
+        )
+        rows = [
+            self._settled(
+                ledger, index,
+                result="Won" if index <= 4 else "Lost",
+                system="crown",
+            )
+            for index in range(1, 8)
+        ]
+        recompute_namespace(ledger, "crown")
+        for row in rows[:3]:
+            row["frozen_condition_definition"] = {}
+
+        frozen_rows = list(
+            ledger["wilson_validation"]["conditions"].values(),
+        )
+        published_candidates = []
+        for frozen in frozen_rows:
+            item = copy.deepcopy(frozen["definition"])
+            item["key"] = copy.deepcopy(item.pop("miner_key"))
+            published_candidates.append(item)
+        target = next(
+            row for row in project_frozen_ranking_evidence(
+                ledger, "crown", published_candidates,
+            )
+            if row.get("condition_number") == 14
+        )
+        detail = target["pending_rollover_evidence"]
+        self.assertTrue(detail["complete"])
+        self.assertEqual(
+            (detail["expected_decided"], detail["expected_hits"]), (7, 4),
+        )
+        self.assertEqual(len(detail["rows"]), 7)
+        self.assertEqual(sum(row["hit"] for row in detail["rows"]), 4)
+
+        duplicate_substitution = copy.deepcopy(ledger)
+        duplicate_substitution["bets"].append(
+            copy.deepcopy(duplicate_substitution["bets"][-1]),
+        )
+        replacement = copy.deepcopy(duplicate_substitution["bets"][-1])
+        old_match_id = replacement["match_id"]
+        replacement["match_id"] = "crown-aggregate-preserving-replacement"
+        replacement["bet_id"] = replacement["bet_id"].replace(
+            old_match_id, replacement["match_id"], 1,
+        )
+        replacement["rollover_provenance"]["fixture_market_hash"] = (
+            _fixture_market_hash(
+                "crown", replacement["match_id"], replacement["market"],
+            )
+        )
+        duplicate_substitution["bets"].append(replacement)
+        blocked_target = next(
+            row for row in project_frozen_ranking_evidence(
+                duplicate_substitution, "crown", published_candidates,
+            )
+            if row.get("condition_number") == 14
+        )
+        self.assertFalse(
+            blocked_target["pending_rollover_evidence"]["complete"],
+        )
+        self.assertEqual(
+            blocked_target["pending_rollover_evidence"]["rows"], [],
+        )
+
     def test_crown_read_only_projection_includes_batch_rows_without_mutating_ledger(self):
         ledger = {"bets": []}
         for index in range(1, 21):
