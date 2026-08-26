@@ -117,15 +117,15 @@ if [ "$crown_history_shape_ready" -eq 1 ]; then
   # time to finish instead of freezing a stale failed systemd result.  Test and
   # emergency overrides are range checked so a bad environment cannot create
   # an unbounded service.
-  integrity_attempts="${INTEGRITY_AUDIT_ATTEMPTS:-12}"
-  integrity_retry_delay="${INTEGRITY_AUDIT_RETRY_DELAY_SECONDS:-5}"
+  integrity_attempts="${INTEGRITY_AUDIT_ATTEMPTS:-3}"
+  integrity_retry_delay="${INTEGRITY_AUDIT_RETRY_DELAY_SECONDS:-2}"
   case "$integrity_attempts" in
     1|2|3|4|5|6|7|8|9|10|11|12|13|14|15|16|17|18|19|20|21|22|23|24) ;;
-    *) integrity_attempts=12 ;;
+    *) integrity_attempts=3 ;;
   esac
   case "$integrity_retry_delay" in
     0|1|2|3|4|5|6|7|8|9|10|11|12|13|14|15) ;;
-    *) integrity_retry_delay=5 ;;
+    *) integrity_retry_delay=2 ;;
   esac
   integrity_rc=1
   for ((integrity_attempt = 1; integrity_attempt <= integrity_attempts; integrity_attempt++)); do

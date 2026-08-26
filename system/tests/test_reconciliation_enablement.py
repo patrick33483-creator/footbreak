@@ -148,14 +148,14 @@ class ReconciliationEnablementTests(unittest.TestCase):
         for raw, expected_attempts in (
             ("1", 1),
             ("24", 24),
-            ("0", 12),
-            ("25", 12),
-            ("abc", 12),
-            ("08", 12),
-            ("09", 12),
-            ("010", 12),
-            ("9223372036854775808", 12),
-            ("18446744073709551616", 12),
+            ("0", 3),
+            ("25", 3),
+            ("abc", 3),
+            ("08", 3),
+            ("09", 3),
+            ("010", 3),
+            ("9223372036854775808", 3),
+            ("18446744073709551616", 3),
         ):
             with self.subTest(raw=raw):
                 result = self.run_reconciler(
@@ -180,10 +180,10 @@ class ReconciliationEnablementTests(unittest.TestCase):
         for raw, expected_delay in (
             ("0", "0"),
             ("15", "15"),
-            ("16", "5"),
-            ("010", "5"),
-            ("9223372036854775808", "5"),
-            ("18446744073709551616", "5"),
+            ("16", "2"),
+            ("010", "2"),
+            ("9223372036854775808", "2"),
+            ("18446744073709551616", "2"),
         ):
             with self.subTest(raw=raw):
                 result = self.run_reconciler(

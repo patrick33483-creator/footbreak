@@ -28,7 +28,7 @@ from analysis.wilson_validation import (
 # If it is interrupted between those writes, the old data.json still points to
 # its old sidecar rather than a mutable file from the next generation.
 HISTORY_DATA_URL = "history.json"
-HISTORY_ARTIFACT_SCHEMA = "crown-history-v1"
+HISTORY_ARTIFACT_SCHEMA = "crown-history-v2"
 
 
 @contextlib.contextmanager
@@ -629,10 +629,19 @@ def stage_completeness(
     }
 
 
-def _history_version(prediction_history: dict[str, Any]) -> str:
-    """Return a stable content marker for the separately published history."""
+def history_artifact_version(
+    prediction_history: dict[str, Any],
+    wilson_ranking_projection: list[dict[str, Any]],
+    watch_projection_rows: list[dict[str, Any]],
+) -> str:
+    """Return the content address for one complete Crown history generation."""
     encoded = json.dumps(
-        prediction_history,
+        {
+            "schema_version": HISTORY_ARTIFACT_SCHEMA,
+            "prediction_history": prediction_history,
+            "wilson_ranking_projection": wilson_ranking_projection,
+            "watch_projection_rows": watch_projection_rows,
+        },
         ensure_ascii=False,
         separators=(",", ":"),
         sort_keys=True,
@@ -668,9 +677,22 @@ def _build_payloads(config: Settings) -> tuple[dict[str, Any], dict[str, Any]]:
     # It never modifies the persisted prediction history or source ledger.
     from analysis.odds_recovery import overlay_rows
     from .prediction_history import calculate_stats
-    prediction_history["rows"] = overlay_rows(
-        project_watch_rows(prediction_history["rows"], ledger), "crown",
-    )
+    persisted_history_keys = {
+        (str(row.get("match_id") or ""), str(row.get("stage") or ""))
+        for row in prediction_history["rows"]
+        if isinstance(row, dict)
+    }
+    watch_projected_rows = project_watch_rows(prediction_history["rows"], ledger)
+    history_watch_projection_rows = [
+        copy.deepcopy(row)
+        for row in watch_projected_rows
+        if isinstance(row, dict)
+        and (
+            str(row.get("match_id") or ""),
+            str(row.get("stage") or ""),
+        ) not in persisted_history_keys
+    ]
+    prediction_history["rows"] = overlay_rows(watch_projected_rows, "crown")
     prediction_history["stats"] = calculate_stats(
         prediction_history["rows"], comparable_era=PREDICTION_ERA,
     )
@@ -727,7 +749,17 @@ def _build_payloads(config: Settings) -> tuple[dict[str, Any], dict[str, Any]]:
     dashboard_ledger, active_condition_bets = _public_ledger(ledger)
     challenger_v2 = ledger.get("crown_v2_challenger")
     generated_at = iso_hkt()
-    history_version = _history_version(prediction_history)
+    # Bind the sidecar to the exact, already-sanitized Wilson ranking projection
+    # produced from the authoritative ledger. Minute ticks may later rebase
+    # data.json onto a newer ledger without rebuilding expensive history; an
+    # auditor must therefore use this immutable generation output rather than
+    # borrowing the moving boot-payload ledger.
+    history_wilson_ranking = copy.deepcopy(projected_ranking)
+    history_version = history_artifact_version(
+        prediction_history,
+        history_wilson_ranking,
+        history_watch_projection_rows,
+    )
     history_data_url = _history_data_url(history_version)
     dashboard = {
         "schema_version": "crown-dashboard-v2", "generated_at": generated_at, "title": "足破 · 皇冠賽事預測終端",
@@ -758,6 +790,8 @@ def _build_payloads(config: Settings) -> tuple[dict[str, Any], dict[str, Any]]:
         "generated_at": generated_at,
         "history_data_version": history_version,
         "prediction_history": prediction_history,
+        "wilson_ranking_projection": history_wilson_ranking,
+        "watch_projection_rows": history_watch_projection_rows,
     }
     return dashboard, history_artifact
 

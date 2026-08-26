@@ -3451,8 +3451,10 @@ class CrownSafetyTests(unittest.TestCase):
             output = write_dashboard_data(config)
             sidecar = output.parent / payload["history_data_url"]
             artifact = json.loads(sidecar.read_text(encoding="utf-8"))
-            self.assertEqual(artifact["schema_version"], "crown-history-v1")
+            self.assertEqual(artifact["schema_version"], "crown-history-v2")
             self.assertEqual(artifact["history_data_version"], payload["history_data_version"])
+            self.assertIsInstance(artifact["wilson_ranking_projection"], list)
+            self.assertIsInstance(artifact["watch_projection_rows"], list)
             self.assertEqual(
                 artifact["prediction_history"]["rows"][0]["match_id"],
                 "old",
