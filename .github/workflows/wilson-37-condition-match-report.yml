@@ -36,7 +36,11 @@ jobs:
           from datetime import datetime, timezone
           from pathlib import Path
 
-          from analysis.wilson_validation import NAMESPACE
+          from analysis.wilson_validation import (
+              NAMESPACE,
+              active_bets,
+              active_observations,
+          )
 
           SOURCES = {
               "footbreak": Path("/opt/footbreak/system/sim_ledger.json"),
@@ -84,7 +88,7 @@ jobs:
                   continue
               order = namespace.get("condition_order") or []
               frozen_conditions = namespace.get("conditions") or {}
-              rows = rows_from(ledger)
+              rows = active_bets(ledger, system) + active_observations(ledger, system)
               conditions = []
               assigned = set()
               for number, signature in enumerate(order, 1):
