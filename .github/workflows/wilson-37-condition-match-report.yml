@@ -1,0 +1,158 @@
+name: Wilson 37-condition match report (read-only)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  report:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: Read production ledgers and build condition map
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            'sudo env PYTHONPATH=/opt/footbreak /opt/footbreak/.venv/bin/python3 -' \
+            > wilson-37-condition-match-report.json <<'PY'
+          import json
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          from analysis.wilson_validation import NAMESPACE
+
+          SOURCES = {
+              "footbreak": Path("/opt/footbreak/system/sim_ledger.json"),
+              "crown": Path("/var/lib/footbreak/crown/ledger.json"),
+          }
+
+          def rows_from(ledger):
+              seen = set()
+              result = []
+              for key in ("bets", "observations", "watch"):
+                  value = ledger.get(key)
+                  if not isinstance(value, list):
+                      continue
+                  for row in value:
+                      if not isinstance(row, dict):
+                          continue
+                      identity = (
+                          str(row.get("bet_id") or row.get("observation_id") or ""),
+                          str(row.get("match_id") or row.get("fixture_id") or ""),
+                          str(row.get("market") or row.get("code") or ""),
+                          str(row.get("frozen_condition_signature") or ""),
+                      )
+                      if identity in seen:
+                          continue
+                      seen.add(identity)
+                      result.append(row)
+              return result
+
+          def compact_definition(frozen):
+              definition = frozen.get("definition")
+              if not isinstance(definition, dict):
+                  definition = {}
+              keys = (
+                  "path", "stage", "market", "odds_tier", "direction", "role",
+                  "line_bucket", "movement", "odds_trajectory", "miner_key",
+              )
+              return {key: definition.get(key) for key in keys if definition.get(key) not in (None, "", [])}
+
+          systems = {}
+          for system, path in SOURCES.items():
+              ledger = json.loads(path.read_text())
+              namespace = ledger.get(NAMESPACE)
+              if not isinstance(namespace, dict):
+                  systems[system] = {"error": "missing_registry_namespace", "conditions": []}
+                  continue
+              order = namespace.get("condition_order") or []
+              frozen_conditions = namespace.get("conditions") or {}
+              rows = rows_from(ledger)
+              conditions = []
+              assigned = set()
+              for number, signature in enumerate(order, 1):
+                  frozen = frozen_conditions.get(signature) or {}
+                  matched = []
+                  for row in rows:
+                      if str(row.get("frozen_condition_signature") or "") != str(signature):
+                          continue
+                      assigned.add(id(row))
+                      provenance = row.get("rollover_provenance")
+                      if not isinstance(provenance, dict):
+                          provenance = {}
+                      matched.append({
+                          "row_id": row.get("bet_id") or row.get("observation_id"),
+                          "match_id": row.get("match_id") or row.get("fixture_id"),
+                          "league": row.get("league"),
+                          "home": row.get("home"),
+                          "away": row.get("away"),
+                          "kickoff": row.get("kickoff") or row.get("kickoff_hkt"),
+                          "stage": row.get("stage"),
+                          "market": row.get("market") or row.get("code"),
+                          "selected_role": row.get("selected_role"),
+                          "selected_side": row.get("selected_side") or row.get("side"),
+                          "selected_line": row.get("selected_line", row.get("line", row.get("condition"))),
+                          "odds": row.get("odds"),
+                          "status": row.get("status"),
+                          "result": row.get("result"),
+                          "admitted_evidence_version": row.get("admitted_evidence_version"),
+                          "formal_identity_present": bool(
+                              row.get("bet_id") or row.get("observation_id")
+                          ),
+                          "recorded_at": (
+                              provenance.get("stage_at")
+                              or row.get("created_at")
+                              or row.get("timestamp")
+                          ),
+                      })
+                  matched.sort(key=lambda item: (
+                      str(item.get("kickoff") or ""),
+                      str(item.get("match_id") or ""),
+                      str(item.get("row_id") or ""),
+                  ))
+                  hits = sum(row.get("result") in {"Won", "Half Won"} for row in matched)
+                  losses = sum(row.get("result") in {"Lost", "Half Lost"} for row in matched)
+                  conditions.append({
+                      "condition_number": number,
+                      "signature": signature,
+                      "definition": compact_definition(frozen),
+                      "row_count": len(matched),
+                      "hits": hits,
+                      "losses": losses,
+                      "rows": matched,
+                  })
+              systems[system] = {
+                  "ledger_path": str(path),
+                  "condition_count": len(conditions),
+                  "conditions": conditions,
+              }
+
+          print(json.dumps({
+              "schema": 1,
+              "read_only": True,
+              "generated_at": datetime.now(timezone.utc).isoformat(),
+              "systems": systems,
+          }, ensure_ascii=False, indent=2))
+          PY
+
+      - name: Upload report data
+        uses: actions/upload-artifact@v4
+        with:
+          name: wilson-37-condition-match-report
+          path: wilson-37-condition-match-report.json
+          if-no-files-found: error
+          retention-days: 7
