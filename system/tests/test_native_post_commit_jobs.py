@@ -127,6 +127,27 @@ class NativePostCommitJobTests(unittest.TestCase):
         )
         cross.assert_not_called()
 
+    def test_tampered_native_snapshot_is_rejected_before_optional_consumers(self):
+        kickoff = datetime.now(record_picks.HKT) + timedelta(minutes=20)
+        ledger, attempt = self._ledger_with_started_attempt(kickoff, stage="T-5")
+        result = self._result(kickoff, attempt["attempt_id"])
+        snapshot = record_picks._snap(
+            result, datetime.now(record_picks.HKT).isoformat(),
+        )
+        stage_state.enrich_snapshot(snapshot, ledger["watch"]["m1"], "T-5")
+        ledger["watch"]["m1"]["stages"].append(snapshot)
+        job = record_picks._enqueue_optional_job(
+            ledger, "m1", snapshot, result, now=snapshot["ts"],
+            t5_safe_to_evaluate=True,
+        )
+        snapshot["market_predictions"][0]["odds"] = 9.99
+        with patch.object(record_picks, "evaluate_new_t5") as native:
+            with self.assertRaisesRegex(ValueError, "native_snapshot_hash_mismatch"):
+                record_picks._process_optional_job(
+                    ledger, job, now=snapshot["ts"], changes=[],
+                )
+        native.assert_not_called()
+
     def test_legacy_nonterminal_t5_job_is_pinned_to_snapshot_cutoff(self):
         stage_at = datetime.now(record_picks.HKT)
         kickoff = stage_at + timedelta(minutes=20)

@@ -13,6 +13,8 @@ import math
 from datetime import datetime, timezone
 from typing import Any, Iterable
 
+from .quarter_line import validate as validate_quarter_line_profile
+
 SCHEMA_VERSION = 2
 NAMESPACE = "wilson_validation"
 STRATEGY = "wilson-test-strategy-v1"
@@ -137,16 +139,159 @@ def wilson95(hits: int, decided: int) -> tuple[float, float] | None:
     return max(0.0, center - margin), min(1.0, center + margin)
 
 
-def admission_arithmetic(hits: int, decided: int, odds: Any) -> dict[str, Any] | None:
-    """Calculate the exact Wilson admission inequality without rounded inputs."""
+def _quarter_line_profile(
+    profile: Any, *, market: str | None = None, side: str | None = None,
+    line: Any = None,
+) -> dict[str, Any] | None:
+    """Recompute and normalize an immutable quarter-line settlement profile."""
+    validated = validate_quarter_line_profile(
+        profile, market=market, side=side, line=line,
+    )
+    return copy.deepcopy(validated) if validated is not None else None
+
+
+def _selected_settlement_profile(
+    market: str, selected: dict[str, Any],
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Require auditable payout weights for HIL .25/.75 lines."""
+    line = _number(selected.get("line", selected.get("condition")))
+    if str(market).upper() != "HIL" or line is None:
+        return None, None
+    fraction = abs(line) - math.floor(abs(line))
+    if not (
+        abs(fraction - 0.25) <= 1e-8 or abs(fraction - 0.75) <= 1e-8
+    ):
+        return None, None
+    profile = _quarter_line_profile(
+        selected.get("quarter_line_settlement"),
+        market=market, side=str(selected.get("side") or ""), line=line,
+    )
+    if profile is None:
+        return None, "quarter_line_settlement_profile_unavailable"
+    return profile, None
+
+
+def _snapshot_binding_valid(binding: Any, system: str) -> bool:
+    if not isinstance(binding, dict) or set(binding) != {
+        "schema_version", "system", "snapshot_id", "snapshot_hash",
+    }:
+        return False
+    snapshot_id = binding.get("snapshot_id")
+    snapshot_hash = binding.get("snapshot_hash")
+    return (
+        binding.get("schema_version") == 1
+        and binding.get("system") == system
+        and isinstance(snapshot_id, str) and bool(snapshot_id)
+        and isinstance(snapshot_hash, str) and len(snapshot_hash) == 64
+        and all(char in "0123456789abcdef" for char in snapshot_hash)
+    )
+
+
+def _quarter_snapshot_binding_valid(
+    ledger: dict[str, Any] | None, row: dict[str, Any], system: str,
+) -> bool:
+    """Bind a quarter-line formal row to its exact immutable native T-5 row."""
+    binding = row.get("native_snapshot_binding")
+    if not _snapshot_binding_valid(binding, system) or not isinstance(ledger, dict):
+        return False
+    watch = (ledger.get("watch") or {}).get(str(row.get("match_id") or ""))
+    if not isinstance(watch, dict):
+        return False
+    snapshot_id_key = (
+        "formal_admission_snapshot_id" if system == "crown"
+        else "native_snapshot_id"
+    )
+    snapshot_hash_key = (
+        "formal_admission_snapshot_hash" if system == "crown"
+        else "native_snapshot_hash"
+    )
+    matches = [
+        stage for stage in watch.get("stages") or []
+        if isinstance(stage, dict)
+        and stage.get("stage") == DECISION_STAGE
+        and stage.get(snapshot_id_key) == binding["snapshot_id"]
+        and stage.get(snapshot_hash_key) == binding["snapshot_hash"]
+    ]
+    if len(matches) != 1:
+        return False
+    stage = matches[0]
+    if stage.get("ts") != row.get("native_stage_at"):
+        return False
+
+    if system == "crown":
+        mutable = {
+            "collection_attempts",
+            "formal_admission_pending",
+            "formal_admission_snapshot_id",
+            "formal_admission_snapshot_hash",
+            "formal_admission_watch_context_hash",
+            "formal_admission_status",
+            "formal_admission_reason",
+            "formal_admission_completed_at",
+            "wilson_validation",
+        }
+        payload = {key: value for key, value in stage.items() if key not in mutable}
+    else:
+        payload = {
+            key: value for key, value in stage.items()
+            if key not in {"native_snapshot_id", "native_snapshot_hash"}
+        }
+    recalculated_hash = hashlib.sha256(json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        default=str,
+    ).encode()).hexdigest()
+    if recalculated_hash != binding["snapshot_hash"]:
+        return False
+
+    line = _number(row.get("line", row.get("condition")))
+    selected = [
+        item for item in stage.get("market_predictions") or []
+        if isinstance(item, dict)
+        and str(item.get("code") or "").upper() == "HIL"
+        and str(item.get("side") or "").upper() == str(row.get("side") or "").upper()
+        and _same_optional_number(item.get("line", item.get("condition")), line)
+        and _same_optional_number(item.get("odds"), row.get("odds"))
+        and item.get("quarter_line_settlement") == row.get("quarter_line_settlement")
+    ]
+    return len(selected) == 1
+
+
+def admission_arithmetic(
+    hits: int, decided: int, odds: Any, *,
+    settlement_profile: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Calculate the exact Wilson admission inequality without rounded inputs.
+
+    Full-win/full-loss markets retain the historical binary formula.  A
+    validated Asian totals quarter-line profile adjusts the break-even hit
+    rate and minimum price for half-win/half-loss settlement.
+    """
     decimal = _number(odds)
     interval = wilson95(hits, decided)
     if decimal is None or decimal <= 1.0 or interval is None:
         return None
+    profile = None
+    if settlement_profile is not None:
+        profile = _quarter_line_profile(settlement_profile)
+        if profile is None:
+            return None
     lower, upper = interval
-    break_even = 1.0 / decimal
+    win_fraction = (
+        float(profile["win_fraction_raw"]) if profile is not None else 1.0
+    )
+    loss_fraction = (
+        float(profile["loss_fraction_raw"]) if profile is not None else 1.0
+    )
+    break_even = loss_fraction / (
+        loss_fraction + (decimal - 1.0) * win_fraction
+    )
     required = break_even + EDGE_BUFFER
-    minimum = 1.0 / (lower - EDGE_BUFFER) if lower > EDGE_BUFFER else None
+    target = lower - EDGE_BUFFER
+    minimum = (
+        1.0 + ((1.0 - target) * loss_fraction) / (target * win_fraction)
+        if target > 0 else None
+    )
+    binary_minimum = 1.0 / target if target > 0 else None
     return {
         "hits": hits,
         "decided": decided,
@@ -157,6 +302,9 @@ def admission_arithmetic(hits: int, decided: int, odds: Any) -> dict[str, Any] |
         "break_even_rate_raw": break_even,
         "required_rate_raw": required,
         "minimum_acceptable_odds_raw": minimum,
+        "binary_minimum_acceptable_odds_raw": binary_minimum,
+        "settlement_adjusted": profile is not None,
+        "settlement_profile": profile,
         # A tolerance is intentionally not used: equality is a valid pass.
         "passes": lower >= required,
         "display": {
@@ -227,6 +375,10 @@ def ensure_namespace(ledger: dict[str, Any], system: str, *, now: str | None = N
     ns.setdefault("display_name", DISPLAY_NAME)
     ns.setdefault("activation_at", activation)
     ns.setdefault("cutover_at", ns["activation_at"])
+    # First execution of the release atomically freezes the compatibility
+    # boundary. Rows written by the previous binary quarter-line code before
+    # this instant remain valid; every later quarter row must carry schema v2.
+    ns.setdefault("quarter_settlement_activation_at", activation)
     if legacy_rollover_upgrade:
         ns.setdefault("rollover_migration_at", activation)
     ns.setdefault("starting_bankroll", STARTING_BANKROLL)
@@ -1677,6 +1829,7 @@ def _validate_formal_admission_binding(
     row: dict[str, Any], *, observation: bool, system: str, signature: str,
     definition: dict[str, Any], frozen: dict[str, Any],
     version_by_number: dict[int, dict[str, Any]], projection_time: datetime,
+    ledger: dict[str, Any] | None,
 ) -> tuple[dict[str, Any] | None, str | None]:
     """Validate the immutable native admission before any funnel count."""
     fixture = row.get("match_id")
@@ -1765,17 +1918,74 @@ def _validate_formal_admission_binding(
         return None, "invalid_formal_admission_binding"
 
     arithmetic = row.get("wilson_admission")
+    row_line = _number(row.get("line", row.get("condition")))
+    row_fraction = (
+        abs(row_line) - math.floor(abs(row_line))
+        if row_line is not None else None
+    )
+    quarter_line = (
+        market == "HIL" and row_fraction is not None
+        and (
+            abs(row_fraction - 0.25) <= 1e-8
+            or abs(row_fraction - 0.75) <= 1e-8
+        )
+    )
+    settlement_schema = row.get("quarter_line_settlement_schema_version")
+    quarter_activation_at = _time(
+        ((ledger or {}).get(NAMESPACE) or {}).get(
+            "quarter_settlement_activation_at"
+        )
+    )
+    created_before_quarter_activation = (
+        created_at is not None
+        and quarter_activation_at is not None
+        and created_at < quarter_activation_at
+    )
+    legacy_quarter = (
+        quarter_line
+        and settlement_schema is None
+        and row.get("quarter_line_settlement") is None
+        and row.get("native_snapshot_binding") is None
+        and created_before_quarter_activation
+    )
+    if quarter_line and not legacy_quarter and (
+        settlement_schema != 2
+        or (
+        _quarter_line_profile(
+            row.get("quarter_line_settlement"),
+            market=market, side=row.get("side"), line=row_line,
+        ) is None
+        or not _quarter_snapshot_binding_valid(ledger, row, system)
+        )
+    ):
+        return None, "invalid_formal_admission_binding"
     expected_arithmetic = admission_arithmetic(
         admitted["cumulative_hits"], admitted["cumulative_decided"], row.get("odds"),
+        settlement_profile=row.get("quarter_line_settlement"),
+    )
+    legacy_arithmetic = (
+        isinstance(arithmetic, dict)
+        and "binary_minimum_acceptable_odds_raw" not in arithmetic
+        and "settlement_adjusted" not in arithmetic
+        and "settlement_profile" not in arithmetic
+        and (not quarter_line or legacy_quarter)
     )
     arithmetic_keys = (
         "hits", "decided", "hit_rate_raw", "wilson95_lower_raw",
         "wilson95_upper_raw", "actual_decimal_odds_raw", "break_even_rate_raw",
-        "required_rate_raw", "minimum_acceptable_odds_raw", "passes",
+        "required_rate_raw", "minimum_acceptable_odds_raw",
+        *((() if legacy_arithmetic else ("binary_minimum_acceptable_odds_raw",))),
+        "passes",
     )
     if (
         not isinstance(arithmetic, dict)
         or expected_arithmetic is None
+        or (not legacy_arithmetic and arithmetic.get("settlement_adjusted") is not expected_arithmetic.get(
+            "settlement_adjusted"
+        ))
+        or (not legacy_arithmetic and arithmetic.get("settlement_profile") != expected_arithmetic.get(
+            "settlement_profile"
+        ))
         or (
             row.get("stage") == DECISION_STAGE
             and arithmetic.get("passes") is not (not observation)
@@ -2023,6 +2233,7 @@ def project_condition_funnel(
             admitted, binding_reason = validate_formal_row(
                 candidate, system=system, signature=signature, frozen=frozen,
                 projection_time=projection_time, require_settled=False,
+                ledger=ledger,
             )
             if admitted is None:
                 settlement_rejections[
@@ -2043,6 +2254,7 @@ def project_condition_funnel(
             settled_admitted, settled_reason = validate_formal_row(
                 row, system=system, signature=signature, frozen=frozen,
                 projection_time=projection_time, require_settled=True,
+                ledger=ledger,
             )
             if settled_admitted is None:
                 settlement_rejections[
@@ -2481,7 +2693,7 @@ def _formal_marker_shape_valid(marker: dict[str, Any]) -> bool:
 def validate_formal_row(
     row: dict[str, Any], *, system: str, signature: str,
     frozen: dict[str, Any], projection_time: datetime,
-    require_settled: bool = False,
+    require_settled: bool = False, ledger: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any] | None, str | None]:
     """Strict shared validator for runtime rollover, funnel, and registry.
 
@@ -2535,6 +2747,7 @@ def validate_formal_row(
         frozen=frozen,
         version_by_number=version_by_number,
         projection_time=projection_time,
+        ledger=ledger,
     )
     if admitted is None:
         return None, reason or "invalid_formal_admission_binding"
@@ -2627,6 +2840,7 @@ def _eligible_rollover_rows(
 def _rollover_condition(
     frozen: dict[str, Any], bets: Iterable[dict[str, Any]], system: str,
     signature: str, *, now: str, migration_boundary: str,
+    ledger: dict[str, Any],
 ) -> bool:
     """Append deterministic 20-row evidence versions, never edit old ones."""
     definition = frozen.get("definition")
@@ -2649,6 +2863,7 @@ def _rollover_condition(
             row, system=system, signature=signature, frozen=frozen,
             projection_time=projection_time,
             require_settled=row.get("status") == "SETTLED",
+            ledger=ledger,
         )
         if admitted is None:
             return False
@@ -2794,6 +3009,7 @@ def apply_active_evidence(
     arithmetic = admission_arithmetic(
         int(active["cumulative_hits"]), int(active["cumulative_decided"]),
         admission["arithmetic"].get("actual_decimal_odds_raw"),
+        settlement_profile=admission["arithmetic"].get("settlement_profile"),
     )
     if arithmetic is None:
         return None, "active_evidence_arithmetic_invalid"
@@ -2841,6 +3057,7 @@ def recompute_namespace(ledger: dict[str, Any], system: str) -> dict[str, Any]:
             valid_activity = _rollover_condition(
                 frozen, raw_grouped.get(str(signature), []), system, str(signature), now=_now(),
                 migration_boundary=ns["activation_at"],
+                ledger=ledger,
             )
             if not valid_activity:
                 continue
@@ -2904,6 +3121,11 @@ def matching_admissions(
         return [], "selected_line_or_side_invalid"
     if odds is None or odds <= 1:
         return [], "selected_odds_invalid_or_missing"
+    settlement_profile, settlement_reason = _selected_settlement_profile(
+        market, selected,
+    )
+    if settlement_reason is not None:
+        return [], settlement_reason
     grouped: dict[str, list[tuple[dict[str, Any], dict[str, Any], dict[str, Any]]]] = {}
     for candidate in candidates:
         if str(candidate.get("market") or "") != market or _selection_signature(market, candidate) != selected_sig:
@@ -2949,12 +3171,18 @@ def matching_admissions(
             or row[2]["artifact"] != baseline["artifact"] for row in rows[1:]
         ):
             continue
-        arithmetic = admission_arithmetic(baseline["hits"], baseline["decided"], odds)
+        arithmetic = admission_arithmetic(
+            baseline["hits"], baseline["decided"], odds,
+            settlement_profile=settlement_profile,
+        )
         if arithmetic is None:
             continue
         matches.append({
             "signature": signature, "definition": rows[0][1], "history": baseline,
             "arithmetic": arithmetic, "candidate": rows[0][0],
+            "native_snapshot_binding": copy.deepcopy(
+                selected.get("native_snapshot_binding")
+            ),
             "safety_margin": arithmetic["wilson95_lower_raw"] - arithmetic["required_rate_raw"],
         })
     if not grouped:
@@ -3056,6 +3284,16 @@ def record_match_observation(
         "frozen_condition_definition": copy.deepcopy(admission["definition"]),
         "frozen_historical_evidence": copy.deepcopy(admission["history"]),
         "wilson_admission": copy.deepcopy(arithmetic),
+        "quarter_line_settlement": copy.deepcopy(
+            arithmetic.get("settlement_profile")
+        ),
+        **(
+            {"quarter_line_settlement_schema_version": 2}
+            if arithmetic.get("settlement_adjusted") is True else {}
+        ),
+        "native_snapshot_binding": copy.deepcopy(
+            admission.get("native_snapshot_binding")
+        ),
         "evidence_version": admission.get("evidence_version"),
         "evidence_hash": admission.get("evidence_hash"),
         "rollover_provenance": _rollover_marker(
@@ -3132,6 +3370,16 @@ def commit_bet(
         "frozen_condition_definition": copy.deepcopy(admission["definition"]),
         "frozen_historical_evidence": copy.deepcopy(admission["history"]),
         "wilson_admission": arithmetic,
+        "quarter_line_settlement": copy.deepcopy(
+            arithmetic.get("settlement_profile")
+        ),
+        **(
+            {"quarter_line_settlement_schema_version": 2}
+            if arithmetic.get("settlement_adjusted") is True else {}
+        ),
+        "native_snapshot_binding": copy.deepcopy(
+            admission.get("native_snapshot_binding")
+        ),
         "evidence_version": admission.get("evidence_version"),
         "evidence_hash": admission.get("evidence_hash"),
         "rollover_provenance": _rollover_marker(

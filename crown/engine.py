@@ -13,6 +13,8 @@ from datetime import datetime, timezone
 from multiprocessing.connection import wait as wait_for_connections
 from typing import Any, Callable
 
+from analysis.quarter_line import from_two_sided_market
+
 from .common import HKT, iso_hkt, parse_time
 from .config import Settings
 from .hkjc import event_from_match, fetch_matches, flatten_odds
@@ -1124,6 +1126,15 @@ def _crown_market_forecasts(
         probability = probabilities[side]
         selected_line = -line if market == "HDC" and side == "A" else line
         display_line = _display_quarter_line(selected_line, signed=market == "HDC")
+        settlement_profile = (
+            from_two_sided_market(
+                line=line,
+                side=side,
+                over_odds=rows["H"]["odds"],
+                under_odds=rows["L"]["odds"],
+            )
+            if market == "HIL" else None
+        )
         output.append({
             "market": market_label,
             "code": market,
@@ -1142,6 +1153,10 @@ def _crown_market_forecasts(
             "bookmaker": "Crown",
             "reference": "crown_full_market_no_vig",
             "forecast_only": True,
+            **(
+                {"quarter_line_settlement": settlement_profile}
+                if settlement_profile is not None else {}
+            ),
         })
     return output, sorted(set(reasons))
 

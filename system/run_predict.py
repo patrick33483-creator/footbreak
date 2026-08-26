@@ -467,6 +467,10 @@ def analyse_match(m, fx, wx_city_override=None, news=None, prev_snap=None,
         "final": {"lh": round(lh2, 3), "la": round(la2, 3),
                   "total": round(lh2 + la2, 3), "supremacy": round(lh2 - la2, 3),
                   "mu": (round(mu2, 2) if mu2 else None), "rho": round(rho, 4)},
+        # Preserve the exact fitted inputs used by candidate pricing.  The
+        # immutable T-5 snapshot uses these values to recompute Asian
+        # quarter-line settlement mass without rounding drift.
+        "quarter_line_model": {"lh": lh2, "la": la2, "rho": rho},
         "outcome": {"home": round(ph, 4), "draw": round(pd, 4), "away": round(pa, 4)},
         "top_scores": sorted(
             [{"s": f"{i}-{j}", "p": round(mat[i][j], 4)}

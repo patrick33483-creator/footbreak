@@ -50,6 +50,29 @@ class FootbreakOddsEvidenceTests(unittest.TestCase):
         self.assertEqual(snapshot["odds_reason"], "no_selected_market_quote")
         self.assertEqual(snapshot["selected_odds_journal"], [])
 
+    def test_quarter_line_snapshot_freezes_model_settlement_profile(self) -> None:
+        snapshot = record_picks._snap({
+            "stage": "T-5", "can_bet": True, "candidates": [{
+                "code": "HIL", "market": "入球大小", "condition": "2.75",
+                "line": 2.75, "side": "H", "label": "大 2.75",
+                "odds": 1.90, "prob": .52, "push": .11, "ev": .03,
+                "kelly_used": .01, "is_main": True,
+            }],
+            "selected_odds_observed_at": "2026-08-13T12:30:00+08:00",
+            "final": {"lh": 1.5, "la": 1.2, "rho": -.03},
+            "quarter_line_model": {"lh": 1.5, "la": 1.2, "rho": -.03},
+            "league": "L", "home": "H", "away": "A", "mins_to_ko": 5,
+            "conviction": 60, "weather": {}, "source": "live",
+        }, "2026-08-13T12:30:01+08:00")
+        profile = snapshot["market_predictions"][0]["quarter_line_settlement"]
+        self.assertEqual(profile["boundary_total"], 3)
+        self.assertEqual(profile["boundary_result"], "half_win")
+        self.assertLess(profile["win_fraction_raw"], 1.0)
+        self.assertEqual(profile["loss_fraction_raw"], 1.0)
+        self.assertEqual(
+            profile["method"], "native_t5_dixon_coles_goal_pmf",
+        )
+
     def test_untimestamped_selected_price_is_explicitly_incomplete(self) -> None:
         snapshot = record_picks._snap({
             "stage": "首預", "can_bet": False, "candidates": [{

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import tempfile
 import unittest
@@ -18,7 +19,10 @@ from analysis.wilson_validation import (
     project_dashboard_research_matches, project_frozen_ranking_evidence,
     record_match_observation,
     recompute_namespace, wilson95,
+    validate_formal_row,
+    _quarter_snapshot_binding_valid,
 )
+from analysis.quarter_line import from_dixon_coles
 from analysis.migrate_wilson_strategy import migrate_file
 from analysis.wilson_portfolio import _native_t5, _selected
 
@@ -50,6 +54,14 @@ def candidate(
 
 def selected(market="HDC", side="H", line=-0.25, odds=1.90):
     return {"market": market, "side": side, "line": line, "odds": odds}
+
+
+def quarter_profile(side="H", line=2.75, **_unused):
+    profile = from_dixon_coles(
+        line=line, side=side, lh=1.5, la=1.2, rho=-.03,
+    )
+    assert profile is not None
+    return profile
 
 
 class WilsonAdmissionTest(unittest.TestCase):
@@ -137,6 +149,179 @@ class WilsonAdmissionTest(unittest.TestCase):
         self.assertIsNone(admission_arithmetic(1, 50, 1.9)["minimum_acceptable_odds_raw"])
         self.assertIsNone(admission_arithmetic(41, 59, 1.0))
         self.assertIsNone(admission_arithmetic(41, 59, "NaN"))
+
+    def test_quarter_line_half_win_requires_higher_odds_than_binary(self):
+        profile = quarter_profile("H", 2.75)
+        adjusted = admission_arithmetic(
+            41, 59, 2.20, settlement_profile=profile,
+        )
+        binary = admission_arithmetic(41, 59, 2.20)
+        self.assertTrue(adjusted["settlement_adjusted"])
+        self.assertEqual(adjusted["settlement_profile"], profile)
+        self.assertGreater(
+            adjusted["minimum_acceptable_odds_raw"],
+            binary["minimum_acceptable_odds_raw"],
+        )
+        q = adjusted["wilson95_lower_raw"] - EDGE_BUFFER
+        expected = 1 + (1 - q) / (q * profile["win_fraction_raw"])
+        self.assertAlmostEqual(
+            adjusted["minimum_acceptable_odds_raw"], expected,
+        )
+
+    def test_quarter_line_half_loss_credits_reduced_boundary_loss(self):
+        profile = quarter_profile("H", 2.25, hit_probability=.58)
+        adjusted = admission_arithmetic(
+            41, 59, 1.90, settlement_profile=profile,
+        )
+        binary = admission_arithmetic(41, 59, 1.90)
+        self.assertLess(
+            adjusted["minimum_acceptable_odds_raw"],
+            binary["minimum_acceptable_odds_raw"],
+        )
+        self.assertEqual(profile["boundary_result"], "half_loss")
+
+    def test_quarter_line_directions_have_correct_boundary_settlement(self):
+        self.assertEqual(
+            quarter_profile("L", 2.25)["boundary_result"], "half_win",
+        )
+        self.assertEqual(
+            quarter_profile("L", 2.75)["boundary_result"], "half_loss",
+        )
+
+    def test_quarter_line_match_fails_closed_without_snapshot_profile(self):
+        row = selected("HIL", "H", 2.75, 2.20)
+        matches, reason = matching_admissions(
+            "footbreak", "HIL", row,
+            [candidate("HIL", "H", 2.75, key="HIL")],
+            stage_at="2026-08-19T22:55:00+08:00",
+        )
+        self.assertEqual(matches, [])
+        self.assertEqual(reason, "quarter_line_settlement_profile_unavailable")
+        row["quarter_line_settlement"] = quarter_profile("H", 2.75)
+        matches, reason = matching_admissions(
+            "footbreak", "HIL", row,
+            [candidate("HIL", "H", 2.75, key="HIL")],
+            stage_at="2026-08-19T22:55:00+08:00",
+        )
+        self.assertEqual(reason, "wilson_pass")
+        self.assertEqual(len(matches), 1)
+        self.assertTrue(matches[0]["arithmetic"]["settlement_adjusted"])
+
+    def test_quarter_formal_row_is_bound_to_exact_native_snapshot(self):
+        stage_at = "2026-08-19T23:00:00+08:00"
+        kickoff = "2026-08-19T23:30:00+08:00"
+        profile = quarter_profile("H", 2.75)
+        selected_row = {
+            **selected("HIL", "H", 2.75, 2.20),
+            "code": "HIL",
+            "quote_source": "provider",
+            "observed_at": "2026-08-19T22:59:50+08:00",
+            "quarter_line_settlement": profile,
+        }
+        stage = {
+            "stage": DECISION_STAGE,
+            "ts": stage_at,
+            "kickoff": kickoff,
+            "market_predictions": [copy.deepcopy(selected_row)],
+        }
+        snapshot_hash = hashlib.sha256(json.dumps(
+            stage, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+            default=str,
+        ).encode()).hexdigest()
+        stage.update({
+            "native_snapshot_id": "snapshot:fixture-quarter:T-5:2026-08-19T23:00:00+08:00",
+            "native_snapshot_hash": snapshot_hash,
+        })
+        selected_row["native_snapshot_binding"] = {
+            "schema_version": 1,
+            "system": "footbreak",
+            "snapshot_id": stage["native_snapshot_id"],
+            "snapshot_hash": snapshot_hash,
+        }
+        ledger = {"bets": [], "watch": {}}
+        watch = {
+            "match_id": "fixture-quarter",
+            "league": "測試",
+            "home": "主",
+            "away": "客",
+            "kickoff": kickoff,
+            "stages": [stage],
+        }
+        ledger["watch"][watch["match_id"]] = watch
+        ensure_namespace(
+            ledger, "footbreak", now="2026-08-19T22:00:00+08:00",
+        )
+        matches, reason = matching_admissions(
+            "footbreak", "HIL", selected_row,
+            [candidate("HIL", "H", 2.75, key="HIL")],
+            stage_at=stage_at,
+        )
+        self.assertEqual(reason, "wilson_pass")
+        admission, reason = apply_active_evidence(
+            ledger, "footbreak", matches[0], stage_at=stage_at, now=stage_at,
+        )
+        self.assertIsNone(reason)
+        row = commit_bet(
+            ledger, "footbreak", watch, "HIL", selected_row, admission,
+            now=stage_at, market_label="入球大細", selected_label="大 2.75",
+            selected_role="大", selected_line=2.75,
+        )
+        self.assertIsNotNone(row)
+        ledger["bets"].append(row)
+        frozen = ledger["wilson_validation"]["conditions"][
+            row["frozen_condition_signature"]
+        ]
+        self.assertTrue(
+            _quarter_snapshot_binding_valid(ledger, row, "footbreak"),
+        )
+        admitted, reason = validate_formal_row(
+            row, system="footbreak",
+            signature=row["frozen_condition_signature"], frozen=frozen,
+            projection_time=datetime.fromisoformat(stage_at), ledger=ledger,
+        )
+        self.assertIsNotNone(admitted, reason)
+        self.assertIsNone(reason)
+
+        corrupted = copy.deepcopy(ledger)
+        corrupted["watch"]["fixture-quarter"]["stages"][0][
+            "market_predictions"
+        ][0]["quarter_line_settlement"]["boundary_probability_raw"] += .01
+        admitted, reason = validate_formal_row(
+            corrupted["bets"][0], system="footbreak",
+            signature=row["frozen_condition_signature"],
+            frozen=corrupted["wilson_validation"]["conditions"][
+                row["frozen_condition_signature"]
+            ],
+            projection_time=datetime.fromisoformat(stage_at),
+            ledger=corrupted,
+        )
+        self.assertIsNone(admitted)
+        self.assertEqual(reason, "invalid_formal_admission_binding")
+
+        legacy_row = copy.deepcopy(row)
+        legacy_row.pop("quarter_line_settlement", None)
+        legacy_row.pop("native_snapshot_binding", None)
+        legacy_row.pop("quarter_line_settlement_schema_version", None)
+        legacy_row["wilson_admission"] = admission_arithmetic(
+            hits=41, decided=59, odds=legacy_row["odds"],
+        )
+        for key in (
+            "binary_minimum_acceptable_odds_raw",
+            "settlement_adjusted",
+            "settlement_profile",
+        ):
+            legacy_row["wilson_admission"].pop(key, None)
+        ledger["wilson_validation"][
+            "quarter_settlement_activation_at"
+        ] = "2026-08-20T00:00:00+08:00"
+        legacy_admitted, legacy_reason = validate_formal_row(
+            legacy_row, system="footbreak",
+            signature=row["frozen_condition_signature"], frozen=frozen,
+            projection_time=datetime.fromisoformat(stage_at),
+            ledger=ledger,
+        )
+        self.assertIsNotNone(legacy_admitted)
+        self.assertIsNone(legacy_reason)
 
     def test_duplicate_and_conflicting_historical_evidence_fail_closed(self):
         first, second = candidate(), candidate(hits=42)
@@ -332,6 +517,27 @@ class WilsonBatchRolloverTest(unittest.TestCase):
     def _active(self, ledger):
         frozen = next(iter(ledger["wilson_validation"]["conditions"].values()))
         return frozen, frozen["active_evidence"]
+
+    def test_pre_patch_binary_formal_row_remains_valid(self):
+        ledger = {"bets": []}
+        row = self._settled(ledger, 1)
+        frozen, _active = self._active(ledger)
+        for key in (
+            "binary_minimum_acceptable_odds_raw",
+            "settlement_adjusted",
+            "settlement_profile",
+        ):
+            row["wilson_admission"].pop(key, None)
+        admitted, reason = validate_formal_row(
+            row,
+            system="footbreak",
+            signature=row["frozen_condition_signature"],
+            frozen=frozen,
+            projection_time=datetime.fromisoformat(row["settled_at"]),
+            require_settled=True,
+        )
+        self.assertIsNotNone(admitted)
+        self.assertIsNone(reason)
 
     def test_nineteen_stay_pending_and_twenty_rolls_once(self):
         ledger = {"bets": []}
