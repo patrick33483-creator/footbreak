@@ -149,6 +149,61 @@ class TelegramSilenceMonitorTests(unittest.TestCase):
         self.assertIn("系統故障", delivered[0])
         self.assertIn("Radar", delivered[0])
 
+    def test_recovery_is_immediate_once_after_notified_fault(self) -> None:
+        delivered: list[str] = []
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            radar = self.fixture(root)
+            state = root / "state.json"
+            write_json(state, {
+                "monitoring_started_at": NOW.isoformat(),
+                "last_monitor_sent_at": (NOW - timedelta(minutes=5)).isoformat(),
+                "last_classification": "system_fault",
+            })
+            with self.paths, patch.object(monitor, "_radar_loopback_healthy", return_value=True):
+                recovered = monitor.run(
+                    NOW, state_path=state, radar_db=radar,
+                    sender=lambda text: delivered.append(text) or True,
+                    runner=healthy_systemd,
+                )
+                deduped = monitor.run(
+                    NOW + timedelta(minutes=5), state_path=state, radar_db=radar,
+                    sender=lambda text: delivered.append(text) or True,
+                    runner=healthy_systemd,
+                )
+        self.assertFalse(recovered["due"])
+        self.assertTrue(recovered["recovery_due"])
+        self.assertTrue(recovered["sent"])
+        self.assertEqual(recovered["notification_type"], "recovery")
+        self.assertFalse(deduped["recovery_due"])
+        self.assertEqual(len(delivered), 1)
+        self.assertIn("故障已恢復", delivered[0])
+
+    def test_failed_recovery_delivery_retries_without_clearing_incident(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            radar = self.fixture(root)
+            state = root / "state.json"
+            write_json(state, {
+                "monitoring_started_at": NOW.isoformat(),
+                "last_classification": "missed_delivery",
+            })
+            with self.paths, patch.object(monitor, "_radar_loopback_healthy", return_value=True):
+                failed = monitor.run(
+                    NOW, state_path=state, radar_db=radar,
+                    sender=lambda _text: False,
+                    runner=healthy_systemd,
+                )
+                retry = monitor.run(
+                    NOW + timedelta(minutes=5), state_path=state, radar_db=radar,
+                    sender=lambda _text: True,
+                    runner=healthy_systemd,
+                )
+        self.assertTrue(failed["recovery_due"])
+        self.assertFalse(failed["sent"])
+        self.assertTrue(retry["recovery_due"])
+        self.assertTrue(retry["sent"])
+
     def test_unit_contract_is_server_owned_and_five_minute(self) -> None:
         root = SYSTEM.parent
         service = (root / "deploy/systemd/telegram-silence-monitor.service").read_text(encoding="utf-8")

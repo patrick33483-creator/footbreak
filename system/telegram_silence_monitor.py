@@ -324,6 +324,27 @@ def _message(
     return "\n".join(lines)
 
 
+def _recovery_message(
+    previous: str,
+    systems: list[dict[str, Any]],
+) -> str:
+    previous_label = "系統故障" if previous == "system_fault" else "疑似漏發"
+    lines = [
+        "✅ TG 靜默監察：故障已恢復",
+        f"上一狀態：{previous_label}",
+    ]
+    for row in systems:
+        status = "正常" if row.get("state_readable") else "資料不可讀"
+        lines.append(
+            f"- {row['name']}：{status}｜待送 {row.get('pending_delivery', 0)}"
+        )
+    lines.extend([
+        "判定：排程、資料及通知鏈已回復正常。",
+        "恢復通知只會為同一宗事故發一次。",
+    ])
+    return "\n".join(lines)
+
+
 def run(
     now: datetime | None = None,
     *,
@@ -363,9 +384,17 @@ def run(
         activity = max(source_activity + ([monitor_sent] if monitor_sent else []) + [started])
         elapsed = max(0, int((current - activity).total_seconds()))
         due = elapsed >= silence_seconds
+        previous = str(state.get("last_classification") or "")
+        recovery_due = (
+            previous in {"system_fault", "missed_delivery"}
+            and classification == "no_signal"
+            and not faults
+            and pending == 0
+        )
         result = {
             "classification": classification,
             "due": due,
+            "recovery_due": recovery_due,
             "silence_seconds": elapsed,
             "faults": faults,
             "systems": [
@@ -377,7 +406,20 @@ def run(
             ],
             "sent": False,
         }
-        if due:
+        if recovery_due:
+            text = _recovery_message(previous, systems)
+            result["message"] = text
+            result["notification_type"] = "recovery"
+            if not dry_run and sender(text):
+                state["last_monitor_sent_at"] = current.isoformat(timespec="seconds")
+                state["last_classification"] = "no_signal"
+                state["last_delivery_ok"] = True
+                state["last_recovered_at"] = current.isoformat(timespec="seconds")
+                result["sent"] = True
+            elif not dry_run:
+                state["last_delivery_ok"] = False
+                state["last_delivery_attempt_at"] = current.isoformat(timespec="seconds")
+        elif due:
             text = _message(
                 classification,
                 systems,
@@ -385,6 +427,7 @@ def run(
                 max(1, silence_seconds // 3600),
             )
             result["message"] = text
+            result["notification_type"] = "silence_summary"
             if not dry_run and sender(text):
                 state["last_monitor_sent_at"] = current.isoformat(timespec="seconds")
                 state["last_classification"] = classification
