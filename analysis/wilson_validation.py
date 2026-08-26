@@ -1267,28 +1267,49 @@ def _project_pending_rollover_rows(
     eligible, selected_excluded = _eligible_rollover_rows(
         candidates, system, signature, active,
     )
-    # Some durable pending cohorts straddle the introduction of the immutable
-    # frozen-condition definition binding.  Recover only the exact legacy
-    # shape: the stored definition is empty and changing that one field to the
-    # already-frozen definition makes the whole row pass the current validator,
-    # including chronology, evidence version/hash, arithmetic and settlement.
-    # Mix those proven legacy rows with current rows, then expose the cohort
-    # only when the deterministic selector still agrees exactly with the
-    # durable pending count, hit count and selector-exclusion counters.  Any
-    # other legacy difference, duplicate, conflict or extra row remains
-    # fail-closed.
+    # Some durable pending cohorts straddle additions to the immutable formal
+    # binding.  Recover only two exact legacy omissions: an empty stored
+    # condition definition, and a missing top-level ``native_stage_at`` when
+    # the same timestamp remains inside a valid rollover marker.  Never repair
+    # a conflicting non-empty definition or two different stage timestamps.
+    # The minimally repaired copy must then pass the complete current validator,
+    # including chronology, evidence version/hash, arithmetic, quarter-line
+    # settlement and snapshot binding.  Mix those proven legacy rows with
+    # current rows, then expose the cohort only when the deterministic selector
+    # still agrees exactly with the durable pending count, hit count and
+    # selector-exclusion counters.  Any other legacy difference, duplicate,
+    # conflict or extra row remains fail-closed.
     if expected_decided > 0:
         legacy_binding_rows: list[dict[str, Any]] = []
         for row, reason in rejected:
-            if (
-                reason != "invalid_formal_admission_binding"
-                or row.get("frozen_condition_definition") != {}
-            ):
+            if reason != "invalid_formal_admission_binding":
                 continue
             repaired = copy.deepcopy(row)
-            repaired["frozen_condition_definition"] = copy.deepcopy(
-                frozen.get("definition"),
-            )
+            changed = False
+            stored_definition = row.get("frozen_condition_definition")
+            if stored_definition == {}:
+                repaired["frozen_condition_definition"] = copy.deepcopy(
+                    frozen.get("definition"),
+                )
+                changed = True
+            elif stored_definition != frozen.get("definition"):
+                continue
+            marker = row.get("rollover_provenance")
+            if row.get("native_stage_at") is None:
+                if (
+                    not isinstance(marker, dict)
+                    or _time(marker.get("stage_at")) is None
+                ):
+                    continue
+                repaired["native_stage_at"] = marker["stage_at"]
+                changed = True
+            elif (
+                not isinstance(marker, dict)
+                or row.get("native_stage_at") != marker.get("stage_at")
+            ):
+                continue
+            if not changed:
+                continue
             admitted, repaired_reason = validate_formal_row(
                 repaired, system=system, signature=signature, frozen=frozen,
                 projection_time=projection_time, require_settled=True,
