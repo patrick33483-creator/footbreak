@@ -5,6 +5,11 @@ import { fileURLToPath } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const source = fs.readFileSync(path.join(here, '..', 'dashboard', 'app.js'), 'utf8');
+assert.match(
+  source,
+  /numeric\(window\.__CROWN_FETCH_TIMEOUT_MS__\) \|\| 15000/,
+  'large authenticated Crown payloads must get the full bounded default load window',
+);
 
 function makeNode() {
   return {
