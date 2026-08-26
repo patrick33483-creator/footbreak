@@ -20,6 +20,7 @@ from analysis.wilson_validation import (
     record_match_observation,
     recompute_namespace, wilson95,
     validate_formal_row,
+    _fixture_market_hash,
     _quarter_snapshot_binding_valid,
 )
 from analysis.quarter_line import from_dixon_coles
@@ -1168,6 +1169,92 @@ class WilsonBatchRolloverTest(unittest.TestCase):
         cross_condition["bets"][0]["frozen_condition_signature"] = "0" * 24
         blocked = project_frozen_ranking_evidence(
             cross_condition, fixture["system"], [candidate()],
+        )[0]["pending_rollover_evidence"]
+        self.assertFalse(blocked["complete"])
+        self.assertEqual(blocked["rows"], [])
+
+    def test_footbreak_seven_projects_exact_pre_binding_legacy_cohort(self):
+        ledger = {"bets": []}
+        seeds = []
+        for index in range(1, 7):
+            seed = copy.deepcopy(candidate())
+            seed["line_bucket"] = f"seed-{index}"
+            seed["key"] = [
+                (
+                    f"bucket=seed-{index}"
+                    if value.startswith("bucket=") else value
+                )
+                for value in seed["key"]
+            ]
+            seeds.append(seed)
+        project_granular_ranking_evidence(
+            ledger, "footbreak", [*seeds, candidate()],
+            now="2026-08-20T00:00:00+08:00",
+        )
+        rows = [
+            self._settled(
+                ledger, index,
+                result="Won" if index <= 9 else "Lost",
+                system="footbreak",
+            )
+            for index in range(1, 18)
+        ]
+        recompute_namespace(ledger, "footbreak")
+        frozen = next(
+            row for row in ledger["wilson_validation"]["conditions"].values()
+            if row.get("condition_number") == 7
+        )
+        self.assertEqual(
+            frozen["pending_rollover_progress"]["display"], "17/20",
+        )
+
+        # Model the exact production compatibility shape: the rows retain the
+        # original formal identity and rollover provenance used to persist the
+        # 17/20 counter, but predate the later immutable admission binding.
+        for row in rows:
+            row["frozen_condition_definition"] = {}
+
+        # A later row rejected for a different reason must not be allowed to
+        # expand or fill the persisted compatibility cohort.
+        later = self._settled(
+            ledger, 18, result="Won", system="footbreak",
+        )
+        later["settled_at"] = later["created_at"]
+
+        projected = project_frozen_ranking_evidence(
+            ledger, "footbreak", [candidate()],
+        )
+        detail = projected[0]["pending_rollover_evidence"]
+        self.assertTrue(detail["complete"])
+        self.assertEqual(len(detail["rows"]), 17)
+        self.assertEqual(sum(row["hit"] for row in detail["rows"]), 9)
+        self.assertEqual(
+            len({row["evidence_identity"] for row in detail["rows"]}), 17,
+        )
+
+        tampered = copy.deepcopy(ledger)
+        tampered["bets"][0]["result"] = "Lost"
+        blocked = project_frozen_ranking_evidence(
+            tampered, "footbreak", [candidate()],
+        )[0]["pending_rollover_evidence"]
+        self.assertFalse(blocked["complete"])
+        self.assertEqual(blocked["rows"], [])
+
+        extra = copy.deepcopy(ledger)
+        extra_row = copy.deepcopy(extra["bets"][0])
+        original_match_id = extra_row["match_id"]
+        extra_row["match_id"] = "extra-pre-binding-row"
+        extra_row["bet_id"] = extra_row["bet_id"].replace(
+            original_match_id, extra_row["match_id"], 1,
+        )
+        extra_row["rollover_provenance"]["fixture_market_hash"] = (
+            _fixture_market_hash(
+                "footbreak", extra_row["match_id"], extra_row["market"],
+            )
+        )
+        extra["bets"].append(extra_row)
+        blocked = project_frozen_ranking_evidence(
+            extra, "footbreak", [candidate()],
         )[0]["pending_rollover_evidence"]
         self.assertFalse(blocked["complete"])
         self.assertEqual(blocked["rows"], [])
