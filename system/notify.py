@@ -506,6 +506,7 @@ _CROWN_COMPARISON_REASONS = {
     # Crown offered no same-fixture market. Keep it distinct from the exact
     # fixture-identity no-market outcome above.
     "crown_exact_quote_journal_missing": "系統未取得原生T-5",
+    "crown_counterpart_grace_pending": "等候皇冠原生T-5",
 }
 
 
@@ -887,11 +888,31 @@ def notify_pending_bilateral_decisions(ledger, *, max_attempts=8, max_seconds=No
     state = load_state()
     sent = set(map(str, state.get("bilateral_decision_alerts") or []))
     order = list(state.get("bilateral_decision_alerts") or [])
+    native_sent = set(map(str, state.get("wilson_match_alerts") or []))
+    native_rows = [
+        row for row in (
+            list(ledger.get("bets") or [])
+            + list((ledger.get("wilson_validation") or {}).get("observations") or [])
+        )
+        if isinstance(row, dict)
+        and str(row.get("bet_id") or row.get("observation_id") or "") in native_sent
+    ]
+    acknowledged_without_send = False
     groups = {}
     for ident, entry in valid.items():
         if not ident or ident in sent:
             continue
         row, fields = entry["decision"], entry["fields"]
+        if any(
+            (
+                _matching_renderable_bilateral_notice(ns, native) or {}
+            ).get("decision_id") == ident
+            for native in native_rows
+        ):
+            sent.add(ident)
+            order.append(ident)
+            acknowledged_without_send = True
+            continue
         # Validate each immutable row before grouping.  One malformed row must
         # never make an otherwise deliverable fixture group disappear.
         # Do not merge records whose public fixture identity differs.  This
@@ -913,6 +934,9 @@ def notify_pending_bilateral_decisions(ledger, *, max_attempts=8, max_seconds=No
         state["bilateral_decision_alerts"] = _bounded_unique_ids(order)
         state["last_sent"] = dt.datetime.now(HKT).isoformat(timespec="seconds")
         save_state(state); count += 1
+    if acknowledged_without_send:
+        state["bilateral_decision_alerts"] = _bounded_unique_ids(order)
+        save_state(state)
     return count
 
 
@@ -949,11 +973,25 @@ def notify_pending_condition_bets(ledger, bet_ids=None, *, max_attempts=8,
         (ledger.get("wilson_validation") or {}).get("observations") or []
     )
     sent = attempted = 0
+    latest_jobs = {}
+    for event in ledger.get("native_post_commit_jobs") or []:
+        if isinstance(event, dict) and event.get("job_id"):
+            latest_jobs[str(event["job_id"])] = event
     for bet in rows:
         if not isinstance(bet, dict):
             continue
         bid = str(bet.get("bet_id") or bet.get("observation_id") or "")
         if not bid or (requested is not None and bid not in requested) or bid in sent_ids:
+            continue
+        pending_cross_book = any(
+            str(job.get("match_id") or "") == str(bet.get("match_id") or "")
+            and str(job.get("stage") or "") == "T-5"
+            and str(job.get("status") or "") in {"PENDING", "STARTED", "WAITING", "RETRYABLE_FAILURE"}
+            and (_parse_time(job.get("cross_book_deadline_at")) or dt.datetime.min.replace(tzinfo=HKT))
+                > dt.datetime.now(HKT)
+            for job in latest_jobs.values()
+        )
+        if pending_cross_book:
             continue
         # New bilateral T-5s have a dedicated immutable decision outbox; do
         # not let this legacy formatter re-read or recompute a counterpart.

@@ -195,6 +195,60 @@ class FootbreakWilsonNotificationTest(unittest.TestCase):
             self.assertTrue(any("合符 足破 Wilson 條件 #7" in text and "讓球" in text for text in messages))
             self.assertTrue(any("合符 足破 Wilson 條件 #8" in text and "入球大細" in text and "不投注：賠率不足" in text for text in messages))
 
+    def test_pending_cross_book_grace_defers_exact_native_notice(self):
+        row = bet()
+        deadline = datetime.now(HKT) + timedelta(seconds=20)
+        ledger = {
+            "bets": [row],
+            "native_post_commit_jobs": [{
+                "schema_version": 1, "job_id": "fixture:snapshot:t5",
+                "status": "WAITING", "match_id": "fixture", "stage": "T-5",
+                "snapshot_id": "snapshot:t5",
+                "cross_book_deadline_at": deadline.isoformat(),
+            }],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            state = str(Path(directory, "notify.json"))
+            with patch.object(notify, "STATE", state), patch.object(notify, "send") as send:
+                self.assertEqual(notify.notify_pending_condition_bets(ledger), 0)
+        send.assert_not_called()
+
+    def test_failed_cross_book_after_cutoff_falls_back_once_to_native(self):
+        low = low_odds_observation(market="入球大細")
+        low.update({
+            "code": "HIL", "market": "HIL", "side": "H", "selected_side": "H",
+            "line": 2.5, "selected_line": 2.5, "selected_role": "大",
+        })
+        job = {
+            "schema_version": 1, "job_id": "fixture:snapshot:t5",
+            "status": "RETRYABLE_FAILURE", "match_id": "fixture", "stage": "T-5",
+            "snapshot_id": "snapshot:t5",
+            "cross_book_deadline_at": (
+                datetime.now(HKT) - timedelta(seconds=1)
+            ).isoformat(),
+        }
+        ledger = {
+            "wilson_validation": {"observations": [low]},
+            "native_post_commit_jobs": [job],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            state = str(Path(directory, "notify.json"))
+            with patch.object(notify, "STATE", state), patch.object(notify, "send") as send:
+                self.assertEqual(notify.notify_pending_condition_bets(ledger), 1)
+                decision = bilateral_decision(
+                    kickoff=low["kickoff"], signal_quote=low["odds"],
+                    minimum_odds=low["wilson_admission"]["minimum_acceptable_odds_raw"],
+                )
+                ledger["footbreak_crown_execution_test"] = {
+                    "decisions": [decision],
+                    "decision_outbox": [bilateral_outbox(decision)],
+                }
+                self.assertEqual(notify.notify_pending_bilateral_decisions(ledger), 0)
+            persisted = json.loads(Path(state).read_text(encoding="utf-8"))
+        self.assertEqual(send.call_count, 1)
+        self.assertIn(low["observation_id"], persisted["wilson_match_alerts"])
+        self.assertIn(decision["decision_id"], persisted["bilateral_decision_alerts"])
+
     def test_shared_budget_prioritizes_wilson_over_cross_book_outbox(self):
         formal = bet()
         cross = {

@@ -87,6 +87,79 @@ class NativePostCommitJobTests(unittest.TestCase):
             self.assertEqual(saved["native_stage_attempts"][-1]["status"], "COMMITTED")
             self.assertEqual(saved["native_post_commit_jobs"][-1]["status"], "COMPLETED")
 
+    def test_t5_job_uses_fixed_twenty_second_cutoff_and_waits_without_sleeping(self):
+        kickoff = datetime.now(record_picks.HKT) + timedelta(minutes=20)
+        ledger, attempt = self._ledger_with_started_attempt(kickoff, stage="T-5")
+        snapshot = record_picks._snap(
+            self._result(kickoff, attempt["attempt_id"]), datetime.now(record_picks.HKT).isoformat(),
+        )
+        stage_state.enrich_snapshot(snapshot, ledger["watch"]["m1"], "T-5")
+        ledger["watch"]["m1"]["stages"].append(snapshot)
+        job = record_picks._enqueue_optional_job(
+            ledger, "m1", snapshot, self._result(kickoff, attempt["attempt_id"]),
+            now=snapshot["ts"], t5_safe_to_evaluate=True,
+        )
+        deadline = datetime.fromisoformat(job["cross_book_deadline_at"])
+        self.assertEqual(
+            deadline, datetime.fromisoformat(snapshot["ts"]) + timedelta(seconds=20),
+        )
+        record_picks.ensure_namespace(ledger, "footbreak")
+        pending = {
+            "HIL": {
+                "status": "PENDING", "reason": "crown_counterpart_grace_pending",
+            },
+        }
+        with patch.object(record_picks, "_record_learning_snapshot", return_value=None), \
+             patch.object(record_picks, "_load_frozen_ranking", return_value=[]), \
+             patch.object(record_picks, "evaluate_new_t5", return_value=([], [])) as native, \
+             patch.object(record_picks, "evaluate_probability_research", return_value=([], [])), \
+             patch.object(record_picks, "capture_t5_counterparts", return_value=pending) as capture, \
+             patch.object(record_picks, "evaluate_crown_execution_t5") as cross:
+            outcome = record_picks._process_optional_job(
+                ledger, job, now=snapshot["ts"], changes=[],
+            )
+        self.assertEqual(outcome, "DEFERRED")
+        native.assert_called_once()
+        capture.assert_called_once()
+        self.assertEqual(
+            capture.call_args.kwargs["grace_deadline_at"],
+            job["cross_book_deadline_at"],
+        )
+        cross.assert_not_called()
+
+    def test_legacy_nonterminal_t5_job_is_pinned_to_snapshot_cutoff(self):
+        stage_at = datetime.now(record_picks.HKT)
+        kickoff = stage_at + timedelta(minutes=20)
+        snapshot = {
+            "stage": "T-5", "ts": stage_at.isoformat(),
+            "kickoff": kickoff.isoformat(), "native_snapshot_id": "legacy:t5",
+            "market_predictions": [],
+        }
+        ledger = {
+            "watch": {"m1": {
+                "match_id": "m1", "kickoff": kickoff.isoformat(),
+                "league": "測試聯賽", "home": "主隊", "away": "客隊",
+                "stages": [snapshot],
+            }},
+            "native_post_commit_jobs": [{
+                "schema_version": 1, "job_id": "m1:legacy:t5",
+                "status": "PENDING", "match_id": "m1", "stage": "T-5",
+                "snapshot_id": "legacy:t5", "t5_safe_to_evaluate": True,
+            }],
+        }
+        record_picks.ensure_namespace(ledger, "footbreak")
+        with patch.object(record_picks, "_process_optional_job", return_value="DEFERRED"):
+            record_picks._drain_optional_jobs(
+                ledger, now=(stage_at + timedelta(seconds=5)).isoformat(),
+                changes=[], notes=[],
+            )
+        latest = ledger["native_post_commit_jobs"][-1]
+        self.assertEqual(latest["status"], "WAITING")
+        self.assertEqual(
+            datetime.fromisoformat(latest["cross_book_deadline_at"]),
+            stage_at + timedelta(seconds=20),
+        )
+
     def test_first_look_wilson_observation_runs_after_commit_without_changes(self):
         kickoff = datetime.now(record_picks.HKT) + timedelta(hours=2)
         ledger = {

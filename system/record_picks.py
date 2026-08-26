@@ -345,6 +345,19 @@ OPTIONAL_JOB_LOG = "native_post_commit_jobs"
 OPTIONAL_JOB_TERMINAL = frozenset({"COMPLETED", "EXPIRED"})
 
 
+def _cross_book_grace_deadline(snapshot, now):
+    try:
+        seconds = float(os.getenv("FOOTBREAK_CROWN_GRACE_SECONDS", "20"))
+    except ValueError:
+        seconds = 20.0
+    seconds = max(0.0, min(30.0, seconds))
+    stage_at = stage_state.parse_time(snapshot.get("ts")) or stage_state.parse_time(now)
+    kickoff = stage_state.parse_time(snapshot.get("kickoff"))
+    if stage_at is None or kickoff is None:
+        return None
+    return min(stage_at + dt.timedelta(seconds=seconds), kickoff).isoformat()
+
+
 def _optional_job_events(ledger):
     events = ledger.get(OPTIONAL_JOB_LOG)
     if not isinstance(events, list):
@@ -383,6 +396,8 @@ def _enqueue_optional_job(ledger, match_id, snapshot, result, *, now, t5_safe_to
         "snapshot_id": snapshot_id,
         "t5_safe_to_evaluate": bool(t5_safe_to_evaluate),
     }
+    if snapshot.get("stage") == BET_STAGE:
+        event["cross_book_deadline_at"] = _cross_book_grace_deadline(snapshot, now)
     _optional_job_events(ledger).append(event)
     return event
 
@@ -391,7 +406,7 @@ def _optional_job_transition(ledger, job, status, *, now, reason=None):
     event = {
         key: job.get(key)
         for key in ("schema_version", "job_id", "match_id", "stage", "snapshot_id",
-                    "t5_safe_to_evaluate")
+                    "t5_safe_to_evaluate", "cross_book_deadline_at")
     }
     event.update({"status": status, "at": now})
     if reason:
@@ -457,49 +472,63 @@ def _process_optional_job(ledger, job, *, now, changes):
         return
     if stage != BET_STAGE:
         return
-    try:
-        capture_t5_counterparts(watch, now=now, ledger=ledger)
-    except Exception as exc:
-        watch.setdefault("counterpart_bridges", {}).setdefault("crown", {})["t5"] = {
-            "at": now, "markets": {}, "reason": f"crown_sidecar_local_error:{type(exc).__name__}",
-        }
-    if not job.get("t5_safe_to_evaluate"):
+    t5_safe_to_evaluate = bool(job.get("t5_safe_to_evaluate"))
+    if not t5_safe_to_evaluate:
         ledger["wilson_validation"]["audit"].append({
             "ts": now, "match_id": match_id, "market": "*",
             "status": "SKIPPED", "reason": "t5_safe_lead_not_met",
         })
-        return
     ranking = _load_frozen_ranking()
-    created, _audit = evaluate_new_t5(
-        ledger, watch, history_path=Path(ACCURACY_HISTORY),
-        ranking=ranking if isinstance(ranking, list) else None,
-    )
-    observations = [
-        row for row in ((ledger.get("wilson_validation") or {}).get("observations") or [])
-        if isinstance(row, dict) and str(row.get("match_id") or "") == match_id
-        and str(row.get("stage") or "") == BET_STAGE
-        and str(row.get("created_at") or "") == str(snapshot.get("ts") or "")
-    ]
-    _attach_persisted_crown_counterpart(ledger, watch, list(created) + observations)
-    evaluate_probability_research(
-        ledger, watch, ranking=ranking if isinstance(ranking, list) else None,
-        evidence_path=Path(PROBABILITY_EVIDENCE),
-    )
-    if created:
-        ledger["bets"].extend(created)
-        changes.extend(_condition_change(bet) for bet in created)
+    created, observations = [], []
+    if t5_safe_to_evaluate:
+        created, _audit = evaluate_new_t5(
+            ledger, watch, history_path=Path(ACCURACY_HISTORY),
+            ranking=ranking if isinstance(ranking, list) else None,
+        )
+        observations = [
+            row for row in ((ledger.get("wilson_validation") or {}).get("observations") or [])
+            if isinstance(row, dict) and str(row.get("match_id") or "") == match_id
+            and str(row.get("stage") or "") == BET_STAGE
+            and str(row.get("created_at") or "") == str(snapshot.get("ts") or "")
+        ]
+        evaluate_probability_research(
+            ledger, watch, ranking=ranking if isinstance(ranking, list) else None,
+            evidence_path=Path(PROBABILITY_EVIDENCE),
+        )
+        if created:
+            ledger["bets"].extend(created)
+            changes.extend(_condition_change(bet) for bet in created)
     try:
-        crown_created, _crown_audit = evaluate_crown_execution_t5(
-            ledger, watch, ranking=ranking if isinstance(ranking, list) else None, now=now,
+        captured = capture_t5_counterparts(
+            watch, now=now, ledger=ledger,
+            grace_deadline_at=job.get("cross_book_deadline_at"),
         )
     except Exception as exc:
-        crown_created = []
-        (ledger.get("wilson_validation") or {}).setdefault("audit", []).append({
-            "ts": now, "match_id": match_id, "market": "*", "status": "SKIPPED",
-            "reason": f"crown_execution_sidecar_local_error:{type(exc).__name__}",
-        })
+        captured = {}
+        watch.setdefault("counterpart_bridges", {}).setdefault("crown", {})["t5"] = {
+            "at": now, "markets": {}, "reason": f"crown_sidecar_local_error:{type(exc).__name__}",
+        }
+    _attach_persisted_crown_counterpart(ledger, watch, list(created) + observations)
+    if any(
+        isinstance(row, dict) and row.get("status") == "PENDING"
+        for row in captured.values()
+    ):
+        return "DEFERRED"
+    crown_created = []
+    if t5_safe_to_evaluate:
+        try:
+            crown_created, _crown_audit = evaluate_crown_execution_t5(
+                ledger, watch, ranking=ranking if isinstance(ranking, list) else None, now=now,
+                decision_at=job.get("cross_book_deadline_at"),
+            )
+        except Exception as exc:
+            (ledger.get("wilson_validation") or {}).setdefault("audit", []).append({
+                "ts": now, "match_id": match_id, "market": "*", "status": "SKIPPED",
+                "reason": f"crown_execution_sidecar_local_error:{type(exc).__name__}",
+            })
     if crown_created:
         changes.extend(_crown_execution_change(bet) for bet in crown_created)
+    return "COMPLETED"
 
 
 def _drain_optional_jobs(ledger, *, now, changes, notes):
@@ -508,6 +537,17 @@ def _drain_optional_jobs(ledger, *, now, changes, notes):
         if str(job.get("status") or "") in OPTIONAL_JOB_TERMINAL:
             continue
         watch, snapshot = _job_watch_snapshot(ledger, job)
+        if (
+            str(job.get("stage") or "") == BET_STAGE
+            and not job.get("cross_book_deadline_at")
+            and isinstance(snapshot, dict)
+        ):
+            job = {
+                **job,
+                "cross_book_deadline_at": _cross_book_grace_deadline(
+                    snapshot, snapshot.get("ts") or now,
+                ),
+            }
         kickoff = stage_state.parse_time(
             snapshot.get("kickoff") if isinstance(snapshot, dict) else None
         )
@@ -525,7 +565,7 @@ def _drain_optional_jobs(ledger, *, now, changes, notes):
             continue
         _optional_job_transition(ledger, job, "STARTED", now=now)
         try:
-            _process_optional_job(ledger, job, now=now, changes=changes)
+            outcome = _process_optional_job(ledger, job, now=now, changes=changes)
         except Exception as exc:
             _optional_job_transition(
                 ledger, job, "RETRYABLE_FAILURE", now=now,
@@ -534,6 +574,12 @@ def _drain_optional_jobs(ledger, *, now, changes, notes):
             notes.append(
                 f"{job.get('match_id') or '—'} — {job.get('stage') or '—'} "
                 f"optional consumer failed ({type(exc).__name__}); native snapshot remains committed"
+            )
+            continue
+        if outcome == "DEFERRED":
+            _optional_job_transition(
+                ledger, job, "WAITING", now=now,
+                reason="crown_counterpart_grace_pending",
             )
             continue
         _optional_job_transition(ledger, job, "COMPLETED", now=now)

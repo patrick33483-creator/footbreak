@@ -37,6 +37,7 @@ BRIDGE_KICKOFF_TOLERANCE_SECONDS = 10 * 60
 T30_KICKOFF_REVERIFY_TOLERANCE_SECONDS = 1
 T30_BOOTSTRAP_ORIGIN = "t30_bootstrap_existing_card"
 T30_RECOVERY_ORIGIN = "t30_recovery_after_unresolved_first_look"
+T5_IDENTITY_RECOVERY_ORIGIN = "t5_exact_id_recovery_after_unresolved_t30"
 
 # These are reviewed display aliases, not a discovery mechanism.  They are
 # used only to validate a card which already carries the same authoritative
@@ -521,6 +522,105 @@ def _verified_t30_bootstrap(
     )
 
 
+def _resolved_identity_valid(
+    watch: dict[str, Any], value: dict[str, Any],
+) -> bool:
+    """Revalidate one resolved exact-ID bridge without trusting its label."""
+    if (
+        value.get("status") != "RESOLVED"
+        or str(value.get("hkjc_match_id") or "") != str(watch.get("match_id") or "")
+        or value.get("identity_confidence") != "authoritative_hkjc_id_unique"
+        or not str(value.get("crown_match_id") or "").strip()
+    ):
+        return False
+    footbreak_kickoff = _time(watch.get("kickoff"))
+    crown_kickoff = _time(value.get("crown_kickoff"))
+    crown_fixture = value.get("crown_fixture")
+    if (
+        footbreak_kickoff is None or crown_kickoff is None
+        or not isinstance(crown_fixture, dict)
+    ):
+        return False
+    context_ok, expected_context = _identity_context(watch, crown_fixture)
+    expected_delta = abs((crown_kickoff - footbreak_kickoff).total_seconds())
+    expected_bridge_id = hashlib.sha256(_canonical_bridge_identity(
+        str(watch.get("match_id") or ""),
+        str(value.get("crown_match_id") or ""),
+        footbreak_kickoff,
+        crown_kickoff,
+    ).encode("utf-8")).hexdigest()
+    return (
+        context_ok
+        and value.get("identity_context") == expected_context
+        and value.get("bridge_id") == expected_bridge_id
+        and expected_delta <= BRIDGE_KICKOFF_TOLERANCE_SECONDS
+        and _num(value.get("kickoff_delta_seconds")) is not None
+        and abs(float(value["kickoff_delta_seconds"]) - expected_delta) <= 1e-3
+    )
+
+
+def _verified_t5_identity_recovery(
+    watch: dict[str, Any], recovery: Any,
+    ledger: dict[str, Any] | None,
+) -> bool:
+    """Validate the append-only exact-ID recovery used after a raced T-30."""
+    if not isinstance(recovery, dict) or recovery.get("origin") != T5_IDENTITY_RECOVERY_ORIGIN:
+        return False
+    root = ((watch.get("counterpart_bridges") or {}).get("crown") or {})
+    first, t30 = root.get("first_look"), root.get("t30")
+    proof = _native_t30_proof(ledger, watch)
+    return (
+        isinstance(first, dict) and first.get("status") == "UNAVAILABLE"
+        and isinstance(t30, dict) and t30.get("status") == "UNAVAILABLE"
+        and isinstance(proof, dict)
+        and _valid_unresolved_first_look(
+            watch, first, native_t30_at=proof.get("snapshot_at"),
+        )
+        and recovery.get("first_look_hash") == _record_hash(first)
+        and recovery.get("t30_hash") == _record_hash(t30)
+        and recovery.get("native_t30_proof_hash") == proof.get("hash")
+        and _resolved_identity_valid(watch, recovery)
+    )
+
+
+def _attempt_t5_identity_recovery(
+    watch: dict[str, Any], *, now: str,
+    ledger: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Append a narrowly proven identity recovery; never rewrite earlier rows."""
+    root = watch.setdefault("counterpart_bridges", {}).setdefault(
+        "crown", {"schema_version": 3, "counterpart_book": "crown"},
+    )
+    existing = root.get("t5_identity_recovery")
+    if isinstance(existing, dict):
+        return existing
+    first, t30 = root.get("first_look"), root.get("t30")
+    proof = _native_t30_proof(ledger, watch)
+    if (
+        not isinstance(first, dict) or first.get("status") != "UNAVAILABLE"
+        or not isinstance(t30, dict) or t30.get("status") != "UNAVAILABLE"
+        or not isinstance(proof, dict)
+        or not _valid_unresolved_first_look(
+            watch, first, native_t30_at=proof.get("snapshot_at"),
+        )
+    ):
+        return None
+    cards, error = _load_local_crown_cards()
+    if error or not cards:
+        return None
+    value = _bridge_identity(watch, cards, now=now)
+    if value.get("status") != "RESOLVED":
+        return None
+    recovery = value | {
+        "origin": T5_IDENTITY_RECOVERY_ORIGIN,
+        "first_look_hash": _record_hash(first),
+        "t30_hash": _record_hash(t30),
+        "native_t30_proof_hash": proof["hash"],
+    }
+    root["t5_identity_recovery"] = recovery
+    return recovery
+
+
 def prefetch_bridge(
     watch: dict[str, Any], *, stage: str = "T-30", now: str | None = None,
     ledger: dict[str, Any] | None = None,
@@ -666,6 +766,7 @@ def _valid_side(market: str, side: Any) -> bool:
 
 def _native_stage_board(
     card: dict[str, Any], stage: str, kickoff: datetime,
+    decision_at: datetime | None = None,
 ) -> tuple[list[dict[str, Any]] | None, str | None, str]:
     """Read one immutable normalized board, with explicit legacy coverage."""
     boards = card.get("native_stage_quote_boards")
@@ -678,6 +779,8 @@ def _native_stage_board(
             return None, f"crown_native_{stage.lower().replace('-', '')}_stage_timestamp_missing", "native_board_invalid"
         if board_at >= kickoff:
             return None, f"crown_native_{stage.lower().replace('-', '')}_post_kickoff_rejected", "native_board_invalid"
+        if decision_at is not None and board_at > decision_at:
+            return None, f"crown_native_{stage.lower().replace('-', '')}_post_decision_rejected", "native_board_invalid"
         rows = board.get("quotes")
         if not isinstance(rows, list):
             return None, f"crown_native_{stage.lower().replace('-', '')}_board_invalid", "native_board_invalid"
@@ -720,6 +823,7 @@ def _exact_board_rows(
 def _crown_quote_for_exact_fixture(
     fixture: str, market: str, side: str, line: float, stage_at: datetime, kickoff: datetime,
     *, expected_crown_match_id: str | None = None,
+    decision_at: datetime | None = None,
 ) -> tuple[dict[str, Any] | None, str | None]:
     cards, error = _load_local_crown_cards()
     if error:
@@ -741,7 +845,10 @@ def _crown_quote_for_exact_fixture(
     card_kickoff = _time(card.get("kickoff_hkt") or card.get("kickoff"))
     if card_kickoff is None or abs((card_kickoff - kickoff).total_seconds()) > 1:
         return None, "crown_fixture_kickoff_identity_mismatch"
-    rows, board_reason, coverage = _native_stage_board(card, "T-5", kickoff)
+    cutoff = decision_at or stage_at
+    rows, board_reason, coverage = _native_stage_board(
+        card, "T-5", kickoff, decision_at=cutoff,
+    )
     if board_reason:
         return None, board_reason
     if rows is None:
@@ -761,9 +868,12 @@ def _crown_quote_for_exact_fixture(
         return None, "crown_execution_source_invalid_or_missing"
     if observed is None:
         return None, "crown_execution_timestamp_missing"
-    if observed >= kickoff or observed > stage_at:
+    if cutoff < stage_at or cutoff >= kickoff:
         return None, "crown_execution_post_kickoff_or_post_decision"
-    if (stage_at - observed).total_seconds() > _freshness_seconds():
+    if observed >= kickoff or observed > cutoff:
+        return None, "crown_execution_post_kickoff_or_post_decision"
+    freshness_reference = stage_at if observed <= stage_at else observed
+    if (freshness_reference - observed).total_seconds() > _freshness_seconds():
         return None, "crown_execution_quote_stale_at_t5"
     return {
         "odds": odds, "source": source, "observed_at": quote.get("observed_at"),
@@ -776,6 +886,7 @@ def _crown_quote_for_exact_fixture(
 def _crown_quote_for_verified_bridge(
     watch: dict[str, Any], market: str, side: str, line: float,
     stage_at: datetime, kickoff: datetime, ledger: dict[str, Any] | None = None,
+    decision_at: datetime | None = None,
 ) -> tuple[dict[str, Any] | None, str | None]:
     """Use a normal first-look bridge or one verified existing-card bootstrap."""
     bridge = ((watch.get("counterpart_bridges") or {}).get("crown") or {})
@@ -790,6 +901,13 @@ def _crown_quote_for_verified_bridge(
         and isinstance(t30, dict)
         and t30.get("origin") == T30_RECOVERY_ORIGIN
     )
+    t5_recovery = bridge.get("t5_identity_recovery") if isinstance(bridge, dict) else None
+    if _verified_t5_identity_recovery(watch, t5_recovery, ledger):
+        return _crown_quote_for_exact_fixture(
+            str(watch.get("match_id") or ""), market, side, line, stage_at, kickoff,
+            expected_crown_match_id=str(t5_recovery.get("crown_match_id") or ""),
+            decision_at=decision_at,
+        )
     # A genuine T-30 bootstrap can itself fail closed (no fixture, ambiguous
     # identity, kickoff mismatch, etc.).  Retain that already-persisted fact
     # at T-5; do not mislabel a valid UNAVAILABLE bootstrap record as a forged
@@ -817,12 +935,14 @@ def _crown_quote_for_verified_bridge(
     return _crown_quote_for_exact_fixture(
         str(watch.get("match_id") or ""), market, side, line, stage_at, kickoff,
         expected_crown_match_id=str(t30.get("crown_match_id") or ""),
+        decision_at=decision_at,
     )
 
 
 def capture_t5_counterparts(
     watch: dict[str, Any], *, now: str | None = None,
     ledger: dict[str, Any] | None = None,
+    grace_deadline_at: str | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Persist T-5 comparison evidence independently of formal admission.
 
@@ -856,6 +976,9 @@ def capture_t5_counterparts(
         }
         bridge["t5"] = {"at": captured_at, "markets": output}
         return output
+    deadline = _time(grace_deadline_at)
+    decision_cutoff = deadline or capture_time
+    _attempt_t5_identity_recovery(watch, now=captured_at, ledger=ledger)
     for market in MARKETS:
         signal, reason = _hkjc_selected(current, market, watch)
         if signal is None:
@@ -868,6 +991,7 @@ def capture_t5_counterparts(
             continue
         quote, reason = _crown_quote_for_verified_bridge(
             watch, market, side, line, stage_at, kickoff, ledger=ledger,
+            decision_at=decision_cutoff,
         )
         output[market] = {
             "status": "AVAILABLE" if quote else "UNAVAILABLE",
@@ -875,6 +999,38 @@ def capture_t5_counterparts(
             "hkjc_observed_at": signal.get("observed_at"),
             "crown_quote": copy.deepcopy(quote) if quote else None,
             "captured_at": captured_at,
+        }
+    temporary_reasons = {
+        "crown_first_look_bridge_missing_or_unresolved",
+        "crown_t30_bridge_missing_or_unresolved",
+        "crown_fixture_not_listed",
+        "crown_collector_unavailable",
+        "crown_local_evidence_unavailable",
+        "crown_native_t5_not_collected",
+        "crown_exact_quote_journal_missing",
+    }
+    temporary_unavailable = [
+        row for row in output.values()
+        if row.get("status") == "UNAVAILABLE"
+        and str(row.get("reason") or "") in temporary_reasons
+    ]
+    if (
+        deadline is not None and capture_time < min(deadline, kickoff)
+        and temporary_unavailable
+    ):
+        return {
+            market: (
+                {
+                    **row,
+                    "status": "PENDING",
+                    "reason": "crown_counterpart_grace_pending",
+                    "grace_deadline_at": grace_deadline_at,
+                }
+                if row.get("status") == "UNAVAILABLE"
+                and str(row.get("reason") or "") in temporary_reasons
+                else row
+            )
+            for market, row in output.items()
         }
     bridge["t5"] = {"at": captured_at, "markets": output}
     return output
@@ -938,7 +1094,7 @@ def _active_existing_admission(
 
 def evaluate_new_t5(
     ledger: dict[str, Any], watch: dict[str, Any], *, ranking: Iterable[dict[str, Any]] | None,
-    now: str | None = None,
+    now: str | None = None, decision_at: str | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Commit only exact, fresh cross-book simulations after a native Footbreak T-5."""
     now = now or _iso_now()
@@ -958,7 +1114,7 @@ def evaluate_new_t5(
         _append_audit(ns, now, fixture, audit[-1]); return [], audit
     stage_at = _time(current.get("ts") or current.get("source_snapshot_at"))
     kickoff = _time(watch.get("kickoff") or current.get("kickoff"))
-    decision_at = _time(now)
+    decision_at = _time(decision_at or now)
     if (
         stage_at is None or kickoff is None or stage_at >= kickoff
         or decision_at is None or decision_at >= kickoff
@@ -981,6 +1137,7 @@ def evaluate_new_t5(
             audit.append({"market": market, "status": "SKIPPED", "reason": reason}); continue
         quote, quote_reason = _crown_quote_for_verified_bridge(
             watch, market, side, line, stage_at, kickoff, ledger,
+            decision_at=decision_at,
         )
         for admission in admissions:
             signature = str(admission["signature"])
