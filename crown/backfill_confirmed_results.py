@@ -296,6 +296,37 @@ def _validate_row(
     }
 
 
+def _protect_conflict_row(
+    location: str, row: dict[str, Any], fixture: dict[str, Any],
+) -> dict[str, Any]:
+    """Describe a conflict-cohort row without trusting researched identity fields.
+
+    Conflict fixtures are deliberately excluded from settlement.  Their public
+    verification names, kickoff, or market annotations may be the very fields
+    under dispute, so they must not gate the confirmed-only backfill.  The
+    immutable match ID selects the protected cohort; the complete row digest
+    guarantees that no selected conflict row changes.
+    """
+    expected_match_id = fixture["_identity"]["match_id"]
+    if str(row.get("match_id") or "") != expected_match_id:
+        raise BackfillError(
+            f"conflict_row_match_id_mismatch:{location}:{expected_match_id}"
+        )
+    row_id = _row_id(row)
+    return {
+        "location": location,
+        "row_id": row_id,
+        "match_id": expected_match_id,
+        "identity": {
+            "home": row.get("home"), "away": row.get("away"),
+            "kickoff": row.get("kickoff"), "market": row.get("code"),
+            "side": row.get("side"), "line": row.get("condition"),
+        },
+        "before_sha256": _row_digest(row),
+        "before": {field: copy.deepcopy(row.get(field)) for field in SETTLEMENT_FIELDS},
+    }
+
+
 def _already_applied(row: dict[str, Any], fixture: dict[str, Any]) -> bool:
     expected = fixture["_identity"]
     return (
@@ -313,6 +344,10 @@ def _plan(ledger: dict[str, Any], fixtures: list[dict[str, Any]]) -> dict[str, A
     if not isinstance(ledger, dict):
         raise BackfillError("ledger_root_not_object")
     by_id = {fixture["_identity"]["match_id"]: fixture for fixture in fixtures}
+    conflict_ids = {
+        match_id for match_id, fixture in by_id.items()
+        if fixture["verification"] == "CONFLICT"
+    }
     rows_by_fixture: dict[str, list[tuple[str, dict[str, Any]]]] = {
         match_id: [] for match_id in by_id
     }
@@ -328,7 +363,7 @@ def _plan(ledger: dict[str, Any], fixtures: list[dict[str, Any]]) -> dict[str, A
         match_id = str(row.get("match_id") or "")
         if match_id not in by_id:
             continue
-        if id(row) not in eligible:
+        if match_id not in conflict_ids and id(row) not in eligible:
             raise BackfillError(
                 f"corresponding_row_not_settleable:{location}:{match_id}"
             )
@@ -347,16 +382,18 @@ def _plan(ledger: dict[str, Any], fixtures: list[dict[str, Any]]) -> dict[str, A
         if not found:
             raise BackfillError(f"fixture_has_no_corresponding_rows:{match_id}")
         for location, row in found:
-            detail = _validate_row(location, row, fixture)
             if fixture["verification"] == "CONFLICT":
+                detail = _protect_conflict_row(location, row, fixture)
                 detail["status"] = row.get("status")
                 protected.append(detail)
-            elif row.get("status") == "PENDING":
+            else:
+                detail = _validate_row(location, row, fixture)
+            if fixture["verification"] == "CONFIRMED" and row.get("status") == "PENDING":
                 targets.append((fixture, row, detail))
-            elif _already_applied(row, fixture):
+            elif fixture["verification"] == "CONFIRMED" and _already_applied(row, fixture):
                 detail["status"] = "ALREADY_APPLIED"
                 already.append(detail)
-            else:
+            elif fixture["verification"] == "CONFIRMED":
                 raise BackfillError(
                     f"confirmed_row_not_pending_or_idempotent:"
                     f"{location}:{detail['row_id']}:{row.get('status')}"

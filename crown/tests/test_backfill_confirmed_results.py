@@ -237,6 +237,39 @@ class ConfirmedResultBackfillTests(unittest.TestCase):
         with self.assertRaisesRegex(BackfillError, "confirmed_row"):
             self._run()
 
+    def test_conflict_rows_are_hash_protected_without_trusting_disputed_identity(
+        self,
+    ) -> None:
+        ledger = load_ledger(self.config)
+        conflict_ids = {fixture["match_id"] for fixture in self.fixtures[34:]}
+        for row in ledger["bets"]:
+            if row.get("match_id") in conflict_ids:
+                row["home"] = f"provider alias {row['match_id']}"
+                row["away"] = "disputed opponent"
+                row["kickoff"] = "2026-08-30T00:00:00+08:00"
+                row["portfolio"] = "quarantined-conflict"
+        save_ledger(self.config, ledger)
+        ledger_path = self.config.state_dir / "ledger.json"
+        before = load_ledger(self.config)
+        before_conflicts = [
+            copy.deepcopy(row) for row in before["bets"]
+            if row.get("match_id") in conflict_ids
+        ]
+
+        dry_run = self._run()
+        self.assertEqual(dry_run["counts"]["conflict_rows_unchanged"], 17)
+        report = self._run(
+            apply=True,
+            expected_ledger_sha256=dry_run["ledger_before_sha256"],
+        )
+        self.assertEqual(report["counts"]["changed_rows"], 66)
+        after_conflicts = [
+            copy.deepcopy(row) for row in load_ledger(self.config)["bets"]
+            if row.get("match_id") in conflict_ids
+        ]
+        self.assertEqual(after_conflicts, before_conflicts)
+        self.assertNotEqual(ledger_path.read_bytes(), b"")
+
     def test_partial_prior_application_is_rejected(self) -> None:
         dry_run = self._run()
         self._run(
