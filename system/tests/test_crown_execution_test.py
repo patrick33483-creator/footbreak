@@ -170,6 +170,118 @@ class CrossEvidenceTests(unittest.TestCase):
         # This namespace's own cap remains independent.
         self.assertLessEqual(sum(b["stake"] for b in ledger[cross.NAMESPACE]["bets"]), 1500)
 
+    def test_t5_grace_accepts_late_quote_only_within_fixed_decision_cutoff(self):
+        stage_at = datetime.now(HKT)
+        decision_at = stage_at + timedelta(seconds=20)
+        kickoff = stage_at + timedelta(minutes=5)
+
+        def cards(*, board_at, observed_at):
+            quote = {
+                "code": "HIL", "side": "H", "line": 2.5, "odds": 1.91,
+                "source": "titan007-crown-id-3", "odds_status": "available",
+                "observed_at": observed_at.isoformat(),
+            }
+            return [{
+                "match_id": "crown-fx", "hkjc_match_id": "fx",
+                "kickoff_hkt": kickoff.isoformat(),
+                "native_stage_quote_boards": {
+                    "T-5": {
+                        "stage": "T-5", "stage_at": board_at.isoformat(),
+                        "coverage": "native_full_board", "quotes": [quote],
+                    },
+                },
+            }]
+
+        with tempfile.TemporaryDirectory() as directory:
+            evidence = Path(directory, "cards.json")
+            evidence.write_text(json.dumps(cards(
+                board_at=stage_at + timedelta(seconds=9),
+                observed_at=stage_at + timedelta(seconds=8),
+            )), encoding="utf-8")
+            with patch.dict(os.environ, {
+                "FOOTBREAK_CROWN_EXECUTION_EVIDENCE_PATH": str(evidence),
+            }):
+                quote, reason = cross._crown_quote_for_exact_fixture(
+                    "fx", "HIL", "H", 2.5, stage_at, kickoff,
+                    expected_crown_match_id="crown-fx", decision_at=decision_at,
+                )
+        self.assertIsNone(reason)
+        self.assertEqual(quote["odds"], 1.91)
+
+    def test_t5_grace_rejects_board_or_quote_after_fixed_decision_cutoff(self):
+        stage_at = datetime.now(HKT)
+        decision_at = stage_at + timedelta(seconds=20)
+        kickoff = stage_at + timedelta(minutes=5)
+
+        def reason_for(*, board_seconds, quote_seconds):
+            card = [{
+                "match_id": "crown-fx", "hkjc_match_id": "fx",
+                "kickoff_hkt": kickoff.isoformat(),
+                "native_stage_quote_boards": {
+                    "T-5": {
+                        "stage": "T-5",
+                        "stage_at": (stage_at + timedelta(seconds=board_seconds)).isoformat(),
+                        "coverage": "native_full_board",
+                        "quotes": [{
+                            "code": "HIL", "side": "H", "line": 2.5, "odds": 1.91,
+                            "source": "titan007-crown-id-3", "odds_status": "available",
+                            "observed_at": (
+                                stage_at + timedelta(seconds=quote_seconds)
+                            ).isoformat(),
+                        }],
+                    },
+                },
+            }]
+            with tempfile.TemporaryDirectory() as directory:
+                evidence = Path(directory, "cards.json")
+                evidence.write_text(json.dumps(card), encoding="utf-8")
+                with patch.dict(os.environ, {
+                    "FOOTBREAK_CROWN_EXECUTION_EVIDENCE_PATH": str(evidence),
+                }):
+                    _quote, reason = cross._crown_quote_for_exact_fixture(
+                        "fx", "HIL", "H", 2.5, stage_at, kickoff,
+                        expected_crown_match_id="crown-fx", decision_at=decision_at,
+                    )
+            return reason
+
+        self.assertEqual(
+            reason_for(board_seconds=21, quote_seconds=19),
+            "crown_native_t5_post_decision_rejected",
+        )
+        self.assertEqual(
+            reason_for(board_seconds=19, quote_seconds=21),
+            "crown_execution_post_kickoff_or_post_decision",
+        )
+
+    def test_t5_grace_is_per_market_and_not_cancelled_by_unrelated_native_error(self):
+        stage_at = datetime.now(HKT)
+        kickoff = stage_at + timedelta(minutes=5)
+        watch = {
+            "match_id": "fx", "kickoff": kickoff.isoformat(),
+            "stages": [{"stage": "T-5", "ts": stage_at.isoformat()}],
+        }
+        signal = {
+            "side": "H", "line": 2.5, "observed_at": stage_at.isoformat(),
+        }
+        with patch.object(cross, "_attempt_t5_identity_recovery", return_value=None), \
+             patch.object(cross, "_hkjc_selected", side_effect=[
+                 (None, "hkjc_signal_missing"),
+                 (signal, None),
+                 (None, "hkjc_signal_missing"),
+             ]), \
+             patch.object(
+                 cross, "_crown_quote_for_verified_bridge",
+                 return_value=(None, "crown_native_t5_not_collected"),
+             ):
+            result = cross.capture_t5_counterparts(
+                watch, now=(stage_at + timedelta(seconds=5)).isoformat(),
+                grace_deadline_at=(stage_at + timedelta(seconds=20)).isoformat(),
+            )
+        self.assertEqual(result["HIL"]["status"], "PENDING")
+        self.assertEqual(result["HDC"]["status"], "UNAVAILABLE")
+        self.assertEqual(result["CHL"]["status"], "UNAVAILABLE")
+        self.assertNotIn("t5", watch["counterpart_bridges"]["crown"])
+
     def test_low_execution_odd_does_not_commit_even_when_hkjc_tier_matches(self):
         arithmetic = admission_arithmetic(41, 59, 1.50)
         self.assertFalse(arithmetic["passes"])
