@@ -797,10 +797,10 @@ class WilsonBatchRolloverTest(unittest.TestCase):
         self.assertNotIn("fixture_market_hash", serialized)
         self.assertNotIn("rollover_provenance", serialized)
 
-    def test_pending_batch_projects_exact_thirteen_rows_and_nine_hits_for_both_systems(self):
+    def test_pending_batch_projects_exact_seventeen_rows_and_nine_hits_for_both_systems(self):
         for system in ("footbreak", "crown"):
             ledger = {"bets": []}
-            for index in range(1, 14):
+            for index in range(1, 18):
                 self._settled(
                     ledger, index, system=system,
                     result="Won" if index <= 9 else "Lost",
@@ -827,11 +827,15 @@ class WilsonBatchRolloverTest(unittest.TestCase):
 
             detail = projected[0]["pending_rollover_evidence"]
             self.assertTrue(detail["complete"])
-            self.assertEqual(detail["expected_decided"], 13)
+            self.assertEqual(detail["expected_decided"], 17)
             self.assertEqual(detail["expected_hits"], 9)
             self.assertEqual(detail["required"], 20)
-            self.assertEqual(len(detail["rows"]), 13)
+            self.assertEqual(len(detail["rows"]), 17)
             self.assertEqual(sum(row["hit"] for row in detail["rows"]), 9)
+            identities = [
+                row["evidence_identity"] for row in detail["rows"]
+            ]
+            self.assertEqual(len(set(identities)), 17)
             self.assertEqual(detail["rows"][0]["home"], "主")
             self.assertEqual(detail["rows"][0]["away"], "客")
             serialized = json.dumps(detail, ensure_ascii=False)
@@ -859,6 +863,108 @@ class WilsonBatchRolloverTest(unittest.TestCase):
         self.assertEqual(
             detail["unavailable_reason"], "pending_row_identity_mismatch",
         )
+
+    def test_footbreak_seven_pending_detail_filters_legacy_identity_only(self):
+        fixture = json.loads(
+            (
+                Path(__file__).with_name("fixtures")
+                / "footbreak_condition_7_pending_17.json"
+            ).read_text(encoding="utf-8")
+        )
+        ledger = {"bets": []}
+        seeds = []
+        for index in range(1, 7):
+            seed = copy.deepcopy(candidate())
+            seed["line_bucket"] = f"seed-{index}"
+            seed["key"] = [
+                (
+                    f"bucket=seed-{index}"
+                    if value.startswith("bucket=") else value
+                )
+                for value in seed["key"]
+            ]
+            seeds.append(seed)
+        project_granular_ranking_evidence(
+            ledger, fixture["system"], [*seeds, candidate()],
+            now="2026-08-20T00:00:00+08:00",
+        )
+        for item in fixture["fixtures"]:
+            self._settled(
+                ledger, item["index"], result=item["result"],
+                system=fixture["system"],
+            )
+        recompute_namespace(ledger, fixture["system"])
+        frozen = next(
+            row for row in ledger["wilson_validation"]["conditions"].values()
+            if row.get("condition_number") == fixture["condition_number"]
+        )
+        self.assertEqual(
+            frozen["pending_rollover_progress"]["display"], "17/20",
+        )
+
+        # Reproduce the production-shaped compatibility conflict: a preserved
+        # same-signature row has rollover-looking provenance but cannot pass
+        # the immutable formal identity/version validator. It must be ignored,
+        # never mixed into the exact 17-row pending cohort.
+        legacy = copy.deepcopy(ledger["bets"][0])
+        legacy.update({
+            "match_id": "legacy-condition-seven-unverifiable",
+            "bet_id": "legacy-unverifiable-id",
+            "evidence_version": 999,
+        })
+        legacy["rollover_provenance"]["fixture_market_hash"] = "f" * 64
+        legacy["rollover_provenance"]["admitted_evidence_version"] = 999
+        ledger["bets"].append(legacy)
+
+        projected = project_frozen_ranking_evidence(
+            ledger, fixture["system"], [candidate()],
+        )
+        detail = projected[0]["pending_rollover_evidence"]
+        self.assertTrue(detail["complete"])
+        self.assertEqual(
+            (detail["expected_decided"], detail["expected_hits"]),
+            (fixture["expected_decided"], fixture["expected_hits"]),
+        )
+        self.assertEqual(len(detail["rows"]), fixture["expected_decided"])
+        self.assertEqual(
+            sum(row["hit"] for row in detail["rows"]),
+            fixture["expected_hits"],
+        )
+        identities = [row["evidence_identity"] for row in detail["rows"]]
+        self.assertEqual(len(set(identities)), fixture["expected_decided"])
+        self.assertNotIn(
+            "legacy-condition-seven-unverifiable",
+            json.dumps(detail, ensure_ascii=False),
+        )
+        repeated = project_frozen_ranking_evidence(
+            ledger, fixture["system"], [candidate()],
+        )[0]["pending_rollover_evidence"]
+        self.assertEqual(
+            identities,
+            [row["evidence_identity"] for row in repeated["rows"]],
+        )
+
+        # Tampering one of the 17 authoritative rows drops the exact join to
+        # 16; the adapter must remain unavailable rather than fill from legacy.
+        tampered = copy.deepcopy(ledger)
+        tampered["bets"][1]["evidence_version"] = 999
+        blocked = project_frozen_ranking_evidence(
+            tampered, fixture["system"], [candidate()],
+        )[0]["pending_rollover_evidence"]
+        self.assertFalse(blocked["complete"])
+        self.assertEqual(blocked["rows"], [])
+        self.assertEqual(
+            blocked["unavailable_reason"], "pending_row_identity_mismatch",
+        )
+
+        # A valid-looking row from another condition cannot fill this cohort.
+        cross_condition = copy.deepcopy(ledger)
+        cross_condition["bets"][0]["frozen_condition_signature"] = "0" * 24
+        blocked = project_frozen_ranking_evidence(
+            cross_condition, fixture["system"], [candidate()],
+        )[0]["pending_rollover_evidence"]
+        self.assertFalse(blocked["complete"])
+        self.assertEqual(blocked["rows"], [])
 
     def test_crown_read_only_projection_includes_batch_rows_without_mutating_ledger(self):
         ledger = {"bets": []}
