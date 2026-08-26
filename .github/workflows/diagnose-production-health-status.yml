@@ -8,6 +8,225 @@ permissions:
   statuses: write
 
 jobs:
+  wilson-pending-detail:
+    name: Read-only Wilson pending-detail diagnosis
+    runs-on: ubuntu-24.04
+    steps:
+      - name: 設定 SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: 唯讀核對足破條件 7 待合併明細
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            'sudo env PYTHONPATH=/opt/footbreak /opt/footbreak/.venv/bin/python3 -' \
+            > /tmp/condition-7-pending-detail.json <<'PY'
+          import json
+          from collections import Counter
+          from pathlib import Path
+
+          from analysis.wilson_validation import (
+              NAMESPACE,
+              _eligible_rollover_rows,
+              _now,
+              _time,
+              active_bets,
+              active_observations,
+              validate_formal_row,
+          )
+
+          ledger = json.loads(Path("/opt/footbreak/system/sim_ledger.json").read_text())
+          public = json.loads(Path("/var/www/footbreak/data.json").read_text())
+          namespace = ledger[NAMESPACE]
+          signature = namespace["condition_order"][6]
+          frozen = namespace["conditions"][signature]
+          ranking = (
+              public.get("prediction_history", {})
+              .get("stats", {})
+              .get("granular_conditions", {})
+              .get("ranking", [])
+          )
+          card = next(
+              row for row in ranking
+              if isinstance(row, dict) and int(row.get("condition_number") or 0) == 7
+          )
+          active = card.get("active_evidence") or {}
+          pending = card.get("pending_progress") or {}
+          published = card.get("pending_rollover_evidence") or {}
+          projection_time = _time(_now())
+
+          raw = [
+              row for row in active_bets(ledger, "footbreak")
+              + active_observations(ledger, "footbreak")
+              if str(row.get("frozen_condition_signature") or "") == signature
+          ]
+          valid = []
+          invalid = Counter()
+          for row in raw:
+              admitted, reason = validate_formal_row(
+                  row,
+                  system="footbreak",
+                  signature=signature,
+                  frozen=frozen,
+                  projection_time=projection_time,
+                  require_settled=True,
+                  ledger=ledger,
+              )
+              if admitted is None:
+                  invalid[str(reason or "unknown")] += 1
+              else:
+                  valid.append(row)
+          eligible, excluded = _eligible_rollover_rows(
+              valid, "footbreak", signature, active,
+          )
+          public_rows = []
+          for item in eligible:
+              row = item["row"]
+              public_rows.append({
+                  "league": row.get("league"),
+                  "home": row.get("home"),
+                  "away": row.get("away"),
+                  "kickoff": row.get("kickoff") or row.get("kickoff_hkt"),
+                  "stage": row.get("stage"),
+                  "market": row.get("market") or row.get("code"),
+                  "selected_role": row.get("selected_role"),
+                  "selected_side": row.get("selected_side") or row.get("side"),
+                  "selected_line": row.get("selected_line", row.get("line")),
+                  "odds": row.get("odds"),
+                  "result": row.get("result"),
+              })
+          print(json.dumps({
+              "read_only": True,
+              "condition_number": 7,
+              "condition_signature": signature,
+              "summary": {
+                  "display": pending.get("display"),
+                  "eligible_decided": pending.get("eligible_decided"),
+                  "eligible_hits": pending.get("eligible_hits"),
+              },
+              "published_detail": {
+                  "complete": published.get("complete"),
+                  "unavailable_reason": published.get("unavailable_reason"),
+                  "row_count": len(published.get("rows") or []),
+              },
+              "reconstruction": {
+                  "raw_same_signature": len(raw),
+                  "strict_valid": len(valid),
+                  "invalid_reasons": dict(invalid),
+                  "eligible": len(eligible),
+                  "eligible_hits": sum(
+                      item["row"].get("result") in {"Won", "Half Won"}
+                      for item in eligible
+                  ),
+                  "excluded": excluded,
+              },
+              "eligible_public_rows": public_rows,
+          }, ensure_ascii=False, indent=2))
+          PY
+
+          cat /tmp/condition-7-pending-detail.json
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          data = json.loads(
+              Path("/tmp/condition-7-pending-detail.json").read_text()
+          )
+          summary = data["summary"]
+          reconstructed = data["reconstruction"]
+          published = data["published_detail"]
+          rows = data["eligible_public_rows"]
+
+          lines = [
+              "# 足破條件 #7：新前瞻待合併逐場唯讀核對",
+              "",
+              f"- 生產摘要：**{summary.get('display') or 'unavailable'}**",
+              (
+                  "- 重新嚴格驗證："
+                  f"**{reconstructed['eligible']} 場，"
+                  f"{reconstructed['eligible_hits']} 中，"
+                  f"{reconstructed['eligible'] - reconstructed['eligible_hits']} 失**"
+              ),
+              (
+                  "- 現時 dashboard 明細："
+                  f"**{published['row_count']} 場**；"
+                  f"complete={published.get('complete')}；"
+                  f"reason={published.get('unavailable_reason') or 'none'}"
+              ),
+              (
+                  "- 同條件原始／嚴格有效："
+                  f"{reconstructed['raw_same_signature']}／"
+                  f"{reconstructed['strict_valid']}"
+              ),
+              "",
+          ]
+          if reconstructed["invalid_reasons"]:
+              lines.extend([
+                  "## 被正式驗證拒絕的原因",
+                  "",
+                  "```json",
+                  json.dumps(
+                      reconstructed["invalid_reasons"],
+                      ensure_ascii=False,
+                      indent=2,
+                  ),
+                  "```",
+                  "",
+              ])
+          lines.extend([
+              "## 嚴格合資格逐場名單",
+              "",
+              "| # | 賽事 | 開賽 | 階段 | 市場／選擇 | 賠率 | 結果 |",
+              "|---:|---|---|---|---|---:|---|",
+          ])
+          for index, row in enumerate(rows, 1):
+              match = " vs ".join(
+                  value or "?"
+                  for value in (row.get("home"), row.get("away"))
+              )
+              if row.get("league"):
+                  match = f"{row['league']} · {match}"
+              selection = " · ".join(
+                  str(value)
+                  for value in (
+                      row.get("market"),
+                      row.get("selected_role"),
+                      row.get("selected_side"),
+                      row.get("selected_line"),
+                  )
+                  if value not in (None, "")
+              )
+              lines.append(
+                  "| {index} | {match} | {kickoff} | {stage} | "
+                  "{selection} | {odds} | {result} |".format(
+                      index=index,
+                      match=match.replace("|", "\\|"),
+                      kickoff=str(row.get("kickoff") or "?").replace("|", "\\|"),
+                      stage=str(row.get("stage") or "?").replace("|", "\\|"),
+                      selection=(selection or "?").replace("|", "\\|"),
+                      odds=row.get("odds") if row.get("odds") is not None else "?",
+                      result=str(row.get("result") or "?").replace("|", "\\|"),
+                  )
+              )
+          lines.extend([
+              "",
+              "> 此工作只讀取生產 ledger 及 dashboard JSON；不會寫入、結算、通知或修改任何證據。",
+          ])
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as handle:
+              handle.write("\n".join(lines) + "\n")
+          PY
+
   diagnose:
     runs-on: ubuntu-24.04
     steps:
