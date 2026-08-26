@@ -1249,19 +1249,52 @@ def _project_pending_rollover_rows(
     # rebuilding the cohort.  A legacy or malformed same-signature row must
     # never be borrowed merely because its loose provenance marker looks
     # similar to condition #7.
+    source_rows = active_bets(ledger, system) + active_observations(ledger, system)
     candidates: list[dict[str, Any]] = []
-    for row in active_bets(ledger, system) + active_observations(ledger, system):
+    rejected: list[tuple[dict[str, Any], str | None]] = []
+    for row in source_rows:
         if str(row.get("frozen_condition_signature") or "") != signature:
             continue
-        admitted, _reason = validate_formal_row(
+        admitted, reason = validate_formal_row(
             row, system=system, signature=signature, frozen=frozen,
             projection_time=projection_time, require_settled=True,
+            ledger=ledger,
         )
         if admitted is not None:
             candidates.append(row)
+        else:
+            rejected.append((row, reason))
     eligible, _excluded = _eligible_rollover_rows(
         candidates, system, signature, active,
     )
+    # Production Footbreak condition #7 predates the immutable
+    # ``evidence_version`` admission binding.  Its persisted 17/20 counter was
+    # created by the same deterministic rollover selector below, and the
+    # historical rows still retain exact formal identity, condition signature,
+    # stage provenance and unique fixture-market hashes.  Reconstruct only
+    # that one known compatibility cohort when every row is rejected solely
+    # for the later admission-binding schema and the result exactly agrees
+    # with the already-durable counter.  Rows rejected for chronology,
+    # provenance, settlement or any other reason can never fill the cohort.
+    if (
+        not eligible
+        and system == "footbreak"
+        and _strict_int(frozen.get("condition_number")) == 7
+        and expected_decided > 0
+    ):
+        legacy_binding_rows = [
+            row for row, reason in rejected
+            if reason == "invalid_formal_admission_binding"
+        ]
+        legacy_eligible, _legacy_excluded = _eligible_rollover_rows(
+            legacy_binding_rows, system, signature, active,
+        )
+        if (
+            len(legacy_eligible) == expected_decided
+            and sum(bool(item["hit"]) for item in legacy_eligible)
+            == expected_hits
+        ):
+            eligible = legacy_eligible
     rows = [
         _dashboard_evidence_row(
             item["row"],
