@@ -4,8 +4,9 @@ from __future__ import annotations
 import copy
 import os
 import time
+from bisect import bisect_right
 from datetime import datetime
-from typing import Any
+from typing import Any, Callable
 
 from .common import (
     HKT,
@@ -32,6 +33,8 @@ LIVE_CACHE_FAILURES_BEFORE_FALLBACK = 2
 _SETTLEMENT_PASS_SECONDS = 120.0
 _SETTLEMENT_PROVIDER_PASS_SECONDS = 90.0
 _SETTLEMENT_COMMIT_RESERVE_SECONDS = 20.0
+_TITAN_DETAIL_REQUESTS_PER_PASS = 3
+_SETTLEMENT_STATE_KEY = "settlement_state"
 
 
 def reciprocal_bets(ledger: dict[str, Any]) -> list[dict[str, Any]]:
@@ -71,6 +74,73 @@ def _settlement_provider_deadline_seconds() -> float:
 
 def _remaining(deadline: float) -> float:
     return max(0.0, deadline - time.monotonic())
+
+
+def _settlement_row_key(bet: dict[str, Any]) -> str:
+    """Return a stable, namespace-qualified identity for settlement ordering."""
+    for field, namespace in (
+        ("bet_id", "bet"),
+        ("observation_id", "observation"),
+        ("research_id", "research"),
+    ):
+        value = str(bet.get(field) or "")
+        if value:
+            return f"{namespace}:{value}"
+    # Malformed rows still need deterministic ordering, but cannot collide
+    # merely because they share a kickoff. They remain fail-closed elsewhere.
+    return "|".join((
+        "unidentified",
+        str(bet.get("titan_match_id") or bet.get("match_id") or ""),
+        str(bet.get("code") or ""),
+        str(bet.get("condition") or ""),
+        str(bet.get("side") or ""),
+    ))
+
+
+def _settlement_order_key(bet: dict[str, Any]) -> tuple[float, str]:
+    kickoff = parse_time(bet.get("kickoff"))
+    return (
+        kickoff.timestamp() if kickoff else float("inf"),
+        _settlement_row_key(bet),
+    )
+
+
+def _fair_due_order(
+    ledger: dict[str, Any], due: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Rotate deterministic due order past the last durable detail attempt."""
+    ordered = sorted(due, key=_settlement_order_key)
+    state = ledger.get(_SETTLEMENT_STATE_KEY)
+    cursor = state.get("titan_detail_cursor") if isinstance(state, dict) else None
+    if not isinstance(cursor, dict):
+        return ordered
+    try:
+        cursor_key = (
+            float(cursor["kickoff_epoch"]),
+            str(cursor["row_key"]),
+        )
+    except (KeyError, TypeError, ValueError):
+        return ordered
+    split = bisect_right([_settlement_order_key(bet) for bet in ordered], cursor_key)
+    return ordered[split:] + ordered[:split]
+
+
+def _advance_titan_detail_cursor(
+    ledger: dict[str, Any], bet: dict[str, Any],
+) -> None:
+    """Stage the cursor immediately before a real exact-detail provider call."""
+    kickoff_epoch, row_key = _settlement_order_key(bet)
+    state = ledger.get(_SETTLEMENT_STATE_KEY)
+    if not isinstance(state, dict):
+        state = {}
+        ledger[_SETTLEMENT_STATE_KEY] = state
+    state.update({
+        "schema_version": 1,
+        "titan_detail_cursor": {
+            "kickoff_epoch": kickoff_epoch,
+            "row_key": row_key,
+        },
+    })
 
 
 def _target(bet: dict[str, Any]) -> Event | None:
@@ -242,6 +312,7 @@ def _verified_titan_corner_score(
     client: TitanClient,
     *,
     max_seconds: float | None = None,
+    on_detail_attempt: Callable[[], None] | None = None,
 ) -> dict[str, Any] | None:
     """Use Titan corners only after exact ID, identity and official-score checks."""
     target = _target(bet)
@@ -277,6 +348,8 @@ def _verified_titan_corner_score(
     if titan_score != official_score:
         return None
     try:
+        if on_detail_attempt:
+            on_detail_attempt()
         detail = client.result_detail(titan_id, max_seconds=max_seconds)
         corners = int(detail["corners_total"]) if detail else None
     except (KeyError, TypeError, ValueError, OSError):
@@ -291,6 +364,7 @@ def _verified_titan_detail_score(
     client: TitanClient,
     *,
     max_seconds: float | None = None,
+    on_detail_attempt: Callable[[], None] | None = None,
 ) -> dict[str, Any] | None:
     """Recover a completed exact-ID result omitted from Titan's result index."""
     target = _target(bet)
@@ -298,6 +372,8 @@ def _verified_titan_detail_score(
     if target is None or not titan_id:
         return None
     try:
+        if on_detail_attempt:
+            on_detail_attempt()
         detail = client.result_detail(titan_id, max_seconds=max_seconds)
     except (KeyError, TypeError, ValueError, OSError):
         return None
@@ -413,6 +489,20 @@ def _commit_settlement(
                 current_bet[key] = staged_bet[key]
             else:
                 current_bet.pop(key, None)
+    staged_settlement_state = staged.get(_SETTLEMENT_STATE_KEY)
+    staged_cursor = (
+        staged_settlement_state.get("titan_detail_cursor")
+        if isinstance(staged_settlement_state, dict) else None
+    )
+    if isinstance(staged_cursor, dict):
+        current_settlement_state = current.get(_SETTLEMENT_STATE_KEY)
+        if not isinstance(current_settlement_state, dict):
+            current_settlement_state = {}
+            current[_SETTLEMENT_STATE_KEY] = current_settlement_state
+        current_settlement_state.update({
+            "schema_version": 1,
+            "titan_detail_cursor": copy.deepcopy(staged_cursor),
+        })
     recompute_stats(current, config)
     save_ledger(config, current)
 
@@ -452,7 +542,7 @@ def _settle_due_locked(
         and parse_time(bet.get("kickoff"))
         and (now - parse_time(bet["kickoff"])).total_seconds() >= SETTLE_AFTER_SECONDS
     ]
-    due = official_due + v2_due
+    due = _fair_due_order(ledger, official_due + v2_due)
     if not due:
         # Retain the historical cheap statistics refresh, but do it as a
         # fresh short commit so a concurrently written T-5 is never lost.
@@ -527,7 +617,7 @@ def _settle_due_locked(
     titan_client = TitanClient(config)
     # Exact detail pages can require two provider reads each. Keep a small
     # per-pass fanout cap; unresolved bets remain pending for the next pass.
-    titan_client.limit_result_detail_requests(3)
+    titan_client.limit_result_detail_requests(_TITAN_DETAIL_REQUESTS_PER_PASS)
     titan_results: list[dict[str, Any]] = []
     if _remaining(provider_deadline) > 0 and any(needs_titan_result(bet) for bet in due):
         try:
@@ -542,9 +632,15 @@ def _settle_due_locked(
             titan_results = []
     titan_by_id = {str(row.get("id") or ""): row for row in titan_results}
     counters = {"settled": 0, "voided": 0}
+    detail_attempts_remaining = _TITAN_DETAIL_REQUESTS_PER_PASS
 
     def count(outcome: str, bet: dict[str, Any]) -> None:
         counters[outcome] += 1
+
+    def record_detail_attempt(bet: dict[str, Any]) -> None:
+        nonlocal detail_attempts_remaining
+        detail_attempts_remaining -= 1
+        _advance_titan_detail_cursor(ledger, bet)
 
     for bet in due:
         if _remaining(provider_deadline) <= 0:
@@ -578,13 +674,14 @@ def _settle_due_locked(
             ):
                 count("settled", bet)
                 continue
-            if official:
+            if official and detail_attempts_remaining > 0:
                 verified = _verified_titan_corner_score(
                     bet,
                     official,
                     titan_by_id,
                     titan_client,
                     max_seconds=_remaining(provider_deadline),
+                    on_detail_attempt=lambda bet=bet: record_detail_attempt(bet),
                 )
                 if verified and _settle(
                     bet,
@@ -615,9 +712,12 @@ def _settle_due_locked(
             if match_event(target, [candidate]).event and _settle(bet, titan, "titan_verified_identity"):
                 count("settled", bet)
                 continue
-        if not titan:
+        if not titan and detail_attempts_remaining > 0:
             detail_score = _verified_titan_detail_score(
-                bet, titan_client, max_seconds=_remaining(provider_deadline),
+                bet,
+                titan_client,
+                max_seconds=_remaining(provider_deadline),
+                on_detail_attempt=lambda bet=bet: record_detail_attempt(bet),
             )
             if detail_score and _settle(
                 bet,
