@@ -348,6 +348,9 @@ jobs:
           counts = dry_run["counts"]
           assert result["production_ledger_byte_unchanged"] is True
           assert result["production_ledger_before_sha256"] == result["production_ledger_after_sha256"]
+          assert result["production_ledger_before_sha256"] == (
+              "bd1be1f5f2e4a56c52b82ebd80b6fb64e5143577830857938b2f913d9fce8d13"
+          )
           assert dry_run["mode"] == "dry-run"
           assert dry_run["safe_to_apply"] is True
           assert dry_run["applied"] is False
@@ -374,11 +377,147 @@ jobs:
           }, ensure_ascii=False, sort_keys=True))
           PY
 
+      - name: Apply the CAS-bound confirmed cohort and verify every changed row
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          target="$DEPLOY_USER@$DEPLOY_HOST"
+          remote_dir="$(ssh -o BatchMode=yes -o ConnectTimeout=20 "$target" \
+            'umask 077; mktemp -d /tmp/crown-confirmed-results-apply.XXXXXX')"
+          cleanup() {
+            ssh -o BatchMode=yes -o ConnectTimeout=20 "$target" \
+              "sudo rm -rf -- $(printf '%q' "$remote_dir")" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          git archive --format=tar HEAD crown analysis \
+            | ssh -o BatchMode=yes -o ConnectTimeout=20 "$target" \
+                "tar -xf - -C $(printf '%q' "$remote_dir")"
+          scp -q deploy/backfill/fixtures_42_verified.json \
+            "$target:$remote_dir/fixtures_42_verified.json"
+
+          ssh -o BatchMode=yes -o ConnectTimeout=20 "$target" \
+            "sudo env REMOTE_DIR=$(printf '%q' "$remote_dir") \
+              PYTHONPATH=$(printf '%q' "$remote_dir") \
+              /opt/footbreak/.venv/bin/python3 -s" \
+            > crown-confirmed-results-production-apply.json <<'PY'
+          import hashlib
+          import json
+          import os
+          import stat
+          from dataclasses import replace
+          from pathlib import Path
+
+          from crown.backfill_confirmed_results import (
+              _ledger_rows,
+              _row_digest,
+              execute,
+          )
+          from crown.config import settings
+
+          expected_before = (
+              "bd1be1f5f2e4a56c52b82ebd80b6fb64e5143577830857938b2f913d9fce8d13"
+          )
+          remote_dir = Path(os.environ["REMOTE_DIR"])
+          state_dir = Path("/var/lib/footbreak/crown")
+          ledger_path = state_dir / "ledger.json"
+          manifest_path = (
+              state_dir / "backfill-manifests"
+              / "confirmed-34-apply-bd1be1f5f2e4a56c.json"
+          )
+
+          before_raw = ledger_path.read_bytes()
+          before_sha = hashlib.sha256(before_raw).hexdigest()
+          if before_sha != expected_before:
+              raise SystemExit(
+                  f"REFUSED: ledger_cas_mismatch:expected={expected_before}:"
+                  f"actual={before_sha}"
+              )
+
+          config = replace(settings(), state_dir=state_dir)
+          result = execute(
+              config,
+              remote_dir / "fixtures_42_verified.json",
+              apply=True,
+              expected_ledger_sha256=expected_before,
+              manifest_path=manifest_path,
+          )
+
+          counts = result["counts"]
+          assert result["mode"] == "apply"
+          assert result["safe_to_apply"] is True
+          assert result["applied"] is True
+          assert result["idempotent_noop"] is False
+          assert counts["changed_rows"] == 66
+          assert counts["already_applied_rows"] == 0
+          assert counts["conflict_rows_unchanged"] == 17
+          assert all(
+              row["status"] == "PENDING"
+              for row in result["protected_conflict_rows"]
+          )
+
+          after_raw = ledger_path.read_bytes()
+          after_sha = hashlib.sha256(after_raw).hexdigest()
+          assert after_sha == result["ledger_after_sha256"]
+          ledger = json.loads(after_raw)
+          rows = {location: row for location, row in _ledger_rows(ledger)}
+          for change in result["changes"]:
+              row = rows[change["location"]]
+              assert row["status"] == "SETTLED"
+              assert _row_digest(row) == change["after_sha256"]
+          for protected in result["protected_conflict_rows"]:
+              row = rows[protected["location"]]
+              assert row["status"] == "PENDING"
+              assert _row_digest(row) == protected["before_sha256"]
+
+          backup_path = Path(result["backup_path"])
+          assert backup_path.read_bytes() == before_raw
+          assert stat.S_IMODE(backup_path.stat().st_mode) == stat.S_IRUSR
+          assert hashlib.sha256(backup_path.read_bytes()).hexdigest() == expected_before
+
+          print(json.dumps({
+              "reviewed_commit": "21ab43ccd31e86f752d89250f0fa6ee0ff93c737",
+              "workflow_commit": os.environ.get("GITHUB_SHA"),
+              "mode": result["mode"],
+              "safe_to_apply": result["safe_to_apply"],
+              "applied": result["applied"],
+              "counts": counts,
+              "ledger_before_sha256": before_sha,
+              "ledger_after_sha256": after_sha,
+              "backup_path": str(backup_path),
+              "backup_mode": "0400",
+              "manifest_path": str(manifest_path),
+              "confirmed_rows_verified_settled": 66,
+              "conflict_rows_verified_pending_and_unchanged": 17,
+              "side_effects": result["side_effects"],
+          }, ensure_ascii=False, indent=2, sort_keys=True))
+          PY
+
+      - name: Regenerate and validate Crown dashboard
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          target="$DEPLOY_USER@$DEPLOY_HOST"
+          ssh -o BatchMode=yes -o ConnectTimeout=20 "$target" '
+            set -euo pipefail
+            sudo env PYTHONPATH=/opt/footbreak \
+              /opt/footbreak/.venv/bin/python3 -m crown.dashboard_data \
+              --out /var/www/crown/data.json
+            sudo /opt/footbreak/.venv/bin/python3 -m json.tool \
+              /var/www/crown/data.json >/dev/null
+          '
+
       - name: Upload dry-run evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: crown-confirmed-results-production-dry-run
-          path: crown-confirmed-results-production-dry-run.json
+          path: |
+            crown-confirmed-results-production-dry-run.json
+            crown-confirmed-results-production-apply.json
           if-no-files-found: error
           retention-days: 30
