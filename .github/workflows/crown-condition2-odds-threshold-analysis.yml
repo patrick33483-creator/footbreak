@@ -109,10 +109,44 @@ jobs:
           if any(row["odds"] is None for row in evidence):
               raise SystemExit("active V2 evidence contains missing odds")
 
+          unique_by_fixture = {}
+          duplicate_rows = []
+          for row in evidence:
+              fixture = str(row["fixture"] or "").strip()
+              if not fixture:
+                  raise SystemExit("active V2 evidence contains missing fixture")
+              normalized = {
+                  **row,
+                  "fixture": fixture,
+                  "odds": float(row["odds"]),
+              }
+              previous = unique_by_fixture.get(fixture)
+              if previous is None:
+                  unique_by_fixture[fixture] = normalized
+                  continue
+              duplicate_rows.append(normalized)
+              if (
+                  previous["hit"] != normalized["hit"]
+                  or abs(previous["odds"] - normalized["odds"]) > 1e-9
+              ):
+                  raise SystemExit(
+                      f"conflicting duplicate fixture {fixture}: "
+                      f"{previous!r} vs {normalized!r}"
+                  )
+
+          unique_evidence = list(unique_by_fixture.values())
+          unique_hits = sum(row["hit"] for row in unique_evidence)
+          if len(unique_evidence) != 459 or len(duplicate_rows) != 71:
+              raise SystemExit(
+                  f"unexpected deduplication result: "
+                  f"{len(unique_evidence)} unique, "
+                  f"{len(duplicate_rows)} duplicates"
+              )
+
           thresholds = []
-          for threshold in (1.80, 1.85, 1.90):
+          for threshold in (1.70, 1.80, 1.85, 1.90):
               selected = [
-                  row for row in evidence
+                  row for row in unique_evidence
                   if float(row["odds"]) >= threshold
               ]
               hits = sum(row["hit"] for row in selected)
@@ -136,6 +170,15 @@ jobs:
                   "hits": total_hits,
                   "decided": len(evidence),
                   "hit_rate": total_hits / len(evidence),
+              },
+              "independent_fixture_evidence": {
+                  "hits": unique_hits,
+                  "losses": len(unique_evidence) - unique_hits,
+                  "decided": len(unique_evidence),
+                  "hit_rate": unique_hits / len(unique_evidence),
+                  "duplicate_rows_removed": len(duplicate_rows),
+                  "deduplication_key": "fixture",
+                  "duplicate_consistency": "same odds and hit",
               },
               "cohorts": {
                   cohort: {
