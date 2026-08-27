@@ -95,12 +95,24 @@ jobs:
             --history "$work/prediction_history.json" \
             --detail-budget 200 --titan-seconds 300 --hkjc-seconds 300 \
             > "$work/audit.json"
+          cat > "$work/manual-overrides.json" <<'JSON'
+          {
+            "2942569": {
+              "home_score": 5,
+              "away_score": 0,
+              "attested_at": "2026-08-28T01:26:00+08:00",
+              "source": "user_attested_manual_score",
+              "attestation_reference": "Perplexity session 18c3de09-41d4-451c-bf7a-d60648354d1b; user explicitly confirmed 查爾斯頓電池 5-0 邁阿密 FC"
+            }
+          }
+          JSON
           PYTHONPATH=/opt/footbreak "$python" \
             analysis/apply_crown_condition2_pending_results.py \
             --ledger "$ledger" \
             --production-history "$history" \
             --refreshed-history "$work/prediction_history.json" \
-            --audit-report "$work/audit.json" | tee "$work/apply.json"
+            --audit-report "$work/audit.json" \
+            --manual-overrides "$work/manual-overrides.json" | tee "$work/apply.json"
           stamp="$(TZ=Asia/Hong_Kong date +%Y%m%d-%H%M%S)"
           install -m 0600 "$work/ledger.before" \
             "$ledger.before-pending-results-$stamp"
