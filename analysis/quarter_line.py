@@ -171,6 +171,31 @@ def _market_over_share(mean: float, line: float) -> float | None:
     return over_inverse / (over_inverse + under_inverse)
 
 
+def _mean_for_over_share(target: float, line: float) -> float | None:
+    if not math.isfinite(target) or not 0.0 < target < 1.0:
+        return None
+    low, high = 0.05, 10.0
+    low_share, high_share = (
+        _market_over_share(low, line),
+        _market_over_share(high, line),
+    )
+    if (
+        low_share is None or high_share is None
+        or not low_share <= target <= high_share
+    ):
+        return None
+    for _ in range(80):
+        middle = (low + high) / 2.0
+        share = _market_over_share(middle, line)
+        if share is None:
+            return None
+        if share < target:
+            low = middle
+        else:
+            high = middle
+    return (low + high) / 2.0
+
+
 def from_two_sided_market(
     *, line: Any, side: Any, over_odds: Any, under_odds: Any,
 ) -> dict[str, Any] | None:
@@ -195,26 +220,9 @@ def from_two_sided_market(
     target = (1.0 / over_value) / (
         (1.0 / over_value) + (1.0 / under_value)
     )
-    low, high = 0.05, 10.0
-    low_share, high_share = (
-        _market_over_share(low, line_value),
-        _market_over_share(high, line_value),
-    )
-    if (
-        low_share is None or high_share is None
-        or not low_share <= target <= high_share
-    ):
+    mean = _mean_for_over_share(target, line_value)
+    if mean is None:
         return None
-    for _ in range(80):
-        middle = (low + high) / 2.0
-        share = _market_over_share(middle, line_value)
-        if share is None:
-            return None
-        if share < target:
-            low = middle
-        else:
-            high = middle
-    mean = (low + high) / 2.0
     source = {
         "kind": "two_sided_market_implied_poisson",
         "over_odds": over_value,
@@ -225,6 +233,45 @@ def from_two_sided_market(
     return _profile_core(
         _poisson_total_pmf(mean), line=line_value, side=str(side),
         method="native_t5_market_implied_poisson", source=source,
+    )
+
+
+def from_no_vig_probability(
+    *, line: Any, side: Any, selected_probability: Any,
+) -> dict[str, Any] | None:
+    """Recover a profile from a persisted same-stage no-vig market share.
+
+    Legacy Crown stage rows retained the selected side's normalized two-sided
+    probability even when they did not retain the opposite raw quote.  This
+    remains decision-time market evidence and does not use a result, later
+    stage, or later price.
+    """
+    try:
+        line_value = float(line)
+        probability = float(selected_probability)
+    except (TypeError, ValueError):
+        return None
+    side_value = str(side or "").upper()
+    if (
+        _quarter_fraction(line_value) is None
+        or side_value not in {"H", "L"}
+        or not math.isfinite(probability)
+        or not 0.0 < probability < 1.0
+    ):
+        return None
+    target = probability if side_value == "H" else 1.0 - probability
+    mean = _mean_for_over_share(target, line_value)
+    if mean is None:
+        return None
+    source = {
+        "kind": "selected_market_no_vig_probability",
+        "selected_probability": probability,
+        "fitted_total_mean": mean,
+        "max_goals": MAX_GOALS,
+    }
+    return _profile_core(
+        _poisson_total_pmf(mean), line=line_value, side=side_value,
+        method="native_market_no_vig_probability", source=source,
     )
 
 
@@ -248,6 +295,11 @@ def validate(
         expected = from_two_sided_market(
             line=profile.get("line"), side=profile.get("side"),
             over_odds=source.get("over_odds"), under_odds=source.get("under_odds"),
+        )
+    elif method == "native_market_no_vig_probability":
+        expected = from_no_vig_probability(
+            line=profile.get("line"), side=profile.get("side"),
+            selected_probability=source.get("selected_probability"),
         )
     else:
         return None

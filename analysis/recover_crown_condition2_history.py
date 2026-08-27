@@ -30,10 +30,12 @@ from analysis.granular_conditions import (
     MARKET_LABELS, _descriptor, _paths, canonical_panels,
 )
 from analysis.legacy_batch_runtime import load_production_legacy_batch_authority
+from analysis.quarter_line import from_no_vig_probability, from_two_sided_market
 from analysis.wilson_validation import (
     _canonical_hash, _time, _version_hash, active_evidence_version,
     apply_active_evidence, formal_registry_candidates, matching_admissions,
-    recompute_namespace, record_match_observation, validate_formal_row,
+    match_formal_registry, recompute_namespace, record_match_observation,
+    validate_formal_row,
 )
 
 SYSTEM = "crown"
@@ -347,6 +349,64 @@ def _selected(match: dict[str, Any]) -> dict[str, Any] | None:
     return copy.deepcopy(exact[0]) if len(exact) == 1 else None
 
 
+def _with_quarter_line_profile(
+    selected: dict[str, Any], source: dict[str, Any],
+) -> dict[str, Any]:
+    """Recover payout weights only from the same immutable two-sided quote.
+
+    Older Crown first-look rows predate persistence of
+    ``quarter_line_settlement``.  The profile is nevertheless deterministic
+    when that exact stage retained one H and one L quote at the selected HIL
+    line.  No result or later quote is consulted.
+    """
+    output = copy.deepcopy(selected)
+    line = _number(output.get("line", output.get("condition")))
+    if line is None or isinstance(output.get("quarter_line_settlement"), dict):
+        return output
+    fraction = abs(line) - math.floor(abs(line))
+    if not (
+        abs(fraction - 0.25) <= 1e-8
+        or abs(fraction - 0.75) <= 1e-8
+    ):
+        return output
+    quotes: dict[str, list[dict[str, Any]]] = {"H": [], "L": []}
+    board = source.get("native_execution_quote_board")
+    source_quotes = (
+        board.get("quotes")
+        if isinstance(board, dict) and isinstance(board.get("quotes"), list)
+        else source.get("market_predictions")
+    )
+    for row in source_quotes or []:
+        if (
+            isinstance(row, dict)
+            and str(row.get("code") or "").upper() == "HIL"
+            and str(row.get("side") or "").upper() in quotes
+            and _same_number(row.get("line", row.get("condition")), line)
+            and _number(row.get("odds")) is not None
+            and row.get("status", "AVAILABLE") == "AVAILABLE"
+        ):
+            quotes[str(row["side"]).upper()].append(row)
+    profile = None
+    if all(len(quotes[side]) == 1 for side in ("H", "L")):
+        profile = from_two_sided_market(
+            line=line,
+            side=str(output.get("side") or "").upper(),
+            over_odds=quotes["H"][0]["odds"],
+            under_odds=quotes["L"][0]["odds"],
+        )
+    if profile is None:
+        profile = from_no_vig_probability(
+            line=line,
+            side=str(output.get("side") or "").upper(),
+            selected_probability=output.get(
+                "probability", output.get("prob", output.get("conviction")),
+            ),
+        )
+    if profile is not None:
+        output["quarter_line_settlement"] = profile
+    return output
+
+
 def _grade(match: dict[str, Any]) -> tuple[str, str, str] | None:
     """Return result, settlement timestamp, and immutable result proof hash."""
     terminal, source = match["terminal"], match["source"]
@@ -431,6 +491,9 @@ def recover(
     registry = formal_registry_candidates(
         ledger, SYSTEM, now=migration_at, authority_context=authority,
     )
+    formal_matches = match_formal_registry(
+        history_rows, registry, system=SYSTEM, decision_stage="首預",
+    )
     candidates = _matching_rows(
         history_rows, frozen["definition"], settled_only=False,
     )
@@ -471,9 +534,18 @@ def recover(
             result["rejected"] += 1
             result["reasons"]["selected_prediction_missing_or_ambiguous"] += 1
             continue
+        selected = _with_quarter_line_profile(selected, match["source"])
         stage_at = str(match["stage_at"])
+        matched_registry = [
+            row for row in formal_matches.get(match["fixture"], [])
+            if row.get("__formal_frozen_signature") == SIGNATURE
+        ]
+        if len(matched_registry) != 1:
+            result["rejected"] += 1
+            result["reasons"]["exact_formal_registry_match_missing_or_ambiguous"] += 1
+            continue
         admissions, reason = matching_admissions(
-            SYSTEM, "HIL", selected, registry, stage_at=stage_at,
+            SYSTEM, "HIL", selected, matched_registry, stage_at=stage_at,
         )
         exact = [row for row in admissions if row.get("signature") == SIGNATURE]
         if len(exact) != 1:

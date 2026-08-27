@@ -5,11 +5,20 @@ import copy
 import unittest
 
 from analysis.quarter_line import (
-    from_dixon_coles, from_two_sided_market, validate,
+    from_dixon_coles, from_no_vig_probability, from_two_sided_market, validate,
 )
 
 
 class QuarterLineProfileTest(unittest.TestCase):
+    def test_persisted_no_vig_probability_round_trips(self) -> None:
+        profile = from_no_vig_probability(
+            line=2.75, side="H", selected_probability=0.53142,
+        )
+        self.assertIsNotNone(profile)
+        self.assertEqual(
+            validate(profile, market="HIL", side="H", line=2.75), profile,
+        )
+
     def test_all_four_quarter_settlements(self) -> None:
         expected = {
             ("H", 2.75): "half_win",
