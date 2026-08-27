@@ -122,7 +122,7 @@ jobs:
               -o UserKnownHostsFile="$WORK/known_hosts" \
               -o GlobalKnownHostsFile=/dev/null \
               "$DEPLOY_USER@$DEPLOY_HOST" \
-              "sudo python3 - --lock /var/lock/footbreak.lock \
+              "sudo python3 -I -S - --lock /var/lock/footbreak.lock \
                --ledger /opt/footbreak/system/sim_ledger.json \
                --repo /opt/footbreak \
                --expected-commit '$EXPECTED_DEPLOYED_SHA' --expected-tree '$EXPECTED_DEPLOYED_TREE' \
@@ -180,13 +180,13 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: condition17-bootstrap-review-${{ github.run_id }}
-          path: ${{ runner.temp }}/condition17-stage-a-${{ github.run_id }}/condition17-bootstrap-review.json
+          path: /tmp/condition17-stage-a-${{ github.run_id }}/condition17-bootstrap-review.json
           if-no-files-found: error
           retention-days: 30
 
       - name: Remove credentials and private intermediates
         if: always()
         run: |
-          test -n "${RUNNER_TEMP:-}" && test -n "${GITHUB_RUN_ID:-}"
-          case "$WORK" in "$RUNNER_TEMP"/condition17-stage-a-"$GITHUB_RUN_ID") ;; *) exit 2 ;; esac
+          test -n "${GITHUB_RUN_ID:-}"
+          test "$WORK" = "/tmp/condition17-stage-a-$GITHUB_RUN_ID"
           rm -rf -- "$WORK"

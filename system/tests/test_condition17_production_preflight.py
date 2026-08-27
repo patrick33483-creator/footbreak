@@ -8,6 +8,7 @@ import importlib.util
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -380,6 +381,90 @@ class Condition17ProductionPreflightTests(unittest.TestCase):
 
 
 class Condition17SecureCaptureTests(unittest.TestCase):
+    def test_capture_never_imports_or_executes_production_worktree(self) -> None:
+        source = (
+            ROOT / "deploy"
+            / "capture-condition17-production-snapshot.py"
+        ).read_text(encoding="utf-8")
+        self.assertNotIn("_verify_import_origins", source)
+        self.assertNotIn("import analysis", source)
+        self.assertNotIn("sys.path.insert", source)
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("sudo python3 -I -S - --lock", workflow)
+
+    def test_capture_cli_emits_only_sanitized_failure_code(self) -> None:
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(
+                    ROOT / "deploy"
+                    / "capture-condition17-production-snapshot.py"
+                ),
+                "--lock", "/definitely/missing/lock",
+                "--ledger", "/definitely/missing/ledger",
+                "--repo", "/definitely/missing/repo",
+                "--expected-commit", "0" * 40,
+                "--expected-tree", "0" * 40,
+                "--expected-validation-sha256", "0" * 64,
+                "--activation-marker", "/definitely/missing/marker",
+                "--lock-timeout", "0",
+            ],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        self.assertEqual(completed.returncode, 1)
+        self.assertEqual(completed.stdout, "")
+        self.assertRegex(
+            completed.stderr,
+            r"^condition17_capture_failure=[a-z0-9_]+\n$",
+        )
+
+    def test_capture_cli_never_passes_through_secret_like_failure_text(self) -> None:
+        arguments = [
+            "--lock", "/unused/lock",
+            "--ledger", "/unused/ledger",
+            "--repo", "/unused/repo",
+            "--expected-commit", "0" * 40,
+            "--expected-tree", "0" * 40,
+            "--expected-validation-sha256", "0" * 64,
+            "--activation-marker", "/unused/marker",
+            "--lock-timeout", "0",
+        ]
+        for private_text in (
+            "ledger_api_secret_abc123",
+            "opt_footbreak_private_ledger",
+        ):
+            stderr = io.StringIO()
+            with (
+                patch.object(
+                    CAPTURE,
+                    "capture",
+                    side_effect=CAPTURE.CaptureFailure(private_text),
+                ),
+                contextlib.redirect_stderr(stderr),
+            ):
+                self.assertEqual(CAPTURE.main(arguments), 1)
+            self.assertEqual(
+                stderr.getvalue(),
+                "condition17_capture_failure=capture_invariant_failure\n",
+            )
+
+    def test_capture_cli_allows_only_explicit_public_failure_codes(self) -> None:
+        self.assertEqual(
+            CAPTURE._public_failure_code(
+                CAPTURE.CaptureFailure("lock_timeout")
+            ),
+            "lock_timeout",
+        )
+        self.assertEqual(
+            CAPTURE._public_failure_code(
+                CAPTURE.CaptureFailure("unknown_lowercase_code")
+            ),
+            "capture_invariant_failure",
+        )
+
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)

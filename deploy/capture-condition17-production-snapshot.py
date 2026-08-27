@@ -22,10 +22,60 @@ SHA256_RE = re.compile(r"[0-9a-f]{64}")
 COMMIT_RE = re.compile(r"[0-9a-f]{40}")
 TREE_RE = re.compile(r"[0-9a-f]{40}")
 SOURCE_SUFFIXES = (".py", ".pyc", ".so", ".pyd", ".pth", ".egg-link")
+PUBLIC_FAILURE_CODES = frozenset({
+    "condition17_already_activated",
+    "deployed_commit_mismatch",
+    "deployed_commit_unavailable",
+    "deployed_git_dir_unavailable",
+    "deployed_git_object_integrity_failed",
+    "deployed_git_paths_mismatch",
+    "deployed_import_origin_mismatch",
+    "deployed_index_dirty",
+    "deployed_repository_identity_changed",
+    "deployed_repository_path_invalid",
+    "deployed_repository_too_large",
+    "deployed_repository_top_unavailable",
+    "deployed_tracked_content_mismatch",
+    "deployed_tracked_file_changed_during_read",
+    "deployed_tracked_file_identity_changed",
+    "deployed_tracked_file_invalid",
+    "deployed_tracked_file_size_exceeded",
+    "deployed_tracked_file_too_large",
+    "deployed_tracked_identity_changed",
+    "deployed_tracked_mode_mismatch",
+    "deployed_tree_empty",
+    "deployed_tree_entry_unsupported",
+    "deployed_tree_listing_failed",
+    "deployed_tree_listing_invalid",
+    "deployed_tree_mismatch",
+    "deployed_tree_path_invalid",
+    "deployed_tree_unavailable",
+    "deployed_untracked_listing_failed",
+    "deployed_untracked_path_invalid",
+    "deployed_untracked_source_shadow",
+    "deployed_validation_dependency_missing",
+    "deployed_validation_hash_mismatch",
+    "deployed_worktree_dirty",
+    "invalid_deployed_code_authority",
+    "ledger_changed_during_read",
+    "ledger_path_invalid",
+    "ledger_path_invalid_identity_changed",
+    "ledger_size_exceeded",
+    "lock_path_invalid",
+    "lock_path_invalid_identity_changed",
+    "lock_timeout",
+})
 
 
 class CaptureFailure(RuntimeError):
     pass
+
+
+def _public_failure_code(exc: CaptureFailure) -> str:
+    reason = str(exc)
+    if reason in PUBLIC_FAILURE_CODES:
+        return reason
+    return "capture_invariant_failure"
 
 
 def _identity(info: os.stat_result) -> tuple[int, int]:
@@ -360,56 +410,6 @@ def _verify_no_source_shadows(repo: Path) -> None:
             raise CaptureFailure("deployed_untracked_source_shadow")
 
 
-def _verify_import_origins(
-    repo: Path, validation_hash: str, quarter_line_hash: str,
-) -> None:
-    program = r"""
-import hashlib
-import json
-import pathlib
-import sys
-
-repo = pathlib.Path(sys.argv[1]).resolve()
-sys.path.insert(0, str(repo))
-import analysis
-import analysis.quarter_line as quarter_line
-import analysis.wilson_validation as validation
-
-expected = {
-    validation: (repo / "analysis" / "wilson_validation.py", sys.argv[2]),
-    quarter_line: (repo / "analysis" / "quarter_line.py", sys.argv[3]),
-}
-if pathlib.Path(analysis.__file__).resolve() != repo / "analysis" / "__init__.py":
-    raise SystemExit(2)
-for module, (path, digest) in expected.items():
-    origin = pathlib.Path(module.__spec__.origin).resolve()
-    if origin != path or pathlib.Path(module.__file__).resolve() != path:
-        raise SystemExit(3)
-    if hashlib.sha256(path.read_bytes()).hexdigest() != digest:
-        raise SystemExit(4)
-"""
-    env = {
-        "HOME": "/nonexistent",
-        "PATH": "/usr/bin:/bin",
-        "PYTHONDONTWRITEBYTECODE": "1",
-        "PYTHONNOUSERSITE": "1",
-    }
-    result = subprocess.run(
-        [
-            sys.executable, "-I", "-S", "-c", program,
-            str(repo), validation_hash, quarter_line_hash,
-        ],
-        check=False,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        timeout=20,
-        env=env,
-        cwd="/",
-    )
-    if result.returncode != 0:
-        raise CaptureFailure("deployed_import_origin_mismatch")
-
-
 def verify_deployed_code(
     repo: Path,
     expected_commit: str,
@@ -440,7 +440,9 @@ def verify_deployed_code(
             raise CaptureFailure("deployed_validation_hash_mismatch")
         if not isinstance(quarter_line_hash, str):
             raise CaptureFailure("deployed_validation_dependency_missing")
-        _verify_import_origins(repo, validation_hash, quarter_line_hash)
+        # Never import or execute code from the production worktree.  The
+        # capture process verifies every tracked blob and streams ledger bytes
+        # only.  Interpretation happens later in the exact reviewed checkout.
         _verify_repository_identity(repo, repo_fd, repo_info, git_info)
         if os.path.lexists(activation_marker):
             raise CaptureFailure("condition17_already_activated")
@@ -536,7 +538,15 @@ def main(argv: list[str] | None = None) -> int:
             args.activation_marker,
             lock_timeout=args.lock_timeout,
         )
+    except CaptureFailure as exc:
+        reason = _public_failure_code(exc)
+        print(f"condition17_capture_failure={reason}", file=sys.stderr)
+        return 1
     except Exception:
+        print(
+            "condition17_capture_failure=capture_unexpected_failure",
+            file=sys.stderr,
+        )
         return 1
     sys.stdout.buffer.write(payload)
     return 0
