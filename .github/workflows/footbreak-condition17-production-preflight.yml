@@ -30,7 +30,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 12
     env:
-      WORK: ${{ runner.temp }}/condition17-stage-a-${{ github.run_id }}
+      WORK: /tmp/condition17-stage-a-${{ github.run_id }}
       TRUSTED_REPOSITORY: patrick33483-creator/footbreak
       TRUSTED_DISPATCH_REF: refs/heads/integrate/condition17-stage-a-main-20260827
       EXPECTED_DEPLOYED_SHA: ${{ inputs.expected_deployed_sha }}
