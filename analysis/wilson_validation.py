@@ -1375,6 +1375,100 @@ def _project_footbreak_17_schema1_settlement_anomaly(
     return row if admitted is not None and reason is None else None
 
 
+def _footbreak_17_production_identity_is_pinned(
+    ledger: dict[str, Any], *, signature: str, frozen: dict[str, Any],
+) -> bool:
+    """Require the independently authorized production manifest, not the registry."""
+    namespace = ledger.get(NAMESPACE)
+    if (
+        not isinstance(namespace, dict)
+        or namespace.get("system") != "footbreak"
+    ):
+        return False
+    expected, validated, reason = _expected_production_identity_manifest(
+        namespace, "footbreak",
+    )
+    manifest = namespace.get("production_identity_manifest")
+    if (
+        reason is not None
+        or expected is None
+        or validated is None
+        or not isinstance(manifest, dict)
+        or manifest != expected
+    ):
+        return False
+    entries = manifest.get("entries")
+    versions = frozen.get("evidence_versions")
+    validated_condition = validated.get(signature)
+    validated_active = (
+        validated_condition[1][-1]
+        if isinstance(validated_condition, tuple)
+        and len(validated_condition) == 2
+        and isinstance(validated_condition[1], list)
+        and validated_condition[1]
+        else None
+    )
+    active_pointer = frozen.get("active_evidence")
+    pointer_keys = (
+        "version", "cumulative_hits", "cumulative_decided",
+        "wilson95_lower_raw", "minimum_acceptable_odds_raw",
+        "minimum_acceptable_odds_display", "activation_boundary_at",
+        "created_at", "evidence_hash",
+    )
+    return bool(
+        isinstance(entries, list)
+        and len(entries) == len(namespace.get("condition_order") or [])
+        and len(entries) >= 17
+        and isinstance(entries[16], dict)
+        and entries[16].get("condition_number") == 17
+        and entries[16].get("condition_signature") == signature
+        and entries[16].get("definition_hash")
+        == _canonical_hash(frozen.get("definition"))
+        and isinstance(versions, list)
+        and versions
+        and isinstance(versions[0], dict)
+        and entries[16].get("initial_evidence_hash")
+        == versions[0].get("evidence_hash")
+        and isinstance(validated_active, dict)
+        and isinstance(active_pointer, dict)
+        and all(key in active_pointer for key in pointer_keys)
+        and all(
+            active_pointer.get(key) == validated_active.get(key)
+            for key in pointer_keys
+        )
+    )
+
+
+def _resolve_footbreak_17_legacy_anomaly_cohort(
+    rows: Iterable[dict[str, Any]], *, signature: str,
+    frozen: dict[str, Any], active: dict[str, Any],
+    projection_time: datetime, ledger: dict[str, Any],
+) -> list[dict[str, Any]] | None:
+    """Resolve only the pinned immutable production cohort: 18 rows / 10 hits."""
+    if not _footbreak_17_production_identity_is_pinned(
+        ledger, signature=signature, frozen=frozen,
+    ):
+        return None
+    admitted = [
+        row for row in rows
+        if _project_footbreak_17_schema1_settlement_anomaly(
+            row, signature=signature, frozen=frozen, active=active,
+            projection_time=projection_time, ledger=ledger,
+        ) is not None
+    ]
+    hashes = [
+        row["rollover_provenance"]["fixture_market_hash"]
+        for row in admitted
+    ]
+    if (
+        len(admitted) != 18
+        or sum(row.get("result") in BINARY_HIT_RESULTS for row in admitted) != 10
+        or len(set(hashes)) != 18
+    ):
+        return None
+    return admitted
+
+
 def _project_pending_rollover_rows(
     ledger: dict[str, Any], system: str, signature: str,
     active: Any, pending: Any,
@@ -1531,21 +1625,13 @@ def _project_pending_rollover_rows(
                 ) is not None
             ):
                 condition_17_settlement_anomaly_rows.append(row)
-        anomaly_fixture_hashes = [
-            row["rollover_provenance"]["fixture_market_hash"]
-            for row in condition_17_settlement_anomaly_rows
-        ]
-        if (
-            len(condition_17_settlement_anomaly_rows) == 18
-            and sum(
-                row.get("result") in BINARY_HIT_RESULTS
-                for row in condition_17_settlement_anomaly_rows
-            ) == 10
-            and len(set(anomaly_fixture_hashes)) == 18
-        ):
-            legacy_binding_rows.extend(
-                condition_17_settlement_anomaly_rows,
-            )
+        resolved_anomaly_rows = _resolve_footbreak_17_legacy_anomaly_cohort(
+            condition_17_settlement_anomaly_rows,
+            signature=signature, frozen=frozen, active=active,
+            projection_time=projection_time, ledger=ledger,
+        )
+        if resolved_anomaly_rows is not None:
+            legacy_binding_rows.extend(resolved_anomaly_rows)
         compatible_eligible, compatible_excluded = _eligible_rollover_rows(
             [*candidates, *legacy_binding_rows], system, signature, active,
         )
@@ -3173,6 +3259,11 @@ def _rollover_condition(
         return False
     # Any malformed same-signature activity blocks the entire condition. It
     # must never be cherry-picked around to create an authoritative version.
+    # The sole exception is the independently pinned, exact 18-row/10-hit
+    # production #17 cohort. Those durable rows are not changed; they are
+    # admitted to this condition's selector only after the shared resolver has
+    # independently proved every invariant except the two known storage fields.
+    invalid_rows: list[dict[str, Any]] = []
     for row in rows:
         admitted, _reason = validate_formal_row(
             row, system=system, signature=signature, frozen=frozen,
@@ -3181,6 +3272,32 @@ def _rollover_condition(
             ledger=ledger,
         )
         if admitted is None:
+            invalid_rows.append(row)
+    if invalid_rows:
+        _definition, validated_versions, chain_reason = (
+            _validate_frozen_identity_and_chain(frozen, signature, system)
+        )
+        pinned_active = (
+            validated_versions[-1]
+            if chain_reason is None
+            and isinstance(validated_versions, list)
+            and validated_versions
+            else None
+        )
+        resolved = (
+            _resolve_footbreak_17_legacy_anomaly_cohort(
+                invalid_rows, signature=signature, frozen=frozen,
+                active=pinned_active,
+                projection_time=projection_time, ledger=ledger,
+            )
+            if system == "footbreak" and isinstance(pinned_active, dict)
+            else None
+        )
+        if (
+            resolved is None
+            or len(resolved) != len(invalid_rows)
+            or {id(row) for row in resolved} != {id(row) for row in invalid_rows}
+        ):
             return False
     active = active_evidence_version(
         frozen, migration_boundary=migration_boundary,
