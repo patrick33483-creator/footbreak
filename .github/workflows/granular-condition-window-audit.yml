@@ -70,6 +70,8 @@ jobs:
             /opt/footbreak/system/sim_ledger.json audit-input/footbreak-ledger.json
           capture_locked /var/lib/footbreak/crown/.state.lock \
             /var/lib/footbreak/crown/ledger.json audit-input/crown-ledger.json
+          capture_locked /var/lib/footbreak/crown/.state.lock \
+            /var/lib/footbreak/crown/prediction_history.json audit-input/crown-history.json
           ssh -o BatchMode=yes -o ConnectTimeout=20 \
             "$DEPLOY_USER@$DEPLOY_HOST" 'sudo python3 -' \
             > audit-input/learning-results.json <<'PY'
@@ -97,6 +99,7 @@ jobs:
           PY
           python3 -m json.tool audit-input/footbreak-ledger.json >/dev/null
           python3 -m json.tool audit-input/crown-ledger.json >/dev/null
+          python3 -m json.tool audit-input/crown-history.json >/dev/null
           python3 -m json.tool audit-input/learning-results.json >/dev/null
 
       - name: 移除 SSH 私鑰
@@ -117,6 +120,15 @@ jobs:
             --json-output granular-condition-window.json \
             --markdown-output granular-condition-window.md
           cat granular-condition-window.md
+
+      - name: 列出皇冠條件二歷史實際場次
+        run: |
+          set -euo pipefail
+          python3 deploy/audit-crown-condition-history-samples.py \
+            --history audit-input/crown-history.json \
+            --ledger audit-input/crown-ledger.json \
+            --condition-number 2 \
+            --limit 10
 
       - name: 上載稽核證據
         uses: actions/upload-artifact@v4
