@@ -1,0 +1,76 @@
+name: Crown condition 1 history audit
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: crown-condition1-history-audit
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out audit code
+        uses: actions/checkout@v4
+
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: Audit condition 1 without writing production
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          scp -q analysis/audit_crown_condition1_history.py \
+            "$DEPLOY_USER@$DEPLOY_HOST:/tmp/audit_crown_condition1_history.py"
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            'sudo env PYTHONPATH=/opt/footbreak /opt/footbreak/.venv/bin/python3
+            /tmp/audit_crown_condition1_history.py
+            --ledger /var/lib/footbreak/crown/ledger.json
+            --history /var/lib/footbreak/crown/prediction_history.json' \
+            > crown-condition1-history-audit.json
+          python3 -m json.tool crown-condition1-history-audit.json >/dev/null
+
+      - name: Print compact audit summary
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          report = json.loads(
+              Path("crown-condition1-history-audit.json").read_text()
+          )
+          compact = {
+              key: report[key] for key in (
+                  "condition_number", "condition_signature",
+                  "stored_evidence_versions", "stored_pending_rollover_progress",
+                  "exact_history", "baseline_reconstruction", "post_boundary",
+                  "integrity", "missing_formal_observation_rows",
+                  "unknown_result_rows", "future_rows",
+                  "formal_rows_not_matching_history_rule",
+              )
+          }
+          print(json.dumps(compact, ensure_ascii=False, indent=2))
+          PY
+
+      - name: Upload full fixture-level audit
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: crown-condition1-history-audit-${{ github.run_id }}
+          path: crown-condition1-history-audit.json
+          if-no-files-found: error
+          retention-days: 30
