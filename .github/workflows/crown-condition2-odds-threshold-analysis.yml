@@ -74,6 +74,47 @@ jobs:
           holdout = baseline[-holdout_size:]
           recovered = frozen.get("historical_recovery_rows") or []
 
+          def normalized_result(value):
+              mapping = {
+                  "won": "Won",
+                  "half won": "Half Won",
+                  "lost": "Lost",
+                  "half lost": "Half Lost",
+              }
+              return mapping.get(str(value or "").strip().lower())
+
+          def baseline_result(item):
+              terminal = item["terminal"]
+              candidates = []
+              for grade in item["source"].get("market_grades") or []:
+                  if not isinstance(grade, dict):
+                      continue
+                  if str(grade.get("code") or "").upper() != "HIL":
+                      continue
+                  if str(grade.get("side") or grade.get("selection") or "").upper() != str(
+                      terminal.get("side") or ""
+                  ).upper():
+                      continue
+                  try:
+                      same_odds = abs(
+                          float(grade.get("odds")) - float(terminal.get("odds"))
+                      ) <= 1e-9
+                      same_line = abs(
+                          float(grade.get("line", grade.get("condition")))
+                          - float(terminal.get("selected_line"))
+                      ) <= 1e-9
+                  except (TypeError, ValueError):
+                      continue
+                  result = normalized_result(grade.get("settlement"))
+                  if same_odds and same_line and result is not None:
+                      candidates.append(result)
+              if len(candidates) != 1:
+                  raise SystemExit(
+                      f"fixture {item['fixture']} has "
+                      f"{len(candidates)} exact baseline settlements"
+                  )
+              return candidates[0]
+
           evidence = []
           for cohort, rows in (
               ("baseline_v1", baseline),
@@ -89,9 +130,10 @@ jobs:
                       "fixture": item["fixture"],
                       "odds": terminal.get("odds"),
                       "hit": hit is True,
+                      "result": baseline_result(item),
                   })
           for row in recovered:
-              result = row.get("result")
+              result = normalized_result(row.get("result"))
               if result not in {"Won", "Half Won", "Lost", "Half Lost"}:
                   continue
               evidence.append({
@@ -99,6 +141,7 @@ jobs:
                   "fixture": row.get("match_id"),
                   "odds": row.get("odds"),
                   "hit": result in {"Won", "Half Won"},
+                  "result": result,
               })
 
           total_hits = sum(row["hit"] for row in evidence)
@@ -128,6 +171,7 @@ jobs:
               duplicate_rows.append(normalized)
               if (
                   previous["hit"] != normalized["hit"]
+                  or previous["result"] != normalized["result"]
                   or abs(previous["odds"] - normalized["odds"]) > 1e-9
               ):
                   raise SystemExit(
@@ -153,6 +197,20 @@ jobs:
               hits = sum(row["hit"] for row in selected)
               decided = len(selected)
               interval = wilson95(hits, decided)
+              result_counts = {
+                  result: sum(row["result"] == result for row in selected)
+                  for result in ("Won", "Half Won", "Lost", "Half Lost")
+              }
+              def unit_pnl(row):
+                  return {
+                      "Won": row["odds"] - 1.0,
+                      "Half Won": (row["odds"] - 1.0) / 2.0,
+                      "Lost": -1.0,
+                      "Half Lost": -0.5,
+                  }[row["result"]]
+              turnover = float(decided)
+              net_pnl = sum(unit_pnl(row) for row in selected)
+              gross_return = turnover + net_pnl
               thresholds.append({
                   "minimum_odds": threshold,
                   "hits": hits,
@@ -161,6 +219,16 @@ jobs:
                   "hit_rate": hits / decided if decided else None,
                   "wilson95_lower": interval[0] if interval else None,
                   "wilson95_upper": interval[1] if interval else None,
+                  "settlements": result_counts,
+                  "average_odds": (
+                      sum(row["odds"] for row in selected) / decided
+                      if decided else None
+                  ),
+                  "unit_stake": 1.0,
+                  "turnover": turnover,
+                  "gross_return": gross_return,
+                  "net_pnl": net_pnl,
+                  "roi": net_pnl / turnover if turnover else None,
               })
 
           print(json.dumps({
