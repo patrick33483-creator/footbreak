@@ -59,6 +59,7 @@ REPOSITORY_ID = "patrick33483-creator/footbreak"
 REQUIRED_RUNTIME_MODULES = {
     "analysis.legacy_batch_aggregate": "analysis/legacy_batch_aggregate.py",
     "analysis.export_legacy_batch_live_authority": "analysis/export_legacy_batch_live_authority.py",
+    "analysis.legacy_batch_discovery_publication": "analysis/legacy_batch_discovery_publication.py",
     "analysis.migrate_legacy_batch_aggregates": "analysis/migrate_legacy_batch_aggregates.py",
     "analysis.legacy_batch_runtime": "analysis/legacy_batch_runtime.py",
     "analysis.wilson_validation": "analysis/wilson_validation.py",
@@ -66,6 +67,7 @@ REQUIRED_RUNTIME_MODULES = {
     "analysis.wilson_registry_export": "analysis/wilson_registry_export.py",
     "analysis.wilson_portfolio": "analysis/wilson_portfolio.py",
     "analysis.wilson_audit_gate": "analysis/wilson_audit_gate.py",
+    "analysis.wilson_audit_bundle": "analysis/wilson_audit_bundle.py",
     "system.settle": "system/settle.py",
     "system.gen_app_data": "system/gen_app_data.py",
 }
@@ -1709,7 +1711,8 @@ def validate_live_discovery(
         raise ValueError("live_discovery_domain_invalid")
     execution = discovery.get("execution_identity")
     coordination = discovery.get("writer_coordination")
-    ledger_object = discovery.get("capture", {}).get("ledger_object")
+    capture = discovery.get("capture")
+    ledger_object = capture.get("ledger_object") if isinstance(capture, dict) else None
     lock_object = (
         coordination.get("canonical_lock")
         if isinstance(coordination, dict) else None
@@ -1718,7 +1721,17 @@ def validate_live_discovery(
         "realpath", "st_dev", "st_ino", "st_uid", "st_gid",
         "st_mode", "st_nlink",
     }
+    capture_base_keys = {
+        "ledger_object", "full_pre_ledger_sha256", "full_pre_ledger_length",
+        "canonical_json_sha256", "stable_registry_projection_sha256",
+    }
     if (
+        not isinstance(capture, dict)
+        or set(capture) not in {
+            frozenset(capture_base_keys),
+            frozenset(capture_base_keys | {"started_at", "ended_at"}),
+        }
+        or
         not isinstance(execution, dict)
         or set(execution) != {
             "repository",
@@ -1751,6 +1764,12 @@ def validate_live_discovery(
     ):
         raise ValueError("live_discovery_runtime_or_object_identity_invalid")
     support = discovery.get("source_support")
+    support_keys = {
+        "condition_signature", "version", "wanted_identity_count",
+        "wanted_identities_found", "valid_exact_row_count",
+        "duplicate_identity_count", "ordered_identity_count", "hits",
+        "classification", "migration_ready",
+    }
     expected_keys = set(calculation_context.entries)
     observed_keys = {
         (row.get("condition_signature"), row.get("version"))
@@ -1758,6 +1777,7 @@ def validate_live_discovery(
     }
     if (
         not isinstance(support, list) or len(support) != 10
+        or any(set(row) != support_keys for row in support)
         or observed_keys != expected_keys
         or any(row.get("classification") != "zero_exact" for row in support)
         or any(row.get("migration_ready") is not True for row in support)
@@ -1828,6 +1848,48 @@ def validate_live_discovery(
         or any(row["three_hash_fields_agree"] is not True for row in formal_rows)
     ):
         raise ValueError("live_discovery_formal_rows_invalid")
+    rollover = discovery.get("rollover_audit")
+    rollover_condition_keys = {
+        "condition_signature", "observed_version_sequence",
+        "expected_version_sequence", "pre_entry_hashes",
+        "expected_post_entry_hashes", "affected_entry_count",
+        "marker_copy_paths",
+    }
+    stats = discovery.get("stats_conditions")
+    expected_post_keys = {
+        "full_ledger_sha256", "post_reference_inventory",
+        "recursive_reference_inventory_root",
+        "post_export_registry_payload_sha256", "converted_version_count",
+        "converted_version_paths", "rewritten_scalar_paths", "rewrite_counts",
+        "authenticated_source_hash_copies",
+        "authority_neutral_manifest_payload",
+        "authority_neutral_manifest_payload_sha256",
+        "condition_funnel_semantic_payload",
+        "condition_funnel_semantic_root",
+    }
+    if (
+        set(discovery.get("production_identity") or {}) != {
+            "stored_manifest_sha256", "recomputed_manifest_sha256", "equal",
+        }
+        or not isinstance(rollover, dict)
+        or set(rollover) != {
+            "retained_limit", "conditions", "rebuilt_tree_count", "root",
+        }
+        or any(
+            set(row) != rollover_condition_keys
+            for row in rollover.get("conditions") or []
+        )
+        or set(stats or {}) not in {
+            frozenset({"classification"}),
+            frozenset({
+                "classification", "pre_tree_sha256",
+                "authoritative_conditions_sha256",
+                "expected_post_tree_sha256",
+            }),
+        }
+        or set(discovery.get("expected_post") or {}) != expected_post_keys
+    ):
+        raise ValueError("live_discovery_nested_schema_invalid")
     if (
         canonical_hash_v1(discovery.get("namespace_audit"))
         != discovery.get("namespace_audit_root")
