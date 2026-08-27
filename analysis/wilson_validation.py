@@ -1212,6 +1212,67 @@ def _project_footbreak_17_schema1_settlement_anomaly(
     kickoff = _time(row.get("kickoff") or row.get("kickoff_hkt"))
     settled_at = _time(row.get("settled_at"))
     active_hash = active.get("evidence_hash")
+    active_version = _strict_int(active.get("version"))
+    version_1 = (
+        versions[0]
+        if isinstance(versions, list)
+        and versions
+        and isinstance(versions[0], dict)
+        else None
+    )
+    version_2 = (
+        versions[1]
+        if isinstance(versions, list)
+        and len(versions) == 2
+        and isinstance(versions[1], dict)
+        else None
+    )
+    version_2_batch_hashes = (
+        version_2.get("batch_fixture_market_hashes")
+        if isinstance(version_2, dict)
+        and isinstance(version_2.get("batch_fixture_market_hashes"), list)
+        and all(
+            isinstance(value, str)
+            for value in version_2["batch_fixture_market_hashes"]
+        )
+        else None
+    )
+    fixture_hash = (
+        marker.get("fixture_market_hash")
+        if isinstance(marker, dict) else None
+    )
+    active_window_valid = (
+        (
+            active_version == 1
+            and isinstance(versions, list)
+            and len(versions) == 1
+            and version_1 is not None
+            and active_hash == version_1.get("evidence_hash")
+        )
+        or (
+            active_version == 2
+            and isinstance(versions, list)
+            and len(versions) == 2
+            and version_1 is not None
+            and version_2 is not None
+            and _strict_int(version_2.get("version")) == 2
+            and version_2.get("condition_signature") == signature
+            and _strict_int(version_2.get("prior_version")) == 1
+            and version_2.get("prior_evidence_hash")
+            == version_1.get("evidence_hash")
+            and version_2.get("evidence_hash") == _version_hash(version_2)
+            and active_hash == version_2.get("evidence_hash")
+            and _strict_int(version_2.get("batch_hits")) is not None
+            and 0 <= _strict_int(version_2.get("batch_hits"))
+            <= ROLLOVER_BATCH_SIZE
+            and _strict_int(version_2.get("batch_decided"))
+            == ROLLOVER_BATCH_SIZE
+            and version_2_batch_hashes is not None
+            and len(version_2_batch_hashes) == ROLLOVER_BATCH_SIZE
+            and len(set(version_2_batch_hashes)) == ROLLOVER_BATCH_SIZE
+            and fixture_hash in version_2_batch_hashes
+        )
+    )
     if (
         frozen.get("condition_number") != 17
         or row.get("frozen_condition_signature") != signature
@@ -1224,19 +1285,17 @@ def _project_footbreak_17_schema1_settlement_anomaly(
         or not _formal_marker_shape_valid(marker)
         or _strict_int(row.get("evidence_version")) != 1
         or _strict_int(marker.get("admitted_evidence_version")) != 1
-        or _strict_int(active.get("version")) != 1
-        or _strict_int(frozen.get("active_evidence_version")) != 1
         or not isinstance(versions, list)
-        or len(versions) != 1
-        or not isinstance(versions[0], dict)
-        or _strict_int(versions[0].get("version")) != 1
-        or versions[0].get("condition_signature") != signature
-        or versions[0].get("evidence_hash") != _version_hash(versions[0])
+        or version_1 is None
+        or _strict_int(version_1.get("version")) != 1
+        or version_1.get("condition_signature") != signature
+        or version_1.get("evidence_hash") != _version_hash(version_1)
+        or not active_window_valid
+        or _strict_int(frozen.get("active_evidence_version")) != active_version
         or not isinstance(active_hash, str)
-        or row.get("evidence_hash") != active_hash
-        or marker.get("admitted_evidence_hash") != active_hash
+        or row.get("evidence_hash") != version_1.get("evidence_hash")
+        or marker.get("admitted_evidence_hash") != version_1.get("evidence_hash")
         or frozen.get("active_evidence_hash") != active_hash
-        or versions[0].get("evidence_hash") != active_hash
         or stage_at is None or created_at is None
         or kickoff is None or settled_at is None
         or not stage_at <= created_at <= settled_at < kickoff
@@ -1347,8 +1406,16 @@ def _project_pending_rollover_rows(
     # still agrees exactly with the durable pending count, hit count and
     # selector-exclusion counters.  Any other legacy difference, duplicate,
     # conflict or extra row remains fail-closed.
-    if expected_decided > 0:
+    if (
+        expected_decided > 0
+        or (
+            system == "footbreak"
+            and frozen.get("condition_number") == 17
+            and required == ROLLOVER_BATCH_SIZE
+        )
+    ):
         legacy_binding_rows: list[dict[str, Any]] = []
+        condition_17_settlement_anomaly_rows: list[dict[str, Any]] = []
         for row, reason in rejected:
             if reason != "invalid_formal_admission_binding":
                 continue
@@ -1387,15 +1454,28 @@ def _project_pending_rollover_rows(
                 legacy_binding_rows.append(row)
             elif (
                 system == "footbreak"
-                and expected_decided == 18
-                and expected_hits == 10
                 and required == ROLLOVER_BATCH_SIZE
                 and _project_footbreak_17_schema1_settlement_anomaly(
                     row, signature=signature, frozen=frozen, active=active,
                     projection_time=projection_time, ledger=ledger,
                 ) is not None
             ):
-                legacy_binding_rows.append(row)
+                condition_17_settlement_anomaly_rows.append(row)
+        anomaly_fixture_hashes = [
+            row["rollover_provenance"]["fixture_market_hash"]
+            for row in condition_17_settlement_anomaly_rows
+        ]
+        if (
+            len(condition_17_settlement_anomaly_rows) == 18
+            and sum(
+                row.get("result") in BINARY_HIT_RESULTS
+                for row in condition_17_settlement_anomaly_rows
+            ) == 10
+            and len(set(anomaly_fixture_hashes)) == 18
+        ):
+            legacy_binding_rows.extend(
+                condition_17_settlement_anomaly_rows,
+            )
         compatible_eligible, compatible_excluded = _eligible_rollover_rows(
             [*candidates, *legacy_binding_rows], system, signature, active,
         )
