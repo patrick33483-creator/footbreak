@@ -87,7 +87,7 @@ class WilsonAdmissionTest(unittest.TestCase):
             registered[0]["condition_signature"],
         )
         self.assertEqual(projected[0]["key"], registered[0]["key"])
-        self.assertEqual(projected[0]["badge"], "正式凍結")
+        self.assertEqual(projected[0]["badge"], "正式累積中")
         self.assertEqual(ledger, before)
 
     def test_kashiwa_style_discovery_matches_are_not_admissions(self):

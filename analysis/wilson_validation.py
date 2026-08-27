@@ -2394,7 +2394,11 @@ def _project_frozen_ranking_evidence(
                 "movement": movement,
                 "odds_trajectory": odds_trajectory,
                 "specificity": len(stored_definition["miner_key"]),
-                "badge": "正式凍結",
+                # The definition remains immutable, but an active formal
+                # condition is continuously accumulating prospective
+                # observations.  Avoid implying that evidence collection is
+                # paused.
+                "badge": "正式累積中",
             }
         current["condition_signature"] = signature
         current["condition_number"] = frozen.get("condition_number")

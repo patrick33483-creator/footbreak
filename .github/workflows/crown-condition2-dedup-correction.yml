@@ -1,0 +1,184 @@
+name: Crown condition 2 dedup correction
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: audit is read-only; apply removes the proven duplicate
+        required: true
+        default: audit
+        type: choice
+        options: [audit, apply]
+      confirmation:
+        description: "Required for apply: APPLY_CROWN_CONDITION2_DEDUP_V1"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+jobs:
+  correct:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out correction code
+        uses: actions/checkout@v4
+
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: Upload correction script
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          scp -o BatchMode=yes -o ConnectTimeout=20 \
+            analysis/correct_crown_condition2_dedup.py \
+            "$DEPLOY_USER@$DEPLOY_HOST:/tmp/correct_crown_condition2_dedup.py"
+
+      - name: Audit or apply the correction
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          MODE: ${{ inputs.mode }}
+          CONFIRMATION: ${{ inputs.confirmation }}
+        run: |
+          set -euo pipefail
+          if [ "$MODE" = apply ]; then
+            test "$CONFIRMATION" = APPLY_CROWN_CONDITION2_DEDUP_V1
+          fi
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=8 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "sudo env MODE='$MODE' bash -s" <<'REMOTE'
+          set -euo pipefail
+          cd /opt/footbreak
+          python=/opt/footbreak/.venv/bin/python3
+          state="${CROWN_STATE_DIR:-/var/lib/footbreak/crown}"
+          ledger="$state/ledger.json"
+          test -s "$ledger"
+          test -s /tmp/correct_crown_condition2_dedup.py
+          work="$(mktemp -d)"
+          active_timers=""
+          stopped=0
+          cleanup() {
+            rc=$?
+            if [ "$rc" -ne 0 ] && [ -s "$work/ledger.before" ]; then
+              install -m 0600 "$work/ledger.before" "$ledger"
+            fi
+            if [ "$stopped" = 1 ]; then
+              for timer in $active_timers; do
+                systemctl start "$timer" || true
+              done
+            fi
+            rm -rf "$work"
+            rm -f /tmp/correct_crown_condition2_dedup.py
+            exit "$rc"
+          }
+          trap cleanup EXIT
+          exec 8>"$state/.state.lock"
+          flock -w 120 8
+          install -m 0600 "$ledger" "$work/ledger.before"
+          install -m 0600 "$ledger" "$work/ledger.audit"
+          if [ "$MODE" = apply ]; then
+            for timer in \
+              crown-round-update.timer crown-first-look-reconcile.timer \
+              crown-early-admission-reconcile.timer crown-sweep.timer \
+              crown-tick.timer crown-settle.timer \
+              crown-reverse-t5-drain.timer; do
+              if systemctl is-active --quiet "$timer"; then
+                active_timers="$active_timers $timer"
+              fi
+              systemctl stop "$timer" || true
+            done
+            systemctl stop \
+              crown-round-update.service crown-first-look-reconcile.service \
+              crown-early-admission-reconcile.service crown-sweep.service \
+              crown-tick.service crown-settle.service \
+              crown-reverse-t5-drain.service || true
+            stopped=1
+          fi
+          PYTHONPATH=/opt/footbreak "$python" \
+            /tmp/correct_crown_condition2_dedup.py \
+            --ledger "$work/ledger.audit" | tee "$work/audit.json"
+          if [ "$MODE" = apply ]; then
+            stamp="$(TZ=Asia/Hong_Kong date +%Y%m%d-%H%M%S)"
+            install -m 0600 "$work/ledger.before" \
+              "$ledger.before-condition2-dedup-$stamp"
+            PYTHONPATH=/opt/footbreak "$python" \
+              /tmp/correct_crown_condition2_dedup.py \
+              --ledger "$ledger" --apply | tee "$work/apply.json"
+            timeout 60s "$python" -m crown.dashboard_data \
+              --out /var/www/crown/data.json
+            chown root:www-data /var/www/crown/data.json
+            chmod 0644 /var/www/crown/data.json
+            PYTHONPATH=/opt/footbreak "$python" - <<'PY'
+          import json
+          from pathlib import Path
+
+          ledger = json.loads(
+              Path("/var/lib/footbreak/crown/ledger.json").read_text()
+          )
+          namespace = ledger["wilson_validation"]
+          condition = next(
+              row for row in namespace["conditions"].values()
+              if row.get("condition_number") == 2
+          )
+          active = condition["active_evidence"]
+          if (
+              active["cumulative_hits"],
+              active["cumulative_decided"],
+          ) != (273, 459):
+              raise SystemExit("condition #2 ledger verification failed")
+          if condition.get("rollover_status") != "active":
+              raise SystemExit("condition #2 prospective rollover is not active")
+          public = json.loads(
+              Path("/var/www/crown/data.json").read_text()
+          )
+          ranking = (
+              public["prediction_history"]["stats"]
+              ["granular_conditions"]["ranking"]
+          )
+          card = next(
+              row for row in ranking
+              if row.get("condition_number") == 2
+          )
+          if (card.get("hits"), card.get("decided")) != (273, 459):
+              raise SystemExit(
+                  f"condition #2 dashboard verification failed: {card}"
+              )
+          print(json.dumps({
+              "verified": True,
+              "ledger": {
+                  "hits": active["cumulative_hits"],
+                  "decided": active["cumulative_decided"],
+                  "minimum_odds":
+                      active["minimum_acceptable_odds_display"],
+              },
+              "pending_rollover_progress":
+                  condition.get("pending_rollover_progress"),
+              "prospective_observation_count": len(
+                  condition.get("prospective_observations") or {}
+              ),
+              "dashboard": {
+                  "hits": card.get("hits"),
+                  "decided": card.get("decided"),
+              },
+          }, ensure_ascii=False, indent=2))
+          PY
+          fi
+          flock -u 8
+          REMOTE
