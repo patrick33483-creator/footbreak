@@ -94,6 +94,43 @@ jobs:
               size = len(json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode())
               count = len(value) if isinstance(value, (dict, list)) else "-"
               print(f"key={key} bytes={size} count={count}")
+
+          print("--- Wilson pending detail projection ---")
+          ranking = (
+              payload.get("prediction_history", {})
+              .get("stats", {})
+              .get("granular_conditions", {})
+              .get("ranking", [])
+          )
+          for item in ranking:
+              if not isinstance(item, dict):
+                  continue
+              progress = item.get("validation_progress") or item.get("pending_progress") or {}
+              detail = item.get("pending_rollover_evidence") or {}
+              decided = int(
+                  progress.get("pending_decided")
+                  or progress.get("eligible_decided")
+                  or detail.get("expected_decided")
+                  or 0
+              )
+              if decided <= 0:
+                  continue
+              rows = detail.get("rows") if isinstance(detail.get("rows"), list) else []
+              print(json.dumps({
+                  "condition_number": item.get("condition_number"),
+                  "display": progress.get("display"),
+                  "pending_decided": decided,
+                  "pending_hits": (
+                      progress.get("pending_hits")
+                      if progress.get("pending_hits") is not None
+                      else progress.get("eligible_hits")
+                  ),
+                  "detail_expected_decided": detail.get("expected_decided"),
+                  "detail_expected_hits": detail.get("expected_hits"),
+                  "detail_complete": detail.get("complete"),
+                  "detail_rows": len(rows),
+                  "detail_reason": detail.get("reason"),
+              }, ensure_ascii=False, sort_keys=True))
           PY
 
           echo "--- unified-dashboard configuration ---"
