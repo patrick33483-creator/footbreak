@@ -58,6 +58,7 @@ jobs:
                   "integrity", "missing_formal_observation_rows",
                   "unknown_result_rows", "future_rows",
                   "formal_rows_not_matching_history_rule",
+                  "history_vs_formal_settlement_disagreement_rows",
               )
           }
           print(json.dumps(compact, ensure_ascii=False, indent=2))

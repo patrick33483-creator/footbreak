@@ -194,6 +194,16 @@ def _public_row(
     kickoff = _time(match.get("kickoff"))
     stage_at = _time(match.get("stage_at"))
     now = datetime.now(timezone.utc)
+    formal_results = sorted({
+        str(row.get("result") or "")
+        for row in evidence_rows
+        if str(row.get("result") or "") in BINARY_HITS | BINARY_LOSSES | {"Refunded"}
+    })
+    effective_result = (
+        formal_results[0]
+        if result == "PENDING" and len(formal_results) == 1
+        else result
+    )
     return {
         "match_id": match["fixture"],
         "kickoff": match.get("kickoff"),
@@ -205,10 +215,12 @@ def _public_row(
             "pre_boundary" if stage_at is not None and stage_at <= boundary
             else "post_boundary"
         ),
-        "result": result,
+        "history_result": result,
+        "formal_results": formal_results,
+        "effective_result": effective_result,
         "result_state": (
             "future" if kickoff is not None and kickoff > now
-            else "unknown_after_kickoff" if result == "PENDING"
+            else "unknown_after_kickoff" if effective_result == "PENDING"
             else "settled"
         ),
         "formal_evidence_rows": len(evidence_rows),
@@ -258,7 +270,8 @@ def audit(ledger: dict[str, Any], history: dict[str, Any]) -> dict[str, Any]:
     pre = [row for row in detailed if row["period"] == "pre_boundary"]
     post = [row for row in detailed if row["period"] == "post_boundary"]
     pre_decided = [
-        row for row in pre if row["result"] in BINARY_HITS | BINARY_LOSSES
+        row for row in pre
+        if row["effective_result"] in BINARY_HITS | BINARY_LOSSES
     ]
     holdout_size = max(1, math.ceil(len(pre_decided) * 0.30)) if pre_decided else 0
     reconstructed_holdout = pre_decided[-holdout_size:] if holdout_size else []
@@ -282,11 +295,25 @@ def audit(ledger: dict[str, Any], history: dict[str, Any]) -> dict[str, Any]:
         for fixture, rows in evidence_by_fixture.items()
         if fixture not in candidate_ids
     ]
-    result_counts = Counter(row["result"] for row in detailed)
-    pre_hits = sum(row["result"] in BINARY_HITS for row in pre_decided)
+    result_counts = Counter(row["effective_result"] for row in detailed)
+    history_result_counts = Counter(row["history_result"] for row in detailed)
+    pre_hits = sum(row["effective_result"] in BINARY_HITS for row in pre_decided)
     holdout_hits = sum(
-        row["result"] in BINARY_HITS for row in reconstructed_holdout
+        row["effective_result"] in BINARY_HITS for row in reconstructed_holdout
     )
+    settlement_disagreements = [
+        row for row in detailed
+        if (
+            row["history_result"] == "PENDING" and row["formal_results"]
+        ) or (
+            row["history_result"] in BINARY_HITS | BINARY_LOSSES
+            and row["formal_evidence_rows"] > 0
+            and (
+                len(row["formal_results"]) != 1
+                or row["formal_results"][0] != row["history_result"]
+            )
+        )
+    ]
     versions = frozen.get("evidence_versions") or []
     stored = [{
         "version": version.get("version"),
@@ -312,6 +339,7 @@ def audit(ledger: dict[str, Any], history: dict[str, Any]) -> dict[str, Any]:
         "exact_history": {
             "fixtures": len(detailed),
             "results": dict(sorted(result_counts.items())),
+            "raw_history_results": dict(sorted(history_result_counts.items())),
             "settled_decided": sum(result_counts[value] for value in BINARY_HITS | BINARY_LOSSES),
             "hits": sum(result_counts[value] for value in BINARY_HITS),
             "pushes": result_counts["Refunded"],
@@ -342,12 +370,16 @@ def audit(ledger: dict[str, Any], history: dict[str, Any]) -> dict[str, Any]:
             "formal_fixture_ids_not_matching_history_rule": len(
                 false_positive_rows
             ),
+            "history_vs_formal_settlement_disagreements": len(
+                settlement_disagreements
+            ),
         },
         "missing_formal_observation_rows": missing_observation,
         "unknown_result_rows": unknown,
         "future_rows": future,
         "duplicate_formal_observation_rows": duplicate_observation,
         "formal_rows_not_matching_history_rule": false_positive_rows,
+        "history_vs_formal_settlement_disagreement_rows": settlement_disagreements,
         "all_matching_rows": detailed,
     }
 
