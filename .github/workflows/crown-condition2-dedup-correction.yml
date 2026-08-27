@@ -121,7 +121,7 @@ jobs:
             PYTHONPATH=/opt/footbreak "$python" \
               /tmp/correct_crown_condition2_dedup.py \
               --ledger "$ledger" --apply | tee "$work/apply.json"
-            timeout 60s "$python" -m crown.dashboard_data \
+            timeout 300s "$python" -m crown.dashboard_data \
               --out /var/www/crown/data.json
             chown root:www-data /var/www/crown/data.json
             chmod 0644 /var/www/crown/data.json
