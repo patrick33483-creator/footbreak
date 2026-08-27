@@ -43,7 +43,7 @@ jobs:
           cd /opt/footbreak
           timeout 90s .venv/bin/python3 -m system.gen_app_data \
             --out /var/www/footbreak/data.json
-          timeout 60s .venv/bin/python3 -m crown.dashboard_data \
+          timeout 300s .venv/bin/python3 -m crown.dashboard_data \
             --out /var/www/crown/data.json
           chown root:www-data /var/www/footbreak/data.json /var/www/crown/data.json
           chmod 0644 /var/www/footbreak/data.json /var/www/crown/data.json
