@@ -38,10 +38,7 @@ jobs:
             "$DEPLOY_USER@$DEPLOY_HOST:/tmp/audit_crown_condition1_history.py"
           ssh -o BatchMode=yes -o ConnectTimeout=20 \
             "$DEPLOY_USER@$DEPLOY_HOST" \
-            'sudo env PYTHONPATH=/opt/footbreak /opt/footbreak/.venv/bin/python3
-            /tmp/audit_crown_condition1_history.py
-            --ledger /var/lib/footbreak/crown/ledger.json
-            --history /var/lib/footbreak/crown/prediction_history.json' \
+            'sudo env PYTHONPATH=/opt/footbreak /opt/footbreak/.venv/bin/python3 /tmp/audit_crown_condition1_history.py --ledger /var/lib/footbreak/crown/ledger.json --history /var/lib/footbreak/crown/prediction_history.json' \
             > crown-condition1-history-audit.json
           python3 -m json.tool crown-condition1-history-audit.json >/dev/null
 
