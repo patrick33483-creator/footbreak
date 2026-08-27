@@ -1,0 +1,23 @@
+[Unit]
+Description=足破 · 皇冠首預及 T-30 正式條件本地累積
+After=network-online.target
+OnFailure=footbreak-incident-alert@%n.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/footbreak
+# This mode reads only durable local state. It never calls providers, sends
+# Telegram, evaluates T-5, or creates a real bet.
+ExecCondition=/bin/grep -Fq '"early-admission-reconcile"' /opt/footbreak/crown/run.py
+ExecStart=/opt/footbreak/deploy/crown-run.sh early-admission-reconcile
+TimeoutStartSec=30
+TimeoutStopSec=5
+KillMode=control-group
+SendSIGKILL=yes
+Nice=10
+NoNewPrivileges=true
+PrivateTmp=true
+SuccessExitStatus=75
+
+[Install]
+WantedBy=multi-user.target

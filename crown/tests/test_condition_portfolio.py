@@ -105,10 +105,10 @@ class ConditionPortfolioTests(unittest.TestCase):
         self.assertEqual((bet["selected_role"], bet["selected_line"]), ("主讓", -.25))
         self.assertEqual(bet["label"], "讓球 · 主讓 -0.25")
         self.assertNotRegex(bet["label"], r"\b(?:HDC|HIL|CHL|A|B|C)\b")
-        # First migration deliberately merges the one completed discovery
-        # holdout cohort as one immutable aggregate, then starts 0/20 anew.
-        self.assertEqual((bet["frozen_historical_evidence"]["hits"], bet["frozen_historical_evidence"]["decided"]), (59, 77))
-        self.assertEqual(bet["evidence_version"], 2)
+        # The discovery holdout is already a subset of these 59 rows. It is
+        # retained for audit but must not be counted a second time.
+        self.assertEqual((bet["frozen_historical_evidence"]["hits"], bet["frozen_historical_evidence"]["decided"]), (50, 59))
+        self.assertEqual(bet["evidence_version"], 1)
         self.assertTrue(bet["wilson_admission"]["passes"])
         created_audit = next(item for item in audit if item["status"] == "CREATED")
         self.assertEqual(created_audit["wilson_admission"]["actual_decimal_odds_raw"], 1.83)
@@ -125,7 +125,7 @@ class ConditionPortfolioTests(unittest.TestCase):
         # First call freezes the formal condition.  Its sub-minimum native
         # price is still a condition observation, never a paper bet.
         created, audit = evaluate_new_t5(
-            ledger, watch(fixture="registry-first", odds=1.50), self.config,
+            ledger, watch(fixture="registry-first", odds=1.30), self.config,
             history_rows=rows,
         )
         self.assertEqual(created, [])
@@ -135,7 +135,7 @@ class ConditionPortfolioTests(unittest.TestCase):
         # The mutable research ranking is now empty.  Existing frozen formal
         # registry identity still matches the next exact native T-5.
         created, audit = evaluate_new_t5(
-            ledger, watch(fixture="registry-second", odds=1.50), self.config,
+            ledger, watch(fixture="registry-second", odds=1.30), self.config,
             ranking=[],
         )
         self.assertEqual(created, [])
@@ -324,6 +324,50 @@ class ConditionPortfolioTests(unittest.TestCase):
                 reconcile_pending_formal_admissions(ledger, config)
             self.assertEqual(evaluate.call_count, 1)
             self.assertFalse(snapshot["formal_admission_pending"])
+
+    def test_early_worker_never_consumes_t5(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = replace(self.config, state_dir=Path(directory))
+            ledger = {
+                "bankroll": 50000, "bets": [], "watch": {},
+                "log": [], "stats": {},
+            }
+            kickoff = "2099-08-01T20:00:00+08:00"
+            for stage, observed in (
+                ("首預", "2099-08-01T18:00:00+08:00"),
+                ("T-5", "2099-08-01T19:54:00+08:00"),
+            ):
+                sync_prediction(
+                    ledger,
+                    {
+                        "match_id": "stage-filter", "league": "L",
+                        "home": "A", "away": "B", "kickoff_hkt": kickoff,
+                        "stage": stage, "status": "PREDICTION_READY",
+                        "forecast_candidates": [{
+                            "code": "HIL", "side": "H", "line": 2.75,
+                            "odds": 1.8, "observed_at": observed,
+                            "source": "titan007-crown-id-3",
+                        }],
+                    },
+                    config,
+                    defer_formal_admission=True,
+                )
+            with patch(
+                "crown.ledger.evaluate_wilson_stage", return_value=([], []),
+            ) as early, patch("crown.ledger.evaluate_new_t5") as t5:
+                reconcile_pending_formal_admissions(
+                    ledger,
+                    config,
+                    allowed_stages={"首預", "T-30"},
+                )
+            stages = {
+                row["stage"]: row
+                for row in ledger["watch"]["stage-filter"]["stages"]
+            }
+            early.assert_called_once()
+            t5.assert_not_called()
+            self.assertFalse(stages["首預"]["formal_admission_pending"])
+            self.assertTrue(stages["T-5"]["formal_admission_pending"])
 
     def test_completed_stage_replay_cannot_overwrite_bound_quote(self):
         with tempfile.TemporaryDirectory() as directory:

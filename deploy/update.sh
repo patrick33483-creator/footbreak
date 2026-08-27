@@ -128,7 +128,7 @@ if crown_is_enabled_in_config; then
   # disabled unit-file state.  Clear that state before the normal Crown timer
   # reconciliation so an enabled bridge cannot remain inert.
   systemctl unmask crown-reverse-t5-drain.timer 2>/dev/null || true
-  for timer in crown-round-update.timer crown-first-look-reconcile.timer crown-sweep.timer crown-tick.timer crown-settle.timer crown-reverse-t5-drain.timer; do
+  for timer in crown-round-update.timer crown-first-look-reconcile.timer crown-early-admission-reconcile.timer crown-sweep.timer crown-tick.timer crown-settle.timer crown-reverse-t5-drain.timer; do
     # A copied-in timer can retain a stale disabled unit-file state across a
     # rollback/forward deployment.  Recreate the timers.target link instead
     # of trusting `restart` to imply persistence; health-check verifies the
@@ -152,9 +152,9 @@ if crown_is_enabled_in_config; then
 else
   echo "▸ Crown validation gate disabled; stopping Crown timers"
   sync_reverse_t5_bridge_enablement_marker
-  systemctl disable --now crown-round-update.timer crown-first-look-reconcile.timer crown-sweep.timer crown-tick.timer crown-settle.timer crown-reverse-t5-drain.timer 2>/dev/null || true
-  systemctl stop crown-round-update.service crown-first-look-reconcile.service crown-sweep.service crown-tick.service crown-settle.service crown-reverse-t5-drain.service 2>/dev/null || true
-  systemctl reset-failed crown-round-update.service crown-first-look-reconcile.service crown-sweep.service crown-tick.service crown-settle.service crown-reverse-t5-drain.service 2>/dev/null || true
+  systemctl disable --now crown-round-update.timer crown-first-look-reconcile.timer crown-early-admission-reconcile.timer crown-sweep.timer crown-tick.timer crown-settle.timer crown-reverse-t5-drain.timer 2>/dev/null || true
+  systemctl stop crown-round-update.service crown-first-look-reconcile.service crown-early-admission-reconcile.service crown-sweep.service crown-tick.service crown-settle.service crown-reverse-t5-drain.service 2>/dev/null || true
+  systemctl reset-failed crown-round-update.service crown-first-look-reconcile.service crown-early-admission-reconcile.service crown-sweep.service crown-tick.service crown-settle.service crown-reverse-t5-drain.service 2>/dev/null || true
 fi
 # Settlement is deliberately separate from the latency-sensitive tick.  T-30
 # and T-5 now share one ordered queue, so the old second timer is retired

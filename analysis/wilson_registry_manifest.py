@@ -14,7 +14,8 @@ from analysis.wilson_validation import (
     MIN_DECIDED, ROLLOVER_BATCH_SIZE, SCHEMA_VERSION, STRATEGY,
     _eligible_rollover_rows, _fixture_market_hash, _time, _version_hash, condition_signature,
     _formal_marker_shape_valid, _formal_stage_provenance_valid, formal_matcher_axes,
-    portfolio_name, validate_formal_row, wilson95,
+    _validate_condition_identity_migrations, portfolio_name, validate_formal_row, wilson95,
+    validate_production_identity_manifest_v1,
 )
 SYSTEMS=("footbreak","crown")
 
@@ -38,13 +39,28 @@ def _activity(ledger:dict[str,Any],ns:dict[str,Any],system:str)->tuple[list[dict
  good_obs=[r for r in obs if isinstance(r,dict) and r.get("portfolio")==f"{system}_wilson_observations" and r.get("strategy")==STRATEGY and r.get("formal_bet") is False and _formal_stage_provenance_valid(r,system) and r.get("status") in {"PENDING","SETTLED","VOIDED"}]
  return good_bets,good_obs
 
-def build_manifest(ledger:Any,system:str)->dict[str,Any]:
+def build_manifest(ledger:Any,system:str,*,authority_context:Any=None)->dict[str,Any]:
  reasons=Counter(); rows=[]
  try:
   if system not in SYSTEMS: raise ValueError("unsupported_system")
   if not isinstance(ledger,dict): raise ValueError("ledger_not_object")
   ns=ledger.get("wilson_validation")
   if not isinstance(ns,dict): raise ValueError("missing_or_invalid_wilson_namespace")
+  aggregate_present=any(
+   isinstance(v,dict) and "legacy_ordinary_batch_aggregate" in v
+   for frozen in (ns.get("conditions") or {}).values() if isinstance(frozen,dict)
+   for v in (frozen.get("evidence_versions") or [])
+  )
+  reservations={}
+  if aggregate_present:
+   from analysis.legacy_batch_aggregate import require_authority_context
+   try:
+    context=require_authority_context(authority_context)
+    reservations=context.reservations
+   except TypeError:
+    reasons["authority_required"]+=1
+   identity,identity_reason=validate_production_identity_manifest_v1(ns,system)
+   if identity is None: reasons[identity_reason or "production_identity_v1_invalid"]+=1
   if _int(ns.get("schema_version"))!=SCHEMA_VERSION: reasons["unsupported_namespace_schema"]+=1
   if "granular_ranking_initial_migration_version" in ns and _int(ns.get("granular_ranking_initial_migration_version")) != 1:
    reasons["invalid_granular_migration_version"] += 1
@@ -66,6 +82,13 @@ def build_manifest(ledger:Any,system:str)->dict[str,Any]:
   if "observations" in ns and not isinstance(ns.get("observations"),list): reasons["invalid_observations_type"]+=1
   if not isinstance(ns.get("audit"),list): reasons["invalid_audit_type"]+=1
   good_bets,good_obs=_activity(ledger,ns,system)
+  retired,migration_reason=_validate_condition_identity_migrations(
+   ledger,system,authority_context=authority_context
+  )
+  migration_unavailable=retired is None
+  if retired is None:
+   reasons[migration_reason or "condition_identity_migrations_invalid"]+=1
+   retired={}
   migration_boundary=ns.get("rollover_migration_at") or ns.get("granular_ranking_initial_migration_completed_at") or ns.get("activation_at")
   if _time(migration_boundary) is None: reasons["invalid_migration_boundary"]+=1
   for position,sig in enumerate(order_strings,1):
@@ -80,7 +103,11 @@ def build_manifest(ledger:Any,system:str)->dict[str,Any]:
    if definition.get("system")!=system: rr.append("definition_system_mismatch")
    candidate={**definition,"key":definition.get("miner_key")}
    rebuilt,_=condition_signature(system,candidate) if definition else (None,{})
-   if rebuilt!=sig: rr.append("production_signature_roundtrip_failed")
+   retirement=retired.get(sig)
+   if retirement is not None:
+    if rebuilt!=retirement.get("target_signature"):
+     rr.append("retired_duplicate_target_roundtrip_failed")
+   elif rebuilt!=sig: rr.append("production_signature_roundtrip_failed")
    definition_axes=formal_matcher_axes(
        candidate, system=system, decision_stage=str(definition.get("stage") or ""),
    ) if definition else None
@@ -118,6 +145,11 @@ def build_manifest(ledger:Any,system:str)->dict[str,Any]:
         or (ch is not None and cd is not None and ch > cd)
     )
     if invalid_counts: rr.append("invalid_evidence_counts")
+    aggregate="legacy_ordinary_batch_aggregate" in v
+    if aggregate:
+     from analysis.legacy_batch_aggregate import validate_aggregate_version
+     aggregate_reason=validate_aggregate_version(v,system,sig,authority_context)
+     if aggregate_reason is not None: rr.append(aggregate_reason)
     if not isinstance(hashes,list) or len(hashes)!=len(set(hashes)) or any(not _hash64(x) for x in hashes): rr.append("invalid_batch_hashes")
     if isinstance(hashes, list):
      if used_batch_hashes.intersection(x for x in hashes if isinstance(x, str)):
@@ -147,7 +179,13 @@ def build_manifest(ledger:Any,system:str)->dict[str,Any]:
       cohort_decided = _int(cohort.get("decided")) if isinstance(cohort, dict) else None
       cohort_pushes = _int(cohort.get("pushes")) if isinstance(cohort, dict) else None
       if not isinstance(cohort,dict) or cohort_hits!=bh or cohort_decided!=bd or cohort_pushes is None or cohort_pushes<0 or not (bd and 0<=bh<=bd) or hashes!=[] or boundary not in valid_markers: rr.append("invalid_migration_v2")
+     elif aggregate:
+      if bd!=ROLLOVER_BATCH_SIZE or hashes!=[]: rr.append("unauthorized_legacy_batch_aggregate")
      elif bd!=ROLLOVER_BATCH_SIZE or len(hashes)!=ROLLOVER_BATCH_SIZE: rr.append("invalid_ordinary_batch")
+     if (
+      not aggregate and isinstance(hashes,list)
+      and set(hashes).intersection(reservations.get(sig,frozenset()))
+     ): rr.append("reserved_historical_identity_reused")
     prev=v; prev_boundary=boundary or prev_boundary; prev_created=created or prev_created
    active=versions[-1] if versions and isinstance(versions[-1],dict) else {}
    if (
@@ -194,6 +232,20 @@ def build_manifest(ledger:Any,system:str)->dict[str,Any]:
          x for x in collection if isinstance(x, dict)
          and str(x.get("frozen_condition_signature") or "") == sig
      )
+   if retirement is not None:
+    effective_at=_time(ns["condition_identity_migrations"]["effective_at"])
+    for activity in candidate_activity:
+     timestamps=[
+         _time(activity.get(key))
+         for key in ("created_at","admission_at","native_stage_at")
+         if activity.get(key) is not None
+     ]
+     marker=activity.get("rollover_provenance")
+     if isinstance(marker,dict) and marker.get("stage_at") is not None:
+      timestamps.append(_time(marker.get("stage_at")))
+     if any(value is None or effective_at is None or value>=effective_at for value in timestamps):
+      rr.append("retired_source_activity_at_or_after_effective_at")
+    candidate_activity=[]
    for activity in candidate_activity:
     is_bet = activity in good_bets
     is_observation = activity in good_obs
@@ -205,6 +257,7 @@ def build_manifest(ledger:Any,system:str)->dict[str,Any]:
         projection_time=datetime.now(timezone.utc),
         require_settled=activity.get("status") == "SETTLED",
         ledger=ledger,
+        authority_context=authority_context,
     )
     if shared_admitted is None:
      activity_rejections["invalid_signature_definition_or_evidence_binding"] += 1
@@ -313,10 +366,13 @@ def build_manifest(ledger:Any,system:str)->dict[str,Any]:
    # Replay production eligibility sequentially. Rows retain their immutable
    # original admission version even when one recomputation creates v2 and v3.
    prior = versions[0] if versions and isinstance(versions[0], dict) else None
-   for v in versions[1:]:
+   for v in ([] if retirement is not None else versions[1:]):
     if not isinstance(v, dict):
      continue
     if v.get("initial_migration_full_cohort") is True:
+     prior = v
+     continue
+    if "legacy_ordinary_batch_aggregate" in v:
      prior = v
      continue
     batch_hashes = v.get("batch_fixture_market_hashes")
@@ -344,7 +400,12 @@ def build_manifest(ledger:Any,system:str)->dict[str,Any]:
     prior = v
    # Do not filter by admitted version: production uses the active boundary,
    # so the six later v1-admitted rows in 26→20+6 remain pending under v2.
-   eligible,excluded=_eligible_rollover_rows(qualified,system,sig,active) if active else ([],{"missing_or_invalid_provenance":0})
+   eligible,excluded=(
+       ([],{"missing_or_invalid_provenance":0,"before_snapshot_boundary":0,"not_binary_decided":0,"duplicate_or_conflicting_fixture_market":0})
+       if retirement is not None
+       else _eligible_rollover_rows(qualified,system,sig,active) if active
+       else ([],{"missing_or_invalid_provenance":0})
+   )
    pending=eligible
    pending_hits=sum(x["hit"] for x in pending)
    persisted=frozen.get("pending_rollover_progress")
@@ -362,7 +423,7 @@ def build_manifest(ledger:Any,system:str)->dict[str,Any]:
                for value in persisted_excluded.values())
     ):
      pending_integer_invalid = True
-   if persisted is not None and (
+   if retirement is None and persisted is not None and (
        not isinstance(persisted,dict)
        or pending_integer_invalid
        or _int(persisted.get("eligible_decided")) is None
@@ -382,10 +443,17 @@ def build_manifest(ledger:Any,system:str)->dict[str,Any]:
     rr.append("invalid_last_rollover_count")
    for reason in set(rr): reasons[reason]+=1
    statuses=Counter(str(x.get("status")) for x in qualified)
-   rows.append({"condition_number":number,"order_position":position,"signature":sig,"definition":definition,"definition_hash":canonical_hash(definition) if definition else None,"market":definition.get("market"),"path":definition.get("path"),"decision_stage":definition.get("stage"),"path_terminal_stage":str(definition.get("path") or "").split("→")[-1] or None,"active_evidence_version":active.get("version"),"active_evidence_hash":active.get("evidence_hash"),"activation_boundary":active.get("activation_boundary_at"),"prospective_x20":{"hits":pending_hits,"decided":len(pending),"target":ROLLOVER_BATCH_SIZE,"excluded":excluded},"formal_rows":len(qualified),"formal_status_counts":dict(sorted(statuses.items())),"rejected_same_signature_activity":sum(activity_rejections.values()),"activity_rejection_reasons":dict(sorted(activity_rejections.items())),"own_stage_matcher_can_structurally_admit":definition_axes is not None,"current_matcher_can_structurally_admit":axes is not None,"safely_recoverable_missed_rows":0,"recovery_status":"HARD_DISABLED","rejection_reasons":sorted(set(rr)),"valid":not rr})
+   row_output={"condition_number":number,"order_position":position,"signature":sig,"definition":definition,"definition_hash":canonical_hash(definition) if definition else None,"market":definition.get("market"),"path":definition.get("path"),"decision_stage":definition.get("stage"),"path_terminal_stage":str(definition.get("path") or "").split("→")[-1] or None,"active_evidence_version":active.get("version"),"active_evidence_hash":active.get("evidence_hash"),"activation_boundary":active.get("activation_boundary_at"),"prospective_x20":{"hits":pending_hits,"decided":len(pending),"target":ROLLOVER_BATCH_SIZE,"excluded":excluded},"formal_rows":len(qualified),"formal_status_counts":dict(sorted(statuses.items())),"rejected_same_signature_activity":sum(activity_rejections.values()),"activity_rejection_reasons":dict(sorted(activity_rejections.items())),"own_stage_matcher_can_structurally_admit":definition_axes is not None,"current_matcher_can_structurally_admit":axes is not None,"safely_recoverable_missed_rows":0,"recovery_status":"HARD_DISABLED","identity_status":"retired_duplicate" if retirement is not None else "active","rejection_reasons":sorted(set(rr)),"valid":not rr}
+   if retirement is not None:
+    row_output["canonical_successor_condition_number"]=retirement["target_condition_number"]
+    row_output["canonical_successor_signature"]=retirement["target_signature"]
+    row_output["future_admission"]="target_only"
+    row_output["historical_activity_row_count"]=retirement["historical_activity"]["row_count"]
+    row_output["historical_activity_root_hash"]=retirement["historical_activity"]["root_hash"]
+   rows.append(row_output)
   good_numbers=[x for x in numbers if x is not None]
   if len(good_numbers)!=len(numbers) or len(good_numbers)!=len(set(good_numbers)): reasons["invalid_or_duplicate_condition_number"]+=1
-  out={"schema":"wilson-registry-manifest-v2","system":system,"namespace_schema_version":ns.get("schema_version"),"namespace_activation_at":ns.get("activation_at"),"condition_count":len(rows),"decision_stage_counts":dict(sorted(Counter(str(r.get("decision_stage") or "MISSING") for r in rows).items())),"conditions":rows,"rejection_reasons":dict(sorted(reasons.items())),"valid":not reasons,"recovery":{"implemented":False,"mode":"audit-only","safely_recoverable_missed_rows":0,"reason":"Recovery is hard-disabled."}}
+  out={"schema":"wilson-registry-manifest-v2","system":system,"namespace_schema_version":ns.get("schema_version"),"namespace_activation_at":ns.get("activation_at"),"condition_count":len(rows),"historical_condition_count":len(rows),"active_condition_count":None if migration_unavailable else len(rows)-len(retired),"retired_duplicate_count":None if migration_unavailable else len(retired),"decision_stage_counts":dict(sorted(Counter(str(r.get("decision_stage") or "MISSING") for r in rows).items())),"conditions":rows,"rejection_reasons":dict(sorted(reasons.items())),"valid":not reasons,"recovery":{"implemented":False,"mode":"audit-only","safely_recoverable_missed_rows":0,"reason":"Recovery is hard-disabled."}}
  except Exception as exc:
   out={"schema":"wilson-registry-manifest-v2","system":system,"condition_count":len(rows),"conditions":rows,"rejection_reasons":{"malformed_input":1,"detail":type(exc).__name__},"valid":False,"recovery":{"implemented":False,"mode":"audit-only","safely_recoverable_missed_rows":0,"reason":"Recovery is hard-disabled."}}
  out["manifest_hash"]=canonical_hash(out); return out

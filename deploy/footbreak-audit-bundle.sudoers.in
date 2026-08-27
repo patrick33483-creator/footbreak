@@ -1,0 +1,5 @@
+# Provisioning template. Replace both @RUNNER_USER@ and @WRAPPER_SHA256@,
+# install as a root-owned mode-0440 single-link file, then run visudo -c.
+@RUNNER_USER@ ALL=(root) NOPASSWD: sha256:@WRAPPER_SHA256@ /usr/local/sbin/footbreak-audit-bundle ^preflight --policy-root [0-9a-f]{64} --wrapper-sha256 [0-9a-f]{64} --runner-user [a-z_][a-z0-9_-]{0,31}$
+@RUNNER_USER@ ALL=(root) NOPASSWD: sha256:@WRAPPER_SHA256@ /usr/local/sbin/footbreak-audit-bundle ^seal --expected /[^[:space:]]+ --expected-sha256 [0-9a-f]{64} --workspace /[^[:space:]]+ --run-key [1-9][0-9]*-[1-9][0-9]* --policy-root [0-9a-f]{64} --wrapper-sha256 [0-9a-f]{64} --runner-user [a-z_][a-z0-9_-]{0,31}$
+@RUNNER_USER@ ALL=(root) NOPASSWD: sha256:@WRAPPER_SHA256@ /usr/local/sbin/footbreak-audit-bundle ^cleanup --run-key [1-9][0-9]*-[1-9][0-9]*$

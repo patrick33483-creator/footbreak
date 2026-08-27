@@ -211,7 +211,8 @@ class ReconciliationEnablementTests(unittest.TestCase):
         self.assertIn("systemctl reenable \"$timer\"", update)
         self.assertIn("was not enabled after reenable", update)
         self.assertIn(
-            "systemctl disable --now crown-round-update.timer crown-first-look-reconcile.timer crown-sweep.timer "
+            "systemctl disable --now crown-round-update.timer crown-first-look-reconcile.timer "
+            "crown-early-admission-reconcile.timer crown-sweep.timer "
             "crown-tick.timer crown-settle.timer crown-reverse-t5-drain.timer",
             update,
         )
