@@ -37,6 +37,82 @@ PINNED_CONDITION17_INITIAL_EVIDENCE_HASH = (
     "eef5807b2cf919727c668c8e933ac9398338032ff02059a0dd3ded8163babca3"
 )
 GIT_OID_RE = re.compile(r"[0-9a-f]{40}")
+PUBLIC_BOOTSTRAP_FAILURE_CODES = frozenset({
+    "canonical_manifest_mismatch",
+    "canonical_manifest_unavailable",
+    "condition_17_active_pointer_invalid",
+    "condition_17_anomaly_cohort_mismatch",
+    "condition_17_definition_invalid",
+    "condition_17_identity_chain_invalid",
+    "condition_17_manifest_entry_mismatch",
+    "condition_17_missing",
+    "condition_17_not_at_v1",
+    "condition_17_projection_progress_invalid",
+    "condition_17_projection_unavailable",
+    "condition_17_registry_position_invalid",
+    "dispatched_deployed_commit_invalid",
+    "dispatched_deployed_tree_invalid",
+    "durable_18_of_20_progress_invalid",
+    "durable_progress_missing",
+    "existing_manifest_mismatch",
+    "extra_or_missing_same_signature_rows",
+    "formal_evidence_container_invalid",
+    "formal_evidence_row_invalid",
+    "independent_condition17_initial_evidence_pin_mismatch",
+    "independent_condition17_signature_pin_mismatch",
+    "ledger_not_object",
+    "ledger_size_exceeded",
+    "ledger_snapshot_changed_during_preflight",
+    "ledger_snapshot_changed_during_read",
+    "ledger_snapshot_file_invalid",
+    "ledger_snapshot_identity_changed",
+    "namespace_invalid",
+    "output_file_verification_failed",
+    "output_parent_identity_changed",
+    "output_parent_invalid",
+    "output_path_exists",
+    "output_path_identity_changed",
+    "output_write_failed",
+    "pinned_quarter_line_sha256_mismatch",
+    "pinned_wilson_validation_sha256_mismatch",
+    "projection_mutated_ledger",
+    "simulation_identity_drift",
+    "source_object_mutated",
+    "strict_synthetic_row_derivation_failed",
+    "synthetic_marker_missing",
+    "synthetic_row_19_progress_invalid",
+    "synthetic_row_19_projection_invalid",
+    "synthetic_row_20_rollover_invalid",
+    "synthetic_simulation_mutated_history",
+    "synthetic_snapshot_binding_invalid",
+    "synthetic_snapshot_source_ambiguous",
+    "synthetic_snapshot_source_missing",
+    "synthetic_time_source_invalid",
+    "synthetic_time_window_unavailable",
+    "synthetic_v2_projection_invalid",
+    "synthetic_watch_container_invalid",
+    "trusted_condition_signature_mismatch",
+    "trusted_hash_input_invalid",
+    "trusted_initial_evidence_hash_mismatch",
+    "trusted_manifest_hash_mismatch",
+})
+
+
+def _public_failure_code(exc: BaseException) -> str:
+    code = str(exc)
+    if code in PUBLIC_BOOTSTRAP_FAILURE_CODES:
+        return code
+    return "bootstrap_invariant_failure"
+
+
+class BootstrapArgumentFailure(Exception):
+    pass
+
+
+class SafeArgumentParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        del message
+        raise BootstrapArgumentFailure("bootstrap_argument_invalid")
 
 
 def canonical_bytes(value: Any) -> bytes:
@@ -177,7 +253,7 @@ def build_review(
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser()
+    parser = SafeArgumentParser()
     parser.add_argument("--ledger", required=True, type=Path)
     parser.add_argument("--deployed-commit", required=True)
     parser.add_argument("--deployed-tree", required=True)
@@ -185,8 +261,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--quarter-line-sha256", required=True)
     parser.add_argument("--activation-marker", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
-    args = parser.parse_args(argv)
+    try:
+        args = parser.parse_args(argv)
+    except BootstrapArgumentFailure:
+        print(
+            "condition17_bootstrap_failure=bootstrap_argument_invalid",
+            file=sys.stderr,
+        )
+        return 1
     original = wv.CONDITION17_ACTIVATION_MARKER
+    diagnostic: str | None = None
     try:
         wv.CONDITION17_ACTIVATION_MARKER = args.activation_marker
         result = build_review(
@@ -198,24 +282,47 @@ def main(argv: list[str] | None = None) -> int:
         )
         rc = 0
     except preflight.PreflightFailure as exc:
+        reason = _public_failure_code(exc)
         result = {
             "schema": "footbreak-condition17-bootstrap-review-v1",
             "result": "NO-GO", "read_only": True,
-            "production_mutation": False, "reason": str(exc),
+            "production_mutation": False, "reason": reason,
         }
+        diagnostic = reason
         rc = 1
     except Exception:
+        reason = "bootstrap_unexpected_failure"
         result = {
             "schema": "footbreak-condition17-bootstrap-review-v1",
             "result": "NO-GO", "read_only": True,
             "production_mutation": False,
-            "reason": "bootstrap_input_or_invariant_failure",
+            "reason": reason,
         }
+        diagnostic = reason
         rc = 1
     finally:
         wv.CONDITION17_ACTIVATION_MARKER = original
     payload = json.dumps(result, ensure_ascii=False, sort_keys=True, indent=2).encode() + b"\n"
-    preflight._write_output_exclusive(args.output, payload)
+    try:
+        preflight._write_output_exclusive(args.output, payload)
+    except preflight.PreflightFailure as exc:
+        diagnostic = _public_failure_code(exc)
+        print(
+            f"condition17_bootstrap_failure={diagnostic}",
+            file=sys.stderr,
+        )
+        return 1
+    except Exception:
+        print(
+            "condition17_bootstrap_failure=bootstrap_output_failure",
+            file=sys.stderr,
+        )
+        return 1
+    if diagnostic is not None:
+        print(
+            f"condition17_bootstrap_failure={diagnostic}",
+            file=sys.stderr,
+        )
     return rc
 
 

@@ -727,6 +727,158 @@ class Condition17PinnedHostKeyTests(unittest.TestCase):
 
 
 class Condition17BootstrapAuditTests(unittest.TestCase):
+    def test_bootstrap_diagnostics_allow_only_explicit_public_codes(self) -> None:
+        self.assertEqual(
+            BOOTSTRAP._public_failure_code(
+                BOOTSTRAP.preflight.PreflightFailure("condition_17_not_at_v1")
+            ),
+            "condition_17_not_at_v1",
+        )
+        for private_text in (
+            "ledger_api_secret_abc123",
+            "opt_footbreak_private_ledger",
+            "/opt/footbreak/private/ledger",
+        ):
+            self.assertEqual(
+                BOOTSTRAP._public_failure_code(
+                    BOOTSTRAP.preflight.PreflightFailure(private_text)
+                ),
+                "bootstrap_invariant_failure",
+            )
+
+    def test_bootstrap_cli_never_emits_private_failure_text(self) -> None:
+        arguments = [
+            "--ledger", "/unused/ledger",
+            "--deployed-commit", "1" * 40,
+            "--deployed-tree", "2" * 40,
+            "--validation-sha256", BOOTSTRAP.PINNED_VALIDATION_SHA256,
+            "--quarter-line-sha256", BOOTSTRAP.PINNED_QUARTER_LINE_SHA256,
+            "--activation-marker", "/unused/marker",
+            "--output", "/unused/output",
+        ]
+        for private_text in (
+            "ledger_api_secret_abc123",
+            "opt_footbreak_private_ledger",
+        ):
+            stderr = io.StringIO()
+            with (
+                patch.object(
+                    BOOTSTRAP,
+                    "build_review",
+                    side_effect=BOOTSTRAP.preflight.PreflightFailure(private_text),
+                ),
+                patch.object(
+                    BOOTSTRAP.preflight,
+                    "_write_output_exclusive",
+                ),
+                contextlib.redirect_stderr(stderr),
+            ):
+                self.assertEqual(BOOTSTRAP.main(arguments), 1)
+            self.assertEqual(
+                stderr.getvalue(),
+                "condition17_bootstrap_failure=bootstrap_invariant_failure\n",
+            )
+            self.assertNotIn(private_text, stderr.getvalue())
+
+    def test_bootstrap_cli_sanitizes_writer_failures(self) -> None:
+        arguments = [
+            "--ledger", "/unused/ledger",
+            "--deployed-commit", "1" * 40,
+            "--deployed-tree", "2" * 40,
+            "--validation-sha256", BOOTSTRAP.PINNED_VALIDATION_SHA256,
+            "--quarter-line-sha256", BOOTSTRAP.PINNED_QUARTER_LINE_SHA256,
+            "--activation-marker", "/unused/marker",
+            "--output", "/unused/output",
+        ]
+        for failure, expected in (
+            (
+                BOOTSTRAP.preflight.PreflightFailure(
+                    "output_path_identity_changed"
+                ),
+                "output_path_identity_changed",
+            ),
+            (
+                BOOTSTRAP.preflight.PreflightFailure(
+                    "ledger_api_secret_abc123"
+                ),
+                "bootstrap_invariant_failure",
+            ),
+            (
+                RuntimeError(
+                    "fixture_12345 /opt/footbreak/private/source.py"
+                ),
+                "bootstrap_output_failure",
+            ),
+        ):
+            stderr = io.StringIO()
+            with (
+                patch.object(BOOTSTRAP, "build_review", return_value={
+                    "schema": "footbreak-condition17-bootstrap-review-v1",
+                    "result": "GO",
+                }),
+                patch.object(
+                    BOOTSTRAP.preflight,
+                    "_write_output_exclusive",
+                    side_effect=failure,
+                ),
+                contextlib.redirect_stderr(stderr),
+            ):
+                self.assertEqual(BOOTSTRAP.main(arguments), 1)
+            self.assertEqual(
+                stderr.getvalue(),
+                f"condition17_bootstrap_failure={expected}\n",
+            )
+            self.assertNotIn("secret", stderr.getvalue())
+            self.assertNotIn("fixture_", stderr.getvalue())
+            self.assertNotIn("/opt/", stderr.getvalue())
+
+    def test_bootstrap_cli_sanitizes_argument_parser_errors(self) -> None:
+        private_text = "SECRET_TOKEN_VALUE"
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            self.assertEqual(
+                BOOTSTRAP.main([f"--unknown-{private_text}"]),
+                1,
+            )
+        self.assertEqual(
+            stderr.getvalue(),
+            "condition17_bootstrap_failure=bootstrap_argument_invalid\n",
+        )
+        self.assertNotIn(private_text, stderr.getvalue())
+
+    def test_bootstrap_cli_sanitizes_unexpected_build_errors(self) -> None:
+        arguments = [
+            "--ledger", "/unused/ledger",
+            "--deployed-commit", "1" * 40,
+            "--deployed-tree", "2" * 40,
+            "--validation-sha256", BOOTSTRAP.PINNED_VALIDATION_SHA256,
+            "--quarter-line-sha256", BOOTSTRAP.PINNED_QUARTER_LINE_SHA256,
+            "--activation-marker", "/unused/marker",
+            "--output", "/unused/output",
+        ]
+        stderr = io.StringIO()
+        written: list[bytes] = []
+        with (
+            patch.object(
+                BOOTSTRAP,
+                "build_review",
+                side_effect=RuntimeError("SECRET_TOKEN_VALUE /private/path"),
+            ),
+            patch.object(
+                BOOTSTRAP.preflight,
+                "_write_output_exclusive",
+                side_effect=lambda _path, payload: written.append(payload),
+            ),
+            contextlib.redirect_stderr(stderr),
+        ):
+            self.assertEqual(BOOTSTRAP.main(arguments), 1)
+        self.assertEqual(
+            stderr.getvalue(),
+            "condition17_bootstrap_failure=bootstrap_unexpected_failure\n",
+        )
+        self.assertNotIn(b"SECRET_TOKEN_VALUE", written[0])
+        self.assertNotIn(b"/private/path", written[0])
+
     def test_bootstrap_requires_canonical_dispatched_commit_and_tree_ids(self) -> None:
         with self.assertRaisesRegex(
             BOOTSTRAP.preflight.PreflightFailure,
