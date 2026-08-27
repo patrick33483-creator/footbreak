@@ -1191,6 +1191,74 @@ def _dashboard_evidence_row(
     return projected
 
 
+def _project_footbreak_17_schema1_settlement_anomaly(
+    row: dict[str, Any], *, signature: str, frozen: dict[str, Any],
+    active: dict[str, Any], projection_time: datetime,
+    ledger: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Validate one exact legacy #17 row without changing formal authority.
+
+    A production-only schema-1 cohort stored settlement timestamps before
+    kickoff and omitted the later top-level mirror of its marker's T-5 time.
+    This projection adapter accepts only that pair of historical storage
+    anomalies.  It validates every other current invariant through
+    ``validate_formal_row`` on a copy whose two anomalous fields are normalized;
+    the durable row and all mutation/rollover consumers remain untouched.
+    """
+    marker = row.get("rollover_provenance")
+    versions = frozen.get("evidence_versions")
+    stage_at = _time(marker.get("stage_at")) if isinstance(marker, dict) else None
+    created_at = _time(row.get("created_at"))
+    kickoff = _time(row.get("kickoff") or row.get("kickoff_hkt"))
+    settled_at = _time(row.get("settled_at"))
+    active_hash = active.get("evidence_hash")
+    if (
+        frozen.get("condition_number") != 17
+        or row.get("frozen_condition_signature") != signature
+        or row.get("frozen_condition_definition") != frozen.get("definition")
+        or "native_stage_at" in row
+        or row.get("status") != "SETTLED"
+        or row.get("result") not in BINARY_DECIDED_RESULTS
+        or not isinstance(marker, dict)
+        or marker.get("schema_version") != 1
+        or not _formal_marker_shape_valid(marker)
+        or _strict_int(row.get("evidence_version")) != 1
+        or _strict_int(marker.get("admitted_evidence_version")) != 1
+        or _strict_int(active.get("version")) != 1
+        or _strict_int(frozen.get("active_evidence_version")) != 1
+        or not isinstance(versions, list)
+        or len(versions) != 1
+        or not isinstance(versions[0], dict)
+        or _strict_int(versions[0].get("version")) != 1
+        or versions[0].get("condition_signature") != signature
+        or versions[0].get("evidence_hash") != _version_hash(versions[0])
+        or not isinstance(active_hash, str)
+        or row.get("evidence_hash") != active_hash
+        or marker.get("admitted_evidence_hash") != active_hash
+        or frozen.get("active_evidence_hash") != active_hash
+        or versions[0].get("evidence_hash") != active_hash
+        or stage_at is None or created_at is None
+        or kickoff is None or settled_at is None
+        or not stage_at <= created_at <= settled_at < kickoff
+        or settled_at > projection_time
+    ):
+        return None
+
+    repaired = copy.deepcopy(row)
+    repaired["native_stage_at"] = marker["stage_at"]
+    # The strict validator permits equality here.  Replacing only the known
+    # bad settlement timestamp proves every other identity, definition,
+    # evidence, marker, fixture-hash, arithmetic and chronology invariant.
+    repaired["settled_at"] = (
+        row.get("kickoff") or row.get("kickoff_hkt")
+    )
+    admitted, reason = validate_formal_row(
+        repaired, system="footbreak", signature=signature, frozen=frozen,
+        projection_time=projection_time, require_settled=True, ledger=ledger,
+    )
+    return row if admitted is not None and reason is None else None
+
+
 def _project_pending_rollover_rows(
     ledger: dict[str, Any], system: str, signature: str,
     active: Any, pending: Any,
@@ -1316,6 +1384,17 @@ def _project_pending_rollover_rows(
                 ledger=ledger,
             )
             if admitted is not None and repaired_reason is None:
+                legacy_binding_rows.append(row)
+            elif (
+                system == "footbreak"
+                and expected_decided == 18
+                and expected_hits == 10
+                and required == ROLLOVER_BATCH_SIZE
+                and _project_footbreak_17_schema1_settlement_anomaly(
+                    row, signature=signature, frozen=frozen, active=active,
+                    projection_time=projection_time, ledger=ledger,
+                ) is not None
+            ):
                 legacy_binding_rows.append(row)
         compatible_eligible, compatible_excluded = _eligible_rollover_rows(
             [*candidates, *legacy_binding_rows], system, signature, active,
