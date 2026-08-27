@@ -397,6 +397,46 @@ jobs:
                           )
                           else False
                       ),
+                      "stage_le_created": (
+                          _time(
+                              (row.get("rollover_provenance") or {}).get("stage_at")
+                          ) <= _time(row.get("created_at"))
+                          if (
+                              isinstance(row.get("rollover_provenance"), dict)
+                              and _time(
+                                  (row.get("rollover_provenance") or {}).get("stage_at")
+                              ) is not None
+                              and _time(row.get("created_at")) is not None
+                          )
+                          else None
+                      ),
+                      "created_lt_kickoff": (
+                          _time(row.get("created_at"))
+                          < _time(row.get("kickoff") or row.get("kickoff_hkt"))
+                          if (
+                              _time(row.get("created_at")) is not None
+                              and _time(
+                                  row.get("kickoff") or row.get("kickoff_hkt")
+                              ) is not None
+                          )
+                          else None
+                      ),
+                      "kickoff_le_settled": (
+                          _time(row.get("kickoff") or row.get("kickoff_hkt"))
+                          <= _time(row.get("settled_at"))
+                          if (
+                              _time(
+                                  row.get("kickoff") or row.get("kickoff_hkt")
+                              ) is not None
+                              and _time(row.get("settled_at")) is not None
+                          )
+                          else None
+                      ),
+                      "settled_le_projection": (
+                          _time(row.get("settled_at")) <= projection_time
+                          if _time(row.get("settled_at")) is not None
+                          else None
+                      ),
                       "marker_evidence_version": (
                           (row.get("rollover_provenance") or {}).get(
                               "admitted_evidence_version"
