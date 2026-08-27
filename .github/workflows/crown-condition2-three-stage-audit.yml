@@ -1,0 +1,61 @@
+name: Crown condition 2 three-stage audit
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: crown-condition2-three-stage-audit
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: Audit the intended three-stage rule without writing production
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          EXPECTED_COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "sudo env EXPECTED_COMMIT='$EXPECTED_COMMIT' bash -s" \
+            <<'REMOTE' | tee crown-condition2-three-stage-audit.json
+          set -euo pipefail
+          cd /opt/footbreak
+          test "$(git rev-parse HEAD)" = "$EXPECTED_COMMIT"
+          python=/opt/footbreak/.venv/bin/python3
+          [ -x "$python" ] || python=python3
+          if [ -f /etc/footbreak.env ]; then set -a; . /etc/footbreak.env; set +a; fi
+          if [ -f /etc/footbreak-crown.env ]; then
+            set -a; . /etc/footbreak-crown.env; set +a
+          fi
+          state="${CROWN_STATE_DIR:-/var/lib/footbreak/crown}"
+          PYTHONPATH=/opt/footbreak "$python" \
+            analysis/audit_crown_condition2_three_stage.py \
+            --ledger "$state/ledger.json" \
+            --history "$state/prediction_history.json"
+          REMOTE
+
+      - name: Upload detailed audit
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: crown-condition2-three-stage-audit-${{ github.run_id }}
+          path: crown-condition2-three-stage-audit.json
+          if-no-files-found: error
+          retention-days: 30
