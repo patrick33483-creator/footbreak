@@ -318,6 +318,67 @@ jobs:
               "compatible_exclusions_match": (
                   pending.get("excluded") == compatible_excluded
               ),
+              "legacy_shape_counts": dict(Counter(
+                  json.dumps({
+                      "status": row.get("status"),
+                      "result": row.get("result"),
+                      "stage": row.get("stage"),
+                      "definition_state": (
+                          "empty" if row.get("frozen_condition_definition") == {}
+                          else "exact" if row.get("frozen_condition_definition")
+                          == frozen.get("definition")
+                          else "other"
+                      ),
+                      "native_stage_present": row.get("native_stage_at") is not None,
+                      "first_t5": row.get("first_native_pre_kickoff_t5"),
+                      "first_stage": row.get("first_native_pre_kickoff_stage"),
+                      "marker_schema": (
+                          (row.get("rollover_provenance") or {}).get("schema_version")
+                          if isinstance(row.get("rollover_provenance"), dict)
+                          else None
+                      ),
+                      "marker_keys": sorted(
+                          (row.get("rollover_provenance") or {}).keys()
+                          if isinstance(row.get("rollover_provenance"), dict)
+                          else []
+                      ),
+                      "marker_t5": (
+                          (row.get("rollover_provenance") or {}).get(
+                              "native_pre_kickoff_t5"
+                          )
+                          if isinstance(row.get("rollover_provenance"), dict)
+                          else None
+                      ),
+                      "marker_first_stage": (
+                          (row.get("rollover_provenance") or {}).get(
+                              "first_native_pre_kickoff_stage"
+                          )
+                          if isinstance(row.get("rollover_provenance"), dict)
+                          else None
+                      ),
+                      "marker_decision_stage": (
+                          (row.get("rollover_provenance") or {}).get("decision_stage")
+                          if isinstance(row.get("rollover_provenance"), dict)
+                          else None
+                      ),
+                      "marker_stage_present": (
+                          (row.get("rollover_provenance") or {}).get("stage_at")
+                          is not None
+                          if isinstance(row.get("rollover_provenance"), dict)
+                          else False
+                      ),
+                      "evidence_version": row.get("evidence_version"),
+                      "marker_evidence_version": (
+                          (row.get("rollover_provenance") or {}).get(
+                              "admitted_evidence_version"
+                          )
+                          if isinstance(row.get("rollover_provenance"), dict)
+                          else None
+                      ),
+                  }, ensure_ascii=False, sort_keys=True)
+                  for row, reason in rejected
+                  if reason == "invalid_formal_admission_binding"
+              )),
           }, ensure_ascii=False, sort_keys=True))
           PY
 
