@@ -1,0 +1,73 @@
+name: Crown condition 2 pending result audit
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: crown-condition2-pending-result-audit
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: Recheck exact pending results on a disposable copy
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          EXPECTED_COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            -o ServerAliveInterval=20 -o ServerAliveCountMax=90 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "sudo env EXPECTED_COMMIT='$EXPECTED_COMMIT' bash -s" \
+            <<'REMOTE' | tee crown-condition2-pending-result-audit.json
+          set -euo pipefail
+          cd /opt/footbreak
+          test "$(git rev-parse HEAD)" = "$EXPECTED_COMMIT"
+          test -s analysis/audit_crown_condition2_pending_results.py
+          python=/opt/footbreak/.venv/bin/python3
+          [ -x "$python" ] || python=python3
+          if [ -f /etc/footbreak.env ]; then set -a; . /etc/footbreak.env; set +a; fi
+          if [ -f /etc/footbreak-crown.env ]; then
+            set -a; . /etc/footbreak-crown.env; set +a
+          fi
+          source_state="${CROWN_STATE_DIR:-/var/lib/footbreak/crown}"
+          test -s "$source_state/ledger.json"
+          test -s "$source_state/prediction_history.json"
+          work="$(mktemp -d)"
+          trap 'rm -rf "$work"' EXIT
+          install -m 0600 "$source_state/ledger.json" "$work/ledger.json"
+          install -m 0600 "$source_state/prediction_history.json" \
+            "$work/prediction_history.json"
+          export CROWN_STATE_DIR="$work"
+          unset LEARNING_DB_PATH
+          PYTHONPATH=/opt/footbreak "$python" \
+            analysis/audit_crown_condition2_pending_results.py \
+            --ledger "$work/ledger.json" \
+            --history "$work/prediction_history.json" \
+            --detail-budget 200 --titan-seconds 300 --hkjc-seconds 300
+          REMOTE
+
+      - name: Upload detailed audit
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: crown-condition2-pending-result-audit-${{ github.run_id }}
+          path: crown-condition2-pending-result-audit.json
+          if-no-files-found: error
+          retention-days: 30
