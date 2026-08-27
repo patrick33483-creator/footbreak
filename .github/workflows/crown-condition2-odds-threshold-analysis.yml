@@ -29,7 +29,8 @@ jobs:
           set -euo pipefail
           ssh -o BatchMode=yes -o ConnectTimeout=20 \
             "$DEPLOY_USER@$DEPLOY_HOST" \
-            'sudo env PYTHONPATH=/opt/footbreak /opt/footbreak/.venv/bin/python3 -' <<'PY'
+            'sudo env PYTHONPATH=/opt/footbreak /opt/footbreak/.venv/bin/python3 -' \
+            <<'PY' | tee /tmp/crown-condition2-threshold-result.json
           import json
           import math
           from pathlib import Path
@@ -199,3 +200,11 @@ jobs:
               "thresholds": thresholds,
           }, ensure_ascii=False, indent=2))
           PY
+
+          {
+            echo '## Independent fixture threshold analysis'
+            echo
+            echo '```json'
+            cat /tmp/crown-condition2-threshold-result.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
