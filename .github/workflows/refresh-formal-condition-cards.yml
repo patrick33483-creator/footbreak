@@ -1,0 +1,71 @@
+name: Refresh frozen formal condition cards
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: Rebuild dashboard projections from durable local state
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'sudo /bin/bash -s' <<'REMOTE'
+          set -euo pipefail
+          stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+          install -d -m 0700 /var/lib/footbreak/backups
+          install -m 0600 /var/www/footbreak/data.json \
+            "/var/lib/footbreak/backups/footbreak-data-before-condition-card-refresh-${stamp}.json"
+          install -m 0600 /var/www/crown/data.json \
+            "/var/lib/footbreak/backups/crown-data-before-condition-card-refresh-${stamp}.json"
+          cd /opt/footbreak
+          timeout 90s .venv/bin/python3 -m system.gen_app_data \
+            --out /var/www/footbreak/data.json
+          timeout 60s .venv/bin/python3 -m crown.dashboard_data \
+            --out /var/www/crown/data.json
+          chown root:www-data /var/www/footbreak/data.json /var/www/crown/data.json
+          chmod 0644 /var/www/footbreak/data.json /var/www/crown/data.json
+          .venv/bin/python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          for system in ("footbreak", "crown"):
+              data = json.loads(
+                  Path(f"/var/www/{system}/data.json").read_text(encoding="utf-8")
+              )
+              ranking = (
+                  (((data.get("prediction_history") or {}).get("stats") or {})
+                   .get("granular_conditions") or {}).get("ranking") or []
+              )
+              rows = [row for row in ranking if isinstance(row, dict)]
+              print(json.dumps({
+                  "system": system,
+                  "card_count": len(rows),
+                  "condition_numbers": [
+                      row.get("condition_number") for row in rows
+                  ],
+              }, ensure_ascii=False))
+          PY
+          REMOTE
