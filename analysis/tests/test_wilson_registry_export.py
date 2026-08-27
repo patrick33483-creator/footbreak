@@ -16,6 +16,7 @@ from analysis.wilson_registry_export import (
     NAMESPACE_KEYS, TIMESTAMP_NAMESPACE_KEYS, TOP_LEVEL_KEYS, export_registry,
     main, verify_export,
 )
+from analysis.wilson_registry_manifest import build_manifest
 
 
 class WilsonRegistryExportTests(unittest.TestCase):
@@ -187,6 +188,61 @@ class WilsonRegistryExportTests(unittest.TestCase):
             export_registry(
                 ledger, "crown", source_ledger_sha256="a" * 64,
             )
+
+    def test_optional_stored_production_manifest_is_strictly_verified(self):
+        ledger = self._ledger("crown")
+        expected = copy.deepcopy(
+            ledger[wv.NAMESPACE]["production_identity_manifest"],
+        )
+
+        matching = copy.deepcopy(ledger)
+        matching_before = copy.deepcopy(matching)
+        exported = export_registry(
+            matching, "crown", source_ledger_sha256="a" * 64,
+        )
+        self.assertEqual(
+            exported["production_identity_manifest"], expected,
+        )
+        self.assertEqual(matching, matching_before)
+
+        absent = copy.deepcopy(ledger)
+        absent[wv.NAMESPACE].pop("production_identity_manifest")
+        absent_before = copy.deepcopy(absent)
+        exported = export_registry(
+            absent, "crown", source_ledger_sha256="b" * 64,
+        )
+        self.assertEqual(
+            exported["production_identity_manifest"], expected,
+        )
+        self.assertEqual(absent, absent_before)
+        self.assertNotIn(
+            "production_identity_manifest", absent[wv.NAMESPACE],
+        )
+
+        mismatched = copy.deepcopy(ledger)
+        stored = mismatched[wv.NAMESPACE]["production_identity_manifest"]
+        stored["entries"][0]["definition_hash"] = "f" * 64
+        body = {
+            key: value for key, value in stored.items()
+            if key != "manifest_hash"
+        }
+        stored["manifest_hash"] = wv._canonical_hash(body)
+        with self.assertRaisesRegex(
+            ValueError, "stored production identity manifest mismatch",
+        ):
+            export_registry(
+                mismatched, "crown", source_ledger_sha256="c" * 64,
+            )
+
+        preinstall, _specs, _allowlist, _document = _registry("footbreak")
+        preinstall[wv.NAMESPACE].pop("production_identity_manifest")
+        before = copy.deepcopy(preinstall)
+        self.assertFalse(build_manifest(preinstall, "footbreak")["valid"])
+        exported = export_registry(
+            preinstall, "footbreak", source_ledger_sha256="d" * 64,
+        )
+        self.assertIsNotNone(exported["production_identity_manifest"])
+        self.assertEqual(preinstall, before)
 
     def test_cli_writes_only_sanitized_output_and_preserves_input(self):
         ledger = self._ledger("crown")

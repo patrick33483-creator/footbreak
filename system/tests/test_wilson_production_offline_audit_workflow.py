@@ -7,7 +7,9 @@ from pathlib import Path
 
 import yaml
 
-from analysis.wilson_audit_gate import EXPECTED_RELEASE, enforce
+from analysis.wilson_audit_gate import (
+    EXPECTED_RELEASE, enforce, summary_projection,
+)
 from analysis.tests.test_wilson_37_condition_regression import (
     _checked_out_commit, _registry,
 )
@@ -292,6 +294,53 @@ class WilsonProductionOfflineAuditWorkflowTests(unittest.TestCase):
                 ValueError, "namespace timestamp invalid",
             ):
                 enforce(root, audited_commit=AUDITED_COMMIT)
+
+    def test_full_gate_accepts_computed_export_root_when_crown_stored_root_absent(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._artifacts(root)
+            ledger_path = root / "audit-input" / "crown-ledger.json"
+            ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+            ledger[wv.NAMESPACE].pop("production_identity_manifest")
+            ledger_path.write_text(
+                json.dumps(ledger, ensure_ascii=False, sort_keys=True),
+                encoding="utf-8",
+            )
+            digest = hashlib.sha256(ledger_path.read_bytes()).hexdigest()
+            hash_path = root / "ledger-sha256.txt"
+            lines = [
+                (
+                    f"{digest}  audit-input/crown-ledger.json"
+                    if line.endswith("audit-input/crown-ledger.json") else line
+                )
+                for line in hash_path.read_text(encoding="utf-8").splitlines()
+            ]
+            hash_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+            manifest = build_manifest(ledger, "crown")
+            self.assertTrue(manifest["valid"], manifest)
+            (root / "crown-wilson-registry-audit.json").write_text(
+                json.dumps(manifest), encoding="utf-8",
+            )
+            exported = export_registry(
+                ledger, "crown", source_ledger_sha256=digest,
+            )
+            self.assertIsNotNone(exported["production_identity_manifest"])
+            self.assertNotIn(
+                "production_identity_manifest", ledger[wv.NAMESPACE],
+            )
+            (root / "crown-wilson-registry-chains.json").write_text(
+                json.dumps(exported), encoding="utf-8",
+            )
+
+            summary_path = root / "wilson-production-audit-summary.json"
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+            summary["ledger_sha256"]["crown-ledger.json"] = digest
+            summary["systems"]["crown"] = summary_projection(manifest)
+            summary_path.write_text(json.dumps(summary), encoding="utf-8")
+            enforce(root, audited_commit=AUDITED_COMMIT)
 
 
 if __name__ == "__main__":

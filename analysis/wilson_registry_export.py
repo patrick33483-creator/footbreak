@@ -223,6 +223,29 @@ def export_registry(
     conditions = ns.get("conditions")
     if not isinstance(order, list) or not isinstance(conditions, dict):
         raise ValueError("frozen condition registry unavailable")
+    expected_manifest, _validated, manifest_reason = (
+        wv._expected_production_identity_manifest(ns, system)
+    )
+    if expected_manifest is None:
+        raise ValueError(
+            manifest_reason or "production identity manifest unavailable"
+        )
+    stored_manifest = ns.get("production_identity_manifest")
+    if (
+        stored_manifest is not None
+        and (
+            not isinstance(stored_manifest, dict)
+            or json.dumps(
+                stored_manifest, ensure_ascii=False, sort_keys=True,
+                separators=(",", ":"),
+            )
+            != json.dumps(
+                expected_manifest, ensure_ascii=False, sort_keys=True,
+                separators=(",", ":"),
+            )
+        )
+    ):
+        raise ValueError("stored production identity manifest mismatch")
     rows = []
     for signature in order:
         frozen = conditions.get(signature)
@@ -267,9 +290,7 @@ def export_registry(
         "namespace_metadata": metadata,
         "condition_order": copy.deepcopy(order),
         "conditions": rows,
-        "production_identity_manifest": copy.deepcopy(
-            ns.get("production_identity_manifest"),
-        ),
+        "production_identity_manifest": copy.deepcopy(expected_manifest),
     }
     result = verify_export({**body, "export_digest": _digest(body)})
     if ledger != before:
