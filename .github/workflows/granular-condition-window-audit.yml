@@ -122,6 +122,8 @@ jobs:
           cat granular-condition-window.md
 
       - name: 列出皇冠條件二歷史實際場次
+        env:
+          PYTHONPATH: .
         run: |
           set -euo pipefail
           python3 deploy/audit-crown-condition-history-samples.py \
