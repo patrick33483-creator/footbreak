@@ -1,0 +1,63 @@
+{
+  "audited_commit": "c18050edd0b0727308dc16bbe5e44bd2cd14dec1",
+  "capture_exit_codes": {
+    "crown": 0,
+    "footbreak": 0
+  },
+  "capture_outcome": "success",
+  "captured_at_utc": "2026-08-27T00:53:52.927037+00:00",
+  "exit_codes": {
+    "crown": 2,
+    "footbreak": 2
+  },
+  "ledger_sha256": {
+    "crown-ledger.json": "e37b6c40aaec38475bca5e7c7e5600bd9f6b600bae7fb78b4bef7170cd9c1648",
+    "footbreak-ledger.json": "e19d2036284775ded598c65b81d73a887c11b68c00f0ced6bd775aeb8a60a59c"
+  },
+  "production_mutation": false,
+  "recovery_enabled": false,
+  "schema": "wilson-production-offline-audit-v1",
+  "systems": {
+    "crown": {
+      "condition_count": 20,
+      "decision_stage_counts": {
+        "T-30": 6,
+        "T-5": 13,
+        "首預": 1
+      },
+      "recovery": {
+        "implemented": false,
+        "mode": "audit-only",
+        "reason": "Recovery is hard-disabled.",
+        "safely_recoverable_missed_rows": 0
+      },
+      "rejection_reasons": {
+        "invalid_formal_matcher_axes": 9,
+        "pending_progress_mismatch": 7
+      },
+      "valid": false
+    },
+    "footbreak": {
+      "condition_count": 17,
+      "decision_stage_counts": {
+        "T-30": 4,
+        "T-5": 12,
+        "首預": 1
+      },
+      "recovery": {
+        "implemented": false,
+        "mode": "audit-only",
+        "reason": "Recovery is hard-disabled.",
+        "safely_recoverable_missed_rows": 0
+      },
+      "rejection_reasons": {
+        "evidence_batch_rows_unverifiable": 3,
+        "invalid_formal_matcher_axes": 5,
+        "pending_progress_mismatch": 6,
+        "production_signature_roundtrip_failed": 2,
+        "unverifiable_same_signature_activity": 8
+      },
+      "valid": false
+    }
+  }
+}

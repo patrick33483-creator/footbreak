@@ -1,0 +1,1082 @@
+{
+  "condition_count": 17,
+  "conditions": [
+    {
+      "activation_boundary": "2026-08-20T05:50:22+08:00",
+      "active_evidence_hash": "ae49569b8e6bf68096ad3aff6e2536492f3494fec8ec854b7c3d9efcbbb1182b",
+      "active_evidence_version": 1,
+      "activity_rejection_reasons": {
+        "wrong_portfolio_strategy_or_formal_shape": 11
+      },
+      "condition_number": 1,
+      "current_matcher_can_structurally_admit": true,
+      "decision_stage": "T-5",
+      "definition": {
+        "direction": "H",
+        "line_bucket": "",
+        "market": "HIL",
+        "miner_key": [
+          "system=footbreak",
+          "market=HIL",
+          "path=T-5",
+          "decision=T-5",
+          "tier=<1.70",
+          "direction=A",
+          "role=大",
+          "bucket=≤2.5",
+          "movement=不變"
+        ],
+        "movement": "",
+        "odds_tier": "<1.70",
+        "odds_trajectory": "",
+        "path": "T-5",
+        "role": "",
+        "stage": "T-5",
+        "system": "footbreak",
+        "version": "granular-condition-v1"
+      },
+      "definition_hash": "cdcddb937b8f8259db5cf7998b242f6e69a203076fa3441747f2feb69a9d0833",
+      "formal_rows": 0,
+      "formal_status_counts": {},
+      "market": "HIL",
+      "order_position": 1,
+      "path": "T-5",
+      "path_terminal_stage": "T-5",
+      "prospective_x20": {
+        "decided": 0,
+        "excluded": {
+          "before_snapshot_boundary": 0,
+          "duplicate_or_conflicting_fixture_market": 0,
+          "missing_or_invalid_provenance": 0,
+          "not_binary_decided": 0
+        },
+        "hits": 0,
+        "target": 20
+      },
+      "recovery_status": "HARD_DISABLED",
+      "rejected_same_signature_activity": 11,
+      "rejection_reasons": [
+        "production_signature_roundtrip_failed",
+        "unverifiable_same_signature_activity"
+      ],
+      "safely_recoverable_missed_rows": 0,
+      "signature": "cdcddb937b8f8259db5cf799",
+      "valid": false
+    },
+    {
+      "activation_boundary": "2026-08-20T07:20:38+08:00",
+      "active_evidence_hash": "578982c8a5a37fb6a5604d8c348fdf0d58352a58a867304cec99623bcc367603",
+      "active_evidence_version": 1,
+      "activity_rejection_reasons": {
+        "wrong_portfolio_strategy_or_formal_shape": 4
+      },
+      "condition_number": 2,
+      "current_matcher_can_structurally_admit": true,
+      "decision_stage": "T-5",
+      "definition": {
+        "direction": "H",
+        "line_bucket": "",
+        "market": "CHL",
+        "miner_key": [
+          "system=footbreak",
+          "market=CHL",
+          "path=T-5",
+          "decision=T-5",
+          "tier=≥1.70",
+          "direction=A",
+          "role=角球大",
+          "bucket=≤9.5",
+          "movement=不變"
+        ],
+        "movement": "",
+        "odds_tier": "≥1.70",
+        "odds_trajectory": "",
+        "path": "T-5",
+        "role": "",
+        "stage": "T-5",
+        "system": "footbreak",
+        "version": "granular-condition-v1"
+      },
+      "definition_hash": "83dee96f7aef2a6e5f997f0214e363c362f353c6a5e07973d3d7302a954bceb7",
+      "formal_rows": 0,
+      "formal_status_counts": {},
+      "market": "CHL",
+      "order_position": 2,
+      "path": "T-5",
+      "path_terminal_stage": "T-5",
+      "prospective_x20": {
+        "decided": 0,
+        "excluded": {
+          "before_snapshot_boundary": 0,
+          "duplicate_or_conflicting_fixture_market": 0,
+          "missing_or_invalid_provenance": 0,
+          "not_binary_decided": 0
+        },
+        "hits": 0,
+        "target": 20
+      },
+      "recovery_status": "HARD_DISABLED",
+      "rejected_same_signature_activity": 4,
+      "rejection_reasons": [
+        "production_signature_roundtrip_failed",
+        "unverifiable_same_signature_activity"
+      ],
+      "safely_recoverable_missed_rows": 0,
+      "signature": "83dee96f7aef2a6e5f997f02",
+      "valid": false
+    },
+    {
+      "activation_boundary": "2026-08-20T23:48:58+08:00",
+      "active_evidence_hash": "381dc5d8b354d7eab51b3ab0f957d6e5e1153bed8bdb137d4785cc7792c432ed",
+      "active_evidence_version": 2,
+      "activity_rejection_reasons": {
+        "wrong_portfolio_strategy_or_formal_shape": 4
+      },
+      "condition_number": 3,
+      "current_matcher_can_structurally_admit": false,
+      "decision_stage": "首預",
+      "definition": {
+        "direction": "A",
+        "line_bucket": "≤2.5",
+        "market": "HIL",
+        "miner_key": [
+          "system=footbreak",
+          "market=HIL",
+          "path=首預",
+          "decision=首預",
+          "tier=<1.70",
+          "direction=A",
+          "role=大",
+          "bucket=≤2.5",
+          "movement=不變"
+        ],
+        "movement": "不變",
+        "odds_tier": "<1.70",
+        "odds_trajectory": "",
+        "path": "首預",
+        "role": "大",
+        "stage": "首預",
+        "system": "footbreak",
+        "version": "granular-condition-v1"
+      },
+      "definition_hash": "0bbe71d0bd504305f07d0b9ea5b3776331ec5074cc20425e1d3cc7f16fc73b95",
+      "formal_rows": 0,
+      "formal_status_counts": {},
+      "market": "HIL",
+      "order_position": 3,
+      "path": "首預",
+      "path_terminal_stage": "首預",
+      "prospective_x20": {
+        "decided": 0,
+        "excluded": {
+          "before_snapshot_boundary": 0,
+          "duplicate_or_conflicting_fixture_market": 0,
+          "missing_or_invalid_provenance": 0,
+          "not_binary_decided": 0
+        },
+        "hits": 0,
+        "target": 20
+      },
+      "recovery_status": "HARD_DISABLED",
+      "rejected_same_signature_activity": 4,
+      "rejection_reasons": [
+        "unverifiable_same_signature_activity"
+      ],
+      "safely_recoverable_missed_rows": 0,
+      "signature": "0bbe71d0bd504305f07d0b9e",
+      "valid": false
+    },
+    {
+      "activation_boundary": "2026-08-24T04:26:00+08:00",
+      "active_evidence_hash": "07be9db54367bb84e724a9d66f205a1b0a5e9ae27b537090990e50ec51a62751",
+      "active_evidence_version": 4,
+      "activity_rejection_reasons": {},
+      "condition_number": 4,
+      "current_matcher_can_structurally_admit": true,
+      "decision_stage": "T-5",
+      "definition": {
+        "direction": "A→A",
+        "line_bucket": "≤2.5",
+        "market": "HIL",
+        "miner_key": [
+          "system=footbreak",
+          "market=HIL",
+          "path=首預→T-5",
+          "decision=T-5",
+          "tier=<1.70",
+          "direction=A→A",
+          "role=大",
+          "bucket=≤2.5",
+          "movement=不變",
+          "tier_path=<1.70→<1.70"
+        ],
+        "movement": "不變",
+        "odds_tier": "<1.70",
+        "odds_trajectory": "<1.70→<1.70",
+        "path": "首預→T-5",
+        "role": "大",
+        "stage": "T-5",
+        "system": "footbreak",
+        "version": "granular-condition-v1"
+      },
+      "definition_hash": "7b69b0c09392930f89bfe52d8c346c487525b3aa39bfcd6695b0fd1e0d7f5812",
+      "formal_rows": 59,
+      "formal_status_counts": {
+        "PENDING": 1,
+        "SETTLED": 57,
+        "VOIDED": 1
+      },
+      "market": "HIL",
+      "order_position": 4,
+      "path": "首預→T-5",
+      "path_terminal_stage": "T-5",
+      "prospective_x20": {
+        "decided": 17,
+        "excluded": {
+          "before_snapshot_boundary": 40,
+          "duplicate_or_conflicting_fixture_market": 0,
+          "missing_or_invalid_provenance": 0,
+          "not_binary_decided": 0
+        },
+        "hits": 14,
+        "target": 20
+      },
+      "recovery_status": "HARD_DISABLED",
+      "rejected_same_signature_activity": 0,
+      "rejection_reasons": [
+        "pending_progress_mismatch"
+      ],
+      "safely_recoverable_missed_rows": 0,
+      "signature": "7b69b0c09392930f89bfe52d",
+      "valid": false
+    },
+    {
+      "activation_boundary": "2026-08-20T23:48:58+08:00",
+      "active_evidence_hash": "b38bf8216a9d3ba5c3d6218d96ce18b29cb40e6b6a16e537626f4e9fc43a7a26",
+      "active_evidence_version": 2,
+      "activity_rejection_reasons": {
+        "wrong_portfolio_strategy_or_formal_shape": 14
+      },
+      "condition_number": 5,
+      "current_matcher_can_structurally_admit": false,
+      "decision_stage": "T-30",
+      "definition": {
+        "direction": "A→A",
+        "line_bucket": "≤2.5",
+        "market": "HIL",
+        "miner_key": [
+          "system=footbreak",
+          "market=HIL",
+          "path=首預→T-30",
+          "decision=T-30",
+          "tier=<1.70",
+          "direction=A→A",
+          "role=大",
+          "bucket=≤2.5",
+          "movement=不變",
+          "tier_path=<1.70→<1.70"
+        ],
+        "movement": "不變",
+        "odds_tier": "<1.70",
+        "odds_trajectory": "<1.70→<1.70",
+        "path": "首預→T-30",
+        "role": "大",
+        "stage": "T-30",
+        "system": "footbreak",
+        "version": "granular-condition-v1"
+      },
+      "definition_hash": "1ccc421a49fd98f328a0b2c48aaebb3030a71a454505252e526663ca792a89f9",
+      "formal_rows": 0,
+      "formal_status_counts": {},
+      "market": "HIL",
+      "order_position": 5,
+      "path": "首預→T-30",
+      "path_terminal_stage": "T-30",
+      "prospective_x20": {
+        "decided": 0,
+        "excluded": {
+          "before_snapshot_boundary": 0,
+          "duplicate_or_conflicting_fixture_market": 0,
+          "missing_or_invalid_provenance": 0,
+          "not_binary_decided": 0
+        },
+        "hits": 0,
+        "target": 20
+      },
+      "recovery_status": "HARD_DISABLED",
+      "rejected_same_signature_activity": 14,
+      "rejection_reasons": [
+        "unverifiable_same_signature_activity"
+      ],
+      "safely_recoverable_missed_rows": 0,
+      "signature": "1ccc421a49fd98f328a0b2c4",
+      "valid": false
+    },
+    {
+      "activation_boundary": "2026-08-25T00:55:25+08:00",
+      "active_evidence_hash": "7736fca0d12c4d677269ec91841ab0ce52a3b42166757d64f31c8c1c34ca2d74",
+      "active_evidence_version": 4,
+      "activity_rejection_reasons": {},
+      "condition_number": 6,
+      "current_matcher_can_structurally_admit": true,
+      "decision_stage": "T-5",
+      "definition": {
+        "direction": "A→A→A",
+        "line_bucket": "≤2.5",
+        "market": "HIL",
+        "miner_key": [
+          "system=footbreak",
+          "market=HIL",
+          "path=首預→T-30→T-5",
+          "decision=T-5",
+          "tier=<1.70",
+          "direction=A→A→A",
+          "role=大",
+          "bucket=≤2.5",
+          "movement=不變",
+          "tier_path=<1.70→<1.70→<1.70"
+        ],
+        "movement": "不變",
+        "odds_tier": "<1.70",
+        "odds_trajectory": "<1.70→<1.70→<1.70",
+        "path": "首預→T-30→T-5",
+        "role": "大",
+        "stage": "T-5",
+        "system": "footbreak",
+        "version": "granular-condition-v1"
+      },
+      "definition_hash": "e9b991435138c3c429a696a8df05b6f45135b40a903537861c331c746b19a534",
+      "formal_rows": 56,
+      "formal_status_counts": {
+        "PENDING": 1,
+        "SETTLED": 54,
+        "VOIDED": 1
+      },
+      "market": "HIL",
+      "order_position": 6,
+      "path": "首預→T-30→T-5",
+      "path_terminal_stage": "T-5",
+      "prospective_x20": {
+        "decided": 13,
+        "excluded": {
+          "before_snapshot_boundary": 41,
+          "duplicate_or_conflicting_fixture_market": 0,
+          "missing_or_invalid_provenance": 0,
+          "not_binary_decided": 0
+        },
+        "hits": 11,
+        "target": 20
+      },
+      "recovery_status": "HARD_DISABLED",
+      "rejected_same_signature_activity": 0,
+      "rejection_reasons": [
+        "evidence_batch_rows_unverifiable",
+        "pending_progress_mismatch"
+      ],
+      "safely_recoverable_missed_rows": 0,
+      "signature": "e9b991435138c3c429a696a8",
+      "valid": false
+    },
+    {
+      "activation_boundary": "2026-08-23T21:25:20+08:00",
+      "active_evidence_hash": "567a3f055f50d6b137f384cf4ecf1293214dcc4ddf52a35ca97cad9377d1989a",
+      "active_evidence_version": 5,
+      "activity_rejection_reasons": {
+        "invalid_signature_definition_or_evidence_binding": 13
+      },
+      "condition_number": 7,
+      "current_matcher_can_structurally_admit": true,
+      "decision_stage": "T-5",
+      "definition": {
+        "direction": "A",
+        "line_bucket": "≤2.5",
+        "market": "HIL",
+        "miner_key": [
+          "system=footbreak",
+          "market=HIL",
+          "path=T-5",
+          "decision=T-5",
+          "tier=<1.70",
+          "direction=A",
+          "role=大",
+          "bucket=≤2.5",
+          "movement=不變"
+        ],
+        "movement": "不變",
+        "odds_tier": "<1.70",
+        "odds_trajectory": "",
+        "path": "T-5",
+        "role": "大",
+        "stage": "T-5",
+        "system": "footbreak",
+        "version": "granular-condition-v1"
+      },
+      "definition_hash": "a7a8aae669b985ff87f8be6e13b503a207aa166cae7fab069fb745034a3ab19e",
+      "formal_rows": 84,
+      "formal_status_counts": {
+        "PENDING": 1,
+        "SETTLED": 82,
+        "VOIDED": 1
+      },
+      "market": "HIL",
+      "order_position": 7,
+      "path": "T-5",
+      "path_terminal_stage": "T-5",
+      "prospective_x20": {
+        "decided": 35,
+        "excluded": {
+          "before_snapshot_boundary": 47,
+          "duplicate_or_conflicting_fixture_market": 0,
+          "missing_or_invalid_provenance": 0,
+          "not_binary_decided": 0
+        },
+        "hits": 23,
+        "target": 20
+      },
+      "recovery_status": "HARD_DISABLED",
+      "rejected_same_signature_activity": 13,
+      "rejection_reasons": [
+        "evidence_batch_rows_unverifiable",
+        "pending_progress_mismatch",
+        "unverifiable_same_signature_activity"
+      ],
+      "safely_recoverable_missed_rows": 0,
+      "signature": "a7a8aae669b985ff87f8be6e",
+      "valid": false
+    },
+    {
+      "activation_boundary": "2026-08-20T23:48:58+08:00",
+      "active_evidence_hash": "819fa1eea07b919ff3d31c2fa6682452b038056d3f60ea41d0fa84b504b36d92",
+      "active_evidence_version": 2,
+      "activity_rejection_reasons": {
+        "wrong_portfolio_strategy_or_formal_shape": 20
+      },
+      "condition_number": 8,
+      "current_matcher_can_structurally_admit": false,
+      "decision_stage": "T-30",
+      "definition": {
+        "direction": "A",
+        "line_bucket": "≤2.5",
+        "market": "HIL",
+        "miner_key": [
+          "system=footbreak",
+          "market=HIL",
+          "path=T-30",
+          "decision=T-30",
+          "tier=<1.70",
+          "direction=A",
+          "role=大",
+          "bucket=≤2.5",
+          "movement=不變"
+        ],
+        "movement": "不變",
+        "odds_tier": "<1.70",
+        "odds_trajectory": "",
+        "path": "T-30",
+        "role": "大",
+        "stage": "T-30",
+        "system": "footbreak",
+        "version": "granular-condition-v1"
+      },
+      "definition_hash": "489929536fb33473f0a90f2526eb801bb02e4478a45ec5b440eb5819d788b86b",
+      "formal_rows": 0,
+      "formal_status_counts": {},
+      "market": "HIL",
+      "order_position": 8,
+      "path": "T-30",
+      "path_terminal_stage": "T-30",
+      "prospective_x20": {
+        "decided": 0,
+        "excluded": {
+          "before_snapshot_boundary": 0,
+          "duplicate_or_conflicting_fixture_market": 0,
+          "missing_or_invalid_provenance": 0,
+          "not_binary_decided": 0
+        },
+        "hits": 0,
+        "target": 20
+      },
+      "recovery_status": "HARD_DISABLED",
+      "rejected_same_signature_activity": 20,
+      "rejection_reasons": [
+        "unverifiable_same_signature_activity"
+      ],
+      "safely_recoverable_missed_rows": 0,
+      "signature": "489929536fb33473f0a90f25",
+      "valid": false
+    },
+    {
+      "activation_boundary": "2026-08-20T23:48:58+08:00",
+      "active_evidence_hash": "da1a17493a5f85b2dbebd78ab06e8c1b881e58af6e0fbef63dca2b99d8081e29",
+      "active_evidence_version": 2,
+      "activity_rejection_reasons": {},
+      "condition_number": 9,
+      "current_matcher_can_structurally_admit": false,
+      "decision_stage": "T-5",
+      "definition": {
+        "direction": "A→A",
+        "line_bucket": "≤2.5",
+        "market": "HIL",
+        "miner_key": [
+          "system=footbreak",
+          "market=HIL",
+          "path=T-30→T-5",
+          "decision=T-5",
+          "tier=<1.70",
+          "direction=A→A",
+          "role=大",
+          "bucket=≤2.5",
+          "movement=不變"
+        ],
+        "movement": "不變",
+        "odds_tier": "<1.70",
+        "odds_trajectory": "",
+        "path": "T-30→T-5",
+        "role": "大",
+        "stage": "T-5",
+        "system": "footbreak",
+        "version": "granular-condition-v1"
+      },
+      "definition_hash": "d3e112d8815b6e9df46e075d01182fac9ee81648641c84650b0a1cb0352e7840",
+      "formal_rows": 0,
+      "formal_status_counts": {},
+      "market": "HIL",
+      "order_position": 9,
+      "path": "T-30→T-5",
+      "path_terminal_stage": "T-5",
+      "prospective_x20": {
+        "decided": 0,
+        "excluded": {
+          "before_snapshot_boundary": 0,
+          "duplicate_or_conflicting_fixture_market": 0,
+          "missing_or_invalid_provenance": 0,
+          "not_binary_decided": 0
+        },
+        "hits": 0,
+        "target": 20
+      },
+      "recovery_status": "HARD_DISABLED",
+      "rejected_same_signature_activity": 0,
+      "rejection_reasons": [
+        "invalid_formal_matcher_axes"
+      ],
+      "safely_recoverable_missed_rows": 0,
+      "signature": "d3e112d8815b6e9df46e075d",
+      "valid": false
+    },
+    {
+      "activation_boundary": "2026-08-20T23:48:58+08:00",
+      "active_evidence_hash": "ce4392d31a1060385ca57d699edc174b4e6d51444ce5f1335a37dde2e3e895d1",
+      "active_evidence_version": 2,
+      "activity_rejection_reasons": {},
+      "condition_number": 10,
+      "current_matcher_can_structurally_admit": false,
+      "decision_stage": "T-5",
+      "definition": {
+        "direction": "A→A",
+        "line_bucket": "≤2.5",
+        "market": "HIL",
+        "miner_key": [
+          "system=footbreak",
+          "market=HIL",
+          "path=首預→T-5",
+          "decision=T-5",
+          "tier=<1.70",
+          "direction=A→A",
+          "role=大",
+          "bucket=≤2.5",
+          "movement=不變"
+        ],
+        "movement": "不變",
+        "odds_tier": "<1.70",
+        "odds_trajectory": "",
+        "path": "首預→T-5",
+        "role": "大",
+        "stage": "T-5",
+        "system": "footbreak",
+        "version": "granular-condition-v1"
+      },
+      "definition_hash": "033986661061d8b486cff4643e5ac93d96a1a9937f14a0f3df96aae83b4bfbb6",
+      "formal_rows": 0,
+      "formal_status_counts": {},
+      "market": "HIL",
+      "order_position": 10,
+      "path": "首預→T-5",
+      "path_terminal_stage": "T-5",
+      "prospective_x20": {
+        "decided": 0,
+        "excluded": {
+          "before_snapshot_boundary": 0,
+          "duplicate_or_conflicting_fixture_market": 0,
+          "missing_or_invalid_provenance": 0,
+          "not_binary_decided": 0
+        },
+        "hits": 0,
+        "target": 20
+      },
+      "recovery_status": "HARD_DISABLED",
+      "rejected_same_signature_activity": 0,
+      "rejection_reasons": [
+        "invalid_formal_matcher_axes"
+      ],
+      "safely_recoverable_missed_rows": 0,
+      "signature": "033986661061d8b486cff464",
+      "valid": false
+    },
+    {
+      "activation_boundary": "2026-08-24T00:30:12+08:00",
+      "active_evidence_hash": "bdf5a1e6b6371669494e89ffc798808f8adc6efa2a2edb14563de9329c612afc",
+      "active_evidence_version": 4,
+      "activity_rejection_reasons": {},
+      "condition_number": 11,
+      "current_matcher_can_structurally_admit": true,
+      "decision_stage": "T-5",
+      "definition": {
+        "direction": "A→A",
+        "line_bucket": "≤2.5",
+        "market": "HIL",
+        "miner_key": [
+          "system=footbreak",
+          "market=HIL",
+          "path=T-30→T-5",
+          "decision=T-5",
+          "tier=<1.70",
+          "direction=A→A",
+          "role=大",
+          "bucket=≤2.5",
+          "movement=不變",
+          "tier_path=<1.70→<1.70"
+        ],
+        "movement": "不變",
+        "odds_tier": "<1.70",
+        "odds_trajectory": "<1.70→<1.70",
+        "path": "T-30→T-5",
+        "role": "大",
+        "stage": "T-5",
+        "system": "footbreak",
+        "version": "granular-condition-v1"
+      },
+      "definition_hash": "0869fbd4573b9dee57ffe2eb333a2b76d2cdef7263d3e1d44ccb482ccc3d28e4",
+      "formal_rows": 69,
+      "formal_status_counts": {
+        "PENDING": 1,
+        "SETTLED": 67,
+        "VOIDED": 1
+      },
+      "market": "HIL",
+      "order_position": 11,
+      "path": "T-30→T-5",
+      "path_terminal_stage": "T-5",
+      "prospective_x20": {
+        "decided": 27,
+        "excluded": {
+          "before_snapshot_boundary": 40,
+          "duplicate_or_conflicting_fixture_market": 0,
+          "missing_or_invalid_provenance": 0,
+          "not_binary_decided": 0
+        },
+        "hits": 19,
+        "target": 20
+      },
+      "recovery_status": "HARD_DISABLED",
+      "rejected_same_signature_activity": 0,
+      "rejection_reasons": [
+        "pending_progress_mismatch"
+      ],
+      "safely_recoverable_missed_rows": 0,
+      "signature": "0869fbd4573b9dee57ffe2eb",
+      "valid": false
+    },
+    {
+      "activation_boundary": "2026-08-20T23:48:58+08:00",
+      "active_evidence_hash": "cca7ea1de1d88a030e9a8badcf5c43af008e26b508d397f97fe1622d46af2571",
+      "active_evidence_version": 2,
+      "activity_rejection_reasons": {},
+      "condition_number": 12,
+      "current_matcher_can_structurally_admit": false,
+      "decision_stage": "T-30",
+      "definition": {
+        "direction": "A→A",
+        "line_bucket": "≤2.5",
+        "market": "HIL",
+        "miner_key": [
+          "system=footbreak",
+          "market=HIL",
+          "path=首預→T-30",
+          "decision=T-30",
+          "tier=<1.70",
+          "direction=A→A",
+          "role=大",
+          "bucket=≤2.5",
+          "movement=不變"
+        ],
+        "movement": "不變",
+        "odds_tier": "<1.70",
+        "odds_trajectory": "",
+        "path": "首預→T-30",
+        "role": "大",
+        "stage": "T-30",
+        "system": "footbreak",
+        "version": "granular-condition-v1"
+      },
+      "definition_hash": "785894424f74f7d3bf9f79e9c4b07e65da238d0f98c207ec1624795657feac94",
+      "formal_rows": 0,
+      "formal_status_counts": {},
+      "market": "HIL",
+      "order_position": 12,
+      "path": "首預→T-30",
+      "path_terminal_stage": "T-30",
+      "prospective_x20": {
+        "decided": 0,
+        "excluded": {
+          "before_snapshot_boundary": 0,
+          "duplicate_or_conflicting_fixture_market": 0,
+          "missing_or_invalid_provenance": 0,
+          "not_binary_decided": 0
+        },
+        "hits": 0,
+        "target": 20
+      },
+      "recovery_status": "HARD_DISABLED",
+      "rejected_same_signature_activity": 0,
+      "rejection_reasons": [
+        "invalid_formal_matcher_axes"
+      ],
+      "safely_recoverable_missed_rows": 0,
+      "signature": "785894424f74f7d3bf9f79e9",
+      "valid": false
+    },
+    {
+      "activation_boundary": "2026-08-20T23:48:58+08:00",
+      "active_evidence_hash": "47bb9e134b5547ae3e08ff14c5a00cacc3945f9440b9d10d71af5fa85626fb5f",
+      "active_evidence_version": 2,
+      "activity_rejection_reasons": {},
+      "condition_number": 13,
+      "current_matcher_can_structurally_admit": false,
+      "decision_stage": "T-5",
+      "definition": {
+        "direction": "A→A→A",
+        "line_bucket": "≤2.5",
+        "market": "HIL",
+        "miner_key": [
+          "system=footbreak",
+          "market=HIL",
+          "path=首預→T-30→T-5",
+          "decision=T-5",
+          "tier=<1.70",
+          "direction=A→A→A",
+          "role=大",
+          "bucket=≤2.5",
+          "movement=不變"
+        ],
+        "movement": "不變",
+        "odds_tier": "<1.70",
+        "odds_trajectory": "",
+        "path": "首預→T-30→T-5",
+        "role": "大",
+        "stage": "T-5",
+        "system": "footbreak",
+        "version": "granular-condition-v1"
+      },
+      "definition_hash": "715edfc03f06dba83f50d2047e9c0234b20069be001d078a27c478b5a7f1ce44",
+      "formal_rows": 0,
+      "formal_status_counts": {},
+      "market": "HIL",
+      "order_position": 13,
+      "path": "首預→T-30→T-5",
+      "path_terminal_stage": "T-5",
+      "prospective_x20": {
+        "decided": 0,
+        "excluded": {
+          "before_snapshot_boundary": 0,
+          "duplicate_or_conflicting_fixture_market": 0,
+          "missing_or_invalid_provenance": 0,
+          "not_binary_decided": 0
+        },
+        "hits": 0,
+        "target": 20
+      },
+      "recovery_status": "HARD_DISABLED",
+      "rejected_same_signature_activity": 0,
+      "rejection_reasons": [
+        "invalid_formal_matcher_axes"
+      ],
+      "safely_recoverable_missed_rows": 0,
+      "signature": "715edfc03f06dba83f50d204",
+      "valid": false
+    },
+    {
+      "activation_boundary": "2026-08-23T07:53:10+08:00",
+      "active_evidence_hash": "dc1f425291be1585c8fa5f55d8951182aaacaeb4c228ef0a0dae272bb75f47aa",
+      "active_evidence_version": 3,
+      "activity_rejection_reasons": {
+        "invalid_signature_definition_or_evidence_binding": 6
+      },
+      "condition_number": 14,
+      "current_matcher_can_structurally_admit": true,
+      "decision_stage": "T-5",
+      "definition": {
+        "direction": "A",
+        "line_bucket": "≤9.5",
+        "market": "CHL",
+        "miner_key": [
+          "system=footbreak",
+          "market=CHL",
+          "path=T-5",
+          "decision=T-5",
+          "tier=≥1.70",
+          "direction=A",
+          "role=角球大",
+          "bucket=≤9.5",
+          "movement=不變"
+        ],
+        "movement": "不變",
+        "odds_tier": "≥1.70",
+        "odds_trajectory": "",
+        "path": "T-5",
+        "role": "角球大",
+        "stage": "T-5",
+        "system": "footbreak",
+        "version": "granular-condition-v1"
+      },
+      "definition_hash": "a79e13125a194532c81940366fd01cc819a5c8eb0090aa033cf6456ba1daf18a",
+      "formal_rows": 27,
+      "formal_status_counts": {
+        "PENDING": 1,
+        "SETTLED": 26
+      },
+      "market": "CHL",
+      "order_position": 14,
+      "path": "T-5",
+      "path_terminal_stage": "T-5",
+      "prospective_x20": {
+        "decided": 12,
+        "excluded": {
+          "before_snapshot_boundary": 14,
+          "duplicate_or_conflicting_fixture_market": 0,
+          "missing_or_invalid_provenance": 0,
+          "not_binary_decided": 0
+        },
+        "hits": 7,
+        "target": 20
+      },
+      "recovery_status": "HARD_DISABLED",
+      "rejected_same_signature_activity": 6,
+      "rejection_reasons": [
+        "evidence_batch_rows_unverifiable",
+        "pending_progress_mismatch",
+        "unverifiable_same_signature_activity"
+      ],
+      "safely_recoverable_missed_rows": 0,
+      "signature": "a79e13125a194532c8194036",
+      "valid": false
+    },
+    {
+      "activation_boundary": "2026-08-20T23:48:58+08:00",
+      "active_evidence_hash": "f30019fa8cd17cfaeef77f63b61a38b74fc4dd88724b5d035a6e787366b914d7",
+      "active_evidence_version": 2,
+      "activity_rejection_reasons": {
+        "wrong_portfolio_strategy_or_formal_shape": 6
+      },
+      "condition_number": 15,
+      "current_matcher_can_structurally_admit": false,
+      "decision_stage": "T-30",
+      "definition": {
+        "direction": "A",
+        "line_bucket": "≤9.5",
+        "market": "CHL",
+        "miner_key": [
+          "system=footbreak",
+          "market=CHL",
+          "path=T-30",
+          "decision=T-30",
+          "tier=≥1.70",
+          "direction=A",
+          "role=角球大",
+          "bucket=≤9.5",
+          "movement=不變"
+        ],
+        "movement": "不變",
+        "odds_tier": "≥1.70",
+        "odds_trajectory": "",
+        "path": "T-30",
+        "role": "角球大",
+        "stage": "T-30",
+        "system": "footbreak",
+        "version": "granular-condition-v1"
+      },
+      "definition_hash": "1a49d5fcc424f70f024e7b1fed9e59cf1276f18d35f5aac74ce61637c6f6c232",
+      "formal_rows": 0,
+      "formal_status_counts": {},
+      "market": "CHL",
+      "order_position": 15,
+      "path": "T-30",
+      "path_terminal_stage": "T-30",
+      "prospective_x20": {
+        "decided": 0,
+        "excluded": {
+          "before_snapshot_boundary": 0,
+          "duplicate_or_conflicting_fixture_market": 0,
+          "missing_or_invalid_provenance": 0,
+          "not_binary_decided": 0
+        },
+        "hits": 0,
+        "target": 20
+      },
+      "recovery_status": "HARD_DISABLED",
+      "rejected_same_signature_activity": 6,
+      "rejection_reasons": [
+        "unverifiable_same_signature_activity"
+      ],
+      "safely_recoverable_missed_rows": 0,
+      "signature": "1a49d5fcc424f70f024e7b1f",
+      "valid": false
+    },
+    {
+      "activation_boundary": "2026-08-21T02:11:32+08:00",
+      "active_evidence_hash": "95b9558042cb2eef029365cdf41370c67d8e5d23510aa8b61e5004eb0cd1de4d",
+      "active_evidence_version": 1,
+      "activity_rejection_reasons": {},
+      "condition_number": 16,
+      "current_matcher_can_structurally_admit": false,
+      "decision_stage": "T-5",
+      "definition": {
+        "direction": "A→A",
+        "line_bucket": "≤9.5",
+        "market": "CHL",
+        "miner_key": [
+          "system=footbreak",
+          "market=CHL",
+          "path=T-30→T-5",
+          "decision=T-5",
+          "tier=≥1.70",
+          "direction=A→A",
+          "role=角球大",
+          "bucket=≤9.5",
+          "movement=不變"
+        ],
+        "movement": "不變",
+        "odds_tier": "≥1.70",
+        "odds_trajectory": "",
+        "path": "T-30→T-5",
+        "role": "角球大",
+        "stage": "T-5",
+        "system": "footbreak",
+        "version": "granular-condition-v1"
+      },
+      "definition_hash": "76a34f2b71c6eedfba4b2496ab49ca54f583a1fc75954db9da5d63945dcd5662",
+      "formal_rows": 0,
+      "formal_status_counts": {},
+      "market": "CHL",
+      "order_position": 16,
+      "path": "T-30→T-5",
+      "path_terminal_stage": "T-5",
+      "prospective_x20": {
+        "decided": 0,
+        "excluded": {
+          "before_snapshot_boundary": 0,
+          "duplicate_or_conflicting_fixture_market": 0,
+          "missing_or_invalid_provenance": 0,
+          "not_binary_decided": 0
+        },
+        "hits": 0,
+        "target": 20
+      },
+      "recovery_status": "HARD_DISABLED",
+      "rejected_same_signature_activity": 0,
+      "rejection_reasons": [
+        "invalid_formal_matcher_axes"
+      ],
+      "safely_recoverable_missed_rows": 0,
+      "signature": "76a34f2b71c6eedfba4b2496",
+      "valid": false
+    },
+    {
+      "activation_boundary": "2026-08-21T02:11:32+08:00",
+      "active_evidence_hash": "eef5807b2cf919727c668c8e933ac9398338032ff02059a0dd3ded8163babca3",
+      "active_evidence_version": 1,
+      "activity_rejection_reasons": {},
+      "condition_number": 17,
+      "current_matcher_can_structurally_admit": true,
+      "decision_stage": "T-5",
+      "definition": {
+        "direction": "A→A",
+        "line_bucket": "≤9.5",
+        "market": "CHL",
+        "miner_key": [
+          "system=footbreak",
+          "market=CHL",
+          "path=T-30→T-5",
+          "decision=T-5",
+          "tier=≥1.70",
+          "direction=A→A",
+          "role=角球大",
+          "bucket=≤9.5",
+          "movement=不變",
+          "tier_path=≥1.70→≥1.70"
+        ],
+        "movement": "不變",
+        "odds_tier": "≥1.70",
+        "odds_trajectory": "≥1.70→≥1.70",
+        "path": "T-30→T-5",
+        "role": "角球大",
+        "stage": "T-5",
+        "system": "footbreak",
+        "version": "granular-condition-v1"
+      },
+      "definition_hash": "0a53d616f4b205339da39824876ca6d9464928d73ac6ce66cb9c1ba950da7498",
+      "formal_rows": 24,
+      "formal_status_counts": {
+        "PENDING": 1,
+        "SETTLED": 23
+      },
+      "market": "CHL",
+      "order_position": 17,
+      "path": "T-30→T-5",
+      "path_terminal_stage": "T-5",
+      "prospective_x20": {
+        "decided": 23,
+        "excluded": {
+          "before_snapshot_boundary": 0,
+          "duplicate_or_conflicting_fixture_market": 0,
+          "missing_or_invalid_provenance": 0,
+          "not_binary_decided": 0
+        },
+        "hits": 13,
+        "target": 20
+      },
+      "recovery_status": "HARD_DISABLED",
+      "rejected_same_signature_activity": 0,
+      "rejection_reasons": [
+        "pending_progress_mismatch"
+      ],
+      "safely_recoverable_missed_rows": 0,
+      "signature": "0a53d616f4b205339da39824",
+      "valid": false
+    }
+  ],
+  "decision_stage_counts": {
+    "T-30": 4,
+    "T-5": 12,
+    "首預": 1
+  },
+  "manifest_hash": "b3b4d6225eaf09e123b567b14c9a29434ac179d51fed49e1bc3ec481e081205b",
+  "namespace_activation_at": "2026-08-19T23:58:24+08:00",
+  "namespace_schema_version": 2,
+  "recovery": {
+    "implemented": false,
+    "mode": "audit-only",
+    "reason": "Recovery is hard-disabled.",
+    "safely_recoverable_missed_rows": 0
+  },
+  "rejection_reasons": {
+    "evidence_batch_rows_unverifiable": 3,
+    "invalid_formal_matcher_axes": 5,
+    "pending_progress_mismatch": 6,
+    "production_signature_roundtrip_failed": 2,
+    "unverifiable_same_signature_activity": 8
+  },
+  "schema": "wilson-registry-manifest-v2",
+  "system": "footbreak",
+  "valid": false
+}
