@@ -1197,6 +1197,202 @@ def _dashboard_evidence_row(
     return projected
 
 
+def _legacy_formal_binding_repair_copy(
+    row: dict[str, Any], *, system: str, signature: str,
+    frozen: dict[str, Any], projection_time: datetime,
+    require_settled: bool, ledger: dict[str, Any],
+    require_absent_native_stage_key: bool = False,
+) -> tuple[dict[str, Any] | None, tuple[str, ...], str | None]:
+    """Prove the exact legacy binding omissions on a copy of ``row``.
+
+    This helper never mutates its input and never accepts a second defect.
+    In particular, the durable migration can require a truly absent
+    ``native_stage_at`` key while the temporary dashboard compatibility path
+    retains its historical missing-or-null behavior.
+    """
+    admitted, reason = validate_formal_row(
+        row, system=system, signature=signature, frozen=frozen,
+        projection_time=projection_time, require_settled=require_settled,
+        ledger=ledger,
+    )
+    if admitted is not None:
+        return copy.deepcopy(row), (), None
+    if reason != "invalid_formal_admission_binding":
+        return None, (), reason
+
+    repaired = copy.deepcopy(row)
+    changed: list[str] = []
+    stored_definition = row.get("frozen_condition_definition")
+    if stored_definition == {}:
+        repaired["frozen_condition_definition"] = copy.deepcopy(
+            frozen.get("definition"),
+        )
+        changed.append("frozen_condition_definition")
+    elif stored_definition != frozen.get("definition"):
+        return None, (), "unsupported_frozen_condition_definition"
+
+    marker = row.get("rollover_provenance")
+    native_key_absent = "native_stage_at" not in row
+    native_missing = native_key_absent or (
+        not require_absent_native_stage_key and row.get("native_stage_at") is None
+    )
+    if native_missing:
+        if (
+            not isinstance(marker, dict)
+            or _time(marker.get("stage_at")) is None
+        ):
+            return None, (), "invalid_legacy_native_stage_source"
+        repaired["native_stage_at"] = marker["stage_at"]
+        changed.append("native_stage_at")
+    elif (
+        not isinstance(marker, dict)
+        or row.get("native_stage_at") != marker.get("stage_at")
+    ):
+        return None, (), "conflicting_native_stage_at"
+
+    if not changed:
+        return None, (), reason
+    admitted, repaired_reason = validate_formal_row(
+        repaired, system=system, signature=signature, frozen=frozen,
+        projection_time=projection_time, require_settled=require_settled,
+        ledger=ledger,
+    )
+    if admitted is None or repaired_reason is not None:
+        return None, (), repaired_reason or "invalid_formal_admission_binding"
+    return repaired, tuple(changed), None
+
+
+def _pending_proof_failure(
+    reason: str, *, expected_decided: int = 0, expected_hits: int = 0,
+    required: int = ROLLOVER_BATCH_SIZE,
+) -> dict[str, Any]:
+    return {
+        "complete": False, "reason": reason, "eligible": [],
+        "ordered_fixture_market_hashes": [], "excluded": {},
+        "repairs": [], "expected_decided": expected_decided,
+        "expected_hits": expected_hits, "required": required,
+    }
+
+
+def _signature_rows_for_rollover(
+    ledger: dict[str, Any], signature: str,
+) -> list[dict[str, Any]]:
+    """Mirror ``recompute_namespace``'s unfiltered signature row scope."""
+    namespace = ledger.get(NAMESPACE)
+    observations = (
+        namespace.get("observations", [])
+        if isinstance(namespace, dict) else []
+    )
+    rows: list[dict[str, Any]] = []
+    for collection in (ledger.get("bets", []), observations):
+        if not isinstance(collection, list):
+            continue
+        rows.extend(
+            row for row in collection
+            if isinstance(row, dict)
+            and str(row.get("frozen_condition_signature") or "") == signature
+        )
+    return rows
+
+
+def _prove_pending_rollover_cohort(
+    ledger: dict[str, Any], system: str, signature: str,
+    frozen: dict[str, Any], active: dict[str, Any], pending: dict[str, Any],
+    *, projection_time: datetime, allow_legacy_omissions: bool = False,
+    require_absent_native_stage_key: bool = False,
+) -> dict[str, Any]:
+    """Prove exact pending identities, outcomes, and full exclusion counters."""
+    try:
+        expected_decided = int(pending.get("eligible_decided") or 0)
+        expected_hits = int(pending.get("eligible_hits") or 0)
+        required = int(pending.get("required") or ROLLOVER_BATCH_SIZE)
+    except (AttributeError, TypeError, ValueError):
+        return _pending_proof_failure("malformed_pending_summary")
+    if (
+        expected_decided < 0 or expected_hits < 0
+        or expected_hits > expected_decided or required <= 0
+    ):
+        return _pending_proof_failure(
+            "malformed_pending_summary",
+            expected_decided=expected_decided, expected_hits=expected_hits,
+            required=required,
+        )
+    expected_excluded = pending.get("excluded")
+    if not isinstance(expected_excluded, dict):
+        return _pending_proof_failure(
+            "malformed_pending_summary",
+            expected_decided=expected_decided, expected_hits=expected_hits,
+            required=required,
+        )
+
+    source_rows = _signature_rows_for_rollover(ledger, signature)
+    validated_rows: list[dict[str, Any]] = []
+    originals: dict[int, dict[str, Any]] = {}
+    repairs: list[dict[str, Any]] = []
+    for row in source_rows:
+        if str(row.get("frozen_condition_signature") or "") != signature:
+            continue
+        admitted, reason = validate_formal_row(
+            row, system=system, signature=signature, frozen=frozen,
+            projection_time=projection_time, require_settled=True,
+            ledger=ledger,
+        )
+        validated = copy.deepcopy(row) if admitted is not None else None
+        fields: tuple[str, ...] = ()
+        if validated is None and allow_legacy_omissions:
+            validated, fields, _repair_reason = (
+                _legacy_formal_binding_repair_copy(
+                    row, system=system, signature=signature, frozen=frozen,
+                    projection_time=projection_time, require_settled=True,
+                    ledger=ledger,
+                    require_absent_native_stage_key=(
+                        require_absent_native_stage_key
+                    ),
+                )
+            )
+        if validated is None:
+            continue
+        validated_rows.append(validated)
+        originals[id(validated)] = row
+        if fields:
+            repairs.append({
+                "row": row, "repaired": validated, "fields": fields,
+            })
+
+    selected, excluded = _eligible_rollover_rows(
+        validated_rows, system, signature, active,
+    )
+    eligible = [
+        {
+            **item,
+            "row": originals[id(item["row"])],
+            "validated_row": item["row"],
+        }
+        for item in selected
+    ]
+    ordered = [item["fixture_market_hash"] for item in eligible]
+    actual_hits = sum(bool(item["hit"]) for item in eligible)
+    if (
+        len(eligible) != expected_decided
+        or actual_hits != expected_hits
+        or excluded != expected_excluded
+    ):
+        return {
+            **_pending_proof_failure(
+                "pending_row_identity_mismatch",
+                expected_decided=expected_decided,
+                expected_hits=expected_hits, required=required,
+            ),
+            "excluded": excluded, "repairs": repairs,
+        }
+    return {
+        "complete": True, "reason": None, "eligible": eligible,
+        "ordered_fixture_market_hashes": ordered, "excluded": excluded,
+        "repairs": repairs, "expected_decided": expected_decided,
+        "expected_hits": expected_hits, "required": required,
+    }
+
+
 def _project_pending_rollover_rows(
     ledger: dict[str, Any], system: str, signature: str,
     active: Any, pending: Any,
@@ -1233,7 +1429,6 @@ def _project_pending_rollover_rows(
             "complete": False,
             "unavailable_reason": "malformed_pending_summary",
         }
-
     namespace = ledger.get(NAMESPACE)
     frozen = (
         (namespace.get("conditions") or {}).get(signature)
@@ -1251,88 +1446,14 @@ def _project_pending_rollover_rows(
             "rows": [], "complete": False,
             "unavailable_reason": "pending_condition_identity_unavailable",
         }
-    # Match the authoritative rollover writer's row/container contract before
-    # rebuilding the cohort.  A legacy or malformed same-signature row must
-    # never be borrowed merely because its loose provenance marker looks
-    # similar to condition #7.
-    source_rows = active_bets(ledger, system) + active_observations(ledger, system)
-    candidates: list[dict[str, Any]] = []
-    rejected: list[tuple[dict[str, Any], str | None]] = []
-    for row in source_rows:
-        if str(row.get("frozen_condition_signature") or "") != signature:
-            continue
-        admitted, reason = validate_formal_row(
-            row, system=system, signature=signature, frozen=frozen,
-            projection_time=projection_time, require_settled=True,
-            ledger=ledger,
-        )
-        if admitted is not None:
-            candidates.append(row)
-        else:
-            rejected.append((row, reason))
-    eligible, selected_excluded = _eligible_rollover_rows(
-        candidates, system, signature, active,
+    proof = _prove_pending_rollover_cohort(
+        ledger, system, signature, frozen, active, pending,
+        projection_time=projection_time, allow_legacy_omissions=True,
     )
-    # Some durable pending cohorts straddle additions to the immutable formal
-    # binding.  Recover only two exact legacy omissions: an empty stored
-    # condition definition, and a missing top-level ``native_stage_at`` when
-    # the same timestamp remains inside a valid rollover marker.  Never repair
-    # a conflicting non-empty definition or two different stage timestamps.
-    # The minimally repaired copy must then pass the complete current validator,
-    # including chronology, evidence version/hash, arithmetic, quarter-line
-    # settlement and snapshot binding.  Mix those proven legacy rows with
-    # current rows, then expose the cohort only when the deterministic selector
-    # still agrees exactly with the durable pending count, hit count and
-    # selector-exclusion counters.  Any other legacy difference, duplicate,
-    # conflict or extra row remains fail-closed.
-    if expected_decided > 0:
-        legacy_binding_rows: list[dict[str, Any]] = []
-        for row, reason in rejected:
-            if reason != "invalid_formal_admission_binding":
-                continue
-            repaired = copy.deepcopy(row)
-            changed = False
-            stored_definition = row.get("frozen_condition_definition")
-            if stored_definition == {}:
-                repaired["frozen_condition_definition"] = copy.deepcopy(
-                    frozen.get("definition"),
-                )
-                changed = True
-            elif stored_definition != frozen.get("definition"):
-                continue
-            marker = row.get("rollover_provenance")
-            if row.get("native_stage_at") is None:
-                if (
-                    not isinstance(marker, dict)
-                    or _time(marker.get("stage_at")) is None
-                ):
-                    continue
-                repaired["native_stage_at"] = marker["stage_at"]
-                changed = True
-            elif (
-                not isinstance(marker, dict)
-                or row.get("native_stage_at") != marker.get("stage_at")
-            ):
-                continue
-            if not changed:
-                continue
-            admitted, repaired_reason = validate_formal_row(
-                repaired, system=system, signature=signature, frozen=frozen,
-                projection_time=projection_time, require_settled=True,
-                ledger=ledger,
-            )
-            if admitted is not None and repaired_reason is None:
-                legacy_binding_rows.append(row)
-        compatible_eligible, compatible_excluded = _eligible_rollover_rows(
-            [*candidates, *legacy_binding_rows], system, signature, active,
-        )
-        if (
-            len(compatible_eligible) == expected_decided
-            and sum(bool(item["hit"]) for item in compatible_eligible)
-            == expected_hits
-        ):
-            eligible = compatible_eligible
-            selected_excluded = compatible_excluded
+    expected_decided = proof["expected_decided"]
+    expected_hits = proof["expected_hits"]
+    required = proof["required"]
+    eligible = proof["eligible"]
     rows = [
         _dashboard_evidence_row(
             item["row"],
@@ -1345,24 +1466,14 @@ def _project_pending_rollover_rows(
         )
         for item in eligible
     ]
-    actual_hits = sum(bool(row["hit"]) for row in rows)
-    expected_excluded = pending.get("excluded")
-    selector_exclusions_match = (
-        isinstance(expected_excluded, dict)
-        and expected_excluded == selected_excluded
-    )
-    if (
-        len(rows) != expected_decided
-        or actual_hits != expected_hits
-        or not selector_exclusions_match
-    ):
+    if not proof["complete"]:
         return {
             "expected_decided": expected_decided,
             "expected_hits": expected_hits,
             "required": required,
             "rows": [],
             "complete": False,
-            "unavailable_reason": "pending_row_identity_mismatch",
+            "unavailable_reason": proof["reason"],
         }
     return {
         "expected_decided": expected_decided,
@@ -1371,6 +1482,132 @@ def _project_pending_rollover_rows(
         "rows": rows,
         "complete": True,
         "unavailable_reason": None,
+    }
+
+
+def _prove_explicit_rollover_batch(
+    ledger: dict[str, Any], system: str, signature: str,
+    frozen: dict[str, Any], version: dict[str, Any], *,
+    projection_time: datetime, allow_legacy_omissions: bool = False,
+    require_absent_native_stage_key: bool = False,
+) -> dict[str, Any]:
+    """Prove every row and ordering claim in one identity-bearing batch."""
+    failure = {
+        "complete": False, "reason": "malformed_batch_summary", "eligible": [],
+        "ordered_fixture_market_hashes": [], "repairs": [],
+        "expected_decided": 0, "expected_hits": 0,
+        "version": version.get("version") if isinstance(version, dict) else None,
+    }
+    definition, versions, chain_reason = _validate_frozen_identity_and_chain(
+        frozen, signature, system,
+    )
+    if definition is None or versions is None or chain_reason is not None:
+        return {**failure, "reason": chain_reason or "invalid_evidence_chain"}
+    if not any(item is version or item == version for item in versions):
+        return {**failure, "reason": "batch_not_in_validated_chain"}
+    version_number = _strict_int(version.get("version"))
+    decided = _strict_int(version.get("batch_decided"))
+    hits = _strict_int(version.get("batch_hits"))
+    hashes = version.get("batch_fixture_market_hashes")
+    base = {
+        **failure, "expected_decided": decided or 0, "expected_hits": hits or 0,
+    }
+    if (
+        version_number is None or version_number <= 1
+        or decided is None or hits is None or decided <= 0
+        or not 0 <= hits <= decided
+        or not isinstance(hashes, list) or len(hashes) != decided
+        or any(not _sha256_hex(value) for value in hashes)
+        or len(set(hashes)) != len(hashes)
+    ):
+        return base
+    predecessor = versions[version_number - 2]
+    predecessor_boundary = predecessor.get("activation_boundary_at")
+    if _time(predecessor_boundary) is None:
+        return {**base, "reason": "batch_predecessor_boundary_invalid"}
+    for other in versions:
+        if other is version or other == version:
+            continue
+        other_hashes = other.get("batch_fixture_market_hashes")
+        if isinstance(other_hashes, list) and set(hashes).intersection(other_hashes):
+            return {**base, "reason": "cross_version_batch_identity_reuse"}
+
+    wanted = set(hashes)
+    matched: dict[str, list[tuple[dict[str, Any], dict[str, Any], tuple[str, ...]]]] = {}
+    source_rows = _signature_rows_for_rollover(ledger, signature)
+    for row in source_rows:
+        if str(row.get("frozen_condition_signature") or "") != signature:
+            continue
+        marker = row.get("rollover_provenance")
+        fixture_hash = marker.get("fixture_market_hash") if isinstance(marker, dict) else None
+        if fixture_hash not in wanted:
+            continue
+        admitted, reason = validate_formal_row(
+            row, system=system, signature=signature, frozen=frozen,
+            projection_time=projection_time, require_settled=True, ledger=ledger,
+        )
+        repaired = copy.deepcopy(row) if admitted is not None else None
+        fields: tuple[str, ...] = ()
+        if repaired is None and allow_legacy_omissions:
+            repaired, fields, _repair_reason = _legacy_formal_binding_repair_copy(
+                row, system=system, signature=signature, frozen=frozen,
+                projection_time=projection_time, require_settled=True,
+                ledger=ledger,
+                require_absent_native_stage_key=require_absent_native_stage_key,
+            )
+        if repaired is None:
+            return {**base, "reason": reason or "batch_row_validation_failed"}
+        matched.setdefault(str(fixture_hash), []).append((row, repaired, fields))
+    if any(len(matched.get(value) or []) != 1 for value in hashes):
+        return {**base, "reason": "batch_row_identity_mismatch"}
+
+    rows = [matched[value][0] for value in hashes]
+    ordered_rows = sorted(
+        rows,
+        key=lambda item: (
+            _time(item[1]["rollover_provenance"]["stage_at"]),
+            item[1]["rollover_provenance"]["fixture_market_hash"],
+        ),
+    )
+    ordered = [
+        item[1]["rollover_provenance"]["fixture_market_hash"]
+        for item in ordered_rows
+    ]
+    actual_hits = sum(item[1].get("result") in BINARY_HIT_RESULTS for item in rows)
+    final_stage = ordered_rows[-1][1]["rollover_provenance"]["stage_at"]
+    if any(
+        not _strictly_after(
+            item[1]["rollover_provenance"]["stage_at"],
+            predecessor_boundary,
+        )
+        for item in ordered_rows
+    ):
+        return {**base, "reason": "batch_row_not_after_predecessor_boundary"}
+    if ordered != hashes:
+        return {**base, "reason": "batch_order_mismatch"}
+    if actual_hits != hits:
+        return {**base, "reason": "batch_outcome_mismatch"}
+    if final_stage != version.get("activation_boundary_at"):
+        return {**base, "reason": "batch_activation_boundary_mismatch"}
+    repairs = [
+        {"row": original, "repaired": repaired, "fields": fields}
+        for original, repaired, fields in rows if fields
+    ]
+    return {
+        "complete": True, "reason": None, "eligible": [
+            {
+                "row": original, "validated_row": repaired,
+                "fixture_market_hash": repaired["rollover_provenance"][
+                    "fixture_market_hash"
+                ],
+                "stage_at": repaired["rollover_provenance"]["stage_at"],
+                "hit": repaired.get("result") in BINARY_HIT_RESULTS,
+            }
+            for original, repaired, _fields in ordered_rows
+        ],
+        "ordered_fixture_market_hashes": ordered, "repairs": repairs,
+        "expected_decided": decided, "expected_hits": hits,
+        "version": version.get("version"),
     }
 
 
