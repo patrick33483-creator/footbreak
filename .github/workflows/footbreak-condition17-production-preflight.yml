@@ -36,7 +36,7 @@ jobs:
       EXPECTED_DEPLOYED_SHA: ${{ inputs.expected_deployed_sha }}
       EXPECTED_DEPLOYED_TREE: ${{ inputs.expected_deployed_tree }}
       PINNED_VALIDATION_SHA: c57707265ad60990b3a20cc689dc5358c7f9c252bb050fede3646837b381cd96
-      PINNED_QUARTER_SHA: f38c63c879ffe48f5bec77c289652152b215f8d24be9a9b8634f22b576cda3a9
+      PINNED_QUARTER_SHA: ec43898d06b1530ce9681a89319150df0b59b6855c8f76f53662d61aaac0d8ba
       DEPLOY_PORT: ${{ inputs.ssh_port }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
