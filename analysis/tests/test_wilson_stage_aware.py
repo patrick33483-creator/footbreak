@@ -297,7 +297,7 @@ class StageAwareWilsonTests(unittest.TestCase):
             funnel["conditions"][0]["stages"]["settled_valid_evidence"]["count"], 1,
         )
 
-    def test_malformed_multistage_trajectory_remains_fail_closed_at_every_stage(self):
+    def test_level_two_multistage_identity_without_tier_path_uses_own_stage(self):
         signatures = [
             "d3e112d8815b6e9df46e075d", "033986661061d8b486cff464",
             "785894424f74f7d3bf9f79e9", "715edfc03f06dba83f50d204",
@@ -310,20 +310,43 @@ class StageAwareWilsonTests(unittest.TestCase):
         self.assertEqual(len(signatures), 14)
         for signature in signatures:
             system = "footbreak" if signature in set(signatures[:5]) else "crown"
-            malformed = {
+            level_two = {
                 "key": [
                     f"system={system}", "market=HIL", "path=首預→T-30",
                     "decision=T-30", "direction=A→A", "role=大",
                     "bucket=≤2.5", "tier=<1.70", "movement=不變",
                 ],
             }
-            for stage in ("首預", "T-30", "T-5"):
+            axes = formal_matcher_axes(
+                level_two, system=system, decision_stage="T-30",
+            )
+            self.assertIsNotNone(axes, signature)
+            self.assertNotIn("tier_path", axes)
+            for stage in ("首預", "T-5"):
                 self.assertIsNone(
                     formal_matcher_axes(
-                        malformed, system=system, decision_stage=stage,
+                        level_two, system=system, decision_stage=stage,
                     ),
                     (signature, stage),
                 )
+
+    def test_present_multistage_tier_path_remains_strict(self):
+        base = [
+            "system=crown", "market=HIL", "path=首預→T-30",
+            "decision=T-30", "direction=A→A", "role=大",
+            "bucket=2.75–3.0", "tier=≥1.70", "movement=不變",
+        ]
+        for tier_path in ("低", "≥1.70→低", "低→≥1.70→≥1.70"):
+            with self.subTest(tier_path=tier_path):
+                self.assertIsNone(formal_matcher_axes(
+                    {"key": base + [f"tier_path={tier_path}"]},
+                    system="crown", decision_stage="T-30",
+                ))
+        axes = formal_matcher_axes(
+            {"key": base + ["tier_path=低→≥1.70"]},
+            system="crown", decision_stage="T-30",
+        )
+        self.assertEqual(axes["tier_path"], "低→≥1.70")
 
     def test_complete_t30_trajectory_matches_only_at_t30(self):
         candidate = {

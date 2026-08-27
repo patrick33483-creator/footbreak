@@ -1047,10 +1047,16 @@ def formal_matcher_axes(
     stages = result["path"].split("→")
     tier_path = result.get("tier_path")
     if len(stages) > 1:
-        if not tier_path or len(tier_path.split("→")) != len(stages):
-            return None
-        if tier_path.split("→")[-1] != result["tier"]:
-            return None
+        # Granular descriptor level 2 intentionally binds the terminal tier
+        # but not the full tier trajectory.  Only level 3 adds ``tier_path``.
+        # An absent trajectory therefore remains an exact level-2 identity;
+        # when present, retain the full level-3 cardinality and terminal-tier
+        # checks rather than synthesizing or widening it.
+        if tier_path:
+            if len(tier_path.split("→")) != len(stages):
+                return None
+            if tier_path.split("→")[-1] != result["tier"]:
+                return None
     elif tier_path:
         # A single-stage condition cannot be widened by a synthetic
         # trajectory field; it is malformed immutable state.
