@@ -35,7 +35,7 @@ jobs:
       TRUSTED_DISPATCH_REF: refs/heads/integrate/condition17-stage-a-main-20260827
       EXPECTED_DEPLOYED_SHA: ${{ inputs.expected_deployed_sha }}
       EXPECTED_DEPLOYED_TREE: ${{ inputs.expected_deployed_tree }}
-      PINNED_VALIDATION_SHA: d0b2d4a4b9605459dbacb71dc18f099e684814546c75b5a3ff37cc870de1f47d
+      PINNED_VALIDATION_SHA: c57707265ad60990b3a20cc689dc5358c7f9c252bb050fede3646837b381cd96
       PINNED_QUARTER_SHA: f38c63c879ffe48f5bec77c289652152b215f8d24be9a9b8634f22b576cda3a9
       DEPLOY_PORT: ${{ inputs.ssh_port }}
     steps:
