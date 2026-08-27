@@ -150,6 +150,7 @@ jobs:
           from pathlib import Path
           report = json.loads(Path("crown-condition-4-replay.json").read_text())
           summary = report["summary"]
+          duplicate = report["v2_duplicate_audit"]
           lines = [
               "# 皇冠 Wilson 條件 #4 唯讀歷史重播",
               "",
@@ -161,6 +162,11 @@ jobs:
               f"- 已有相應記錄：{summary['recorded_expected_fixture_count']}",
               f"- 缺少相應記錄：{summary['missing_expected_record_fixture_count']}",
               f"- 經歷史及 learning DB 仍未知賽果：{summary['unknown_result_fixture_count']}",
+              f"- V2 儲存逐場身份：{'有' if duplicate['stored_v2_fixture_identities_available'] else '沒有（舊聚合限制）'}",
+              f"- 可重建界線前場次：{duplicate['reconstructed_pre_boundary_fixture_count']}",
+              f"- 可重建界線前重複 fixture：{len(duplicate['reconstructed_pre_boundary_duplicate_fixture_ids'])}",
+              f"- 新40場內部重複 fixture：{len(duplicate['post_boundary_duplicate_fixture_ids'])}",
+              f"- 新舊界線交叉重複 fixture：{len(duplicate['cross_boundary_duplicate_fixture_ids'])}",
               "",
               "## 逐場",
           ]

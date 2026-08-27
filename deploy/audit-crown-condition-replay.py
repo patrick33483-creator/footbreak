@@ -172,6 +172,35 @@ def replay(
     minimum_odds = float(active["minimum_acceptable_odds_raw"])
     candidates: list[dict[str, Any]] = []
     excluded_before_boundary = 0
+    reconstructed_pre_boundary: list[dict[str, Any]] = []
+
+    for panel in canonical_panels(rows, settled_only=True):
+        if panel.get("market") != "HDC":
+            continue
+        matching_paths = [
+            path for path in _paths(panel, "T-5")
+            if path[-1].get("stage") == "T-5"
+            and _descriptor("crown", path, 2)[0] == expected_key
+        ]
+        if len(matching_paths) != 1:
+            continue
+        path = matching_paths[0]
+        fixture = str(panel.get("fixture") or "")
+        terminal_row = history_index.get((fixture, "T-5"), {})
+        stage_at = _time(
+            terminal_row.get("predicted_at")
+            or terminal_row.get("ts")
+            or terminal_row.get("observed_at")
+        )
+        if stage_at is None or stage_at >= boundary:
+            continue
+        terminal = path[-1]
+        reconstructed_pre_boundary.append({
+            "match_id": fixture,
+            "hit": terminal.get("hit"),
+            "push": terminal.get("push"),
+            "stage_at": stage_at.isoformat(),
+        })
 
     for panel in canonical_panels(rows, settled_only=False):
         if panel.get("market") != "HDC":
@@ -273,6 +302,22 @@ def replay(
     ]
     price_pass = [row for row in candidates if row["passes_wilson_price"]]
     low_price = [row for row in candidates if not row["passes_wilson_price"]]
+    historical_ids = [row["match_id"] for row in reconstructed_pre_boundary]
+    current_ids = [row["match_id"] for row in candidates]
+    historical_duplicate_ids = sorted({
+        fixture for fixture in historical_ids if historical_ids.count(fixture) > 1
+    })
+    current_duplicate_ids = sorted({
+        fixture for fixture in current_ids if current_ids.count(fixture) > 1
+    })
+    cross_boundary_duplicate_ids = sorted(set(historical_ids) & set(current_ids))
+    reconstructed_hits = sum(
+        row["hit"] is True for row in reconstructed_pre_boundary
+    )
+    reconstructed_decided = sum(
+        row["hit"] is True or row["hit"] is False
+        for row in reconstructed_pre_boundary
+    )
     return {
         "schema": "crown_condition_read_only_replay_v1",
         "read_only": True,
@@ -287,6 +332,24 @@ def replay(
         "history_source_rows": len(rows),
         "learning_result_rows": len(learning_results),
         "excluded_matching_before_activation": excluded_before_boundary,
+        "v2_duplicate_audit": {
+            "stored_v2_fixture_identities_available": any(
+                version.get("batch_fixture_market_hashes")
+                for version in condition.get("evidence_versions") or []
+            ),
+            "stored_v2_cumulative_decided": active.get("cumulative_decided"),
+            "stored_v2_cumulative_hits": active.get("cumulative_hits"),
+            "reconstructed_pre_boundary_fixture_count": len(
+                reconstructed_pre_boundary
+            ),
+            "reconstructed_pre_boundary_decided": reconstructed_decided,
+            "reconstructed_pre_boundary_hits": reconstructed_hits,
+            "reconstructed_pre_boundary_duplicate_fixture_ids": (
+                historical_duplicate_ids
+            ),
+            "post_boundary_duplicate_fixture_ids": current_duplicate_ids,
+            "cross_boundary_duplicate_fixture_ids": cross_boundary_duplicate_ids,
+        },
         "summary": {
             "matching_fixture_count": len(candidates),
             "wilson_price_pass_fixture_count": len(price_pass),
