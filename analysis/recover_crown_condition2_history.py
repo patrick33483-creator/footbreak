@@ -1,16 +1,19 @@
 #!/usr/bin/env python3
 """Proof-gated recovery of Crown Wilson condition #2 first-look evidence.
 
-The migration has two deliberately separate proofs:
+The migration follows the explicitly authorized evidence model:
 
-1. prove that the legacy 44/71 "prospective" cohort is the latest 30% subset
-   of the already-counted 141/231 discovery total, then supersede only that
-   duplicate evidence version;
+1. prove the stored baseline (141/231) and existing V2 batch (44/71), keeping
+   the resulting 185/302 as the active V2 starting point;
 2. match later fixtures from immutable pre-kickoff first-look predictions
-   without reading outcomes, create ordinary non-betting observations, and
-   only then use the persisted normal grade to settle them.
+   without using outcomes as matching inputs, then merge their persisted
+   normal grades once into V2;
+3. reset the post-migration prospective batch to 0/20 so only new first-look
+   admissions can create V3.
 
-Audit is the default.  ``--apply`` atomically replaces only the Crown ledger.
+Pushes remain auditable but do not enter the Wilson denominator. Pending
+fixtures remain pending. Audit is the default; ``--apply`` atomically replaces
+only the Crown ledger.
 """
 from __future__ import annotations
 
@@ -26,16 +29,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
-from analysis.granular_conditions import (
-    MARKET_LABELS, _descriptor, _paths, canonical_panels,
-)
+from analysis.granular_conditions import _descriptor, _paths, canonical_panels
 from analysis.legacy_batch_runtime import load_production_legacy_batch_authority
 from analysis.quarter_line import from_no_vig_probability, from_two_sided_market
 from analysis.wilson_validation import (
-    _canonical_hash, _time, _version_hash, active_evidence_version,
-    apply_active_evidence, formal_registry_candidates, matching_admissions,
-    match_formal_registry, recompute_namespace, record_match_observation,
-    validate_formal_row,
+    _canonical_hash, _evidence_values, _time, _version_hash,
+    active_evidence_version, formal_registry_candidates, matching_admissions,
+    match_formal_registry, recompute_namespace,
 )
 
 SYSTEM = "crown"
@@ -297,36 +297,90 @@ def _prove_duplicate(
     }
 
 
-def _supersede_duplicate(proof: dict[str, Any], migration_at: str) -> None:
+def _merge_recovered_into_v2(
+    proof: dict[str, Any], recovered: list[dict[str, Any]], migration_at: str,
+) -> dict[str, int]:
+    """Rebuild active V2 from the stored 185/302 plus recovered history.
+
+    This is the explicitly authorized migration model for condition #2:
+    historical decided rows are merged once into V2, pushes are retained but
+    excluded from the Wilson denominator, and only stages after the migration
+    boundary may accumulate toward V3.
+    """
     frozen = proof["frozen"]
-    v1, v2 = proof["v1"], proof["v2"]
-    frozen["evidence_versions"] = [copy.deepcopy(v1)]
-    frozen["active_evidence_version"] = 1
-    frozen["active_evidence_hash"] = v1["evidence_hash"]
+    v1, original_v2 = copy.deepcopy(proof["v1"]), copy.deepcopy(proof["v2"])
+    recovered_hits = sum(
+        row.get("result") in {"Won", "Half Won"} for row in recovered
+    )
+    recovered_losses = sum(
+        row.get("result") in {"Lost", "Half Lost"} for row in recovered
+    )
+    recovered_pushes = sum(row.get("result") == "Refunded" for row in recovered)
+    recovered_pending = sum(row.get("result") == "PENDING" for row in recovered)
+    recovered_decided = recovered_hits + recovered_losses
+    row_hashes = sorted(_hash(row) for row in recovered)
+    values = _evidence_values(
+        EXPECTED_DUPLICATE["hits"] + recovered_hits + EXPECTED_BASELINE["hits"],
+        EXPECTED_DUPLICATE["decided"] + recovered_decided
+        + EXPECTED_BASELINE["decided"],
+    )
+    v2 = {
+        **original_v2,
+        "batch_fixture_market_hashes": [],
+        "batch_hits": EXPECTED_DUPLICATE["hits"] + recovered_hits,
+        "batch_decided": EXPECTED_DUPLICATE["decided"] + recovered_decided,
+        "cumulative_hits": EXPECTED_BASELINE["hits"]
+        + EXPECTED_DUPLICATE["hits"] + recovered_hits,
+        "cumulative_decided": EXPECTED_BASELINE["decided"]
+        + EXPECTED_DUPLICATE["decided"] + recovered_decided,
+        "wilson95_lower_raw": values["wilson95_lower_raw"],
+        "minimum_acceptable_odds_raw": values["minimum_acceptable_odds_raw"],
+        "minimum_acceptable_odds_display": values["display"][
+            "minimum_acceptable_odds"
+        ],
+        "activation_boundary_at": migration_at,
+        "created_at": migration_at,
+        "legacy_prospective_cohort": {
+            "hits": EXPECTED_DUPLICATE["hits"] + recovered_hits,
+            "decided": EXPECTED_DUPLICATE["decided"] + recovered_decided,
+            "pushes": EXPECTED_DUPLICATE["pushes"] + recovered_pushes,
+        },
+        "condition2_history_recovery": {
+            "schema_version": 1,
+            "migration": MIGRATION,
+            "starting_active": {"hits": 185, "decided": 302},
+            "recovered": {
+                "hits": recovered_hits,
+                "losses": recovered_losses,
+                "decided": recovered_decided,
+                "pushes": recovered_pushes,
+                "pending": recovered_pending,
+                "settled": recovered_decided + recovered_pushes,
+            },
+            "fixture_rows_root_hash": _hash(row_hashes),
+            "fixture_row_hashes": row_hashes,
+            "superseded_v2_evidence_hash": original_v2["evidence_hash"],
+        },
+    }
+    v2["evidence_hash"] = _version_hash(v2)
+    frozen["evidence_versions"] = [v1, v2]
+    frozen["active_evidence_version"] = 2
+    frozen["active_evidence_hash"] = v2["evidence_hash"]
     frozen["active_evidence"] = {
-        key: copy.deepcopy(v1.get(key)) for key in (
+        key: copy.deepcopy(v2.get(key)) for key in (
             "version", "cumulative_hits", "cumulative_decided",
             "wilson95_lower_raw", "minimum_acceptable_odds_raw",
             "minimum_acceptable_odds_display", "activation_boundary_at",
             "created_at", "evidence_hash",
         )
     }
-    frozen["superseded_duplicate_evidence_versions"] = [{
+    frozen["superseded_pre_history_recovery_v2"] = [{
         "migration": MIGRATION,
         "superseded_at": migration_at,
-        "reason": "discovery_holdout_is_subset_of_historical_total",
-        "proof_hash": _hash({
-            "baseline": proof["baseline"],
-            "holdout": proof["holdout"],
-            "holdout_fixtures": proof["holdout_fixtures"],
-            "version": v2,
-        }),
-        "version": copy.deepcopy(v2),
+        "reason": "authorized_direct_history_merge_into_active_v2",
+        "version": original_v2,
     }]
-    frozen["rollover_audit"] = [
-        row for row in frozen.get("rollover_audit") or []
-        if not (isinstance(row, dict) and row.get("evidence_hash") == v2["evidence_hash"])
-    ]
+    frozen["rollover_audit"] = [copy.deepcopy(v2)]
     frozen["prospective"] = {}
     frozen["prospective_observations"] = {}
     frozen["pending_rollover_progress"] = {
@@ -334,6 +388,15 @@ def _supersede_duplicate(proof: dict[str, Any], migration_at: str) -> None:
         "required": 20, "display": "0/20", "excluded": {},
     }
     frozen["rollover_status"] = "active"
+    frozen["historical_recovery_rows"] = copy.deepcopy(recovered)
+    return {
+        "hits": recovered_hits,
+        "losses": recovered_losses,
+        "decided": recovered_decided,
+        "pushes": recovered_pushes,
+        "pending": recovered_pending,
+        "settled": recovered_decided + recovered_pushes,
+    }
 
 
 def _selected(match: dict[str, Any]) -> dict[str, Any] | None:
@@ -486,7 +549,6 @@ def recover(
         }
 
     proof = _prove_duplicate(ledger, history_rows)
-    _supersede_duplicate(proof, migration_at)
     authority = load_production_legacy_batch_authority(ledger)
     registry = formal_registry_candidates(
         ledger, SYSTEM, now=migration_at, authority_context=authority,
@@ -508,26 +570,16 @@ def recover(
         "migration": MIGRATION,
         "condition_number": CONDITION_NUMBER,
         "condition_signature": SIGNATURE,
-        "duplicate_proof": {
+        "starting_v2_proof": {
             "baseline": proof["baseline"],
             "duplicate_holdout": proof["holdout"],
             "all_duplicate_fixtures_are_in_baseline": True,
-            "superseded_active": {"hits": 185, "decided": 302},
-            "correct_active_before_new_history": {"hits": 141, "decided": 231},
+            "starting_active_v2": {"hits": 185, "decided": 302},
         },
         "matched_after_boundary": len(candidates),
         "accepted": 0, "settled": 0, "pending_result": 0,
         "rejected": 0, "reasons": Counter(), "fixtures": [],
     }
-    observations = namespace.setdefault("observations", [])
-    if not isinstance(observations, list):
-        raise ValueError("Crown Wilson observations container is malformed")
-    if len(observations) + len(candidates) > 1600:
-        raise ValueError(
-            "recovery could exceed the 1600-observation retention limit; "
-            "refusing to evict existing evidence"
-        )
-
     for match in candidates:
         selected = _selected(match)
         if selected is None:
@@ -552,85 +604,14 @@ def recover(
             result["rejected"] += 1
             result["reasons"][reason or "exact_condition_admission_missing"] += 1
             continue
-        admission, reason = apply_active_evidence(
-            ledger, SYSTEM, exact[0], stage_at=stage_at, now=stage_at,
-            authority_context=authority,
-        )
-        if admission is None:
-            result["rejected"] += 1
-            result["reasons"][reason or "active_evidence_unavailable"] += 1
-            continue
-        observation_id = (
-            f"{match['fixture']}|HIL|首預|{SIGNATURE}|formal-observation"
-        )
-        prior = [
-            row for row in observations
-            if isinstance(row, dict) and row.get("observation_id") == observation_id
-        ]
-        if prior:
-            result["rejected"] += 1
-            result["reasons"]["existing_observation_requires_manual_review"] += 1
-            continue
-        row = record_match_observation(
-            ledger, SYSTEM, _watch(match), "HIL", selected, admission,
-            now=stage_at, market_label=MARKET_LABELS["HIL"],
-            selected_role="大", selected_line=float(match["terminal"]["selected_line"]),
-            decision_stage="首預", authority_context=authority,
-        )
-        if row is None:
-            result["rejected"] += 1
-            result["reasons"]["canonical_observation_creation_failed"] += 1
-            continue
-        row["historical_recovery"] = {
-            "schema_version": 1,
-            "migration": MIGRATION,
-            "recovered_at": migration_at,
-            "admission_source_hash": _hash({
-                "source": match["source"], "selected": selected,
-                "condition_signature": SIGNATURE,
-            }),
-            "matched_without_result_input": True,
-        }
-        admitted, validation_reason = validate_formal_row(
-            row, system=SYSTEM, signature=SIGNATURE, frozen=frozen,
-            projection_time=datetime.now().astimezone(), require_settled=False,
-            ledger=ledger, authority_context=authority,
-        )
-        if admitted is None:
-            observations.remove(row)
-            result["rejected"] += 1
-            result["reasons"][validation_reason or "formal_row_validation_failed"] += 1
-            continue
         grade = _grade(match)
         fixture_result = "PENDING"
+        settled_at = None
+        grade_hash = None
         if grade is None:
             result["pending_result"] += 1
         else:
             settlement, settled_at, grade_hash = grade
-            row.update({
-                "status": "SETTLED",
-                "result": settlement,
-                "settled_at": settled_at,
-                "settlement_source": "persisted_normal_market_grade",
-            })
-            row["historical_recovery"]["normal_grade_source_hash"] = grade_hash
-            row.setdefault("history", []).append({
-                "ts": migration_at, "stage": "歷史修復",
-                "action": "以既有首預決策及正常賽果補回正式觀察",
-                "result": settlement, "source_hash": grade_hash,
-            })
-            admitted, validation_reason = validate_formal_row(
-                row, system=SYSTEM, signature=SIGNATURE, frozen=frozen,
-                projection_time=datetime.now().astimezone(), require_settled=True,
-                ledger=ledger, authority_context=authority,
-            )
-            if admitted is None:
-                observations.remove(row)
-                result["rejected"] += 1
-                result["reasons"][
-                    validation_reason or "settled_row_validation_failed"
-                ] += 1
-                continue
             fixture_result = settlement
             result["settled"] += 1
         result["accepted"] += 1
@@ -645,9 +626,19 @@ def recover(
             "line": selected.get("line", selected.get("condition")),
             "odds": selected.get("odds"),
             "result": fixture_result,
-            "evidence_version_at_admission": row.get("evidence_version"),
+            "settled_at": settled_at,
+            "admission_source_hash": _hash({
+                "source": match["source"], "selected": selected,
+                "condition_signature": SIGNATURE,
+            }),
+            "normal_grade_source_hash": grade_hash,
+            "matched_without_result_input": True,
         })
 
+    recovered_counts = _merge_recovered_into_v2(
+        proof, result["fixtures"], migration_at,
+    )
+    result["recovered_counts"] = recovered_counts
     recompute_namespace(ledger, SYSTEM, authority_context=authority)
     active = active_evidence_version(
         frozen, migration_boundary=namespace["activation_at"],
@@ -672,7 +663,7 @@ def recover(
             "completed": True,
             "migration": MIGRATION,
             "completed_at": migration_at,
-            "proof_hash": _hash(result["duplicate_proof"]),
+            "proof_hash": _hash(result["starting_v2_proof"]),
             "matched_after_boundary": result["matched_after_boundary"],
             "accepted": result["accepted"],
             "settled": result["settled"],

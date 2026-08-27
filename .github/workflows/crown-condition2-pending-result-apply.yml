@@ -1,0 +1,123 @@
+name: Crown condition 2 pending result apply
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "Required: APPLY_CROWN_CONDITION2_PENDING_RESULTS"
+        required: true
+        type: string
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: Refresh, prove and apply exact results
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          EXPECTED_COMMIT: ${{ github.sha }}
+          CONFIRMATION: ${{ inputs.confirmation }}
+        run: |
+          set -euo pipefail
+          test "$CONFIRMATION" = APPLY_CROWN_CONDITION2_PENDING_RESULTS
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            -o ServerAliveInterval=20 -o ServerAliveCountMax=90 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "sudo env EXPECTED_COMMIT='$EXPECTED_COMMIT' bash -s" <<'REMOTE'
+          set -euo pipefail
+          cd /opt/footbreak
+          test "$(git rev-parse HEAD)" = "$EXPECTED_COMMIT"
+          python=/opt/footbreak/.venv/bin/python3
+          [ -x "$python" ] || python=python3
+          if [ -f /etc/footbreak.env ]; then set -a; . /etc/footbreak.env; set +a; fi
+          if [ -f /etc/footbreak-crown.env ]; then
+            set -a; . /etc/footbreak-crown.env; set +a
+          fi
+          state="${CROWN_STATE_DIR:-/var/lib/footbreak/crown}"
+          ledger="$state/ledger.json"
+          history="$state/prediction_history.json"
+          test -s "$ledger" && test -s "$history"
+          work="$(mktemp -d)"
+          active_timers=""
+          cleanup() {
+            rc=$?
+            if [ "$rc" -ne 0 ] && [ -s "$work/ledger.before" ]; then
+              install -m 0600 "$work/ledger.before" "$ledger"
+              install -m 0600 "$work/history.before" "$history"
+            fi
+            for timer in $active_timers; do systemctl start "$timer" || true; done
+            rm -rf "$work"
+            exit "$rc"
+          }
+          trap cleanup EXIT
+          for timer in crown-round-update.timer crown-first-look-reconcile.timer \
+            crown-early-admission-reconcile.timer crown-sweep.timer \
+            crown-tick.timer crown-settle.timer crown-reverse-t5-drain.timer; do
+            if systemctl is-active --quiet "$timer"; then
+              active_timers="$active_timers $timer"
+            fi
+            systemctl stop "$timer" || true
+          done
+          systemctl stop crown-round-update.service crown-first-look-reconcile.service \
+            crown-early-admission-reconcile.service crown-sweep.service \
+            crown-tick.service crown-settle.service \
+            crown-reverse-t5-drain.service || true
+          exec 8>"$state/.state.lock"
+          flock -w 180 8
+          install -m 0600 "$ledger" "$work/ledger.before"
+          install -m 0600 "$history" "$work/history.before"
+          install -m 0600 "$ledger" "$work/ledger.json"
+          install -m 0600 "$history" "$work/prediction_history.json"
+          production_state="$state"
+          export CROWN_STATE_DIR="$work"
+          unset LEARNING_DB_PATH
+          PYTHONPATH=/opt/footbreak "$python" \
+            analysis/audit_crown_condition2_pending_results.py \
+            --ledger "$work/ledger.json" \
+            --history "$work/prediction_history.json" \
+            --detail-budget 200 --titan-seconds 300 --hkjc-seconds 300 \
+            > "$work/audit.json"
+          cat > "$work/manual-overrides.json" <<'JSON'
+          {
+            "2942569": {
+              "home_score": 5,
+              "away_score": 0,
+              "attested_at": "2026-08-28T01:26:00+08:00",
+              "source": "user_attested_manual_score",
+              "attestation_reference": "Perplexity session 18c3de09-41d4-451c-bf7a-d60648354d1b; user explicitly confirmed 查爾斯頓電池 5-0 邁阿密 FC"
+            }
+          }
+          JSON
+          PYTHONPATH=/opt/footbreak "$python" \
+            analysis/apply_crown_condition2_pending_results.py \
+            --ledger "$ledger" \
+            --production-history "$history" \
+            --refreshed-history "$work/prediction_history.json" \
+            --audit-report "$work/audit.json" \
+            --manual-overrides "$work/manual-overrides.json" | tee "$work/apply.json"
+          stamp="$(TZ=Asia/Hong_Kong date +%Y%m%d-%H%M%S)"
+          install -m 0600 "$work/ledger.before" \
+            "$ledger.before-pending-results-$stamp"
+          install -m 0600 "$work/history.before" \
+            "$history.before-pending-results-$stamp"
+          flock -u 8
+          cat "$work/apply.json"
+          REMOTE
