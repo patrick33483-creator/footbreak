@@ -182,6 +182,145 @@ jobs:
               }, ensure_ascii=False, sort_keys=True))
           PY
 
+          echo "--- Footbreak condition 17 identity diagnosis ---"
+          env PYTHONPATH=/opt/footbreak /opt/footbreak/.venv/bin/python3 - <<'PY'
+          import copy
+          import json
+          from collections import Counter
+          from pathlib import Path
+
+          from analysis.wilson_validation import (
+              NAMESPACE,
+              _eligible_rollover_rows,
+              _now,
+              _time,
+              active_bets,
+              active_observations,
+              validate_formal_row,
+          )
+
+          ledger = json.loads(
+              Path("/opt/footbreak/system/sim_ledger.json").read_text(encoding="utf-8")
+          )
+          namespace = ledger[NAMESPACE]
+          signature = namespace["condition_order"][16]
+          frozen = namespace["conditions"][signature]
+          versions = frozen.get("evidence_versions") or []
+          active = versions[-1]
+          pending = frozen.get("pending_rollover_progress") or {}
+          projection_time = _time(_now())
+          raw = [
+              row
+              for row in active_bets(ledger, "footbreak")
+              + active_observations(ledger, "footbreak")
+              if str(row.get("frozen_condition_signature") or "") == signature
+          ]
+
+          valid = []
+          rejected = []
+          missing = Counter()
+          for row in raw:
+              admitted, reason = validate_formal_row(
+                  row,
+                  system="footbreak",
+                  signature=signature,
+                  frozen=frozen,
+                  projection_time=projection_time,
+                  require_settled=True,
+                  ledger=ledger,
+              )
+              if admitted is not None:
+                  valid.append(row)
+                  continue
+              rejected.append((row, str(reason or "unknown")))
+              for key in (
+                  "frozen_condition_definition",
+                  "native_stage_at",
+                  "rollover_provenance",
+                  "admitted_evidence_version",
+                  "admitted_evidence_hash",
+                  "formal_evidence_id",
+                  "formal_evidence_hash",
+              ):
+                  if row.get(key) in (None, {}, ""):
+                      missing[key] += 1
+
+          repaired_valid = []
+          repaired_reasons = Counter()
+          for row, reason in rejected:
+              if reason != "invalid_formal_admission_binding":
+                  repaired_reasons[reason] += 1
+                  continue
+              repaired = copy.deepcopy(row)
+              changed = False
+              stored_definition = row.get("frozen_condition_definition")
+              if stored_definition == {}:
+                  repaired["frozen_condition_definition"] = copy.deepcopy(
+                      frozen.get("definition")
+                  )
+                  changed = True
+              elif stored_definition != frozen.get("definition"):
+                  repaired_reasons["conflicting_frozen_definition"] += 1
+                  continue
+              marker = row.get("rollover_provenance")
+              if row.get("native_stage_at") is None:
+                  if not isinstance(marker, dict) or _time(marker.get("stage_at")) is None:
+                      repaired_reasons["missing_recoverable_stage"] += 1
+                      continue
+                  repaired["native_stage_at"] = marker["stage_at"]
+                  changed = True
+              elif (
+                  not isinstance(marker, dict)
+                  or row.get("native_stage_at") != marker.get("stage_at")
+              ):
+                  repaired_reasons["conflicting_stage"] += 1
+                  continue
+              if not changed:
+                  repaired_reasons["no_allowed_legacy_omission"] += 1
+                  continue
+              admitted, repaired_reason = validate_formal_row(
+                  repaired,
+                  system="footbreak",
+                  signature=signature,
+                  frozen=frozen,
+                  projection_time=projection_time,
+                  require_settled=True,
+                  ledger=ledger,
+              )
+              if admitted is not None and repaired_reason is None:
+                  repaired_valid.append(row)
+              else:
+                  repaired_reasons[str(repaired_reason or "unknown")] += 1
+
+          strict_eligible, strict_excluded = _eligible_rollover_rows(
+              valid, "footbreak", signature, active
+          )
+          compatible_eligible, compatible_excluded = _eligible_rollover_rows(
+              [*valid, *repaired_valid], "footbreak", signature, active
+          )
+          print(json.dumps({
+              "condition_number": 17,
+              "summary_decided": pending.get("eligible_decided"),
+              "summary_hits": pending.get("eligible_hits"),
+              "summary_excluded": pending.get("excluded"),
+              "raw_same_signature": len(raw),
+              "strict_valid": len(valid),
+              "strict_invalid_reasons": dict(Counter(reason for _, reason in rejected)),
+              "missing_field_counts": dict(missing),
+              "strict_eligible": len(strict_eligible),
+              "strict_hits": sum(bool(item["hit"]) for item in strict_eligible),
+              "strict_excluded": strict_excluded,
+              "legacy_repaired_valid": len(repaired_valid),
+              "legacy_repair_rejections": dict(repaired_reasons),
+              "compatible_eligible": len(compatible_eligible),
+              "compatible_hits": sum(bool(item["hit"]) for item in compatible_eligible),
+              "compatible_excluded": compatible_excluded,
+              "compatible_exclusions_match": (
+                  pending.get("excluded") == compatible_excluded
+              ),
+          }, ensure_ascii=False, sort_keys=True))
+          PY
+
           echo "--- unified-dashboard configuration ---"
           sed -E 's#(auth_basic_user_file[[:space:]]+)[^;]+#\1[redacted]#g' \
             /etc/nginx/sites-enabled/unified-dashboard
