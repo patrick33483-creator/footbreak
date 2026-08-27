@@ -55,10 +55,10 @@ PINNED_FIXTURE_DIGEST = (
     "7ad25feb2a17e9eed6f9230e9b76543975b0db04341bd9780d26dee06be173a4"
 )
 CALCULATION_PATH = (
-    Path(__file__).resolve().parents[2]
-    / ".."
+    Path(__file__).resolve().parent
+    / "fixtures"
     / "proposed-legacy-batch-authority-calculation.json"
-).resolve()
+)
 
 
 @lru_cache(maxsize=1)

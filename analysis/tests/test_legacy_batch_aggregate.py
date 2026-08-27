@@ -32,7 +32,10 @@ from analysis.wilson_registry_export import export_registry_v2, verify_export_v2
 
 
 ROOT = Path(__file__).resolve().parents[2]
-CALCULATION = ROOT.parent / "proposed-legacy-batch-authority-calculation.json"
+CALCULATION = (
+    ROOT / "analysis" / "tests" / "fixtures"
+    / "proposed-legacy-batch-authority-calculation.json"
+)
 FIXTURE = (
     ROOT / "analysis" / "tests" / "fixtures"
     / "wilson_production_registry_5205a8b.json"
