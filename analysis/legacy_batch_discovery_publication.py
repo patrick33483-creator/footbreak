@@ -18,6 +18,11 @@ from .legacy_batch_aggregate import (
     parse_json_bytes_v1, serialize_ledger_bytes_v1,
     validate_live_discovery, validate_sanitized_calculation,
 )
+from .export_legacy_batch_live_authority import (
+    CAPTURE_ENVELOPE_KEYS, CAPTURE_ENVELOPE_SCHEMA,
+    MAX_CAPTURE_ENVELOPE_BYTES, MAX_DISCOVERY_CAPTURE_BYTES,
+    MAX_LEDGER_CAPTURE_BYTES,
+)
 
 INVALID_SCHEMA = "footbreak-legacy-batch-live-discovery-invalid-v1"
 INVALID_KEYS = {
@@ -124,10 +129,14 @@ def _open_verified(
         raise
 
 
-def _read_verified(path: Path, expected: Identity | None = None) -> bytes:
+def _read_verified(
+    path: Path, expected: Identity | None = None, maximum: int | None = None,
+) -> bytes:
     descriptor = _open_verified(path, os.O_RDONLY, expected)
     try:
         size = os.fstat(descriptor).st_size
+        if maximum is not None and size > maximum:
+            raise ValueError("private_file_exceeds_bound")
         chunks = []
         remaining = size + 1
         while remaining:
@@ -148,6 +157,147 @@ def _verified_identity(path: Path) -> Identity:
         return opened.st_dev, opened.st_ino
     finally:
         os.close(descriptor)
+
+
+def _decode_envelope_payload(
+    document: dict[str, Any], prefix: str, maximum: int,
+) -> bytes:
+    encoded = document.get(prefix + "_base64")
+    length = document.get(prefix + "_length")
+    digest = document.get(prefix + "_sha256")
+    if (
+        not isinstance(encoded, str)
+        or not isinstance(length, int) or isinstance(length, bool)
+        or length < 1 or length > maximum
+        or not isinstance(digest, str) or len(digest) != 64
+        or any(character not in "0123456789abcdef" for character in digest)
+    ):
+        raise ValueError("capture_envelope_payload_metadata_invalid")
+    try:
+        raw = base64.b64decode(encoded, validate=True)
+    except Exception as exc:
+        raise ValueError("capture_envelope_base64_invalid") from exc
+    if len(raw) != length:
+        raise ValueError("capture_envelope_length_mismatch")
+    if hashlib.sha256(raw).hexdigest() != digest:
+        raise ValueError("capture_envelope_hash_mismatch")
+    return raw
+
+
+def _write_new_private(path: Path, data: bytes) -> Identity:
+    parent = os.stat(path.parent, follow_symlinks=False)
+    if (
+        not stat.S_ISDIR(parent.st_mode)
+        or stat.S_IMODE(parent.st_mode) != 0o700
+        or parent.st_uid != os.geteuid()
+    ):
+        raise ValueError("unsafe_private_capture_directory")
+    descriptor = os.open(
+        path,
+        os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW,
+        0o600,
+    )
+    completed = False
+    reserved_identity = None
+    try:
+        opened = os.fstat(descriptor)
+        reserved_identity = (opened.st_dev, opened.st_ino)
+        if (
+            not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1
+            or stat.S_IMODE(opened.st_mode) != 0o600
+        ):
+            raise ValueError("unsafe_private_capture_output")
+        view = memoryview(data)
+        while view:
+            written = os.write(descriptor, view)
+            view = view[written:]
+        os.fsync(descriptor)
+        by_path = os.stat(path, follow_symlinks=False)
+        final = os.fstat(descriptor)
+        identity = (opened.st_dev, opened.st_ino)
+        if (
+            identity != (final.st_dev, final.st_ino)
+            or identity != (by_path.st_dev, by_path.st_ino)
+            or final.st_nlink != 1
+        ):
+            raise ValueError("private_capture_output_identity_changed")
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        readback = b""
+        while len(readback) <= len(data):
+            chunk = os.read(descriptor, len(data) + 1 - len(readback))
+            if not chunk:
+                break
+            readback += chunk
+        if readback != data:
+            raise ValueError("private_capture_output_readback_mismatch")
+        completed = True
+        return identity
+    finally:
+        os.close(descriptor)
+        if not completed:
+            try:
+                _secure_delete(path, reserved_identity)
+            except Exception:
+                pass
+
+
+def unpack_private_capture_envelope(
+    envelope_path: Path, discovery_path: Path, ledger_path: Path,
+    envelope_identity: Identity | None = None,
+) -> tuple[Identity, Identity, str]:
+    """Strictly unpack one private transport object into two mode-0600 files."""
+    discovery_identity = None
+    ledger_identity = None
+    try:
+        envelope_raw = _read_verified(
+            envelope_path, envelope_identity, MAX_CAPTURE_ENVELOPE_BYTES,
+        )
+        envelope = parse_json_bytes_v1(envelope_raw)
+        if (
+            not isinstance(envelope, dict)
+            or set(envelope) != CAPTURE_ENVELOPE_KEYS
+            or envelope.get("schema") != CAPTURE_ENVELOPE_SCHEMA
+            or serialize_ledger_bytes_v1(envelope) != envelope_raw
+        ):
+            raise ValueError("capture_envelope_schema_invalid")
+        discovery_raw = _decode_envelope_payload(
+            envelope, "discovery", MAX_DISCOVERY_CAPTURE_BYTES,
+        )
+        ledger_raw = _decode_envelope_payload(
+            envelope, "footbreak_ledger", MAX_LEDGER_CAPTURE_BYTES,
+        )
+        discovery = parse_json_bytes_v1(discovery_raw)
+        if (
+            not isinstance(discovery, dict)
+            or serialize_ledger_bytes_v1(discovery) != discovery_raw
+            or discovery.get("capture", {}).get("full_pre_ledger_sha256")
+            != envelope["footbreak_ledger_sha256"]
+        ):
+            raise ValueError("capture_envelope_discovery_binding_invalid")
+        # Strict parsing here prevents a malformed private ledger from reaching
+        # any audit command; its exact original bytes remain the hash authority.
+        parse_json_bytes_v1(ledger_raw)
+        if discovery_path.resolve() == ledger_path.resolve():
+            raise ValueError("capture_outputs_alias")
+        discovery_identity = _write_new_private(discovery_path, discovery_raw)
+        ledger_identity = _write_new_private(ledger_path, ledger_raw)
+        return (
+            discovery_identity, ledger_identity,
+            envelope["footbreak_ledger_sha256"],
+        )
+    except Exception:
+        for path, identity in (
+            (discovery_path, discovery_identity),
+            (ledger_path, ledger_identity),
+        ):
+            if identity is not None:
+                try:
+                    _secure_delete(path, identity)
+                except Exception:
+                    pass
+        raise
+    finally:
+        _secure_delete(envelope_path, envelope_identity)
 
 
 def run_captured_command(
@@ -614,11 +764,18 @@ def main() -> int:
     cleanup = subparsers.add_parser("cleanup")
     cleanup.add_argument("--path", required=True, type=Path)
     cleanup.add_argument("--identity", required=True)
+    identify = subparsers.add_parser("identify")
+    identify.add_argument("--path", required=True, type=Path)
     capture = subparsers.add_parser("capture")
     capture.add_argument("--stdout", required=True, type=Path)
     capture.add_argument("--stderr", required=True, type=Path)
     capture.add_argument("--stderr-identity")
     capture.add_argument("child", nargs=argparse.REMAINDER)
+    unpack = subparsers.add_parser("unpack")
+    unpack.add_argument("--envelope", required=True, type=Path)
+    unpack.add_argument("--envelope-identity", required=True)
+    unpack.add_argument("--discovery", required=True, type=Path)
+    unpack.add_argument("--ledger", required=True, type=Path)
     seal = subparsers.add_parser("seal")
     seal.add_argument("--publication", required=True, type=Path)
     seal.add_argument("--sealed", required=True, type=Path)
@@ -667,6 +824,20 @@ def main() -> int:
             "stderr_identity": f"{stderr_identity[0]}:{stderr_identity[1]}",
         }, sort_keys=True, separators=(",", ":")))
         return 0
+    if args.command == "unpack":
+        discovery_identity, ledger_identity, digest = (
+            unpack_private_capture_envelope(
+                args.envelope, args.discovery, args.ledger,
+                identity(args.envelope_identity),
+            )
+        )
+        print(json.dumps({
+            "discovery_identity":
+                f"{discovery_identity[0]}:{discovery_identity[1]}",
+            "ledger_identity": f"{ledger_identity[0]}:{ledger_identity[1]}",
+            "ledger_sha256": digest,
+        }, sort_keys=True, separators=(",", ":")))
+        return 0
     if args.command == "seal":
         digest, sealed_identity = seal_publication(
             args.publication, args.sealed, args.expected_sha256,
@@ -693,6 +864,10 @@ def main() -> int:
         return 0
     if args.command == "cleanup":
         _secure_delete(args.path, identity(args.identity))
+        return 0
+    if args.command == "identify":
+        found = _verified_identity(args.path)
+        print(f"{found[0]}:{found[1]}")
         return 0
     if args.command == "invalid":
         _atomic_write(

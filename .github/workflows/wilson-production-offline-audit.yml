@@ -101,10 +101,13 @@ jobs:
         run: |
           set +e
           private_receipt=""
+          envelope=""
           staging=""
           calculation=""
           process_log=""
+          envelope_identity=""
           staging_identity=""
+          footbreak_ledger_identity=""
           calculation_identity=""
           process_log_identity=""
           cleanup() {
@@ -114,6 +117,15 @@ jobs:
             if [ -n "$staging_identity" ]; then
               python3 -m analysis.legacy_batch_discovery_publication cleanup \
                 --path "$staging" --identity "$staging_identity" >/dev/null 2>&1
+            fi
+            if [ -n "$envelope_identity" ]; then
+              python3 -m analysis.legacy_batch_discovery_publication cleanup \
+                --path "$envelope" --identity "$envelope_identity" >/dev/null 2>&1
+            fi
+            if [ "$saved_rc" -ne 0 ] && [ -n "$footbreak_ledger_identity" ]; then
+              python3 -m analysis.legacy_batch_discovery_publication cleanup \
+                --path audit-input/footbreak-ledger.json \
+                --identity "$footbreak_ledger_identity" >/dev/null 2>&1
             fi
             if [ -n "$calculation_identity" ]; then
               python3 -m analysis.legacy_batch_discovery_publication cleanup \
@@ -131,21 +143,26 @@ jobs:
           trap cleanup EXIT HUP INT TERM
           private_receipt="$(mktemp -d)"
           chmod 700 "$private_receipt"
+          install -d -m 700 audit-input
+          envelope="$private_receipt/private-capture-envelope.json"
           staging="$private_receipt/remote-discovery.json"
           calculation="$private_receipt/approved-calculation.json"
           process_log="$private_receipt/process.log"
           publication="footbreak-legacy-batch-live-discovery.json"
           capture_receipt="$(python3 -m analysis.legacy_batch_discovery_publication capture \
-            --stdout "$staging" --stderr "$process_log" -- \
+            --stdout "$envelope" --stderr "$process_log" -- \
             ssh -o BatchMode=yes -o ConnectTimeout=20 \
             -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
             -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
             "$DEPLOY_USER@$DEPLOY_HOST" \
             "set -euo pipefail
              remote_output=\$(sudo -n mktemp /var/lib/footbreak-audit/legacy-batch-discovery.XXXXXX)
+             remote_envelope=\$(sudo -n mktemp /var/lib/footbreak-audit/legacy-batch-capture.XXXXXX)
              remote_cleanup() {
                sudo -n shred -u -- \"\$remote_output\" 2>/dev/null ||
                  sudo -n rm -f -- \"\$remote_output\"
+               sudo -n shred -u -- \"\$remote_envelope\" 2>/dev/null ||
+                 sudo -n rm -f -- \"\$remote_envelope\"
              }
              remote_signal() {
                signal_number=\"\$1\"
@@ -169,14 +186,16 @@ jobs:
                --runtime-config /etc/footbreak/legacy-batch-runtime.json \
                --calculation /etc/footbreak/proposed-legacy-batch-authority-calculation.json \
                --output \"\$remote_output\" \
+               --capture-envelope \"\$remote_envelope\" \
                --require-quiesced >/dev/null
              sudo -n test -s \"\$remote_output\"
-             sudo -n cat -- \"\$remote_output\"
+             sudo -n test -s \"\$remote_envelope\"
+             sudo -n cat -- \"\$remote_envelope\"
              remote_cleanup
              trap - EXIT HUP INT TERM")"
           capture_helper_rc=$?
           rc="$(printf '%s' "$capture_receipt" | python3 -c 'import json,sys; print(json.load(sys.stdin)["exit_code"])' 2>/dev/null)"
-          staging_identity="$(printf '%s' "$capture_receipt" | python3 -c 'import json,sys; print(json.load(sys.stdin)["stdout_identity"])' 2>/dev/null)"
+          envelope_identity="$(printf '%s' "$capture_receipt" | python3 -c 'import json,sys; print(json.load(sys.stdin)["stdout_identity"])' 2>/dev/null)"
           process_log_identity="$(printf '%s' "$capture_receipt" | python3 -c 'import json,sys; print(json.load(sys.stdin)["stderr_identity"])' 2>/dev/null)"
           if [ "$capture_helper_rc" -ne 0 ] || [ -z "$rc" ]; then
             rc=2
@@ -194,6 +213,21 @@ jobs:
             rc="$(printf '%s' "$calculation_receipt" | python3 -c 'import json,sys; print(json.load(sys.stdin)["exit_code"])' 2>/dev/null)"
             calculation_identity="$(printf '%s' "$calculation_receipt" | python3 -c 'import json,sys; print(json.load(sys.stdin)["stdout_identity"])' 2>/dev/null)"
             if [ "$calculation_helper_rc" -ne 0 ] || [ -z "$rc" ]; then
+              rc=2
+            fi
+          fi
+          if [ "$rc" -eq 0 ]; then
+            unpack_receipt="$(python3 -m analysis.legacy_batch_discovery_publication unpack \
+              --envelope "$envelope" \
+              --envelope-identity "$envelope_identity" \
+              --discovery "$staging" \
+              --ledger audit-input/footbreak-ledger.json)"
+            unpack_rc=$?
+            envelope_identity=""
+            staging_identity="$(printf '%s' "$unpack_receipt" | python3 -c 'import json,sys; print(json.load(sys.stdin)["discovery_identity"])' 2>/dev/null)"
+            footbreak_ledger_identity="$(printf '%s' "$unpack_receipt" | python3 -c 'import json,sys; print(json.load(sys.stdin)["ledger_identity"])' 2>/dev/null)"
+            if [ "$unpack_rc" -ne 0 ] || [ -z "$staging_identity" ] \
+               || [ -z "$footbreak_ledger_identity" ]; then
               rc=2
             fi
           fi
@@ -220,6 +254,8 @@ jobs:
             rc=2
           fi
           printf 'legacy_discovery_rc=%s\n' "$rc" >> "$GITHUB_OUTPUT"
+          printf 'footbreak_capture_rc=%s\n' "$rc" >> "$GITHUB_OUTPUT"
+          printf 'footbreak_ledger_identity=%s\n' "$footbreak_ledger_identity" >> "$GITHUB_OUTPUT"
           printf 'publication_sha256=%s\n' "$publication_sha256" >> "$GITHUB_OUTPUT"
           printf 'publication_identity=%s\n' "$publication_identity" >> "$GITHUB_OUTPUT"
           exit "$rc"
@@ -230,8 +266,10 @@ jobs:
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          FOOTBREAK_CAPTURE_RC: ${{ steps.legacy_discovery.outputs.footbreak_capture_rc }}
         run: |
           set -euo pipefail
+          umask 077
           cleanup() {
             shred -u ~/.ssh/id_ed25519 2>/dev/null || rm -f ~/.ssh/id_ed25519
           }
@@ -241,11 +279,14 @@ jobs:
             lock_path="$1"
             ledger_path="$2"
             output_path="$3"
+            process_log="$4"
+            python3 -m analysis.legacy_batch_discovery_publication capture \
+              --stdout "$output_path" --stderr "$process_log" -- \
             ssh -o BatchMode=yes -o ConnectTimeout=20 \
               -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
               -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
               "$DEPLOY_USER@$DEPLOY_HOST" \
-              "sudo python3 - '$lock_path' '$ledger_path'" > "$output_path" <<'PY'
+              "sudo python3 - '$lock_path' '$ledger_path'" <<'PY'
           import fcntl
           import os
           import signal
@@ -256,10 +297,41 @@ jobs:
           lock_fd = os.open(lock_path, os.O_RDWR | os.O_NOFOLLOW)
           try:
               fcntl.flock(lock_fd, fcntl.LOCK_EX)
-              with open(ledger_path, "rb") as handle:
-                  payload = handle.read(134_217_729)
-              if len(payload) > 134_217_728:
-                  raise RuntimeError("ledger exceeds 128 MiB capture bound")
+              ledger_fd = os.open(
+                  ledger_path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW,
+              )
+              try:
+                  opened = os.fstat(ledger_fd)
+                  by_path = os.stat(ledger_path, follow_symlinks=False)
+                  if (
+                      not __import__("stat").S_ISREG(opened.st_mode)
+                      or opened.st_nlink != 1
+                      or (opened.st_dev, opened.st_ino)
+                      != (by_path.st_dev, by_path.st_ino)
+                  ):
+                      raise RuntimeError("unsafe ledger identity")
+                  chunks = []
+                  remaining = 134_217_729
+                  while remaining:
+                      chunk = os.read(ledger_fd, min(1_048_576, remaining))
+                      if not chunk:
+                          break
+                      chunks.append(chunk)
+                      remaining -= len(chunk)
+                  payload = b"".join(chunks)
+                  if len(payload) > 134_217_728:
+                      raise RuntimeError("ledger exceeds 128 MiB capture bound")
+                  final = os.fstat(ledger_fd)
+                  final_path = os.stat(ledger_path, follow_symlinks=False)
+                  if (
+                      (opened.st_dev, opened.st_ino)
+                      != (final.st_dev, final.st_ino)
+                      or (opened.st_dev, opened.st_ino)
+                      != (final_path.st_dev, final_path.st_ino)
+                  ):
+                      raise RuntimeError("ledger identity changed")
+              finally:
+                  os.close(ledger_fd)
           finally:
               fcntl.flock(lock_fd, fcntl.LOCK_UN)
               os.close(lock_fd)
@@ -268,20 +340,26 @@ jobs:
           PY
           }
           set +e
-          capture_locked \
-            /var/lock/footbreak.lock \
-            /opt/footbreak/system/sim_ledger.json \
-            audit-input/footbreak-ledger.json &
-          footbreak_pid=$!
-          capture_locked \
+          footbreak_rc="${FOOTBREAK_CAPTURE_RC:-2}"
+          crown_private="$(mktemp -d)"
+          chmod 700 "$crown_private"
+          crown_log="$crown_private/process.log"
+          crown_receipt="$(capture_locked \
             /var/lib/footbreak/crown/.state.lock \
             /var/lib/footbreak/crown/ledger.json \
-            audit-input/crown-ledger.json &
-          crown_pid=$!
-          wait "$footbreak_pid"
-          footbreak_rc=$?
-          wait "$crown_pid"
-          crown_rc=$?
+            audit-input/crown-ledger.json "$crown_log")"
+          crown_helper_rc=$?
+          crown_rc="$(printf '%s' "$crown_receipt" | python3 -c 'import json,sys; print(json.load(sys.stdin)["exit_code"])' 2>/dev/null)"
+          crown_ledger_identity="$(printf '%s' "$crown_receipt" | python3 -c 'import json,sys; print(json.load(sys.stdin)["stdout_identity"])' 2>/dev/null)"
+          crown_log_identity="$(printf '%s' "$crown_receipt" | python3 -c 'import json,sys; print(json.load(sys.stdin)["stderr_identity"])' 2>/dev/null)"
+          if [ "$crown_helper_rc" -ne 0 ] || [ -z "$crown_rc" ]; then
+            crown_rc=2
+          fi
+          if [ -n "$crown_log_identity" ]; then
+            python3 -m analysis.legacy_batch_discovery_publication cleanup \
+              --path "$crown_log" --identity "$crown_log_identity" >/dev/null 2>&1
+          fi
+          rmdir "$crown_private" >/dev/null 2>&1
           if [ "$footbreak_rc" -eq 0 ]; then
             python3 -m json.tool audit-input/footbreak-ledger.json >/dev/null
             footbreak_rc=$?
@@ -303,6 +381,7 @@ jobs:
           fi
           printf 'footbreak_capture_rc=%s\n' "$footbreak_rc" >> "$GITHUB_OUTPUT"
           printf 'crown_capture_rc=%s\n' "$crown_rc" >> "$GITHUB_OUTPUT"
+          printf 'crown_ledger_identity=%s\n' "$crown_ledger_identity" >> "$GITHUB_OUTPUT"
           set -e
 
       - name: Bind discovery to captured immutable Footbreak ledger
@@ -674,3 +753,22 @@ jobs:
           set -euo pipefail
           /usr/bin/sudo -n /usr/local/sbin/footbreak-audit-bundle cleanup \
             --run-key "$RUN_KEY"
+
+      - name: Remove private ledger audit inputs
+        if: always()
+        env:
+          FOOTBREAK_LEDGER_IDENTITY: ${{ steps.legacy_discovery.outputs.footbreak_ledger_identity }}
+          CROWN_LEDGER_IDENTITY: ${{ steps.capture.outputs.crown_ledger_identity }}
+        run: |
+          set -euo pipefail
+          if [ -n "$FOOTBREAK_LEDGER_IDENTITY" ]; then
+            python3 -m analysis.legacy_batch_discovery_publication cleanup \
+              --path audit-input/footbreak-ledger.json \
+              --identity "$FOOTBREAK_LEDGER_IDENTITY"
+          fi
+          if [ -n "$CROWN_LEDGER_IDENTITY" ]; then
+            python3 -m analysis.legacy_batch_discovery_publication cleanup \
+              --path audit-input/crown-ledger.json \
+              --identity "$CROWN_LEDGER_IDENTITY"
+          fi
+          rmdir audit-input
