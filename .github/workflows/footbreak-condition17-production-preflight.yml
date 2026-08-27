@@ -3,6 +3,14 @@ name: Footbreak condition 17 production preflight (read only)
 on:
   workflow_dispatch:
     inputs:
+      expected_deployed_sha:
+        description: Exact reviewed 40-hex commit deployed at /opt/footbreak
+        required: true
+        type: string
+      expected_wilson_validation_sha256:
+        description: Reviewed SHA-256 of deployed analysis/wilson_validation.py
+        required: true
+        type: string
       expected_manifest_hash:
         description: Trusted canonical production identity manifest SHA-256
         required: true
@@ -14,6 +22,11 @@ on:
       expected_initial_evidence_hash:
         description: Trusted condition 17 initial evidence SHA-256
         required: true
+        type: string
+      ssh_port:
+        description: Reviewed production SSH port bound by the pinned host key
+        required: true
+        default: "22"
         type: string
 
 permissions:
@@ -28,123 +41,189 @@ jobs:
     name: Read-only condition 17 preflight
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    env:
+      PREFLIGHT_DIR: ${{ runner.temp }}/footbreak-condition17-preflight-${{ github.run_id }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
 
-      - name: Verify dispatched preflight code
+      - name: Verify dispatched commit and reviewed code
+        env:
+          EXPECTED_DEPLOYED_SHA: ${{ inputs.expected_deployed_sha }}
+          EXPECTED_VALIDATION_SHA: ${{ inputs.expected_wilson_validation_sha256 }}
+          EXPECTED_MANIFEST_HASH: ${{ inputs.expected_manifest_hash }}
+          EXPECTED_CONDITION_SIGNATURE: ${{ inputs.expected_condition_signature }}
+          EXPECTED_INITIAL_EVIDENCE_HASH: ${{ inputs.expected_initial_evidence_hash }}
+          DEPLOY_PORT: ${{ inputs.ssh_port }}
         run: |
           set -euo pipefail
+          [[ "$EXPECTED_DEPLOYED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$EXPECTED_VALIDATION_SHA" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$EXPECTED_MANIFEST_HASH" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$EXPECTED_CONDITION_SIGNATURE" =~ ^[0-9a-f]{24}$ ]]
+          [[ "$EXPECTED_INITIAL_EVIDENCE_HASH" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$DEPLOY_PORT" =~ ^[0-9]{1,5}$ ]]
+          test "$DEPLOY_PORT" -ge 1
+          test "$DEPLOY_PORT" -le 65535
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$GITHUB_SHA" = "$EXPECTED_DEPLOYED_SHA"
+          test "$(sha256sum analysis/wilson_validation.py | awk '{print $1}')" = \
+            "$EXPECTED_VALIDATION_SHA"
           test -s deploy/condition17-production-preflight.py
-          python3 -m py_compile deploy/condition17-production-preflight.py
-          sha256sum deploy/condition17-production-preflight.py
+          test -s deploy/capture-condition17-production-snapshot.py
+          test -s deploy/verify_ssh_host_key.py
+          timeout 30s python3 -m py_compile \
+            deploy/condition17-production-preflight.py \
+            deploy/capture-condition17-production-snapshot.py \
+            deploy/verify_ssh_host_key.py
 
-      - name: Configure SSH
+      - name: Configure independently pinned SSH identity
         env:
           DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_SSH_HOST_KEY: ${{ secrets.DEPLOY_SSH_HOST_KEY }}
+          DEPLOY_SSH_HOST_FINGERPRINT: ${{ secrets.DEPLOY_SSH_HOST_FINGERPRINT }}
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ inputs.ssh_port }}
         run: |
           set -euo pipefail
-          install -m 700 -d ~/.ssh
-          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
-          chmod 600 ~/.ssh/id_ed25519
-          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
-          chmod 600 ~/.ssh/known_hosts
+          umask 077
+          test ! -e "$PREFLIGHT_DIR"
+          install -d -m 700 "$PREFLIGHT_DIR"
+          cleanup_on_error() {
+            rc=$?
+            if [ "$rc" -ne 0 ]; then
+              rm -rf -- "$PREFLIGHT_DIR"
+            fi
+            trap - EXIT HUP INT TERM
+            exit "$rc"
+          }
+          trap cleanup_on_error EXIT
+          trap 'exit 130' HUP INT TERM
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$PREFLIGHT_DIR/id_ed25519"
+          chmod 600 "$PREFLIGHT_DIR/id_ed25519"
+          printf '%s\n' "$DEPLOY_SSH_HOST_KEY" > "$PREFLIGHT_DIR/known_hosts"
+          chmod 600 "$PREFLIGHT_DIR/known_hosts"
+          timeout 30s python3 deploy/verify_ssh_host_key.py \
+            --known-hosts "$PREFLIGHT_DIR/known_hosts" \
+            --host "$DEPLOY_HOST" --port "$DEPLOY_PORT" \
+            --expected-fingerprint "$DEPLOY_SSH_HOST_FINGERPRINT"
+          trap - EXIT HUP INT TERM
 
-      - name: Capture immutable production ledger under shared writer lock
-        id: capture
+      - name: Verify deployed code and run immutable snapshot preflight
+        id: check
         continue-on-error: true
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
-        run: |
-          set -euo pipefail
-          umask 077
-          install -d -m 700 preflight-input
-          ssh -o BatchMode=yes -o ConnectTimeout=20 \
-            -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
-            "$DEPLOY_USER@$DEPLOY_HOST" \
-            "sudo python3 - /var/lock/footbreak.lock /opt/footbreak/system/sim_ledger.json" \
-            > preflight-input/sim-ledger.snapshot <<'PY'
-          import fcntl
-          import os
-          import stat
-          import sys
-          import time
-
-          lock_path, ledger_path = sys.argv[1:3]
-          maximum = 128 * 1024 * 1024
-          deadline = time.monotonic() + 120
-          lock_fd = os.open(lock_path, os.O_RDONLY | os.O_NOFOLLOW)
-          try:
-              while True:
-                  try:
-                      fcntl.flock(lock_fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
-                      break
-                  except BlockingIOError:
-                      if time.monotonic() >= deadline:
-                          raise TimeoutError("bounded shared lock acquisition failed")
-                      time.sleep(0.1)
-              ledger_fd = os.open(ledger_path, os.O_RDONLY | os.O_NOFOLLOW)
-              try:
-                  info = os.fstat(ledger_fd)
-                  if not stat.S_ISREG(info.st_mode) or info.st_size > maximum:
-                      raise RuntimeError("ledger capture bounds rejected")
-                  payload = bytearray()
-                  while len(payload) <= maximum:
-                      block = os.read(ledger_fd, min(1024 * 1024, maximum + 1 - len(payload)))
-                      if not block:
-                          break
-                      payload.extend(block)
-                  if len(payload) > maximum:
-                      raise RuntimeError("ledger capture bounds rejected")
-              finally:
-                  os.close(ledger_fd)
-          finally:
-              try:
-                  fcntl.flock(lock_fd, fcntl.LOCK_UN)
-              finally:
-                  os.close(lock_fd)
-          sys.stdout.buffer.write(payload)
-          PY
-          python3 -m json.tool preflight-input/sim-ledger.snapshot >/dev/null
-          chmod 400 preflight-input/sim-ledger.snapshot
-
-      - name: Remove SSH credentials
-        if: always()
-        run: |
-          shred -u ~/.ssh/id_ed25519 2>/dev/null || rm -f ~/.ssh/id_ed25519
-
-      - name: Run repository preflight against immutable snapshot
-        id: check
-        if: steps.capture.outcome == 'success'
-        continue-on-error: true
-        env:
+          DEPLOY_PORT: ${{ inputs.ssh_port }}
+          EXPECTED_DEPLOYED_SHA: ${{ inputs.expected_deployed_sha }}
+          EXPECTED_VALIDATION_SHA: ${{ inputs.expected_wilson_validation_sha256 }}
           EXPECTED_MANIFEST_HASH: ${{ inputs.expected_manifest_hash }}
           EXPECTED_CONDITION_SIGNATURE: ${{ inputs.expected_condition_signature }}
           EXPECTED_INITIAL_EVIDENCE_HASH: ${{ inputs.expected_initial_evidence_hash }}
         run: |
           set -euo pipefail
-          python3 deploy/condition17-production-preflight.py \
-            --ledger preflight-input/sim-ledger.snapshot \
-            --expected-manifest-hash "$EXPECTED_MANIFEST_HASH" \
-            --expected-condition-signature "$EXPECTED_CONDITION_SIGNATURE" \
-            --expected-initial-evidence-hash "$EXPECTED_INITIAL_EVIDENCE_HASH" \
-            --output condition17-production-preflight-summary.json
+          umask 077
+          snapshot="$PREFLIGHT_DIR/sim-ledger.snapshot"
+          summary="$PREFLIGHT_DIR/condition17-production-preflight-summary.json"
+          cleanup_snapshot() {
+            if [ -e "$snapshot" ] || [ -L "$snapshot" ]; then
+              chmod 600 "$snapshot" 2>/dev/null || true
+              rm -f -- "$snapshot"
+            fi
+            rm -f -- \
+              "$PREFLIGHT_DIR/id_ed25519" "$PREFLIGHT_DIR/known_hosts"
+          }
+          trap cleanup_snapshot EXIT
+          trap 'exit 130' HUP INT TERM
+          set -C
+          set +e
+          timeout --signal=TERM --kill-after=10s 180s \
+            ssh -p "$DEPLOY_PORT" \
+              -i "$PREFLIGHT_DIR/id_ed25519" \
+              -o BatchMode=yes -o ConnectTimeout=20 \
+              -o ConnectionAttempts=1 \
+              -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
+              -o StrictHostKeyChecking=yes \
+              -o UserKnownHostsFile="$PREFLIGHT_DIR/known_hosts" \
+              -o GlobalKnownHostsFile=/dev/null \
+              "$DEPLOY_USER@$DEPLOY_HOST" \
+              "sudo python3 - --lock /var/lock/footbreak.lock \
+               --ledger /opt/footbreak/system/sim_ledger.json \
+               --repo /opt/footbreak \
+               --expected-commit '$EXPECTED_DEPLOYED_SHA' \
+               --expected-validation-sha256 '$EXPECTED_VALIDATION_SHA' \
+               --lock-timeout 120" \
+              < deploy/capture-condition17-production-snapshot.py \
+              > "$snapshot"
+          capture_rc=$?
+          set -e
+          if [ "$capture_rc" -ne 0 ]; then
+            rm -f -- "$snapshot"
+            python3 - "$summary" <<'PY'
+          import json
+          import os
+          import stat
+          import sys
 
-      - name: Record capture failure without sensitive data
-        if: steps.capture.outcome != 'success'
-        run: |
-          printf '%s\n' \
-            '{"production_mutation":false,"read_only":true,"reason":"immutable_snapshot_capture_failed","result":"NO-GO","schema":"footbreak-condition17-production-preflight-v1","synthetic_data_output":false}' \
-            > condition17-production-preflight-summary.json
+          path = sys.argv[1]
+          payload = json.dumps({
+              "production_mutation": False,
+              "read_only": True,
+              "reason": "immutable_snapshot_or_deployed_code_verification_failed",
+              "result": "NO-GO",
+              "schema": "footbreak-condition17-production-preflight-v1",
+              "synthetic_data_output": False,
+          }, sort_keys=True).encode() + b"\n"
+          fd = os.open(
+              path,
+              os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+              0o400,
+          )
+          try:
+              os.fchmod(fd, 0o400)
+              written = 0
+              while written < len(payload):
+                  count = os.write(fd, payload[written:])
+                  if count <= 0:
+                      raise RuntimeError("short summary write")
+                  written += count
+              os.fsync(fd)
+              info = os.fstat(fd)
+              path_info = os.lstat(path)
+              if (
+                  not stat.S_ISREG(info.st_mode)
+                  or info.st_nlink != 1
+                  or stat.S_IMODE(info.st_mode) != 0o400
+                  or (path_info.st_dev, path_info.st_ino)
+                  != (info.st_dev, info.st_ino)
+                  or path_info.st_nlink != 1
+                  or info.st_size != len(payload)
+              ):
+                  raise RuntimeError("unsafe summary output")
+          finally:
+              os.close(fd)
+          PY
+            exit 1
+          fi
+          chmod 400 "$snapshot"
+          timeout --signal=TERM --kill-after=10s 180s \
+            python3 deploy/condition17-production-preflight.py \
+              --ledger "$snapshot" \
+              --expected-manifest-hash "$EXPECTED_MANIFEST_HASH" \
+              --expected-condition-signature "$EXPECTED_CONDITION_SIGNATURE" \
+              --expected-initial-evidence-hash "$EXPECTED_INITIAL_EVIDENCE_HASH" \
+              --output "$summary"
 
       - name: Print bounded preflight result
         if: always()
         run: |
-          test -s condition17-production-preflight-summary.json
+          set -euo pipefail
+          summary="$PREFLIGHT_DIR/condition17-production-preflight-summary.json"
+          test -f "$summary"
+          test ! -L "$summary"
+          test "$(stat -c '%h %a' "$summary")" = "1 400"
           printf '%s\n' 'CONDITION17_PRODUCTION_PREFLIGHT_BEGIN'
-          cat condition17-production-preflight-summary.json
+          cat "$summary"
           printf '%s\n' 'CONDITION17_PRODUCTION_PREFLIGHT_END'
 
       - name: Upload bounded preflight result
@@ -152,30 +231,25 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: condition17-production-preflight-${{ github.run_id }}
-          path: condition17-production-preflight-summary.json
+          path: ${{ runner.temp }}/footbreak-condition17-preflight-${{ github.run_id }}/condition17-production-preflight-summary.json
           if-no-files-found: error
           retention-days: 7
 
       - name: Enforce GO
         if: always()
         env:
-          CAPTURE_OUTCOME: ${{ steps.capture.outcome }}
           CHECK_OUTCOME: ${{ steps.check.outcome }}
         run: |
           set -euo pipefail
-          python3 - <<'PY'
+          timeout 30s python3 - "$PREFLIGHT_DIR/condition17-production-preflight-summary.json" <<'PY'
           import json
           import os
+          import sys
           from pathlib import Path
 
-          result = json.loads(
-              Path("condition17-production-preflight-summary.json").read_text(
-                  encoding="utf-8",
-              )
-          )
+          result = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
           if (
-              os.environ.get("CAPTURE_OUTCOME") != "success"
-              or os.environ.get("CHECK_OUTCOME") != "success"
+              os.environ.get("CHECK_OUTCOME") != "success"
               or result.get("result") != "GO"
               or result.get("read_only") is not True
               or result.get("production_mutation") is not False
@@ -183,3 +257,22 @@ jobs:
           ):
               raise SystemExit("NO-GO")
           PY
+
+      - name: Remove all preflight credentials and intermediates
+        if: always()
+        run: |
+          set -euo pipefail
+          cleanup() {
+            rc=$?
+            trap - EXIT HUP INT TERM
+            test -n "${RUNNER_TEMP:-}"
+            test -n "${GITHUB_RUN_ID:-}"
+            case "$PREFLIGHT_DIR" in
+              "$RUNNER_TEMP"/footbreak-condition17-preflight-"$GITHUB_RUN_ID") ;;
+              *) exit 2 ;;
+            esac
+            rm -rf -- "$PREFLIGHT_DIR"
+            exit "$rc"
+          }
+          trap cleanup EXIT
+          trap 'exit 130' HUP INT TERM

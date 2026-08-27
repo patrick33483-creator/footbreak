@@ -12,7 +12,10 @@ import argparse
 import copy
 import hashlib
 import json
+import os
+import stat
 import sys
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -54,6 +57,153 @@ def _sha256(value: bytes) -> str:
 def _require(condition: bool, code: str) -> None:
     if not condition:
         raise PreflightFailure(code)
+
+
+def _file_identity(info: os.stat_result) -> tuple[int, int]:
+    return info.st_dev, info.st_ino
+
+
+def _validate_snapshot_info(info: os.stat_result) -> None:
+    _require(
+        stat.S_ISREG(info.st_mode)
+        and info.st_nlink == 1
+        and stat.S_IMODE(info.st_mode) == 0o400
+        and info.st_size <= MAX_LEDGER_BYTES,
+        "ledger_snapshot_file_invalid",
+    )
+
+
+def _verify_snapshot_path(
+    path: Path, fd: int, expected: os.stat_result,
+) -> os.stat_result:
+    opened = os.fstat(fd)
+    current = os.lstat(path)
+    _validate_snapshot_info(opened)
+    _validate_snapshot_info(current)
+    _require(
+        _file_identity(opened) == _file_identity(expected)
+        and _file_identity(current) == _file_identity(expected),
+        "ledger_snapshot_identity_changed",
+    )
+    return opened
+
+
+def _read_fd(fd: int, maximum: int) -> bytes:
+    os.lseek(fd, 0, os.SEEK_SET)
+    payload = bytearray()
+    while len(payload) <= maximum:
+        block = os.read(fd, min(1024 * 1024, maximum + 1 - len(payload)))
+        if not block:
+            break
+        payload.extend(block)
+    _require(len(payload) <= maximum, "ledger_size_exceeded")
+    return bytes(payload)
+
+
+@contextmanager
+def _verified_snapshot(path: Path):
+    before = os.lstat(path)
+    _validate_snapshot_info(before)
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        opened = _verify_snapshot_path(path, fd, before)
+        raw = _read_fd(fd, MAX_LEDGER_BYTES)
+        after_read = _verify_snapshot_path(path, fd, before)
+        _require(
+            len(raw) == opened.st_size
+            and after_read.st_size == opened.st_size
+            and after_read.st_mtime_ns == opened.st_mtime_ns
+            and after_read.st_ctime_ns == opened.st_ctime_ns,
+            "ledger_snapshot_changed_during_read",
+        )
+        yield raw
+        final = _verify_snapshot_path(path, fd, before)
+        final_raw = _read_fd(fd, MAX_LEDGER_BYTES)
+        _require(
+            final.st_size == opened.st_size
+            and final.st_mtime_ns == opened.st_mtime_ns
+            and final.st_ctime_ns == opened.st_ctime_ns
+            and final_raw == raw,
+            "ledger_snapshot_changed_during_preflight",
+        )
+    finally:
+        os.close(fd)
+
+
+def _write_output_exclusive(path: Path, payload: bytes) -> None:
+    parent = path.parent
+    parent_before = os.lstat(parent)
+    _require(
+        stat.S_ISDIR(parent_before.st_mode)
+        and parent_before.st_uid == os.geteuid()
+        and not stat.S_IMODE(parent_before.st_mode) & 0o022,
+        "output_parent_invalid",
+    )
+    parent_fd = os.open(
+        parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+    )
+    created = False
+    try:
+        parent_opened = os.fstat(parent_fd)
+        _require(
+            _file_identity(parent_opened) == _file_identity(parent_before),
+            "output_parent_identity_changed",
+        )
+        try:
+            os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            raise PreflightFailure("output_path_exists")
+        flags = (
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL
+            | os.O_NOFOLLOW | os.O_CLOEXEC
+        )
+        fd = os.open(path.name, flags, 0o400, dir_fd=parent_fd)
+        created = True
+        try:
+            os.fchmod(fd, 0o400)
+            offset = 0
+            while offset < len(payload):
+                written = os.write(fd, payload[offset:])
+                _require(written > 0, "output_write_failed")
+                offset += written
+            os.fsync(fd)
+            opened = os.fstat(fd)
+            current = os.stat(
+                path.name, dir_fd=parent_fd, follow_symlinks=False,
+            )
+            _require(
+                stat.S_ISREG(opened.st_mode)
+                and opened.st_nlink == 1
+                and stat.S_IMODE(opened.st_mode) == 0o400
+                and _file_identity(opened) == _file_identity(current)
+                and current.st_nlink == 1
+                and stat.S_IMODE(current.st_mode) == 0o400
+                and opened.st_size == len(payload),
+                "output_file_verification_failed",
+            )
+        finally:
+            os.close(fd)
+        final = os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
+        parent_final = os.lstat(parent)
+        _require(
+            stat.S_ISREG(final.st_mode)
+            and final.st_nlink == 1
+            and stat.S_IMODE(final.st_mode) == 0o400
+            and _file_identity(final) == _file_identity(current)
+            and _file_identity(parent_final) == _file_identity(parent_before),
+            "output_path_identity_changed",
+        )
+    except Exception:
+        if created:
+            try:
+                os.unlink(path.name, dir_fd=parent_fd)
+            except FileNotFoundError:
+                pass
+        raise
+    finally:
+        os.close(parent_fd)
 
 
 def _condition_17(ledger: dict[str, Any]) -> tuple[dict[str, Any], str]:
@@ -536,51 +686,44 @@ def run_preflight(
     expected_signature: str,
     expected_initial_evidence_hash: str,
 ) -> dict[str, Any]:
-    stat_before = ledger_path.stat()
-    _require(stat_before.st_size <= MAX_LEDGER_BYTES, "ledger_size_exceeded")
-    raw = ledger_path.read_bytes()
-    _require(len(raw) == stat_before.st_size, "ledger_read_size_changed")
-    ledger_digest = _sha256(raw)
-    ledger = json.loads(raw)
-    _require(isinstance(ledger, dict), "ledger_not_object")
-    source_before = _canonical_bytes(ledger)
-    frozen, signature = _condition_17(ledger)
-    manifest_hash, initial_hash = _verify_manifest_and_identity(
-        ledger, frozen, signature,
-        expected_manifest_hash=expected_manifest_hash,
-        expected_signature=expected_signature,
-        expected_initial_evidence_hash=expected_initial_evidence_hash,
-    )
-    now = datetime.now(timezone.utc)
-    anomalies = _verify_exact_anomaly_cohort(
-        ledger, frozen, signature, projection_time=now,
-    )
-    _verify_durable_progress(ledger, frozen, signature)
-    _simulate_rollover(ledger, frozen, signature, anomalies, now)
-    _require(_canonical_bytes(ledger) == source_before, "source_object_mutated")
-    _require(
-        ledger_path.read_bytes() == raw
-        and ledger_path.stat().st_size == stat_before.st_size,
-        "snapshot_file_mutated",
-    )
-    return {
-        "schema": "footbreak-condition17-production-preflight-v1",
-        "result": "GO",
-        "read_only": True,
-        "ledger_sha256": ledger_digest,
-        "manifest_hash": manifest_hash,
-        "condition_signature": signature,
-        "initial_evidence_hash": initial_hash,
-        "condition_number": CONDITION_NUMBER,
-        "compatible_anomaly_rows": EXPECTED_DECIDED,
-        "pending_hits": EXPECTED_HITS,
-        "durable_progress": "18/20",
-        "synthetic_progress": ["19/20", "0/20"],
-        "synthetic_rollover_version": 2,
-        "synthetic_derivation": "deep-copy-in-memory",
-        "production_mutation": False,
-        "synthetic_data_output": False,
-    }
+    with _verified_snapshot(ledger_path) as raw:
+        ledger_digest = _sha256(raw)
+        ledger = json.loads(raw)
+        _require(isinstance(ledger, dict), "ledger_not_object")
+        source_before = _canonical_bytes(ledger)
+        frozen, signature = _condition_17(ledger)
+        manifest_hash, initial_hash = _verify_manifest_and_identity(
+            ledger, frozen, signature,
+            expected_manifest_hash=expected_manifest_hash,
+            expected_signature=expected_signature,
+            expected_initial_evidence_hash=expected_initial_evidence_hash,
+        )
+        now = datetime.now(timezone.utc)
+        anomalies = _verify_exact_anomaly_cohort(
+            ledger, frozen, signature, projection_time=now,
+        )
+        _verify_durable_progress(ledger, frozen, signature)
+        _simulate_rollover(ledger, frozen, signature, anomalies, now)
+        _require(_canonical_bytes(ledger) == source_before, "source_object_mutated")
+        result = {
+            "schema": "footbreak-condition17-production-preflight-v1",
+            "result": "GO",
+            "read_only": True,
+            "ledger_sha256": ledger_digest,
+            "manifest_hash": manifest_hash,
+            "condition_signature": signature,
+            "initial_evidence_hash": initial_hash,
+            "condition_number": CONDITION_NUMBER,
+            "compatible_anomaly_rows": EXPECTED_DECIDED,
+            "pending_hits": EXPECTED_HITS,
+            "durable_progress": "18/20",
+            "synthetic_progress": ["19/20", "0/20"],
+            "synthetic_rollover_version": 2,
+            "synthetic_derivation": "deep-copy-in-memory",
+            "production_mutation": False,
+            "synthetic_data_output": False,
+        }
+    return result
 
 
 def _safe_summary(result: str, reason: str | None = None) -> dict[str, Any]:
@@ -624,10 +767,17 @@ def main(argv: list[str] | None = None) -> int:
     except Exception:
         result = _safe_summary("NO-GO", "preflight_input_or_invariant_failure")
         rc = 1
-    payload = json.dumps(result, ensure_ascii=False, sort_keys=True) + "\n"
+    payload = (json.dumps(result, ensure_ascii=False, sort_keys=True) + "\n").encode()
     if args.output is not None:
-        args.output.write_text(payload, encoding="utf-8")
-    sys.stdout.write(payload)
+        try:
+            _write_output_exclusive(args.output, payload)
+        except Exception:
+            result = _safe_summary("NO-GO", "output_protection_failure")
+            payload = (
+                json.dumps(result, ensure_ascii=False, sort_keys=True) + "\n"
+            ).encode()
+            rc = 1
+    sys.stdout.write(payload.decode("utf-8"))
     return rc
 
 
