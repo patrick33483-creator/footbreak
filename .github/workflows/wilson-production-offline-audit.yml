@@ -1,0 +1,338 @@
+name: Wilson production offline audit
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wilson-production-offline-audit
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    name: Audit immutable Footbreak and Crown ledger copies
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+
+      - name: Verify dispatched audit code
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test -s analysis/wilson_registry_manifest.py
+          test -s analysis/wilson_validation.py
+          sha256sum \
+            analysis/wilson_registry_manifest.py \
+            analysis/wilson_validation.py
+
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: Capture immutable ledger copies under production locks
+        id: capture
+        continue-on-error: true
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          cleanup() {
+            shred -u ~/.ssh/id_ed25519 2>/dev/null || rm -f ~/.ssh/id_ed25519
+          }
+          trap cleanup EXIT
+          install -d -m 700 audit-input
+          capture_locked() {
+            lock_path="$1"
+            ledger_path="$2"
+            output_path="$3"
+            ssh -o BatchMode=yes -o ConnectTimeout=20 \
+              -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
+              "$DEPLOY_USER@$DEPLOY_HOST" \
+              "sudo python3 - '$lock_path' '$ledger_path'" > "$output_path" <<'PY'
+          import fcntl
+          import os
+          import signal
+          import sys
+
+          lock_path, ledger_path = sys.argv[1:3]
+          signal.alarm(180)
+          lock_fd = os.open(lock_path, os.O_RDWR | os.O_NOFOLLOW)
+          try:
+              fcntl.flock(lock_fd, fcntl.LOCK_EX)
+              with open(ledger_path, "rb") as handle:
+                  payload = handle.read(134_217_729)
+              if len(payload) > 134_217_728:
+                  raise RuntimeError("ledger exceeds 128 MiB capture bound")
+          finally:
+              fcntl.flock(lock_fd, fcntl.LOCK_UN)
+              os.close(lock_fd)
+          signal.alarm(0)
+          sys.stdout.buffer.write(payload)
+          PY
+          }
+          set +e
+          capture_locked \
+            /var/lock/footbreak.lock \
+            /opt/footbreak/system/sim_ledger.json \
+            audit-input/footbreak-ledger.json &
+          footbreak_pid=$!
+          capture_locked \
+            /var/lib/footbreak/crown/.state.lock \
+            /var/lib/footbreak/crown/ledger.json \
+            audit-input/crown-ledger.json &
+          crown_pid=$!
+          wait "$footbreak_pid"
+          footbreak_rc=$?
+          wait "$crown_pid"
+          crown_rc=$?
+          if [ "$footbreak_rc" -eq 0 ]; then
+            python3 -m json.tool audit-input/footbreak-ledger.json >/dev/null
+            footbreak_rc=$?
+          fi
+          if [ "$crown_rc" -eq 0 ]; then
+            python3 -m json.tool audit-input/crown-ledger.json >/dev/null
+            crown_rc=$?
+          fi
+          : > ledger-sha256.txt
+          if [ "$footbreak_rc" -eq 0 ]; then
+            if ! sha256sum audit-input/footbreak-ledger.json >> ledger-sha256.txt; then
+              footbreak_rc=2
+            fi
+          fi
+          if [ "$crown_rc" -eq 0 ]; then
+            if ! sha256sum audit-input/crown-ledger.json >> ledger-sha256.txt; then
+              crown_rc=2
+            fi
+          fi
+          printf 'footbreak_capture_rc=%s\n' "$footbreak_rc" >> "$GITHUB_OUTPUT"
+          printf 'crown_capture_rc=%s\n' "$crown_rc" >> "$GITHUB_OUTPUT"
+          set -e
+
+      - name: Remove SSH credentials
+        if: always()
+        run: |
+          shred -u ~/.ssh/id_ed25519 2>/dev/null || rm -f ~/.ssh/id_ed25519
+
+      - name: Run fail-closed offline registry audits
+        id: registry
+        if: always()
+        run: |
+          set +e
+          run_audit() {
+            system="$1"
+            ledger="audit-input/${system}-ledger.json"
+            output="${system}-wilson-registry-audit.json"
+            if [ ! -s "$ledger" ]; then
+              printf '{"schema":"wilson-registry-manifest-v2","system":"%s","valid":false,"rejection_reasons":{"capture_failed":1},"recovery":{"implemented":false,"mode":"audit-only","safely_recoverable_missed_rows":0,"reason":"Recovery is hard-disabled."}}\n' \
+                "$system" > "$output"
+              return 2
+            fi
+            python3 -m analysis.wilson_registry_manifest \
+              --system "$system" \
+              --ledger "$ledger" \
+              --output "$output" \
+              --require-valid \
+              > "${system}-audit-process.log" 2>&1
+            rc=$?
+            if [ ! -s "$output" ]; then
+              printf '{"schema":"wilson-registry-manifest-v2","system":"%s","valid":false,"rejection_reasons":{"audit_process_failed":1},"recovery":{"implemented":false,"mode":"audit-only","safely_recoverable_missed_rows":0,"reason":"Recovery is hard-disabled."}}\n' \
+                "$system" > "$output"
+              return 2
+            fi
+            return "$rc"
+          }
+          run_audit footbreak
+          footbreak_rc=$?
+          run_audit crown
+          crown_rc=$?
+          set -e
+          printf 'footbreak_rc=%s\n' "$footbreak_rc" >> "$GITHUB_OUTPUT"
+          printf 'crown_rc=%s\n' "$crown_rc" >> "$GITHUB_OUTPUT"
+
+      - name: Build non-sensitive audit summary
+        if: always()
+        env:
+          AUDITED_COMMIT: ${{ github.sha }}
+          CAPTURE_OUTCOME: ${{ steps.capture.outcome }}
+          FOOTBREAK_CAPTURE_RC: ${{ steps.capture.outputs.footbreak_capture_rc }}
+          CROWN_CAPTURE_RC: ${{ steps.capture.outputs.crown_capture_rc }}
+          FOOTBREAK_RC: ${{ steps.registry.outputs.footbreak_rc }}
+          CROWN_RC: ${{ steps.registry.outputs.crown_rc }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          hashes = {}
+          hash_path = Path("ledger-sha256.txt")
+          if hash_path.is_file():
+              for line in hash_path.read_text(encoding="utf-8").splitlines():
+                  digest, path = line.split(maxsplit=1)
+                  hashes[Path(path).name] = digest
+
+          manifests = {}
+          for system in ("footbreak", "crown"):
+              path = Path(f"{system}-wilson-registry-audit.json")
+              try:
+                  data = json.loads(path.read_text(encoding="utf-8"))
+              except Exception:
+                  data = {
+                      "valid": False,
+                      "rejection_reasons": {"audit_manifest_unreadable": 1},
+                      "recovery": {"implemented": False},
+                  }
+                  path.write_text(
+                      json.dumps(data, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
+                      encoding="utf-8",
+                  )
+              manifests[system] = {
+                  "valid": data.get("valid") is True,
+                  "condition_count": data.get("condition_count"),
+                  "decision_stage_counts": data.get("decision_stage_counts"),
+                  "rejection_reasons": data.get("rejection_reasons"),
+                  "recovery": data.get("recovery"),
+              }
+
+          def exit_code(value):
+              try:
+                  return int(value)
+              except (TypeError, ValueError):
+                  return 2
+
+          summary = {
+              "schema": "wilson-production-offline-audit-v1",
+              "audited_commit": os.environ["AUDITED_COMMIT"],
+              "captured_at_utc": datetime.now(timezone.utc).isoformat(),
+              "capture_outcome": os.environ.get("CAPTURE_OUTCOME"),
+              "capture_exit_codes": {
+                  "footbreak": exit_code(os.environ.get("FOOTBREAK_CAPTURE_RC")),
+                  "crown": exit_code(os.environ.get("CROWN_CAPTURE_RC")),
+              },
+              "ledger_sha256": hashes,
+              "exit_codes": {
+                  "footbreak": exit_code(os.environ.get("FOOTBREAK_RC")),
+                  "crown": exit_code(os.environ.get("CROWN_RC")),
+              },
+              "systems": manifests,
+              "production_mutation": False,
+              "recovery_enabled": False,
+          }
+          Path("wilson-production-audit-summary.json").write_text(
+              json.dumps(summary, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Print non-sensitive audit results
+        if: always()
+        run: |
+          printf '%s\n' 'WILSON_STRICT_SUMMARY_JSON_BEGIN'
+          cat wilson-production-audit-summary.json
+          printf '%s\n' 'WILSON_STRICT_SUMMARY_JSON_END'
+          for system in footbreak crown; do
+            printf 'WILSON_STRICT_MANIFEST_%s_BEGIN\n' "$system"
+            cat "${system}-wilson-registry-audit.json"
+            printf 'WILSON_STRICT_MANIFEST_%s_END\n' "$system"
+          done
+
+      - name: Upload audit evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: wilson-production-offline-audit
+          path: |
+            ledger-sha256.txt
+            wilson-production-audit-summary.json
+            footbreak-wilson-registry-audit.json
+            crown-wilson-registry-audit.json
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Enforce valid manifests
+        if: always()
+        env:
+          CAPTURE_OUTCOME: ${{ steps.capture.outcome }}
+          FOOTBREAK_CAPTURE_RC: ${{ steps.capture.outputs.footbreak_capture_rc }}
+          CROWN_CAPTURE_RC: ${{ steps.capture.outputs.crown_capture_rc }}
+          FOOTBREAK_RC: ${{ steps.registry.outputs.footbreak_rc }}
+          CROWN_RC: ${{ steps.registry.outputs.crown_rc }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import re
+          from pathlib import Path
+
+          expected_counts = {"footbreak": 17, "crown": 20}
+          observed_total = 0
+          for system in ("footbreak", "crown"):
+              data = json.loads(
+                  Path(f"{system}-wilson-registry-audit.json").read_text(encoding="utf-8")
+              )
+              if not isinstance(data, dict):
+                  raise SystemExit(f"{system}: manifest is not an object")
+              if data.get("schema") != "wilson-registry-manifest-v2":
+                  raise SystemExit(f"{system}: unexpected manifest schema")
+              if data.get("system") != system:
+                  raise SystemExit(f"{system}: manifest system mismatch")
+              if data.get("condition_count") != expected_counts[system]:
+                  raise SystemExit(
+                      f"{system}: expected {expected_counts[system]} conditions, "
+                      f"found {data.get('condition_count')}"
+                  )
+              observed_total += data["condition_count"]
+              if data.get("valid") is not True:
+                  raise SystemExit(f"{system}: manifest is not valid")
+              conditions = data.get("conditions")
+              if not isinstance(conditions, list) or len(conditions) != expected_counts[system]:
+                  raise SystemExit(f"{system}: malformed condition manifest rows")
+              for position, condition in enumerate(conditions, start=1):
+                  if not isinstance(condition, dict):
+                      raise SystemExit(f"{system}: malformed condition row {position}")
+                  if condition.get("condition_number") != position:
+                      raise SystemExit(f"{system}: condition order mismatch at {position}")
+                  if condition.get("valid") is not True:
+                      raise SystemExit(f"{system}: condition {position} is not valid")
+                  if condition.get("own_stage_matcher_can_structurally_admit") is not True:
+                      raise SystemExit(
+                          f"{system}: condition {position} cannot be structurally admitted"
+                      )
+              recovery = data.get("recovery")
+              if not isinstance(recovery, dict) or recovery.get("implemented") is not False:
+                  raise SystemExit(f"{system}: recovery isolation is not proven")
+          if observed_total != 37:
+              raise SystemExit(f"expected 37 total conditions, found {observed_total}")
+
+          hashes = {}
+          for line in Path("ledger-sha256.txt").read_text(encoding="utf-8").splitlines():
+              parts = line.split()
+              if len(parts) != 2:
+                  raise SystemExit("malformed ledger hash line")
+              digest, path = parts
+              basename = Path(path).name
+              if basename in hashes:
+                  raise SystemExit(f"duplicate ledger hash: {basename}")
+              hashes[basename] = digest
+          expected = {"footbreak-ledger.json", "crown-ledger.json"}
+          if set(hashes) != expected:
+              raise SystemExit("ledger hash set mismatch")
+          if any(re.fullmatch(r"[0-9a-f]{64}", digest) is None for digest in hashes.values()):
+              raise SystemExit("invalid ledger SHA-256")
+          PY
+          test "$CAPTURE_OUTCOME" = "success"
+          test "$FOOTBREAK_CAPTURE_RC" -eq 0
+          test "$CROWN_CAPTURE_RC" -eq 0
+          test "$FOOTBREAK_RC" -eq 0
+          test "$CROWN_RC" -eq 0
