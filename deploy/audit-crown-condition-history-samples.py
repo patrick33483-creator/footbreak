@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import math
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -148,6 +149,37 @@ def matching_samples(
     return sorted(output, key=lambda row: (str(row.get("kickoff") or ""), row["match_id"]))
 
 
+def metrics(samples: list[dict[str, Any]]) -> dict[str, int]:
+    return {
+        "settled": len(samples),
+        "hits": sum(row["hit"] is True for row in samples),
+        "losses": sum(row["hit"] is False for row in samples),
+        "pushes": sum(row["hit"] is None for row in samples),
+        "decided": sum(row["hit"] is True or row["hit"] is False for row in samples),
+    }
+
+
+def settlement_conflicts(samples: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    output = []
+    for row in samples:
+        settlement = str((row.get("grade") or {}).get("settlement") or "").lower()
+        expected = (
+            True if "won" in settlement
+            else False if "lost" in settlement
+            else None if settlement in {"refunded", "push", "void"}
+            else "unknown"
+        )
+        if expected != "unknown" and row.get("hit") is not expected:
+            output.append({
+                key: copy.deepcopy(row.get(key))
+                for key in (
+                    "kickoff", "match_id", "league", "home", "away",
+                    "selection", "line", "odds", "hit", "score", "grade",
+                )
+            })
+    return output
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--history", type=Path, required=True)
@@ -177,9 +209,19 @@ def main() -> None:
     )
     expected_hits = int(historical.get("hits"))
     expected_decided = int(historical.get("decided"))
-    frozen_hits = sum(row["hit"] is True for row in frozen)
-    verified_frozen_hits = sum(row["hit"] is True for row in verified_frozen)
-    current_hits = sum(row["hit"] is True for row in current)
+    frozen_metrics = metrics(frozen)
+    verified_frozen_metrics = metrics(verified_frozen)
+    current_metrics = metrics(current)
+    holdout_size = max(1, math.ceil(len(frozen) * 0.30)) if frozen else 0
+    reconstructed_holdout = frozen[-holdout_size:] if holdout_size else []
+    holdout_metrics = metrics(reconstructed_holdout)
+    post_boundary = [
+        row for row in current
+        if parse_time(row.get("kickoff")) is not None
+        and boundary is not None
+        and parse_time(row.get("kickoff")) > boundary
+    ]
+    conflicts = settlement_conflicts(frozen)
 
     report = {
         "condition_number": args.condition_number,
@@ -192,28 +234,31 @@ def main() -> None:
             "decided": expected_decided,
         },
         "reconstructed_at_boundary": {
-            "hits": frozen_hits,
-            "decided": len(frozen),
+            **frozen_metrics,
             "matches_registry": (
-                frozen_hits == expected_hits and len(frozen) == expected_decided
+                frozen_metrics["hits"] == expected_hits
+                and frozen_metrics["decided"] == expected_decided
             ),
         },
         "reconstructed_verified_at_boundary": {
-            "hits": verified_frozen_hits,
-            "decided": len(verified_frozen),
+            **verified_frozen_metrics,
             "matches_registry": (
-                verified_frozen_hits == expected_hits
-                and len(verified_frozen) == expected_decided
+                verified_frozen_metrics["hits"] == expected_hits
+                and verified_frozen_metrics["decided"] == expected_decided
             ),
         },
-        "current_history_same_definition": {
-            "hits": current_hits,
-            "decided": len(current),
-        },
+        "current_history_same_definition": current_metrics,
         "prospective": copy.deepcopy(condition.get("prospective")),
         "active_evidence": copy.deepcopy(condition.get("active_evidence")),
         "active_evidence_version": condition.get("active_evidence_version"),
         "evidence_versions": copy.deepcopy(condition.get("evidence_versions")),
+        "reconstructed_latest_30pct_holdout": {
+            **holdout_metrics,
+            "fixtures": [row["match_id"] for row in reconstructed_holdout],
+            "all_are_already_in_frozen_total": all(row in frozen for row in reconstructed_holdout),
+        },
+        "post_boundary_same_definition": metrics(post_boundary),
+        "settlement_hit_conflicts": conflicts,
         "samples": frozen[: max(0, args.limit)],
     }
     print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
