@@ -2257,7 +2257,8 @@ def _project_last_merged_batch_rows(
 
 
 def _project_frozen_ranking_evidence(
-    ns: dict[str, Any], system: str, ranking: Iterable[dict[str, Any]],
+    ns: dict[str, Any], system: str, ranking: Iterable[dict[str, Any]], *,
+    include_missing: bool = False,
 ) -> list[dict[str, Any]]:
     """Project existing immutable evidence without repairing or creating it."""
     if str(ns.get("system") or "") != system:
@@ -2265,21 +2266,52 @@ def _project_frozen_ranking_evidence(
     conditions = ns.get("conditions")
     if not isinstance(conditions, dict):
         return []
-    output: list[dict[str, Any]] = []
+    order = ns.get("condition_order")
+    if (
+        not isinstance(order, list)
+        or any(not isinstance(signature, str) for signature in order)
+    ):
+        return []
+
+    live_candidates: dict[str, dict[str, Any]] = {}
+    live_order: list[str] = []
     for candidate in ranking:
         if not isinstance(candidate, dict):
             continue
         signature, _definition = condition_signature(system, candidate)
+        if signature in conditions:
+            live_candidates[signature] = candidate
+            if signature not in live_order:
+                live_order.append(signature)
+
+    projection_order = list(live_order)
+    if include_missing:
+        projection_order.extend(
+            signature for signature in order
+            if signature in conditions and signature not in projection_order
+        )
+
+    market_labels = {
+        "HDC": "讓球",
+        "HIL": "入球大細",
+        "CHL": "角球大細",
+    }
+    output: list[dict[str, Any]] = []
+    for signature in projection_order:
         frozen = conditions.get(signature)
         if not isinstance(frozen, dict):
             continue
         # Publication has no authority to synthesize a missing baseline,
         # normalize an old namespace, or select a replacement version.  It
         # displays only the already-durable final immutable version.
-        _stored_definition, versions, identity_reason = (
+        stored_definition, versions, identity_reason = (
             _validate_frozen_identity_and_chain(frozen, signature, system)
         )
-        if identity_reason is not None or not isinstance(versions, list):
+        if (
+            identity_reason is not None
+            or not isinstance(stored_definition, dict)
+            or not isinstance(versions, list)
+        ):
             continue
         active = versions[-1]
         pointer = frozen.get("active_evidence")
@@ -2312,7 +2344,58 @@ def _project_frozen_ranking_evidence(
         last_batch = (frozen.get("rollover_audit") or [])[-1] if isinstance(
             frozen.get("rollover_audit"), list
         ) and frozen.get("rollover_audit") else None
-        current = copy.deepcopy(candidate)
+        candidate = live_candidates.get(signature)
+        if isinstance(candidate, dict):
+            current = copy.deepcopy(candidate)
+        else:
+            path = str(stored_definition.get("path") or "")
+            stage = str(stored_definition.get("stage") or "")
+            market = str(stored_definition.get("market") or "")
+            odds_tier = str(stored_definition.get("odds_tier") or "")
+            role = str(stored_definition.get("role") or "")
+            direction = str(stored_definition.get("direction") or "")
+            line_bucket = str(stored_definition.get("line_bucket") or "")
+            movement = str(stored_definition.get("movement") or "")
+            odds_trajectory = str(
+                stored_definition.get("odds_trajectory") or ""
+            )
+            label_parts = [
+                f"{market_labels.get(market, market)}｜{path}",
+                f"決策 {stage}",
+                odds_tier,
+            ]
+            if direction:
+                label_parts.append(
+                    f"方向 {direction}"
+                    + (f"（終段角色 {role}）" if role else "")
+                )
+            if role:
+                label_parts.append(f"角色 {role}")
+            if line_bucket:
+                label_parts.append(f"線位 {line_bucket}")
+            if movement:
+                label_parts.append(f"走勢 {movement}")
+            if odds_trajectory:
+                label_parts.append(f"賠率路徑 {odds_trajectory}")
+            current = {
+                "key": copy.deepcopy(stored_definition["miner_key"]),
+                "label": "｜".join(part for part in label_parts if part),
+                "system": system,
+                "market": market,
+                "market_label": market_labels.get(market, market),
+                "observed_path": path,
+                "path": path,
+                "decision_stage": stage,
+                "stage": stage,
+                "odds_tier": odds_tier,
+                "direction": direction,
+                "role": role,
+                "line_bucket": line_bucket,
+                "movement": movement,
+                "odds_trajectory": odds_trajectory,
+                "specificity": len(stored_definition["miner_key"]),
+                "badge": "正式凍結",
+            }
         current["condition_signature"] = signature
         current["condition_number"] = frozen.get("condition_number")
         current["total"] = {
@@ -2357,7 +2440,9 @@ def project_frozen_ranking_evidence(
     ns = ledger.get(NAMESPACE)
     if not isinstance(ns, dict):
         return []
-    projected = _project_frozen_ranking_evidence(ns, system, ranking)
+    projected = _project_frozen_ranking_evidence(
+        ns, system, ranking, include_missing=True,
+    )
     for card in projected:
         card["last_merged_evidence"] = _project_last_merged_batch_rows(
             ledger,

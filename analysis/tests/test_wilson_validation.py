@@ -69,6 +69,27 @@ def quarter_profile(side="H", line=2.75, **_unused):
 
 
 class WilsonAdmissionTest(unittest.TestCase):
+    def test_read_only_projection_keeps_frozen_card_when_live_ranking_is_empty(self):
+        ledger = {"bets": []}
+        registered = project_granular_ranking_evidence(
+            ledger, "crown", [candidate(system="crown")],
+            now="2026-08-20T00:00:00+08:00",
+        )
+        self.assertEqual(len(registered), 1)
+        before = copy.deepcopy(ledger)
+
+        projected = project_frozen_ranking_evidence(ledger, "crown", [])
+
+        self.assertEqual(len(projected), 1)
+        self.assertEqual(projected[0]["condition_number"], 1)
+        self.assertEqual(
+            projected[0]["condition_signature"],
+            registered[0]["condition_signature"],
+        )
+        self.assertEqual(projected[0]["key"], registered[0]["key"])
+        self.assertEqual(projected[0]["badge"], "正式凍結")
+        self.assertEqual(ledger, before)
+
     def test_kashiwa_style_discovery_matches_are_not_admissions(self):
         """Two research hits must not impersonate the native #8/#9 outcome."""
         rows = [

@@ -1094,6 +1094,7 @@ def main(out_path=None):
     # fall back to the pre-migration discovery counts.
     from analysis.wilson_validation import (
         project_dashboard_research_matches,
+        project_frozen_ranking_evidence,
         project_granular_ranking_evidence,
     )
     raw_ranking = (
@@ -1103,6 +1104,12 @@ def main(out_path=None):
     projected_ranking = project_granular_ranking_evidence(
         led, "footbreak", raw_ranking,
         now=dt.datetime.now(HKT).isoformat(timespec="seconds"),
+    )
+    projected_ranking = project_frozen_ranking_evidence(
+        led, "footbreak", projected_ranking,
+    )
+    projected_ranking.sort(
+        key=lambda item: int(item.get("condition_number") or 10**9)
     )
     _write_ledger_atomic(lp, led)
     if isinstance((prediction_history.get("stats") or {}).get("granular_conditions"), dict):

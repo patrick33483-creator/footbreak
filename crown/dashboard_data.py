@@ -709,6 +709,9 @@ def _build_payloads(config: Settings) -> tuple[dict[str, Any], dict[str, Any]]:
     projected_ranking = project_frozen_ranking_evidence(
         ledger, "crown", raw_ranking,
     )
+    projected_ranking.sort(
+        key=lambda item: int(item.get("condition_number") or 10**9)
+    )
     if isinstance(prediction_history["stats"].get("granular_conditions"), dict):
         prediction_history["stats"]["granular_conditions"]["ranking"] = projected_ranking
     # Card-level matches are derived from persisted immutable snapshots, not
