@@ -37,7 +37,7 @@ jobs:
           systemctl list-timers footbreak-tick.timer footbreak-t30.timer crown-tick.timer crown-settle.timer --all --no-pager || true
 
           echo "=== services ==="
-          for unit in footbreak-tick.service footbreak-t30.service crown-tick.service crown-settle.service; do
+          for unit in footbreak-tick.service footbreak-t30.service footbreak-settle.service crown-tick.service crown-settle.service; do
             echo "--- $unit"
             systemctl show "$unit" \
               -p ActiveState -p SubState -p Result -p ExecMainStatus \
@@ -130,6 +130,18 @@ jobs:
 
           echo "=== recent tick journal ==="
           journalctl -u footbreak-tick.service --since "-90 minutes" --no-pager -o short-iso | tail -n 1200 || true
+          echo "=== Footbreak settlement failure classification ==="
+          settle_journal="$(
+            journalctl -u footbreak-settle.service --since "-90 minutes" \
+              --no-pager -o cat -n 1200 2>&1 || true
+          )"
+          echo "raw_settlement_journal_printed=0"
+          echo "traceback_lines=$(grep -Fc 'Traceback (most recent call last):' <<<"$settle_journal" || true)"
+          echo "systemd_exit_status_lines=$(grep -Eci 'status=[1-9][0-9]*/|code=exited, status=[1-9]' <<<"$settle_journal" || true)"
+          echo "validation_rejection_lines=$(grep -Eci 'validation|manifest|mismatch|rejected|invalid' <<<"$settle_journal" || true)"
+          printf '%s\n' "$settle_journal" \
+            | sed -nE 's/^([A-Za-z_][A-Za-z0-9_.]*(Error|Exception)):.*/exception_class=\1/p' \
+            | sort -u
           echo "=== recent t30 journal ==="
           journalctl -u footbreak-t30.service --since "-90 minutes" --no-pager -o short-iso | tail -n 600 || true
           echo "=== recent Crown tick journal ==="
