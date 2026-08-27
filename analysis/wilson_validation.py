@@ -117,6 +117,17 @@ def _time(value: Any) -> datetime | None:
     return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed.astimezone(timezone.utc)
 
 
+def _aware_time(value: Any) -> datetime | None:
+    """Parse only timestamps that carry an explicit UTC offset."""
+    try:
+        parsed = datetime.fromisoformat(str(value or "").replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        return None
+    return parsed.astimezone(timezone.utc)
+
+
 def _strictly_after(value: Any, boundary: Any) -> bool:
     left, right = _time(value), _time(boundary)
     return left is not None and right is not None and left > right
@@ -1207,10 +1218,13 @@ def _project_footbreak_17_schema1_settlement_anomaly(
     """
     marker = row.get("rollover_provenance")
     versions = frozen.get("evidence_versions")
-    stage_at = _time(marker.get("stage_at")) if isinstance(marker, dict) else None
-    created_at = _time(row.get("created_at"))
-    kickoff = _time(row.get("kickoff") or row.get("kickoff_hkt"))
-    settled_at = _time(row.get("settled_at"))
+    stage_at = (
+        _aware_time(marker.get("stage_at"))
+        if isinstance(marker, dict) else None
+    )
+    created_at = _aware_time(row.get("created_at"))
+    kickoff = _aware_time(row.get("kickoff") or row.get("kickoff_hkt"))
+    settled_at = _aware_time(row.get("settled_at"))
     active_hash = active.get("evidence_hash")
     active_version = _strict_int(active.get("version"))
     version_1 = (
@@ -1240,6 +1254,47 @@ def _project_footbreak_17_schema1_settlement_anomaly(
     fixture_hash = (
         marker.get("fixture_market_hash")
         if isinstance(marker, dict) else None
+    )
+    namespace = ledger.get(NAMESPACE)
+    conditions = (
+        namespace.get("conditions")
+        if isinstance(namespace, dict)
+        and isinstance(namespace.get("conditions"), dict)
+        else None
+    )
+    order = (
+        namespace.get("condition_order")
+        if isinstance(namespace, dict)
+        and isinstance(namespace.get("condition_order"), list)
+        else None
+    )
+    definition = frozen.get("definition")
+    rebuilt_signature = (
+        condition_signature(
+            "footbreak",
+            {**definition, "key": copy.deepcopy(definition["miner_key"])},
+        )[0]
+        if isinstance(definition, dict)
+        and isinstance(definition.get("miner_key"), list)
+        else None
+    )
+    registry_binding_valid = (
+        isinstance(conditions, dict)
+        and isinstance(order, list)
+        and len(order) == len(conditions)
+        and len(order) >= 17
+        and all(isinstance(value, str) for value in order)
+        and len(set(order)) == len(order)
+        and set(order) == set(conditions)
+        and order[16] == signature
+        and order.count(signature) == 1
+        and conditions.get(signature) is frozen
+        and all(
+            isinstance(conditions.get(value), dict)
+            and _strict_int(conditions[value].get("condition_number")) == index
+            for index, value in enumerate(order, start=1)
+        )
+        and rebuilt_signature == signature
     )
     active_window_valid = (
         (
@@ -1274,7 +1329,8 @@ def _project_footbreak_17_schema1_settlement_anomaly(
         )
     )
     if (
-        frozen.get("condition_number") != 17
+        not registry_binding_valid
+        or frozen.get("condition_number") != 17
         or row.get("frozen_condition_signature") != signature
         or row.get("frozen_condition_definition") != frozen.get("definition")
         or "native_stage_at" in row
@@ -1298,7 +1354,8 @@ def _project_footbreak_17_schema1_settlement_anomaly(
         or frozen.get("active_evidence_hash") != active_hash
         or stage_at is None or created_at is None
         or kickoff is None or settled_at is None
-        or not stage_at <= created_at <= settled_at < kickoff
+        or settled_at != created_at
+        or not stage_at <= created_at < kickoff
         or settled_at > projection_time
     ):
         return None
@@ -1376,7 +1433,20 @@ def _project_pending_rollover_rows(
     # rebuilding the cohort.  A legacy or malformed same-signature row must
     # never be borrowed merely because its loose provenance marker looks
     # similar to condition #7.
-    source_rows = active_bets(ledger, system) + active_observations(ledger, system)
+    observations = (
+        namespace.get("observations") or []
+        if isinstance(namespace, dict) else []
+    )
+    projection_observations = [
+        row for row in observations
+        if isinstance(row, dict)
+        and row.get("portfolio") == f"{system}_wilson_observations"
+        and row.get("strategy") == STRATEGY
+        and row.get("formal_bet") is False
+        and _formal_stage_provenance_valid(row, system)
+        and row.get("status") in {"PENDING", "SETTLED", "VOIDED"}
+    ] if isinstance(observations, list) else []
+    source_rows = active_bets(ledger, system) + projection_observations
     candidates: list[dict[str, Any]] = []
     rejected: list[tuple[dict[str, Any], str | None]] = []
     for row in source_rows:
@@ -1645,11 +1715,23 @@ def _project_frozen_ranking_evidence(
         # Publication has no authority to synthesize a missing baseline,
         # normalize an old namespace, or select a replacement version.  It
         # displays only the already-durable final immutable version.
-        versions = frozen.get("evidence_versions")
-        active = versions[-1] if isinstance(versions, list) and versions else None
+        _stored_definition, versions, identity_reason = (
+            _validate_frozen_identity_and_chain(frozen, signature, system)
+        )
+        if identity_reason is not None or not isinstance(versions, list):
+            continue
+        active = versions[-1]
+        pointer = frozen.get("active_evidence")
+        pointer_keys = {
+            "version", "cumulative_hits", "cumulative_decided",
+            "wilson95_lower_raw", "minimum_acceptable_odds_raw",
+            "minimum_acceptable_odds_display", "activation_boundary_at",
+            "created_at", "evidence_hash",
+        }
         if (
-            not isinstance(active, dict)
-            or str(active.get("condition_signature") or "") != signature
+            not isinstance(pointer, dict)
+            or set(pointer) != pointer_keys
+            or any(pointer.get(key) != active.get(key) for key in pointer_keys)
         ):
             continue
         try:
@@ -1677,7 +1759,7 @@ def _project_frozen_ranking_evidence(
             "accuracy": hits / decided if decided else None,
             "wilson95": list(interval) if interval else None,
         }
-        current["active_evidence"] = copy.deepcopy(active)
+        current["active_evidence"] = copy.deepcopy(pointer)
         current["last_merged_batch"] = copy.deepcopy(last_batch) if isinstance(last_batch, dict) else None
         current["pending_progress"] = copy.deepcopy(pending)
         # The old holdout stays in immutable migration audit; no current card
