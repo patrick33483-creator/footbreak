@@ -1,0 +1,11 @@
+[Unit]
+Description=足破 · 皇冠每分鐘首預及 T-30 正式條件本地累積
+
+[Timer]
+OnCalendar=*-*-* *:*:20
+Persistent=true
+AccuracySec=1s
+Unit=crown-early-admission-reconcile.service
+
+[Install]
+WantedBy=timers.target

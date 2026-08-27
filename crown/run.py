@@ -12,12 +12,16 @@ from .config import settings
 from .common import iso_hkt, write_json_atomic
 from .dashboard_data import write_dashboard_data, write_tick_dashboard_projection
 from .engine import _tick_pass_deadline_seconds, run
+from .ledger import reconcile_pending_formal_admissions, recompute_stats
 from .footbreak_identity_reconciliation import (
     schedule_hkjc_identity_reconciliation,
 )
 from .notify import notify_new
 from .prediction_history import archive_watch_fast, update_history
-from .state import load_ledger, schedule_footbreak_execution_evidence_projection
+from .state import (
+    load_ledger, save_ledger, schedule_footbreak_execution_evidence_projection,
+    state_lock,
+)
 from . import tick_timing_probe as _timing
 
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -33,6 +37,47 @@ _REVERSE_T5_DRAIN_SERVICE_MAX_SECONDS = 15.0
 # Keep the upstream first-look card publication bounded and independent from
 # the durable reconciliation commit.
 _FIRST_LOOK_PROJECTION_MAX_SECONDS = 5.0
+
+
+def _run_early_admission_reconcile(config) -> dict[str, object]:
+    """Drain durable early-stage Wilson jobs without network or T-5 actions."""
+    with state_lock(config):
+        ledger = load_ledger(config)
+        before = sum(
+            row.get("formal_admission_pending") is True
+            and str(row.get("stage") or "") in {"首預", "T-30"}
+            for watch in (ledger.get("watch") or {}).values()
+            if isinstance(watch, dict)
+            for row in watch.get("stages") or []
+            if isinstance(row, dict)
+        )
+        emitted = reconcile_pending_formal_admissions(
+            ledger,
+            config,
+            max_items=100,
+            allowed_stages={"首預", "T-30"},
+        )
+        recompute_stats(ledger, config)
+        save_ledger(config, ledger)
+        after = sum(
+            row.get("formal_admission_pending") is True
+            and str(row.get("stage") or "") in {"首預", "T-30"}
+            for watch in (ledger.get("watch") or {}).values()
+            if isinstance(watch, dict)
+            for row in watch.get("stages") or []
+            if isinstance(row, dict)
+        )
+    return {
+        "ok": True,
+        "mode": "early-admission-reconcile",
+        "pending_before": before,
+        "processed": before - after,
+        "pending_after": after,
+        "simulations_created": len(emitted),
+        "network_requested": False,
+        "t5_processed": False,
+        "real_betting_enabled": False,
+    }
 
 
 def _write_tick_health(config, result: dict[str, object]) -> None:
@@ -457,6 +502,7 @@ def main() -> int:
         choices=(
             "tick", "sweep", "round-update", "first-look-reconcile",
             "settle", "refresh", "health", "reverse-t5-drain",
+            "early-admission-reconcile",
         ),
     )
     parser.add_argument("--dry-run", action="store_true")
@@ -471,6 +517,10 @@ def main() -> int:
     if args.mode == "health":
         print({"ok": True, "enabled": config.enabled, "pinnapi_configured": config.pinnapi_configured,
                "telegram_enabled": config.telegram_enabled, "real_betting_enabled": False})
+        return 0
+    if args.mode == "early-admission-reconcile":
+        result = _run_early_admission_reconcile(config)
+        print(result)
         return 0
     if args.mode == "reverse-t5-drain":
         # This intentionally precedes dashboard setup and engine dispatch.
