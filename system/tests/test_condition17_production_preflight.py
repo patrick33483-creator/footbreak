@@ -642,6 +642,30 @@ class Condition17PinnedHostKeyTests(unittest.TestCase):
 
 
 class Condition17BootstrapAuditTests(unittest.TestCase):
+    def test_bootstrap_requires_canonical_dispatched_commit_and_tree_ids(self) -> None:
+        with self.assertRaisesRegex(
+            BOOTSTRAP.preflight.PreflightFailure,
+            "dispatched_deployed_commit_invalid",
+        ):
+            BOOTSTRAP.build_review(
+                Path("/not-opened"),
+                deployed_commit="main",
+                deployed_tree="2" * 40,
+                validation_sha256=BOOTSTRAP.PINNED_VALIDATION_SHA256,
+                quarter_line_sha256=BOOTSTRAP.PINNED_QUARTER_LINE_SHA256,
+            )
+        with self.assertRaisesRegex(
+            BOOTSTRAP.preflight.PreflightFailure,
+            "dispatched_deployed_tree_invalid",
+        ):
+            BOOTSTRAP.build_review(
+                Path("/not-opened"),
+                deployed_commit="1" * 40,
+                deployed_tree="A" * 40,
+                validation_sha256=BOOTSTRAP.PINNED_VALIDATION_SHA256,
+                quarter_line_sha256=BOOTSTRAP.PINNED_QUARTER_LINE_SHA256,
+            )
+
     def test_bootstrap_artifact_has_full_manifest_and_no_rows(self) -> None:
         ledger, trusted, secret = production_shape()
         ledger["wilson_validation"].pop("production_identity_manifest")
@@ -671,8 +695,8 @@ class Condition17BootstrapAuditTests(unittest.TestCase):
             ):
                 result = BOOTSTRAP.build_review(
                     snapshot,
-                    deployed_commit=BOOTSTRAP.PINNED_DEPLOYED_COMMIT,
-                    deployed_tree=BOOTSTRAP.PINNED_DEPLOYED_TREE,
+                    deployed_commit="1" * 40,
+                    deployed_tree="2" * 40,
                     validation_sha256=BOOTSTRAP.PINNED_VALIDATION_SHA256,
                     quarter_line_sha256=BOOTSTRAP.PINNED_QUARTER_LINE_SHA256,
                 )
@@ -695,7 +719,7 @@ class Condition17BootstrapAuditTests(unittest.TestCase):
 
 
 class Condition17ProductionPreflightWorkflowTests(unittest.TestCase):
-    def test_workflow_is_manual_read_only_and_pins_exact_e5_code(self) -> None:
+    def test_workflow_is_manual_read_only_and_binds_dispatched_integration(self) -> None:
         text = WORKFLOW.read_text(encoding="utf-8")
         parsed = yaml.safe_load(text)
         trigger = parsed.get(True, {})
@@ -705,17 +729,69 @@ class Condition17ProductionPreflightWorkflowTests(unittest.TestCase):
         self.assertNotIn("push", trigger)
         self.assertNotIn("schedule", trigger)
         self.assertEqual(parsed.get("permissions"), {"contents": "read"})
-        self.assertEqual(set(inputs), {"ssh_port"})
+        self.assertEqual(
+            set(inputs),
+            {"expected_deployed_sha", "expected_deployed_tree", "ssh_port"},
+        )
         self.assertTrue(all(value.get("required") is True for value in inputs.values()))
-        self.assertIn(BOOTSTRAP.PINNED_DEPLOYED_COMMIT, text)
-        self.assertIn(BOOTSTRAP.PINNED_DEPLOYED_TREE, text)
+        self.assertNotIn("e5ca5f6e745bbb7671841b860aa81dbd0039210a", text)
+        self.assertNotIn("50a9e26a20d90a93f481b9ea4ccd002f162232ad", text)
         self.assertIn(BOOTSTRAP.PINNED_VALIDATION_SHA256, text)
         self.assertIn(BOOTSTRAP.PINNED_QUARTER_LINE_SHA256, text)
         self.assertIn(
             "test \"$(sha256sum analysis/wilson_validation.py | awk '{print $1}')\"",
             text,
         )
+        self.assertIn(
+            "TRUSTED_DISPATCH_REF: refs/heads/integrate/"
+            "condition17-stage-a-main-20260827",
+            text,
+        )
+        self.assertIn("TRUSTED_REPOSITORY: patrick33483-creator/footbreak", text)
+        self.assertIn(
+            'test "$GITHUB_REPOSITORY" = "$TRUSTED_REPOSITORY"', text,
+        )
+        self.assertIn('test "$GITHUB_REF" = "$TRUSTED_DISPATCH_REF"', text)
+        self.assertIn('test "$EXPECTED_DEPLOYED_SHA" = "$GITHUB_SHA"', text)
+        self.assertIn(
+            'test "$(git rev-parse --verify "$GITHUB_SHA^{tree}")" '
+            '= "$EXPECTED_DEPLOYED_TREE"',
+            text,
+        )
         self.assertNotIn("git push", text)
+
+    def test_checkout_and_reviewed_blobs_are_bound_to_exact_dispatch_sha(self) -> None:
+        text = WORKFLOW.read_text(encoding="utf-8")
+        checkout = parsed_workflow()["jobs"]["audit"]["steps"][0]
+
+        self.assertEqual(checkout["with"]["ref"], "${{ github.sha }}")
+        self.assertEqual(checkout["with"]["fetch-depth"], 1)
+        self.assertIs(checkout["with"]["persist-credentials"], False)
+        self.assertIn('test "$(git rev-parse --verify HEAD^{commit})" = "$GITHUB_SHA"', text)
+        self.assertIn('entry="$(git ls-tree "$GITHUB_SHA" -- "$path")"', text)
+        self.assertIn('test "$(git hash-object -- "$path")" = "$oid"', text)
+        for path in (
+            ".github/workflows/footbreak-condition17-production-preflight.yml",
+            "deploy/verify_ssh_host_key.py",
+            "deploy/capture-condition17-production-snapshot.py",
+            "deploy/condition17-production-preflight.py",
+            "deploy/condition17-bootstrap-audit.py",
+        ):
+            self.assertIn(path, text)
+
+    def test_arbitrary_ref_or_mismatched_dispatch_authority_cannot_pass(self) -> None:
+        text = WORKFLOW.read_text(encoding="utf-8")
+
+        self.assertIn('test "$GITHUB_EVENT_NAME" = "workflow_dispatch"', text)
+        self.assertIn(
+            'test "$GITHUB_REPOSITORY" = "$TRUSTED_REPOSITORY"', text,
+        )
+        self.assertIn('test "$GITHUB_REF" = "$TRUSTED_DISPATCH_REF"', text)
+        self.assertIn('[[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]]', text)
+        self.assertIn('[[ "$EXPECTED_DEPLOYED_SHA" =~ ^[0-9a-f]{40}$ ]]', text)
+        self.assertIn('[[ "$EXPECTED_DEPLOYED_TREE" =~ ^[0-9a-f]{40}$ ]]', text)
+        self.assertNotIn("${{ github.event.inputs.ref", text)
+        self.assertNotIn("refs/heads/${{", text)
 
     def test_workflow_uses_bounded_shared_lock_and_never_uploads_ledger(self) -> None:
         text = WORKFLOW.read_text(encoding="utf-8")
@@ -723,10 +799,10 @@ class Condition17ProductionPreflightWorkflowTests(unittest.TestCase):
         self.assertIn("/var/lock/footbreak.lock", text)
         self.assertIn("/opt/footbreak/system/sim_ledger.json", text)
         self.assertIn("capture-condition17-production-snapshot.py", text)
-        self.assertIn("--expected-commit '$E5_COMMIT'", text)
-        self.assertIn("--expected-tree '$E5_TREE'", text)
+        self.assertIn("--expected-commit '$EXPECTED_DEPLOYED_SHA'", text)
+        self.assertIn("--expected-tree '$EXPECTED_DEPLOYED_TREE'", text)
         self.assertIn(
-            "--expected-validation-sha256 '$E5_VALIDATION_SHA'", text,
+            "--expected-validation-sha256 '$PINNED_VALIDATION_SHA'", text,
         )
         self.assertIn("--lock-timeout 120", text)
         self.assertIn('chmod 400 "$snapshot"', text)

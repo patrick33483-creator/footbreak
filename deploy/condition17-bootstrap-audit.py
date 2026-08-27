@@ -12,6 +12,7 @@ import copy
 import hashlib
 import importlib.util
 import json
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -29,14 +30,13 @@ assert SPEC is not None and SPEC.loader is not None
 preflight = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(preflight)
 
-PINNED_DEPLOYED_COMMIT = "e5ca5f6e745bbb7671841b860aa81dbd0039210a"
-PINNED_DEPLOYED_TREE = "50a9e26a20d90a93f481b9ea4ccd002f162232ad"
 PINNED_VALIDATION_SHA256 = "d0b2d4a4b9605459dbacb71dc18f099e684814546c75b5a3ff37cc870de1f47d"
 PINNED_QUARTER_LINE_SHA256 = "f38c63c879ffe48f5bec77c289652152b215f8d24be9a9b8634f22b576cda3a9"
 PINNED_CONDITION17_SIGNATURE = "0a53d616f4b205339da39824"
 PINNED_CONDITION17_INITIAL_EVIDENCE_HASH = (
     "eef5807b2cf919727c668c8e933ac9398338032ff02059a0dd3ded8163babca3"
 )
+GIT_OID_RE = re.compile(r"[0-9a-f]{40}")
 
 
 def canonical_bytes(value: Any) -> bytes:
@@ -49,9 +49,18 @@ def build_review(
     snapshot: Path, *, deployed_commit: str, deployed_tree: str,
     validation_sha256: str, quarter_line_sha256: str,
 ) -> dict[str, Any]:
+    # Commit and tree authority is supplied by the workflow only after it binds
+    # both values to GITHUB_SHA and that commit's tree. Keeping those identities
+    # out of this file avoids an impossible self-referential commit/tree pin.
+    preflight._require(
+        GIT_OID_RE.fullmatch(deployed_commit) is not None,
+        "dispatched_deployed_commit_invalid",
+    )
+    preflight._require(
+        GIT_OID_RE.fullmatch(deployed_tree) is not None,
+        "dispatched_deployed_tree_invalid",
+    )
     authorities = (
-        (deployed_commit, PINNED_DEPLOYED_COMMIT, "deployed_commit"),
-        (deployed_tree, PINNED_DEPLOYED_TREE, "deployed_tree"),
         (validation_sha256, PINNED_VALIDATION_SHA256, "wilson_validation_sha256"),
         (quarter_line_sha256, PINNED_QUARTER_LINE_SHA256, "quarter_line_sha256"),
     )
@@ -105,9 +114,10 @@ def build_review(
             "condition_17_manifest_entry_mismatch",
         )
         now = datetime.now(timezone.utc)
-        # e5 deliberately requires the identity root before its compatibility
-        # path can activate.  Bootstrap the candidate only in an in-memory
-        # audit copy; the locked snapshot and production ledger stay untouched.
+        # The compatibility runtime deliberately requires the identity root
+        # before its path can activate. Bootstrap the candidate only in an
+        # in-memory audit copy; the locked snapshot and production ledger stay
+        # untouched.
         simulation_input = copy.deepcopy(ledger)
         simulation_input[wv.NAMESPACE][
             "production_identity_manifest"
@@ -125,8 +135,9 @@ def build_review(
             simulation_input, simulated_frozen, signature,
         )
 
-        # Exercise the exact post-marker e5 path only in a deep copy.  The
-        # workflow supplies a private synthetic marker to the imported module.
+        # Exercise the exact post-marker compatibility path only in a deep
+        # copy. The workflow supplies a private synthetic marker to the
+        # imported module.
         preflight._simulate_rollover(
             simulation_input, simulated_frozen, signature, anomaly_rows, now,
         )

@@ -3,6 +3,14 @@ name: Footbreak condition 17 Stage A bootstrap audit (read only)
 on:
   workflow_dispatch:
     inputs:
+      expected_deployed_sha:
+        description: Exact 40-character integration commit selected for this dispatch
+        required: true
+        type: string
+      expected_deployed_tree:
+        description: Exact 40-character tree of the selected integration commit
+        required: true
+        type: string
       ssh_port:
         description: Reviewed production SSH port bound by the pinned host key
         required: true
@@ -23,19 +31,53 @@ jobs:
     timeout-minutes: 12
     env:
       WORK: ${{ runner.temp }}/condition17-stage-a-${{ github.run_id }}
-      E5_COMMIT: e5ca5f6e745bbb7671841b860aa81dbd0039210a
-      E5_TREE: 50a9e26a20d90a93f481b9ea4ccd002f162232ad
-      E5_VALIDATION_SHA: d0b2d4a4b9605459dbacb71dc18f099e684814546c75b5a3ff37cc870de1f47d
-      E5_QUARTER_SHA: f38c63c879ffe48f5bec77c289652152b215f8d24be9a9b8634f22b576cda3a9
+      TRUSTED_REPOSITORY: patrick33483-creator/footbreak
+      TRUSTED_DISPATCH_REF: refs/heads/integrate/condition17-stage-a-main-20260827
+      EXPECTED_DEPLOYED_SHA: ${{ inputs.expected_deployed_sha }}
+      EXPECTED_DEPLOYED_TREE: ${{ inputs.expected_deployed_tree }}
+      PINNED_VALIDATION_SHA: d0b2d4a4b9605459dbacb71dc18f099e684814546c75b5a3ff37cc870de1f47d
+      PINNED_QUARTER_SHA: f38c63c879ffe48f5bec77c289652152b215f8d24be9a9b8634f22b576cda3a9
       DEPLOY_PORT: ${{ inputs.ssh_port }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
 
-      - name: Verify reviewed audit implementation and e5 runtime modules
+      - name: Bind dispatch to the trusted integration commit and reviewed tree
         run: |
           set -euo pipefail
-          test "$(sha256sum analysis/wilson_validation.py | awk '{print $1}')" = "$E5_VALIDATION_SHA"
-          test "$(sha256sum analysis/quarter_line.py | awk '{print $1}')" = "$E5_QUARTER_SHA"
+          test "$GITHUB_EVENT_NAME" = "workflow_dispatch"
+          test "$GITHUB_REPOSITORY" = "$TRUSTED_REPOSITORY"
+          test "$GITHUB_REF" = "$TRUSTED_DISPATCH_REF"
+          [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$EXPECTED_DEPLOYED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$EXPECTED_DEPLOYED_TREE" =~ ^[0-9a-f]{40}$ ]]
+          test "$EXPECTED_DEPLOYED_SHA" = "$GITHUB_SHA"
+          test "$(git rev-parse --verify HEAD^{commit})" = "$GITHUB_SHA"
+          test "$(git rev-parse --verify "$GITHUB_SHA^{tree}")" = "$EXPECTED_DEPLOYED_TREE"
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+
+          reviewed_paths=(
+            .github/workflows/footbreak-condition17-production-preflight.yml
+            analysis/quarter_line.py
+            analysis/wilson_validation.py
+            deploy/verify_ssh_host_key.py
+            deploy/capture-condition17-production-snapshot.py
+            deploy/condition17-production-preflight.py
+            deploy/condition17-bootstrap-audit.py
+          )
+          for path in "${reviewed_paths[@]}"; do
+            entry="$(git ls-tree "$GITHUB_SHA" -- "$path")"
+            read -r mode type oid entry_path <<<"${entry//$'\t'/ }"
+            test "$type" = "blob"
+            case "$mode" in 100644|100755) ;; *) exit 1 ;; esac
+            test "$entry_path" = "$path"
+            test "$(git hash-object -- "$path")" = "$oid"
+          done
+          test "$(sha256sum analysis/wilson_validation.py | awk '{print $1}')" = "$PINNED_VALIDATION_SHA"
+          test "$(sha256sum analysis/quarter_line.py | awk '{print $1}')" = "$PINNED_QUARTER_SHA"
           python3 -m py_compile \
             deploy/verify_ssh_host_key.py \
             deploy/capture-condition17-production-snapshot.py \
@@ -63,7 +105,7 @@ jobs:
             --host "$DEPLOY_HOST" --port "$DEPLOY_PORT" \
             --expected-fingerprint "$DEPLOY_SSH_HOST_FINGERPRINT"
 
-      - name: Verify exact clean e5 deployment and capture locked immutable ledger
+      - name: Verify exact dispatched deployment and capture locked immutable ledger
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
@@ -83,8 +125,8 @@ jobs:
               "sudo python3 - --lock /var/lock/footbreak.lock \
                --ledger /opt/footbreak/system/sim_ledger.json \
                --repo /opt/footbreak \
-               --expected-commit '$E5_COMMIT' --expected-tree '$E5_TREE' \
-               --expected-validation-sha256 '$E5_VALIDATION_SHA' \
+               --expected-commit '$EXPECTED_DEPLOYED_SHA' --expected-tree '$EXPECTED_DEPLOYED_TREE' \
+               --expected-validation-sha256 '$PINNED_VALIDATION_SHA' \
                --activation-marker /var/lib/footbreak/activation/condition17-legacy-cohort-v1.json \
                --lock-timeout 120" \
               < deploy/capture-condition17-production-snapshot.py > "$snapshot"
@@ -97,8 +139,8 @@ jobs:
           path = Path(sys.argv[1])
           payload = {
               "schema": "footbreak-condition17-legacy-cohort-v1",
-              "wilson_validation_sha256": os.environ["E5_VALIDATION_SHA"],
-              "quarter_line_sha256": os.environ["E5_QUARTER_SHA"],
+              "wilson_validation_sha256": os.environ["PINNED_VALIDATION_SHA"],
+              "quarter_line_sha256": os.environ["PINNED_QUARTER_SHA"],
           }
           fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o400)
           with os.fdopen(fd, "w") as handle:
@@ -108,9 +150,10 @@ jobs:
           PY
           python3 deploy/condition17-bootstrap-audit.py \
             --ledger "$snapshot" \
-            --deployed-commit "$E5_COMMIT" --deployed-tree "$E5_TREE" \
-            --validation-sha256 "$E5_VALIDATION_SHA" \
-            --quarter-line-sha256 "$E5_QUARTER_SHA" \
+            --deployed-commit "$EXPECTED_DEPLOYED_SHA" \
+            --deployed-tree "$EXPECTED_DEPLOYED_TREE" \
+            --validation-sha256 "$PINNED_VALIDATION_SHA" \
+            --quarter-line-sha256 "$PINNED_QUARTER_SHA" \
             --activation-marker "$WORK/synthetic-marker.json" \
             --output "$WORK/condition17-bootstrap-review.json"
           rm -f "$snapshot" "$WORK/synthetic-marker.json" \
