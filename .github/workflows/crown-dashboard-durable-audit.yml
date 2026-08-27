@@ -218,6 +218,7 @@ jobs:
           }, ensure_ascii=False, indent=2))
           PY
           python3 -m json.tool crown-dashboard-durable-audit.json >/dev/null
+          cat crown-dashboard-durable-audit.json
 
       - name: Upload audit evidence
         uses: actions/upload-artifact@v4
