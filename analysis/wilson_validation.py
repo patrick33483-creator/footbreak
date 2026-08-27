@@ -34,6 +34,28 @@ CONDITION_AUDIT_LIMIT = 1600
 FUNNEL_REJECTION_LIMIT = 8
 PRODUCTION_IDENTITY_MANIFEST_SCHEMA_VERSION = 1
 PRODUCTION_IDENTITY_MANIFEST_VERSION = "wilson-production-identity-v1"
+CONDITION_IDENTITY_MIGRATION_SCHEMA_VERSION = 1
+CONDITION_IDENTITY_MIGRATION_VERSION = "footbreak-retired-duplicate-identity-v1"
+CONDITION_IDENTITY_MIGRATION_ALLOWLIST = (
+    {
+        "source_condition_number": 1,
+        "source_signature": "cdcddb937b8f8259db5cf799",
+        "source_definition_hash": "cdcddb937b8f8259db5cf7998b242f6e69a203076fa3441747f2feb69a9d0833",
+        "source_initial_evidence_hash": "ae49569b8e6bf68096ad3aff6e2536492f3494fec8ec854b7c3d9efcbbb1182b",
+        "target_condition_number": 7,
+        "target_signature": "a7a8aae669b985ff87f8be6e",
+        "target_definition_hash": "a7a8aae669b985ff87f8be6e13b503a207aa166cae7fab069fb745034a3ab19e",
+    },
+    {
+        "source_condition_number": 2,
+        "source_signature": "83dee96f7aef2a6e5f997f02",
+        "source_definition_hash": "83dee96f7aef2a6e5f997f0214e363c362f353c6a5e07973d3d7302a954bceb7",
+        "source_initial_evidence_hash": "578982c8a5a37fb6a5604d8c348fdf0d58352a58a867304cec99623bcc367603",
+        "target_condition_number": 14,
+        "target_signature": "a79e13125a194532c8194036",
+        "target_definition_hash": "a79e13125a194532c81940366fd01cc819a5c8eb0090aa033cf6456ba1daf18a",
+    },
+)
 BINARY_HIT_RESULTS = {"Won", "Half Won"}
 BINARY_MISS_RESULTS = {"Lost", "Half Lost"}
 BINARY_DECIDED_RESULTS = BINARY_HIT_RESULTS | BINARY_MISS_RESULTS
@@ -967,6 +989,11 @@ def formal_registry_candidates(
     decision.  The projection restores the matcher input shape without
     silently creating, rewriting, or promoting an identity.
     """
+    retired, migration_reason = _validate_condition_identity_migrations(
+        ledger, system,
+    )
+    if retired is None:
+        return []
     ns = ensure_namespace(ledger, system, now=now)
     output: list[dict[str, Any]] = []
     for raw_signature, frozen in (ns.get("conditions") or {}).items():
@@ -999,6 +1026,15 @@ def formal_registry_candidates(
             "__formal_frozen_history": copy.deepcopy(history),
         }
         rebuilt, _rebuilt_definition = condition_signature(system, candidate)
+        retirement = retired.get(signature)
+        if retirement is not None:
+            if (
+                rebuilt != retirement["target_signature"]
+                or _rebuilt_definition
+                != ns["conditions"][retirement["target_signature"]]["definition"]
+            ):
+                return []
+            continue
         if rebuilt != signature:
             continue
         if _historical(candidate, _rebuilt_definition, str(now or ns["activation_at"])) is None:
@@ -2103,6 +2139,401 @@ def create_production_identity_manifest(
     return copy.deepcopy(expected)
 
 
+def _historical_activity_hashes(
+    ledger: dict[str, Any], source_signature: str,
+) -> list[str]:
+    """Seal every historical source row without treating it as target evidence."""
+    ns = ledger.get(NAMESPACE)
+    observations = ns.get("observations") if isinstance(ns, dict) else None
+    output: list[str] = []
+    for container, rows in (
+        ("bets", ledger.get("bets")),
+        ("wilson_validation.observations", observations),
+    ):
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if (
+                isinstance(row, dict)
+                and str(row.get("frozen_condition_signature") or "")
+                == source_signature
+            ):
+                output.append(_canonical_hash({"container": container, "row": row}))
+    return sorted(output)
+
+
+def _known_condition_identity_migration_required(
+    ns: dict[str, Any], system: str,
+) -> bool:
+    """Recognize only the closed production duplicate pairs, not generic ledgers."""
+    if system != "footbreak":
+        return False
+    conditions, order = ns.get("conditions"), ns.get("condition_order")
+    if not isinstance(conditions, dict) or not isinstance(order, list):
+        return False
+    for entry in CONDITION_IDENTITY_MIGRATION_ALLOWLIST:
+        source_number = entry["source_condition_number"]
+        target_number = entry["target_condition_number"]
+        if (
+            len(order) < max(source_number, target_number)
+            or order[source_number - 1] != entry["source_signature"]
+            or order[target_number - 1] != entry["target_signature"]
+            or entry["source_signature"] not in conditions
+            or entry["target_signature"] not in conditions
+        ):
+            return False
+    return True
+
+
+def _source_activity_timestamps_valid(
+    ledger: dict[str, Any], source_signature: str, effective_at: Any,
+) -> bool:
+    """Require at least one parseable admission/creation time, all pre-cutoff."""
+    cutoff = _time(effective_at)
+    if cutoff is None:
+        return False
+    ns = ledger.get(NAMESPACE)
+    observations = ns.get("observations") if isinstance(ns, dict) else None
+    for rows in (ledger.get("bets"), observations):
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if (
+                not isinstance(row, dict)
+                or str(row.get("frozen_condition_signature") or "")
+                != source_signature
+            ):
+                continue
+            raw_timestamps = [
+                row.get(key) for key in (
+                    "created_at", "admission_at", "native_stage_at",
+                ) if row.get(key) is not None
+            ]
+            marker = row.get("rollover_provenance")
+            if isinstance(marker, dict) and marker.get("stage_at") is not None:
+                raw_timestamps.append(marker["stage_at"])
+            parsed = [_time(value) for value in raw_timestamps]
+            if (
+                not raw_timestamps
+                or any(value is None for value in parsed)
+                or any(value >= cutoff for value in parsed if value is not None)
+            ):
+                return False
+    return True
+
+
+def _migration_activity_root(activity: dict[str, Any]) -> str:
+    return _canonical_hash({
+        "scope": activity["scope"],
+        "row_count": activity["row_count"],
+        "row_hashes": activity["row_hashes"],
+    })
+
+
+def _validate_condition_identity_migration_document(
+    ledger: dict[str, Any], system: str, document: Any,
+) -> tuple[dict[str, dict[str, Any]] | None, str | None]:
+    """Validate the independently authorized, closed duplicate-retirement root."""
+    if system != "footbreak":
+        return None, "condition_identity_migrations_cross_system"
+    ns = ledger.get(NAMESPACE)
+    if not isinstance(ns, dict):
+        return None, "condition_identity_migrations_namespace_unavailable"
+    document_keys = {
+        "schema_version", "migration_version", "system", "immutable",
+        "effective_at", "authority", "entries", "manifest_hash",
+    }
+    authority_keys = {
+        "kind", "release_commit", "production_identity_manifest_hash",
+    }
+    entry_keys = {
+        "source_condition_number", "source_signature",
+        "source_definition_hash", "source_initial_evidence_hash", "relation",
+        "target_condition_number", "target_signature", "target_definition_hash",
+        "canonicalization", "historical_activity", "future_admission",
+        "evidence_merge",
+    }
+    activity_keys = {
+        "scope", "row_count", "row_hashes", "rows_are_evidence", "root_hash",
+    }
+    if not isinstance(document, dict) or set(document) != document_keys:
+        return None, "condition_identity_migrations_malformed"
+    body = {key: value for key, value in document.items() if key != "manifest_hash"}
+    if (
+        document.get("schema_version")
+        != CONDITION_IDENTITY_MIGRATION_SCHEMA_VERSION
+        or document.get("migration_version")
+        != CONDITION_IDENTITY_MIGRATION_VERSION
+        or document.get("system") != "footbreak"
+        or document.get("immutable") is not True
+        or _time(document.get("effective_at")) is None
+        or not _sha256_hex(document.get("manifest_hash"))
+        or document.get("manifest_hash") != _canonical_hash(body)
+    ):
+        return None, "condition_identity_migrations_header_invalid"
+    authority = document.get("authority")
+    if (
+        not isinstance(authority, dict) or set(authority) != authority_keys
+        or authority.get("kind") != "reviewed-manifest-sha256"
+        or not _sha256_hex(authority.get("release_commit"), length=40)
+        or authority.get("release_commit") == "0" * 40
+        or not _sha256_hex(authority.get("production_identity_manifest_hash"))
+    ):
+        return None, "condition_identity_migrations_authority_invalid"
+    expected_production, validated, reason = (
+        _expected_production_identity_manifest(ns, system)
+    )
+    if expected_production is None or validated is None:
+        return None, reason or "production_identity_manifest_invalid"
+    if (
+        ns.get("production_identity_manifest") != expected_production
+        or authority["production_identity_manifest_hash"]
+        != expected_production["manifest_hash"]
+    ):
+        return None, "condition_identity_migrations_production_manifest_mismatch"
+    entries = document.get("entries")
+    if not isinstance(entries, list) or len(entries) != len(
+        CONDITION_IDENTITY_MIGRATION_ALLOWLIST
+    ):
+        return None, "condition_identity_migrations_entries_invalid"
+    conditions, order = ns.get("conditions"), ns.get("condition_order")
+    if not isinstance(conditions, dict) or not isinstance(order, list):
+        return None, "condition_identity_migrations_registry_invalid"
+    if (
+        len(order) != 17
+        or len(conditions) != 17
+        or len(CONDITION_IDENTITY_MIGRATION_ALLOWLIST) != 2
+    ):
+        return None, "condition_identity_migrations_registry_cardinality_invalid"
+    result: dict[str, dict[str, Any]] = {}
+    targets: set[str] = set()
+    for entry, allowed in zip(entries, CONDITION_IDENTITY_MIGRATION_ALLOWLIST):
+        if not isinstance(entry, dict) or set(entry) != entry_keys:
+            return None, "condition_identity_migrations_entry_malformed"
+        for key, expected_value in allowed.items():
+            if entry.get(key) != expected_value:
+                return None, "condition_identity_migrations_entry_not_allowlisted"
+        if (
+            entry.get("relation") != "retired_duplicate_of"
+            or entry.get("canonicalization")
+            != "condition_definition_from_source_miner_key"
+            or entry.get("future_admission") != "target_only"
+            or entry.get("evidence_merge") != "none"
+        ):
+            return None, "condition_identity_migrations_policy_invalid"
+        source, target = entry["source_signature"], entry["target_signature"]
+        if (
+            source == target or source in result or target in targets
+            or target in result or source in targets
+        ):
+            return None, "condition_identity_migrations_chain_or_cycle"
+        source_frozen, target_frozen = conditions.get(source), conditions.get(target)
+        if not isinstance(source_frozen, dict) or not isinstance(target_frozen, dict):
+            return None, "condition_identity_migrations_unknown_identity"
+        if (
+            order[entry["source_condition_number"] - 1] != source
+            or order[entry["target_condition_number"] - 1] != target
+        ):
+            return None, "condition_identity_migrations_number_mismatch"
+        source_definition, source_versions, source_reason = (
+            _validate_frozen_identity_and_chain(source_frozen, source, system)
+        )
+        target_definition, target_versions, target_reason = (
+            _validate_frozen_identity_and_chain(target_frozen, target, system)
+        )
+        if (
+            source_reason is not None or target_reason is not None
+            or source_definition is None or target_definition is None
+            or source_versions is None or target_versions is None
+        ):
+            return None, source_reason or target_reason or "frozen_identity_invalid"
+        if (
+            _canonical_hash(source_definition) != entry["source_definition_hash"]
+            or _canonical_hash(target_definition) != entry["target_definition_hash"]
+            or source_versions[0]["evidence_hash"]
+            != entry["source_initial_evidence_hash"]
+        ):
+            return None, "condition_identity_migrations_frozen_hash_mismatch"
+        rebuilt, rebuilt_definition = condition_signature(system, {
+            **copy.deepcopy(source_definition),
+            "key": copy.deepcopy(source_definition.get("miner_key")),
+        })
+        target_roundtrip, target_roundtrip_definition = condition_signature(
+            system, {
+                **copy.deepcopy(target_definition),
+                "key": copy.deepcopy(target_definition.get("miner_key")),
+            },
+        )
+        if (
+            rebuilt != target or rebuilt_definition != target_definition
+            or target_roundtrip != target
+            or target_roundtrip_definition != target_definition
+            or formal_matcher_axes(
+                {**target_definition, "key": target_definition.get("miner_key")},
+                system=system,
+                decision_stage=str(target_definition.get("stage") or ""),
+            ) is None
+        ):
+            return None, "condition_identity_migrations_canonicalization_invalid"
+        activity = entry.get("historical_activity")
+        hashes = _historical_activity_hashes(ledger, source)
+        if (
+            not isinstance(activity, dict) or set(activity) != activity_keys
+            or activity.get("scope")
+            != ["bets", "wilson_validation.observations"]
+            or type(activity.get("row_count")) is not int
+            or activity["row_count"] < 0
+            or not isinstance(activity.get("row_hashes"), list)
+            or any(not _sha256_hex(value) for value in activity["row_hashes"])
+            or activity["row_hashes"] != sorted(activity["row_hashes"])
+            or activity.get("rows_are_evidence") is not False
+            or activity["row_count"] != len(activity["row_hashes"])
+            or activity["row_count"] != len(hashes)
+            or activity["row_hashes"] != hashes
+            or activity.get("root_hash") != _migration_activity_root(activity)
+            or not _source_activity_timestamps_valid(
+                ledger, source, document["effective_at"],
+            )
+        ):
+            return None, "condition_identity_migrations_historical_activity_drift"
+        result[source] = copy.deepcopy(entry)
+        targets.add(target)
+    if set(result) != {
+        row["source_signature"] for row in CONDITION_IDENTITY_MIGRATION_ALLOWLIST
+    }:
+        return None, "condition_identity_migrations_missing_entry"
+    if len(order) - len(result) != 15:
+        return None, "condition_identity_migrations_registry_cardinality_invalid"
+    return result, None
+
+
+def _validate_condition_identity_migrations(
+    ledger: dict[str, Any], system: str,
+) -> tuple[dict[str, dict[str, Any]] | None, str | None]:
+    """Absent is valid; present malformed retirement metadata fails closed."""
+    ns = ledger.get(NAMESPACE)
+    if not isinstance(ns, dict):
+        return {}, None
+    document = ns.get("condition_identity_migrations")
+    if document is None:
+        if _known_condition_identity_migration_required(ns, system):
+            return None, "required_condition_identity_migration_missing"
+        return {}, None
+    return _validate_condition_identity_migration_document(ledger, system, document)
+
+
+def _identity_projection(
+    ns: dict[str, Any], retired: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    return [
+        {
+            "condition_number": index,
+            "condition_signature": signature,
+            "identity_status": (
+                "retired_duplicate" if signature in retired else "active"
+            ),
+            "canonical_successor_signature": (
+                retired[signature]["target_signature"]
+                if signature in retired else None
+            ),
+        }
+        for index, signature in enumerate(ns.get("condition_order") or [], start=1)
+    ]
+
+
+def plan_condition_identity_migration(
+    ledger: dict[str, Any], system: str, authorized_manifest: dict[str, Any], *,
+    expected_release_commit: str,
+) -> dict[str, Any]:
+    """Purely prove an externally authored retirement document and its projection."""
+    before = copy.deepcopy(ledger)
+    ns = ledger.get(NAMESPACE)
+    if not isinstance(ns, dict) or ns.get("condition_identity_migrations") is not None:
+        raise ValueError("condition identity migration must be absent when planning")
+    if not isinstance(authorized_manifest, dict):
+        raise ValueError("authorized migration document must be an object")
+    if (
+        not _sha256_hex(expected_release_commit, length=40)
+        or expected_release_commit == "0" * 40
+        or authorized_manifest.get("authority", {}).get("release_commit")
+        != expected_release_commit
+    ):
+        raise ValueError("authorized migration release commit mismatch")
+    retired, reason = _validate_condition_identity_migration_document(
+        ledger, system, authorized_manifest,
+    )
+    if retired is None:
+        raise ValueError(reason or "condition identity migration invalid")
+    if ledger != before:
+        raise RuntimeError("condition identity migration planning mutated ledger")
+    return {
+        "status": "ready",
+        "system": system,
+        "post_document": copy.deepcopy(authorized_manifest),
+        "condition_identity_migrations": copy.deepcopy(authorized_manifest),
+        "before_identity_projection_hash": _canonical_hash(
+            _identity_projection(ns, {}),
+        ),
+        "after_identity_projection_hash": _canonical_hash(
+            _identity_projection(ns, retired),
+        ),
+        "historical_condition_count": len(ns["condition_order"]),
+        "active_condition_count": len(ns["condition_order"]) - len(retired),
+        "retired_duplicate_count": len(retired),
+    }
+
+
+def apply_condition_identity_migration(
+    ledger: dict[str, Any], system: str, authorized_manifest: dict[str, Any] | None = None,
+    trusted_manifest_hash: str | None = None, *, candidate_manifest: dict[str, Any] | None = None,
+    expected_release_commit: str | None = None,
+) -> dict[str, Any]:
+    """Insert the authorized immutable root once; never repair or overwrite it."""
+    if (authorized_manifest is None) == (trusted_manifest_hash is None):
+        raise ValueError("supply exactly one independent migration authority")
+    ns = ledger.get(NAMESPACE)
+    if not isinstance(ns, dict):
+        raise ValueError("validated Wilson namespace required")
+    existing = ns.get("condition_identity_migrations")
+    if existing is not None:
+        retired, reason = _validate_condition_identity_migrations(ledger, system)
+        if retired is None:
+            raise ValueError(reason or "immutable condition identity migration invalid")
+        if authorized_manifest is not None and existing != authorized_manifest:
+            raise ValueError("immutable condition identity migration mismatch")
+        if trusted_manifest_hash is not None and (
+            not _sha256_hex(trusted_manifest_hash)
+            or existing.get("manifest_hash") != trusted_manifest_hash
+        ):
+            raise ValueError("trusted condition identity migration hash mismatch")
+        return copy.deepcopy(existing)
+    if expected_release_commit is None:
+        raise ValueError("expected release commit required for initial insertion")
+    document = authorized_manifest
+    if trusted_manifest_hash is not None:
+        if (
+            not isinstance(candidate_manifest, dict)
+            or not _sha256_hex(trusted_manifest_hash)
+            or candidate_manifest.get("manifest_hash") != trusted_manifest_hash
+        ):
+            raise ValueError("trusted condition identity migration hash mismatch")
+        document = candidate_manifest
+    elif candidate_manifest is not None:
+        raise ValueError("candidate manifest is only valid with trusted hash authority")
+    if not isinstance(document, dict):
+        raise ValueError("authorized migration document required for initial insertion")
+    plan_condition_identity_migration(
+        ledger, system, document,
+        expected_release_commit=expected_release_commit,
+    )
+    ns["condition_identity_migrations"] = copy.deepcopy(document)
+    retired, reason = _validate_condition_identity_migrations(ledger, system)
+    if retired is None:
+        ns.pop("condition_identity_migrations", None)
+        raise ValueError(reason or "condition identity migration readback invalid")
+    return copy.deepcopy(document)
+
+
 def _unavailable_condition_card(
     number: int, reason: str,
 ) -> dict[str, Any]:
@@ -2349,6 +2780,13 @@ def project_condition_funnel(
         != json.dumps(expected_manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     ):
         return _funnel_unavailable(system, "production_identity_manifest_unavailable_or_mismatch")
+    retired, migration_reason = _validate_condition_identity_migrations(
+        ledger, system,
+    )
+    if retired is None:
+        return _funnel_unavailable(
+            system, migration_reason or "condition_identity_migrations_invalid",
+        )
     numbers = [conditions[signature]["condition_number"] for signature in order]
 
     bets = ledger.get("bets")
@@ -2415,6 +2853,61 @@ def project_condition_funnel(
         definition, versions = validated_registry[signature]
         active = versions[-1]
         version_by_number = {row["version"]: row for row in versions}
+        retirement = retired.get(signature)
+        if retirement is not None:
+            unavailable = {
+                "available": False,
+                "availability": "unavailable",
+                "count": None,
+                "reason": "retired_duplicate_historical_lineage_only",
+            }
+            output.append({
+                "condition_number": number,
+                "identity_available": True,
+                "identity_status": "retired_duplicate",
+                "condition_signature": signature,
+                "condition_version": definition["version"],
+                "definition": definition,
+                "frozen_at": frozen.get("frozen_at"),
+                "unavailable_reason": None,
+                "canonical_successor_condition_number": retirement[
+                    "target_condition_number"
+                ],
+                "canonical_successor_signature": retirement["target_signature"],
+                "future_admission": "target_only",
+                "historical_evidence": copy.deepcopy(
+                    frozen.get("historical_evidence"),
+                ),
+                "historical_activity": copy.deepcopy(
+                    retirement["historical_activity"],
+                ),
+                "active_evidence": {
+                    "version": None,
+                    "unavailable_reason": (
+                        "retired_duplicate_historical_lineage_only"
+                    ),
+                },
+                "stages": {
+                    "eligible_post_activation_t5_observations": copy.deepcopy(unavailable),
+                    "exact_condition_matches": copy.deepcopy(unavailable),
+                    "recorded_formal_evidence": copy.deepcopy(unavailable),
+                    "settled_valid_evidence": copy.deepcopy(unavailable),
+                    "current_rollover_progress": {
+                        **copy.deepcopy(unavailable),
+                        "required": ROLLOVER_BATCH_SIZE,
+                        "display": None,
+                    },
+                },
+                "rejections": {
+                    "bounded": True,
+                    "visible_limit": FUNNEL_REJECTION_LIMIT,
+                    "audit_window_limit": CONDITION_AUDIT_LIMIT,
+                    "audit_truncation_possible": False,
+                    "items": [],
+                    "omitted_reason_kinds": 0,
+                },
+            })
+            continue
 
         exact_keys: set[tuple[str, str]] = set()
         legacy_unverifiable_exact = 0
@@ -2754,7 +3247,7 @@ def project_condition_funnel(
             ),
         }
 
-        output.append({
+        card = {
             "condition_number": number,
             "identity_available": True,
             "condition_signature": signature,
@@ -2793,12 +3286,17 @@ def project_condition_funnel(
                 "items": rejection_rows[:FUNNEL_REJECTION_LIMIT],
                 "omitted_reason_kinds": omitted,
             },
-        })
+        }
+        card["identity_status"] = "active"
+        output.append(card)
     return {
         "schema_version": 1,
         "read_only": True,
         "system": system,
         "condition_count": len(output),
+        "historical_condition_count": len(output),
+        "active_condition_count": len(output) - len(retired),
+        "retired_duplicate_count": len(retired),
         "audit_window_limit": CONDITION_AUDIT_LIMIT,
         "conditions": output,
         "unavailable_reason": None,
@@ -3305,8 +3803,15 @@ def apply_active_evidence(
     admission must be strictly later than the latest evidence boundary. This
     prevents a late rerun from applying a newly learned threshold backward.
     """
-    ns = ensure_namespace(ledger, system, now=now)
     signature = str(admission["signature"])
+    retired, migration_reason = _validate_condition_identity_migrations(
+        ledger, system,
+    )
+    if retired is None:
+        return None, migration_reason or "condition_identity_migrations_invalid"
+    if signature in retired:
+        return None, "retired_duplicate_target_only"
+    ns = ensure_namespace(ledger, system, now=now)
     existed = isinstance(ns["conditions"].get(signature), dict)
     frozen = freeze_condition(ledger, system, admission, now=now)
     active = active_evidence_version(
@@ -3349,9 +3854,22 @@ def apply_active_evidence(
 
 
 def recompute_namespace(ledger: dict[str, Any], system: str) -> dict[str, Any]:
+    retired, migration_reason = _validate_condition_identity_migrations(
+        ledger, system,
+    )
+    if retired is None:
+        raise ValueError(
+            migration_reason or "condition identity migration metadata invalid"
+        )
     ns = ensure_namespace(ledger, system)
-    bets = active_bets(ledger, system)
-    observations = active_observations(ledger, system)
+    bets = [
+        row for row in active_bets(ledger, system)
+        if str(row.get("frozen_condition_signature") or "") not in retired
+    ]
+    observations = [
+        row for row in active_observations(ledger, system)
+        if str(row.get("frozen_condition_signature") or "") not in retired
+    ]
     evidence_rows = bets + observations
     grouped: dict[str, list[dict[str, Any]]] = {}
     raw_grouped: dict[str, list[dict[str, Any]]] = {}
@@ -3370,6 +3888,8 @@ def recompute_namespace(ledger: dict[str, Any], system: str) -> dict[str, Any]:
             str(row.get("frozen_condition_signature") or ""), []
         ).append(row)
     for signature, frozen in ns["conditions"].items():
+        if str(signature) in retired:
+            continue
         if isinstance(frozen, dict):
             valid_activity = _rollover_condition(
                 frozen, raw_grouped.get(str(signature), []), system, str(signature), now=_now(),

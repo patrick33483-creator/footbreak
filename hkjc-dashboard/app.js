@@ -1948,10 +1948,19 @@ function validWilsonFunnelPayload(funnel) {
         || !Number.isInteger(row.rejections.omitted_reason_kinds)) return false;
     numbers.add(row.condition_number);
     if (row.identity_available) {
+      const retired = row.identity_status === 'retired_duplicate';
       if (!/^[0-9a-f]{24}$/.test(row.condition_signature || '')
           || !row.definition || typeof row.definition !== 'object'
-          || !row.active_evidence || !Number.isInteger(row.active_evidence.version)
-          || !/^[0-9a-f]{64}$/.test(row.active_evidence.evidence_hash || '')) return false;
+          || !row.active_evidence
+          || (retired
+            ? (!Number.isInteger(row.canonical_successor_condition_number)
+              || row.canonical_successor_condition_number <= 0
+              || !/^[0-9a-f]{24}$/.test(row.canonical_successor_signature || '')
+              || row.future_admission !== 'target_only'
+              || row.active_evidence.version !== null
+              || !row.active_evidence.unavailable_reason)
+            : (!Number.isInteger(row.active_evidence.version)
+              || !/^[0-9a-f]{64}$/.test(row.active_evidence.evidence_hash || '')))) return false;
     } else if (row.condition_signature !== null || row.definition !== null
                || row.active_evidence?.version !== null || !row.unavailable_reason) return false;
     if (!requiredStages.every((key) => {
@@ -2024,11 +2033,14 @@ function wilsonRolloverCard(validation) {
     <div class="wilson-condition-list">${rows.map((row) => {
       const active = row.active_evidence || {}, stages = row.stages || {};
       const identityAvailable = row.identity_available === true;
+      const retired = row.identity_status === 'retired_duplicate';
       const signature = String(row.condition_signature || '');
-      const activeVersion = identityAvailable && numeric(active.version) != null
+      const activeVersion = retired
+        ? `已退役重複身份 · 後繼 #${Math.trunc(numeric(row.canonical_successor_condition_number) || 0)}`
+        : identityAvailable && numeric(active.version) != null
         ? `證據 v${Math.trunc(numeric(active.version))}` : '身份／證據未可用';
       const cumulative = numeric(active.cumulative_decided) == null
-        ? '累計證據未可用'
+        ? (retired ? '只保留歷史證據' : '累計證據未可用')
         : `${numeric(active.cumulative_hits) || 0}/${Math.trunc(numeric(active.cumulative_decided))}`;
       const progress = stages.current_rollover_progress?.available === true
         ? stages.current_rollover_progress.display
@@ -2059,6 +2071,7 @@ function wilsonRolloverCard(validation) {
             <div><span>條件版本</span><b>${esc(identityAvailable ? row.condition_version : '未可用')}</b></div>
             <div><span>完整 signature</span><code>${esc(signature || '未可用')}</code></div>
             <div><span>證據 hash</span><code>${esc(active.evidence_hash || '未可用')}</code></div>
+            ${retired ? `<div><span>身份狀態</span><b>已退役重複身份；未來只歸入條件 #${esc(row.canonical_successor_condition_number)}</b></div>` : ''}
           </div>
           <div class="wilson-definition-grid">${definitions || '<div><span>凍結定義</span><b>未可用</b></div>'}</div>
           <div class="wilson-funnel-grid">
