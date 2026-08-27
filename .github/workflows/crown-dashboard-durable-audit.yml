@@ -73,6 +73,44 @@ jobs:
           cards = read_json("/var/lib/footbreak/crown/predictions.json", [])
           public_path = Path("/var/www/crown/data.json")
           public = read_json(str(public_path), {})
+          footbreak_public = read_json("/var/www/footbreak/data.json", {})
+
+          def formal_condition_summary(payload):
+              ranking = (
+                  (((payload.get("prediction_history") or {}).get("stats") or {})
+                   .get("granular_conditions") or {}).get("ranking") or []
+              ) if isinstance(payload, dict) else []
+              rows = [row for row in ranking if isinstance(row, dict)]
+              return {
+                  "card_count": len(rows),
+                  "condition_numbers": [
+                      row.get("condition_number") for row in rows
+                  ],
+                  "condition_signatures": [
+                      row.get("condition_signature") for row in rows
+                  ],
+              }
+
+          def registry_summary(source):
+              namespace = (
+                  source.get("wilson_validation")
+                  if isinstance(source, dict) else {}
+              )
+              namespace = namespace if isinstance(namespace, dict) else {}
+              conditions = namespace.get("conditions")
+              conditions = conditions if isinstance(conditions, dict) else {}
+              return {
+                  "condition_count": len(conditions),
+                  "condition_order_count": len(
+                      namespace.get("condition_order") or []
+                  ),
+                  "condition_numbers": sorted(
+                      row.get("condition_number")
+                      for row in conditions.values()
+                      if isinstance(row, dict)
+                      and isinstance(row.get("condition_number"), int)
+                  ),
+              }
           watches = ledger.get("watch") if isinstance(ledger, dict) else {}
           watches = watches if isinstance(watches, dict) else {}
           cards = cards if isinstance(cards, list) else []
@@ -159,6 +197,13 @@ jobs:
                   "generated_at": public.get("generated_at") if isinstance(public, dict) else None,
                   "mtime_hkt": datetime.fromtimestamp(public_path.stat().st_mtime, HKT).isoformat(),
                   "card_count": len(public_cards),
+              },
+              "formal_conditions": {
+                  "crown_registry": registry_summary(ledger),
+                  "crown_dashboard": formal_condition_summary(public),
+                  "footbreak_dashboard": formal_condition_summary(
+                      footbreak_public
+                  ),
               },
               "window": {"start_hkt": horizon_start.isoformat(), "end_hkt": horizon_end.isoformat()},
               "counts": {
