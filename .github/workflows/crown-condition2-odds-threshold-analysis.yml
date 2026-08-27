@@ -1,0 +1,158 @@
+name: Crown condition 2 odds threshold analysis
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: Analyze the exact active V2 evidence without writing production
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            'sudo env PYTHONPATH=/opt/footbreak /opt/footbreak/.venv/bin/python3 -' <<'PY'
+          import json
+          import math
+          from pathlib import Path
+
+          from analysis.recover_crown_condition2_history import (
+              _condition, _kickoff, _matching_rows, _rows, _time,
+          )
+          from analysis.wilson_validation import wilson95
+
+          ledger = json.loads(
+              Path("/var/lib/footbreak/crown/ledger.json").read_text(
+                  encoding="utf-8"
+              )
+          )
+          history = json.loads(
+              Path("/var/lib/footbreak/crown/prediction_history.json").read_text(
+                  encoding="utf-8"
+              )
+          )
+          _namespace, frozen = _condition(ledger)
+          historical = frozen["historical_evidence"]
+          artifact = historical.get("artifact") or {}
+          boundary_text = artifact.get("as_of") or frozen.get("frozen_at")
+          boundary = _time(boundary_text)
+          if boundary is None:
+              raise SystemExit("invalid condition #2 discovery boundary")
+
+          eligible = [
+              row for row in _rows(history)
+              if (
+                  _time(_kickoff(row)) is not None
+                  and _time(_kickoff(row)) <= boundary
+                  and _time(row.get("verified_at")) is not None
+                  and _time(row.get("verified_at")) <= boundary
+              )
+          ]
+          baseline = _matching_rows(
+              eligible, frozen["definition"], settled_only=True,
+          )
+          holdout_size = max(1, math.ceil(len(baseline) * 0.30))
+          holdout = baseline[-holdout_size:]
+          recovered = frozen.get("historical_recovery_rows") or []
+
+          evidence = []
+          for cohort, rows in (
+              ("baseline_v1", baseline),
+              ("duplicate_holdout_v2", holdout),
+          ):
+              for item in rows:
+                  terminal = item["terminal"]
+                  hit = terminal.get("hit")
+                  if hit is not True and hit is not False:
+                      continue
+                  evidence.append({
+                      "cohort": cohort,
+                      "fixture": item["fixture"],
+                      "odds": terminal.get("odds"),
+                      "hit": hit is True,
+                  })
+          for row in recovered:
+              result = row.get("result")
+              if result not in {"Won", "Half Won", "Lost", "Half Lost"}:
+                  continue
+              evidence.append({
+                  "cohort": "recovered_v2",
+                  "fixture": row.get("match_id"),
+                  "odds": row.get("odds"),
+                  "hit": result in {"Won", "Half Won"},
+              })
+
+          total_hits = sum(row["hit"] for row in evidence)
+          if len(evidence) != 530 or total_hits != 317:
+              raise SystemExit(
+                  f"active V2 reconstruction mismatch: "
+                  f"{total_hits}/{len(evidence)}"
+              )
+          if any(row["odds"] is None for row in evidence):
+              raise SystemExit("active V2 evidence contains missing odds")
+
+          thresholds = []
+          for threshold in (1.80, 1.85, 1.90):
+              selected = [
+                  row for row in evidence
+                  if float(row["odds"]) >= threshold
+              ]
+              hits = sum(row["hit"] for row in selected)
+              decided = len(selected)
+              interval = wilson95(hits, decided)
+              thresholds.append({
+                  "minimum_odds": threshold,
+                  "hits": hits,
+                  "losses": decided - hits,
+                  "decided": decided,
+                  "hit_rate": hits / decided if decided else None,
+                  "wilson95_lower": interval[0] if interval else None,
+                  "wilson95_upper": interval[1] if interval else None,
+              })
+
+          print(json.dumps({
+              "read_only": True,
+              "condition_number": 2,
+              "condition_signature": frozen.get("signature"),
+              "active_v2_reconstructed": {
+                  "hits": total_hits,
+                  "decided": len(evidence),
+                  "hit_rate": total_hits / len(evidence),
+              },
+              "cohorts": {
+                  cohort: {
+                      "hits": sum(
+                          row["hit"] for row in evidence
+                          if row["cohort"] == cohort
+                      ),
+                      "decided": sum(
+                          row["cohort"] == cohort for row in evidence
+                      ),
+                  }
+                  for cohort in (
+                      "baseline_v1",
+                      "duplicate_holdout_v2",
+                      "recovered_v2",
+                  )
+              },
+              "thresholds": thresholds,
+          }, ensure_ascii=False, indent=2))
+          PY
