@@ -550,6 +550,10 @@ def _version_hash(payload: dict[str, Any]) -> str:
             "activation_boundary_at",
         )
     }
+    if "legacy_ordinary_batch_aggregate" in payload:
+        hashable["legacy_ordinary_batch_aggregate"] = payload.get(
+            "legacy_ordinary_batch_aggregate"
+        )
     return _canonical_hash(hashable)
 
 
@@ -704,7 +708,20 @@ def _ensure_evidence_versions(
 
 def active_evidence_version(
     frozen: dict[str, Any], *, migration_boundary: str,
+    authority_context: Any = None,
 ) -> dict[str, Any] | None:
+    if any(
+        isinstance(row, dict) and "legacy_ordinary_batch_aggregate" in row
+        for row in (frozen.get("evidence_versions") or [])
+    ):
+        definition, validated, reason = _validate_frozen_identity_and_chain(
+            frozen, str(frozen.get("signature") or ""),
+            str((frozen.get("definition") or {}).get("system") or ""),
+            authority_context=authority_context,
+        )
+        if definition is None or validated is None or reason is not None:
+            return None
+        return validated[-1]
     versions = _ensure_evidence_versions(
         frozen, migration_boundary=migration_boundary,
     )
@@ -979,6 +996,7 @@ def sync_granular_ranking_evidence(
 
 def formal_registry_candidates(
     ledger: dict[str, Any], system: str, *, now: str | None = None,
+    authority_context: Any = None,
 ) -> list[dict[str, Any]]:
     """Project *only* validated frozen formal conditions for native matching.
 
@@ -990,7 +1008,7 @@ def formal_registry_candidates(
     silently creating, rewriting, or promoting an identity.
     """
     retired, migration_reason = _validate_condition_identity_migrations(
-        ledger, system,
+        ledger, system, authority_context=authority_context,
     )
     if retired is None:
         return []
@@ -1526,6 +1544,8 @@ def _prove_explicit_rollover_batch(
     frozen: dict[str, Any], version: dict[str, Any], *,
     projection_time: datetime, allow_legacy_omissions: bool = False,
     require_absent_native_stage_key: bool = False,
+    reserved_hashes: set[str] | frozenset[str] | None = None,
+    authority_context: Any = None,
 ) -> dict[str, Any]:
     """Prove every row and ordering claim in one identity-bearing batch."""
     failure = {
@@ -1535,7 +1555,7 @@ def _prove_explicit_rollover_batch(
         "version": version.get("version") if isinstance(version, dict) else None,
     }
     definition, versions, chain_reason = _validate_frozen_identity_and_chain(
-        frozen, signature, system,
+        frozen, signature, system, authority_context=authority_context,
     )
     if definition is None or versions is None or chain_reason is not None:
         return {**failure, "reason": chain_reason or "invalid_evidence_chain"}
@@ -1557,6 +1577,8 @@ def _prove_explicit_rollover_batch(
         or len(set(hashes)) != len(hashes)
     ):
         return base
+    if reserved_hashes and set(hashes).intersection(reserved_hashes):
+        return {**base, "reason": "historical_authority_identity_reuse"}
     predecessor = versions[version_number - 2]
     predecessor_boundary = predecessor.get("activation_boundary_at")
     if _time(predecessor_boundary) is None:
@@ -1581,6 +1603,7 @@ def _prove_explicit_rollover_batch(
         admitted, reason = validate_formal_row(
             row, system=system, signature=signature, frozen=frozen,
             projection_time=projection_time, require_settled=True, ledger=ledger,
+            authority_context=authority_context,
         )
         repaired = copy.deepcopy(row) if admitted is not None else None
         fields: tuple[str, ...] = ()
@@ -1888,7 +1911,8 @@ def _funnel_unavailable(system: str, reason: str) -> dict[str, Any]:
 
 
 def _validate_frozen_identity_and_chain(
-    frozen: dict[str, Any], signature: str, system: str,
+    frozen: dict[str, Any], signature: str, system: str, *,
+    authority_context: Any = None,
 ) -> tuple[dict[str, Any] | None, list[dict[str, Any]] | None, str | None]:
     """Validate one immutable definition and its complete evidence hash chain."""
     definition = frozen.get("definition")
@@ -1939,6 +1963,17 @@ def _validate_frozen_identity_and_chain(
         boundary = _time(row.get("activation_boundary_at"))
         created_at = _time(row.get("created_at"))
         hashes = row.get("batch_fixture_market_hashes")
+        aggregate_reason = None
+        is_legacy_ordinary_aggregate = (
+            "legacy_ordinary_batch_aggregate" in row
+        )
+        if is_legacy_ordinary_aggregate:
+            from .legacy_batch_aggregate import validate_aggregate_version
+            aggregate_reason = validate_aggregate_version(
+                row, system, signature, authority_context,
+            )
+            if aggregate_reason is not None:
+                return copy.deepcopy(definition), None, aggregate_reason
         if (
             version != index
             or row.get("condition_signature") != signature
@@ -1975,7 +2010,15 @@ def _validate_frozen_identity_and_chain(
             and legacy_cohort["pushes"] >= 0
         )
         if (
-            (len(hashes) != batch_decided and not legacy_batch)
+            (
+                len(hashes) != batch_decided
+                and not legacy_batch
+                and not is_legacy_ordinary_aggregate
+            )
+            or (
+                is_legacy_ordinary_aggregate
+                and (hashes != [] or batch_decided != ROLLOVER_BATCH_SIZE)
+            )
             or (legacy_batch and hashes)
             or (legacy_batch and not legacy_batch_valid)
             or (
@@ -2046,8 +2089,67 @@ def _validate_frozen_identity_and_chain(
     return copy.deepcopy(definition), validated, None
 
 
-def _expected_production_identity_manifest(
+def validate_production_identity_manifest_v1(
     ns: dict[str, Any], system: str,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Validate the immutable definition/v1 root without later-chain trust."""
+    conditions, order = ns.get("conditions"), ns.get("condition_order")
+    if (
+        not isinstance(conditions, dict) or not isinstance(order, list)
+        or not order or len(order) != len(set(order))
+        or set(order) != set(conditions)
+    ):
+        return None, "frozen_condition_registry_malformed"
+    entries = []
+    for number, signature in enumerate(order, 1):
+        frozen = conditions.get(signature)
+        if not isinstance(frozen, dict) or _strict_int(
+            frozen.get("condition_number")
+        ) != number:
+            return None, "frozen_condition_number_registry_malformed"
+        definition = frozen.get("definition")
+        versions = frozen.get("evidence_versions")
+        if (
+            not isinstance(definition, dict)
+            or _canonical_hash(definition)[:24] != signature
+            or frozen.get("signature") != signature
+            or not isinstance(versions, list) or not versions
+            or not isinstance(versions[0], dict)
+        ):
+            return None, "production_identity_v1_invalid"
+        first = versions[0]
+        if (
+            first.get("version") != 1
+            or first.get("condition_signature") != signature
+            or first.get("prior_version") is not None
+            or first.get("prior_evidence_hash") is not None
+            or first.get("batch_fixture_market_hashes") != []
+            or first.get("batch_hits") != 0
+            or first.get("batch_decided") != 0
+            or first.get("evidence_hash") != _version_hash(first)
+        ):
+            return None, "production_identity_v1_invalid"
+        entries.append({
+            "condition_number": number,
+            "condition_signature": signature,
+            "definition_hash": _canonical_hash(definition),
+            "initial_evidence_hash": first["evidence_hash"],
+        })
+    body = {
+        "schema_version": PRODUCTION_IDENTITY_MANIFEST_SCHEMA_VERSION,
+        "manifest_version": PRODUCTION_IDENTITY_MANIFEST_VERSION,
+        "system": system,
+        "immutable": True,
+        "entries": entries,
+    }
+    expected = {**body, "manifest_hash": _canonical_hash(body)}
+    if ns.get("production_identity_manifest") != expected:
+        return None, "immutable_production_identity_manifest_mismatch"
+    return copy.deepcopy(expected), None
+
+
+def _expected_production_identity_manifest(
+    ns: dict[str, Any], system: str, *, authority_context: Any = None,
 ) -> tuple[dict[str, Any] | None, dict[str, tuple[dict[str, Any], list[dict[str, Any]]]] | None, str | None]:
     """Build the deterministic identity root from an already-frozen registry."""
     conditions, order = ns.get("conditions"), ns.get("condition_order")
@@ -2070,7 +2172,7 @@ def _expected_production_identity_manifest(
         if number != expected_number:
             return None, None, "frozen_condition_number_registry_malformed"
         definition, versions, reason = _validate_frozen_identity_and_chain(
-            frozen, signature, system,
+            frozen, signature, system, authority_context=authority_context,
         )
         if reason is not None or definition is None or versions is None:
             return None, None, reason or "frozen_identity_unavailable"
@@ -2231,7 +2333,8 @@ def _migration_activity_root(activity: dict[str, Any]) -> str:
 
 
 def _validate_condition_identity_migration_document(
-    ledger: dict[str, Any], system: str, document: Any,
+    ledger: dict[str, Any], system: str, document: Any, *,
+    authority_context: Any = None,
 ) -> tuple[dict[str, dict[str, Any]] | None, str | None]:
     """Validate the independently authorized, closed duplicate-retirement root."""
     if system != "footbreak":
@@ -2280,10 +2383,10 @@ def _validate_condition_identity_migration_document(
         or not _sha256_hex(authority.get("production_identity_manifest_hash"))
     ):
         return None, "condition_identity_migrations_authority_invalid"
-    expected_production, validated, reason = (
-        _expected_production_identity_manifest(ns, system)
+    expected_production, reason = validate_production_identity_manifest_v1(
+        ns, system,
     )
-    if expected_production is None or validated is None:
+    if expected_production is None:
         return None, reason or "production_identity_manifest_invalid"
     if (
         ns.get("production_identity_manifest") != expected_production
@@ -2336,10 +2439,16 @@ def _validate_condition_identity_migration_document(
         ):
             return None, "condition_identity_migrations_number_mismatch"
         source_definition, source_versions, source_reason = (
-            _validate_frozen_identity_and_chain(source_frozen, source, system)
+            _validate_frozen_identity_and_chain(
+                source_frozen, source, system,
+                authority_context=authority_context,
+            )
         )
         target_definition, target_versions, target_reason = (
-            _validate_frozen_identity_and_chain(target_frozen, target, system)
+            _validate_frozen_identity_and_chain(
+                target_frozen, target, system,
+                authority_context=authority_context,
+            )
         )
         if (
             source_reason is not None or target_reason is not None
@@ -2408,7 +2517,7 @@ def _validate_condition_identity_migration_document(
 
 
 def _validate_condition_identity_migrations(
-    ledger: dict[str, Any], system: str,
+    ledger: dict[str, Any], system: str, *, authority_context: Any = None,
 ) -> tuple[dict[str, dict[str, Any]] | None, str | None]:
     """Absent is valid; present malformed retirement metadata fails closed."""
     ns = ledger.get(NAMESPACE)
@@ -2419,7 +2528,9 @@ def _validate_condition_identity_migrations(
         if _known_condition_identity_migration_required(ns, system):
             return None, "required_condition_identity_migration_missing"
         return {}, None
-    return _validate_condition_identity_migration_document(ledger, system, document)
+    return _validate_condition_identity_migration_document(
+        ledger, system, document, authority_context=authority_context,
+    )
 
 
 def _identity_projection(
@@ -2754,7 +2865,7 @@ def _validate_formal_admission_binding(
 
 
 def project_condition_funnel(
-    ledger: dict[str, Any], system: str,
+    ledger: dict[str, Any], system: str, *, authority_context: Any = None,
 ) -> dict[str, Any]:
     """Return a pure, fail-closed funnel from already-durable Wilson evidence."""
     ns = ledger.get(NAMESPACE)
@@ -2767,7 +2878,9 @@ def project_condition_funnel(
     conditions = ns.get("conditions")
     order = ns.get("condition_order")
     expected_manifest, validated_registry, registry_reason = (
-        _expected_production_identity_manifest(ns, system)
+        _expected_production_identity_manifest(
+            ns, system, authority_context=authority_context,
+        )
     )
     if expected_manifest is None or validated_registry is None:
         return _funnel_unavailable(
@@ -2781,7 +2894,7 @@ def project_condition_funnel(
     ):
         return _funnel_unavailable(system, "production_identity_manifest_unavailable_or_mismatch")
     retired, migration_reason = _validate_condition_identity_migrations(
-        ledger, system,
+        ledger, system, authority_context=authority_context,
     )
     if retired is None:
         return _funnel_unavailable(
@@ -3044,6 +3157,7 @@ def project_condition_funnel(
                 candidate, system=system, signature=signature, frozen=frozen,
                 projection_time=projection_time, require_settled=False,
                 ledger=ledger,
+                authority_context=authority_context,
             )
             if admitted is None:
                 settlement_rejections[
@@ -3065,6 +3179,7 @@ def project_condition_funnel(
                 row, system=system, signature=signature, frozen=frozen,
                 projection_time=projection_time, require_settled=True,
                 ledger=ledger,
+                authority_context=authority_context,
             )
             if settled_admitted is None:
                 settlement_rejections[
@@ -3509,6 +3624,7 @@ def validate_formal_row(
     row: dict[str, Any], *, system: str, signature: str,
     frozen: dict[str, Any], projection_time: datetime,
     require_settled: bool = False, ledger: dict[str, Any] | None = None,
+    authority_context: Any = None,
 ) -> tuple[dict[str, Any] | None, str | None]:
     """Strict shared validator for runtime rollover, funnel, and registry.
 
@@ -3520,6 +3636,19 @@ def validate_formal_row(
     versions = frozen.get("evidence_versions")
     if not isinstance(definition, dict) or not isinstance(versions, list):
         return None, "invalid_formal_admission_binding"
+    if any(
+        isinstance(version, dict)
+        and "legacy_ordinary_batch_aggregate" in version
+        for version in versions
+    ):
+        _definition, validated, chain_reason = (
+            _validate_frozen_identity_and_chain(
+                frozen, signature, system,
+                authority_context=authority_context,
+            )
+        )
+        if validated is None:
+            return None, chain_reason or "authority_required"
     version_by_number = {
         item.get("version"): item for item in versions
         if isinstance(item, dict) and _strict_int(item.get("version")) is not None
@@ -3585,6 +3714,7 @@ def validate_formal_row(
 def _eligible_rollover_rows(
     bets: Iterable[dict[str, Any]], system: str, signature: str,
     active: dict[str, Any],
+    reserved_hashes: set[str] | frozenset[str] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, int]]:
     """Return only independently auditable next-batch rows, fail closed.
 
@@ -3618,6 +3748,11 @@ def _eligible_rollover_rows(
             or _time(stage_at) is None
         ):
             excluded["missing_or_invalid_provenance"] += 1
+            continue
+        if reserved_hashes and fixture_hash in reserved_hashes:
+            excluded["historical_authority_identity_reuse"] = (
+                excluded.get("historical_authority_identity_reuse", 0) + 1
+            )
             continue
         if not _strictly_after(stage_at, boundary):
             excluded["before_snapshot_boundary"] += 1
@@ -3655,7 +3790,7 @@ def _eligible_rollover_rows(
 def _rollover_condition(
     frozen: dict[str, Any], bets: Iterable[dict[str, Any]], system: str,
     signature: str, *, now: str, migration_boundary: str,
-    ledger: dict[str, Any],
+    ledger: dict[str, Any], authority_context: Any = None,
 ) -> bool:
     """Append deterministic 20-row evidence versions, never edit old ones."""
     definition = frozen.get("definition")
@@ -3679,19 +3814,27 @@ def _rollover_condition(
             projection_time=projection_time,
             require_settled=row.get("status") == "SETTLED",
             ledger=ledger,
+            authority_context=authority_context,
         )
         if admitted is None:
             return False
     active = active_evidence_version(
         frozen, migration_boundary=migration_boundary,
+        authority_context=authority_context,
     )
     if active is None:
         return False
     last_excluded: dict[str, int] = {}
     created = 0
+    reserved_hashes: frozenset[str] = frozenset()
+    if authority_context is not None:
+        from .legacy_batch_aggregate import require_authority_context
+        reserved_hashes = require_authority_context(
+            authority_context
+        ).reservations.get(signature, frozenset())
     while True:
         eligible, excluded = _eligible_rollover_rows(
-            rows, system, signature, active,
+            rows, system, signature, active, reserved_hashes,
         )
         last_excluded = excluded
         if len(eligible) < ROLLOVER_BATCH_SIZE:
@@ -3706,6 +3849,13 @@ def _rollover_condition(
             }
             break
         batch = eligible[:ROLLOVER_BATCH_SIZE]
+        if reserved_hashes.intersection(
+            item["fixture_market_hash"] for item in batch
+        ):
+            frozen["rollover_status"] = (
+                "blocked_historical_authority_identity_reuse"
+            )
+            return False
         # A strict timestamp boundary cannot safely split an ambiguous group
         # with the same native T-5 instant. Hold it pending instead of
         # inventing an order which later allows equal-time rows through.
@@ -3795,7 +3945,7 @@ def _rollover_condition(
 
 def apply_active_evidence(
     ledger: dict[str, Any], system: str, admission: dict[str, Any], *,
-    stage_at: str, now: str,
+    stage_at: str, now: str, authority_context: Any = None,
 ) -> tuple[dict[str, Any] | None, str | None]:
     """Use only the active version for a new native T-5 decision.
 
@@ -3805,7 +3955,7 @@ def apply_active_evidence(
     """
     signature = str(admission["signature"])
     retired, migration_reason = _validate_condition_identity_migrations(
-        ledger, system,
+        ledger, system, authority_context=authority_context,
     )
     if retired is None:
         return None, migration_reason or "condition_identity_migrations_invalid"
@@ -3816,6 +3966,7 @@ def apply_active_evidence(
     frozen = freeze_condition(ledger, system, admission, now=now)
     active = active_evidence_version(
         frozen, migration_boundary=ns["activation_at"],
+        authority_context=authority_context,
     )
     if active is None:
         return None, "active_evidence_unavailable"
@@ -3853,15 +4004,41 @@ def apply_active_evidence(
     return updated, None
 
 
-def recompute_namespace(ledger: dict[str, Any], system: str) -> dict[str, Any]:
+def recompute_namespace(
+    ledger: dict[str, Any], system: str, *, authority_context: Any = None,
+) -> dict[str, Any]:
     retired, migration_reason = _validate_condition_identity_migrations(
-        ledger, system,
+        ledger, system, authority_context=authority_context,
     )
     if retired is None:
         raise ValueError(
             migration_reason or "condition identity migration metadata invalid"
         )
     ns = ensure_namespace(ledger, system)
+    has_aggregate = any(
+        isinstance(version, dict)
+        and "legacy_ordinary_batch_aggregate" in version
+        for frozen in (ns.get("conditions") or {}).values()
+        if isinstance(frozen, dict)
+        for version in (frozen.get("evidence_versions") or [])
+    )
+    if has_aggregate:
+        from .legacy_batch_aggregate import require_authority_context
+        require_authority_context(authority_context)
+        identity, identity_reason = validate_production_identity_manifest_v1(
+            ns, system,
+        )
+        if identity is None:
+            raise ValueError(identity_reason or "production_identity_v1_invalid")
+        for signature, frozen in ns["conditions"].items():
+            _definition, _versions, reason = (
+                _validate_frozen_identity_and_chain(
+                    frozen, signature, system,
+                    authority_context=authority_context,
+                )
+            )
+            if reason is not None:
+                raise ValueError(reason)
     bets = [
         row for row in active_bets(ledger, system)
         if str(row.get("frozen_condition_signature") or "") not in retired
@@ -3894,7 +4071,7 @@ def recompute_namespace(ledger: dict[str, Any], system: str) -> dict[str, Any]:
             valid_activity = _rollover_condition(
                 frozen, raw_grouped.get(str(signature), []), system, str(signature), now=_now(),
                 migration_boundary=ns["activation_at"],
-                ledger=ledger,
+                ledger=ledger, authority_context=authority_context,
             )
             if not valid_activity:
                 continue
@@ -3921,6 +4098,9 @@ def recompute_namespace(ledger: dict[str, Any], system: str) -> dict[str, Any]:
         "n_voided": sum(row.get("status") == "VOIDED" for row in bets),
         "n_decided": metrics["decided"],
     })
+    if has_aggregate:
+        from .legacy_batch_aggregate import _stats_conditions_projection
+        metrics["conditions"] = _stats_conditions_projection(ns["conditions"])
     ns["stats"] = metrics
     return metrics
 
@@ -4036,7 +4216,7 @@ def record_match_observation(
     ledger: dict[str, Any], system: str, watch: dict[str, Any], market: str,
     selected: dict[str, Any], admission: dict[str, Any], *, now: str,
     market_label: str, selected_role: str | None, selected_line: float,
-    decision_stage: str = DECISION_STAGE,
+    decision_stage: str = DECISION_STAGE, authority_context: Any = None,
 ) -> dict[str, Any] | None:
     """Persist a matched Wilson condition which did not become a formal bet.
 
@@ -4135,7 +4315,10 @@ def record_match_observation(
         "evidence_hash": admission.get("evidence_hash"),
         "rollover_provenance": _rollover_marker(
             system, fixture, market, signature, str(admission.get("stage_at") or now),
-            active_evidence_version(frozen, migration_boundary=ns["activation_at"]) or {},
+            active_evidence_version(
+                frozen, migration_boundary=ns["activation_at"],
+                authority_context=authority_context,
+            ) or {},
             decision_stage=decision_stage,
         ),
         "history": [{
@@ -4159,7 +4342,8 @@ def record_match_observation(
 def commit_bet(
     ledger: dict[str, Any], system: str, watch: dict[str, Any], market: str,
     selected: dict[str, Any], admission: dict[str, Any], *, now: str,
-    market_label: str, selected_label: str, selected_role: str | None, selected_line: float,
+    market_label: str, selected_label: str, selected_role: str | None,
+    selected_line: float, authority_context: Any = None,
 ) -> dict[str, Any] | None:
     ns = ensure_namespace(ledger, system, now=now)
     if market not in {"HDC", "HIL", "CHL"}:
@@ -4184,6 +4368,7 @@ def commit_bet(
     stage_at = admission.get("stage_at") or now
     evidence = active_evidence_version(
         frozen, migration_boundary=ns["activation_at"],
+        authority_context=authority_context,
     )
     if not isinstance(stage_at, str) or evidence is None:
         return None

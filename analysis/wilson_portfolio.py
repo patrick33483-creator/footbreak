@@ -195,6 +195,8 @@ def evaluate_stage(
     now: str, ranking: Iterable[dict[str, Any]] | None, decision_stage: str,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Evaluate one already-persisted native stage against its own identities."""
+    from .legacy_batch_runtime import load_production_legacy_batch_authority
+    authority_context = load_production_legacy_batch_authority(ledger)
     ns = ensure_namespace(ledger, system, now=now)
     def rejected(reason: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         row = {"market": "*", "status": "SKIPPED", "reason": reason}
@@ -222,7 +224,9 @@ def evaluate_stage(
     # not the mutable/re-ranked granular research cards.  ``ranking`` remains
     # an input for the one-time freeze performed by the caller, but can never
     # decide whether an already frozen condition exists.
-    formal_candidates = formal_registry_candidates(ledger, system, now=now)
+    formal_candidates = formal_registry_candidates(
+        ledger, system, now=now, authority_context=authority_context,
+    )
     if not formal_candidates:
         # Keep the historic reason stable for callers which supplied an
         # initial discovery snapshot that yielded no valid formal condition.
@@ -302,6 +306,7 @@ def evaluate_stage(
         for admission in admissions:
             adjusted, boundary_reason = apply_active_evidence(
                 ledger, system, admission, stage_at=stage_at, now=now,
+                authority_context=authority_context,
             )
             frozen = ns["conditions"].get(str(admission["signature"])) or {}
             if adjusted is None:
@@ -319,6 +324,7 @@ def evaluate_stage(
                 ledger, system, watch, market, selected, adjusted, now=now,
                 market_label=market_labels[market], selected_role=role,
                 selected_line=selected_line, decision_stage=decision_stage,
+                authority_context=authority_context,
             )
             audit.append({
                 "market": market, "status": "MATCHED_NO_BET",
@@ -353,7 +359,8 @@ def evaluate_stage(
             continue
         bet = commit_bet(ledger, system, watch, market, selected, admission, now=now,
                          market_label=market_labels[market], selected_label=f"{market_labels[market]} · {label}",
-                         selected_role=role, selected_line=selected_line)
+                         selected_role=role, selected_line=selected_line,
+                         authority_context=authority_context)
         if bet is None:
             audit.append({"market": market, "status": "SKIPPED", "reason": "idempotent_existing_market"})
             continue

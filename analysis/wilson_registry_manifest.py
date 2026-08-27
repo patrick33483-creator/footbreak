@@ -15,6 +15,7 @@ from analysis.wilson_validation import (
     _eligible_rollover_rows, _fixture_market_hash, _time, _version_hash, condition_signature,
     _formal_marker_shape_valid, _formal_stage_provenance_valid, formal_matcher_axes,
     _validate_condition_identity_migrations, portfolio_name, validate_formal_row, wilson95,
+    validate_production_identity_manifest_v1,
 )
 SYSTEMS=("footbreak","crown")
 
@@ -38,13 +39,28 @@ def _activity(ledger:dict[str,Any],ns:dict[str,Any],system:str)->tuple[list[dict
  good_obs=[r for r in obs if isinstance(r,dict) and r.get("portfolio")==f"{system}_wilson_observations" and r.get("strategy")==STRATEGY and r.get("formal_bet") is False and _formal_stage_provenance_valid(r,system) and r.get("status") in {"PENDING","SETTLED","VOIDED"}]
  return good_bets,good_obs
 
-def build_manifest(ledger:Any,system:str)->dict[str,Any]:
+def build_manifest(ledger:Any,system:str,*,authority_context:Any=None)->dict[str,Any]:
  reasons=Counter(); rows=[]
  try:
   if system not in SYSTEMS: raise ValueError("unsupported_system")
   if not isinstance(ledger,dict): raise ValueError("ledger_not_object")
   ns=ledger.get("wilson_validation")
   if not isinstance(ns,dict): raise ValueError("missing_or_invalid_wilson_namespace")
+  aggregate_present=any(
+   isinstance(v,dict) and "legacy_ordinary_batch_aggregate" in v
+   for frozen in (ns.get("conditions") or {}).values() if isinstance(frozen,dict)
+   for v in (frozen.get("evidence_versions") or [])
+  )
+  reservations={}
+  if aggregate_present:
+   from analysis.legacy_batch_aggregate import require_authority_context
+   try:
+    context=require_authority_context(authority_context)
+    reservations=context.reservations
+   except TypeError:
+    reasons["authority_required"]+=1
+   identity,identity_reason=validate_production_identity_manifest_v1(ns,system)
+   if identity is None: reasons[identity_reason or "production_identity_v1_invalid"]+=1
   if _int(ns.get("schema_version"))!=SCHEMA_VERSION: reasons["unsupported_namespace_schema"]+=1
   if "granular_ranking_initial_migration_version" in ns and _int(ns.get("granular_ranking_initial_migration_version")) != 1:
    reasons["invalid_granular_migration_version"] += 1
@@ -66,7 +82,9 @@ def build_manifest(ledger:Any,system:str)->dict[str,Any]:
   if "observations" in ns and not isinstance(ns.get("observations"),list): reasons["invalid_observations_type"]+=1
   if not isinstance(ns.get("audit"),list): reasons["invalid_audit_type"]+=1
   good_bets,good_obs=_activity(ledger,ns,system)
-  retired,migration_reason=_validate_condition_identity_migrations(ledger,system)
+  retired,migration_reason=_validate_condition_identity_migrations(
+   ledger,system,authority_context=authority_context
+  )
   migration_unavailable=retired is None
   if retired is None:
    reasons[migration_reason or "condition_identity_migrations_invalid"]+=1
@@ -127,6 +145,11 @@ def build_manifest(ledger:Any,system:str)->dict[str,Any]:
         or (ch is not None and cd is not None and ch > cd)
     )
     if invalid_counts: rr.append("invalid_evidence_counts")
+    aggregate="legacy_ordinary_batch_aggregate" in v
+    if aggregate:
+     from analysis.legacy_batch_aggregate import validate_aggregate_version
+     aggregate_reason=validate_aggregate_version(v,system,sig,authority_context)
+     if aggregate_reason is not None: rr.append(aggregate_reason)
     if not isinstance(hashes,list) or len(hashes)!=len(set(hashes)) or any(not _hash64(x) for x in hashes): rr.append("invalid_batch_hashes")
     if isinstance(hashes, list):
      if used_batch_hashes.intersection(x for x in hashes if isinstance(x, str)):
@@ -156,7 +179,13 @@ def build_manifest(ledger:Any,system:str)->dict[str,Any]:
       cohort_decided = _int(cohort.get("decided")) if isinstance(cohort, dict) else None
       cohort_pushes = _int(cohort.get("pushes")) if isinstance(cohort, dict) else None
       if not isinstance(cohort,dict) or cohort_hits!=bh or cohort_decided!=bd or cohort_pushes is None or cohort_pushes<0 or not (bd and 0<=bh<=bd) or hashes!=[] or boundary not in valid_markers: rr.append("invalid_migration_v2")
+     elif aggregate:
+      if bd!=ROLLOVER_BATCH_SIZE or hashes!=[]: rr.append("unauthorized_legacy_batch_aggregate")
      elif bd!=ROLLOVER_BATCH_SIZE or len(hashes)!=ROLLOVER_BATCH_SIZE: rr.append("invalid_ordinary_batch")
+     if (
+      not aggregate and isinstance(hashes,list)
+      and set(hashes).intersection(reservations.get(sig,frozenset()))
+     ): rr.append("reserved_historical_identity_reused")
     prev=v; prev_boundary=boundary or prev_boundary; prev_created=created or prev_created
    active=versions[-1] if versions and isinstance(versions[-1],dict) else {}
    if (
@@ -228,6 +257,7 @@ def build_manifest(ledger:Any,system:str)->dict[str,Any]:
         projection_time=datetime.now(timezone.utc),
         require_settled=activity.get("status") == "SETTLED",
         ledger=ledger,
+        authority_context=authority_context,
     )
     if shared_admitted is None:
      activity_rejections["invalid_signature_definition_or_evidence_binding"] += 1
@@ -340,6 +370,9 @@ def build_manifest(ledger:Any,system:str)->dict[str,Any]:
     if not isinstance(v, dict):
      continue
     if v.get("initial_migration_full_cohort") is True:
+     prior = v
+     continue
+    if "legacy_ordinary_batch_aggregate" in v:
      prior = v
      continue
     batch_hashes = v.get("batch_fixture_market_hashes")

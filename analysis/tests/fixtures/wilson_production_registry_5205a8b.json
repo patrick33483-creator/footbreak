@@ -1,24 +1,48 @@
 {
-  "schema": "wilson-production-registry-fixture-v1",
+  "schema": "wilson-production-chain-fixture-v2",
   "source": {
-    "audited_commit": "5205a8ba03bbae46bdc065f38a68467df48038aa",
-    "captured_at_utc": "2026-08-27T01:03:25.872502+00:00",
-    "captured_ledger_sha256": {
-      "crown-ledger.json": "6b50800e896729bb070adacd81df76d056f4a372e942cf98c2a3130e873dec6c",
-      "footbreak-ledger.json": "539c86d9ad36b026bc52a786c2dbd1a72669ecf73bd67b9ac41b7ec6d6e15a94"
-    },
+    "audited_commit": "5c940c3389ed3100da758dea6af1e814ee32ce74",
+    "captured_at_utc": "2026-08-27T03:37:27Z",
     "repository": "patrick33483-creator/footbreak",
-    "source_manifest_hashes": {
-      "crown": "35ab6adb7e258fcc54d3fc39bbe06921ee04677dadfbcf272cd10df21ea6cc6c",
-      "footbreak": "a386b5e4ea7ea2041b83a2b6a9f09f5e1ace92939d3582d63043e41ea2e52f56"
-    },
-    "workflow_run_id": 33028833183
+    "workflow_run_id": 33036920076
   },
   "systems": {
     "crown": {
-      "identities": [
+      "condition_order": [
+        "e84866d8fdad5d2bc0cc868a",
+        "8c240fb81cb9dda4fb50ecf7",
+        "51717d4b680bbcb59d83a3ff",
+        "91192678300cb3c01cd4a836",
+        "7d990edf3c230cf5a21ead44",
+        "09ba238cb8400670519ce95a",
+        "788f1c10ee7e89708e89d97f",
+        "4c534bfae22c929ecbfb8a05",
+        "36adac14f977adf9d9a3c70f",
+        "f956f75e552c8de37b0f2656",
+        "7ef849b34e8bd3c5f3fc8a91",
+        "147d829890170c596e2958fd",
+        "568d5972eecdf574487f9ae0",
+        "554338a6184511e7d0a10c13",
+        "eed2751d41fde707cbb37002",
+        "d5b99f3e7b64a35751c4145a",
+        "6fbac6848286d7fd9756b1fe",
+        "c1a159dfd3c39224996e16a4",
+        "fc2c52e9252aec081522f7a9",
+        "9c086655900223c767f56849"
+      ],
+      "conditions": [
         {
-          "activation_boundary": "2026-08-20T23:48:40+08:00",
+          "active_evidence": {
+            "activation_boundary_at": "2026-08-20T23:48:40+08:00",
+            "created_at": "2026-08-20T23:48:40+08:00",
+            "cumulative_decided": 80,
+            "cumulative_hits": 53,
+            "evidence_hash": "1c2ad74161d3775f9fa57f47ea350517343198ba3571762adae37ce1e371ed3f",
+            "minimum_acceptable_odds_display": 1.91,
+            "minimum_acceptable_odds_raw": 1.9099816700870165,
+            "version": 2,
+            "wilson95_lower_raw": 0.5535652339817697
+          },
           "active_evidence_hash": "1c2ad74161d3775f9fa57f47ea350517343198ba3571762adae37ce1e371ed3f",
           "active_evidence_version": 2,
           "condition_number": 1,
@@ -47,12 +71,74 @@
             "system": "crown",
             "version": "granular-condition-v1"
           },
-          "definition_hash": "e84866d8fdad5d2bc0cc868aa7a109ba07fc40e6ab517b26261f433af877b507",
-          "order_position": 1,
+          "evidence_versions": [
+            {
+              "activation_boundary_at": "2026-08-20T23:48:40+08:00",
+              "batch_decided": 0,
+              "batch_fixture_market_hashes": [],
+              "batch_hits": 0,
+              "condition_signature": "e84866d8fdad5d2bc0cc868a",
+              "created_at": "2026-08-20T23:48:40+08:00",
+              "cumulative_decided": 61,
+              "cumulative_hits": 41,
+              "evidence_hash": "9c398da6609cb0f342b230483824ab9bef2db262433236e0811656f2e804ebd3",
+              "migration_baseline": true,
+              "minimum_acceptable_odds_display": 1.93,
+              "minimum_acceptable_odds_raw": 1.9334204879427808,
+              "prior_evidence_hash": null,
+              "prior_version": null,
+              "version": 1,
+              "wilson95_lower_raw": 0.5472180631353664
+            },
+            {
+              "activation_boundary_at": "2026-08-20T23:48:40+08:00",
+              "batch_decided": 19,
+              "batch_fixture_market_hashes": [],
+              "batch_fixture_market_ids_unavailable_from_legacy_aggregate": true,
+              "batch_hits": 12,
+              "condition_signature": "e84866d8fdad5d2bc0cc868a",
+              "created_at": "2026-08-20T23:48:40+08:00",
+              "cumulative_decided": 80,
+              "cumulative_hits": 53,
+              "evidence_hash": "1c2ad74161d3775f9fa57f47ea350517343198ba3571762adae37ce1e371ed3f",
+              "initial_migration_full_cohort": true,
+              "legacy_prospective_cohort": {
+                "decided": 19,
+                "hits": 12,
+                "pushes": 0
+              },
+              "minimum_acceptable_odds_display": 1.91,
+              "minimum_acceptable_odds_raw": 1.9099816700870165,
+              "prior_evidence_hash": "9c398da6609cb0f342b230483824ab9bef2db262433236e0811656f2e804ebd3",
+              "prior_version": 1,
+              "version": 2,
+              "wilson95_lower_raw": 0.5535652339817697
+            }
+          ],
+          "historical_evidence": {
+            "artifact": {
+              "as_of": "2026-08-20T23:48:40+08:00",
+              "hash": "b52742e20c0deef4da5760db565f06e276ac1326d5a0c5cc1b75397b98e6839e",
+              "version": "granular-ranking-v1"
+            },
+            "decided": 61,
+            "hits": 41,
+            "pushes": 0
+          },
           "signature": "e84866d8fdad5d2bc0cc868a"
         },
         {
-          "activation_boundary": "2026-08-20T23:48:40+08:00",
+          "active_evidence": {
+            "activation_boundary_at": "2026-08-20T23:48:40+08:00",
+            "created_at": "2026-08-20T23:48:40+08:00",
+            "cumulative_decided": 302,
+            "cumulative_hits": 185,
+            "evidence_hash": "fb6e907bb62ea104e3838333802009c6ca609db902280e5b0552bab50dc0d43f",
+            "minimum_acceptable_odds_display": 1.9,
+            "minimum_acceptable_odds_raw": 1.8991439688764498,
+            "version": 2,
+            "wilson95_lower_raw": 0.5565530240930648
+          },
           "active_evidence_hash": "fb6e907bb62ea104e3838333802009c6ca609db902280e5b0552bab50dc0d43f",
           "active_evidence_version": 2,
           "condition_number": 2,
@@ -80,12 +166,74 @@
             "system": "crown",
             "version": "granular-condition-v1"
           },
-          "definition_hash": "8c240fb81cb9dda4fb50ecf77f81bce1365df01511271409da9a2e305aa1a935",
-          "order_position": 2,
+          "evidence_versions": [
+            {
+              "activation_boundary_at": "2026-08-20T23:48:40+08:00",
+              "batch_decided": 0,
+              "batch_fixture_market_hashes": [],
+              "batch_hits": 0,
+              "condition_signature": "8c240fb81cb9dda4fb50ecf7",
+              "created_at": "2026-08-20T23:48:40+08:00",
+              "cumulative_decided": 231,
+              "cumulative_hits": 141,
+              "evidence_hash": "feea401a8338b95a3d7874fefffc9733ec81925b6331ecf7e0c9772e73ff7086",
+              "migration_baseline": true,
+              "minimum_acceptable_odds_display": 1.94,
+              "minimum_acceptable_odds_raw": 1.9372816107393536,
+              "prior_evidence_hash": null,
+              "prior_version": null,
+              "version": 1,
+              "wilson95_lower_raw": 0.546187215351905
+            },
+            {
+              "activation_boundary_at": "2026-08-20T23:48:40+08:00",
+              "batch_decided": 71,
+              "batch_fixture_market_hashes": [],
+              "batch_fixture_market_ids_unavailable_from_legacy_aggregate": true,
+              "batch_hits": 44,
+              "condition_signature": "8c240fb81cb9dda4fb50ecf7",
+              "created_at": "2026-08-20T23:48:40+08:00",
+              "cumulative_decided": 302,
+              "cumulative_hits": 185,
+              "evidence_hash": "fb6e907bb62ea104e3838333802009c6ca609db902280e5b0552bab50dc0d43f",
+              "initial_migration_full_cohort": true,
+              "legacy_prospective_cohort": {
+                "decided": 71,
+                "hits": 44,
+                "pushes": 4
+              },
+              "minimum_acceptable_odds_display": 1.9,
+              "minimum_acceptable_odds_raw": 1.8991439688764498,
+              "prior_evidence_hash": "feea401a8338b95a3d7874fefffc9733ec81925b6331ecf7e0c9772e73ff7086",
+              "prior_version": 1,
+              "version": 2,
+              "wilson95_lower_raw": 0.5565530240930648
+            }
+          ],
+          "historical_evidence": {
+            "artifact": {
+              "as_of": "2026-08-20T23:48:40+08:00",
+              "hash": "5d31c004a597ab0a679710bbe0f9f0526665121dc15e61d483ef9ad81c27b395",
+              "version": "granular-ranking-v1"
+            },
+            "decided": 231,
+            "hits": 141,
+            "pushes": 17
+          },
           "signature": "8c240fb81cb9dda4fb50ecf7"
         },
         {
-          "activation_boundary": "2026-08-20T23:48:40+08:00",
+          "active_evidence": {
+            "activation_boundary_at": "2026-08-20T23:48:40+08:00",
+            "created_at": "2026-08-20T23:48:40+08:00",
+            "cumulative_decided": 76,
+            "cumulative_hits": 49,
+            "evidence_hash": "bb08ce85402d096f13aba0bcb741c6f3e5454c3f7e6f508b2bdb2474cdbf2c41",
+            "minimum_acceptable_odds_display": 1.99,
+            "minimum_acceptable_odds_raw": 1.9897968979851468,
+            "version": 2,
+            "wilson95_lower_raw": 0.5325638551414933
+          },
           "active_evidence_hash": "bb08ce85402d096f13aba0bcb741c6f3e5454c3f7e6f508b2bdb2474cdbf2c41",
           "active_evidence_version": 2,
           "condition_number": 3,
@@ -113,12 +261,74 @@
             "system": "crown",
             "version": "granular-condition-v1"
           },
-          "definition_hash": "51717d4b680bbcb59d83a3ffba6cb2fd635552b2bd0670c71bd9393dad1e233d",
-          "order_position": 3,
+          "evidence_versions": [
+            {
+              "activation_boundary_at": "2026-08-20T23:48:40+08:00",
+              "batch_decided": 0,
+              "batch_fixture_market_hashes": [],
+              "batch_hits": 0,
+              "condition_signature": "51717d4b680bbcb59d83a3ff",
+              "created_at": "2026-08-20T23:48:40+08:00",
+              "cumulative_decided": 57,
+              "cumulative_hits": 38,
+              "evidence_hash": "0bb5ea14f69e1c8ddff5fe4642a5cfd8e2c6ff74a3eb06fa759a15c6e84dab50",
+              "migration_baseline": true,
+              "minimum_acceptable_odds_display": 1.97,
+              "minimum_acceptable_odds_raw": 1.9715112064625921,
+              "prior_evidence_hash": null,
+              "prior_version": null,
+              "version": 1,
+              "wilson95_lower_raw": 0.5372251158005144
+            },
+            {
+              "activation_boundary_at": "2026-08-20T23:48:40+08:00",
+              "batch_decided": 19,
+              "batch_fixture_market_hashes": [],
+              "batch_fixture_market_ids_unavailable_from_legacy_aggregate": true,
+              "batch_hits": 11,
+              "condition_signature": "51717d4b680bbcb59d83a3ff",
+              "created_at": "2026-08-20T23:48:40+08:00",
+              "cumulative_decided": 76,
+              "cumulative_hits": 49,
+              "evidence_hash": "bb08ce85402d096f13aba0bcb741c6f3e5454c3f7e6f508b2bdb2474cdbf2c41",
+              "initial_migration_full_cohort": true,
+              "legacy_prospective_cohort": {
+                "decided": 19,
+                "hits": 11,
+                "pushes": 0
+              },
+              "minimum_acceptable_odds_display": 1.99,
+              "minimum_acceptable_odds_raw": 1.9897968979851468,
+              "prior_evidence_hash": "0bb5ea14f69e1c8ddff5fe4642a5cfd8e2c6ff74a3eb06fa759a15c6e84dab50",
+              "prior_version": 1,
+              "version": 2,
+              "wilson95_lower_raw": 0.5325638551414933
+            }
+          ],
+          "historical_evidence": {
+            "artifact": {
+              "as_of": "2026-08-20T23:48:40+08:00",
+              "hash": "b6f661a780dabecedff84c11db8e9060fe8dfa6e00d8e93ca383eaa03b7d7832",
+              "version": "granular-ranking-v1"
+            },
+            "decided": 57,
+            "hits": 38,
+            "pushes": 5
+          },
           "signature": "51717d4b680bbcb59d83a3ff"
         },
         {
-          "activation_boundary": "2026-08-20T23:48:40+08:00",
+          "active_evidence": {
+            "activation_boundary_at": "2026-08-20T23:48:40+08:00",
+            "created_at": "2026-08-20T23:48:40+08:00",
+            "cumulative_decided": 81,
+            "cumulative_hits": 52,
+            "evidence_hash": "e95a00f84e1e1e475e9e1f55ae1cfb25234aa8001d1b8055905966d46d3ef0b6",
+            "minimum_acceptable_odds_display": 1.99,
+            "minimum_acceptable_odds_raw": 1.986765671190432,
+            "version": 2,
+            "wilson95_lower_raw": 0.533330621472244
+          },
           "active_evidence_hash": "e95a00f84e1e1e475e9e1f55ae1cfb25234aa8001d1b8055905966d46d3ef0b6",
           "active_evidence_version": 2,
           "condition_number": 4,
@@ -146,12 +356,74 @@
             "system": "crown",
             "version": "granular-condition-v1"
           },
-          "definition_hash": "91192678300cb3c01cd4a836daf064502c38b76bcced4a9eb756d7f56f0a6921",
-          "order_position": 4,
+          "evidence_versions": [
+            {
+              "activation_boundary_at": "2026-08-20T23:48:40+08:00",
+              "batch_decided": 0,
+              "batch_fixture_market_hashes": [],
+              "batch_hits": 0,
+              "condition_signature": "91192678300cb3c01cd4a836",
+              "created_at": "2026-08-20T23:48:40+08:00",
+              "cumulative_decided": 62,
+              "cumulative_hits": 41,
+              "evidence_hash": "5e9670651feae06f270f7b5c7f1b06527bba5493ac70b7981ccdbf45d865c856",
+              "migration_baseline": true,
+              "minimum_acceptable_odds_display": 1.97,
+              "minimum_acceptable_odds_raw": 1.9716982609331595,
+              "prior_evidence_hash": null,
+              "prior_version": null,
+              "version": 1,
+              "wilson95_lower_raw": 0.5371769954935818
+            },
+            {
+              "activation_boundary_at": "2026-08-20T23:48:40+08:00",
+              "batch_decided": 19,
+              "batch_fixture_market_hashes": [],
+              "batch_fixture_market_ids_unavailable_from_legacy_aggregate": true,
+              "batch_hits": 11,
+              "condition_signature": "91192678300cb3c01cd4a836",
+              "created_at": "2026-08-20T23:48:40+08:00",
+              "cumulative_decided": 81,
+              "cumulative_hits": 52,
+              "evidence_hash": "e95a00f84e1e1e475e9e1f55ae1cfb25234aa8001d1b8055905966d46d3ef0b6",
+              "initial_migration_full_cohort": true,
+              "legacy_prospective_cohort": {
+                "decided": 19,
+                "hits": 11,
+                "pushes": 0
+              },
+              "minimum_acceptable_odds_display": 1.99,
+              "minimum_acceptable_odds_raw": 1.986765671190432,
+              "prior_evidence_hash": "5e9670651feae06f270f7b5c7f1b06527bba5493ac70b7981ccdbf45d865c856",
+              "prior_version": 1,
+              "version": 2,
+              "wilson95_lower_raw": 0.533330621472244
+            }
+          ],
+          "historical_evidence": {
+            "artifact": {
+              "as_of": "2026-08-20T23:48:40+08:00",
+              "hash": "26103f01e5ff2a914ca41af079b035706575144a1ab80fbc2372af0e167e1816",
+              "version": "granular-ranking-v1"
+            },
+            "decided": 62,
+            "hits": 41,
+            "pushes": 0
+          },
           "signature": "91192678300cb3c01cd4a836"
         },
         {
-          "activation_boundary": "2026-08-20T23:48:40+08:00",
+          "active_evidence": {
+            "activation_boundary_at": "2026-08-20T23:48:40+08:00",
+            "created_at": "2026-08-20T23:48:40+08:00",
+            "cumulative_decided": 75,
+            "cumulative_hits": 48,
+            "evidence_hash": "751ca23cf1af9d046eca90ef22a88704daa5536c6d1034067f2b00c86ad01157",
+            "minimum_acceptable_odds_display": 2.01,
+            "minimum_acceptable_odds_raw": 2.012045661886885,
+            "version": 2,
+            "wilson95_lower_raw": 0.5270066131909779
+          },
           "active_evidence_hash": "751ca23cf1af9d046eca90ef22a88704daa5536c6d1034067f2b00c86ad01157",
           "active_evidence_version": 2,
           "condition_number": 5,
@@ -180,12 +452,74 @@
             "system": "crown",
             "version": "granular-condition-v1"
           },
-          "definition_hash": "7d990edf3c230cf5a21ead442b8abae9ad18138b80debde57b1ba1e527b32428",
-          "order_position": 5,
+          "evidence_versions": [
+            {
+              "activation_boundary_at": "2026-08-20T23:48:40+08:00",
+              "batch_decided": 0,
+              "batch_fixture_market_hashes": [],
+              "batch_hits": 0,
+              "condition_signature": "7d990edf3c230cf5a21ead44",
+              "created_at": "2026-08-20T23:48:40+08:00",
+              "cumulative_decided": 56,
+              "cumulative_hits": 37,
+              "evidence_hash": "9fa0c5f2b239fc542f603cc82fa0baf92f541d2340838e2d2445b51302e5d617",
+              "migration_baseline": true,
+              "minimum_acceptable_odds_display": 2.0,
+              "minimum_acceptable_odds_raw": 2.0000218799569547,
+              "prior_evidence_hash": null,
+              "prior_version": null,
+              "version": 1,
+              "wilson95_lower_raw": 0.5299945300706023
+            },
+            {
+              "activation_boundary_at": "2026-08-20T23:48:40+08:00",
+              "batch_decided": 19,
+              "batch_fixture_market_hashes": [],
+              "batch_fixture_market_ids_unavailable_from_legacy_aggregate": true,
+              "batch_hits": 11,
+              "condition_signature": "7d990edf3c230cf5a21ead44",
+              "created_at": "2026-08-20T23:48:40+08:00",
+              "cumulative_decided": 75,
+              "cumulative_hits": 48,
+              "evidence_hash": "751ca23cf1af9d046eca90ef22a88704daa5536c6d1034067f2b00c86ad01157",
+              "initial_migration_full_cohort": true,
+              "legacy_prospective_cohort": {
+                "decided": 19,
+                "hits": 11,
+                "pushes": 0
+              },
+              "minimum_acceptable_odds_display": 2.01,
+              "minimum_acceptable_odds_raw": 2.012045661886885,
+              "prior_evidence_hash": "9fa0c5f2b239fc542f603cc82fa0baf92f541d2340838e2d2445b51302e5d617",
+              "prior_version": 1,
+              "version": 2,
+              "wilson95_lower_raw": 0.5270066131909779
+            }
+          ],
+          "historical_evidence": {
+            "artifact": {
+              "as_of": "2026-08-20T23:48:40+08:00",
+              "hash": "ddfc2ad119ee9c1fa4d3bd368a04ceb43d6858d6bb35af0e5dc002a12e1206c7",
+              "version": "granular-ranking-v1"
+            },
+            "decided": 56,
+            "hits": 37,
+            "pushes": 5
+          },
           "signature": "7d990edf3c230cf5a21ead44"
         },
         {
-          "activation_boundary": "2026-08-20T23:48:40+08:00",
+          "active_evidence": {
+            "activation_boundary_at": "2026-08-20T23:48:40+08:00",
+            "created_at": "2026-08-20T23:48:40+08:00",
+            "cumulative_decided": 127,
+            "cumulative_hits": 80,
+            "evidence_hash": "64c9041cce83f70ccdf8803ed30da846b212a7c837f85a3affa57f6234f5f33d",
+            "minimum_acceptable_odds_display": 1.95,
+            "minimum_acceptable_odds_raw": 1.9482223398821248,
+            "version": 2,
+            "wilson95_lower_raw": 0.5432884371198126
+          },
           "active_evidence_hash": "64c9041cce83f70ccdf8803ed30da846b212a7c837f85a3affa57f6234f5f33d",
           "active_evidence_version": 2,
           "condition_number": 6,
@@ -213,12 +547,74 @@
             "system": "crown",
             "version": "granular-condition-v1"
           },
-          "definition_hash": "09ba238cb8400670519ce95a78f956920a5abde543635e65e4bac29d8fe400d6",
-          "order_position": 6,
+          "evidence_versions": [
+            {
+              "activation_boundary_at": "2026-08-20T23:48:40+08:00",
+              "batch_decided": 0,
+              "batch_fixture_market_hashes": [],
+              "batch_hits": 0,
+              "condition_signature": "09ba238cb8400670519ce95a",
+              "created_at": "2026-08-20T23:48:40+08:00",
+              "cumulative_decided": 97,
+              "cumulative_hits": 61,
+              "evidence_hash": "6ce2a282872b580c5974bf3622583aea5617bb8bc9de8416e54fba5715cd948a",
+              "migration_baseline": true,
+              "minimum_acceptable_odds_display": 2.0,
+              "minimum_acceptable_odds_raw": 2.001851066740314,
+              "prior_evidence_hash": null,
+              "prior_version": null,
+              "version": 1,
+              "wilson95_lower_raw": 0.5295376612248862
+            },
+            {
+              "activation_boundary_at": "2026-08-20T23:48:40+08:00",
+              "batch_decided": 30,
+              "batch_fixture_market_hashes": [],
+              "batch_fixture_market_ids_unavailable_from_legacy_aggregate": true,
+              "batch_hits": 19,
+              "condition_signature": "09ba238cb8400670519ce95a",
+              "created_at": "2026-08-20T23:48:40+08:00",
+              "cumulative_decided": 127,
+              "cumulative_hits": 80,
+              "evidence_hash": "64c9041cce83f70ccdf8803ed30da846b212a7c837f85a3affa57f6234f5f33d",
+              "initial_migration_full_cohort": true,
+              "legacy_prospective_cohort": {
+                "decided": 30,
+                "hits": 19,
+                "pushes": 0
+              },
+              "minimum_acceptable_odds_display": 1.95,
+              "minimum_acceptable_odds_raw": 1.9482223398821248,
+              "prior_evidence_hash": "6ce2a282872b580c5974bf3622583aea5617bb8bc9de8416e54fba5715cd948a",
+              "prior_version": 1,
+              "version": 2,
+              "wilson95_lower_raw": 0.5432884371198126
+            }
+          ],
+          "historical_evidence": {
+            "artifact": {
+              "as_of": "2026-08-20T23:48:40+08:00",
+              "hash": "3fbf6fedb87b75e5cb9f08a3341d62c38b42a114dc129a75d84f934867fd8fee",
+              "version": "granular-ranking-v1"
+            },
+            "decided": 97,
+            "hits": 61,
+            "pushes": 0
+          },
           "signature": "09ba238cb8400670519ce95a"
         },
         {
-          "activation_boundary": "2026-08-20T23:48:40+08:00",
+          "active_evidence": {
+            "activation_boundary_at": "2026-08-20T23:48:40+08:00",
+            "created_at": "2026-08-20T23:48:40+08:00",
+            "cumulative_decided": 127,
+            "cumulative_hits": 80,
+            "evidence_hash": "f30aefd901ce47e22c378621baa72c9313c26f00f468f78b6cd8b20ca5d88708",
+            "minimum_acceptable_odds_display": 1.95,
+            "minimum_acceptable_odds_raw": 1.9482223398821248,
+            "version": 2,
+            "wilson95_lower_raw": 0.5432884371198126
+          },
           "active_evidence_hash": "f30aefd901ce47e22c378621baa72c9313c26f00f468f78b6cd8b20ca5d88708",
           "active_evidence_version": 2,
           "condition_number": 7,
@@ -247,12 +643,74 @@
             "system": "crown",
             "version": "granular-condition-v1"
           },
-          "definition_hash": "788f1c10ee7e89708e89d97fb097bfe803ec04de4cc0e503195edb394d303eb6",
-          "order_position": 7,
+          "evidence_versions": [
+            {
+              "activation_boundary_at": "2026-08-20T23:48:40+08:00",
+              "batch_decided": 0,
+              "batch_fixture_market_hashes": [],
+              "batch_hits": 0,
+              "condition_signature": "788f1c10ee7e89708e89d97f",
+              "created_at": "2026-08-20T23:48:40+08:00",
+              "cumulative_decided": 97,
+              "cumulative_hits": 61,
+              "evidence_hash": "5f5fdab44043d0feb974bfc21e585b0057e32c33f10efaa7063fe978d5ba6040",
+              "migration_baseline": true,
+              "minimum_acceptable_odds_display": 2.0,
+              "minimum_acceptable_odds_raw": 2.001851066740314,
+              "prior_evidence_hash": null,
+              "prior_version": null,
+              "version": 1,
+              "wilson95_lower_raw": 0.5295376612248862
+            },
+            {
+              "activation_boundary_at": "2026-08-20T23:48:40+08:00",
+              "batch_decided": 30,
+              "batch_fixture_market_hashes": [],
+              "batch_fixture_market_ids_unavailable_from_legacy_aggregate": true,
+              "batch_hits": 19,
+              "condition_signature": "788f1c10ee7e89708e89d97f",
+              "created_at": "2026-08-20T23:48:40+08:00",
+              "cumulative_decided": 127,
+              "cumulative_hits": 80,
+              "evidence_hash": "f30aefd901ce47e22c378621baa72c9313c26f00f468f78b6cd8b20ca5d88708",
+              "initial_migration_full_cohort": true,
+              "legacy_prospective_cohort": {
+                "decided": 30,
+                "hits": 19,
+                "pushes": 0
+              },
+              "minimum_acceptable_odds_display": 1.95,
+              "minimum_acceptable_odds_raw": 1.9482223398821248,
+              "prior_evidence_hash": "5f5fdab44043d0feb974bfc21e585b0057e32c33f10efaa7063fe978d5ba6040",
+              "prior_version": 1,
+              "version": 2,
+              "wilson95_lower_raw": 0.5432884371198126
+            }
+          ],
+          "historical_evidence": {
+            "artifact": {
+              "as_of": "2026-08-20T23:48:40+08:00",
+              "hash": "8d8647f850a93008425313e5d213fdab26269f329d6251e12e3c1ccf84e9b2cc",
+              "version": "granular-ranking-v1"
+            },
+            "decided": 97,
+            "hits": 61,
+            "pushes": 0
+          },
           "signature": "788f1c10ee7e89708e89d97f"
         },
         {
-          "activation_boundary": "2026-08-20T23:48:40+08:00",
+          "active_evidence": {
+            "activation_boundary_at": "2026-08-20T23:48:40+08:00",
+            "created_at": "2026-08-20T23:48:40+08:00",
+            "cumulative_decided": 214,
+            "cumulative_hits": 126,
+            "evidence_hash": "21426909b543539fa934b12b089ebb20d5f6a2acc8c010b45e4f79bc1fc2e656",
+            "minimum_acceptable_odds_display": 2.03,
+            "minimum_acceptable_odds_raw": 2.0331033759564057,
+            "version": 2,
+            "wilson95_lower_raw": 0.5218589048771726
+          },
           "active_evidence_hash": "21426909b543539fa934b12b089ebb20d5f6a2acc8c010b45e4f79bc1fc2e656",
           "active_evidence_version": 2,
           "condition_number": 8,
@@ -281,12 +739,74 @@
             "system": "crown",
             "version": "granular-condition-v1"
           },
-          "definition_hash": "4c534bfae22c929ecbfb8a052d5cfaecfbbb64635f494d957f80e32985ab8be0",
-          "order_position": 8,
+          "evidence_versions": [
+            {
+              "activation_boundary_at": "2026-08-20T23:48:40+08:00",
+              "batch_decided": 0,
+              "batch_fixture_market_hashes": [],
+              "batch_hits": 0,
+              "condition_signature": "4c534bfae22c929ecbfb8a05",
+              "created_at": "2026-08-20T23:48:40+08:00",
+              "cumulative_decided": 163,
+              "cumulative_hits": 98,
+              "evidence_hash": "6508fcfa07b842e52531e100b89c8ed654592b884d76155ae561d254da653d96",
+              "migration_baseline": true,
+              "minimum_acceptable_odds_display": 2.02,
+              "minimum_acceptable_odds_raw": 2.0219930246000355,
+              "prior_evidence_hash": null,
+              "prior_version": null,
+              "version": 1,
+              "wilson95_lower_raw": 0.5245615478558869
+            },
+            {
+              "activation_boundary_at": "2026-08-20T23:48:40+08:00",
+              "batch_decided": 51,
+              "batch_fixture_market_hashes": [],
+              "batch_fixture_market_ids_unavailable_from_legacy_aggregate": true,
+              "batch_hits": 28,
+              "condition_signature": "4c534bfae22c929ecbfb8a05",
+              "created_at": "2026-08-20T23:48:40+08:00",
+              "cumulative_decided": 214,
+              "cumulative_hits": 126,
+              "evidence_hash": "21426909b543539fa934b12b089ebb20d5f6a2acc8c010b45e4f79bc1fc2e656",
+              "initial_migration_full_cohort": true,
+              "legacy_prospective_cohort": {
+                "decided": 51,
+                "hits": 28,
+                "pushes": 3
+              },
+              "minimum_acceptable_odds_display": 2.03,
+              "minimum_acceptable_odds_raw": 2.0331033759564057,
+              "prior_evidence_hash": "6508fcfa07b842e52531e100b89c8ed654592b884d76155ae561d254da653d96",
+              "prior_version": 1,
+              "version": 2,
+              "wilson95_lower_raw": 0.5218589048771726
+            }
+          ],
+          "historical_evidence": {
+            "artifact": {
+              "as_of": "2026-08-20T23:48:40+08:00",
+              "hash": "432c5950585e723788a838fafcdce8c40f096520939b57297633254adc7aaaf7",
+              "version": "granular-ranking-v1"
+            },
+            "decided": 163,
+            "hits": 98,
+            "pushes": 15
+          },
           "signature": "4c534bfae22c929ecbfb8a05"
         },
         {
-          "activation_boundary": "2026-08-20T23:48:40+08:00",
+          "active_evidence": {
+            "activation_boundary_at": "2026-08-20T23:48:40+08:00",
+            "created_at": "2026-08-20T23:48:40+08:00",
+            "cumulative_decided": 74,
+            "cumulative_hits": 47,
+            "evidence_hash": "23f635a89fc442d3212d8595f975415964b11891efcf3ba28ec8154212cbce53",
+            "minimum_acceptable_odds_display": 2.04,
+            "minimum_acceptable_odds_raw": 2.0353411136213446,
+            "version": 2,
+            "wilson95_lower_raw": 0.5213181349836578
+          },
           "active_evidence_hash": "23f635a89fc442d3212d8595f975415964b11891efcf3ba28ec8154212cbce53",
           "active_evidence_version": 2,
           "condition_number": 9,
@@ -314,12 +834,74 @@
             "system": "crown",
             "version": "granular-condition-v1"
           },
-          "definition_hash": "36adac14f977adf9d9a3c70f95212e9034c48ee9e1823509364006b39b8734d9",
-          "order_position": 9,
+          "evidence_versions": [
+            {
+              "activation_boundary_at": "2026-08-20T23:48:40+08:00",
+              "batch_decided": 0,
+              "batch_fixture_market_hashes": [],
+              "batch_hits": 0,
+              "condition_signature": "36adac14f977adf9d9a3c70f",
+              "created_at": "2026-08-20T23:48:40+08:00",
+              "cumulative_decided": 57,
+              "cumulative_hits": 37,
+              "evidence_hash": "0565a8879f697b7a3f16094b32b3b4349fd76ef133b18c8fe047ba493a620798",
+              "migration_baseline": true,
+              "minimum_acceptable_odds_display": 2.04,
+              "minimum_acceptable_odds_raw": 2.0432392181242993,
+              "prior_evidence_hash": null,
+              "prior_version": null,
+              "version": 1,
+              "wilson95_lower_raw": 0.519418953556502
+            },
+            {
+              "activation_boundary_at": "2026-08-20T23:48:40+08:00",
+              "batch_decided": 17,
+              "batch_fixture_market_hashes": [],
+              "batch_fixture_market_ids_unavailable_from_legacy_aggregate": true,
+              "batch_hits": 10,
+              "condition_signature": "36adac14f977adf9d9a3c70f",
+              "created_at": "2026-08-20T23:48:40+08:00",
+              "cumulative_decided": 74,
+              "cumulative_hits": 47,
+              "evidence_hash": "23f635a89fc442d3212d8595f975415964b11891efcf3ba28ec8154212cbce53",
+              "initial_migration_full_cohort": true,
+              "legacy_prospective_cohort": {
+                "decided": 17,
+                "hits": 10,
+                "pushes": 2
+              },
+              "minimum_acceptable_odds_display": 2.04,
+              "minimum_acceptable_odds_raw": 2.0353411136213446,
+              "prior_evidence_hash": "0565a8879f697b7a3f16094b32b3b4349fd76ef133b18c8fe047ba493a620798",
+              "prior_version": 1,
+              "version": 2,
+              "wilson95_lower_raw": 0.5213181349836578
+            }
+          ],
+          "historical_evidence": {
+            "artifact": {
+              "as_of": "2026-08-20T23:48:40+08:00",
+              "hash": "a3cc138e77670eee614ed390ebee87360b789c0d2e79a35048502248008132dd",
+              "version": "granular-ranking-v1"
+            },
+            "decided": 57,
+            "hits": 37,
+            "pushes": 6
+          },
           "signature": "36adac14f977adf9d9a3c70f"
         },
         {
-          "activation_boundary": "2026-08-20T23:48:40+08:00",
+          "active_evidence": {
+            "activation_boundary_at": "2026-08-20T23:48:40+08:00",
+            "created_at": "2026-08-20T23:48:40+08:00",
+            "cumulative_decided": 152,
+            "cumulative_hits": 96,
+            "evidence_hash": "53915db617926475cab8718b58e6e90bebe0b8608185562f7780ff16cbb58eaf",
+            "minimum_acceptable_odds_display": 1.91,
+            "minimum_acceptable_odds_raw": 1.9137590041437178,
+            "version": 2,
+            "wilson95_lower_raw": 0.5525318328142549
+          },
           "active_evidence_hash": "53915db617926475cab8718b58e6e90bebe0b8608185562f7780ff16cbb58eaf",
           "active_evidence_version": 2,
           "condition_number": 10,
@@ -347,12 +929,74 @@
             "system": "crown",
             "version": "granular-condition-v1"
           },
-          "definition_hash": "f956f75e552c8de37b0f2656a25d73d82b2be1573fdf52dada55a17f1ead327a",
-          "order_position": 10,
+          "evidence_versions": [
+            {
+              "activation_boundary_at": "2026-08-20T23:48:40+08:00",
+              "batch_decided": 0,
+              "batch_fixture_market_hashes": [],
+              "batch_hits": 0,
+              "condition_signature": "f956f75e552c8de37b0f2656",
+              "created_at": "2026-08-20T23:48:40+08:00",
+              "cumulative_decided": 116,
+              "cumulative_hits": 70,
+              "evidence_hash": "d31aac45dea3417757b937c01ae3eefb1d1ba0d1655672346012a854b6b1e25d",
+              "migration_baseline": true,
+              "minimum_acceptable_odds_display": 2.07,
+              "minimum_acceptable_odds_raw": 2.072592063160943,
+              "prior_evidence_hash": null,
+              "prior_version": null,
+              "version": 1,
+              "wilson95_lower_raw": 0.5124876143136842
+            },
+            {
+              "activation_boundary_at": "2026-08-20T23:48:40+08:00",
+              "batch_decided": 36,
+              "batch_fixture_market_hashes": [],
+              "batch_fixture_market_ids_unavailable_from_legacy_aggregate": true,
+              "batch_hits": 26,
+              "condition_signature": "f956f75e552c8de37b0f2656",
+              "created_at": "2026-08-20T23:48:40+08:00",
+              "cumulative_decided": 152,
+              "cumulative_hits": 96,
+              "evidence_hash": "53915db617926475cab8718b58e6e90bebe0b8608185562f7780ff16cbb58eaf",
+              "initial_migration_full_cohort": true,
+              "legacy_prospective_cohort": {
+                "decided": 36,
+                "hits": 26,
+                "pushes": 2
+              },
+              "minimum_acceptable_odds_display": 1.91,
+              "minimum_acceptable_odds_raw": 1.9137590041437178,
+              "prior_evidence_hash": "d31aac45dea3417757b937c01ae3eefb1d1ba0d1655672346012a854b6b1e25d",
+              "prior_version": 1,
+              "version": 2,
+              "wilson95_lower_raw": 0.5525318328142549
+            }
+          ],
+          "historical_evidence": {
+            "artifact": {
+              "as_of": "2026-08-20T23:48:40+08:00",
+              "hash": "63359bf6797293b7621059b0aa7ec5dd978a7002c68c3f3c4cfb8a630e76a729",
+              "version": "granular-ranking-v1"
+            },
+            "decided": 116,
+            "hits": 70,
+            "pushes": 8
+          },
           "signature": "f956f75e552c8de37b0f2656"
         },
         {
-          "activation_boundary": "2026-08-20T23:48:40+08:00",
+          "active_evidence": {
+            "activation_boundary_at": "2026-08-20T23:48:40+08:00",
+            "created_at": "2026-08-20T23:48:40+08:00",
+            "cumulative_decided": 152,
+            "cumulative_hits": 96,
+            "evidence_hash": "7dc1a382cee94ab878e6fdef727fef06092e39efca8b4ea5afe5f58d4b70fb42",
+            "minimum_acceptable_odds_display": 1.91,
+            "minimum_acceptable_odds_raw": 1.9137590041437178,
+            "version": 2,
+            "wilson95_lower_raw": 0.5525318328142549
+          },
           "active_evidence_hash": "7dc1a382cee94ab878e6fdef727fef06092e39efca8b4ea5afe5f58d4b70fb42",
           "active_evidence_version": 2,
           "condition_number": 11,
@@ -381,12 +1025,74 @@
             "system": "crown",
             "version": "granular-condition-v1"
           },
-          "definition_hash": "7ef849b34e8bd3c5f3fc8a912f6bc3857bd25d5e271c435173211dee29015dd1",
-          "order_position": 11,
+          "evidence_versions": [
+            {
+              "activation_boundary_at": "2026-08-20T23:48:40+08:00",
+              "batch_decided": 0,
+              "batch_fixture_market_hashes": [],
+              "batch_hits": 0,
+              "condition_signature": "7ef849b34e8bd3c5f3fc8a91",
+              "created_at": "2026-08-20T23:48:40+08:00",
+              "cumulative_decided": 116,
+              "cumulative_hits": 70,
+              "evidence_hash": "664b9c726719226434dbb33702f7a9bf0dfa34a4147d66a37a7260fd812fb84b",
+              "migration_baseline": true,
+              "minimum_acceptable_odds_display": 2.07,
+              "minimum_acceptable_odds_raw": 2.072592063160943,
+              "prior_evidence_hash": null,
+              "prior_version": null,
+              "version": 1,
+              "wilson95_lower_raw": 0.5124876143136842
+            },
+            {
+              "activation_boundary_at": "2026-08-20T23:48:40+08:00",
+              "batch_decided": 36,
+              "batch_fixture_market_hashes": [],
+              "batch_fixture_market_ids_unavailable_from_legacy_aggregate": true,
+              "batch_hits": 26,
+              "condition_signature": "7ef849b34e8bd3c5f3fc8a91",
+              "created_at": "2026-08-20T23:48:40+08:00",
+              "cumulative_decided": 152,
+              "cumulative_hits": 96,
+              "evidence_hash": "7dc1a382cee94ab878e6fdef727fef06092e39efca8b4ea5afe5f58d4b70fb42",
+              "initial_migration_full_cohort": true,
+              "legacy_prospective_cohort": {
+                "decided": 36,
+                "hits": 26,
+                "pushes": 2
+              },
+              "minimum_acceptable_odds_display": 1.91,
+              "minimum_acceptable_odds_raw": 1.9137590041437178,
+              "prior_evidence_hash": "664b9c726719226434dbb33702f7a9bf0dfa34a4147d66a37a7260fd812fb84b",
+              "prior_version": 1,
+              "version": 2,
+              "wilson95_lower_raw": 0.5525318328142549
+            }
+          ],
+          "historical_evidence": {
+            "artifact": {
+              "as_of": "2026-08-20T23:48:40+08:00",
+              "hash": "29c0e5b1d95cacfcc52f7d96f36866cf5ca22f0f677d9f882506858714e11e2d",
+              "version": "granular-ranking-v1"
+            },
+            "decided": 116,
+            "hits": 70,
+            "pushes": 8
+          },
           "signature": "7ef849b34e8bd3c5f3fc8a91"
         },
         {
-          "activation_boundary": "2026-08-20T23:48:40+08:00",
+          "active_evidence": {
+            "activation_boundary_at": "2026-08-20T23:48:40+08:00",
+            "created_at": "2026-08-20T23:48:40+08:00",
+            "cumulative_decided": 73,
+            "cumulative_hits": 46,
+            "evidence_hash": "779a6471de403dc656f7144a12cdfb8f7b3999ff820f1ef27b8370e65f71138d",
+            "minimum_acceptable_odds_display": 2.06,
+            "minimum_acceptable_odds_raw": 2.0597583192830338,
+            "version": 2,
+            "wilson95_lower_raw": 0.5154938517000784
+          },
           "active_evidence_hash": "779a6471de403dc656f7144a12cdfb8f7b3999ff820f1ef27b8370e65f71138d",
           "active_evidence_version": 2,
           "condition_number": 12,
@@ -415,12 +1121,74 @@
             "system": "crown",
             "version": "granular-condition-v1"
           },
-          "definition_hash": "147d829890170c596e2958fdb7344f9ab64d2e84f289c828c8410ac8c9f6a23d",
-          "order_position": 12,
+          "evidence_versions": [
+            {
+              "activation_boundary_at": "2026-08-20T23:48:40+08:00",
+              "batch_decided": 0,
+              "batch_fixture_market_hashes": [],
+              "batch_hits": 0,
+              "condition_signature": "147d829890170c596e2958fd",
+              "created_at": "2026-08-20T23:48:40+08:00",
+              "cumulative_decided": 56,
+              "cumulative_hits": 36,
+              "evidence_hash": "17dda3c45dc8027613593955a0f49cc0291dd46ce025f942841d187b51d61e58",
+              "migration_baseline": true,
+              "minimum_acceptable_odds_display": 2.07,
+              "minimum_acceptable_odds_raw": 2.074951919465108,
+              "prior_evidence_hash": null,
+              "prior_version": null,
+              "version": 1,
+              "wilson95_lower_raw": 0.5119388780139953
+            },
+            {
+              "activation_boundary_at": "2026-08-20T23:48:40+08:00",
+              "batch_decided": 17,
+              "batch_fixture_market_hashes": [],
+              "batch_fixture_market_ids_unavailable_from_legacy_aggregate": true,
+              "batch_hits": 10,
+              "condition_signature": "147d829890170c596e2958fd",
+              "created_at": "2026-08-20T23:48:40+08:00",
+              "cumulative_decided": 73,
+              "cumulative_hits": 46,
+              "evidence_hash": "779a6471de403dc656f7144a12cdfb8f7b3999ff820f1ef27b8370e65f71138d",
+              "initial_migration_full_cohort": true,
+              "legacy_prospective_cohort": {
+                "decided": 17,
+                "hits": 10,
+                "pushes": 2
+              },
+              "minimum_acceptable_odds_display": 2.06,
+              "minimum_acceptable_odds_raw": 2.0597583192830338,
+              "prior_evidence_hash": "17dda3c45dc8027613593955a0f49cc0291dd46ce025f942841d187b51d61e58",
+              "prior_version": 1,
+              "version": 2,
+              "wilson95_lower_raw": 0.5154938517000784
+            }
+          ],
+          "historical_evidence": {
+            "artifact": {
+              "as_of": "2026-08-20T23:48:40+08:00",
+              "hash": "2c0d911680fa82e56ab9b179a11f559350dc41da77e92f32f25e133c351c0d2a",
+              "version": "granular-ranking-v1"
+            },
+            "decided": 56,
+            "hits": 36,
+            "pushes": 6
+          },
           "signature": "147d829890170c596e2958fd"
         },
         {
-          "activation_boundary": "2026-08-20T23:48:40+08:00",
+          "active_evidence": {
+            "activation_boundary_at": "2026-08-20T23:48:40+08:00",
+            "created_at": "2026-08-20T23:48:40+08:00",
+            "cumulative_decided": 103,
+            "cumulative_hits": 66,
+            "evidence_hash": "685b3942eb8ea36b7ba5897960aee6372d84d92b319cc7a79a11138d2f4a37cf",
+            "minimum_acceptable_odds_display": 1.94,
+            "minimum_acceptable_odds_raw": 1.9432525952768742,
+            "version": 2,
+            "wilson95_lower_raw": 0.5446011395690534
+          },
           "active_evidence_hash": "685b3942eb8ea36b7ba5897960aee6372d84d92b319cc7a79a11138d2f4a37cf",
           "active_evidence_version": 2,
           "condition_number": 13,
@@ -449,12 +1217,74 @@
             "system": "crown",
             "version": "granular-condition-v1"
           },
-          "definition_hash": "568d5972eecdf574487f9ae0add2a13925b84f6d6358ce57551802bbdf4eedae",
-          "order_position": 13,
+          "evidence_versions": [
+            {
+              "activation_boundary_at": "2026-08-20T23:48:40+08:00",
+              "batch_decided": 0,
+              "batch_fixture_market_hashes": [],
+              "batch_hits": 0,
+              "condition_signature": "568d5972eecdf574487f9ae0",
+              "created_at": "2026-08-20T23:48:40+08:00",
+              "cumulative_decided": 79,
+              "cumulative_hits": 49,
+              "evidence_hash": "c123857daa6089fbca4ae0287a6abcc1373075c60db6f4ec4f0f0c92aee75e5a",
+              "migration_baseline": true,
+              "minimum_acceptable_odds_display": 2.08,
+              "minimum_acceptable_odds_raw": 2.083252119321008,
+              "prior_evidence_hash": null,
+              "prior_version": null,
+              "version": 1,
+              "wilson95_lower_raw": 0.5100187124379016
+            },
+            {
+              "activation_boundary_at": "2026-08-20T23:48:40+08:00",
+              "batch_decided": 24,
+              "batch_fixture_market_hashes": [],
+              "batch_fixture_market_ids_unavailable_from_legacy_aggregate": true,
+              "batch_hits": 17,
+              "condition_signature": "568d5972eecdf574487f9ae0",
+              "created_at": "2026-08-20T23:48:40+08:00",
+              "cumulative_decided": 103,
+              "cumulative_hits": 66,
+              "evidence_hash": "685b3942eb8ea36b7ba5897960aee6372d84d92b319cc7a79a11138d2f4a37cf",
+              "initial_migration_full_cohort": true,
+              "legacy_prospective_cohort": {
+                "decided": 24,
+                "hits": 17,
+                "pushes": 2
+              },
+              "minimum_acceptable_odds_display": 1.94,
+              "minimum_acceptable_odds_raw": 1.9432525952768742,
+              "prior_evidence_hash": "c123857daa6089fbca4ae0287a6abcc1373075c60db6f4ec4f0f0c92aee75e5a",
+              "prior_version": 1,
+              "version": 2,
+              "wilson95_lower_raw": 0.5446011395690534
+            }
+          ],
+          "historical_evidence": {
+            "artifact": {
+              "as_of": "2026-08-20T23:48:40+08:00",
+              "hash": "66e8d2ec899bd1d7afab1f89297fb585eb1b0b3c7b91af1b268f75d0f8a3a55e",
+              "version": "granular-ranking-v1"
+            },
+            "decided": 79,
+            "hits": 49,
+            "pushes": 6
+          },
           "signature": "568d5972eecdf574487f9ae0"
         },
         {
-          "activation_boundary": "2026-08-20T23:48:40+08:00",
+          "active_evidence": {
+            "activation_boundary_at": "2026-08-20T23:48:40+08:00",
+            "created_at": "2026-08-20T23:48:40+08:00",
+            "cumulative_decided": 115,
+            "cumulative_hits": 73,
+            "evidence_hash": "fe6d5dd3e784a0516f9eb65af26c60524c12a61dfb46b93fee36d9f4c5f2d7b5",
+            "minimum_acceptable_odds_display": 1.95,
+            "minimum_acceptable_odds_raw": 1.9464746476138517,
+            "version": 2,
+            "wilson95_lower_raw": 0.5437493063297187
+          },
           "active_evidence_hash": "fe6d5dd3e784a0516f9eb65af26c60524c12a61dfb46b93fee36d9f4c5f2d7b5",
           "active_evidence_version": 2,
           "condition_number": 14,
@@ -483,12 +1313,74 @@
             "system": "crown",
             "version": "granular-condition-v1"
           },
-          "definition_hash": "554338a6184511e7d0a10c13e2ea123f0fc8a2b3aee3a56ecb67d704ab2f9672",
-          "order_position": 14,
+          "evidence_versions": [
+            {
+              "activation_boundary_at": "2026-08-20T23:48:40+08:00",
+              "batch_decided": 0,
+              "batch_fixture_market_hashes": [],
+              "batch_hits": 0,
+              "condition_signature": "554338a6184511e7d0a10c13",
+              "created_at": "2026-08-20T23:48:40+08:00",
+              "cumulative_decided": 88,
+              "cumulative_hits": 54,
+              "evidence_hash": "cac8d7a934aabea6fd4cafc8bf14f881c5990a58fd436ecb3694df1c0e2e1c62",
+              "migration_baseline": true,
+              "minimum_acceptable_odds_display": 2.09,
+              "minimum_acceptable_odds_raw": 2.0868654833054316,
+              "prior_evidence_hash": null,
+              "prior_version": null,
+              "version": 1,
+              "wilson95_lower_raw": 0.5091875700661254
+            },
+            {
+              "activation_boundary_at": "2026-08-20T23:48:40+08:00",
+              "batch_decided": 27,
+              "batch_fixture_market_hashes": [],
+              "batch_fixture_market_ids_unavailable_from_legacy_aggregate": true,
+              "batch_hits": 19,
+              "condition_signature": "554338a6184511e7d0a10c13",
+              "created_at": "2026-08-20T23:48:40+08:00",
+              "cumulative_decided": 115,
+              "cumulative_hits": 73,
+              "evidence_hash": "fe6d5dd3e784a0516f9eb65af26c60524c12a61dfb46b93fee36d9f4c5f2d7b5",
+              "initial_migration_full_cohort": true,
+              "legacy_prospective_cohort": {
+                "decided": 27,
+                "hits": 19,
+                "pushes": 2
+              },
+              "minimum_acceptable_odds_display": 1.95,
+              "minimum_acceptable_odds_raw": 1.9464746476138517,
+              "prior_evidence_hash": "cac8d7a934aabea6fd4cafc8bf14f881c5990a58fd436ecb3694df1c0e2e1c62",
+              "prior_version": 1,
+              "version": 2,
+              "wilson95_lower_raw": 0.5437493063297187
+            }
+          ],
+          "historical_evidence": {
+            "artifact": {
+              "as_of": "2026-08-20T23:48:40+08:00",
+              "hash": "58be5de4a34159961742f8654c016ace6b4031416733f33e4e594d0d97053c18",
+              "version": "granular-ranking-v1"
+            },
+            "decided": 88,
+            "hits": 54,
+            "pushes": 7
+          },
           "signature": "554338a6184511e7d0a10c13"
         },
         {
-          "activation_boundary": "2026-08-20T23:48:40+08:00",
+          "active_evidence": {
+            "activation_boundary_at": "2026-08-20T23:48:40+08:00",
+            "created_at": "2026-08-20T23:48:40+08:00",
+            "cumulative_decided": 88,
+            "cumulative_hits": 51,
+            "evidence_hash": "74717fb1f1aa30a29c9433742fe7a34dcb332c565515f7ed7e1c93fed87d11f6",
+            "minimum_acceptable_odds_display": 2.25,
+            "minimum_acceptable_odds_raw": 2.2461435195241424,
+            "version": 2,
+            "wilson95_lower_raw": 0.4752075262812483
+          },
           "active_evidence_hash": "74717fb1f1aa30a29c9433742fe7a34dcb332c565515f7ed7e1c93fed87d11f6",
           "active_evidence_version": 2,
           "condition_number": 15,
@@ -516,12 +1408,74 @@
             "system": "crown",
             "version": "granular-condition-v1"
           },
-          "definition_hash": "eed2751d41fde707cbb37002dd418fef2ac8eadc066f0b3e0241700f8a3d29b0",
-          "order_position": 15,
+          "evidence_versions": [
+            {
+              "activation_boundary_at": "2026-08-20T23:48:40+08:00",
+              "batch_decided": 0,
+              "batch_fixture_market_hashes": [],
+              "batch_hits": 0,
+              "condition_signature": "eed2751d41fde707cbb37002",
+              "created_at": "2026-08-20T23:48:40+08:00",
+              "cumulative_decided": 67,
+              "cumulative_hits": 42,
+              "evidence_hash": "c4aa202ac4097cb0743b21cb999ede7877abf4ade1bfb2a1ec884628e1926282",
+              "migration_baseline": true,
+              "minimum_acceptable_odds_display": 2.1,
+              "minimum_acceptable_odds_raw": 2.095759124520326,
+              "prior_evidence_hash": null,
+              "prior_version": null,
+              "version": 1,
+              "wilson95_lower_raw": 0.5071540719064641
+            },
+            {
+              "activation_boundary_at": "2026-08-20T23:48:40+08:00",
+              "batch_decided": 21,
+              "batch_fixture_market_hashes": [],
+              "batch_fixture_market_ids_unavailable_from_legacy_aggregate": true,
+              "batch_hits": 9,
+              "condition_signature": "eed2751d41fde707cbb37002",
+              "created_at": "2026-08-20T23:48:40+08:00",
+              "cumulative_decided": 88,
+              "cumulative_hits": 51,
+              "evidence_hash": "74717fb1f1aa30a29c9433742fe7a34dcb332c565515f7ed7e1c93fed87d11f6",
+              "initial_migration_full_cohort": true,
+              "legacy_prospective_cohort": {
+                "decided": 21,
+                "hits": 9,
+                "pushes": 0
+              },
+              "minimum_acceptable_odds_display": 2.25,
+              "minimum_acceptable_odds_raw": 2.2461435195241424,
+              "prior_evidence_hash": "c4aa202ac4097cb0743b21cb999ede7877abf4ade1bfb2a1ec884628e1926282",
+              "prior_version": 1,
+              "version": 2,
+              "wilson95_lower_raw": 0.4752075262812483
+            }
+          ],
+          "historical_evidence": {
+            "artifact": {
+              "as_of": "2026-08-20T23:48:40+08:00",
+              "hash": "986da1117abb6d681f73654acce6e6f9661ebb15399b557c7bcbd6678227774f",
+              "version": "granular-ranking-v1"
+            },
+            "decided": 67,
+            "hits": 42,
+            "pushes": 0
+          },
           "signature": "eed2751d41fde707cbb37002"
         },
         {
-          "activation_boundary": "2026-08-20T23:48:40+08:00",
+          "active_evidence": {
+            "activation_boundary_at": "2026-08-20T23:48:40+08:00",
+            "created_at": "2026-08-20T23:48:40+08:00",
+            "cumulative_decided": 99,
+            "cumulative_hits": 61,
+            "evidence_hash": "e26e5eeb31a7623979745c70e5efa1482cbca0ec032dfc6e883e5bbbe2a1ffff",
+            "minimum_acceptable_odds_display": 2.05,
+            "minimum_acceptable_odds_raw": 2.050307687390829,
+            "version": 2,
+            "wilson95_lower_raw": 0.5177316737140929
+          },
           "active_evidence_hash": "e26e5eeb31a7623979745c70e5efa1482cbca0ec032dfc6e883e5bbbe2a1ffff",
           "active_evidence_version": 2,
           "condition_number": 16,
@@ -550,12 +1504,74 @@
             "system": "crown",
             "version": "granular-condition-v1"
           },
-          "definition_hash": "d5b99f3e7b64a35751c4145aea1151a2af4bc97db4f7cb1f449ec326127ec3d5",
-          "order_position": 16,
+          "evidence_versions": [
+            {
+              "activation_boundary_at": "2026-08-20T23:48:40+08:00",
+              "batch_decided": 0,
+              "batch_fixture_market_hashes": [],
+              "batch_hits": 0,
+              "condition_signature": "d5b99f3e7b64a35751c4145a",
+              "created_at": "2026-08-20T23:48:40+08:00",
+              "cumulative_decided": 76,
+              "cumulative_hits": 47,
+              "evidence_hash": "483f5ed0c169f0d7195445c6fa653d4635ae0c3c698c39c6d2fd8e9bd25be96a",
+              "migration_baseline": true,
+              "minimum_acceptable_odds_display": 2.1,
+              "minimum_acceptable_odds_raw": 2.100762881476832,
+              "prior_evidence_hash": null,
+              "prior_version": null,
+              "version": 1,
+              "wilson95_lower_raw": 0.5060175500135465
+            },
+            {
+              "activation_boundary_at": "2026-08-20T23:48:40+08:00",
+              "batch_decided": 23,
+              "batch_fixture_market_hashes": [],
+              "batch_fixture_market_ids_unavailable_from_legacy_aggregate": true,
+              "batch_hits": 14,
+              "condition_signature": "d5b99f3e7b64a35751c4145a",
+              "created_at": "2026-08-20T23:48:40+08:00",
+              "cumulative_decided": 99,
+              "cumulative_hits": 61,
+              "evidence_hash": "e26e5eeb31a7623979745c70e5efa1482cbca0ec032dfc6e883e5bbbe2a1ffff",
+              "initial_migration_full_cohort": true,
+              "legacy_prospective_cohort": {
+                "decided": 23,
+                "hits": 14,
+                "pushes": 0
+              },
+              "minimum_acceptable_odds_display": 2.05,
+              "minimum_acceptable_odds_raw": 2.050307687390829,
+              "prior_evidence_hash": "483f5ed0c169f0d7195445c6fa653d4635ae0c3c698c39c6d2fd8e9bd25be96a",
+              "prior_version": 1,
+              "version": 2,
+              "wilson95_lower_raw": 0.5177316737140929
+            }
+          ],
+          "historical_evidence": {
+            "artifact": {
+              "as_of": "2026-08-20T23:48:40+08:00",
+              "hash": "ba56ce8b5a3a4b59280f452f116d6077cea9daa1a4d718fe49b125b8c2e32e2e",
+              "version": "granular-ranking-v1"
+            },
+            "decided": 76,
+            "hits": 47,
+            "pushes": 0
+          },
           "signature": "d5b99f3e7b64a35751c4145a"
         },
         {
-          "activation_boundary": "2026-08-20T23:48:40+08:00",
+          "active_evidence": {
+            "activation_boundary_at": "2026-08-20T23:48:40+08:00",
+            "created_at": "2026-08-20T23:48:40+08:00",
+            "cumulative_decided": 116,
+            "cumulative_hits": 73,
+            "evidence_hash": "6fb4145a18c50c76aaef03fb8cf149847d09bb4c3eae3cf15808b1a1b6f0db3b",
+            "minimum_acceptable_odds_display": 1.97,
+            "minimum_acceptable_odds_raw": 1.9662097258283713,
+            "version": 2,
+            "wilson95_lower_raw": 0.5385927441329772
+          },
           "active_evidence_hash": "6fb4145a18c50c76aaef03fb8cf149847d09bb4c3eae3cf15808b1a1b6f0db3b",
           "active_evidence_version": 2,
           "condition_number": 17,
@@ -583,12 +1599,74 @@
             "system": "crown",
             "version": "granular-condition-v1"
           },
-          "definition_hash": "6fbac6848286d7fd9756b1feb2d32964094f2e9bbe5577e5ca67c186cd632086",
-          "order_position": 17,
+          "evidence_versions": [
+            {
+              "activation_boundary_at": "2026-08-20T23:48:40+08:00",
+              "batch_decided": 0,
+              "batch_fixture_market_hashes": [],
+              "batch_hits": 0,
+              "condition_signature": "6fbac6848286d7fd9756b1fe",
+              "created_at": "2026-08-20T23:48:40+08:00",
+              "cumulative_decided": 89,
+              "cumulative_hits": 54,
+              "evidence_hash": "f7d6ae686afc7058daa2095046ce0fbdb5262b10e5205fec0520cc82726277dd",
+              "migration_baseline": true,
+              "minimum_acceptable_odds_display": 2.11,
+              "minimum_acceptable_odds_raw": 2.114766717397946,
+              "prior_evidence_hash": null,
+              "prior_version": null,
+              "version": 1,
+              "wilson95_lower_raw": 0.5028653953994611
+            },
+            {
+              "activation_boundary_at": "2026-08-20T23:48:40+08:00",
+              "batch_decided": 27,
+              "batch_fixture_market_hashes": [],
+              "batch_fixture_market_ids_unavailable_from_legacy_aggregate": true,
+              "batch_hits": 19,
+              "condition_signature": "6fbac6848286d7fd9756b1fe",
+              "created_at": "2026-08-20T23:48:40+08:00",
+              "cumulative_decided": 116,
+              "cumulative_hits": 73,
+              "evidence_hash": "6fb4145a18c50c76aaef03fb8cf149847d09bb4c3eae3cf15808b1a1b6f0db3b",
+              "initial_migration_full_cohort": true,
+              "legacy_prospective_cohort": {
+                "decided": 27,
+                "hits": 19,
+                "pushes": 2
+              },
+              "minimum_acceptable_odds_display": 1.97,
+              "minimum_acceptable_odds_raw": 1.9662097258283713,
+              "prior_evidence_hash": "f7d6ae686afc7058daa2095046ce0fbdb5262b10e5205fec0520cc82726277dd",
+              "prior_version": 1,
+              "version": 2,
+              "wilson95_lower_raw": 0.5385927441329772
+            }
+          ],
+          "historical_evidence": {
+            "artifact": {
+              "as_of": "2026-08-20T23:48:40+08:00",
+              "hash": "d221b260ff788533adfa23dcc8c2b69bdf68bfd8539c691dcb6d8ba0ddabe580",
+              "version": "granular-ranking-v1"
+            },
+            "decided": 89,
+            "hits": 54,
+            "pushes": 7
+          },
           "signature": "6fbac6848286d7fd9756b1fe"
         },
         {
-          "activation_boundary": "2026-08-20T23:48:40+08:00",
+          "active_evidence": {
+            "activation_boundary_at": "2026-08-20T23:48:40+08:00",
+            "created_at": "2026-08-20T23:48:40+08:00",
+            "cumulative_decided": 107,
+            "cumulative_hits": 68,
+            "evidence_hash": "c2ef02a5c4d3e4433991a2cfe093ec0210bb24edafd125741f27957430bd82c8",
+            "minimum_acceptable_odds_display": 1.96,
+            "minimum_acceptable_odds_raw": 1.956579080860729,
+            "version": 2,
+            "wilson95_lower_raw": 0.5410961319079854
+          },
           "active_evidence_hash": "c2ef02a5c4d3e4433991a2cfe093ec0210bb24edafd125741f27957430bd82c8",
           "active_evidence_version": 2,
           "condition_number": 18,
@@ -616,12 +1694,74 @@
             "system": "crown",
             "version": "granular-condition-v1"
           },
-          "definition_hash": "c1a159dfd3c39224996e16a4923feb60d2c1fb8867deea8fe3b4147bf27a0ba1",
-          "order_position": 18,
+          "evidence_versions": [
+            {
+              "activation_boundary_at": "2026-08-20T23:48:40+08:00",
+              "batch_decided": 0,
+              "batch_fixture_market_hashes": [],
+              "batch_hits": 0,
+              "condition_signature": "c1a159dfd3c39224996e16a4",
+              "created_at": "2026-08-20T23:48:40+08:00",
+              "cumulative_decided": 82,
+              "cumulative_hits": 50,
+              "evidence_hash": "28ece496f828cd4de69ebbe3f6d6c2fed55eb38a95ce5285d7722e96bfdb4e60",
+              "migration_baseline": true,
+              "minimum_acceptable_odds_display": 2.12,
+              "minimum_acceptable_odds_raw": 2.120730196475948,
+              "prior_evidence_hash": null,
+              "prior_version": null,
+              "version": 1,
+              "wilson95_lower_raw": 0.5015357010815031
+            },
+            {
+              "activation_boundary_at": "2026-08-20T23:48:40+08:00",
+              "batch_decided": 25,
+              "batch_fixture_market_hashes": [],
+              "batch_fixture_market_ids_unavailable_from_legacy_aggregate": true,
+              "batch_hits": 18,
+              "condition_signature": "c1a159dfd3c39224996e16a4",
+              "created_at": "2026-08-20T23:48:40+08:00",
+              "cumulative_decided": 107,
+              "cumulative_hits": 68,
+              "evidence_hash": "c2ef02a5c4d3e4433991a2cfe093ec0210bb24edafd125741f27957430bd82c8",
+              "initial_migration_full_cohort": true,
+              "legacy_prospective_cohort": {
+                "decided": 25,
+                "hits": 18,
+                "pushes": 2
+              },
+              "minimum_acceptable_odds_display": 1.96,
+              "minimum_acceptable_odds_raw": 1.956579080860729,
+              "prior_evidence_hash": "28ece496f828cd4de69ebbe3f6d6c2fed55eb38a95ce5285d7722e96bfdb4e60",
+              "prior_version": 1,
+              "version": 2,
+              "wilson95_lower_raw": 0.5410961319079854
+            }
+          ],
+          "historical_evidence": {
+            "artifact": {
+              "as_of": "2026-08-20T23:48:40+08:00",
+              "hash": "a6ed59161408a7b764ae3dd78c1f133fe3241f17fe15824081aa81501862ac7b",
+              "version": "granular-ranking-v1"
+            },
+            "decided": 82,
+            "hits": 50,
+            "pushes": 6
+          },
           "signature": "c1a159dfd3c39224996e16a4"
         },
         {
-          "activation_boundary": "2026-08-20T23:48:40+08:00",
+          "active_evidence": {
+            "activation_boundary_at": "2026-08-20T23:48:40+08:00",
+            "created_at": "2026-08-20T23:48:40+08:00",
+            "cumulative_decided": 101,
+            "cumulative_hits": 61,
+            "evidence_hash": "c925b5a8a8b83e08a826b01f39c8d5bb6f38ec4fb68f097fadabd8803f9f9809",
+            "minimum_acceptable_odds_display": 2.1,
+            "minimum_acceptable_odds_raw": 2.0988267242153587,
+            "version": 2,
+            "wilson95_lower_raw": 0.5064566738465976
+          },
           "active_evidence_hash": "c925b5a8a8b83e08a826b01f39c8d5bb6f38ec4fb68f097fadabd8803f9f9809",
           "active_evidence_version": 2,
           "condition_number": 19,
@@ -649,12 +1789,74 @@
             "system": "crown",
             "version": "granular-condition-v1"
           },
-          "definition_hash": "fc2c52e9252aec081522f7a9aa645403f26c4a353d2cf5df4caa89724160c504",
-          "order_position": 19,
+          "evidence_versions": [
+            {
+              "activation_boundary_at": "2026-08-20T23:48:40+08:00",
+              "batch_decided": 0,
+              "batch_fixture_market_hashes": [],
+              "batch_hits": 0,
+              "condition_signature": "fc2c52e9252aec081522f7a9",
+              "created_at": "2026-08-20T23:48:40+08:00",
+              "cumulative_decided": 77,
+              "cumulative_hits": 47,
+              "evidence_hash": "bf58e9fdba2682c7365d938a397e4e56ca9e70432bf2f12fe0414f407f123878",
+              "migration_baseline": true,
+              "minimum_acceptable_odds_display": 2.13,
+              "minimum_acceptable_odds_raw": 2.1335123483926766,
+              "prior_evidence_hash": null,
+              "prior_version": null,
+              "version": 1,
+              "wilson95_lower_raw": 0.4987106689367745
+            },
+            {
+              "activation_boundary_at": "2026-08-20T23:48:40+08:00",
+              "batch_decided": 24,
+              "batch_fixture_market_hashes": [],
+              "batch_fixture_market_ids_unavailable_from_legacy_aggregate": true,
+              "batch_hits": 14,
+              "condition_signature": "fc2c52e9252aec081522f7a9",
+              "created_at": "2026-08-20T23:48:40+08:00",
+              "cumulative_decided": 101,
+              "cumulative_hits": 61,
+              "evidence_hash": "c925b5a8a8b83e08a826b01f39c8d5bb6f38ec4fb68f097fadabd8803f9f9809",
+              "initial_migration_full_cohort": true,
+              "legacy_prospective_cohort": {
+                "decided": 24,
+                "hits": 14,
+                "pushes": 0
+              },
+              "minimum_acceptable_odds_display": 2.1,
+              "minimum_acceptable_odds_raw": 2.0988267242153587,
+              "prior_evidence_hash": "bf58e9fdba2682c7365d938a397e4e56ca9e70432bf2f12fe0414f407f123878",
+              "prior_version": 1,
+              "version": 2,
+              "wilson95_lower_raw": 0.5064566738465976
+            }
+          ],
+          "historical_evidence": {
+            "artifact": {
+              "as_of": "2026-08-20T23:48:40+08:00",
+              "hash": "000f438c383f69bac5cd66c1b17ed40ce5943c1924dd05adbf7b8d7e33bb2859",
+              "version": "granular-ranking-v1"
+            },
+            "decided": 77,
+            "hits": 47,
+            "pushes": 0
+          },
           "signature": "fc2c52e9252aec081522f7a9"
         },
         {
-          "activation_boundary": "2026-08-20T23:48:40+08:00",
+          "active_evidence": {
+            "activation_boundary_at": "2026-08-20T23:48:40+08:00",
+            "created_at": "2026-08-20T23:48:40+08:00",
+            "cumulative_decided": 85,
+            "cumulative_hits": 49,
+            "evidence_hash": "a943e25ab9f85daa5e2ba8c555b98ff57387546eadd6c78eafbce9dab64f4386",
+            "minimum_acceptable_odds_display": 2.27,
+            "minimum_acceptable_odds_raw": 2.270851229241901,
+            "version": 2,
+            "wilson95_lower_raw": 0.47036350207487576
+          },
           "active_evidence_hash": "a943e25ab9f85daa5e2ba8c555b98ff57387546eadd6c78eafbce9dab64f4386",
           "active_evidence_version": 2,
           "condition_number": 20,
@@ -683,18 +1885,240 @@
             "system": "crown",
             "version": "granular-condition-v1"
           },
-          "definition_hash": "9c086655900223c767f5684959394098cb71d21b6acfe1a13a1bdf96dc0d0835",
-          "order_position": 20,
+          "evidence_versions": [
+            {
+              "activation_boundary_at": "2026-08-20T23:48:40+08:00",
+              "batch_decided": 0,
+              "batch_fixture_market_hashes": [],
+              "batch_hits": 0,
+              "condition_signature": "9c086655900223c767f56849",
+              "created_at": "2026-08-20T23:48:40+08:00",
+              "cumulative_decided": 65,
+              "cumulative_hits": 40,
+              "evidence_hash": "f4ed236ce48895ce18f7e949415bcb6effe074d350437b30eafac9222fcc23e3",
+              "migration_baseline": true,
+              "minimum_acceptable_odds_display": 2.16,
+              "minimum_acceptable_odds_raw": 2.155906406718201,
+              "prior_evidence_hash": null,
+              "prior_version": null,
+              "version": 1,
+              "wilson95_lower_raw": 0.493842028060131
+            },
+            {
+              "activation_boundary_at": "2026-08-20T23:48:40+08:00",
+              "batch_decided": 20,
+              "batch_fixture_market_hashes": [],
+              "batch_fixture_market_ids_unavailable_from_legacy_aggregate": true,
+              "batch_hits": 9,
+              "condition_signature": "9c086655900223c767f56849",
+              "created_at": "2026-08-20T23:48:40+08:00",
+              "cumulative_decided": 85,
+              "cumulative_hits": 49,
+              "evidence_hash": "a943e25ab9f85daa5e2ba8c555b98ff57387546eadd6c78eafbce9dab64f4386",
+              "initial_migration_full_cohort": true,
+              "legacy_prospective_cohort": {
+                "decided": 20,
+                "hits": 9,
+                "pushes": 0
+              },
+              "minimum_acceptable_odds_display": 2.27,
+              "minimum_acceptable_odds_raw": 2.270851229241901,
+              "prior_evidence_hash": "f4ed236ce48895ce18f7e949415bcb6effe074d350437b30eafac9222fcc23e3",
+              "prior_version": 1,
+              "version": 2,
+              "wilson95_lower_raw": 0.47036350207487576
+            }
+          ],
+          "historical_evidence": {
+            "artifact": {
+              "as_of": "2026-08-20T23:48:40+08:00",
+              "hash": "8ed6d79d676a35d28f040e8521850541f9f02ecff8eb45995052e474ed5a2d3f",
+              "version": "granular-ranking-v1"
+            },
+            "decided": 65,
+            "hits": 40,
+            "pushes": 0
+          },
           "signature": "9c086655900223c767f56849"
         }
       ],
-      "namespace_activation_at": "2026-08-19T23:59:23+08:00",
-      "namespace_schema_version": 2
+      "export_digest": "b709b2211ab1784e5ccba5a73153f688fa544e1857bc80b6ba88896f69ac6e1c",
+      "namespace_metadata": {
+        "activation_at": "2026-08-19T23:59:23+08:00",
+        "cutover_at": "2026-08-19T23:59:23+08:00",
+        "granular_ranking_initial_migration_completed_at": "2026-08-20T23:48:40+08:00",
+        "granular_ranking_initial_migration_version": 1,
+        "quarter_settlement_activation_at": "2026-08-26T18:15:35+08:00",
+        "rollover_migration_at": "2026-08-20T23:00:26+08:00",
+        "schema_version": 2,
+        "system": "crown"
+      },
+      "production_identity_manifest": {
+        "entries": [
+          {
+            "condition_number": 1,
+            "condition_signature": "e84866d8fdad5d2bc0cc868a",
+            "definition_hash": "e84866d8fdad5d2bc0cc868aa7a109ba07fc40e6ab517b26261f433af877b507",
+            "initial_evidence_hash": "9c398da6609cb0f342b230483824ab9bef2db262433236e0811656f2e804ebd3"
+          },
+          {
+            "condition_number": 2,
+            "condition_signature": "8c240fb81cb9dda4fb50ecf7",
+            "definition_hash": "8c240fb81cb9dda4fb50ecf77f81bce1365df01511271409da9a2e305aa1a935",
+            "initial_evidence_hash": "feea401a8338b95a3d7874fefffc9733ec81925b6331ecf7e0c9772e73ff7086"
+          },
+          {
+            "condition_number": 3,
+            "condition_signature": "51717d4b680bbcb59d83a3ff",
+            "definition_hash": "51717d4b680bbcb59d83a3ffba6cb2fd635552b2bd0670c71bd9393dad1e233d",
+            "initial_evidence_hash": "0bb5ea14f69e1c8ddff5fe4642a5cfd8e2c6ff74a3eb06fa759a15c6e84dab50"
+          },
+          {
+            "condition_number": 4,
+            "condition_signature": "91192678300cb3c01cd4a836",
+            "definition_hash": "91192678300cb3c01cd4a836daf064502c38b76bcced4a9eb756d7f56f0a6921",
+            "initial_evidence_hash": "5e9670651feae06f270f7b5c7f1b06527bba5493ac70b7981ccdbf45d865c856"
+          },
+          {
+            "condition_number": 5,
+            "condition_signature": "7d990edf3c230cf5a21ead44",
+            "definition_hash": "7d990edf3c230cf5a21ead442b8abae9ad18138b80debde57b1ba1e527b32428",
+            "initial_evidence_hash": "9fa0c5f2b239fc542f603cc82fa0baf92f541d2340838e2d2445b51302e5d617"
+          },
+          {
+            "condition_number": 6,
+            "condition_signature": "09ba238cb8400670519ce95a",
+            "definition_hash": "09ba238cb8400670519ce95a78f956920a5abde543635e65e4bac29d8fe400d6",
+            "initial_evidence_hash": "6ce2a282872b580c5974bf3622583aea5617bb8bc9de8416e54fba5715cd948a"
+          },
+          {
+            "condition_number": 7,
+            "condition_signature": "788f1c10ee7e89708e89d97f",
+            "definition_hash": "788f1c10ee7e89708e89d97fb097bfe803ec04de4cc0e503195edb394d303eb6",
+            "initial_evidence_hash": "5f5fdab44043d0feb974bfc21e585b0057e32c33f10efaa7063fe978d5ba6040"
+          },
+          {
+            "condition_number": 8,
+            "condition_signature": "4c534bfae22c929ecbfb8a05",
+            "definition_hash": "4c534bfae22c929ecbfb8a052d5cfaecfbbb64635f494d957f80e32985ab8be0",
+            "initial_evidence_hash": "6508fcfa07b842e52531e100b89c8ed654592b884d76155ae561d254da653d96"
+          },
+          {
+            "condition_number": 9,
+            "condition_signature": "36adac14f977adf9d9a3c70f",
+            "definition_hash": "36adac14f977adf9d9a3c70f95212e9034c48ee9e1823509364006b39b8734d9",
+            "initial_evidence_hash": "0565a8879f697b7a3f16094b32b3b4349fd76ef133b18c8fe047ba493a620798"
+          },
+          {
+            "condition_number": 10,
+            "condition_signature": "f956f75e552c8de37b0f2656",
+            "definition_hash": "f956f75e552c8de37b0f2656a25d73d82b2be1573fdf52dada55a17f1ead327a",
+            "initial_evidence_hash": "d31aac45dea3417757b937c01ae3eefb1d1ba0d1655672346012a854b6b1e25d"
+          },
+          {
+            "condition_number": 11,
+            "condition_signature": "7ef849b34e8bd3c5f3fc8a91",
+            "definition_hash": "7ef849b34e8bd3c5f3fc8a912f6bc3857bd25d5e271c435173211dee29015dd1",
+            "initial_evidence_hash": "664b9c726719226434dbb33702f7a9bf0dfa34a4147d66a37a7260fd812fb84b"
+          },
+          {
+            "condition_number": 12,
+            "condition_signature": "147d829890170c596e2958fd",
+            "definition_hash": "147d829890170c596e2958fdb7344f9ab64d2e84f289c828c8410ac8c9f6a23d",
+            "initial_evidence_hash": "17dda3c45dc8027613593955a0f49cc0291dd46ce025f942841d187b51d61e58"
+          },
+          {
+            "condition_number": 13,
+            "condition_signature": "568d5972eecdf574487f9ae0",
+            "definition_hash": "568d5972eecdf574487f9ae0add2a13925b84f6d6358ce57551802bbdf4eedae",
+            "initial_evidence_hash": "c123857daa6089fbca4ae0287a6abcc1373075c60db6f4ec4f0f0c92aee75e5a"
+          },
+          {
+            "condition_number": 14,
+            "condition_signature": "554338a6184511e7d0a10c13",
+            "definition_hash": "554338a6184511e7d0a10c13e2ea123f0fc8a2b3aee3a56ecb67d704ab2f9672",
+            "initial_evidence_hash": "cac8d7a934aabea6fd4cafc8bf14f881c5990a58fd436ecb3694df1c0e2e1c62"
+          },
+          {
+            "condition_number": 15,
+            "condition_signature": "eed2751d41fde707cbb37002",
+            "definition_hash": "eed2751d41fde707cbb37002dd418fef2ac8eadc066f0b3e0241700f8a3d29b0",
+            "initial_evidence_hash": "c4aa202ac4097cb0743b21cb999ede7877abf4ade1bfb2a1ec884628e1926282"
+          },
+          {
+            "condition_number": 16,
+            "condition_signature": "d5b99f3e7b64a35751c4145a",
+            "definition_hash": "d5b99f3e7b64a35751c4145aea1151a2af4bc97db4f7cb1f449ec326127ec3d5",
+            "initial_evidence_hash": "483f5ed0c169f0d7195445c6fa653d4635ae0c3c698c39c6d2fd8e9bd25be96a"
+          },
+          {
+            "condition_number": 17,
+            "condition_signature": "6fbac6848286d7fd9756b1fe",
+            "definition_hash": "6fbac6848286d7fd9756b1feb2d32964094f2e9bbe5577e5ca67c186cd632086",
+            "initial_evidence_hash": "f7d6ae686afc7058daa2095046ce0fbdb5262b10e5205fec0520cc82726277dd"
+          },
+          {
+            "condition_number": 18,
+            "condition_signature": "c1a159dfd3c39224996e16a4",
+            "definition_hash": "c1a159dfd3c39224996e16a4923feb60d2c1fb8867deea8fe3b4147bf27a0ba1",
+            "initial_evidence_hash": "28ece496f828cd4de69ebbe3f6d6c2fed55eb38a95ce5285d7722e96bfdb4e60"
+          },
+          {
+            "condition_number": 19,
+            "condition_signature": "fc2c52e9252aec081522f7a9",
+            "definition_hash": "fc2c52e9252aec081522f7a9aa645403f26c4a353d2cf5df4caa89724160c504",
+            "initial_evidence_hash": "bf58e9fdba2682c7365d938a397e4e56ca9e70432bf2f12fe0414f407f123878"
+          },
+          {
+            "condition_number": 20,
+            "condition_signature": "9c086655900223c767f56849",
+            "definition_hash": "9c086655900223c767f5684959394098cb71d21b6acfe1a13a1bdf96dc0d0835",
+            "initial_evidence_hash": "f4ed236ce48895ce18f7e949415bcb6effe074d350437b30eafac9222fcc23e3"
+          }
+        ],
+        "immutable": true,
+        "manifest_hash": "68cd96a8fd2b4968a05de980c7ad6a670dc87aef38e3d356e3f17504e9147c55",
+        "manifest_version": "wilson-production-identity-v1",
+        "schema_version": 1,
+        "system": "crown"
+      },
+      "schema": "wilson-sanitized-registry-chains-v1",
+      "source_ledger_sha256": "d7402fded158e577cf180abc0f461e72fc89b0ffcd7b7f4957cf0fdc45457b0a",
+      "system": "crown"
     },
     "footbreak": {
-      "identities": [
+      "condition_order": [
+        "cdcddb937b8f8259db5cf799",
+        "83dee96f7aef2a6e5f997f02",
+        "0bbe71d0bd504305f07d0b9e",
+        "7b69b0c09392930f89bfe52d",
+        "1ccc421a49fd98f328a0b2c4",
+        "e9b991435138c3c429a696a8",
+        "a7a8aae669b985ff87f8be6e",
+        "489929536fb33473f0a90f25",
+        "d3e112d8815b6e9df46e075d",
+        "033986661061d8b486cff464",
+        "0869fbd4573b9dee57ffe2eb",
+        "785894424f74f7d3bf9f79e9",
+        "715edfc03f06dba83f50d204",
+        "a79e13125a194532c8194036",
+        "1a49d5fcc424f70f024e7b1f",
+        "76a34f2b71c6eedfba4b2496",
+        "0a53d616f4b205339da39824"
+      ],
+      "conditions": [
         {
-          "activation_boundary": "2026-08-20T05:50:22+08:00",
+          "active_evidence": {
+            "activation_boundary_at": "2026-08-20T05:50:22+08:00",
+            "created_at": "2026-08-20T05:50:22+08:00",
+            "cumulative_decided": 124,
+            "cumulative_hits": 78,
+            "evidence_hash": "ae49569b8e6bf68096ad3aff6e2536492f3494fec8ec854b7c3d9efcbbb1182b",
+            "minimum_acceptable_odds_display": 1.96,
+            "minimum_acceptable_odds_raw": 1.9556902227776238,
+            "version": 1,
+            "wilson95_lower_raw": 0.5413284242837406
+          },
           "active_evidence_hash": "ae49569b8e6bf68096ad3aff6e2536492f3494fec8ec854b7c3d9efcbbb1182b",
           "active_evidence_version": 1,
           "condition_number": 1,
@@ -722,12 +2146,50 @@
             "system": "footbreak",
             "version": "granular-condition-v1"
           },
-          "definition_hash": "cdcddb937b8f8259db5cf7998b242f6e69a203076fa3441747f2feb69a9d0833",
-          "order_position": 1,
+          "evidence_versions": [
+            {
+              "activation_boundary_at": "2026-08-20T05:50:22+08:00",
+              "batch_decided": 0,
+              "batch_fixture_market_hashes": [],
+              "batch_hits": 0,
+              "condition_signature": "cdcddb937b8f8259db5cf799",
+              "created_at": "2026-08-20T05:50:22+08:00",
+              "cumulative_decided": 124,
+              "cumulative_hits": 78,
+              "evidence_hash": "ae49569b8e6bf68096ad3aff6e2536492f3494fec8ec854b7c3d9efcbbb1182b",
+              "migration_baseline": true,
+              "minimum_acceptable_odds_display": 1.96,
+              "minimum_acceptable_odds_raw": 1.9556902227776238,
+              "prior_evidence_hash": null,
+              "prior_version": null,
+              "version": 1,
+              "wilson95_lower_raw": 0.5413284242837406
+            }
+          ],
+          "historical_evidence": {
+            "artifact": {
+              "as_of": "2026-08-20T05:50:22+08:00",
+              "hash": "b4b746a29b12428be6920077c53e664f4fd0b737ab14f95ea25d02868a56616e",
+              "version": "granular-ranking-v1"
+            },
+            "decided": 124,
+            "hits": 78,
+            "pushes": 0
+          },
           "signature": "cdcddb937b8f8259db5cf799"
         },
         {
-          "activation_boundary": "2026-08-20T07:20:38+08:00",
+          "active_evidence": {
+            "activation_boundary_at": "2026-08-20T07:20:38+08:00",
+            "created_at": "2026-08-20T07:20:38+08:00",
+            "cumulative_decided": 51,
+            "cumulative_hits": 34,
+            "evidence_hash": "578982c8a5a37fb6a5604d8c348fdf0d58352a58a867304cec99623bcc367603",
+            "minimum_acceptable_odds_display": 2.0,
+            "minimum_acceptable_odds_raw": 2.001265686195366,
+            "version": 1,
+            "wilson95_lower_raw": 0.529683778569708
+          },
           "active_evidence_hash": "578982c8a5a37fb6a5604d8c348fdf0d58352a58a867304cec99623bcc367603",
           "active_evidence_version": 1,
           "condition_number": 2,
@@ -755,12 +2217,50 @@
             "system": "footbreak",
             "version": "granular-condition-v1"
           },
-          "definition_hash": "83dee96f7aef2a6e5f997f0214e363c362f353c6a5e07973d3d7302a954bceb7",
-          "order_position": 2,
+          "evidence_versions": [
+            {
+              "activation_boundary_at": "2026-08-20T07:20:38+08:00",
+              "batch_decided": 0,
+              "batch_fixture_market_hashes": [],
+              "batch_hits": 0,
+              "condition_signature": "83dee96f7aef2a6e5f997f02",
+              "created_at": "2026-08-20T07:20:38+08:00",
+              "cumulative_decided": 51,
+              "cumulative_hits": 34,
+              "evidence_hash": "578982c8a5a37fb6a5604d8c348fdf0d58352a58a867304cec99623bcc367603",
+              "migration_baseline": true,
+              "minimum_acceptable_odds_display": 2.0,
+              "minimum_acceptable_odds_raw": 2.001265686195366,
+              "prior_evidence_hash": null,
+              "prior_version": null,
+              "version": 1,
+              "wilson95_lower_raw": 0.529683778569708
+            }
+          ],
+          "historical_evidence": {
+            "artifact": {
+              "as_of": "2026-08-20T07:20:38+08:00",
+              "hash": "209ee409e0d5f8d1da1a4b49fa8f3c427fb0dc1ced09a8c6e2b4701d516f1e58",
+              "version": "granular-ranking-v1"
+            },
+            "decided": 51,
+            "hits": 34,
+            "pushes": 0
+          },
           "signature": "83dee96f7aef2a6e5f997f02"
         },
         {
-          "activation_boundary": "2026-08-20T23:48:58+08:00",
+          "active_evidence": {
+            "activation_boundary_at": "2026-08-20T23:48:58+08:00",
+            "created_at": "2026-08-20T23:48:58+08:00",
+            "cumulative_decided": 141,
+            "cumulative_hits": 94,
+            "evidence_hash": "381dc5d8b354d7eab51b3ab0f957d6e5e1153bed8bdb137d4785cc7792c432ed",
+            "minimum_acceptable_odds_display": 1.8,
+            "minimum_acceptable_odds_raw": 1.8006710045911207,
+            "version": 2,
+            "wilson95_lower_raw": 0.585348532547216
+          },
           "active_evidence_hash": "381dc5d8b354d7eab51b3ab0f957d6e5e1153bed8bdb137d4785cc7792c432ed",
           "active_evidence_version": 2,
           "condition_number": 3,
@@ -788,12 +2288,74 @@
             "system": "footbreak",
             "version": "granular-condition-v1"
           },
-          "definition_hash": "0bbe71d0bd504305f07d0b9ea5b3776331ec5074cc20425e1d3cc7f16fc73b95",
-          "order_position": 3,
+          "evidence_versions": [
+            {
+              "activation_boundary_at": "2026-08-20T23:48:58+08:00",
+              "batch_decided": 0,
+              "batch_fixture_market_hashes": [],
+              "batch_hits": 0,
+              "condition_signature": "0bbe71d0bd504305f07d0b9e",
+              "created_at": "2026-08-20T23:48:58+08:00",
+              "cumulative_decided": 108,
+              "cumulative_hits": 71,
+              "evidence_hash": "385fa568aebf7812fad71f16bc17cce48615795c5c1999ec48272642085f8146",
+              "migration_baseline": true,
+              "minimum_acceptable_odds_display": 1.87,
+              "minimum_acceptable_odds_raw": 1.873075187093802,
+              "prior_evidence_hash": null,
+              "prior_version": null,
+              "version": 1,
+              "wilson95_lower_raw": 0.5638813982964374
+            },
+            {
+              "activation_boundary_at": "2026-08-20T23:48:58+08:00",
+              "batch_decided": 33,
+              "batch_fixture_market_hashes": [],
+              "batch_fixture_market_ids_unavailable_from_legacy_aggregate": true,
+              "batch_hits": 23,
+              "condition_signature": "0bbe71d0bd504305f07d0b9e",
+              "created_at": "2026-08-20T23:48:58+08:00",
+              "cumulative_decided": 141,
+              "cumulative_hits": 94,
+              "evidence_hash": "381dc5d8b354d7eab51b3ab0f957d6e5e1153bed8bdb137d4785cc7792c432ed",
+              "initial_migration_full_cohort": true,
+              "legacy_prospective_cohort": {
+                "decided": 33,
+                "hits": 23,
+                "pushes": 0
+              },
+              "minimum_acceptable_odds_display": 1.8,
+              "minimum_acceptable_odds_raw": 1.8006710045911207,
+              "prior_evidence_hash": "385fa568aebf7812fad71f16bc17cce48615795c5c1999ec48272642085f8146",
+              "prior_version": 1,
+              "version": 2,
+              "wilson95_lower_raw": 0.585348532547216
+            }
+          ],
+          "historical_evidence": {
+            "artifact": {
+              "as_of": "2026-08-20T23:48:58+08:00",
+              "hash": "61a772321dc83ec0f4475fb926ed1fc8e1f6fbdce0b2ba69e7616506dda4a543",
+              "version": "granular-ranking-v1"
+            },
+            "decided": 108,
+            "hits": 71,
+            "pushes": 0
+          },
           "signature": "0bbe71d0bd504305f07d0b9e"
         },
         {
-          "activation_boundary": "2026-08-24T04:26:00+08:00",
+          "active_evidence": {
+            "activation_boundary_at": "2026-08-24T04:26:00+08:00",
+            "created_at": "2026-08-24T06:40:26+08:00",
+            "cumulative_decided": 151,
+            "cumulative_hits": 99,
+            "evidence_hash": "07be9db54367bb84e724a9d66f205a1b0a5e9ae27b537090990e50ec51a62751",
+            "minimum_acceptable_odds_display": 1.83,
+            "minimum_acceptable_odds_raw": 1.8287340398802654,
+            "version": 4,
+            "wilson95_lower_raw": 0.5768263717918621
+          },
           "active_evidence_hash": "07be9db54367bb84e724a9d66f205a1b0a5e9ae27b537090990e50ec51a62751",
           "active_evidence_version": 4,
           "condition_number": 4,
@@ -822,12 +2384,150 @@
             "system": "footbreak",
             "version": "granular-condition-v1"
           },
-          "definition_hash": "7b69b0c09392930f89bfe52d8c346c487525b3aa39bfcd6695b0fd1e0d7f5812",
-          "order_position": 4,
+          "evidence_versions": [
+            {
+              "activation_boundary_at": "2026-08-20T23:48:58+08:00",
+              "batch_decided": 0,
+              "batch_fixture_market_hashes": [],
+              "batch_hits": 0,
+              "condition_signature": "7b69b0c09392930f89bfe52d",
+              "created_at": "2026-08-20T23:48:58+08:00",
+              "cumulative_decided": 85,
+              "cumulative_hits": 56,
+              "evidence_hash": "e8e44105e980409c259aae8462c509774ea9747f7289f2e5de4ec6bd3a00d000",
+              "migration_baseline": true,
+              "minimum_acceptable_odds_display": 1.91,
+              "minimum_acceptable_odds_raw": 1.911565673340899,
+              "prior_evidence_hash": null,
+              "prior_version": null,
+              "version": 1,
+              "wilson95_lower_raw": 0.5531313859346882
+            },
+            {
+              "activation_boundary_at": "2026-08-20T23:48:58+08:00",
+              "batch_decided": 26,
+              "batch_fixture_market_hashes": [],
+              "batch_fixture_market_ids_unavailable_from_legacy_aggregate": true,
+              "batch_hits": 18,
+              "condition_signature": "7b69b0c09392930f89bfe52d",
+              "created_at": "2026-08-20T23:48:58+08:00",
+              "cumulative_decided": 111,
+              "cumulative_hits": 74,
+              "evidence_hash": "b970e30dc4b64bfdcb6a1fc4432ec1a0fd8ddcdf96da30521887a184447bed0c",
+              "initial_migration_full_cohort": true,
+              "legacy_prospective_cohort": {
+                "decided": 26,
+                "hits": 18,
+                "pushes": 0
+              },
+              "minimum_acceptable_odds_display": 1.84,
+              "minimum_acceptable_odds_raw": 1.835890910455495,
+              "prior_evidence_hash": "e8e44105e980409c259aae8462c509774ea9747f7289f2e5de4ec6bd3a00d000",
+              "prior_version": 1,
+              "version": 2,
+              "wilson95_lower_raw": 0.5746946734715813
+            },
+            {
+              "activation_boundary_at": "2026-08-23T06:25:09+08:00",
+              "batch_decided": 20,
+              "batch_fixture_market_hashes": [
+                "d03074f681f219d10e7238920ced5b2b4ff95cb2cd375678c16dc88111be6725",
+                "2b979336e0be6b9ff3184a0add5e317a040dc160a56b65947a0db3dc54d0ac00",
+                "901dbbe808a024c142edd1bd4714d9e5cc9886eb0ed105a7415d8548d7a53709",
+                "f90e7facc07138d589ad5fafbd292f095021ca26a1a4cbc8fb48676bfd3c9242",
+                "a8517a3cf64fb26ecf9ddb01035c2b4e1d5ef413f61421c2b7cfc0513e7a8858",
+                "7cb736927f9f99068b156e332cca4ef89d7cb3c154b97728c01dd616b9c493ba",
+                "8428c36ed6078805c4838a2402fd1e93f86c957cef2ad962dc45f529374fa82c",
+                "038a8d074455a8d6f7ec89747b048286522692b456e0ee9a84ba9be8d6d06663",
+                "c71dff8fa4d06d6450d1d838bb345000a95d4bf40dc4b497173b6916c4eb83a9",
+                "6ad56d6a795100505284d56ec862ca41399e9bb36e8f469be4466e00a2cba107",
+                "9b7a0f19e247a5d25706a314c5b7ecc41088f00be595eb2b3b269b9a1ddb028a",
+                "dc1fbea25faf80722594849a6d6a3e18a9a56fc6aea5c3138ec46cde0fe46307",
+                "995f20e9a1dd702b65983046839bab25282fceaf64b2b21c065ae081a7f0bf38",
+                "e4d2717a94c27f733c0a87013fa030568dbb669e6e00479c688041a61d57e2c3",
+                "9fdcf3dd0c2f652b673469b91261194647e9b6467d6e12191c085851ddb820d8",
+                "7713b959b2978c64ef5ea0fd4773368c21162d2ebcaba160c87e0a0126b011aa",
+                "ca693c7fb08a0ba554bf33e8e471af25ffe8bd272ece54b7f244e4b18aaf1faf",
+                "debc619335f0170b01fbf481e52e56c310d7d8887fc0afaf4babb649d5c77e39",
+                "ec374d88bc239333cf6649cd37a23927ddf6b86413b20e8d5110d0bf6c450f2b",
+                "879b6f18ba53a44a3107a27dca197167de5eabaa823609eb91218d88ea3b3eb6"
+              ],
+              "batch_hits": 12,
+              "condition_signature": "7b69b0c09392930f89bfe52d",
+              "created_at": "2026-08-23T08:40:28+08:00",
+              "cumulative_decided": 131,
+              "cumulative_hits": 86,
+              "evidence_hash": "53db88b37d993fc7120be2a2d6d003386bb01cee3d1d281b37be853579b185c9",
+              "minimum_acceptable_odds_display": 1.85,
+              "minimum_acceptable_odds_raw": 1.8458584059285792,
+              "prior_evidence_hash": "b970e30dc4b64bfdcb6a1fc4432ec1a0fd8ddcdf96da30521887a184447bed0c",
+              "prior_version": 2,
+              "version": 3,
+              "wilson95_lower_raw": 0.5717533635235359
+            },
+            {
+              "activation_boundary_at": "2026-08-24T04:26:00+08:00",
+              "batch_decided": 20,
+              "batch_fixture_market_hashes": [
+                "6c39e1d1d17e559394e4b992c3d8c6c08f502a3b6ccf81ccd5b0ab17c638771c",
+                "6e2ac027f398bbff62b4fbd4f158f605e7c4679c0758b6c57557cdd91f5fb6e6",
+                "f6212802942cca7ea06742171c232ea109b875cf7ab07acea021dc3d3ff97057",
+                "9a6af72be1ca845ef48d02b5c3f9155d84f0b11455ada401ae0e56d5960c4bf5",
+                "26c479e8f7965647b23cb68cfd864a2eeb0b7ce03795aeebb00a04d8ef6f0d01",
+                "720aa73c13eff5b9f4469b10bbbe0f96aaacae09f7843539ad3f38196e57819a",
+                "f0d0dbf56ebf59e69b35d739ecae97661e11df57afed2867673d1dec439714f1",
+                "da39c59d1d52ad6987f28e9fc62e803f1a91f32f25491e8c199c7b774883139b",
+                "a13ab3352704dd57c85c271d07c8095d9dce750bfdb186df77042c456722e490",
+                "fd978db1d9c4b3149ea8329f17680e544075506114d1352020e1083d40fd6e23",
+                "851acf26cfcae52991ac57d65dd6ab7b76dbcb6ef3e898521800d0bd9f8c9b16",
+                "6effa7c1fe39a51b5a7d89b0a4094bf47cc8c637e7653727f910c6c5c2981f0c",
+                "80a361068f407521cfccb223b2a79a1f105f462b38164ad1ff63fa23da152b58",
+                "d7e96beed67b513dd17b66592207b247cf24b735bc1ff58cb8a489698a871b00",
+                "cf7d18eef6c47f93f5b0da5fd2d276cac9548746cb19f3ab74df40e35eb00f5e",
+                "e804dc7a92b95581b200965f4bb8b434e2e7083dfdc4760333dc649676141ce7",
+                "cb7aae1b819b0c402433b10bbc2491ab1ee09b3a4765025ddcd78a44e24ebd40",
+                "fb7f8200ad85a4847c97cd27aecb115ca252760476100e60a4f7762ef6199792",
+                "72ff840b3f588f8aff20986ca8354060b6a1e3601418d50f4e96d46e6f0b976b",
+                "498ecd9496e6cc674ad85b1623dabd01c99ec6b289a5902980c276f6bb65eb43"
+              ],
+              "batch_hits": 13,
+              "condition_signature": "7b69b0c09392930f89bfe52d",
+              "created_at": "2026-08-24T06:40:26+08:00",
+              "cumulative_decided": 151,
+              "cumulative_hits": 99,
+              "evidence_hash": "07be9db54367bb84e724a9d66f205a1b0a5e9ae27b537090990e50ec51a62751",
+              "minimum_acceptable_odds_display": 1.83,
+              "minimum_acceptable_odds_raw": 1.8287340398802654,
+              "prior_evidence_hash": "53db88b37d993fc7120be2a2d6d003386bb01cee3d1d281b37be853579b185c9",
+              "prior_version": 3,
+              "version": 4,
+              "wilson95_lower_raw": 0.5768263717918621
+            }
+          ],
+          "historical_evidence": {
+            "artifact": {
+              "as_of": "2026-08-20T23:48:58+08:00",
+              "hash": "0ceca7c2e29a772d9dd57030a9dac650603c2f748ebc65bb81d5aa54b5d35fd4",
+              "version": "granular-ranking-v1"
+            },
+            "decided": 85,
+            "hits": 56,
+            "pushes": 0
+          },
           "signature": "7b69b0c09392930f89bfe52d"
         },
         {
-          "activation_boundary": "2026-08-20T23:48:58+08:00",
+          "active_evidence": {
+            "activation_boundary_at": "2026-08-20T23:48:58+08:00",
+            "created_at": "2026-08-20T23:48:58+08:00",
+            "cumulative_decided": 117,
+            "cumulative_hits": 78,
+            "evidence_hash": "b38bf8216a9d3ba5c3d6218d96ce18b29cb40e6b6a16e537626f4e9fc43a7a26",
+            "minimum_acceptable_odds_display": 1.83,
+            "minimum_acceptable_odds_raw": 1.8276444275566697,
+            "version": 2,
+            "wilson95_lower_raw": 0.5771523809129953
+          },
           "active_evidence_hash": "b38bf8216a9d3ba5c3d6218d96ce18b29cb40e6b6a16e537626f4e9fc43a7a26",
           "active_evidence_version": 2,
           "condition_number": 5,
@@ -856,12 +2556,74 @@
             "system": "footbreak",
             "version": "granular-condition-v1"
           },
-          "definition_hash": "1ccc421a49fd98f328a0b2c48aaebb3030a71a454505252e526663ca792a89f9",
-          "order_position": 5,
+          "evidence_versions": [
+            {
+              "activation_boundary_at": "2026-08-20T23:48:58+08:00",
+              "batch_decided": 0,
+              "batch_fixture_market_hashes": [],
+              "batch_hits": 0,
+              "condition_signature": "1ccc421a49fd98f328a0b2c4",
+              "created_at": "2026-08-20T23:48:58+08:00",
+              "cumulative_decided": 90,
+              "cumulative_hits": 59,
+              "evidence_hash": "91c1b268e14656c6dbc99b457b5852f2ae3c0341d1c5794bead3d1fd6da42b0d",
+              "migration_baseline": true,
+              "minimum_acceptable_odds_display": 1.91,
+              "minimum_acceptable_odds_raw": 1.9126503180265284,
+              "prior_evidence_hash": null,
+              "prior_version": null,
+              "version": 1,
+              "wilson95_lower_raw": 0.5528347234071513
+            },
+            {
+              "activation_boundary_at": "2026-08-20T23:48:58+08:00",
+              "batch_decided": 27,
+              "batch_fixture_market_hashes": [],
+              "batch_fixture_market_ids_unavailable_from_legacy_aggregate": true,
+              "batch_hits": 19,
+              "condition_signature": "1ccc421a49fd98f328a0b2c4",
+              "created_at": "2026-08-20T23:48:58+08:00",
+              "cumulative_decided": 117,
+              "cumulative_hits": 78,
+              "evidence_hash": "b38bf8216a9d3ba5c3d6218d96ce18b29cb40e6b6a16e537626f4e9fc43a7a26",
+              "initial_migration_full_cohort": true,
+              "legacy_prospective_cohort": {
+                "decided": 27,
+                "hits": 19,
+                "pushes": 0
+              },
+              "minimum_acceptable_odds_display": 1.83,
+              "minimum_acceptable_odds_raw": 1.8276444275566697,
+              "prior_evidence_hash": "91c1b268e14656c6dbc99b457b5852f2ae3c0341d1c5794bead3d1fd6da42b0d",
+              "prior_version": 1,
+              "version": 2,
+              "wilson95_lower_raw": 0.5771523809129953
+            }
+          ],
+          "historical_evidence": {
+            "artifact": {
+              "as_of": "2026-08-20T23:48:58+08:00",
+              "hash": "ea0480b33fe011d55bb6bce6210b02f8ca1d621a40ed56d1126480ccae9f5f27",
+              "version": "granular-ranking-v1"
+            },
+            "decided": 90,
+            "hits": 59,
+            "pushes": 0
+          },
           "signature": "1ccc421a49fd98f328a0b2c4"
         },
         {
-          "activation_boundary": "2026-08-25T00:55:25+08:00",
+          "active_evidence": {
+            "activation_boundary_at": "2026-08-25T00:55:25+08:00",
+            "created_at": "2026-08-25T03:20:21+08:00",
+            "cumulative_decided": 150,
+            "cumulative_hits": 97,
+            "evidence_hash": "7736fca0d12c4d677269ec91841ab0ce52a3b42166757d64f31c8c1c34ca2d74",
+            "minimum_acceptable_odds_display": 1.86,
+            "minimum_acceptable_odds_raw": 1.8608757926165744,
+            "version": 4,
+            "wilson95_lower_raw": 0.5673813792235438
+          },
           "active_evidence_hash": "7736fca0d12c4d677269ec91841ab0ce52a3b42166757d64f31c8c1c34ca2d74",
           "active_evidence_version": 4,
           "condition_number": 6,
@@ -890,12 +2652,150 @@
             "system": "footbreak",
             "version": "granular-condition-v1"
           },
-          "definition_hash": "e9b991435138c3c429a696a8df05b6f45135b40a903537861c331c746b19a534",
-          "order_position": 6,
+          "evidence_versions": [
+            {
+              "activation_boundary_at": "2026-08-20T23:48:58+08:00",
+              "batch_decided": 0,
+              "batch_fixture_market_hashes": [],
+              "batch_hits": 0,
+              "condition_signature": "e9b991435138c3c429a696a8",
+              "created_at": "2026-08-20T23:48:58+08:00",
+              "cumulative_decided": 84,
+              "cumulative_hits": 55,
+              "evidence_hash": "f599bab2b41729106e06205413daf174ece3bc07423f6af2842783e4b217655a",
+              "migration_baseline": true,
+              "minimum_acceptable_odds_display": 1.93,
+              "minimum_acceptable_odds_raw": 1.9292432736158678,
+              "prior_evidence_hash": null,
+              "prior_version": null,
+              "version": 1,
+              "wilson95_lower_raw": 0.548337948187197
+            },
+            {
+              "activation_boundary_at": "2026-08-20T23:48:58+08:00",
+              "batch_decided": 26,
+              "batch_fixture_market_hashes": [],
+              "batch_fixture_market_ids_unavailable_from_legacy_aggregate": true,
+              "batch_hits": 18,
+              "condition_signature": "e9b991435138c3c429a696a8",
+              "created_at": "2026-08-20T23:48:58+08:00",
+              "cumulative_decided": 110,
+              "cumulative_hits": 73,
+              "evidence_hash": "dcab1f639e9d30b55d8d954eed42df53b6b68f1ccc9815e697b9d9343b8cdabf",
+              "initial_migration_full_cohort": true,
+              "legacy_prospective_cohort": {
+                "decided": 26,
+                "hits": 18,
+                "pushes": 0
+              },
+              "minimum_acceptable_odds_display": 1.85,
+              "minimum_acceptable_odds_raw": 1.847917850638017,
+              "prior_evidence_hash": "f599bab2b41729106e06205413daf174ece3bc07423f6af2842783e4b217655a",
+              "prior_version": 1,
+              "version": 2,
+              "wilson95_lower_raw": 0.5711495969124046
+            },
+            {
+              "activation_boundary_at": "2026-08-23T07:26:24+08:00",
+              "batch_decided": 20,
+              "batch_fixture_market_hashes": [
+                "d03074f681f219d10e7238920ced5b2b4ff95cb2cd375678c16dc88111be6725",
+                "2b979336e0be6b9ff3184a0add5e317a040dc160a56b65947a0db3dc54d0ac00",
+                "901dbbe808a024c142edd1bd4714d9e5cc9886eb0ed105a7415d8548d7a53709",
+                "f90e7facc07138d589ad5fafbd292f095021ca26a1a4cbc8fb48676bfd3c9242",
+                "a8517a3cf64fb26ecf9ddb01035c2b4e1d5ef413f61421c2b7cfc0513e7a8858",
+                "8428c36ed6078805c4838a2402fd1e93f86c957cef2ad962dc45f529374fa82c",
+                "c71dff8fa4d06d6450d1d838bb345000a95d4bf40dc4b497173b6916c4eb83a9",
+                "6ad56d6a795100505284d56ec862ca41399e9bb36e8f469be4466e00a2cba107",
+                "9b7a0f19e247a5d25706a314c5b7ecc41088f00be595eb2b3b269b9a1ddb028a",
+                "dc1fbea25faf80722594849a6d6a3e18a9a56fc6aea5c3138ec46cde0fe46307",
+                "995f20e9a1dd702b65983046839bab25282fceaf64b2b21c065ae081a7f0bf38",
+                "e4d2717a94c27f733c0a87013fa030568dbb669e6e00479c688041a61d57e2c3",
+                "9fdcf3dd0c2f652b673469b91261194647e9b6467d6e12191c085851ddb820d8",
+                "ca693c7fb08a0ba554bf33e8e471af25ffe8bd272ece54b7f244e4b18aaf1faf",
+                "debc619335f0170b01fbf481e52e56c310d7d8887fc0afaf4babb649d5c77e39",
+                "ec374d88bc239333cf6649cd37a23927ddf6b86413b20e8d5110d0bf6c450f2b",
+                "879b6f18ba53a44a3107a27dca197167de5eabaa823609eb91218d88ea3b3eb6",
+                "6c39e1d1d17e559394e4b992c3d8c6c08f502a3b6ccf81ccd5b0ab17c638771c",
+                "6e2ac027f398bbff62b4fbd4f158f605e7c4679c0758b6c57557cdd91f5fb6e6",
+                "9a6af72be1ca845ef48d02b5c3f9155d84f0b11455ada401ae0e56d5960c4bf5"
+              ],
+              "batch_hits": 11,
+              "condition_signature": "e9b991435138c3c429a696a8",
+              "created_at": "2026-08-23T09:50:29+08:00",
+              "cumulative_decided": 130,
+              "cumulative_hits": 84,
+              "evidence_hash": "76edda11dba7529d0c06a44687f7a9e4cb37ef11e12230baf702527e4c4c5486",
+              "minimum_acceptable_odds_display": 1.88,
+              "minimum_acceptable_odds_raw": 1.8837980890020416,
+              "prior_evidence_hash": "dcab1f639e9d30b55d8d954eed42df53b6b68f1ccc9815e697b9d9343b8cdabf",
+              "prior_version": 2,
+              "version": 3,
+              "wilson95_lower_raw": 0.56084245378429
+            },
+            {
+              "activation_boundary_at": "2026-08-25T00:55:25+08:00",
+              "batch_decided": 20,
+              "batch_fixture_market_hashes": [
+                "26c479e8f7965647b23cb68cfd864a2eeb0b7ce03795aeebb00a04d8ef6f0d01",
+                "720aa73c13eff5b9f4469b10bbbe0f96aaacae09f7843539ad3f38196e57819a",
+                "f0d0dbf56ebf59e69b35d739ecae97661e11df57afed2867673d1dec439714f1",
+                "da39c59d1d52ad6987f28e9fc62e803f1a91f32f25491e8c199c7b774883139b",
+                "a13ab3352704dd57c85c271d07c8095d9dce750bfdb186df77042c456722e490",
+                "fd978db1d9c4b3149ea8329f17680e544075506114d1352020e1083d40fd6e23",
+                "851acf26cfcae52991ac57d65dd6ab7b76dbcb6ef3e898521800d0bd9f8c9b16",
+                "6effa7c1fe39a51b5a7d89b0a4094bf47cc8c637e7653727f910c6c5c2981f0c",
+                "80a361068f407521cfccb223b2a79a1f105f462b38164ad1ff63fa23da152b58",
+                "d7e96beed67b513dd17b66592207b247cf24b735bc1ff58cb8a489698a871b00",
+                "cf7d18eef6c47f93f5b0da5fd2d276cac9548746cb19f3ab74df40e35eb00f5e",
+                "e804dc7a92b95581b200965f4bb8b434e2e7083dfdc4760333dc649676141ce7",
+                "cb7aae1b819b0c402433b10bbc2491ab1ee09b3a4765025ddcd78a44e24ebd40",
+                "fb7f8200ad85a4847c97cd27aecb115ca252760476100e60a4f7762ef6199792",
+                "72ff840b3f588f8aff20986ca8354060b6a1e3601418d50f4e96d46e6f0b976b",
+                "498ecd9496e6cc674ad85b1623dabd01c99ec6b289a5902980c276f6bb65eb43",
+                "4b76938367af7929711331075d0d602fa796c1dcd248ce344f62db8fe9e8b19b",
+                "cd12e9796914eed2ab56da081c2340bb4f73649f454fa37c27b58dd56f7d1e9c",
+                "95d3dc1cbf539e613be48e0c7275fd15c02dc0090a9b3ffa85d7478f991755ae",
+                "53a2cbe073a0407ad82922ffc6a7e6e5ab34006f44f14d6b1173583ad82f00d3"
+              ],
+              "batch_hits": 13,
+              "condition_signature": "e9b991435138c3c429a696a8",
+              "created_at": "2026-08-25T03:20:21+08:00",
+              "cumulative_decided": 150,
+              "cumulative_hits": 97,
+              "evidence_hash": "7736fca0d12c4d677269ec91841ab0ce52a3b42166757d64f31c8c1c34ca2d74",
+              "minimum_acceptable_odds_display": 1.86,
+              "minimum_acceptable_odds_raw": 1.8608757926165744,
+              "prior_evidence_hash": "76edda11dba7529d0c06a44687f7a9e4cb37ef11e12230baf702527e4c4c5486",
+              "prior_version": 3,
+              "version": 4,
+              "wilson95_lower_raw": 0.5673813792235438
+            }
+          ],
+          "historical_evidence": {
+            "artifact": {
+              "as_of": "2026-08-20T23:48:58+08:00",
+              "hash": "69ada9e4bd64c00c44995d8886c1c4e5e27b3b9e1455d91b8f4fccfa19fdca03",
+              "version": "granular-ranking-v1"
+            },
+            "decided": 84,
+            "hits": 55,
+            "pushes": 0
+          },
           "signature": "e9b991435138c3c429a696a8"
         },
         {
-          "activation_boundary": "2026-08-23T21:25:20+08:00",
+          "active_evidence": {
+            "activation_boundary_at": "2026-08-23T21:25:20+08:00",
+            "created_at": "2026-08-23T23:40:42+08:00",
+            "cumulative_decided": 236,
+            "cumulative_hits": 145,
+            "evidence_hash": "567a3f055f50d6b137f384cf4ecf1293214dcc4ddf52a35ca97cad9377d1989a",
+            "minimum_acceptable_odds_display": 1.92,
+            "minimum_acceptable_odds_raw": 1.919579566016299,
+            "version": 5,
+            "wilson95_lower_raw": 0.5509474083303036
+          },
           "active_evidence_hash": "567a3f055f50d6b137f384cf4ecf1293214dcc4ddf52a35ca97cad9377d1989a",
           "active_evidence_version": 5,
           "condition_number": 7,
@@ -923,12 +2823,188 @@
             "system": "footbreak",
             "version": "granular-condition-v1"
           },
-          "definition_hash": "a7a8aae669b985ff87f8be6e13b503a207aa166cae7fab069fb745034a3ab19e",
-          "order_position": 7,
+          "evidence_versions": [
+            {
+              "activation_boundary_at": "2026-08-20T23:48:58+08:00",
+              "batch_decided": 0,
+              "batch_fixture_market_hashes": [],
+              "batch_hits": 0,
+              "condition_signature": "a7a8aae669b985ff87f8be6e",
+              "created_at": "2026-08-20T23:48:58+08:00",
+              "cumulative_decided": 135,
+              "cumulative_hits": 85,
+              "evidence_hash": "9c80fbe0c72bff4929d4dc0541faacb9413947f1a9efe5b46a0fff1996ed0411",
+              "migration_baseline": true,
+              "minimum_acceptable_odds_display": 1.94,
+              "minimum_acceptable_odds_raw": 1.939343939576138,
+              "prior_evidence_hash": null,
+              "prior_version": null,
+              "version": 1,
+              "wilson95_lower_raw": 0.5456382937513186
+            },
+            {
+              "activation_boundary_at": "2026-08-20T23:48:58+08:00",
+              "batch_decided": 41,
+              "batch_fixture_market_hashes": [],
+              "batch_fixture_market_ids_unavailable_from_legacy_aggregate": true,
+              "batch_hits": 25,
+              "condition_signature": "a7a8aae669b985ff87f8be6e",
+              "created_at": "2026-08-20T23:48:58+08:00",
+              "cumulative_decided": 176,
+              "cumulative_hits": 110,
+              "evidence_hash": "3740c7050e8bdd27ea5fd7cf538fdbe692ac5bf8bd080dcd75c4906ea939f08c",
+              "initial_migration_full_cohort": true,
+              "legacy_prospective_cohort": {
+                "decided": 41,
+                "hits": 25,
+                "pushes": 0
+              },
+              "minimum_acceptable_odds_display": 1.92,
+              "minimum_acceptable_odds_raw": 1.917456074635974,
+              "prior_evidence_hash": "9c80fbe0c72bff4929d4dc0541faacb9413947f1a9efe5b46a0fff1996ed0411",
+              "prior_version": 1,
+              "version": 2,
+              "wilson95_lower_raw": 0.55152433280113
+            },
+            {
+              "activation_boundary_at": "2026-08-22T02:51:18+08:00",
+              "batch_decided": 20,
+              "batch_fixture_market_hashes": [
+                "5ab291e140cda2a47ba488d69650e4b366100fdaa441756bb600870f66c662ab",
+                "25ee7f1e16df38d63509bdfb68fc74ae3697422f745f9526a182827dfdbe4559",
+                "37857bd04c31d82646d32b52ffbcf61ca654602d1c27e57a3e4bacf11d299a1c",
+                "29c93f1640d9d26c1bd7be8a5c12fb264984a896e1a4d27bb5b0c05553784b39",
+                "2729dae1ca2001d85498f2151e58a87ed274666c573623744c5ab0c69bbe98c2",
+                "47bb39c44c19f8fe5d9f05c6d6db9a69c721bd9559f5d3d26fad6dae5e8279cd",
+                "8a7a38a4edb768a48d176f0f275df8cc909f8fee90679b618826dd62563ab532",
+                "0dc8395ced021778e54064dec6beb105e3b0fd58254ec1d2440e79f1286d0150",
+                "0c56eb53e05d4f95bd9bc963524b60825a3fcb816cbbf9f1da5d710e8a50662f",
+                "fb7eb328edf0c679ea92df323bc18762b899bb65d94e5b44eb2ad3e6dbd1b42e",
+                "1d733c1238ecb9a741b7802ce386cf985a03cd57a8ad21884a5bd9d747bf6821",
+                "042944ed04924899f5bf63d18ba8ec17ecb32f8103a1e50fe7cee20d1e68ef05",
+                "205fbd2e0a0ccef3fd7d50d88b278783a12b2816b7525080c9a2a4e55646f83c",
+                "19a86d126518750b519e92b847efd46745b5e8a500f6bf563b9230ab261302df",
+                "0d6da6eb286006b38786a4fc093d5d6da50d10a88c1ac4da5bb1a17f68cd7abd",
+                "475a8f51de6765ab854aab7044c7cb9c7ef586ec1e50f72ee9978b9ee8928d56",
+                "7e071457768a3e3f9fc53867df80e8c8129ff915ad65588f5e5b3f4ac909cb3a",
+                "c48740f399d39379416224aee74516637431fa114b98207e9c892b19309f14b5",
+                "4af7448f6d11da673665d08eb78e8b1b14a925e87241e77ca7600fa0b426095e",
+                "18179ed23c00c84a518cad5bd2936ed6ac8ccb621c50032594ea00f0782ae692"
+              ],
+              "batch_hits": 10,
+              "condition_signature": "a7a8aae669b985ff87f8be6e",
+              "created_at": "2026-08-22T05:10:23+08:00",
+              "cumulative_decided": 196,
+              "cumulative_hits": 120,
+              "evidence_hash": "6fccbbaaf7bd41db2dd8de4d7cea80f341607742cbca92b34c08900027de54b9",
+              "minimum_acceptable_odds_display": 1.95,
+              "minimum_acceptable_odds_raw": 1.9512213888062742,
+              "prior_evidence_hash": "3740c7050e8bdd27ea5fd7cf538fdbe692ac5bf8bd080dcd75c4906ea939f08c",
+              "prior_version": 2,
+              "version": 3,
+              "wilson95_lower_raw": 0.5424995070968262
+            },
+            {
+              "activation_boundary_at": "2026-08-23T00:40:20+08:00",
+              "batch_decided": 20,
+              "batch_fixture_market_hashes": [
+                "a92540ed4c1f471050f5755a1ea7e8983e52375eaea75e2e12a2b370a414591a",
+                "1b942afca5528e5614201c22d26a9a65455de673cccfd61bc9c91eb9beede75b",
+                "1fdf0089e10209e92922bc09ec6f91803a5ca93f903de64eb90ee8f652005760",
+                "d03074f681f219d10e7238920ced5b2b4ff95cb2cd375678c16dc88111be6725",
+                "1d5096f73e9a664423a3980353c0f6e1abb4d1e6403a0a87b2da2cbe906e23d6",
+                "2b979336e0be6b9ff3184a0add5e317a040dc160a56b65947a0db3dc54d0ac00",
+                "901dbbe808a024c142edd1bd4714d9e5cc9886eb0ed105a7415d8548d7a53709",
+                "f90e7facc07138d589ad5fafbd292f095021ca26a1a4cbc8fb48676bfd3c9242",
+                "3e78dfa7c7e26e06210abbc409980327dff9851e5efbd4039c34aa2c8298a9e4",
+                "7e44d5310996a4f2a4b92eb96edea60f5292664d9369acf863fb922a20d8e21c",
+                "a8517a3cf64fb26ecf9ddb01035c2b4e1d5ef413f61421c2b7cfc0513e7a8858",
+                "7cb736927f9f99068b156e332cca4ef89d7cb3c154b97728c01dd616b9c493ba",
+                "8428c36ed6078805c4838a2402fd1e93f86c957cef2ad962dc45f529374fa82c",
+                "038a8d074455a8d6f7ec89747b048286522692b456e0ee9a84ba9be8d6d06663",
+                "0325bf9134a5aa31c7a4fd866e623e49ecdae469e078cf39b87e8d8095f7522b",
+                "c71dff8fa4d06d6450d1d838bb345000a95d4bf40dc4b497173b6916c4eb83a9",
+                "6ad56d6a795100505284d56ec862ca41399e9bb36e8f469be4466e00a2cba107",
+                "9b7a0f19e247a5d25706a314c5b7ecc41088f00be595eb2b3b269b9a1ddb028a",
+                "dc1fbea25faf80722594849a6d6a3e18a9a56fc6aea5c3138ec46cde0fe46307",
+                "995f20e9a1dd702b65983046839bab25282fceaf64b2b21c065ae081a7f0bf38"
+              ],
+              "batch_hits": 13,
+              "condition_signature": "a7a8aae669b985ff87f8be6e",
+              "created_at": "2026-08-23T03:05:27+08:00",
+              "cumulative_decided": 216,
+              "cumulative_hits": 133,
+              "evidence_hash": "30408da302075b7c457f90c292a2d4f837554a5c77f15d67bb92cadd34024fe9",
+              "minimum_acceptable_odds_display": 1.93,
+              "minimum_acceptable_odds_raw": 1.9253448034472365,
+              "prior_evidence_hash": "6fccbbaaf7bd41db2dd8de4d7cea80f341607742cbca92b34c08900027de54b9",
+              "prior_version": 3,
+              "version": 4,
+              "wilson95_lower_raw": 0.5493874874825271
+            },
+            {
+              "activation_boundary_at": "2026-08-23T21:25:20+08:00",
+              "batch_decided": 20,
+              "batch_fixture_market_hashes": [
+                "8b028ccaba47c494bb145d049c9b59ae53e1311ad87508a35700b411d344a08a",
+                "e4d2717a94c27f733c0a87013fa030568dbb669e6e00479c688041a61d57e2c3",
+                "9fdcf3dd0c2f652b673469b91261194647e9b6467d6e12191c085851ddb820d8",
+                "7713b959b2978c64ef5ea0fd4773368c21162d2ebcaba160c87e0a0126b011aa",
+                "ca693c7fb08a0ba554bf33e8e471af25ffe8bd272ece54b7f244e4b18aaf1faf",
+                "debc619335f0170b01fbf481e52e56c310d7d8887fc0afaf4babb649d5c77e39",
+                "ec374d88bc239333cf6649cd37a23927ddf6b86413b20e8d5110d0bf6c450f2b",
+                "879b6f18ba53a44a3107a27dca197167de5eabaa823609eb91218d88ea3b3eb6",
+                "6c39e1d1d17e559394e4b992c3d8c6c08f502a3b6ccf81ccd5b0ab17c638771c",
+                "6e2ac027f398bbff62b4fbd4f158f605e7c4679c0758b6c57557cdd91f5fb6e6",
+                "f6212802942cca7ea06742171c232ea109b875cf7ab07acea021dc3d3ff97057",
+                "9a6af72be1ca845ef48d02b5c3f9155d84f0b11455ada401ae0e56d5960c4bf5",
+                "26c479e8f7965647b23cb68cfd864a2eeb0b7ce03795aeebb00a04d8ef6f0d01",
+                "720aa73c13eff5b9f4469b10bbbe0f96aaacae09f7843539ad3f38196e57819a",
+                "f0d0dbf56ebf59e69b35d739ecae97661e11df57afed2867673d1dec439714f1",
+                "da39c59d1d52ad6987f28e9fc62e803f1a91f32f25491e8c199c7b774883139b",
+                "a13ab3352704dd57c85c271d07c8095d9dce750bfdb186df77042c456722e490",
+                "fd978db1d9c4b3149ea8329f17680e544075506114d1352020e1083d40fd6e23",
+                "851acf26cfcae52991ac57d65dd6ab7b76dbcb6ef3e898521800d0bd9f8c9b16",
+                "6effa7c1fe39a51b5a7d89b0a4094bf47cc8c637e7653727f910c6c5c2981f0c"
+              ],
+              "batch_hits": 12,
+              "condition_signature": "a7a8aae669b985ff87f8be6e",
+              "created_at": "2026-08-23T23:40:42+08:00",
+              "cumulative_decided": 236,
+              "cumulative_hits": 145,
+              "evidence_hash": "567a3f055f50d6b137f384cf4ecf1293214dcc4ddf52a35ca97cad9377d1989a",
+              "minimum_acceptable_odds_display": 1.92,
+              "minimum_acceptable_odds_raw": 1.919579566016299,
+              "prior_evidence_hash": "30408da302075b7c457f90c292a2d4f837554a5c77f15d67bb92cadd34024fe9",
+              "prior_version": 4,
+              "version": 5,
+              "wilson95_lower_raw": 0.5509474083303036
+            }
+          ],
+          "historical_evidence": {
+            "artifact": {
+              "as_of": "2026-08-20T23:48:58+08:00",
+              "hash": "3176fbdef46e18f66c98eee3d88a5927b5e8da8fc950ef0e43d45e2cb2756807",
+              "version": "granular-ranking-v1"
+            },
+            "decided": 135,
+            "hits": 85,
+            "pushes": 0
+          },
           "signature": "a7a8aae669b985ff87f8be6e"
         },
         {
-          "activation_boundary": "2026-08-20T23:48:58+08:00",
+          "active_evidence": {
+            "activation_boundary_at": "2026-08-20T23:48:58+08:00",
+            "created_at": "2026-08-20T23:48:58+08:00",
+            "cumulative_decided": 175,
+            "cumulative_hits": 109,
+            "evidence_hash": "819fa1eea07b919ff3d31c2fa6682452b038056d3f60ea41d0fa84b504b36d92",
+            "minimum_acceptable_odds_display": 1.93,
+            "minimum_acceptable_odds_raw": 1.9262773444161636,
+            "version": 2,
+            "wilson95_lower_raw": 0.5491360438821392
+          },
           "active_evidence_hash": "819fa1eea07b919ff3d31c2fa6682452b038056d3f60ea41d0fa84b504b36d92",
           "active_evidence_version": 2,
           "condition_number": 8,
@@ -956,12 +3032,74 @@
             "system": "footbreak",
             "version": "granular-condition-v1"
           },
-          "definition_hash": "489929536fb33473f0a90f2526eb801bb02e4478a45ec5b440eb5819d788b86b",
-          "order_position": 8,
+          "evidence_versions": [
+            {
+              "activation_boundary_at": "2026-08-20T23:48:58+08:00",
+              "batch_decided": 0,
+              "batch_fixture_market_hashes": [],
+              "batch_hits": 0,
+              "condition_signature": "489929536fb33473f0a90f25",
+              "created_at": "2026-08-20T23:48:58+08:00",
+              "cumulative_decided": 134,
+              "cumulative_hits": 84,
+              "evidence_hash": "840a238f114c18a29e3e14d95772c7c41ed33bfcd699f785965acfb7406ca470",
+              "migration_baseline": true,
+              "minimum_acceptable_odds_display": 1.95,
+              "minimum_acceptable_odds_raw": 1.951163494070124,
+              "prior_evidence_hash": null,
+              "prior_version": null,
+              "version": 1,
+              "wilson95_lower_raw": 0.5425147139330706
+            },
+            {
+              "activation_boundary_at": "2026-08-20T23:48:58+08:00",
+              "batch_decided": 41,
+              "batch_fixture_market_hashes": [],
+              "batch_fixture_market_ids_unavailable_from_legacy_aggregate": true,
+              "batch_hits": 25,
+              "condition_signature": "489929536fb33473f0a90f25",
+              "created_at": "2026-08-20T23:48:58+08:00",
+              "cumulative_decided": 175,
+              "cumulative_hits": 109,
+              "evidence_hash": "819fa1eea07b919ff3d31c2fa6682452b038056d3f60ea41d0fa84b504b36d92",
+              "initial_migration_full_cohort": true,
+              "legacy_prospective_cohort": {
+                "decided": 41,
+                "hits": 25,
+                "pushes": 0
+              },
+              "minimum_acceptable_odds_display": 1.93,
+              "minimum_acceptable_odds_raw": 1.9262773444161636,
+              "prior_evidence_hash": "840a238f114c18a29e3e14d95772c7c41ed33bfcd699f785965acfb7406ca470",
+              "prior_version": 1,
+              "version": 2,
+              "wilson95_lower_raw": 0.5491360438821392
+            }
+          ],
+          "historical_evidence": {
+            "artifact": {
+              "as_of": "2026-08-20T23:48:58+08:00",
+              "hash": "d04c26a64c783e0947116fd7f4e27483d3ebad45c8414ea2bf5bee2942dd6a50",
+              "version": "granular-ranking-v1"
+            },
+            "decided": 134,
+            "hits": 84,
+            "pushes": 0
+          },
           "signature": "489929536fb33473f0a90f25"
         },
         {
-          "activation_boundary": "2026-08-20T23:48:58+08:00",
+          "active_evidence": {
+            "activation_boundary_at": "2026-08-20T23:48:58+08:00",
+            "created_at": "2026-08-20T23:48:58+08:00",
+            "cumulative_decided": 173,
+            "cumulative_hits": 107,
+            "evidence_hash": "da1a17493a5f85b2dbebd78ab06e8c1b881e58af6e0fbef63dca2b99d8081e29",
+            "minimum_acceptable_odds_display": 1.94,
+            "minimum_acceptable_odds_raw": 1.9444537617917101,
+            "version": 2,
+            "wilson95_lower_raw": 0.544283249954246
+          },
           "active_evidence_hash": "da1a17493a5f85b2dbebd78ab06e8c1b881e58af6e0fbef63dca2b99d8081e29",
           "active_evidence_version": 2,
           "condition_number": 9,
@@ -989,12 +3127,74 @@
             "system": "footbreak",
             "version": "granular-condition-v1"
           },
-          "definition_hash": "d3e112d8815b6e9df46e075d01182fac9ee81648641c84650b0a1cb0352e7840",
-          "order_position": 9,
+          "evidence_versions": [
+            {
+              "activation_boundary_at": "2026-08-20T23:48:58+08:00",
+              "batch_decided": 0,
+              "batch_fixture_market_hashes": [],
+              "batch_hits": 0,
+              "condition_signature": "d3e112d8815b6e9df46e075d",
+              "created_at": "2026-08-20T23:48:58+08:00",
+              "cumulative_decided": 133,
+              "cumulative_hits": 83,
+              "evidence_hash": "ca33bcae1864ce4459c94803176a0d0dfef700aaccc0d959f5842ca553677092",
+              "migration_baseline": true,
+              "minimum_acceptable_odds_display": 1.96,
+              "minimum_acceptable_odds_raw": 1.9632924073516345,
+              "prior_evidence_hash": null,
+              "prior_version": null,
+              "version": 1,
+              "wilson95_lower_raw": 0.5393484782274185
+            },
+            {
+              "activation_boundary_at": "2026-08-20T23:48:58+08:00",
+              "batch_decided": 40,
+              "batch_fixture_market_hashes": [],
+              "batch_fixture_market_ids_unavailable_from_legacy_aggregate": true,
+              "batch_hits": 24,
+              "condition_signature": "d3e112d8815b6e9df46e075d",
+              "created_at": "2026-08-20T23:48:58+08:00",
+              "cumulative_decided": 173,
+              "cumulative_hits": 107,
+              "evidence_hash": "da1a17493a5f85b2dbebd78ab06e8c1b881e58af6e0fbef63dca2b99d8081e29",
+              "initial_migration_full_cohort": true,
+              "legacy_prospective_cohort": {
+                "decided": 40,
+                "hits": 24,
+                "pushes": 0
+              },
+              "minimum_acceptable_odds_display": 1.94,
+              "minimum_acceptable_odds_raw": 1.9444537617917101,
+              "prior_evidence_hash": "ca33bcae1864ce4459c94803176a0d0dfef700aaccc0d959f5842ca553677092",
+              "prior_version": 1,
+              "version": 2,
+              "wilson95_lower_raw": 0.544283249954246
+            }
+          ],
+          "historical_evidence": {
+            "artifact": {
+              "as_of": "2026-08-20T23:48:58+08:00",
+              "hash": "f6573fba08e7525cb941b47d330464b1b36a346009b8848f66a38e4a47d2c5a3",
+              "version": "granular-ranking-v1"
+            },
+            "decided": 133,
+            "hits": 83,
+            "pushes": 0
+          },
           "signature": "d3e112d8815b6e9df46e075d"
         },
         {
-          "activation_boundary": "2026-08-20T23:48:58+08:00",
+          "active_evidence": {
+            "activation_boundary_at": "2026-08-20T23:48:58+08:00",
+            "created_at": "2026-08-20T23:48:58+08:00",
+            "cumulative_decided": 134,
+            "cumulative_hits": 86,
+            "evidence_hash": "ce4392d31a1060385ca57d699edc174b4e6d51444ce5f1335a37dde2e3e895d1",
+            "minimum_acceptable_odds_display": 1.9,
+            "minimum_acceptable_odds_raw": 1.8950194664176976,
+            "version": 2,
+            "wilson95_lower_raw": 0.5576990646910756
+          },
           "active_evidence_hash": "ce4392d31a1060385ca57d699edc174b4e6d51444ce5f1335a37dde2e3e895d1",
           "active_evidence_version": 2,
           "condition_number": 10,
@@ -1022,12 +3222,74 @@
             "system": "footbreak",
             "version": "granular-condition-v1"
           },
-          "definition_hash": "033986661061d8b486cff4643e5ac93d96a1a9937f14a0f3df96aae83b4bfbb6",
-          "order_position": 10,
+          "evidence_versions": [
+            {
+              "activation_boundary_at": "2026-08-20T23:48:58+08:00",
+              "batch_decided": 0,
+              "batch_fixture_market_hashes": [],
+              "batch_hits": 0,
+              "condition_signature": "033986661061d8b486cff464",
+              "created_at": "2026-08-20T23:48:58+08:00",
+              "cumulative_decided": 103,
+              "cumulative_hits": 65,
+              "evidence_hash": "bddc84a87d143dad4d9a471b8409ddc4ecc46953348913d93ec8d6c96518e2d9",
+              "migration_baseline": true,
+              "minimum_acceptable_odds_display": 1.98,
+              "minimum_acceptable_odds_raw": 1.9812147915205918,
+              "prior_evidence_hash": null,
+              "prior_version": null,
+              "version": 1,
+              "wilson95_lower_raw": 0.5347408308679622
+            },
+            {
+              "activation_boundary_at": "2026-08-20T23:48:58+08:00",
+              "batch_decided": 31,
+              "batch_fixture_market_hashes": [],
+              "batch_fixture_market_ids_unavailable_from_legacy_aggregate": true,
+              "batch_hits": 21,
+              "condition_signature": "033986661061d8b486cff464",
+              "created_at": "2026-08-20T23:48:58+08:00",
+              "cumulative_decided": 134,
+              "cumulative_hits": 86,
+              "evidence_hash": "ce4392d31a1060385ca57d699edc174b4e6d51444ce5f1335a37dde2e3e895d1",
+              "initial_migration_full_cohort": true,
+              "legacy_prospective_cohort": {
+                "decided": 31,
+                "hits": 21,
+                "pushes": 0
+              },
+              "minimum_acceptable_odds_display": 1.9,
+              "minimum_acceptable_odds_raw": 1.8950194664176976,
+              "prior_evidence_hash": "bddc84a87d143dad4d9a471b8409ddc4ecc46953348913d93ec8d6c96518e2d9",
+              "prior_version": 1,
+              "version": 2,
+              "wilson95_lower_raw": 0.5576990646910756
+            }
+          ],
+          "historical_evidence": {
+            "artifact": {
+              "as_of": "2026-08-20T23:48:58+08:00",
+              "hash": "fc93291f763a5e03ae961c683deafcb154f7af7248b138c01884df4e33144030",
+              "version": "granular-ranking-v1"
+            },
+            "decided": 103,
+            "hits": 65,
+            "pushes": 0
+          },
           "signature": "033986661061d8b486cff464"
         },
         {
-          "activation_boundary": "2026-08-24T00:30:12+08:00",
+          "active_evidence": {
+            "activation_boundary_at": "2026-08-24T00:30:12+08:00",
+            "created_at": "2026-08-24T02:50:25+08:00",
+            "cumulative_decided": 199,
+            "cumulative_hits": 123,
+            "evidence_hash": "bdf5a1e6b6371669494e89ffc798808f8adc6efa2a2edb14563de9329c612afc",
+            "minimum_acceptable_odds_display": 1.93,
+            "minimum_acceptable_odds_raw": 1.9269487829665843,
+            "version": 4,
+            "wilson95_lower_raw": 0.5489551527469639
+          },
           "active_evidence_hash": "bdf5a1e6b6371669494e89ffc798808f8adc6efa2a2edb14563de9329c612afc",
           "active_evidence_version": 4,
           "condition_number": 11,
@@ -1056,12 +3318,150 @@
             "system": "footbreak",
             "version": "granular-condition-v1"
           },
-          "definition_hash": "0869fbd4573b9dee57ffe2eb333a2b76d2cdef7263d3e1d44ccb482ccc3d28e4",
-          "order_position": 11,
+          "evidence_versions": [
+            {
+              "activation_boundary_at": "2026-08-20T23:48:58+08:00",
+              "batch_decided": 0,
+              "batch_fixture_market_hashes": [],
+              "batch_hits": 0,
+              "condition_signature": "0869fbd4573b9dee57ffe2eb",
+              "created_at": "2026-08-20T23:48:58+08:00",
+              "cumulative_decided": 122,
+              "cumulative_hits": 76,
+              "evidence_hash": "5eeaf27e599c3bd71c91b7aa7f9c71e5296e21ffcd744d787affb45eba7517c9",
+              "migration_baseline": true,
+              "minimum_acceptable_odds_display": 1.98,
+              "minimum_acceptable_odds_raw": 1.9824037162091308,
+              "prior_evidence_hash": null,
+              "prior_version": null,
+              "version": 1,
+              "wilson95_lower_raw": 0.5344381181408694
+            },
+            {
+              "activation_boundary_at": "2026-08-20T23:48:58+08:00",
+              "batch_decided": 37,
+              "batch_fixture_market_hashes": [],
+              "batch_fixture_market_ids_unavailable_from_legacy_aggregate": true,
+              "batch_hits": 21,
+              "condition_signature": "0869fbd4573b9dee57ffe2eb",
+              "created_at": "2026-08-20T23:48:58+08:00",
+              "cumulative_decided": 159,
+              "cumulative_hits": 97,
+              "evidence_hash": "a52683808d0fcf19055a3fbbd94b56f2e3a36148c1c407fb2bd2fb6a6cfe6942",
+              "initial_migration_full_cohort": true,
+              "legacy_prospective_cohort": {
+                "decided": 37,
+                "hits": 21,
+                "pushes": 0
+              },
+              "minimum_acceptable_odds_display": 1.99,
+              "minimum_acceptable_odds_raw": 1.990011271963436,
+              "prior_evidence_hash": "5eeaf27e599c3bd71c91b7aa7f9c71e5296e21ffcd744d787affb45eba7517c9",
+              "prior_version": 1,
+              "version": 2,
+              "wilson95_lower_raw": 0.5325097164466583
+            },
+            {
+              "activation_boundary_at": "2026-08-23T05:22:08+08:00",
+              "batch_decided": 20,
+              "batch_fixture_market_hashes": [
+                "d03074f681f219d10e7238920ced5b2b4ff95cb2cd375678c16dc88111be6725",
+                "1d5096f73e9a664423a3980353c0f6e1abb4d1e6403a0a87b2da2cbe906e23d6",
+                "2b979336e0be6b9ff3184a0add5e317a040dc160a56b65947a0db3dc54d0ac00",
+                "901dbbe808a024c142edd1bd4714d9e5cc9886eb0ed105a7415d8548d7a53709",
+                "f90e7facc07138d589ad5fafbd292f095021ca26a1a4cbc8fb48676bfd3c9242",
+                "3e78dfa7c7e26e06210abbc409980327dff9851e5efbd4039c34aa2c8298a9e4",
+                "7e44d5310996a4f2a4b92eb96edea60f5292664d9369acf863fb922a20d8e21c",
+                "a8517a3cf64fb26ecf9ddb01035c2b4e1d5ef413f61421c2b7cfc0513e7a8858",
+                "8428c36ed6078805c4838a2402fd1e93f86c957cef2ad962dc45f529374fa82c",
+                "0325bf9134a5aa31c7a4fd866e623e49ecdae469e078cf39b87e8d8095f7522b",
+                "c71dff8fa4d06d6450d1d838bb345000a95d4bf40dc4b497173b6916c4eb83a9",
+                "6ad56d6a795100505284d56ec862ca41399e9bb36e8f469be4466e00a2cba107",
+                "9b7a0f19e247a5d25706a314c5b7ecc41088f00be595eb2b3b269b9a1ddb028a",
+                "dc1fbea25faf80722594849a6d6a3e18a9a56fc6aea5c3138ec46cde0fe46307",
+                "995f20e9a1dd702b65983046839bab25282fceaf64b2b21c065ae081a7f0bf38",
+                "e4d2717a94c27f733c0a87013fa030568dbb669e6e00479c688041a61d57e2c3",
+                "9fdcf3dd0c2f652b673469b91261194647e9b6467d6e12191c085851ddb820d8",
+                "ca693c7fb08a0ba554bf33e8e471af25ffe8bd272ece54b7f244e4b18aaf1faf",
+                "debc619335f0170b01fbf481e52e56c310d7d8887fc0afaf4babb649d5c77e39",
+                "ec374d88bc239333cf6649cd37a23927ddf6b86413b20e8d5110d0bf6c450f2b"
+              ],
+              "batch_hits": 13,
+              "condition_signature": "0869fbd4573b9dee57ffe2eb",
+              "created_at": "2026-08-23T07:40:28+08:00",
+              "cumulative_decided": 179,
+              "cumulative_hits": 110,
+              "evidence_hash": "1c7586677b3e15b13dccf585797377a7383e9394c1c4f97dbfec3d7fc82fd903",
+              "minimum_acceptable_odds_display": 1.95,
+              "minimum_acceptable_odds_raw": 1.9549158833075497,
+              "prior_evidence_hash": "a52683808d0fcf19055a3fbbd94b56f2e3a36148c1c407fb2bd2fb6a6cfe6942",
+              "prior_version": 2,
+              "version": 3,
+              "wilson95_lower_raw": 0.5415309607634299
+            },
+            {
+              "activation_boundary_at": "2026-08-24T00:30:12+08:00",
+              "batch_decided": 20,
+              "batch_fixture_market_hashes": [
+                "879b6f18ba53a44a3107a27dca197167de5eabaa823609eb91218d88ea3b3eb6",
+                "6c39e1d1d17e559394e4b992c3d8c6c08f502a3b6ccf81ccd5b0ab17c638771c",
+                "6e2ac027f398bbff62b4fbd4f158f605e7c4679c0758b6c57557cdd91f5fb6e6",
+                "f6212802942cca7ea06742171c232ea109b875cf7ab07acea021dc3d3ff97057",
+                "9a6af72be1ca845ef48d02b5c3f9155d84f0b11455ada401ae0e56d5960c4bf5",
+                "26c479e8f7965647b23cb68cfd864a2eeb0b7ce03795aeebb00a04d8ef6f0d01",
+                "720aa73c13eff5b9f4469b10bbbe0f96aaacae09f7843539ad3f38196e57819a",
+                "f0d0dbf56ebf59e69b35d739ecae97661e11df57afed2867673d1dec439714f1",
+                "da39c59d1d52ad6987f28e9fc62e803f1a91f32f25491e8c199c7b774883139b",
+                "a13ab3352704dd57c85c271d07c8095d9dce750bfdb186df77042c456722e490",
+                "fd978db1d9c4b3149ea8329f17680e544075506114d1352020e1083d40fd6e23",
+                "851acf26cfcae52991ac57d65dd6ab7b76dbcb6ef3e898521800d0bd9f8c9b16",
+                "6effa7c1fe39a51b5a7d89b0a4094bf47cc8c637e7653727f910c6c5c2981f0c",
+                "80a361068f407521cfccb223b2a79a1f105f462b38164ad1ff63fa23da152b58",
+                "61af0a98bdecbe7542afb6bd25bbbe21261e5a117326da75a8e988d3117b0745",
+                "d7e96beed67b513dd17b66592207b247cf24b735bc1ff58cb8a489698a871b00",
+                "cf7d18eef6c47f93f5b0da5fd2d276cac9548746cb19f3ab74df40e35eb00f5e",
+                "e804dc7a92b95581b200965f4bb8b434e2e7083dfdc4760333dc649676141ce7",
+                "05f35a8cbc00a39388d07447f213b7ab1729f41201199777ec4eb23bd5167987",
+                "cb7aae1b819b0c402433b10bbc2491ab1ee09b3a4765025ddcd78a44e24ebd40"
+              ],
+              "batch_hits": 13,
+              "condition_signature": "0869fbd4573b9dee57ffe2eb",
+              "created_at": "2026-08-24T02:50:25+08:00",
+              "cumulative_decided": 199,
+              "cumulative_hits": 123,
+              "evidence_hash": "bdf5a1e6b6371669494e89ffc798808f8adc6efa2a2edb14563de9329c612afc",
+              "minimum_acceptable_odds_display": 1.93,
+              "minimum_acceptable_odds_raw": 1.9269487829665843,
+              "prior_evidence_hash": "1c7586677b3e15b13dccf585797377a7383e9394c1c4f97dbfec3d7fc82fd903",
+              "prior_version": 3,
+              "version": 4,
+              "wilson95_lower_raw": 0.5489551527469639
+            }
+          ],
+          "historical_evidence": {
+            "artifact": {
+              "as_of": "2026-08-20T23:48:58+08:00",
+              "hash": "6bc10d677a64e86075ecd7276ad3d10946babc96f953103aaac536c1276ecd1c",
+              "version": "granular-ranking-v1"
+            },
+            "decided": 122,
+            "hits": 76,
+            "pushes": 0
+          },
           "signature": "0869fbd4573b9dee57ffe2eb"
         },
         {
-          "activation_boundary": "2026-08-20T23:48:58+08:00",
+          "active_evidence": {
+            "activation_boundary_at": "2026-08-20T23:48:58+08:00",
+            "created_at": "2026-08-20T23:48:58+08:00",
+            "cumulative_decided": 137,
+            "cumulative_hits": 86,
+            "evidence_hash": "cca7ea1de1d88a030e9a8badcf5c43af008e26b508d397f97fe1622d46af2571",
+            "minimum_acceptable_odds_display": 1.94,
+            "minimum_acceptable_odds_raw": 1.9442331609045838,
+            "version": 2,
+            "wilson95_lower_raw": 0.5443416026988939
+          },
           "active_evidence_hash": "cca7ea1de1d88a030e9a8badcf5c43af008e26b508d397f97fe1622d46af2571",
           "active_evidence_version": 2,
           "condition_number": 12,
@@ -1089,12 +3489,74 @@
             "system": "footbreak",
             "version": "granular-condition-v1"
           },
-          "definition_hash": "785894424f74f7d3bf9f79e9c4b07e65da238d0f98c207ec1624795657feac94",
-          "order_position": 12,
+          "evidence_versions": [
+            {
+              "activation_boundary_at": "2026-08-20T23:48:58+08:00",
+              "batch_decided": 0,
+              "batch_fixture_market_hashes": [],
+              "batch_hits": 0,
+              "condition_signature": "785894424f74f7d3bf9f79e9",
+              "created_at": "2026-08-20T23:48:58+08:00",
+              "cumulative_decided": 105,
+              "cumulative_hits": 66,
+              "evidence_hash": "ea2be2fda2ccf37995d3e6e8dc7a3af95b66aed025c04554a6a34f4a533c8f79",
+              "migration_baseline": true,
+              "minimum_acceptable_odds_display": 1.99,
+              "minimum_acceptable_odds_raw": 1.9874972698808404,
+              "prior_evidence_hash": null,
+              "prior_version": null,
+              "version": 1,
+              "wilson95_lower_raw": 0.5331453452310677
+            },
+            {
+              "activation_boundary_at": "2026-08-20T23:48:58+08:00",
+              "batch_decided": 32,
+              "batch_fixture_market_hashes": [],
+              "batch_fixture_market_ids_unavailable_from_legacy_aggregate": true,
+              "batch_hits": 20,
+              "condition_signature": "785894424f74f7d3bf9f79e9",
+              "created_at": "2026-08-20T23:48:58+08:00",
+              "cumulative_decided": 137,
+              "cumulative_hits": 86,
+              "evidence_hash": "cca7ea1de1d88a030e9a8badcf5c43af008e26b508d397f97fe1622d46af2571",
+              "initial_migration_full_cohort": true,
+              "legacy_prospective_cohort": {
+                "decided": 32,
+                "hits": 20,
+                "pushes": 0
+              },
+              "minimum_acceptable_odds_display": 1.94,
+              "minimum_acceptable_odds_raw": 1.9442331609045838,
+              "prior_evidence_hash": "ea2be2fda2ccf37995d3e6e8dc7a3af95b66aed025c04554a6a34f4a533c8f79",
+              "prior_version": 1,
+              "version": 2,
+              "wilson95_lower_raw": 0.5443416026988939
+            }
+          ],
+          "historical_evidence": {
+            "artifact": {
+              "as_of": "2026-08-20T23:48:58+08:00",
+              "hash": "cbcebe23f4b5181b3c3aaee2c6e6f00e033632768a3ec635c4f00f1379077cb9",
+              "version": "granular-ranking-v1"
+            },
+            "decided": 105,
+            "hits": 66,
+            "pushes": 0
+          },
           "signature": "785894424f74f7d3bf9f79e9"
         },
         {
-          "activation_boundary": "2026-08-20T23:48:58+08:00",
+          "active_evidence": {
+            "activation_boundary_at": "2026-08-20T23:48:58+08:00",
+            "created_at": "2026-08-20T23:48:58+08:00",
+            "cumulative_decided": 133,
+            "cumulative_hits": 84,
+            "evidence_hash": "47bb9e134b5547ae3e08ff14c5a00cacc3945f9440b9d10d71af5fa85626fb5f",
+            "minimum_acceptable_odds_display": 1.93,
+            "minimum_acceptable_odds_raw": 1.934312080988297,
+            "version": 2,
+            "wilson95_lower_raw": 0.5469796589850541
+          },
           "active_evidence_hash": "47bb9e134b5547ae3e08ff14c5a00cacc3945f9440b9d10d71af5fa85626fb5f",
           "active_evidence_version": 2,
           "condition_number": 13,
@@ -1122,12 +3584,74 @@
             "system": "footbreak",
             "version": "granular-condition-v1"
           },
-          "definition_hash": "715edfc03f06dba83f50d2047e9c0234b20069be001d078a27c478b5a7f1ce44",
-          "order_position": 13,
+          "evidence_versions": [
+            {
+              "activation_boundary_at": "2026-08-20T23:48:58+08:00",
+              "batch_decided": 0,
+              "batch_fixture_market_hashes": [],
+              "batch_hits": 0,
+              "condition_signature": "715edfc03f06dba83f50d204",
+              "created_at": "2026-08-20T23:48:58+08:00",
+              "cumulative_decided": 102,
+              "cumulative_hits": 64,
+              "evidence_hash": "b697c078e3bb4c149b07691290d9613c14f2aea3e330c8a599ad63392ae2bb45",
+              "migration_baseline": true,
+              "minimum_acceptable_odds_display": 2.0,
+              "minimum_acceptable_odds_raw": 1.9976021103905244,
+              "prior_evidence_hash": null,
+              "prior_version": null,
+              "version": 1,
+              "wilson95_lower_raw": 0.5306001919994485
+            },
+            {
+              "activation_boundary_at": "2026-08-20T23:48:58+08:00",
+              "batch_decided": 31,
+              "batch_fixture_market_hashes": [],
+              "batch_fixture_market_ids_unavailable_from_legacy_aggregate": true,
+              "batch_hits": 20,
+              "condition_signature": "715edfc03f06dba83f50d204",
+              "created_at": "2026-08-20T23:48:58+08:00",
+              "cumulative_decided": 133,
+              "cumulative_hits": 84,
+              "evidence_hash": "47bb9e134b5547ae3e08ff14c5a00cacc3945f9440b9d10d71af5fa85626fb5f",
+              "initial_migration_full_cohort": true,
+              "legacy_prospective_cohort": {
+                "decided": 31,
+                "hits": 20,
+                "pushes": 0
+              },
+              "minimum_acceptable_odds_display": 1.93,
+              "minimum_acceptable_odds_raw": 1.934312080988297,
+              "prior_evidence_hash": "b697c078e3bb4c149b07691290d9613c14f2aea3e330c8a599ad63392ae2bb45",
+              "prior_version": 1,
+              "version": 2,
+              "wilson95_lower_raw": 0.5469796589850541
+            }
+          ],
+          "historical_evidence": {
+            "artifact": {
+              "as_of": "2026-08-20T23:48:58+08:00",
+              "hash": "1869c6778110836f2aff9f10c31796c9a2356743807f05e8042081e52b224f52",
+              "version": "granular-ranking-v1"
+            },
+            "decided": 102,
+            "hits": 64,
+            "pushes": 0
+          },
           "signature": "715edfc03f06dba83f50d204"
         },
         {
-          "activation_boundary": "2026-08-23T07:53:10+08:00",
+          "active_evidence": {
+            "activation_boundary_at": "2026-08-23T07:53:10+08:00",
+            "created_at": "2026-08-23T10:40:34+08:00",
+            "cumulative_decided": 91,
+            "cumulative_hits": 54,
+            "evidence_hash": "dc1f425291be1585c8fa5f55d8951182aaacaeb4c228ef0a0dae272bb75f47aa",
+            "minimum_acceptable_odds_display": 2.17,
+            "minimum_acceptable_odds_raw": 2.1706365126319733,
+            "version": 3,
+            "wilson95_lower_raw": 0.49069436047008386
+          },
           "active_evidence_hash": "dc1f425291be1585c8fa5f55d8951182aaacaeb4c228ef0a0dae272bb75f47aa",
           "active_evidence_version": 3,
           "condition_number": 14,
@@ -1155,12 +3679,112 @@
             "system": "footbreak",
             "version": "granular-condition-v1"
           },
-          "definition_hash": "a79e13125a194532c81940366fd01cc819a5c8eb0090aa033cf6456ba1daf18a",
-          "order_position": 14,
+          "evidence_versions": [
+            {
+              "activation_boundary_at": "2026-08-20T23:48:58+08:00",
+              "batch_decided": 0,
+              "batch_fixture_market_hashes": [],
+              "batch_hits": 0,
+              "condition_signature": "a79e13125a194532c8194036",
+              "created_at": "2026-08-20T23:48:58+08:00",
+              "cumulative_decided": 54,
+              "cumulative_hits": 35,
+              "evidence_hash": "97b161e48e9de9974780b163439dcfb098a7a1a205c70ef003c4ae40fce8488e",
+              "migration_baseline": true,
+              "minimum_acceptable_odds_display": 2.06,
+              "minimum_acceptable_odds_raw": 2.062500755690224,
+              "prior_evidence_hash": null,
+              "prior_version": null,
+              "version": 1,
+              "wilson95_lower_raw": 0.5148483072023632
+            },
+            {
+              "activation_boundary_at": "2026-08-20T23:48:58+08:00",
+              "batch_decided": 17,
+              "batch_fixture_market_hashes": [],
+              "batch_fixture_market_ids_unavailable_from_legacy_aggregate": true,
+              "batch_hits": 8,
+              "condition_signature": "a79e13125a194532c8194036",
+              "created_at": "2026-08-20T23:48:58+08:00",
+              "cumulative_decided": 71,
+              "cumulative_hits": 43,
+              "evidence_hash": "4fdbd77d08bf9a9ab76c4375526854bc1baa759f48acbdd003dc817d327843e4",
+              "initial_migration_full_cohort": true,
+              "legacy_prospective_cohort": {
+                "decided": 17,
+                "hits": 8,
+                "pushes": 0
+              },
+              "minimum_acceptable_odds_display": 2.18,
+              "minimum_acceptable_odds_raw": 2.1769528031582697,
+              "prior_evidence_hash": "97b161e48e9de9974780b163439dcfb098a7a1a205c70ef003c4ae40fce8488e",
+              "prior_version": 1,
+              "version": 2,
+              "wilson95_lower_raw": 0.48935768499400845
+            },
+            {
+              "activation_boundary_at": "2026-08-23T07:53:10+08:00",
+              "batch_decided": 20,
+              "batch_fixture_market_hashes": [
+                "e42fc6ec2656df00d29de447e790015337c1a6d3815eed9aff30bb85cdd1e555",
+                "95a18a74ae6ce447dfa81b999e1be809eab917394db6c0ef7129c21ba8dacf26",
+                "268675ec604cdc0436b379f1ddf4dab0ce394722041bf5bf3f8694dcca7b53e4",
+                "d75156bda36a2d646fae5c5b91903dbed4376cc89bc56ca06cdb4dd3a04faf3a",
+                "37dec476498e271e2ade357db83937cddb8f24735676cee7cdf1f4bccc3e32b3",
+                "a065edfe574882e32e02d616847b9d45d8a88b371796f8e11b49dcb8a19c4cf0",
+                "bc7ff975e5da51e7ebdc1eea116c14823e7fa745b345ad3b1fc1cea8419f189e",
+                "f6edde13716504bea0923a184bd3fb08c3e088ccc180aae328f44ae13f47e2bd",
+                "6cb52769a3850cf8ea8fb09131521d4264e8908ec1b64b40e926726b1f74f275",
+                "e62a5d1ad1e65838ae6f1479b5c3fcc234a9e2d13bf05874f244a3f0c343938a",
+                "c878b1155a818b608766754517b2057601cf563eb23ae9758f2a138d2465a3da",
+                "dad6c41fa51b0f07c85f7c634961e33d7260737571c1e8e88e5941a645c0be73",
+                "f23b38671551ba0062553b3d5bc04d298e91c0417a130dc88ed5b153ecd1c96e",
+                "055e2a2b34f0e23a5ceb88a242f516f10ef794ebd50a894fe9be910fcbfe390c",
+                "cc614f429e3b676ac9e3aec1cd4a310d07b16d3ba175614a4177d911d09ccdb1",
+                "2ef48589967a314467e07d6e2639ab7c8741a4c6ea8a2ee2c78c35a7bf5e9c7a",
+                "64fd00587d39e27c4a3ce191f02a38b2261272691bf466c538140fce109de323",
+                "0cb4a1431066a40721531059297af0094adad277733b1d51b41c32801b6bbc9c",
+                "ac4187e658cf1a7c49b83da3fc8adb26f39e9eb55724ffc70c0dc7a747ed1786",
+                "f1f9e37f3db03e857055a7ad9a5a7516cb795af62b318ba0601598b35ae6b4a6"
+              ],
+              "batch_hits": 11,
+              "condition_signature": "a79e13125a194532c8194036",
+              "created_at": "2026-08-23T10:40:34+08:00",
+              "cumulative_decided": 91,
+              "cumulative_hits": 54,
+              "evidence_hash": "dc1f425291be1585c8fa5f55d8951182aaacaeb4c228ef0a0dae272bb75f47aa",
+              "minimum_acceptable_odds_display": 2.17,
+              "minimum_acceptable_odds_raw": 2.1706365126319733,
+              "prior_evidence_hash": "4fdbd77d08bf9a9ab76c4375526854bc1baa759f48acbdd003dc817d327843e4",
+              "prior_version": 2,
+              "version": 3,
+              "wilson95_lower_raw": 0.49069436047008386
+            }
+          ],
+          "historical_evidence": {
+            "artifact": {
+              "as_of": "2026-08-20T23:48:58+08:00",
+              "hash": "56eddf009bffd738b3fb5969ea781e2590f45fc0c080b009487e49c7d91ca277",
+              "version": "granular-ranking-v1"
+            },
+            "decided": 54,
+            "hits": 35,
+            "pushes": 0
+          },
           "signature": "a79e13125a194532c8194036"
         },
         {
-          "activation_boundary": "2026-08-20T23:48:58+08:00",
+          "active_evidence": {
+            "activation_boundary_at": "2026-08-20T23:48:58+08:00",
+            "created_at": "2026-08-20T23:48:58+08:00",
+            "cumulative_decided": 69,
+            "cumulative_hits": 42,
+            "evidence_hash": "f30019fa8cd17cfaeef77f63b61a38b74fc4dd88724b5d035a6e787366b914d7",
+            "minimum_acceptable_odds_display": 2.17,
+            "minimum_acceptable_odds_raw": 2.170421880110049,
+            "version": 2,
+            "wilson95_lower_raw": 0.49073991842972764
+          },
           "active_evidence_hash": "f30019fa8cd17cfaeef77f63b61a38b74fc4dd88724b5d035a6e787366b914d7",
           "active_evidence_version": 2,
           "condition_number": 15,
@@ -1188,12 +3812,74 @@
             "system": "footbreak",
             "version": "granular-condition-v1"
           },
-          "definition_hash": "1a49d5fcc424f70f024e7b1fed9e59cf1276f18d35f5aac74ce61637c6f6c232",
-          "order_position": 15,
+          "evidence_versions": [
+            {
+              "activation_boundary_at": "2026-08-20T23:48:58+08:00",
+              "batch_decided": 0,
+              "batch_fixture_market_hashes": [],
+              "batch_hits": 0,
+              "condition_signature": "1a49d5fcc424f70f024e7b1f",
+              "created_at": "2026-08-20T23:48:58+08:00",
+              "cumulative_decided": 53,
+              "cumulative_hits": 34,
+              "evidence_hash": "4f20fc20aa2ad72370ac033b04fdb2a74250b77e96c69594915de7732a7dbdab",
+              "migration_baseline": true,
+              "minimum_acceptable_odds_display": 2.1,
+              "minimum_acceptable_odds_raw": 2.0968254635700196,
+              "prior_evidence_hash": null,
+              "prior_version": null,
+              "version": 1,
+              "wilson95_lower_raw": 0.5069114155535945
+            },
+            {
+              "activation_boundary_at": "2026-08-20T23:48:58+08:00",
+              "batch_decided": 16,
+              "batch_fixture_market_hashes": [],
+              "batch_fixture_market_ids_unavailable_from_legacy_aggregate": true,
+              "batch_hits": 8,
+              "condition_signature": "1a49d5fcc424f70f024e7b1f",
+              "created_at": "2026-08-20T23:48:58+08:00",
+              "cumulative_decided": 69,
+              "cumulative_hits": 42,
+              "evidence_hash": "f30019fa8cd17cfaeef77f63b61a38b74fc4dd88724b5d035a6e787366b914d7",
+              "initial_migration_full_cohort": true,
+              "legacy_prospective_cohort": {
+                "decided": 16,
+                "hits": 8,
+                "pushes": 0
+              },
+              "minimum_acceptable_odds_display": 2.17,
+              "minimum_acceptable_odds_raw": 2.170421880110049,
+              "prior_evidence_hash": "4f20fc20aa2ad72370ac033b04fdb2a74250b77e96c69594915de7732a7dbdab",
+              "prior_version": 1,
+              "version": 2,
+              "wilson95_lower_raw": 0.49073991842972764
+            }
+          ],
+          "historical_evidence": {
+            "artifact": {
+              "as_of": "2026-08-20T23:48:58+08:00",
+              "hash": "0d9731ed41a1e6f58ce25e79bf0c6ac4f068a16ce9fc773cc404cf073243672f",
+              "version": "granular-ranking-v1"
+            },
+            "decided": 53,
+            "hits": 34,
+            "pushes": 0
+          },
           "signature": "1a49d5fcc424f70f024e7b1f"
         },
         {
-          "activation_boundary": "2026-08-21T02:11:32+08:00",
+          "active_evidence": {
+            "activation_boundary_at": "2026-08-21T02:11:32+08:00",
+            "created_at": "2026-08-21T02:11:32+08:00",
+            "cumulative_decided": 50,
+            "cumulative_hits": 32,
+            "evidence_hash": "95b9558042cb2eef029365cdf41370c67d8e5d23510aa8b61e5004eb0cd1de4d",
+            "minimum_acceptable_odds_display": 2.12,
+            "minimum_acceptable_odds_raw": 2.1212949279987217,
+            "version": 1,
+            "wilson95_lower_raw": 0.501410168761127
+          },
           "active_evidence_hash": "95b9558042cb2eef029365cdf41370c67d8e5d23510aa8b61e5004eb0cd1de4d",
           "active_evidence_version": 1,
           "condition_number": 16,
@@ -1221,12 +3907,50 @@
             "system": "footbreak",
             "version": "granular-condition-v1"
           },
-          "definition_hash": "76a34f2b71c6eedfba4b2496ab49ca54f583a1fc75954db9da5d63945dcd5662",
-          "order_position": 16,
+          "evidence_versions": [
+            {
+              "activation_boundary_at": "2026-08-21T02:11:32+08:00",
+              "batch_decided": 0,
+              "batch_fixture_market_hashes": [],
+              "batch_hits": 0,
+              "condition_signature": "76a34f2b71c6eedfba4b2496",
+              "created_at": "2026-08-21T02:11:32+08:00",
+              "cumulative_decided": 50,
+              "cumulative_hits": 32,
+              "evidence_hash": "95b9558042cb2eef029365cdf41370c67d8e5d23510aa8b61e5004eb0cd1de4d",
+              "migration_baseline": true,
+              "minimum_acceptable_odds_display": 2.12,
+              "minimum_acceptable_odds_raw": 2.1212949279987217,
+              "prior_evidence_hash": null,
+              "prior_version": null,
+              "version": 1,
+              "wilson95_lower_raw": 0.501410168761127
+            }
+          ],
+          "historical_evidence": {
+            "artifact": {
+              "as_of": "2026-08-21T02:11:32+08:00",
+              "hash": "6346c1a3ace718e10b59a88052a7136da67744fe3f4bb6a00406db07cacf9562",
+              "version": "granular-ranking-v1"
+            },
+            "decided": 50,
+            "hits": 32,
+            "pushes": 0
+          },
           "signature": "76a34f2b71c6eedfba4b2496"
         },
         {
-          "activation_boundary": "2026-08-21T02:11:32+08:00",
+          "active_evidence": {
+            "activation_boundary_at": "2026-08-21T02:11:32+08:00",
+            "created_at": "2026-08-21T02:11:32+08:00",
+            "cumulative_decided": 50,
+            "cumulative_hits": 32,
+            "evidence_hash": "eef5807b2cf919727c668c8e933ac9398338032ff02059a0dd3ded8163babca3",
+            "minimum_acceptable_odds_display": 2.12,
+            "minimum_acceptable_odds_raw": 2.1212949279987217,
+            "version": 1,
+            "wilson95_lower_raw": 0.501410168761127
+          },
           "active_evidence_hash": "eef5807b2cf919727c668c8e933ac9398338032ff02059a0dd3ded8163babca3",
           "active_evidence_version": 1,
           "condition_number": 17,
@@ -1255,13 +3979,164 @@
             "system": "footbreak",
             "version": "granular-condition-v1"
           },
-          "definition_hash": "0a53d616f4b205339da39824876ca6d9464928d73ac6ce66cb9c1ba950da7498",
-          "order_position": 17,
+          "evidence_versions": [
+            {
+              "activation_boundary_at": "2026-08-21T02:11:32+08:00",
+              "batch_decided": 0,
+              "batch_fixture_market_hashes": [],
+              "batch_hits": 0,
+              "condition_signature": "0a53d616f4b205339da39824",
+              "created_at": "2026-08-21T02:11:32+08:00",
+              "cumulative_decided": 50,
+              "cumulative_hits": 32,
+              "evidence_hash": "eef5807b2cf919727c668c8e933ac9398338032ff02059a0dd3ded8163babca3",
+              "migration_baseline": true,
+              "minimum_acceptable_odds_display": 2.12,
+              "minimum_acceptable_odds_raw": 2.1212949279987217,
+              "prior_evidence_hash": null,
+              "prior_version": null,
+              "version": 1,
+              "wilson95_lower_raw": 0.501410168761127
+            }
+          ],
+          "historical_evidence": {
+            "artifact": {
+              "as_of": "2026-08-21T02:11:32+08:00",
+              "hash": "f0b672ff9f8877f36cc31942a8962bf212578335eec2fcd0e34abd34b43bde0e",
+              "version": "granular-ranking-v1"
+            },
+            "decided": 50,
+            "hits": 32,
+            "pushes": 0
+          },
           "signature": "0a53d616f4b205339da39824"
         }
       ],
-      "namespace_activation_at": "2026-08-19T23:58:24+08:00",
-      "namespace_schema_version": 2
+      "export_digest": "c99ec16ca1e00a1730f64801f75816de0d8878d8faff7948a9109577f3e80eaf",
+      "namespace_metadata": {
+        "activation_at": "2026-08-19T23:58:24+08:00",
+        "cutover_at": "2026-08-19T23:58:24+08:00",
+        "granular_ranking_initial_migration_completed_at": "2026-08-20T23:48:58+08:00",
+        "granular_ranking_initial_migration_version": 1,
+        "quarter_settlement_activation_at": "2026-08-26T17:57:14+08:00",
+        "rollover_migration_at": "2026-08-20T23:00:13+08:00",
+        "schema_version": 2,
+        "system": "footbreak"
+      },
+      "production_identity_manifest": {
+        "entries": [
+          {
+            "condition_number": 1,
+            "condition_signature": "cdcddb937b8f8259db5cf799",
+            "definition_hash": "cdcddb937b8f8259db5cf7998b242f6e69a203076fa3441747f2feb69a9d0833",
+            "initial_evidence_hash": "ae49569b8e6bf68096ad3aff6e2536492f3494fec8ec854b7c3d9efcbbb1182b"
+          },
+          {
+            "condition_number": 2,
+            "condition_signature": "83dee96f7aef2a6e5f997f02",
+            "definition_hash": "83dee96f7aef2a6e5f997f0214e363c362f353c6a5e07973d3d7302a954bceb7",
+            "initial_evidence_hash": "578982c8a5a37fb6a5604d8c348fdf0d58352a58a867304cec99623bcc367603"
+          },
+          {
+            "condition_number": 3,
+            "condition_signature": "0bbe71d0bd504305f07d0b9e",
+            "definition_hash": "0bbe71d0bd504305f07d0b9ea5b3776331ec5074cc20425e1d3cc7f16fc73b95",
+            "initial_evidence_hash": "385fa568aebf7812fad71f16bc17cce48615795c5c1999ec48272642085f8146"
+          },
+          {
+            "condition_number": 4,
+            "condition_signature": "7b69b0c09392930f89bfe52d",
+            "definition_hash": "7b69b0c09392930f89bfe52d8c346c487525b3aa39bfcd6695b0fd1e0d7f5812",
+            "initial_evidence_hash": "e8e44105e980409c259aae8462c509774ea9747f7289f2e5de4ec6bd3a00d000"
+          },
+          {
+            "condition_number": 5,
+            "condition_signature": "1ccc421a49fd98f328a0b2c4",
+            "definition_hash": "1ccc421a49fd98f328a0b2c48aaebb3030a71a454505252e526663ca792a89f9",
+            "initial_evidence_hash": "91c1b268e14656c6dbc99b457b5852f2ae3c0341d1c5794bead3d1fd6da42b0d"
+          },
+          {
+            "condition_number": 6,
+            "condition_signature": "e9b991435138c3c429a696a8",
+            "definition_hash": "e9b991435138c3c429a696a8df05b6f45135b40a903537861c331c746b19a534",
+            "initial_evidence_hash": "f599bab2b41729106e06205413daf174ece3bc07423f6af2842783e4b217655a"
+          },
+          {
+            "condition_number": 7,
+            "condition_signature": "a7a8aae669b985ff87f8be6e",
+            "definition_hash": "a7a8aae669b985ff87f8be6e13b503a207aa166cae7fab069fb745034a3ab19e",
+            "initial_evidence_hash": "9c80fbe0c72bff4929d4dc0541faacb9413947f1a9efe5b46a0fff1996ed0411"
+          },
+          {
+            "condition_number": 8,
+            "condition_signature": "489929536fb33473f0a90f25",
+            "definition_hash": "489929536fb33473f0a90f2526eb801bb02e4478a45ec5b440eb5819d788b86b",
+            "initial_evidence_hash": "840a238f114c18a29e3e14d95772c7c41ed33bfcd699f785965acfb7406ca470"
+          },
+          {
+            "condition_number": 9,
+            "condition_signature": "d3e112d8815b6e9df46e075d",
+            "definition_hash": "d3e112d8815b6e9df46e075d01182fac9ee81648641c84650b0a1cb0352e7840",
+            "initial_evidence_hash": "ca33bcae1864ce4459c94803176a0d0dfef700aaccc0d959f5842ca553677092"
+          },
+          {
+            "condition_number": 10,
+            "condition_signature": "033986661061d8b486cff464",
+            "definition_hash": "033986661061d8b486cff4643e5ac93d96a1a9937f14a0f3df96aae83b4bfbb6",
+            "initial_evidence_hash": "bddc84a87d143dad4d9a471b8409ddc4ecc46953348913d93ec8d6c96518e2d9"
+          },
+          {
+            "condition_number": 11,
+            "condition_signature": "0869fbd4573b9dee57ffe2eb",
+            "definition_hash": "0869fbd4573b9dee57ffe2eb333a2b76d2cdef7263d3e1d44ccb482ccc3d28e4",
+            "initial_evidence_hash": "5eeaf27e599c3bd71c91b7aa7f9c71e5296e21ffcd744d787affb45eba7517c9"
+          },
+          {
+            "condition_number": 12,
+            "condition_signature": "785894424f74f7d3bf9f79e9",
+            "definition_hash": "785894424f74f7d3bf9f79e9c4b07e65da238d0f98c207ec1624795657feac94",
+            "initial_evidence_hash": "ea2be2fda2ccf37995d3e6e8dc7a3af95b66aed025c04554a6a34f4a533c8f79"
+          },
+          {
+            "condition_number": 13,
+            "condition_signature": "715edfc03f06dba83f50d204",
+            "definition_hash": "715edfc03f06dba83f50d2047e9c0234b20069be001d078a27c478b5a7f1ce44",
+            "initial_evidence_hash": "b697c078e3bb4c149b07691290d9613c14f2aea3e330c8a599ad63392ae2bb45"
+          },
+          {
+            "condition_number": 14,
+            "condition_signature": "a79e13125a194532c8194036",
+            "definition_hash": "a79e13125a194532c81940366fd01cc819a5c8eb0090aa033cf6456ba1daf18a",
+            "initial_evidence_hash": "97b161e48e9de9974780b163439dcfb098a7a1a205c70ef003c4ae40fce8488e"
+          },
+          {
+            "condition_number": 15,
+            "condition_signature": "1a49d5fcc424f70f024e7b1f",
+            "definition_hash": "1a49d5fcc424f70f024e7b1fed9e59cf1276f18d35f5aac74ce61637c6f6c232",
+            "initial_evidence_hash": "4f20fc20aa2ad72370ac033b04fdb2a74250b77e96c69594915de7732a7dbdab"
+          },
+          {
+            "condition_number": 16,
+            "condition_signature": "76a34f2b71c6eedfba4b2496",
+            "definition_hash": "76a34f2b71c6eedfba4b2496ab49ca54f583a1fc75954db9da5d63945dcd5662",
+            "initial_evidence_hash": "95b9558042cb2eef029365cdf41370c67d8e5d23510aa8b61e5004eb0cd1de4d"
+          },
+          {
+            "condition_number": 17,
+            "condition_signature": "0a53d616f4b205339da39824",
+            "definition_hash": "0a53d616f4b205339da39824876ca6d9464928d73ac6ce66cb9c1ba950da7498",
+            "initial_evidence_hash": "eef5807b2cf919727c668c8e933ac9398338032ff02059a0dd3ded8163babca3"
+          }
+        ],
+        "immutable": true,
+        "manifest_hash": "9348cc7a6007fe2787dbf9d932e8129cfbeeb119f8988a2c78fc4396b77fff3e",
+        "manifest_version": "wilson-production-identity-v1",
+        "schema_version": 1,
+        "system": "footbreak"
+      },
+      "schema": "wilson-sanitized-registry-chains-v1",
+      "source_ledger_sha256": "a8deb6423d92bec989dbc943d0d919e82dbb5c0d84c5838114b2fa941587d1ad",
+      "system": "footbreak"
     }
   }
 }

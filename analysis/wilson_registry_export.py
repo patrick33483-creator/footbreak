@@ -66,6 +66,11 @@ EVIDENCE_MIGRATION_KEYS = EVIDENCE_BASE_KEYS | {
     "initial_migration_full_cohort", "legacy_prospective_cohort",
 }
 LEGACY_COHORT_KEYS = {"hits", "decided", "pushes"}
+PAYLOAD_V2_SCHEMA = "wilson-registry-export-payload-v2"
+EXPORT_V2_SCHEMA = "wilson-sanitized-registry-chains-v2"
+EVIDENCE_AGGREGATE_KEYS = EVIDENCE_BASE_KEYS | {
+    "legacy_ordinary_batch_aggregate",
+}
 
 
 def _digest(value: Any) -> str:
@@ -94,6 +99,18 @@ def _evidence_version(row: Any) -> dict[str, Any]:
         if not isinstance(cohort, dict) or set(cohort) != LEGACY_COHORT_KEYS:
             raise ValueError("legacy evidence cohort shape invalid")
     return _only(row, keys)
+
+
+def _evidence_version_v2(row: Any) -> dict[str, Any]:
+    if not isinstance(row, dict):
+        raise ValueError("evidence version must be an object")
+    if set(row) == EVIDENCE_AGGREGATE_KEYS:
+        marker = row.get("legacy_ordinary_batch_aggregate")
+        from analysis.legacy_batch_aggregate import MARKER_KEYS
+        if not isinstance(marker, dict) or set(marker) != MARKER_KEYS:
+            raise ValueError("aggregate marker shape invalid")
+        return copy.deepcopy(row)
+    return _evidence_version(row)
 
 
 def _namespace_metadata(value: Any, system: str) -> dict[str, Any]:
@@ -296,6 +313,223 @@ def export_registry(
     if ledger != before:
         raise RuntimeError("sanitized export mutated source ledger")
     return result
+
+
+def _registry_payload_v2(
+    ledger: dict[str, Any], system: str, *,
+    authority_context: Any = None, calculation_context: Any = None,
+) -> dict[str, Any]:
+    """Build the authority-neutral v2 payload without envelope metadata."""
+    from analysis.legacy_batch_aggregate import (
+        _require_calculation_context, require_authority_context,
+    )
+    if (authority_context is None) == (calculation_context is None):
+        raise TypeError("supply exactly one legacy batch context")
+    authority = None
+    if authority_context is not None:
+        authority = require_authority_context(authority_context)
+        calculation = authority.calculation
+    else:
+        calculation = _require_calculation_context(calculation_context)
+    if system != "footbreak":
+        raise ValueError("aggregate v2 export is Footbreak-only")
+    ns = ledger.get(wv.NAMESPACE)
+    if not isinstance(ns, dict):
+        raise ValueError("validated Wilson namespace required")
+    metadata = _namespace_metadata(_only(ns, NAMESPACE_KEYS), system)
+    order, conditions = ns.get("condition_order"), ns.get("conditions")
+    if not isinstance(order, list) or not isinstance(conditions, dict):
+        raise ValueError("frozen condition registry unavailable")
+    identity, reason = wv.validate_production_identity_manifest_v1(ns, system)
+    if identity is None:
+        raise ValueError(reason or "production identity v1 invalid")
+    rows = []
+    for signature in order:
+        frozen = conditions.get(signature)
+        if not isinstance(frozen, dict):
+            raise ValueError("frozen condition unavailable")
+        historical = frozen.get("historical_evidence")
+        artifact = (
+            historical.get("artifact") if isinstance(historical, dict) else None
+        )
+        active = frozen.get("active_evidence")
+        versions = frozen.get("evidence_versions")
+        if (
+            not isinstance(historical, dict)
+            or not HISTORICAL_KEYS.issubset(historical)
+            or not isinstance(artifact, dict) or set(artifact) != ARTIFACT_KEYS
+            or not isinstance(active, dict) or set(active) != ACTIVE_KEYS
+            or not isinstance(versions, list)
+        ):
+            raise ValueError("v2 registry projection invalid")
+        projected = [_evidence_version_v2(row) for row in versions]
+        if authority is not None:
+            definition, validated, chain_reason = (
+                wv._validate_frozen_identity_and_chain(
+                    frozen, signature, system,
+                    authority_context=authority,
+                )
+            )
+            if definition is None or validated is None or chain_reason is not None:
+                raise ValueError(chain_reason or "aggregate evidence chain invalid")
+        rows.append({
+            "signature": signature,
+            "condition_number": frozen.get("condition_number"),
+            "definition": copy.deepcopy(frozen.get("definition")),
+            "historical_evidence": {
+                **_only(historical, HISTORICAL_KEYS - {"artifact"}),
+                "artifact": _only(artifact, ARTIFACT_KEYS),
+            },
+            "evidence_versions": projected,
+            "active_evidence_version": frozen.get("active_evidence_version"),
+            "active_evidence_hash": frozen.get("active_evidence_hash"),
+            "active_evidence": _only(active, ACTIVE_KEYS),
+        })
+    payload = {
+        "schema": PAYLOAD_V2_SCHEMA,
+        "system": system,
+        "namespace_metadata": metadata,
+        "condition_order": copy.deepcopy(order),
+        "conditions": rows,
+        "production_identity_manifest": copy.deepcopy(identity),
+    }
+    # Calculation-context use is discovery-only and must be the exact planned
+    # sanitized payload, not a caller-invented aggregate ledger.
+    if calculation_context is not None and _digest(payload) != (
+        calculation.document["expected_post_export_registry_payload_sha256"]
+    ):
+        raise ValueError("discovery post export payload commitment mismatch")
+    return payload
+
+
+def export_registry_payload_v2_for_discovery(
+    ledger: dict[str, Any], calculation_context: Any,
+) -> dict[str, Any]:
+    return _registry_payload_v2(
+        ledger, "footbreak", calculation_context=calculation_context,
+    )
+
+
+def export_registry_v2(
+    ledger: dict[str, Any], *, authority_context: Any,
+) -> dict[str, Any]:
+    from analysis.legacy_batch_aggregate import (
+        canonical_hash_v1, require_authority_context,
+    )
+    context = require_authority_context(authority_context)
+    before = copy.deepcopy(ledger)
+    payload = _registry_payload_v2(
+        ledger, "footbreak", authority_context=context,
+    )
+    body = {
+        "schema": EXPORT_V2_SCHEMA,
+        "trusted_authority_manifest_hash": context.manifest_hash,
+        "payload_sha256": canonical_hash_v1(payload),
+        "payload": payload,
+        "authority_material": context.authority,
+    }
+    result = {**body, "export_digest": canonical_hash_v1(body)}
+    if ledger != before:
+        raise RuntimeError("v2 export mutated source ledger")
+    return result
+
+
+def verify_export_v2(
+    document: Any, *, trusted_authority_hash: str | None = None,
+    trusted_public_key: str | bytes | None = None,
+    detached_signature: dict[str, Any] | None = None,
+    trusted_public_key_id: str | None = None,
+) -> dict[str, Any]:
+    """Verify payload, independent authority pin, and archival envelope."""
+    from analysis.legacy_batch_aggregate import (
+        AUTHORITY_SCHEMA, _extract_calculation, canonical_hash_v1,
+        validate_final_authority, validate_sanitized_calculation,
+    )
+    keys = {
+        "schema", "trusted_authority_manifest_hash", "payload_sha256", "payload",
+        "authority_material", "export_digest",
+    }
+    if not isinstance(document, dict) or set(document) != keys:
+        raise ValueError("v2 export envelope shape invalid")
+    if document.get("schema") != EXPORT_V2_SCHEMA:
+        raise ValueError("v2 export schema invalid")
+    if trusted_authority_hash is None and (
+        trusted_public_key is None or detached_signature is None
+        or not trusted_public_key_id
+    ):
+        raise ValueError("external authority trust required")
+    authority_hash = document.get("trusted_authority_manifest_hash")
+    if trusted_authority_hash is not None and authority_hash != trusted_authority_hash:
+        raise ValueError("trusted authority hash mismatch")
+    authority = document.get("authority_material")
+    if not isinstance(authority, dict):
+        raise ValueError("complete authority material required")
+    authority_body = copy.deepcopy(authority)
+    claimed_authority_hash = authority_body.pop("authority_manifest_hash", None)
+    if claimed_authority_hash != canonical_hash_v1(authority_body):
+        raise ValueError("embedded authority hash invalid")
+    if authority_hash != claimed_authority_hash:
+        raise ValueError("export authority binding mismatch")
+    if trusted_public_key is not None or detached_signature is not None:
+        if not isinstance(detached_signature, dict) or set(detached_signature) != {
+            "schema", "algorithm", "authority_manifest_hash", "approver_key_id",
+            "approved_at", "signature_base64",
+        }:
+            raise ValueError("detached authority signature invalid")
+        if (
+            detached_signature["schema"]
+            != "footbreak-legacy-batch-authority-signature-v1"
+            or detached_signature["algorithm"] != "ed25519"
+            or detached_signature["authority_manifest_hash"] != authority_hash
+            or detached_signature["approver_key_id"] != trusted_public_key_id
+        ):
+            raise ValueError("detached authority signature invalid")
+        import base64
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+            Ed25519PublicKey,
+        )
+        try:
+            key_bytes = (
+                trusted_public_key if isinstance(trusted_public_key, bytes)
+                else base64.b64decode(trusted_public_key, validate=True)
+            )
+            Ed25519PublicKey.from_public_bytes(key_bytes).verify(
+                base64.b64decode(
+                    detached_signature["signature_base64"], validate=True,
+                ),
+                AUTHORITY_SCHEMA.encode("ascii")
+                + b"\0" + bytes.fromhex(authority_hash),
+            )
+        except Exception as exc:
+            raise ValueError("detached authority signature invalid") from exc
+    validate_final_authority(
+        authority, authority_hash, authority.get("implementation"),
+    )
+    calculation = validate_sanitized_calculation(_extract_calculation(authority))
+    payload = document.get("payload")
+    if (
+        not isinstance(payload, dict)
+        or set(payload) != {
+            "schema", "system", "namespace_metadata", "condition_order",
+            "conditions", "production_identity_manifest",
+        }
+        or payload.get("schema") != PAYLOAD_V2_SCHEMA
+        or canonical_hash_v1(payload) != document.get("payload_sha256")
+        or document.get("payload_sha256")
+        != authority.get("expected_poststate", {}).get(
+            "post_export_registry_payload_sha256",
+            calculation.document["expected_post_export_registry_payload_sha256"],
+        )
+    ):
+        raise ValueError("v2 registry payload hash mismatch")
+    if payload != calculation.document["expected_post_export_registry_payload"]:
+        raise ValueError("v2 payload does not reconstruct approved postimages")
+    body = {key: value for key, value in document.items() if key != "export_digest"}
+    if canonical_hash_v1(body) != document.get("export_digest"):
+        raise ValueError("v2 export envelope digest invalid")
+    # Re-validating calculation commits every old preimage, postimage, and
+    # reservation set independently of the embedded authority summary.
+    return copy.deepcopy(document)
 
 
 def _same_file(left: Path, right: Path) -> bool:

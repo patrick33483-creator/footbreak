@@ -577,7 +577,11 @@ def settlement_bets(ledger):
 
 def recompute(led):
     """Recompute public totals from Wilson rows only; v1 remains archival."""
-    stats = recompute_namespace(led, "footbreak")
+    from analysis.legacy_batch_runtime import load_production_legacy_batch_authority
+    stats = recompute_namespace(
+        led, "footbreak",
+        authority_context=load_production_legacy_batch_authority(led),
+    )
     led["stats"] = stats
     return stats
 

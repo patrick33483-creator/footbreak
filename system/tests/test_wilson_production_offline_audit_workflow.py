@@ -1,3 +1,4 @@
+import copy
 import hashlib
 import json
 import subprocess
@@ -11,7 +12,7 @@ from analysis.wilson_audit_gate import (
     EXPECTED_RELEASE, enforce, summary_projection,
 )
 from analysis.tests.test_wilson_37_condition_regression import (
-    _checked_out_commit, _registry,
+    _active_projection, _checked_out_commit, _registry, _retirement_document,
 )
 from analysis import wilson_validation as wv
 from analysis.wilson_registry_manifest import build_manifest
@@ -63,8 +64,21 @@ class WilsonProductionOfflineAuditWorkflowTests(unittest.TestCase):
         hashes = {}
         for system in EXPECTED_RELEASE:
             ledger = inputs / f"{system}-ledger.json"
-            value, _specs, _allowlist, document = _registry(system)
+            value, _specs, allowlist, _document = _registry(system)
+            namespace = value[wv.NAMESPACE]
+            for frozen in namespace["conditions"].values():
+                first = copy.deepcopy(frozen["evidence_versions"][0])
+                frozen["evidence_versions"] = [first]
+                frozen["active_evidence_version"] = 1
+                frozen["active_evidence_hash"] = first["evidence_hash"]
+                frozen["active_evidence"] = _active_projection(first)
+            production, _validated, reason = (
+                wv._expected_production_identity_manifest(namespace, system)
+            )
+            self.assertIsNone(reason)
+            namespace["production_identity_manifest"] = production
             if system == "footbreak":
+                document = _retirement_document(value, allowlist)
                 wv.apply_condition_identity_migration(
                     value, system, authorized_manifest=document,
                     expected_release_commit=_checked_out_commit(),

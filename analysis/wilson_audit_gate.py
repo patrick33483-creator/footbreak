@@ -154,7 +154,13 @@ def enforce(base: Path, *, audited_commit: str) -> None:
         actual[ledger_path.name] = hashlib.sha256(
             ledger_path.read_bytes(),
         ).hexdigest()
-        rebuilt = build_manifest(ledger, system)
+        from analysis.legacy_batch_runtime import (
+            load_production_legacy_batch_authority,
+        )
+        rebuilt = build_manifest(
+            ledger, system,
+            authority_context=load_production_legacy_batch_authority(ledger),
+        )
         if supplied != rebuilt:
             raise ValueError(f"{system}: supplied manifest does not match ledger")
         manifests[system] = rebuilt

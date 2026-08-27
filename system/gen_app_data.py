@@ -942,7 +942,11 @@ def main(out_path=None):
         except Exception:
             pass
     from analysis.wilson_validation import project_condition_funnel
-    condition_funnel = project_condition_funnel(led, "footbreak")
+    from analysis.legacy_batch_runtime import load_production_legacy_batch_authority
+    condition_funnel = project_condition_funnel(
+        led, "footbreak",
+        authority_context=load_production_legacy_batch_authority(led),
+    )
     ledger = {
         "bankroll": bank,
         "bets": [_public_bet(bet) for bet in sorted(bets, key=lambda b: b.get("kickoff") or "")],

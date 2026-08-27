@@ -127,12 +127,6 @@ class WilsonRegistryExportTests(unittest.TestCase):
                 if label == "evidence version":
                     version = changed_frozen["evidence_versions"][0]
                     version["evidence_hash"] = wv._version_hash(version)
-                    changed_frozen["active_evidence_hash"] = version[
-                        "evidence_hash"
-                    ]
-                    changed_frozen["active_evidence"]["evidence_hash"] = (
-                        version["evidence_hash"]
-                    )
                 with self.assertRaisesRegex(
                     ValueError, "unknown.*fields",
                 ):

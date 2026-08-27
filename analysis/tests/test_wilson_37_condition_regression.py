@@ -12,7 +12,10 @@ import copy
 import hashlib
 import itertools
 import json
+import os
+import tempfile
 import unittest
+from functools import lru_cache
 from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
@@ -25,6 +28,13 @@ from analysis.migrate_condition_identity_retirement import _checked_out_commit
 from analysis.migrate_wilson_formal_bindings import migrate_legacy_formal_bindings
 from analysis.quarter_line import from_dixon_coles
 from analysis.wilson_registry_manifest import build_manifest
+from analysis.legacy_batch_aggregate import (
+    assemble_final_authority_candidate, build_live_discovery,
+    canonical_hash_v1, REQUIRED_RUNTIME_MODULES,
+    runtime_identity_from_checkout, serialize_ledger_bytes_v1,
+    validate_final_authority, validate_sanitized_calculation,
+)
+from analysis.migrate_legacy_batch_aggregates import CONFIRMATION, migrate
 
 
 BASELINE = "2026-08-20T00:00:00+08:00"
@@ -42,12 +52,59 @@ PINNED_FIXTURE = (
     / "wilson_production_registry_5205a8b.json"
 )
 PINNED_FIXTURE_DIGEST = (
-    "f79e435a28ab33db5fa585cc58aa01340221daacdac16709a513d2ffac87be77"
+    "7ad25feb2a17e9eed6f9230e9b76543975b0db04341bd9780d26dee06be173a4"
 )
-PINNED_IDENTITY_ROOTS = {
-    "footbreak": "3dac349bc973988342bc7689509e7d93d1aa5a17e8ab1b2f7d249f27e1419952",
-    "crown": "d49a6f41d5a7b8284453d87c306c4355e87ec213f2a8428931a27eaa039de3a2",
-}
+CALCULATION_PATH = (
+    Path(__file__).resolve().parents[2]
+    / ".."
+    / "proposed-legacy-batch-authority-calculation.json"
+).resolve()
+
+
+@lru_cache(maxsize=1)
+def _legacy_batch_context():
+    calculation_document = json.loads(CALCULATION_PATH.read_text())
+    calculation = validate_sanitized_calculation(calculation_document)
+    runtime = runtime_identity_from_checkout(
+        Path(__file__).resolve().parents[2],
+        sorted(REQUIRED_RUNTIME_MODULES.values()),
+    )
+    runtime["working_tree_policy"] = "clean_tracked_no_shadow_files"
+    ledger, _specs, allowlist, _document = _registry("footbreak")
+    ledger["bets"] = []
+    retirement = _retirement_document(ledger, allowlist)
+    wv.apply_condition_identity_migration(
+        ledger, "footbreak", authorized_manifest=retirement,
+        expected_release_commit=_checked_out_commit(),
+    )
+    discovery = build_live_discovery(
+        ledger, calculation, execution_identity=runtime,
+        writer_coordination={
+            "all_writers_quiesced": True,
+            "canonical_lock": {
+                "realpath": "/reviewed/test.lock", "st_dev": 1, "st_ino": 2,
+                "st_uid": 0, "st_gid": 0, "st_mode": 384, "st_nlink": 1,
+            },
+            "writer_inventory_root": "a" * 64, "writer_count": 0,
+            "service_configuration_sha256": "b" * 64,
+            "runtime_config": {
+                "realpath": "/reviewed/runtime.json",
+                "st_dev": 1, "st_ino": 4, "st_uid": 0, "st_gid": 0,
+                "st_mode": 384, "st_nlink": 1, "sha256": "c" * 64,
+            },
+        },
+        capture={"ledger_object": {
+            "realpath": "/reviewed/test-ledger", "st_dev": 1, "st_ino": 3,
+            "st_uid": 0, "st_gid": 0, "st_mode": 420, "st_nlink": 1,
+        }},
+    )
+    authority = assemble_final_authority_candidate(
+        calculation_document, discovery,
+    )
+    authority_hash = authority["authority_manifest_hash"]
+    return calculation, validate_final_authority(
+        authority, authority_hash, runtime,
+    )
 
 
 def _canonical_bytes(value: object) -> bytes:
@@ -63,63 +120,42 @@ def _pinned_fixture(value: dict | None = None) -> dict:
     )
     if hashlib.sha256(_canonical_bytes(fixture)).hexdigest() != PINNED_FIXTURE_DIGEST:
         raise ValueError("pinned production fixture digest mismatch")
+    if fixture.get("schema") != "wilson-production-chain-fixture-v2":
+        raise ValueError("pinned production fixture schema mismatch")
     if fixture.get("source") != {
         "repository": "patrick33483-creator/footbreak",
-        "audited_commit": "5205a8ba03bbae46bdc065f38a68467df48038aa",
-        "workflow_run_id": 33028833183,
-        "captured_at_utc": "2026-08-27T01:03:25.872502+00:00",
-        "captured_ledger_sha256": {
-            "footbreak-ledger.json": (
-                "539c86d9ad36b026bc52a786c2dbd1a72669ecf73bd67b9ac41b7ec6d6e15a94"
-            ),
-            "crown-ledger.json": (
-                "6b50800e896729bb070adacd81df76d056f4a372e942cf98c2a3130e873dec6c"
-            ),
-        },
-        "source_manifest_hashes": {
-            "footbreak": (
-                "a386b5e4ea7ea2041b83a2b6a9f09f5e1ace92939d3582d63043e41ea2e52f56"
-            ),
-            "crown": (
-                "35ab6adb7e258fcc54d3fc39bbe06921ee04677dadfbcf272cd10df21ea6cc6c"
-            ),
-        },
+        "audited_commit": "5c940c3389ed3100da758dea6af1e814ee32ce74",
+        "workflow_run_id": 33036920076,
+        "captured_at_utc": "2026-08-27T03:37:27Z",
     }:
         raise ValueError("pinned production fixture provenance mismatch")
-    for system, expected_count in (("footbreak", 17), ("crown", 20)):
-        identities = fixture["systems"][system]["identities"]
-        if len(identities) != expected_count:
+    from analysis.wilson_registry_export import verify_export
+    expected_exports = {
+        "footbreak": (
+            17, "a8deb6423d92bec989dbc943d0d919e82dbb5c0d84c5838114b2fa941587d1ad",
+            "c99ec16ca1e00a1730f64801f75816de0d8878d8faff7948a9109577f3e80eaf",
+        ),
+        "crown": (
+            20, "d7402fded158e577cf180abc0f461e72fc89b0ffcd7b7f4957cf0fdc45457b0a",
+            "b709b2211ab1784e5ccba5a73153f688fa544e1857bc80b6ba88896f69ac6e1c",
+        ),
+    }
+    for system, (count, ledger_hash, export_digest) in expected_exports.items():
+        exported = verify_export(fixture["systems"][system])
+        if (
+            len(exported["conditions"]) != count
+            or exported["source_ledger_sha256"] != ledger_hash
+            or exported["export_digest"] != export_digest
+        ):
             raise ValueError(f"{system}: pinned identity cardinality mismatch")
-        projection = []
-        for position, row in enumerate(identities, start=1):
-            definition_hash = hashlib.sha256(
-                _canonical_bytes(row["definition"]),
-            ).hexdigest()
+        for position, row in enumerate(exported["conditions"], start=1):
             if (
                 row["condition_number"] != position
-                or row["order_position"] != position
-                or row["signature"] != definition_hash[:24]
-                or row["definition_hash"] != definition_hash
-                or not isinstance(row["active_evidence_version"], int)
-                or isinstance(row["active_evidence_version"], bool)
-                or row["active_evidence_version"] < 1
-                or len(row["active_evidence_hash"]) != 64
+                or row["signature"] != exported["condition_order"][position - 1]
             ):
                 raise ValueError(
                     f"{system}: pinned identity mismatch at {position}"
                 )
-            projection.append({
-                key: copy.deepcopy(row[key])
-                for key in (
-                    "condition_number", "order_position", "signature",
-                    "definition_hash", "definition", "active_evidence_version",
-                    "active_evidence_hash", "activation_boundary",
-                )
-            })
-        if hashlib.sha256(_canonical_bytes(projection)).hexdigest() != (
-            PINNED_IDENTITY_ROOTS[system]
-        ):
-            raise ValueError(f"{system}: pinned identity root mismatch")
     return fixture
 
 
@@ -290,51 +326,41 @@ def _retirement_document(
 
 
 def _registry(system: str) -> tuple[dict, list[dict], tuple[dict, ...], dict | None]:
-    pinned = _pinned_fixture()["systems"][system]["identities"]
+    exported = _pinned_fixture()["systems"][system]
+    pinned = exported["conditions"]
     definitions = [copy.deepcopy(row["definition"]) for row in pinned]
     specs = [_spec_for_definition(definition) for definition in definitions]
-    source_counts = {1: (78, 124), 2: (34, 51)}
     items = []
-    for number, (definition, pinned_row) in enumerate(
-        zip(definitions, pinned), start=1,
-    ):
-        hits, decided = source_counts.get(number, (70, 80))
-        signature, frozen = _frozen(
-            definition, number, hits=hits, decided=decided,
-            boundary=(
-                pinned_row["activation_boundary"]
-                if system == "footbreak" and number in source_counts
-                else BASELINE
+    for pinned_row in pinned:
+        frozen = copy.deepcopy(pinned_row)
+        frozen.update({
+            "prospective": {},
+            "rollover_audit": copy.deepcopy(
+                frozen["evidence_versions"][1:][-64:]
             ),
-        )
-        assert signature == pinned_row["signature"]
-        if system == "footbreak" and number in source_counts:
-            assert (
-                frozen["active_evidence_hash"]
-                == pinned_row["active_evidence_hash"]
-            )
-        items.append((signature, frozen))
-    order = [signature for signature, _frozen_row in items]
+            "pending_rollover_progress": {
+                "eligible_decided": 0, "eligible_hits": 0, "accuracy": None,
+                "required": 20, "display": "0/20",
+                "excluded": copy.deepcopy(EXCLUDED_ZERO),
+            },
+        })
+        items.append((pinned_row["signature"], frozen))
+    order = copy.deepcopy(exported["condition_order"])
     ledger = {
         "bets": [],
         wv.NAMESPACE: {
-            "schema_version": wv.SCHEMA_VERSION,
-            "system": system,
-            "activation_at": BASELINE,
-            "quarter_settlement_activation_at": EFFECTIVE,
+            **copy.deepcopy(exported["namespace_metadata"]),
             "condition_order": order,
             "conditions": dict(items),
             "observations": [],
             "audit": [],
+            "production_identity_manifest": copy.deepcopy(
+                exported["production_identity_manifest"],
+            ),
         },
         "watch": {},
     }
     ns = ledger[wv.NAMESPACE]
-    expected, _validated, reason = wv._expected_production_identity_manifest(
-        ns, system,
-    )
-    assert reason is None and expected is not None
-    ns["production_identity_manifest"] = expected
     allowlist: tuple[dict, ...] = ()
     document = None
     if system == "footbreak":
@@ -485,6 +511,9 @@ def _append_settled(
     case.assertEqual(len(admissions), 1)
     admission, reason = wv.apply_active_evidence(
         ledger, system, admissions[0], stage_at=stage_at, now=stage_at,
+        authority_context=(
+            _legacy_batch_context()[1] if system == "footbreak" else None
+        ),
     )
     case.assertIsNone(reason)
     case.assertIsNotNone(admission)
@@ -497,6 +526,9 @@ def _append_settled(
             selected_label=f"condition {condition_number}",
             selected_role=spec["items"][-1]["role"],
             selected_line=matched_candidate["selected_line"],
+            authority_context=(
+                _legacy_batch_context()[1] if system == "footbreak" else None
+            ),
         )
         case.assertIsNotNone(row)
         assert row is not None
@@ -508,6 +540,9 @@ def _append_settled(
             selected_role=spec["items"][-1]["role"],
             selected_line=matched_candidate["selected_line"],
             decision_stage=own_stage,
+            authority_context=(
+                _legacy_batch_context()[1] if system == "footbreak" else None
+            ),
         )
         case.assertIsNotNone(row)
         assert row is not None
@@ -536,6 +571,110 @@ class WilsonThirtySevenConditionRegression(unittest.TestCase):
                 ledger, system, authorized_manifest=document,
                 expected_release_commit=_checked_out_commit(),
             )
+            calculation_document = json.loads(CALCULATION_PATH.read_text())
+            calculation = validate_sanitized_calculation(calculation_document)
+            runtime = _legacy_batch_context()[1].authority["implementation"]
+            with tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                ledger_path = root / "ledger.json"
+                lock_path = root / "writer.lock"
+                authority_path = root / "authority.json"
+                config_path = root / "runtime.json"
+                raw = serialize_ledger_bytes_v1(ledger)
+                ledger_path.write_bytes(raw)
+                lock_path.touch(mode=0o600)
+                os.chmod(lock_path, 0o600)
+                ledger_stat, lock_stat = ledger_path.stat(), lock_path.stat()
+                writer_inventory = [
+                    {
+                        "name": name, "unit_name": f"footbreak-{name}.service",
+                        "state": "inactive",
+                        "unit_sha256": "a" * 64,
+                        "config_sha256": "b" * 64,
+                    }
+                    for name in (
+                        "tick", "sweep", "settle", "t30",
+                        "result_reconciliation",
+                    )
+                ]
+                service_configuration = {
+                    "ledger_path": str(ledger_path),
+                    "canonical_lock_path": str(lock_path),
+                }
+                coordination = {
+                    "all_writers_quiesced": True,
+                    "canonical_lock": {
+                        "realpath": str(lock_path.resolve()),
+                        "st_dev": lock_stat.st_dev, "st_ino": lock_stat.st_ino,
+                        "st_uid": lock_stat.st_uid, "st_gid": lock_stat.st_gid,
+                        "st_mode": 384, "st_nlink": 1,
+                    },
+                    "writer_inventory_root": canonical_hash_v1(
+                        writer_inventory
+                    ),
+                    "writer_count": len(writer_inventory),
+                    "service_configuration_sha256": canonical_hash_v1(
+                        service_configuration
+                    ),
+                    "runtime_config": {
+                        "realpath": str(config_path.resolve()),
+                        "st_dev": 1, "st_ino": 1, "st_uid": 0, "st_gid": 0,
+                        "st_mode": 384, "st_nlink": 1, "sha256": "c" * 64,
+                    },
+                }
+                discovery = build_live_discovery(
+                    ledger, calculation, raw_ledger_bytes=raw,
+                    execution_identity=runtime,
+                    writer_coordination=coordination,
+                    capture={"ledger_object": {
+                        "realpath": str(ledger_path.resolve()),
+                        "st_dev": ledger_stat.st_dev,
+                        "st_ino": ledger_stat.st_ino,
+                        "st_uid": ledger_stat.st_uid,
+                        "st_gid": ledger_stat.st_gid,
+                        "st_mode": 420, "st_nlink": 1,
+                    }},
+                )
+                authority = assemble_final_authority_candidate(
+                    calculation_document, discovery,
+                )
+                pin = authority["authority_manifest_hash"]
+                authority_path.write_bytes(serialize_ledger_bytes_v1(authority))
+                config_path.write_bytes(serialize_ledger_bytes_v1({
+                    "ledger_path": str(ledger_path),
+                    "canonical_lock_path": str(lock_path),
+                    "canonical_lock_identity": {
+                        "st_dev": lock_stat.st_dev, "st_ino": lock_stat.st_ino,
+                    },
+                    "all_writers_quiesced": True,
+                    "repository_root": str(Path(__file__).resolve().parents[2]),
+                    "writer_inventory": writer_inventory,
+                    "service_configuration": service_configuration,
+                    "authority_path": str(authority_path),
+                }))
+                collector = lambda _root, _paths: copy.deepcopy(runtime)
+                loader = lambda _path: (
+                    json.loads(config_path.read_text()), b"test-config",
+                    copy.deepcopy(coordination["runtime_config"]),
+                )
+                dry_code, dry = migrate(
+                    ledger_path, authority_path, config_path,
+                    trusted_manifest_hash=pin,
+                    runtime_identity_collector=collector,
+                    config_loader=loader,
+                    writer_state_probe=lambda _unit: "inactive",
+                )
+                assert dry_code == 0 and dry["dry_run"]
+                apply_code, applied = migrate(
+                    ledger_path, authority_path, config_path,
+                    trusted_manifest_hash=pin, apply=True,
+                    confirmation=CONFIRMATION,
+                    runtime_identity_collector=collector,
+                    config_loader=loader,
+                    writer_state_probe=lambda _unit: "inactive",
+                )
+                assert apply_code == 0 and applied["committed"]
+                ledger = json.loads(ledger_path.read_bytes())
         return ledger, specs, allowlist
 
     def test_all_37_historical_35_active_end_to_end(self):
@@ -544,7 +683,7 @@ class WilsonThirtySevenConditionRegression(unittest.TestCase):
         pinned = _pinned_fixture()
         self.assertEqual(
             {
-                system: len(value["identities"])
+                system: len(value["conditions"])
                 for system, value in pinned["systems"].items()
             },
             {"footbreak": 17, "crown": 20},
@@ -559,7 +698,11 @@ class WilsonThirtySevenConditionRegression(unittest.TestCase):
             ("crown", (20, 20, 0)),
         ):
             ledger, specs, allowlist = self._installed_registry(system)
-            pinned_rows = pinned["systems"][system]["identities"]
+            pinned_rows = pinned["systems"][system]["conditions"]
+            if system == "footbreak":
+                pinned_rows = _legacy_batch_context()[0].document[
+                    "expected_post_condition_registry_scope"
+                ]["conditions"]
             namespace = ledger[wv.NAMESPACE]
             self.assertEqual(
                 namespace["condition_order"],
@@ -570,15 +713,15 @@ class WilsonThirtySevenConditionRegression(unittest.TestCase):
                 self.assertEqual(frozen["condition_number"], row["condition_number"])
                 self.assertEqual(frozen["definition"], row["definition"])
                 self.assertEqual(
-                    hashlib.sha256(
-                        _canonical_bytes(frozen["definition"]),
-                    ).hexdigest(),
-                    row["definition_hash"],
+                    frozen["historical_evidence"],
+                    row["historical_evidence"],
                 )
-                # The production evidence root is independently pinned before
-                # fresh internally-valid simulation evidence is attached.
-                self.assertRegex(row["active_evidence_hash"], r"^[0-9a-f]{64}$")
-                self.assertGreaterEqual(row["active_evidence_version"], 1)
+                self.assertEqual(
+                    frozen["evidence_versions"], row["evidence_versions"],
+                )
+                self.assertEqual(
+                    frozen["active_evidence"], row["active_evidence"],
+                )
             if system == "footbreak":
                 self.assertEqual(
                     allowlist, wv.CONDITION_IDENTITY_MIGRATION_ALLOWLIST,
@@ -586,6 +729,10 @@ class WilsonThirtySevenConditionRegression(unittest.TestCase):
             with patch.object(wv, "_now", return_value=PROJECTION_NOW):
                 registry = wv.formal_registry_candidates(
                     ledger, system, now=PROJECTION_NOW,
+                    authority_context=(
+                        _legacy_batch_context()[1]
+                        if system == "footbreak" else None
+                    ),
                 )
                 self.assertEqual(len(registry), expected[1])
                 by_signature = {
@@ -610,8 +757,19 @@ class WilsonThirtySevenConditionRegression(unittest.TestCase):
                     quarter_line_seen += int(
                         first.get("quarter_line_settlement") is not None
                     )
-                    wv.recompute_namespace(ledger, system)
+                    wv.recompute_namespace(
+                        ledger, system,
+                        authority_context=(
+                            _legacy_batch_context()[1]
+                            if system == "footbreak" else None
+                        ),
+                    )
                     frozen = ledger[wv.NAMESPACE]["conditions"][signature]
+                    starting_version = candidate["__formal_frozen_history"][
+                        "evidence_version"
+                    ] if "evidence_version" in candidate[
+                        "__formal_frozen_history"
+                    ] else frozen["evidence_versions"][-1]["version"]
                     self.assertEqual(
                         (
                             frozen["active_evidence_version"],
@@ -620,30 +778,65 @@ class WilsonThirtySevenConditionRegression(unittest.TestCase):
                             ],
                             frozen["pending_rollover_progress"]["eligible_hits"],
                         ),
-                        (1, 1, 1),
+                        (starting_version, 1, 1),
                         (system, number),
                     )
-                    v1 = copy.deepcopy(frozen["evidence_versions"][0])
+                    prior_chain = copy.deepcopy(frozen["evidence_versions"])
                     for row_index in range(2, 21):
                         _append_settled(
                             self, ledger, system, candidate, spec, number,
                             row_index,
                         )
-                    wv.recompute_namespace(ledger, system)
+                    wv.recompute_namespace(
+                        ledger, system,
+                        authority_context=(
+                            _legacy_batch_context()[1]
+                            if system == "footbreak" else None
+                        ),
+                    )
                     frozen = ledger[wv.NAMESPACE]["conditions"][signature]
-                    self.assertEqual(frozen["evidence_versions"][0], v1)
-                    self.assertEqual(len(frozen["evidence_versions"]), 2)
+                    self.assertEqual(
+                        frozen["evidence_versions"][:-1], prior_chain,
+                    )
+                    self.assertEqual(
+                        len(frozen["evidence_versions"]), len(prior_chain) + 1,
+                    )
                     self.assertEqual(
                         (
                             frozen["active_evidence_version"],
-                            frozen["evidence_versions"][1]["batch_decided"],
-                            frozen["evidence_versions"][1]["batch_hits"],
+                            frozen["evidence_versions"][-1]["batch_decided"],
+                            frozen["evidence_versions"][-1]["batch_hits"],
                             frozen["pending_rollover_progress"]["display"],
                         ),
-                        (2, 20, 10, "0/20"),
+                        (starting_version + 1, 20, 10, "0/20"),
                         (system, number),
                     )
-                manifest = build_manifest(ledger, system)
+                manifest = build_manifest(
+                    ledger, system,
+                    authority_context=(
+                        _legacy_batch_context()[1]
+                        if system == "footbreak" else None
+                    ),
+                )
+                from analysis.wilson_registry_export import (
+                    export_registry, export_registry_v2, verify_export,
+                )
+                if system == "footbreak":
+                    strict_chain_manifest = export_registry_v2(
+                        ledger, authority_context=_legacy_batch_context()[1],
+                    )
+                    self.assertEqual(
+                        strict_chain_manifest["payload"]["schema"],
+                        "wilson-registry-export-payload-v2",
+                    )
+                else:
+                    strict_chain_manifest = export_registry(
+                        ledger, system, source_ledger_sha256="a" * 64,
+                    )
+                    self.assertEqual(
+                        verify_export(strict_chain_manifest),
+                        strict_chain_manifest,
+                    )
                 self.assertTrue(manifest["valid"], manifest)
                 self.assertEqual(
                     (
@@ -673,8 +866,8 @@ class WilsonThirtySevenConditionRegression(unittest.TestCase):
 
     def test_pinned_production_fixture_uses_real_retirement_allowlist(self):
         fixture = _pinned_fixture()
-        footbreak = fixture["systems"]["footbreak"]["identities"]
-        crown = fixture["systems"]["crown"]["identities"]
+        footbreak = fixture["systems"]["footbreak"]["conditions"]
+        crown = fixture["systems"]["crown"]["conditions"]
         self.assertEqual(
             [row["condition_number"] for row in footbreak], list(range(1, 18)),
         )
@@ -686,7 +879,8 @@ class WilsonThirtySevenConditionRegression(unittest.TestCase):
             target = footbreak[allowed["target_condition_number"] - 1]
             self.assertEqual(source["signature"], allowed["source_signature"])
             self.assertEqual(
-                source["definition_hash"], allowed["source_definition_hash"],
+                hashlib.sha256(_canonical_bytes(source["definition"])).hexdigest(),
+                allowed["source_definition_hash"],
             )
             self.assertEqual(
                 source["active_evidence_hash"],
@@ -694,7 +888,8 @@ class WilsonThirtySevenConditionRegression(unittest.TestCase):
             )
             self.assertEqual(target["signature"], allowed["target_signature"])
             self.assertEqual(
-                target["definition_hash"], allowed["target_definition_hash"],
+                hashlib.sha256(_canonical_bytes(target["definition"])).hexdigest(),
+                allowed["target_definition_hash"],
             )
             rebuilt, definition = wv.condition_signature(
                 "footbreak", {
@@ -709,12 +904,13 @@ class WilsonThirtySevenConditionRegression(unittest.TestCase):
         fixture = _pinned_fixture()
         mutations = {
             "reorder": lambda value: value["systems"]["crown"][
-                "identities"
+                "conditions"
             ].reverse(),
             "renumber": lambda value: value["systems"]["footbreak"][
-                "identities"
+                "conditions"
             ][2].update(condition_number=99),
             "self-reseal": self._self_reseal_fixture_identity,
+            "active chain self-reseal": self._self_reseal_active_chain,
         }
         for label, mutate in mutations.items():
             with self.subTest(label):
@@ -730,6 +926,7 @@ class WilsonThirtySevenConditionRegression(unittest.TestCase):
         with patch.object(wv, "_now", return_value=PROJECTION_NOW):
             registry = wv.formal_registry_candidates(
                 ledger, "footbreak", now=PROJECTION_NOW,
+                authority_context=_legacy_batch_context()[1],
             )
             projected = {
                 row["__formal_frozen_signature"] for row in registry
@@ -754,14 +951,21 @@ class WilsonThirtySevenConditionRegression(unittest.TestCase):
                     },
                     stage_at=(ROW_START + timedelta(minutes=1)).isoformat(),
                     now=(ROW_START + timedelta(minutes=1)).isoformat(),
+                    authority_context=_legacy_batch_context()[1],
                 )
                 self.assertIsNone(rejected)
                 self.assertEqual(reason, "retired_duplicate_target_only")
-                wv.recompute_namespace(ledger, "footbreak")
+                wv.recompute_namespace(
+                    ledger, "footbreak",
+                    authority_context=_legacy_batch_context()[1],
+                )
                 self.assertEqual(
                     ledger[wv.NAMESPACE]["conditions"][source], before,
                 )
-            manifest = build_manifest(ledger, "footbreak")
+            manifest = build_manifest(
+                ledger, "footbreak",
+                authority_context=_legacy_batch_context()[1],
+            )
             retired = [
                 row for row in manifest["conditions"]
                 if row["identity_status"] == "retired_duplicate"
@@ -836,7 +1040,10 @@ class WilsonThirtySevenConditionRegression(unittest.TestCase):
                 with self.subTest(label):
                     ledger = copy.deepcopy(pristine)
                     mutate(ledger)
-                    manifest = build_manifest(ledger, "footbreak")
+                    manifest = build_manifest(
+                        ledger, "footbreak",
+                        authority_context=_legacy_batch_context()[1],
+                    )
                     self.assertFalse(manifest["valid"], manifest)
                     self.assertEqual(
                         wv.formal_registry_candidates(
@@ -898,11 +1105,17 @@ class WilsonThirtySevenConditionRegression(unittest.TestCase):
                     [],
                 )
                 with self.assertRaises(ValueError):
-                    wv.recompute_namespace(ledger, "footbreak")
+                    wv.recompute_namespace(
+                        ledger, "footbreak",
+                        authority_context=_legacy_batch_context()[1],
+                    )
                 self.assertEqual(
                     ledger[wv.NAMESPACE]["conditions"][source], before,
                 )
-                manifest = build_manifest(ledger, "footbreak")
+                manifest = build_manifest(
+                    ledger, "footbreak",
+                    authority_context=_legacy_batch_context()[1],
+                )
                 self.assertFalse(manifest["valid"], manifest)
                 self.assertIn(
                     "condition_identity_migrations_historical_activity_drift",
@@ -933,13 +1146,49 @@ class WilsonThirtySevenConditionRegression(unittest.TestCase):
 
     @staticmethod
     def _self_reseal_fixture_identity(fixture: dict) -> None:
-        row = fixture["systems"]["crown"]["identities"][0]
+        row = fixture["systems"]["crown"]["conditions"][0]
         row["definition"]["role"] = "tampered-and-resealed"
         digest = hashlib.sha256(
             _canonical_bytes(row["definition"]),
         ).hexdigest()
         row["definition_hash"] = digest
         row["signature"] = digest[:24]
+
+    @staticmethod
+    def _self_reseal_active_chain(fixture: dict) -> None:
+        exported = fixture["systems"]["footbreak"]
+        row = exported["conditions"][15]
+        version = row["evidence_versions"][0]
+        version["cumulative_hits"] -= 1
+        values = wv._evidence_values(
+            version["cumulative_hits"], version["cumulative_decided"],
+        )
+        version["wilson95_lower_raw"] = values["wilson95_lower_raw"]
+        version["minimum_acceptable_odds_raw"] = values[
+            "minimum_acceptable_odds_raw"
+        ]
+        version["minimum_acceptable_odds_display"] = values["display"][
+            "minimum_acceptable_odds"
+        ]
+        version["evidence_hash"] = wv._version_hash(version)
+        row["historical_evidence"]["hits"] = version["cumulative_hits"]
+        row["active_evidence_version"] = version["version"]
+        row["active_evidence_hash"] = version["evidence_hash"]
+        row["active_evidence"] = _active_projection(version)
+        manifest = exported["production_identity_manifest"]
+        manifest["entries"][15]["initial_evidence_hash"] = version[
+            "evidence_hash"
+        ]
+        body = {
+            key: value for key, value in manifest.items()
+            if key != "manifest_hash"
+        }
+        manifest["manifest_hash"] = wv._canonical_hash(body)
+        export_body = {
+            key: value for key, value in exported.items()
+            if key != "export_digest"
+        }
+        exported["export_digest"] = wv._canonical_hash(export_body)
 
 
 if __name__ == "__main__":
