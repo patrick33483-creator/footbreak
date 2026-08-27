@@ -70,6 +70,22 @@ def rows_at_boundary(rows: list[dict[str, Any]], boundary: datetime | None) -> l
     return output
 
 
+def rows_verified_at_boundary(
+    rows: list[dict[str, Any]], boundary: datetime | None
+) -> list[dict[str, Any]]:
+    if boundary is None:
+        return rows
+    output = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        kickoff = parse_time(row.get("kickoff") or row.get("kickoff_hkt"))
+        verified = parse_time(row.get("verified_at"))
+        if kickoff is not None and kickoff <= boundary and verified is not None and verified <= boundary:
+            output.append(row)
+    return output
+
+
 def matching_samples(
     rows: list[dict[str, Any]], system: str, wanted: tuple[str, ...]
 ) -> list[dict[str, Any]]:
@@ -156,9 +172,13 @@ def main() -> None:
     current = matching_samples(rows, "crown", wanted)
     boundary_rows = rows_at_boundary(rows, boundary)
     frozen = matching_samples(boundary_rows, "crown", wanted)
+    verified_frozen = matching_samples(
+        rows_verified_at_boundary(rows, boundary), "crown", wanted
+    )
     expected_hits = int(historical.get("hits"))
     expected_decided = int(historical.get("decided"))
     frozen_hits = sum(row["hit"] is True for row in frozen)
+    verified_frozen_hits = sum(row["hit"] is True for row in verified_frozen)
     current_hits = sum(row["hit"] is True for row in current)
 
     report = {
@@ -166,6 +186,7 @@ def main() -> None:
         "definition": definition,
         "target_key": list(wanted),
         "artifact_as_of": boundary_text,
+        "frozen_at": condition.get("frozen_at"),
         "frozen_registry": {
             "hits": expected_hits,
             "decided": expected_decided,
@@ -177,10 +198,22 @@ def main() -> None:
                 frozen_hits == expected_hits and len(frozen) == expected_decided
             ),
         },
+        "reconstructed_verified_at_boundary": {
+            "hits": verified_frozen_hits,
+            "decided": len(verified_frozen),
+            "matches_registry": (
+                verified_frozen_hits == expected_hits
+                and len(verified_frozen) == expected_decided
+            ),
+        },
         "current_history_same_definition": {
             "hits": current_hits,
             "decided": len(current),
         },
+        "prospective": copy.deepcopy(condition.get("prospective")),
+        "active_evidence": copy.deepcopy(condition.get("active_evidence")),
+        "active_evidence_version": condition.get("active_evidence_version"),
+        "evidence_versions": copy.deepcopy(condition.get("evidence_versions")),
         "samples": frozen[: max(0, args.limit)],
     }
     print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
