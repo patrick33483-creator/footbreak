@@ -156,7 +156,12 @@ jobs:
               row for row in ranking
               if row.get("condition_number") == 2
           )
-          if (card.get("hits"), card.get("decided")) != (273, 459):
+          card_total = card.get("total") or {}
+          if (
+              card_total.get("hits"),
+              card_total.get("decided"),
+              card.get("badge"),
+          ) != (273, 459, "正式累積中"):
               raise SystemExit(
                   f"condition #2 dashboard verification failed: {card}"
               )
@@ -174,8 +179,9 @@ jobs:
                   condition.get("prospective_observations") or {}
               ),
               "dashboard": {
-                  "hits": card.get("hits"),
-                  "decided": card.get("decided"),
+                  "hits": card_total.get("hits"),
+                  "decided": card_total.get("decided"),
+                  "badge": card.get("badge"),
               },
           }, ensure_ascii=False, indent=2))
           PY

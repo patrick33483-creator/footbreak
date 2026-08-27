@@ -24,6 +24,14 @@ NOTIFICATION_STAGE_MAX_AGE = {
     "T-30": timedelta(minutes=45),
     "T-5": timedelta(minutes=15),
 }
+CONDITION2_STAGE_MAX_AGE = {
+    "首預": timedelta(minutes=45),
+    **NOTIFICATION_STAGE_MAX_AGE,
+}
+CONDITION2_NUMBER = 2
+CONDITION2_MIN_ENROLMENT_ODDS = 1.70
+CONDITION2_MIN_LINE = 2.75
+CONDITION2_MAX_LINE = 3.0
 STATE_LIMIT = 1600
 
 
@@ -122,6 +130,7 @@ def _load(config: Settings) -> dict[str, Any]:
     state.setdefault("native_t5_direct_alerts", [])
     state.setdefault("wilson_bets", [])
     state.setdefault("wilson_match_alerts", [])
+    state.setdefault("wilson_condition2_bet_alerts", [])
     state.setdefault("hkjc_execution_test_alerts", [])
     return _seed_wilson_match_alerts(state)
 
@@ -501,6 +510,10 @@ def notify_wilson_pending(
         for bet in formal_rows:
             if not isinstance(bet, dict):
                 continue
+            # #2 has one fixture-level, first-qualifying-stage outbox. Never
+            # replay it through the generic T-5 Wilson notification path.
+            if _condition_number(bet) == CONDITION2_NUMBER:
+                continue
             bid = str(bet.get("bet_id") or "")
             if not bid or bid in sent_ids or bet.get("status") != "PENDING":
                 continue
@@ -525,7 +538,12 @@ def notify_wilson_pending(
             state["updated_at"] = iso_hkt()
             write_json_atomic(paths(config)["notify"], state)
         for group in _observation_groups(
-            [row for row in observation_rows if isinstance(row, dict)], sent_ids,
+            [
+                row for row in observation_rows
+                if isinstance(row, dict)
+                and _condition_number(row) != CONDITION2_NUMBER
+            ],
+            sent_ids,
         ):
             ids = [str(row.get("observation_id") or "") for row in group]
             message = _wilson_observation_group_message(group)
@@ -814,6 +832,13 @@ def _finite_positive(value: Any) -> float | None:
     except (TypeError, ValueError):
         return None
     return numeric if math.isfinite(numeric) and numeric > 0 else None
+
+
+def _condition_number(row: dict[str, Any]) -> int | None:
+    try:
+        return int(row.get("condition_number"))
+    except (TypeError, ValueError):
+        return None
 
 
 def _numeric_line(value: Any) -> float | None:
@@ -1123,6 +1148,223 @@ def _native_recent_condition_events(
     return output
 
 
+def _condition2_active(
+    ledger: dict[str, Any],
+) -> tuple[str, dict[str, Any], float] | None:
+    namespace = ledger.get("wilson_validation") or {}
+    conditions = namespace.get("conditions") or {}
+    if not isinstance(conditions, dict):
+        return None
+    matches = [
+        (str(signature), row)
+        for signature, row in conditions.items()
+        if isinstance(row, dict)
+        and _condition_number(row) == CONDITION2_NUMBER
+    ]
+    if len(matches) != 1:
+        return None
+    signature, condition = matches[0]
+    active = condition.get("active_evidence")
+    minimum = _finite_positive(
+        (active or {}).get("minimum_acceptable_odds_raw")
+    )
+    if (
+        not signature
+        or condition.get("rollover_status") != "active"
+        or not isinstance(active, dict)
+        or minimum is None
+        or minimum <= 1
+    ):
+        return None
+    return signature, condition, minimum
+
+
+def _condition2_enrolments(
+    ledger: dict[str, Any], signature: str,
+) -> dict[str, dict[str, Any]]:
+    namespace = ledger.get("wilson_validation") or {}
+    output: dict[str, dict[str, Any]] = {}
+    for row in namespace.get("observations") or []:
+        if not isinstance(row, dict):
+            continue
+        line = _numeric_line(row.get("selected_line", row.get("line")))
+        odds = _finite_positive(row.get("odds"))
+        fixture = str(row.get("match_id") or "").strip()
+        if (
+            not fixture
+            or row.get("status") != "PENDING"
+            or _condition_number(row) != CONDITION2_NUMBER
+            or str(row.get("frozen_condition_signature") or "") != signature
+            or str(row.get("stage") or "") != "首預"
+            or str(row.get("code") or row.get("market") or "") != "HIL"
+            or str(row.get("selected_role") or "") != "大"
+            or str(row.get("selected_side") or row.get("side") or "") != "H"
+            or line is None
+            or not (CONDITION2_MIN_LINE <= line <= CONDITION2_MAX_LINE)
+            or odds is None
+            or odds + 1e-12 < CONDITION2_MIN_ENROLMENT_ODDS
+        ):
+            continue
+        output[fixture] = row
+    return output
+
+
+def _condition2_stage_quote(
+    watch: dict[str, Any], stage_name: str,
+) -> tuple[dict[str, Any], float, float] | None:
+    now = now_hkt()
+    kickoff = parse_time(
+        str(watch.get("kickoff_hkt") or watch.get("kickoff") or "")
+    )
+    rows = [
+        row for row in (watch.get("stages") or [])
+        if isinstance(row, dict) and row.get("stage") == stage_name
+    ]
+    if kickoff is None or kickoff <= now or len(rows) != 1:
+        return None
+    stage = rows[0]
+    stage_kickoff = parse_time(
+        str(stage.get("kickoff_hkt") or stage.get("kickoff") or "")
+    ) or kickoff
+    stage_at = parse_time(
+        str(stage.get("ts") or stage.get("source_snapshot_at") or "")
+    )
+    if (
+        stage.get("post_hoc_backfill")
+        or stage.get("exclude_from_telegram")
+        or stage.get("status") == "DATA_MISSING"
+        or stage_kickoff != kickoff
+        or stage_at is None
+        or stage_at > now
+        or stage_at >= kickoff
+        or now - stage_at > CONDITION2_STAGE_MAX_AGE[stage_name]
+    ):
+        return None
+    selected = _stage_market(stage, "HIL")
+    if not isinstance(selected, dict):
+        return None
+    line = _numeric_line(selected.get("line", selected.get("condition")))
+    odds = _finite_positive(selected.get("odds"))
+    observed_at = parse_time(str(selected.get("observed_at") or ""))
+    if (
+        str(selected.get("side") or "") != "H"
+        or line is None
+        or not (CONDITION2_MIN_LINE <= line <= CONDITION2_MAX_LINE)
+        or odds is None
+        or odds <= 1
+        or observed_at is None
+        or observed_at >= kickoff
+    ):
+        return None
+    return stage, line, odds
+
+
+def _condition2_message(
+    watch: dict[str, Any], stage_name: str, line: float, odds: float,
+    minimum: float,
+) -> str | None:
+    kickoff = parse_time(
+        str(watch.get("kickoff_hkt") or watch.get("kickoff") or "")
+    )
+    league = traditional_chinese_league(watch.get("league"))
+    if kickoff is None or not league:
+        return None
+    return "\n".join([
+        "【皇冠 Wilson #2】",
+        f"{kickoff.astimezone(HKT).strftime('%H:%M')} {league}",
+        f"{watch.get('home') or ''} vs {watch.get('away') or ''}",
+        "",
+        f"達標時點：{stage_name}",
+        f"皇冠訊號：入球大細 · 大 {_quarter_line(line, signed=False)} @{odds:.2f}",
+        f"Wilson 最低賠率要求：{minimum:.2f}",
+        "決定：投注",
+        "投注平台：皇冠",
+        "同一場 #2 只通知一次",
+    ])
+
+
+def notify_condition2_pending(
+    ledger: dict[str, Any], config: Settings, *,
+    max_attempts: int | None = None, max_seconds: float | None = None,
+    _budget: _NotificationBudget | None = None,
+) -> int:
+    """Alert #2 at the first qualifying 首預/T-30/T-5 quote, exactly once.
+
+    The immutable first-look observation owns evidence accumulation. Odds at
+    later stages affect only the Telegram decision; they never create, cancel,
+    or replace that observation.
+    """
+    active = _condition2_active(ledger)
+    if active is None:
+        return 0
+    signature, _condition, minimum = active
+    enrolments = _condition2_enrolments(ledger, signature)
+    if not enrolments:
+        return 0
+    budget = _budget or _NotificationBudget.create(max_attempts, max_seconds)
+    watches = ledger.get("watch") or {}
+    if not isinstance(watches, dict):
+        return 0
+    with notification_lock(config) as acquired:
+        if not acquired:
+            return 0
+        state = _load(config)
+        sent_ids = {
+            str(value)
+            for value in state.get("wilson_condition2_bet_alerts") or []
+        }
+        sent = 0
+        for fixture in sorted(enrolments):
+            alert_id = (
+                f"crown|{fixture}|wilson-condition-2|first-qualifying-v1"
+            )
+            if alert_id in sent_ids:
+                continue
+            watch = watches.get(fixture)
+            if not isinstance(watch, dict):
+                continue
+            # Always decide from the latest stage already persisted. If T-5 is
+            # present but no longer qualifies, never fall back to an older
+            # T-30 quote. Once delivered, the fixture key suppresses all later
+            # stages.
+            available = {
+                str(row.get("stage") or "")
+                for row in (watch.get("stages") or [])
+                if isinstance(row, dict)
+            }
+            stage_name = next(
+                (
+                    name for name in ("T-5", "T-30", "首預")
+                    if name in available
+                ),
+                None,
+            )
+            if stage_name is None:
+                continue
+            quote = _condition2_stage_quote(watch, stage_name)
+            if quote is None:
+                continue
+            _stage, line, odds = quote
+            if odds + 1e-12 < minimum:
+                continue
+            message = _condition2_message(
+                watch, stage_name, line, odds, minimum,
+            )
+            if message is None or not budget.reserve_attempt():
+                break
+            if _send(config, message, max_seconds=budget.remaining()) is False:
+                continue
+            state["wilson_condition2_bet_alerts"] = _bounded_unique_ids(
+                list(state.get("wilson_condition2_bet_alerts") or [])
+                + [alert_id]
+            )
+            state["updated_at"] = iso_hkt()
+            write_json_atomic(paths(config)["notify"], state)
+            sent_ids.add(alert_id)
+            sent += 1
+        return sent
+
+
 def notify_new(
     ledger: dict[str, Any],
     config: Settings,
@@ -1139,10 +1381,13 @@ def notify_new(
     short per-stage action window.  Historical, recovered, post-hoc, malformed
     and stale rows fail closed.
     """
-    # The producer, not this function, uses fresh native persistence only.
-    # Never scan historical predictions; old IDs in `signals` stay untouched.
+    # The producer, not this function, creates evidence. Notifications inspect
+    # only already-persisted, still-upcoming native stages and durable outboxes.
     del fresh_t5_predictions
     budget = _NotificationBudget.create(max_attempts, max_seconds)
+    condition2 = notify_condition2_pending(
+        ledger, config, _budget=budget,
+    )
     direct = notify_native_direct_t5_pending(
         ledger, config, _budget=budget,
     )
@@ -1164,7 +1409,7 @@ def notify_new(
         if isinstance(bilateral_ns, dict) and bilateral_ns.get("decision_outbox")
         else 0
     )
-    return direct + wilson + bilateral
+    return condition2 + direct + wilson + bilateral
 
     from analysis.granular_conditions import _role, notification_opportunities
     with notification_lock(config) as acquired:
