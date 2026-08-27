@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 from unittest.mock import patch
 from pathlib import Path
 
+from analysis import wilson_validation as wv
 from analysis.wilson_validation import (
     DECISION_STAGE, EDGE_BUFFER, FIXED_STAKE, FIXTURE_STAKE_CAP, MIN_DECIDED, STRATEGY,
     STARTING_BANKROLL, admission_arithmetic, choose_admission, commit_bet,
@@ -20,6 +21,8 @@ from analysis.wilson_validation import (
     record_match_observation,
     recompute_namespace, wilson95,
     validate_formal_row,
+    create_production_identity_manifest,
+    _expected_production_identity_manifest,
     _fixture_market_hash,
     _quarter_snapshot_binding_valid,
 )
@@ -469,6 +472,29 @@ class WilsonPortfolioTest(unittest.TestCase):
 
 
 class WilsonBatchRolloverTest(unittest.TestCase):
+    def setUp(self):
+        self._activation_temp = tempfile.TemporaryDirectory()
+        marker = Path(self._activation_temp.name) / "condition17-activation.json"
+        module_path = Path(wv.__file__)
+        marker.write_text(json.dumps({
+            "schema": wv.CONDITION17_ACTIVATION_SCHEMA,
+            "wilson_validation_sha256": hashlib.sha256(
+                module_path.read_bytes(),
+            ).hexdigest(),
+            "quarter_line_sha256": hashlib.sha256(
+                module_path.with_name("quarter_line.py").read_bytes(),
+            ).hexdigest(),
+        }), encoding="utf-8")
+        marker.chmod(0o400)
+        self._activation_patch = patch.object(
+            wv, "CONDITION17_ACTIVATION_MARKER", marker,
+        )
+        self._activation_patch.start()
+
+    def tearDown(self):
+        self._activation_patch.stop()
+        self._activation_temp.cleanup()
+
     """Versioned evidence is intentionally tested independently of betting PnL."""
 
     def _admission(self, system="footbreak"):
@@ -518,6 +544,16 @@ class WilsonBatchRolloverTest(unittest.TestCase):
     def _active(self, ledger):
         frozen = next(iter(ledger["wilson_validation"]["conditions"].values()))
         return frozen, frozen["active_evidence"]
+
+    def _authorize_production_manifest(self, ledger, system="footbreak"):
+        expected, _validated, reason = _expected_production_identity_manifest(
+            ledger["wilson_validation"], system,
+        )
+        self.assertIsNone(reason)
+        self.assertIsNotNone(expected)
+        return create_production_identity_manifest(
+            ledger, system, authorized_manifest=expected,
+        )
 
     def test_pre_patch_binary_formal_row_remains_valid(self):
         ledger = {"bets": []}
@@ -1371,6 +1407,567 @@ class WilsonBatchRolloverTest(unittest.TestCase):
         )[-1]["pending_rollover_evidence"]
         self.assertFalse(blocked["complete"])
         self.assertEqual(blocked["rows"], [])
+
+    def test_footbreak_seventeen_projects_exact_schema1_timestamp_anomaly(self):
+        fixture = json.loads(
+            (
+                Path(__file__).with_name("fixtures")
+                / "footbreak_condition_17_pending_18.json"
+            ).read_text(encoding="utf-8")
+        )
+        ledger = {"bets": []}
+        seeds = []
+        for index in range(1, fixture["condition_number"]):
+            seed = copy.deepcopy(candidate())
+            seed["line_bucket"] = f"seed-{index}"
+            seed["key"] = [
+                (
+                    f"bucket=seed-{index}"
+                    if value.startswith("bucket=") else value
+                )
+                for value in seed["key"]
+            ]
+            seeds.append(seed)
+        ranking = [*seeds, candidate()]
+        project_granular_ranking_evidence(
+            ledger, fixture["system"], ranking,
+            now="2026-08-20T00:00:00+08:00",
+        )
+        rows = [
+            self._settled(
+                ledger, item["index"], result=item["result"],
+                system=fixture["system"],
+            )
+            for item in fixture["fixtures"]
+        ]
+        recompute_namespace(ledger, fixture["system"])
+        self._authorize_production_manifest(ledger, fixture["system"])
+        frozen = next(
+            item for item in ledger["wilson_validation"]["conditions"].values()
+            if item.get("condition_number") == fixture["condition_number"]
+        )
+        self.assertEqual(
+            frozen["pending_rollover_progress"]["display"], "18/20",
+        )
+        self.assertEqual(
+            frozen["pending_rollover_progress"]["eligible_hits"], 10,
+        )
+
+        # Exact production storage shape: immutable schema-1 admission remains
+        # complete, but the top-level stage mirror is absent and the settlement
+        # timestamp was stored after creation yet before kickoff.
+        for row in rows:
+            row.pop("native_stage_at")
+            row["settled_at"] = row["created_at"]
+            self.assertEqual(row["rollover_provenance"]["schema_version"], 1)
+            self.assertEqual(row["evidence_version"], 1)
+        admitted, reason = validate_formal_row(
+            rows[0], system=fixture["system"],
+            signature=rows[0]["frozen_condition_signature"], frozen=frozen,
+            projection_time=datetime.fromisoformat(rows[0]["kickoff"]),
+            require_settled=True, ledger=ledger,
+        )
+        self.assertIsNone(admitted)
+        self.assertEqual(reason, "invalid_formal_admission_binding")
+
+        # Nearby same-signature activity must remain hidden: five malformed
+        # settled rows and one pending row cannot enter or fill the cohort.
+        for index in range(5):
+            malformed = copy.deepcopy(rows[index])
+            old_match_id = malformed["match_id"]
+            malformed["match_id"] = f"malformed-condition-17-{index}"
+            malformed["bet_id"] = malformed["bet_id"].replace(
+                old_match_id, malformed["match_id"], 1,
+            )
+            malformed["rollover_provenance"].pop("native_pre_kickoff_t5")
+            ledger["bets"].append(malformed)
+        pending_row = copy.deepcopy(rows[-1])
+        old_match_id = pending_row["match_id"]
+        pending_row["match_id"] = "pending-condition-17"
+        pending_row["bet_id"] = pending_row["bet_id"].replace(
+            old_match_id, pending_row["match_id"], 1,
+        )
+        pending_row.update({"status": "PENDING", "result": None})
+        ledger["bets"].append(pending_row)
+
+        before_projection_object = copy.deepcopy(ledger)
+        before_projection_bytes = json.dumps(
+            ledger, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        )
+        target = next(
+            card for card in project_frozen_ranking_evidence(
+                ledger, fixture["system"], ranking,
+            )
+            if card.get("condition_number") == fixture["condition_number"]
+        )
+        self.assertEqual(ledger, before_projection_object)
+        self.assertEqual(
+            json.dumps(
+                ledger, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+            ),
+            before_projection_bytes,
+        )
+        detail = target["pending_rollover_evidence"]
+        self.assertTrue(detail["complete"])
+        self.assertEqual(
+            (detail["expected_decided"], detail["expected_hits"]),
+            (fixture["expected_decided"], fixture["expected_hits"]),
+        )
+        self.assertEqual(len(detail["rows"]), fixture["expected_decided"])
+        self.assertEqual(
+            sum(row["hit"] for row in detail["rows"]),
+            fixture["expected_hits"],
+        )
+        self.assertEqual(
+            sum(not row["hit"] for row in detail["rows"]),
+            fixture["expected_misses"],
+        )
+        identities = [row["evidence_identity"] for row in detail["rows"]]
+        self.assertEqual(len(set(identities)), fixture["expected_decided"])
+        repeated = next(
+            card for card in project_frozen_ranking_evidence(
+                ledger, fixture["system"], ranking,
+            )
+            if card.get("condition_number") == fixture["condition_number"]
+        )["pending_rollover_evidence"]
+        self.assertEqual(
+            identities,
+            [row["evidence_identity"] for row in repeated["rows"]],
+        )
+        serialized = json.dumps(detail, ensure_ascii=False)
+        self.assertNotIn("malformed-condition-17", serialized)
+        self.assertNotIn("pending-condition-17", serialized)
+
+        # Read-only projection must neither repair nor expose a card whose
+        # durable active pointer disagrees with its immutable evidence chain.
+        pointer_mutations = (
+            lambda item: item.update(active_evidence_version=2),
+            lambda item: item.update(active_evidence_hash="f" * 64),
+            lambda item: item["active_evidence"].update(evidence_hash="f" * 64),
+            lambda item: item.pop("active_evidence_version"),
+            lambda item: item.pop("active_evidence_hash"),
+            lambda item: item.pop("active_evidence"),
+        )
+        for mutate in pointer_mutations:
+            corrupted = copy.deepcopy(ledger)
+            corrupted_frozen = next(
+                item for item in
+                corrupted["wilson_validation"]["conditions"].values()
+                if item.get("condition_number") == fixture["condition_number"]
+            )
+            mutate(corrupted_frozen)
+            before_object = copy.deepcopy(corrupted)
+            before_bytes = json.dumps(
+                corrupted, ensure_ascii=False, sort_keys=True,
+                separators=(",", ":"),
+            )
+            projected = project_frozen_ranking_evidence(
+                corrupted, fixture["system"], ranking,
+            )
+            self.assertFalse(any(
+                card.get("condition_signature")
+                == frozen["signature"]
+                for card in projected
+            ))
+            self.assertEqual(corrupted, before_object)
+            self.assertEqual(
+                json.dumps(
+                    corrupted, ensure_ascii=False, sort_keys=True,
+                    separators=(",", ":"),
+                ),
+                before_bytes,
+            )
+
+    def test_footbreak_seventeen_timestamp_compatibility_fails_closed(self):
+        ledger = {"bets": []}
+        seeds = []
+        for index in range(1, 17):
+            seed = copy.deepcopy(candidate())
+            seed["line_bucket"] = f"seed-{index}"
+            seed["key"] = [
+                (
+                    f"bucket=seed-{index}"
+                    if value.startswith("bucket=") else value
+                )
+                for value in seed["key"]
+            ]
+            seeds.append(seed)
+        ranking = [*seeds, candidate()]
+        project_granular_ranking_evidence(
+            ledger, "footbreak", ranking,
+            now="2026-08-20T00:00:00+08:00",
+        )
+        rows = [
+            self._settled(
+                ledger, index, result="Won" if index <= 10 else "Lost",
+            )
+            for index in range(1, 19)
+        ]
+        recompute_namespace(ledger, "footbreak")
+        self._authorize_production_manifest(ledger)
+        for row in rows:
+            row.pop("native_stage_at")
+            row["settled_at"] = row["created_at"]
+
+        def detail_for(candidate_ledger):
+            return next(
+                card for card in project_frozen_ranking_evidence(
+                    candidate_ledger, "footbreak", ranking,
+                )
+                if card.get("condition_number") == 17
+            )["pending_rollover_evidence"]
+
+        mutations = (
+            lambda row: row.update(frozen_condition_signature="0" * 24),
+            lambda row: row.update(condition_number=16),
+            lambda row: row.update(frozen_condition_definition={}),
+            lambda row: row["rollover_provenance"].update(schema_version=2),
+            lambda row: row["rollover_provenance"].update(
+                admitted_evidence_version=2,
+            ),
+            lambda row: row.update(evidence_version=2),
+            lambda row: row.update(evidence_hash="f" * 64),
+            lambda row: row["rollover_provenance"].update(
+                fixture_market_hash="f" * 64,
+            ),
+            lambda row: row.update(result="Refunded"),
+            lambda row: row.update(settled_at=(
+                datetime.fromisoformat(row["created_at"]) - timedelta(seconds=1)
+            ).isoformat()),
+            lambda row: row.update(post_hoc_backfill=True),
+            lambda row: row.update(exclude_from_simulation=True),
+        )
+        for mutate in mutations:
+            tampered = copy.deepcopy(ledger)
+            mutate(tampered["bets"][0])
+            blocked = detail_for(tampered)
+            self.assertFalse(blocked["complete"])
+            self.assertEqual(blocked["rows"], [])
+            self.assertEqual(
+                blocked["unavailable_reason"],
+                "pending_row_identity_mismatch",
+            )
+
+        duplicate = copy.deepcopy(ledger)
+        duplicate["bets"].append(copy.deepcopy(duplicate["bets"][0]))
+        blocked = detail_for(duplicate)
+        self.assertFalse(blocked["complete"])
+        self.assertEqual(blocked["rows"], [])
+
+        wrong_hits = copy.deepcopy(ledger)
+        wrong_hits["bets"][0]["result"] = "Lost"
+        blocked = detail_for(wrong_hits)
+        self.assertFalse(blocked["complete"])
+        self.assertEqual(blocked["rows"], [])
+
+        halfway = copy.deepcopy(ledger)
+        for row in halfway["bets"]:
+            created = datetime.fromisoformat(row["created_at"])
+            kickoff = datetime.fromisoformat(row["kickoff"])
+            row["settled_at"] = (
+                created + (kickoff - created) / 2
+            ).isoformat()
+        blocked = detail_for(halfway)
+        self.assertFalse(blocked["complete"])
+        self.assertEqual(blocked["rows"], [])
+
+        naive_equal = copy.deepcopy(ledger)
+        for row in naive_equal["bets"]:
+            row["created_at"] = datetime.fromisoformat(
+                row["created_at"],
+            ).replace(tzinfo=None).isoformat()
+            row["settled_at"] = row["created_at"]
+        blocked = detail_for(naive_equal)
+        self.assertFalse(blocked["complete"])
+        self.assertEqual(blocked["rows"], [])
+
+        # Current canonical rows retain their existing path and result.
+        current = copy.deepcopy(ledger)
+        for row in current["bets"]:
+            row["native_stage_at"] = row["rollover_provenance"]["stage_at"]
+            row["settled_at"] = (
+                datetime.fromisoformat(row["kickoff"]) + timedelta(hours=1)
+            ).isoformat()
+        current_detail = detail_for(current)
+        self.assertTrue(current_detail["complete"])
+        self.assertEqual(len(current_detail["rows"]), 18)
+        self.assertEqual(sum(row["hit"] for row in current_detail["rows"]), 10)
+
+    def test_footbreak_seventeen_legacy_subset_progresses_to_nineteen_and_rollover(self):
+        seeds = []
+        for index in range(1, 17):
+            seed = copy.deepcopy(candidate())
+            seed["line_bucket"] = f"seed-{index}"
+            seed["key"] = [
+                f"bucket=seed-{index}" if value.startswith("bucket=") else value
+                for value in seed["key"]
+            ]
+            seeds.append(seed)
+        ranking = [*seeds, candidate()]
+        ledger = {"bets": []}
+        project_granular_ranking_evidence(
+            ledger, "footbreak", ranking,
+            now="2026-08-20T00:00:00+08:00",
+        )
+        legacy_rows = [
+            self._settled(
+                ledger, index, result="Won" if index <= 10 else "Lost",
+            )
+            for index in range(1, 19)
+        ]
+        recompute_namespace(ledger, "footbreak")
+        self._authorize_production_manifest(ledger)
+        frozen = next(
+            item for item in ledger["wilson_validation"]["conditions"].values()
+            if item.get("condition_number") == 17
+        )
+        self.assertEqual(frozen["pending_rollover_progress"]["display"], "18/20")
+        for row in legacy_rows:
+            row.pop("native_stage_at")
+            row["settled_at"] = row["created_at"]
+        immutable_legacy = copy.deepcopy(legacy_rows)
+
+        row_19 = self._settled(ledger, 19, result="Lost")
+        recompute_namespace(ledger, "footbreak")
+        self.assertEqual(legacy_rows, immutable_legacy)
+        self.assertEqual(frozen["active_evidence_version"], 1)
+        self.assertEqual(
+            (
+                frozen["pending_rollover_progress"]["eligible_decided"],
+                frozen["pending_rollover_progress"]["eligible_hits"],
+            ),
+            (19, 10),
+        )
+        detail_19 = next(
+            card for card in project_frozen_ranking_evidence(
+                ledger, "footbreak", ranking,
+            )
+            if card.get("condition_number") == 17
+        )["pending_rollover_evidence"]
+        self.assertTrue(detail_19["complete"])
+        self.assertEqual(len(detail_19["rows"]), 19)
+        self.assertEqual(sum(row["hit"] for row in detail_19["rows"]), 10)
+        self.assertEqual(
+            len({row["evidence_identity"] for row in detail_19["rows"]}), 19,
+        )
+
+        substituted = copy.deepcopy(ledger)
+        restored = substituted["bets"][0]
+        restored["native_stage_at"] = restored["rollover_provenance"]["stage_at"]
+        restored["settled_at"] = (
+            datetime.fromisoformat(restored["kickoff"]) + timedelta(hours=1)
+        ).isoformat()
+        substituted_frozen = next(
+            item for item in
+            substituted["wilson_validation"]["conditions"].values()
+            if item.get("condition_number") == 17
+        )
+        before_substituted_progress = copy.deepcopy(
+            substituted_frozen["pending_rollover_progress"],
+        )
+        recompute_namespace(substituted, "footbreak")
+        self.assertEqual(
+            substituted_frozen["pending_rollover_progress"],
+            before_substituted_progress,
+        )
+        substituted_detail = next(
+            card for card in project_frozen_ranking_evidence(
+                substituted, "footbreak", ranking,
+            )
+            if card.get("condition_number") == 17
+        )["pending_rollover_evidence"]
+        self.assertFalse(substituted_detail["complete"])
+        self.assertEqual(substituted_detail["rows"], [])
+
+        row_20 = self._settled(ledger, 20, result="Lost")
+        recompute_namespace(ledger, "footbreak")
+        self.assertEqual(legacy_rows, immutable_legacy)
+        self.assertEqual(frozen["active_evidence_version"], 2)
+        self.assertEqual(frozen["pending_rollover_progress"]["display"], "0/20")
+        self.assertEqual(len(frozen["rollover_audit"]), 1)
+        rolled = frozen["rollover_audit"][0]
+        self.assertEqual((rolled["batch_decided"], rolled["batch_hits"]), (20, 10))
+        self.assertEqual(
+            rolled["batch_fixture_market_hashes"],
+            [
+                row["rollover_provenance"]["fixture_market_hash"]
+                for row in [*legacy_rows, row_19, row_20]
+            ],
+        )
+        card_20 = next(
+            card for card in project_frozen_ranking_evidence(
+                ledger, "footbreak", ranking,
+            )
+            if card.get("condition_number") == 17
+        )
+        self.assertTrue(card_20["pending_rollover_evidence"]["complete"])
+        self.assertEqual(card_20["pending_rollover_evidence"]["rows"], [])
+        merged = card_20["last_merged_evidence"]
+        self.assertTrue(merged["complete"])
+        self.assertEqual(len(merged["rows"]), 20)
+        self.assertEqual(sum(row["hit"] for row in merged["rows"]), 10)
+
+    def test_footbreak_seventeen_requires_exact_registry_position_and_signature(self):
+        ledger = {"bets": []}
+        seeds = []
+        for index in range(1, 17):
+            seed = copy.deepcopy(candidate())
+            seed["line_bucket"] = f"seed-{index}"
+            seed["key"] = [
+                (
+                    f"bucket=seed-{index}"
+                    if value.startswith("bucket=") else value
+                )
+                for value in seed["key"]
+            ]
+            seeds.append(seed)
+        ranking = [*seeds, candidate()]
+        project_granular_ranking_evidence(
+            ledger, "footbreak", ranking,
+            now="2026-08-20T00:00:00+08:00",
+        )
+        rows = [
+            self._settled(
+                ledger, index, result="Won" if index <= 10 else "Lost",
+            )
+            for index in range(1, 19)
+        ]
+        recompute_namespace(ledger, "footbreak")
+        self._authorize_production_manifest(ledger)
+        for row in rows:
+            row.pop("native_stage_at")
+            row["settled_at"] = row["created_at"]
+        signature = rows[0]["frozen_condition_signature"]
+
+        def target_detail(candidate_ledger):
+            cards = project_frozen_ranking_evidence(
+                candidate_ledger, "footbreak", ranking,
+            )
+            target = next(
+                (
+                    card for card in cards
+                    if card.get("condition_signature") == signature
+                ),
+                None,
+            )
+            return (
+                target.get("pending_rollover_evidence")
+                if isinstance(target, dict) else None
+            )
+
+        moved = copy.deepcopy(ledger)
+        order = moved["wilson_validation"]["condition_order"]
+        order[0], order[16] = order[16], order[0]
+        detail = target_detail(moved)
+        self.assertIsNotNone(detail)
+        self.assertFalse(detail["complete"])
+        self.assertEqual(detail["rows"], [])
+
+        duplicated = copy.deepcopy(ledger)
+        duplicated["wilson_validation"]["condition_order"][0] = signature
+        detail = target_detail(duplicated)
+        self.assertIsNotNone(detail)
+        self.assertFalse(detail["complete"])
+        self.assertEqual(detail["rows"], [])
+
+        missing_manifest = copy.deepcopy(ledger)
+        missing_manifest["wilson_validation"].pop("production_identity_manifest")
+        before_missing_manifest = copy.deepcopy(missing_manifest)
+        detail = target_detail(missing_manifest)
+        self.assertIsNotNone(detail)
+        self.assertFalse(detail["complete"])
+        self.assertEqual(detail["rows"], [])
+        self.assertEqual(missing_manifest, before_missing_manifest)
+
+        definition_tampered = copy.deepcopy(ledger)
+        definition_tampered["wilson_validation"]["conditions"][signature][
+            "definition"
+        ]["movement"] = "tampered"
+        self.assertIsNone(target_detail(definition_tampered))
+
+        # Even a completely coherent registry rewrite cannot authorize itself.
+        # The independently authorized pre-swap manifest remains stale while
+        # condition #1 is moved to slot #17 and all mutable numbers are changed.
+        coherent = {"bets": []}
+        attack_ranking = [candidate(), *seeds]
+        project_granular_ranking_evidence(
+            coherent, "footbreak", attack_ranking,
+            now="2026-08-20T00:00:00+08:00",
+        )
+        coherent_rows = [
+            self._settled(
+                coherent, index, result="Won" if index <= 10 else "Lost",
+            )
+            for index in range(1, 19)
+        ]
+        recompute_namespace(coherent, "footbreak")
+        stale_manifest = self._authorize_production_manifest(coherent)
+        coherent_ns = coherent["wilson_validation"]
+        coherent_signature = coherent_rows[0]["frozen_condition_signature"]
+        coherent_order = coherent_ns["condition_order"]
+        coherent_order[0], coherent_order[16] = (
+            coherent_order[16], coherent_order[0],
+        )
+        for number, ordered_signature in enumerate(coherent_order, start=1):
+            coherent_ns["conditions"][ordered_signature]["condition_number"] = number
+        for row in coherent_rows:
+            row["condition_number"] = 17
+            row.pop("native_stage_at")
+            row["settled_at"] = row["created_at"]
+        self.assertEqual(
+            coherent_ns["production_identity_manifest"], stale_manifest,
+        )
+        coherent_card = next(
+            card for card in project_frozen_ranking_evidence(
+                coherent, "footbreak", attack_ranking,
+            )
+            if card.get("condition_signature") == coherent_signature
+        )
+        coherent_detail = coherent_card["pending_rollover_evidence"]
+        self.assertFalse(coherent_detail["complete"])
+        self.assertEqual(coherent_detail["rows"], [])
+        before_progress = copy.deepcopy(
+            coherent_ns["conditions"][coherent_signature][
+                "pending_rollover_progress"
+            ],
+        )
+        self._settled(coherent, 19, result="Lost")
+        recompute_namespace(coherent, "footbreak")
+        self.assertEqual(
+            coherent_ns["conditions"][coherent_signature][
+                "pending_rollover_progress"
+            ],
+            before_progress,
+        )
+
+        # A genuine condition #1 coherently relabeled in its frozen record and
+        # all rows is still not production condition #17.
+        relabeled = {"bets": []}
+        project_granular_ranking_evidence(
+            relabeled, "footbreak", [candidate()],
+            now="2026-08-20T00:00:00+08:00",
+        )
+        relabeled_rows = [
+            self._settled(
+                relabeled, index, result="Won" if index <= 10 else "Lost",
+            )
+            for index in range(1, 19)
+        ]
+        recompute_namespace(relabeled, "footbreak")
+        relabeled_frozen = next(
+            iter(relabeled["wilson_validation"]["conditions"].values()),
+        )
+        relabeled_frozen["condition_number"] = 17
+        for row in relabeled_rows:
+            row["condition_number"] = 17
+            row.pop("native_stage_at")
+            row["settled_at"] = row["created_at"]
+        card = project_frozen_ranking_evidence(
+            relabeled, "footbreak", [candidate()],
+        )[0]
+        detail = card["pending_rollover_evidence"]
+        self.assertFalse(detail["complete"])
+        self.assertEqual(detail["rows"], [])
 
     def test_crown_condition_fourteen_projects_mixed_binding_pending_cohort(self):
         ledger = {"bets": []}

@@ -1,0 +1,192 @@
+name: Footbreak condition 17 Stage A bootstrap audit (read only)
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected_deployed_sha:
+        description: Exact 40-character integration commit selected for this dispatch
+        required: true
+        type: string
+      expected_deployed_tree:
+        description: Exact 40-character tree of the selected integration commit
+        required: true
+        type: string
+      ssh_port:
+        description: Reviewed production SSH port bound by the pinned host key
+        required: true
+        default: "22"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    name: Read-only locked bootstrap audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    env:
+      WORK: /tmp/condition17-stage-a-${{ github.run_id }}
+      TRUSTED_REPOSITORY: patrick33483-creator/footbreak
+      TRUSTED_DISPATCH_REF: refs/heads/integrate/condition17-stage-a-main-20260827
+      EXPECTED_DEPLOYED_SHA: ${{ inputs.expected_deployed_sha }}
+      EXPECTED_DEPLOYED_TREE: ${{ inputs.expected_deployed_tree }}
+      PINNED_VALIDATION_SHA: d0b2d4a4b9605459dbacb71dc18f099e684814546c75b5a3ff37cc870de1f47d
+      PINNED_QUARTER_SHA: f38c63c879ffe48f5bec77c289652152b215f8d24be9a9b8634f22b576cda3a9
+      DEPLOY_PORT: ${{ inputs.ssh_port }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Bind dispatch to the trusted integration commit and reviewed tree
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = "workflow_dispatch"
+          test "$GITHUB_REPOSITORY" = "$TRUSTED_REPOSITORY"
+          test "$GITHUB_REF" = "$TRUSTED_DISPATCH_REF"
+          [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$EXPECTED_DEPLOYED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$EXPECTED_DEPLOYED_TREE" =~ ^[0-9a-f]{40}$ ]]
+          test "$EXPECTED_DEPLOYED_SHA" = "$GITHUB_SHA"
+          test "$(git rev-parse --verify HEAD^{commit})" = "$GITHUB_SHA"
+          test "$(git rev-parse --verify "$GITHUB_SHA^{tree}")" = "$EXPECTED_DEPLOYED_TREE"
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+
+          reviewed_paths=(
+            .github/workflows/footbreak-condition17-production-preflight.yml
+            analysis/quarter_line.py
+            analysis/wilson_validation.py
+            deploy/verify_ssh_host_key.py
+            deploy/capture-condition17-production-snapshot.py
+            deploy/condition17-production-preflight.py
+            deploy/condition17-bootstrap-audit.py
+          )
+          for path in "${reviewed_paths[@]}"; do
+            entry="$(git ls-tree "$GITHUB_SHA" -- "$path")"
+            read -r mode type oid entry_path <<<"${entry//$'\t'/ }"
+            test "$type" = "blob"
+            case "$mode" in 100644|100755) ;; *) exit 1 ;; esac
+            test "$entry_path" = "$path"
+            test "$(git hash-object -- "$path")" = "$oid"
+          done
+          test "$(sha256sum analysis/wilson_validation.py | awk '{print $1}')" = "$PINNED_VALIDATION_SHA"
+          test "$(sha256sum analysis/quarter_line.py | awk '{print $1}')" = "$PINNED_QUARTER_SHA"
+          python3 -m py_compile \
+            deploy/verify_ssh_host_key.py \
+            deploy/capture-condition17-production-snapshot.py \
+            deploy/condition17-production-preflight.py \
+            deploy/condition17-bootstrap-audit.py
+          [[ "$DEPLOY_PORT" =~ ^[0-9]{1,5}$ ]]
+          test "$DEPLOY_PORT" -ge 1
+          test "$DEPLOY_PORT" -le 65535
+
+      - name: Configure independently pinned SSH identity
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_SSH_HOST_KEY: ${{ secrets.DEPLOY_SSH_HOST_KEY }}
+          DEPLOY_SSH_HOST_FINGERPRINT: ${{ secrets.DEPLOY_SSH_HOST_FINGERPRINT }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          set -euo pipefail
+          umask 077
+          install -d -m 700 "$WORK"
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$WORK/id_ed25519"
+          printf '%s\n' "$DEPLOY_SSH_HOST_KEY" > "$WORK/known_hosts"
+          chmod 600 "$WORK/id_ed25519" "$WORK/known_hosts"
+          python3 deploy/verify_ssh_host_key.py \
+            --known-hosts "$WORK/known_hosts" \
+            --host "$DEPLOY_HOST" --port "$DEPLOY_PORT" \
+            --expected-fingerprint "$DEPLOY_SSH_HOST_FINGERPRINT"
+
+      - name: Verify exact dispatched deployment and capture locked immutable ledger
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          umask 077
+          snapshot="$WORK/sim-ledger.snapshot"
+          trap 'rm -f "$snapshot"' EXIT
+          timeout --signal=TERM --kill-after=10s 180s \
+            ssh -p "$DEPLOY_PORT" \
+              -i "$WORK/id_ed25519" -o BatchMode=yes \
+              -o ConnectTimeout=20 -o ConnectionAttempts=1 \
+              -o StrictHostKeyChecking=yes \
+              -o UserKnownHostsFile="$WORK/known_hosts" \
+              -o GlobalKnownHostsFile=/dev/null \
+              "$DEPLOY_USER@$DEPLOY_HOST" \
+              "sudo python3 -I -S - --lock /var/lock/footbreak.lock \
+               --ledger /opt/footbreak/system/sim_ledger.json \
+               --repo /opt/footbreak \
+               --expected-commit '$EXPECTED_DEPLOYED_SHA' --expected-tree '$EXPECTED_DEPLOYED_TREE' \
+               --expected-validation-sha256 '$PINNED_VALIDATION_SHA' \
+               --activation-marker /var/lib/footbreak/activation/condition17-legacy-cohort-v1.json \
+               --lock-timeout 120" \
+              < deploy/capture-condition17-production-snapshot.py > "$snapshot"
+          chmod 400 "$snapshot"
+          test "$(stat -c '%h %a' "$snapshot")" = "1 400"
+
+          python3 - "$WORK/synthetic-marker.json" <<'PY'
+          import json, os, sys
+          from pathlib import Path
+          path = Path(sys.argv[1])
+          payload = {
+              "schema": "footbreak-condition17-legacy-cohort-v1",
+              "wilson_validation_sha256": os.environ["PINNED_VALIDATION_SHA"],
+              "quarter_line_sha256": os.environ["PINNED_QUARTER_SHA"],
+          }
+          fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o400)
+          with os.fdopen(fd, "w") as handle:
+              json.dump(payload, handle, sort_keys=True, separators=(",", ":"))
+              handle.flush()
+              os.fsync(handle.fileno())
+          PY
+          python3 deploy/condition17-bootstrap-audit.py \
+            --ledger "$snapshot" \
+            --deployed-commit "$EXPECTED_DEPLOYED_SHA" \
+            --deployed-tree "$EXPECTED_DEPLOYED_TREE" \
+            --validation-sha256 "$PINNED_VALIDATION_SHA" \
+            --quarter-line-sha256 "$PINNED_QUARTER_SHA" \
+            --activation-marker "$WORK/synthetic-marker.json" \
+            --output "$WORK/condition17-bootstrap-review.json"
+          rm -f "$snapshot" "$WORK/synthetic-marker.json" \
+            "$WORK/id_ed25519" "$WORK/known_hosts"
+          trap - EXIT
+
+      - name: Print non-secret review artifact
+        run: |
+          set -euo pipefail
+          review="$WORK/condition17-bootstrap-review.json"
+          test "$(stat -c '%h %a' "$review")" = "1 400"
+          python3 - "$review" <<'PY'
+          import json, sys
+          value = json.load(open(sys.argv[1], encoding="utf-8"))
+          assert value["result"] == "GO"
+          assert value["contains_fixture_ids_or_raw_rows"] is False
+          assert value["condition17"]["durable_progress"] == "18/20"
+          assert value["condition17"]["durable_hits"] == 10
+          assert all(v == 0 for v in value["condition17"]["exclusions"].values())
+          print(json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2))
+          PY
+
+      - name: Upload exact reviewer document
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: condition17-bootstrap-review-${{ github.run_id }}
+          path: /tmp/condition17-stage-a-${{ github.run_id }}/condition17-bootstrap-review.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Remove credentials and private intermediates
+        if: always()
+        run: |
+          test -n "${GITHUB_RUN_ID:-}"
+          test "$WORK" = "/tmp/condition17-stage-a-$GITHUB_RUN_ID"
+          rm -rf -- "$WORK"

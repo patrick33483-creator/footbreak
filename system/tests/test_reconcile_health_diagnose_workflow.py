@@ -32,6 +32,16 @@ class ReconcileHealthDiagnoseWorkflowTests(unittest.TestCase):
         self.assertIn("raw_journal_lines_printed=0 raw_journal_lines_uploaded=0", text)
         self.assertIn("No environment, credential, team identifier, state file, or provider response", text)
         self.assertIn(
+            "phase_crown_history_shape_busy=$(count_journal_matches "
+            "'Crown local history-shape repair busy')",
+            text,
+        )
+        self.assertIn(
+            "phase_crown_history_shape_failures=$(count_journal_matches "
+            "'Crown local history-shape repair failed')",
+            text,
+        )
+        self.assertIn(
             "integrity_crown_public_row_count=$(count_journal_matches "
             "'Crown public/projected prediction row count mismatch')",
             text,

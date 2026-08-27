@@ -1,0 +1,11 @@
+[Unit]
+Description=Send the daily condition report at 12:15 Hong Kong time
+
+[Timer]
+OnCalendar=*-*-* 12:15:00 Asia/Hong_Kong
+AccuracySec=30s
+Persistent=true
+Unit=footbreak-daily-condition-report.service
+
+[Install]
+WantedBy=timers.target

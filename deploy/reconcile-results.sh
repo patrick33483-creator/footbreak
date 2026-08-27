@@ -66,13 +66,19 @@ run_reconciler "Footbreak" "$APP_DIR/deploy/run.sh" settle
 CROWN_HISTORY_REPAIR_LOCK_TIMEOUT_SECONDS="${CROWN_HISTORY_REPAIR_LOCK_TIMEOUT_SECONDS:-2}"
 crown_history_shape_ready=1
 echo "=== $(TZ=Asia/Hong_Kong date '+%F %T') Crown local history-shape repair ==="
-if PYTHONPATH="$APP_DIR" "$APP_DIR/.venv/bin/python3" -m crown.history_shape_repair \
-  --lock-timeout-seconds "$CROWN_HISTORY_REPAIR_LOCK_TIMEOUT_SECONDS"; then
+crown_history_shape_repair_rc=0
+PYTHONPATH="$APP_DIR" "$APP_DIR/.venv/bin/python3" -m crown.history_shape_repair \
+  --lock-timeout-seconds "$CROWN_HISTORY_REPAIR_LOCK_TIMEOUT_SECONDS" \
+  || crown_history_shape_repair_rc=$?
+if [ "$crown_history_shape_repair_rc" -eq 0 ]; then
   echo "Crown local history-shape repair OK"
+elif [ "$crown_history_shape_repair_rc" -eq 75 ]; then
+  crown_history_shape_ready=0
+  echo "Crown local history-shape repair busy; automatic retry remains scheduled" >&2
 else
   crown_history_shape_ready=0
   reconciliation_failed=1
-  echo "Crown local history-shape repair did not complete; automatic retry remains scheduled" >&2
+  echo "Crown local history-shape repair failed rc=$crown_history_shape_repair_rc; automatic retry remains scheduled" >&2
 fi
 
 if crown_is_enabled; then
@@ -147,7 +153,7 @@ if [ "$crown_history_shape_ready" -eq 1 ]; then
     echo "Prediction-history integrity audit OK"
   fi
 else
-  echo "Prediction-history integrity audit skipped: Crown local history-shape repair did not complete" >&2
+  echo "Prediction-history integrity audit skipped: Crown local history-shape repair unavailable" >&2
 fi
 
 # 資料健康報告(唯讀診斷)。喺同一個 15 分鐘週期平價重生,完全唔會改

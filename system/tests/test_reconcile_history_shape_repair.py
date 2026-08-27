@@ -21,6 +21,18 @@ class ReconcileHistoryShapeRepairTests(unittest.TestCase):
             'if [ "$crown_history_shape_ready" -eq 1 ]; then',
             script,
         )
+        self.assertIn(
+            'elif [ "$crown_history_shape_repair_rc" -eq 75 ]; then',
+            script,
+        )
+        self.assertIn(
+            "Crown local history-shape repair busy; automatic retry remains scheduled",
+            script,
+        )
+        self.assertIn(
+            "Crown local history-shape repair failed rc=$crown_history_shape_repair_rc",
+            script,
+        )
 
 
 if __name__ == "__main__":
