@@ -11,6 +11,10 @@ on:
         description: Reviewed SHA-256 of deployed analysis/wilson_validation.py
         required: true
         type: string
+      expected_repository_tree:
+        description: Exact reviewed Git tree object for the deployed commit
+        required: true
+        type: string
       expected_manifest_hash:
         description: Trusted canonical production identity manifest SHA-256
         required: true
@@ -33,7 +37,9 @@ permissions:
   contents: read
 
 concurrency:
-  group: footbreak-condition17-production-preflight
+  # Deployment uses this same group.  The immutable verification/capture cannot
+  # overlap a reset of /opt/footbreak.
+  group: production-maintenance
   cancel-in-progress: false
 
 jobs:
@@ -50,6 +56,7 @@ jobs:
         env:
           EXPECTED_DEPLOYED_SHA: ${{ inputs.expected_deployed_sha }}
           EXPECTED_VALIDATION_SHA: ${{ inputs.expected_wilson_validation_sha256 }}
+          EXPECTED_REPOSITORY_TREE: ${{ inputs.expected_repository_tree }}
           EXPECTED_MANIFEST_HASH: ${{ inputs.expected_manifest_hash }}
           EXPECTED_CONDITION_SIGNATURE: ${{ inputs.expected_condition_signature }}
           EXPECTED_INITIAL_EVIDENCE_HASH: ${{ inputs.expected_initial_evidence_hash }}
@@ -58,6 +65,7 @@ jobs:
           set -euo pipefail
           [[ "$EXPECTED_DEPLOYED_SHA" =~ ^[0-9a-f]{40}$ ]]
           [[ "$EXPECTED_VALIDATION_SHA" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$EXPECTED_REPOSITORY_TREE" =~ ^[0-9a-f]{40}$ ]]
           [[ "$EXPECTED_MANIFEST_HASH" =~ ^[0-9a-f]{64}$ ]]
           [[ "$EXPECTED_CONDITION_SIGNATURE" =~ ^[0-9a-f]{24}$ ]]
           [[ "$EXPECTED_INITIAL_EVIDENCE_HASH" =~ ^[0-9a-f]{64}$ ]]
@@ -66,6 +74,12 @@ jobs:
           test "$DEPLOY_PORT" -le 65535
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           test "$GITHUB_SHA" = "$EXPECTED_DEPLOYED_SHA"
+          test "$(git rev-parse "${EXPECTED_DEPLOYED_SHA}^{tree}")" = \
+            "$EXPECTED_REPOSITORY_TREE"
+          timeout 60s git fsck --strict --no-dangling --no-reflogs \
+            "$EXPECTED_REPOSITORY_TREE" >/dev/null 2>&1
+          git diff-index --cached --quiet "$EXPECTED_DEPLOYED_SHA" --
+          git diff-files --quiet --
           test "$(sha256sum analysis/wilson_validation.py | awk '{print $1}')" = \
             "$EXPECTED_VALIDATION_SHA"
           test -s deploy/condition17-production-preflight.py
@@ -117,6 +131,7 @@ jobs:
           DEPLOY_PORT: ${{ inputs.ssh_port }}
           EXPECTED_DEPLOYED_SHA: ${{ inputs.expected_deployed_sha }}
           EXPECTED_VALIDATION_SHA: ${{ inputs.expected_wilson_validation_sha256 }}
+          EXPECTED_REPOSITORY_TREE: ${{ inputs.expected_repository_tree }}
           EXPECTED_MANIFEST_HASH: ${{ inputs.expected_manifest_hash }}
           EXPECTED_CONDITION_SIGNATURE: ${{ inputs.expected_condition_signature }}
           EXPECTED_INITIAL_EVIDENCE_HASH: ${{ inputs.expected_initial_evidence_hash }}
@@ -125,6 +140,7 @@ jobs:
           umask 077
           snapshot="$PREFLIGHT_DIR/sim-ledger.snapshot"
           summary="$PREFLIGHT_DIR/condition17-production-preflight-summary.json"
+          activation_marker="$PREFLIGHT_DIR/condition17.synthetic-activation.json"
           cleanup_snapshot() {
             if [ -e "$snapshot" ] || [ -L "$snapshot" ]; then
               chmod 600 "$snapshot" 2>/dev/null || true
@@ -132,6 +148,7 @@ jobs:
             fi
             rm -f -- \
               "$PREFLIGHT_DIR/id_ed25519" "$PREFLIGHT_DIR/known_hosts"
+            rm -f -- "$activation_marker"
           }
           trap cleanup_snapshot EXIT
           trap 'exit 130' HUP INT TERM
@@ -151,7 +168,9 @@ jobs:
                --ledger /opt/footbreak/system/sim_ledger.json \
                --repo /opt/footbreak \
                --expected-commit '$EXPECTED_DEPLOYED_SHA' \
+               --expected-tree '$EXPECTED_REPOSITORY_TREE' \
                --expected-validation-sha256 '$EXPECTED_VALIDATION_SHA' \
+               --activation-marker /var/lib/footbreak/activation/condition17-legacy-cohort-v1.json \
                --lock-timeout 120" \
               < deploy/capture-condition17-production-snapshot.py \
               > "$snapshot"
@@ -206,12 +225,56 @@ jobs:
             exit 1
           fi
           chmod 400 "$snapshot"
+          python3 - "$activation_marker" <<'PY'
+          import hashlib
+          import json
+          import os
+          import stat
+          import sys
+          from pathlib import Path
+
+          path = Path(sys.argv[1])
+          payload = json.dumps({
+              "schema": "footbreak-condition17-legacy-cohort-v1",
+              "wilson_validation_sha256": hashlib.sha256(
+                  Path("analysis/wilson_validation.py").read_bytes(),
+              ).hexdigest(),
+              "quarter_line_sha256": hashlib.sha256(
+                  Path("analysis/quarter_line.py").read_bytes(),
+              ).hexdigest(),
+          }, sort_keys=True, separators=(",", ":")).encode() + b"\n"
+          fd = os.open(
+              path,
+              os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+              0o400,
+          )
+          try:
+              offset = 0
+              while offset < len(payload):
+                  written = os.write(fd, payload[offset:])
+                  if written <= 0:
+                      raise RuntimeError("short activation marker write")
+                  offset += written
+              os.fsync(fd)
+              info = os.fstat(fd)
+              current = os.lstat(path)
+              if (
+                  not stat.S_ISREG(info.st_mode)
+                  or info.st_nlink != 1
+                  or stat.S_IMODE(info.st_mode) != 0o400
+                  or (current.st_dev, current.st_ino) != (info.st_dev, info.st_ino)
+              ):
+                  raise RuntimeError("unsafe synthetic activation marker")
+          finally:
+              os.close(fd)
+          PY
           timeout --signal=TERM --kill-after=10s 180s \
             python3 deploy/condition17-production-preflight.py \
               --ledger "$snapshot" \
               --expected-manifest-hash "$EXPECTED_MANIFEST_HASH" \
               --expected-condition-signature "$EXPECTED_CONDITION_SIGNATURE" \
               --expected-initial-evidence-hash "$EXPECTED_INITIAL_EVIDENCE_HASH" \
+              --activation-marker "$activation_marker" \
               --output "$summary"
 
       - name: Print bounded preflight result

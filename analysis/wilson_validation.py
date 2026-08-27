@@ -10,7 +10,10 @@ import copy
 import hashlib
 import json
 import math
+import os
+import stat
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Iterable
 
 from .quarter_line import validate as validate_quarter_line_profile
@@ -37,6 +40,10 @@ PRODUCTION_IDENTITY_MANIFEST_VERSION = "wilson-production-identity-v1"
 BINARY_HIT_RESULTS = {"Won", "Half Won"}
 BINARY_MISS_RESULTS = {"Lost", "Half Lost"}
 BINARY_DECIDED_RESULTS = BINARY_HIT_RESULTS | BINARY_MISS_RESULTS
+CONDITION17_ACTIVATION_MARKER = Path(
+    "/var/lib/footbreak/activation/condition17-legacy-cohort-v1.json",
+)
+CONDITION17_ACTIVATION_SCHEMA = "footbreak-condition17-legacy-cohort-v1"
 
 FUNNEL_AUDIT_REJECTIONS = {
     "stage_not_strictly_after_evidence_activation_boundary": (
@@ -107,6 +114,120 @@ def _canonical_hash(value: Any) -> str:
         value, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
     ).encode("utf-8")
     return hashlib.sha256(raw).hexdigest()
+
+
+def _condition17_activation_file_hash(path: Path) -> str | None:
+    """Hash one immutable source file without accepting links or replacement."""
+    try:
+        before = os.lstat(path)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_nlink != 1
+            or before.st_size > 8 * 1024 * 1024
+        ):
+            return None
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except (OSError, ValueError):
+        return None
+    try:
+        opened = os.fstat(fd)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_nlink != 1
+            or (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino)
+        ):
+            return None
+        payload = bytearray()
+        while len(payload) <= 8 * 1024 * 1024:
+            block = os.read(fd, min(1024 * 1024, 8 * 1024 * 1024 + 1 - len(payload)))
+            if not block:
+                break
+            payload.extend(block)
+        after_fd = os.fstat(fd)
+        after_path = os.lstat(path)
+        if (
+            len(payload) > 8 * 1024 * 1024
+            or len(payload) != opened.st_size
+            or (after_fd.st_dev, after_fd.st_ino)
+            != (opened.st_dev, opened.st_ino)
+            or (after_path.st_dev, after_path.st_ino)
+            != (opened.st_dev, opened.st_ino)
+            or after_fd.st_nlink != 1
+            or after_path.st_nlink != 1
+            or after_fd.st_size != opened.st_size
+            or after_fd.st_mtime_ns != opened.st_mtime_ns
+            or after_fd.st_ctime_ns != opened.st_ctime_ns
+        ):
+            return None
+        return hashlib.sha256(payload).hexdigest()
+    except (OSError, ValueError):
+        return None
+    finally:
+        os.close(fd)
+
+
+def _footbreak_17_legacy_cohort_is_activated() -> bool:
+    """Fail closed unless a private marker binds the exact runtime sources."""
+    marker_path = CONDITION17_ACTIVATION_MARKER
+    try:
+        before = os.lstat(marker_path)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_nlink != 1
+            or before.st_uid != os.geteuid()
+            or stat.S_IMODE(before.st_mode) & 0o077
+            or before.st_size > 1024
+        ):
+            return False
+        fd = os.open(
+            marker_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
+        )
+    except (OSError, ValueError):
+        return False
+    try:
+        opened = os.fstat(fd)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_nlink != 1
+            or (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino)
+        ):
+            return False
+        raw = os.read(fd, 1025)
+        after_fd = os.fstat(fd)
+        after_path = os.lstat(marker_path)
+        if (
+            len(raw) > 1024
+            or len(raw) != opened.st_size
+            or (after_fd.st_dev, after_fd.st_ino)
+            != (opened.st_dev, opened.st_ino)
+            or (after_path.st_dev, after_path.st_ino)
+            != (opened.st_dev, opened.st_ino)
+            or after_fd.st_nlink != 1
+            or after_path.st_nlink != 1
+            or after_fd.st_mtime_ns != opened.st_mtime_ns
+            or after_fd.st_ctime_ns != opened.st_ctime_ns
+        ):
+            return False
+        payload = json.loads(raw)
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return False
+    finally:
+        os.close(fd)
+    module_path = Path(__file__).resolve()
+    dependency_path = module_path.with_name("quarter_line.py")
+    return bool(
+        isinstance(payload, dict)
+        and set(payload) == {
+            "schema",
+            "wilson_validation_sha256",
+            "quarter_line_sha256",
+        }
+        and payload.get("schema") == CONDITION17_ACTIVATION_SCHEMA
+        and payload.get("wilson_validation_sha256")
+        == _condition17_activation_file_hash(module_path)
+        and payload.get("quarter_line_sha256")
+        == _condition17_activation_file_hash(dependency_path)
+    )
 
 
 def _time(value: Any) -> datetime | None:
@@ -1445,8 +1566,11 @@ def _resolve_footbreak_17_legacy_anomaly_cohort(
     projection_time: datetime, ledger: dict[str, Any],
 ) -> list[dict[str, Any]] | None:
     """Resolve only the pinned immutable production cohort: 18 rows / 10 hits."""
-    if not _footbreak_17_production_identity_is_pinned(
-        ledger, signature=signature, frozen=frozen,
+    if (
+        not _footbreak_17_legacy_cohort_is_activated()
+        or not _footbreak_17_production_identity_is_pinned(
+            ledger, signature=signature, frozen=frozen,
+        )
     ):
         return None
     admitted = [

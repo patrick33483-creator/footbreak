@@ -16,6 +16,7 @@ from unittest.mock import patch
 
 import yaml
 
+from analysis import wilson_validation as wv
 from analysis.tests import test_wilson_validation as validation_tests
 from analysis.wilson_validation import (
     _expected_production_identity_manifest,
@@ -107,6 +108,54 @@ def production_shape() -> tuple[dict, dict, str]:
 
 
 class Condition17ProductionPreflightTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.marker_temp = tempfile.TemporaryDirectory()
+        self.activation_marker = Path(self.marker_temp.name) / "activation.json"
+        self.activation_marker.write_text(json.dumps({
+            "schema": wv.CONDITION17_ACTIVATION_SCHEMA,
+            "wilson_validation_sha256": hashlib.sha256(
+                Path(wv.__file__).read_bytes(),
+            ).hexdigest(),
+            "quarter_line_sha256": hashlib.sha256(
+                Path(wv.__file__).with_name("quarter_line.py").read_bytes(),
+            ).hexdigest(),
+        }), encoding="utf-8")
+        self.activation_marker.chmod(0o400)
+        self.marker_patch = patch.object(
+            wv, "CONDITION17_ACTIVATION_MARKER", self.activation_marker,
+        )
+        self.marker_patch.start()
+
+    def tearDown(self) -> None:
+        self.marker_patch.stop()
+        self.marker_temp.cleanup()
+
+    def _cli_marker(self) -> list[str]:
+        return ["--activation-marker", str(self.activation_marker)]
+
+    def test_activation_is_default_off_and_marker_is_source_bound(self) -> None:
+        missing = Path(self.marker_temp.name) / "missing"
+        with patch.object(wv, "CONDITION17_ACTIVATION_MARKER", missing):
+            self.assertFalse(wv._footbreak_17_legacy_cohort_is_activated())
+        victim = Path(self.marker_temp.name) / "victim"
+        victim.write_bytes(self.activation_marker.read_bytes())
+        victim.chmod(0o400)
+        symlink = Path(self.marker_temp.name) / "marker-symlink"
+        symlink.symlink_to(victim)
+        hardlink = Path(self.marker_temp.name) / "marker-hardlink"
+        os.link(victim, hardlink)
+        for marker in (symlink, hardlink, victim):
+            with self.subTest(marker=marker.name):
+                with patch.object(wv, "CONDITION17_ACTIVATION_MARKER", marker):
+                    self.assertFalse(wv._footbreak_17_legacy_cohort_is_activated())
+        tampered = json.loads(self.activation_marker.read_text(encoding="utf-8"))
+        tampered["quarter_line_sha256"] = "0" * 64
+        bad = Path(self.marker_temp.name) / "bad-marker"
+        bad.write_text(json.dumps(tampered), encoding="utf-8")
+        bad.chmod(0o400)
+        with patch.object(wv, "CONDITION17_ACTIVATION_MARKER", bad):
+            self.assertFalse(wv._footbreak_17_legacy_cohort_is_activated())
+
     def _write(self, ledger: dict, directory: str) -> Path:
         path = Path(directory) / "sim-ledger.snapshot"
         path.write_bytes(json.dumps(ledger, ensure_ascii=False).encode())
@@ -229,6 +278,7 @@ class Condition17ProductionPreflightTests(unittest.TestCase):
                     "--expected-condition-signature", trusted["expected_signature"],
                     "--expected-initial-evidence-hash",
                     trusted["expected_initial_evidence_hash"],
+                    *self._cli_marker(),
                     "--output", str(output),
                 ])
             payload = output.read_text(encoding="utf-8")
@@ -265,6 +315,7 @@ class Condition17ProductionPreflightTests(unittest.TestCase):
                             trusted["expected_signature"],
                             "--expected-initial-evidence-hash",
                             trusted["expected_initial_evidence_hash"],
+                            *self._cli_marker(),
                             "--output", str(output),
                         ])
                     self.assertEqual(rc, 1)
@@ -285,6 +336,7 @@ class Condition17ProductionPreflightTests(unittest.TestCase):
                     "--expected-condition-signature", trusted["expected_signature"],
                     "--expected-initial-evidence-hash",
                     trusted["expected_initial_evidence_hash"],
+                    *self._cli_marker(),
                     "--output", str(output),
                 ])
             info = os.lstat(output)
@@ -332,12 +384,21 @@ class Condition17SecureCaptureTests(unittest.TestCase):
         self.ledger = self.root / "sim_ledger.json"
         self.lock.write_bytes(b"")
         self.ledger.write_bytes(b'{"safe":true}\n')
+        self.repo = self.root / "repo"
+        subprocess.run(
+            ["git", "clone", "--quiet", "--no-hardlinks", str(ROOT), str(self.repo)],
+            check=True,
+        )
         self.commit = subprocess.check_output(
-            ["git", "-C", str(ROOT), "rev-parse", "HEAD"], text=True,
+            ["git", "-C", str(self.repo), "rev-parse", "HEAD"], text=True,
+        ).strip()
+        self.tree = subprocess.check_output(
+            ["git", "-C", str(self.repo), "rev-parse", "HEAD^{tree}"], text=True,
         ).strip()
         self.validation_hash = hashlib.sha256(
-            (ROOT / "analysis" / "wilson_validation.py").read_bytes(),
+            (self.repo / "analysis" / "wilson_validation.py").read_bytes(),
         ).hexdigest()
+        self.activation_marker = self.root / "production-activation.json"
 
     def tearDown(self) -> None:
         self.temp.cleanup()
@@ -346,9 +407,11 @@ class Condition17SecureCaptureTests(unittest.TestCase):
         return CAPTURE.capture(
             self.lock,
             self.ledger,
-            ROOT,
+            self.repo,
             self.commit,
+            self.tree,
             self.validation_hash,
+            self.activation_marker,
             lock_timeout=0.1,
             **kwargs,
         )
@@ -359,16 +422,110 @@ class Condition17SecureCaptureTests(unittest.TestCase):
             CAPTURE.CaptureFailure, "deployed_commit_mismatch",
         ):
             CAPTURE.capture(
-                self.lock, self.ledger, ROOT, "0" * 40, self.validation_hash,
+                self.lock, self.ledger, self.repo, "0" * 40, self.tree,
+                self.validation_hash, self.activation_marker,
                 lock_timeout=0.1,
             )
         with self.assertRaisesRegex(
             CAPTURE.CaptureFailure, "deployed_validation_hash_mismatch",
         ):
             CAPTURE.capture(
-                self.lock, self.ledger, ROOT, self.commit, "0" * 64,
+                self.lock, self.ledger, self.repo, self.commit, self.tree,
+                "0" * 64, self.activation_marker,
                 lock_timeout=0.1,
             )
+        with self.assertRaisesRegex(
+            CAPTURE.CaptureFailure, "deployed_tree_mismatch",
+        ):
+            CAPTURE.capture(
+                self.lock, self.ledger, self.repo, self.commit, "0" * 40,
+                self.validation_hash, self.activation_marker,
+                lock_timeout=0.1,
+            )
+
+    def test_tree_dirty_staged_and_untracked_source_fail_closed(self) -> None:
+        dependency = self.repo / "analysis" / "quarter_line.py"
+        dependency.write_text(
+            dependency.read_text(encoding="utf-8") + "\n# dirty\n",
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(
+            CAPTURE.CaptureFailure,
+            "deployed_(worktree_dirty|tracked_content_mismatch)",
+        ):
+            self._capture()
+
+        subprocess.run(
+            ["git", "-C", str(self.repo), "reset", "--hard", "--quiet", "HEAD"],
+            check=True,
+        )
+        readme = self.repo / "README.md"
+        readme.write_text(
+            readme.read_text(encoding="utf-8") + "\nstaged attack\n",
+            encoding="utf-8",
+        )
+        subprocess.run(
+            ["git", "-C", str(self.repo), "add", "README.md"], check=True,
+        )
+        with self.assertRaisesRegex(CAPTURE.CaptureFailure, "deployed_index_dirty"):
+            self._capture()
+
+        subprocess.run(
+            ["git", "-C", str(self.repo), "reset", "--hard", "--quiet", "HEAD"],
+            check=True,
+        )
+        (self.repo / "analysis" / "quarter_line.so").write_bytes(
+            b"untracked-extension-module-shadow",
+        )
+        with self.assertRaisesRegex(
+            CAPTURE.CaptureFailure, "deployed_untracked_source_shadow",
+        ):
+            self._capture()
+
+    def test_dependency_symlink_and_same_content_replacement_fail_closed(self) -> None:
+        dependency = self.repo / "analysis" / "quarter_line.py"
+        outside = self.root / "quarter_line.py"
+        outside.write_bytes(dependency.read_bytes())
+        dependency.unlink()
+        dependency.symlink_to(outside)
+        with self.assertRaises(CAPTURE.CaptureFailure):
+            self._capture()
+
+        dependency.unlink()
+        subprocess.run(
+            ["git", "-C", str(self.repo), "checkout", "--quiet", "--",
+             "analysis/quarter_line.py"],
+            check=True,
+        )
+
+        def replace_dependency() -> None:
+            replacement = self.root / "same-content-quarter-line.py"
+            replacement.write_bytes(dependency.read_bytes())
+            replacement.chmod(dependency.stat().st_mode & 0o777)
+            os.replace(replacement, dependency)
+
+        with self.assertRaisesRegex(
+            CAPTURE.CaptureFailure,
+            "deployed_(worktree_dirty|tracked_identity_changed)",
+        ):
+            self._capture(after_read_hook=replace_dependency)
+
+    def test_preactivation_and_sanitized_git_environment_are_required(self) -> None:
+        self.activation_marker.write_text("already active", encoding="utf-8")
+        with self.assertRaisesRegex(
+            CAPTURE.CaptureFailure, "condition17_already_activated",
+        ):
+            self._capture()
+        self.activation_marker.unlink()
+        with patch.dict(
+            os.environ,
+            {
+                "GIT_DIR": str(self.root / "attacker-git-dir"),
+                "GIT_WORK_TREE": str(self.root / "attacker-worktree"),
+                "GIT_CONFIG_GLOBAL": str(self.root / "attacker-config"),
+            },
+        ):
+            self.assertEqual(self._capture(), self.ledger.read_bytes())
 
     def test_lock_symlink_and_hardlink_are_rejected(self) -> None:
         symlink = self.root / "lock-symlink"
@@ -379,8 +536,9 @@ class Condition17SecureCaptureTests(unittest.TestCase):
             with self.subTest(path=path.name):
                 with self.assertRaises(CAPTURE.CaptureFailure):
                     CAPTURE.capture(
-                        path, self.ledger, ROOT, self.commit,
-                        self.validation_hash, lock_timeout=0.1,
+                        path, self.ledger, self.repo, self.commit, self.tree,
+                        self.validation_hash, self.activation_marker,
+                        lock_timeout=0.1,
                     )
 
     def test_lock_inode_replacement_after_acquisition_is_rejected(self) -> None:
@@ -403,8 +561,9 @@ class Condition17SecureCaptureTests(unittest.TestCase):
             with self.subTest(path=path.name):
                 with self.assertRaises(CAPTURE.CaptureFailure):
                     CAPTURE.capture(
-                        self.lock, path, ROOT, self.commit,
-                        self.validation_hash, lock_timeout=0.1,
+                        self.lock, path, self.repo, self.commit, self.tree,
+                        self.validation_hash, self.activation_marker,
+                        lock_timeout=0.1,
                     )
         hardlink.unlink()
 
@@ -495,6 +654,7 @@ class Condition17ProductionPreflightWorkflowTests(unittest.TestCase):
             {
                 "expected_deployed_sha",
                 "expected_wilson_validation_sha256",
+                "expected_repository_tree",
                 "expected_manifest_hash",
                 "expected_condition_signature",
                 "expected_initial_evidence_hash",
@@ -504,6 +664,12 @@ class Condition17ProductionPreflightWorkflowTests(unittest.TestCase):
         self.assertTrue(all(value.get("required") is True for value in inputs.values()))
         self.assertIn('test "$(git rev-parse HEAD)" = "$GITHUB_SHA"', text)
         self.assertIn('test "$GITHUB_SHA" = "$EXPECTED_DEPLOYED_SHA"', text)
+        self.assertIn(
+            'git rev-parse "${EXPECTED_DEPLOYED_SHA}^{tree}"', text,
+        )
+        self.assertIn("git fsck --strict --no-dangling", text)
+        self.assertIn("git diff-index --cached --quiet", text)
+        self.assertIn("git diff-files --quiet", text)
         self.assertIn(
             "test \"$(sha256sum analysis/wilson_validation.py | awk '{print $1}')\"",
             text,
@@ -517,6 +683,7 @@ class Condition17ProductionPreflightWorkflowTests(unittest.TestCase):
         self.assertIn("/opt/footbreak/system/sim_ledger.json", text)
         self.assertIn("capture-condition17-production-snapshot.py", text)
         self.assertIn("--expected-commit '$EXPECTED_DEPLOYED_SHA'", text)
+        self.assertIn("--expected-tree '$EXPECTED_REPOSITORY_TREE'", text)
         self.assertIn(
             "--expected-validation-sha256 '$EXPECTED_VALIDATION_SHA'", text,
         )
@@ -525,6 +692,9 @@ class Condition17ProductionPreflightWorkflowTests(unittest.TestCase):
         self.assertIn("timeout --signal=TERM --kill-after=10s 180s", text)
         self.assertEqual(
             parsed_workflow()["jobs"]["preflight"]["timeout-minutes"], 10,
+        )
+        self.assertEqual(
+            parsed_workflow()["concurrency"]["group"], "production-maintenance",
         )
         upload = text.split("Upload bounded preflight result", 1)[1]
         self.assertNotIn("sim-ledger.snapshot", upload)
@@ -546,8 +716,22 @@ class Condition17ProductionPreflightWorkflowTests(unittest.TestCase):
         self.assertIn("trap cleanup_snapshot EXIT", text)
         self.assertIn("trap cleanup EXIT", text)
         self.assertGreaterEqual(text.count("trap 'exit 130' HUP INT TERM"), 3)
+        self.assertIn("--activation-marker \"$activation_marker\"", text)
+        self.assertIn(
+            "/var/lib/footbreak/activation/condition17-legacy-cohort-v1.json",
+            text,
+        )
         self.assertIn('rm -rf -- "$PREFLIGHT_DIR"', text)
         self.assertNotIn("cat ~/.ssh/id_ed25519", text)
+
+    def test_deployment_does_not_activate_condition_17(self) -> None:
+        deploy_workflow = (
+            ROOT / ".github" / "workflows" / "deploy.yml"
+        ).read_text(encoding="utf-8")
+        update = (ROOT / "deploy" / "update.sh").read_text(encoding="utf-8")
+        marker = "condition17-legacy-cohort-v1.json"
+        self.assertNotIn(marker, deploy_workflow)
+        self.assertNotIn(marker, update)
 
 
 def parsed_workflow():

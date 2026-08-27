@@ -16,8 +16,12 @@ from typing import Callable
 
 
 MAX_LEDGER_BYTES = 128 * 1024 * 1024
+MAX_REPOSITORY_BYTES = 512 * 1024 * 1024
+MAX_TRACKED_FILE_BYTES = 128 * 1024 * 1024
 SHA256_RE = re.compile(r"[0-9a-f]{64}")
 COMMIT_RE = re.compile(r"[0-9a-f]{40}")
+TREE_RE = re.compile(r"[0-9a-f]{40}")
+SOURCE_SUFFIXES = (".py", ".pyc", ".so", ".pyd", ".pth", ".egg-link")
 
 
 class CaptureFailure(RuntimeError):
@@ -96,28 +100,353 @@ def _read_verified(path: Path, maximum: int, code: str) -> bytes:
         os.close(fd)
 
 
-def verify_deployed_code(
-    repo: Path, expected_commit: str, expected_validation_sha256: str,
+def _git_environment() -> dict[str, str]:
+    env = {
+        key: value for key, value in os.environ.items()
+        if not key.startswith("GIT_")
+    }
+    env.update({
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": "/dev/null",
+        "GIT_OPTIONAL_LOCKS": "0",
+        "HOME": "/nonexistent",
+        "XDG_CONFIG_HOME": "/nonexistent",
+        "PATH": "/usr/bin:/bin",
+    })
+    return env
+
+
+def _git(
+    repo: Path, arguments: list[str], *, timeout: float = 30,
+) -> subprocess.CompletedProcess[bytes]:
+    return subprocess.run(
+        [
+            "git",
+            "--git-dir", str(repo / ".git"),
+            "--work-tree", str(repo),
+            "-c", "core.fsmonitor=false",
+            "-c", "core.untrackedCache=false",
+            "-c", "core.hooksPath=/dev/null",
+            *arguments,
+        ],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        timeout=timeout,
+        env=_git_environment(),
+        cwd="/",
+    )
+
+
+def _require_git_success(
+    result: subprocess.CompletedProcess[bytes], code: str,
+) -> bytes:
+    if result.returncode != 0:
+        raise CaptureFailure(code)
+    return result.stdout
+
+
+def _open_repository_root(repo: Path) -> tuple[int, os.stat_result, os.stat_result]:
+    before = os.lstat(repo)
+    git_before = os.lstat(repo / ".git")
+    if (
+        not stat.S_ISDIR(before.st_mode)
+        or not stat.S_ISDIR(git_before.st_mode)
+    ):
+        raise CaptureFailure("deployed_repository_path_invalid")
+    fd = os.open(
+        repo, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+    )
+    opened = os.fstat(fd)
+    if _identity(opened) != _identity(before):
+        os.close(fd)
+        raise CaptureFailure("deployed_repository_identity_changed")
+    return fd, opened, git_before
+
+
+def _verify_repository_identity(
+    repo: Path, repo_fd: int, expected: os.stat_result,
+    git_expected: os.stat_result,
 ) -> None:
+    current_fd = os.fstat(repo_fd)
+    current_path = os.lstat(repo)
+    current_git = os.lstat(repo / ".git")
+    if (
+        not stat.S_ISDIR(current_fd.st_mode)
+        or not stat.S_ISDIR(current_path.st_mode)
+        or not stat.S_ISDIR(current_git.st_mode)
+        or _identity(current_fd) != _identity(expected)
+        or _identity(current_path) != _identity(expected)
+        or _identity(current_git) != _identity(git_expected)
+    ):
+        raise CaptureFailure("deployed_repository_identity_changed")
+
+
+def _open_relative_file(
+    root_fd: int, relative: str,
+) -> tuple[int, os.stat_result]:
+    parts = relative.split("/")
+    if (
+        not relative
+        or relative.startswith("/")
+        or any(part in {"", ".", ".."} for part in parts)
+    ):
+        raise CaptureFailure("deployed_tree_path_invalid")
+    directory_fd = os.dup(root_fd)
+    try:
+        for part in parts[:-1]:
+            next_fd = os.open(
+                part,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                dir_fd=directory_fd,
+            )
+            os.close(directory_fd)
+            directory_fd = next_fd
+        before = os.stat(
+            parts[-1], dir_fd=directory_fd, follow_symlinks=False,
+        )
+        if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+            raise CaptureFailure("deployed_tracked_file_invalid")
+        fd = os.open(
+            parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
+            dir_fd=directory_fd,
+        )
+        opened = os.fstat(fd)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_nlink != 1
+            or _identity(opened) != _identity(before)
+        ):
+            os.close(fd)
+            raise CaptureFailure("deployed_tracked_file_identity_changed")
+        return fd, opened
+    finally:
+        os.close(directory_fd)
+
+
+def _read_relative_file(
+    root_fd: int, relative: str, *, executable: bool,
+) -> tuple[bytes, tuple[int, int]]:
+    fd, opened = _open_relative_file(root_fd, relative)
+    try:
+        if opened.st_size > MAX_TRACKED_FILE_BYTES:
+            raise CaptureFailure("deployed_tracked_file_too_large")
+        payload = _read_fd_bounded(
+            fd, opened, MAX_TRACKED_FILE_BYTES, "deployed_tracked_file",
+        )
+        if bool(opened.st_mode & 0o111) != executable:
+            raise CaptureFailure("deployed_tracked_mode_mismatch")
+        check_fd, current = _open_relative_file(root_fd, relative)
+        os.close(check_fd)
+        if _identity(current) != _identity(opened):
+            raise CaptureFailure("deployed_tracked_file_identity_changed")
+        return payload, _identity(opened)
+    finally:
+        os.close(fd)
+
+
+def _git_blob_oid(payload: bytes) -> str:
+    digest = hashlib.sha1()
+    digest.update(f"blob {len(payload)}\0".encode("ascii"))
+    digest.update(payload)
+    return digest.hexdigest()
+
+
+def _verify_tracked_tree(
+    repo: Path, repo_fd: int, expected_commit: str, expected_tree: str,
+) -> tuple[dict[str, str], dict[str, tuple[int, int]]]:
+    head = _require_git_success(
+        _git(repo, ["rev-parse", "--verify", "HEAD^{commit}"]),
+        "deployed_commit_unavailable",
+    ).decode("ascii").strip()
+    if head != expected_commit:
+        raise CaptureFailure("deployed_commit_mismatch")
+    tree = _require_git_success(
+        _git(repo, ["rev-parse", "--verify", f"{expected_commit}^{{tree}}"]),
+        "deployed_tree_unavailable",
+    ).decode("ascii").strip()
+    if tree != expected_tree:
+        raise CaptureFailure("deployed_tree_mismatch")
+    top = _require_git_success(
+        _git(repo, ["rev-parse", "--show-toplevel"]),
+        "deployed_repository_top_unavailable",
+    ).decode("utf-8").strip()
+    git_dir = _require_git_success(
+        _git(repo, ["rev-parse", "--absolute-git-dir"]),
+        "deployed_git_dir_unavailable",
+    ).decode("utf-8").strip()
+    if Path(top).resolve() != repo.resolve() or Path(git_dir).resolve() != (
+        repo / ".git"
+    ).resolve():
+        raise CaptureFailure("deployed_git_paths_mismatch")
+    _require_git_success(
+        _git(
+            repo,
+            [
+                "fsck", "--strict", "--no-dangling", "--no-reflogs",
+                expected_tree,
+            ],
+            timeout=60,
+        ),
+        "deployed_git_object_integrity_failed",
+    )
+    _require_git_success(
+        _git(repo, ["diff-index", "--cached", "--quiet", expected_commit, "--"]),
+        "deployed_index_dirty",
+    )
+    _require_git_success(
+        _git(repo, ["diff-files", "--quiet", "--"]),
+        "deployed_worktree_dirty",
+    )
+
+    listing = _require_git_success(
+        _git(repo, ["ls-tree", "-rz", "--full-tree", expected_commit]),
+        "deployed_tree_listing_failed",
+    )
+    hashes: dict[str, str] = {}
+    identities: dict[str, tuple[int, int]] = {}
+    total = 0
+    for record in listing.split(b"\0"):
+        if not record:
+            continue
+        try:
+            metadata, raw_path = record.split(b"\t", 1)
+            mode, object_type, oid = metadata.decode("ascii").split()
+            relative = raw_path.decode("utf-8", "strict")
+        except (ValueError, UnicodeDecodeError):
+            raise CaptureFailure("deployed_tree_listing_invalid") from None
+        if object_type != "blob" or mode not in {"100644", "100755"}:
+            raise CaptureFailure("deployed_tree_entry_unsupported")
+        payload, identity = _read_relative_file(
+            repo_fd, relative, executable=mode == "100755",
+        )
+        total += len(payload)
+        if total > MAX_REPOSITORY_BYTES:
+            raise CaptureFailure("deployed_repository_too_large")
+        actual_oid = _git_blob_oid(payload)
+        if actual_oid != oid:
+            raise CaptureFailure("deployed_tracked_content_mismatch")
+        hashes[relative] = hashlib.sha256(payload).hexdigest()
+        identities[relative] = identity
+    if not hashes:
+        raise CaptureFailure("deployed_tree_empty")
+    return hashes, identities
+
+
+def _verify_no_source_shadows(repo: Path) -> None:
+    candidates: set[str] = set()
+    for arguments in (
+        ["ls-files", "--others", "--exclude-standard", "-z"],
+        ["ls-files", "--others", "--ignored", "--exclude-standard", "-z"],
+    ):
+        raw = _require_git_success(
+            _git(repo, arguments),
+            "deployed_untracked_listing_failed",
+        )
+        try:
+            candidates.update(
+                item.decode("utf-8", "strict")
+                for item in raw.split(b"\0") if item
+            )
+        except UnicodeDecodeError:
+            raise CaptureFailure("deployed_untracked_path_invalid") from None
+    for relative in candidates:
+        normalized = relative.replace("\\", "/")
+        if normalized == ".venv" or normalized.startswith(".venv/"):
+            continue
+        if "/__pycache__/" in f"/{normalized}/" and normalized.endswith(".pyc"):
+            continue
+        if normalized.endswith(SOURCE_SUFFIXES):
+            raise CaptureFailure("deployed_untracked_source_shadow")
+
+
+def _verify_import_origins(
+    repo: Path, validation_hash: str, quarter_line_hash: str,
+) -> None:
+    program = r"""
+import hashlib
+import json
+import pathlib
+import sys
+
+repo = pathlib.Path(sys.argv[1]).resolve()
+sys.path.insert(0, str(repo))
+import analysis
+import analysis.quarter_line as quarter_line
+import analysis.wilson_validation as validation
+
+expected = {
+    validation: (repo / "analysis" / "wilson_validation.py", sys.argv[2]),
+    quarter_line: (repo / "analysis" / "quarter_line.py", sys.argv[3]),
+}
+if pathlib.Path(analysis.__file__).resolve() != repo / "analysis" / "__init__.py":
+    raise SystemExit(2)
+for module, (path, digest) in expected.items():
+    origin = pathlib.Path(module.__spec__.origin).resolve()
+    if origin != path or pathlib.Path(module.__file__).resolve() != path:
+        raise SystemExit(3)
+    if hashlib.sha256(path.read_bytes()).hexdigest() != digest:
+        raise SystemExit(4)
+"""
+    env = {
+        "HOME": "/nonexistent",
+        "PATH": "/usr/bin:/bin",
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONNOUSERSITE": "1",
+    }
+    result = subprocess.run(
+        [
+            sys.executable, "-I", "-S", "-c", program,
+            str(repo), validation_hash, quarter_line_hash,
+        ],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        timeout=20,
+        env=env,
+        cwd="/",
+    )
+    if result.returncode != 0:
+        raise CaptureFailure("deployed_import_origin_mismatch")
+
+
+def verify_deployed_code(
+    repo: Path,
+    expected_commit: str,
+    expected_tree: str,
+    expected_validation_sha256: str,
+    activation_marker: Path,
+    expected_identities: dict[str, tuple[int, int]] | None = None,
+) -> dict[str, tuple[int, int]]:
     if (
         COMMIT_RE.fullmatch(expected_commit) is None
+        or TREE_RE.fullmatch(expected_tree) is None
         or SHA256_RE.fullmatch(expected_validation_sha256) is None
     ):
         raise CaptureFailure("invalid_deployed_code_authority")
-    result = subprocess.run(
-        ["git", "-C", str(repo), "rev-parse", "HEAD"],
-        check=False,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        timeout=10,
-    )
-    if result.returncode != 0 or result.stdout.strip() != expected_commit:
-        raise CaptureFailure("deployed_commit_mismatch")
-    validation = repo / "analysis" / "wilson_validation.py"
-    payload = _read_verified(validation, 8 * 1024 * 1024, "deployed_validation")
-    if hashlib.sha256(payload).hexdigest() != expected_validation_sha256:
-        raise CaptureFailure("deployed_validation_hash_mismatch")
+    if os.path.lexists(activation_marker):
+        raise CaptureFailure("condition17_already_activated")
+    repo_fd, repo_info, git_info = _open_repository_root(repo)
+    try:
+        hashes, identities = _verify_tracked_tree(
+            repo, repo_fd, expected_commit, expected_tree,
+        )
+        if expected_identities is not None and identities != expected_identities:
+            raise CaptureFailure("deployed_tracked_identity_changed")
+        _verify_no_source_shadows(repo)
+        validation_hash = hashes.get("analysis/wilson_validation.py")
+        quarter_line_hash = hashes.get("analysis/quarter_line.py")
+        if validation_hash != expected_validation_sha256:
+            raise CaptureFailure("deployed_validation_hash_mismatch")
+        if not isinstance(quarter_line_hash, str):
+            raise CaptureFailure("deployed_validation_dependency_missing")
+        _verify_import_origins(repo, validation_hash, quarter_line_hash)
+        _verify_repository_identity(repo, repo_fd, repo_info, git_info)
+        if os.path.lexists(activation_marker):
+            raise CaptureFailure("condition17_already_activated")
+        return identities
+    finally:
+        os.close(repo_fd)
 
 
 def capture(
@@ -125,7 +454,9 @@ def capture(
     ledger_path: Path,
     repo: Path,
     expected_commit: str,
+    expected_tree: str,
     expected_validation_sha256: str,
+    activation_marker: Path,
     *,
     lock_timeout: float = 120.0,
     after_lock_hook: Callable[[], None] | None = None,
@@ -147,7 +478,10 @@ def capture(
         if after_lock_hook is not None:
             after_lock_hook()
         _verify_path_fd(lock_path, lock_fd, lock_info, "lock_path_invalid")
-        verify_deployed_code(repo, expected_commit, expected_validation_sha256)
+        deployed_identities = verify_deployed_code(
+            repo, expected_commit, expected_tree,
+            expected_validation_sha256, activation_marker,
+        )
 
         ledger_fd, ledger_info = _open_verified(
             ledger_path, "ledger_path_invalid",
@@ -162,7 +496,11 @@ def capture(
                 ledger_path, ledger_fd, ledger_info, "ledger_path_invalid",
             )
             _verify_path_fd(lock_path, lock_fd, lock_info, "lock_path_invalid")
-            verify_deployed_code(repo, expected_commit, expected_validation_sha256)
+            verify_deployed_code(
+                repo, expected_commit, expected_tree,
+                expected_validation_sha256, activation_marker,
+                expected_identities=deployed_identities,
+            )
             _verify_path_fd(
                 ledger_path, ledger_fd, ledger_info, "ledger_path_invalid",
             )
@@ -182,7 +520,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--ledger", required=True, type=Path)
     parser.add_argument("--repo", required=True, type=Path)
     parser.add_argument("--expected-commit", required=True)
+    parser.add_argument("--expected-tree", required=True)
     parser.add_argument("--expected-validation-sha256", required=True)
+    parser.add_argument("--activation-marker", required=True, type=Path)
     parser.add_argument("--lock-timeout", type=float, default=120.0)
     args = parser.parse_args(argv)
     try:
@@ -191,7 +531,9 @@ def main(argv: list[str] | None = None) -> int:
             args.ledger,
             args.repo,
             args.expected_commit,
+            args.expected_tree,
             args.expected_validation_sha256,
+            args.activation_marker,
             lock_timeout=args.lock_timeout,
         )
     except Exception:

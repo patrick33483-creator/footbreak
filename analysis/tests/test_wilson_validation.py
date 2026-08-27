@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 from unittest.mock import patch
 from pathlib import Path
 
+from analysis import wilson_validation as wv
 from analysis.wilson_validation import (
     DECISION_STAGE, EDGE_BUFFER, FIXED_STAKE, FIXTURE_STAKE_CAP, MIN_DECIDED, STRATEGY,
     STARTING_BANKROLL, admission_arithmetic, choose_admission, commit_bet,
@@ -471,6 +472,29 @@ class WilsonPortfolioTest(unittest.TestCase):
 
 
 class WilsonBatchRolloverTest(unittest.TestCase):
+    def setUp(self):
+        self._activation_temp = tempfile.TemporaryDirectory()
+        marker = Path(self._activation_temp.name) / "condition17-activation.json"
+        module_path = Path(wv.__file__)
+        marker.write_text(json.dumps({
+            "schema": wv.CONDITION17_ACTIVATION_SCHEMA,
+            "wilson_validation_sha256": hashlib.sha256(
+                module_path.read_bytes(),
+            ).hexdigest(),
+            "quarter_line_sha256": hashlib.sha256(
+                module_path.with_name("quarter_line.py").read_bytes(),
+            ).hexdigest(),
+        }), encoding="utf-8")
+        marker.chmod(0o400)
+        self._activation_patch = patch.object(
+            wv, "CONDITION17_ACTIVATION_MARKER", marker,
+        )
+        self._activation_patch.start()
+
+    def tearDown(self):
+        self._activation_patch.stop()
+        self._activation_temp.cleanup()
+
     """Versioned evidence is intentionally tested independently of betting PnL."""
 
     def _admission(self, system="footbreak"):

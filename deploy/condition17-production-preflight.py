@@ -745,9 +745,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--expected-manifest-hash", required=True)
     parser.add_argument("--expected-condition-signature", required=True)
     parser.add_argument("--expected-initial-evidence-hash", required=True)
+    parser.add_argument("--activation-marker", required=True, type=Path)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
+    original_activation_marker = wv.CONDITION17_ACTIVATION_MARKER
     try:
+        # This override is process-local and points only at a runner-private
+        # synthetic approval marker.  Production keeps using the fixed,
+        # default-off root-owned marker and this read-only workflow never
+        # creates or modifies it.
+        wv.CONDITION17_ACTIVATION_MARKER = args.activation_marker
         for value, length in (
             (args.expected_manifest_hash, 64),
             (args.expected_condition_signature, 24),
@@ -767,6 +774,8 @@ def main(argv: list[str] | None = None) -> int:
     except Exception:
         result = _safe_summary("NO-GO", "preflight_input_or_invariant_failure")
         rc = 1
+    finally:
+        wv.CONDITION17_ACTIVATION_MARKER = original_activation_marker
     payload = (json.dumps(result, ensure_ascii=False, sort_keys=True) + "\n").encode()
     if args.output is not None:
         try:
