@@ -1,0 +1,119 @@
+{
+  "read_only": true,
+  "condition_number": 2,
+  "condition_signature": "8c240fb81cb9dda4fb50ecf7",
+  "active_v2_reconstructed": {
+    "hits": 317,
+    "decided": 530,
+    "hit_rate": 0.5981132075471698
+  },
+  "independent_fixture_evidence": {
+    "hits": 273,
+    "losses": 186,
+    "decided": 459,
+    "hit_rate": 0.5947712418300654,
+    "duplicate_rows_removed": 71,
+    "deduplication_key": "fixture",
+    "duplicate_consistency": "same odds and hit"
+  },
+  "cohorts": {
+    "baseline_v1": {
+      "hits": 141,
+      "decided": 231
+    },
+    "duplicate_holdout_v2": {
+      "hits": 44,
+      "decided": 71
+    },
+    "recovered_v2": {
+      "hits": 132,
+      "decided": 228
+    }
+  },
+  "thresholds": [
+    {
+      "minimum_odds": 1.7,
+      "hits": 273,
+      "losses": 186,
+      "decided": 459,
+      "hit_rate": 0.5947712418300654,
+      "wilson95_lower": 0.549252057525119,
+      "wilson95_upper": 0.6387172748282821,
+      "settlements": {
+        "Won": 212,
+        "Half Won": 61,
+        "Lost": 186,
+        "Half Lost": 0
+      },
+      "average_odds": 1.8329629629629631,
+      "unit_stake": 1.0,
+      "turnover": 459.0,
+      "gross_return": 474.65000000000003,
+      "net_pnl": 15.650000000000007,
+      "roi": 0.03409586056644882
+    },
+    {
+      "minimum_odds": 1.8,
+      "hits": 213,
+      "losses": 148,
+      "decided": 361,
+      "hit_rate": 0.590027700831025,
+      "wilson95_lower": 0.5386036584630143,
+      "wilson95_upper": 0.6395559186039799,
+      "settlements": {
+        "Won": 168,
+        "Half Won": 45,
+        "Lost": 148,
+        "Half Lost": 0
+      },
+      "average_odds": 1.852437673130194,
+      "unit_stake": 1.0,
+      "turnover": 361.0,
+      "gross_return": 375.02,
+      "net_pnl": 14.020000000000007,
+      "roi": 0.03883656509695293
+    },
+    {
+      "minimum_odds": 1.85,
+      "hits": 112,
+      "losses": 85,
+      "decided": 197,
+      "hit_rate": 0.5685279187817259,
+      "wilson95_lower": 0.4987073261336019,
+      "wilson95_upper": 0.6357270688291679,
+      "settlements": {
+        "Won": 87,
+        "Half Won": 25,
+        "Lost": 85,
+        "Half Lost": 0
+      },
+      "average_odds": 1.8804060913705585,
+      "unit_stake": 1.0,
+      "turnover": 197.0,
+      "gross_return": 199.39000000000001,
+      "net_pnl": 2.390000000000001,
+      "roi": 0.012131979695431477
+    },
+    {
+      "minimum_odds": 1.9,
+      "hits": 35,
+      "losses": 26,
+      "decided": 61,
+      "hit_rate": 0.5737704918032787,
+      "wilson95_lower": 0.4489523044494656,
+      "wilson95_upper": 0.6898477806147472,
+      "settlements": {
+        "Won": 24,
+        "Half Won": 11,
+        "Lost": 26,
+        "Half Lost": 0
+      },
+      "average_odds": 1.9150819672131147,
+      "unit_stake": 1.0,
+      "turnover": 61.0,
+      "gross_return": 61.97,
+      "net_pnl": 0.9699999999999978,
+      "roi": 0.01590163934426226
+    }
+  ]
+}
