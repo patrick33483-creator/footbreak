@@ -303,10 +303,10 @@ def _message(
     hours: int,
 ) -> str:
     if classification == "system_fault":
-        heading = "⚠️ TG 靜默監察：系統故障"
-        verdict = "判定：並非單純冇訊號，需要檢查伺服器。"
+        heading = "TG 靜默監察：後台系統故障（Telegram 通道正常）"
+        verdict = "判定：Telegram 訊息已成功送達；故障位於下面列出嘅伺服器環節。"
     elif classification == "missed_delivery":
-        heading = "⚠️ TG 靜默監察：疑似漏發"
+        heading = "TG 靜默監察：疑似漏發投注通知"
         verdict = "判定：有合資格訊號未見送達確認。"
     else:
         heading = "TG 靜默監察：運作正常"
@@ -330,7 +330,7 @@ def _recovery_message(
 ) -> str:
     previous_label = "系統故障" if previous == "system_fault" else "疑似漏發"
     lines = [
-        "✅ TG 靜默監察：故障已恢復",
+        "TG 靜默監察：後台故障已恢復",
         f"上一狀態：{previous_label}",
     ]
     for row in systems:
@@ -339,7 +339,7 @@ def _recovery_message(
             f"- {row['name']}：{status}｜待送 {row.get('pending_delivery', 0)}"
         )
     lines.extend([
-        "判定：排程、資料及通知鏈已回復正常。",
+        "判定：排程、資料及通知鏈已回復正常；Telegram 通道正常。",
         "恢復通知只會為同一宗事故發一次。",
     ])
     return "\n".join(lines)

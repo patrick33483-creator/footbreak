@@ -93,6 +93,8 @@ jobs:
           echo "journal_error_keyword_lines=$journal_error_keywords"
           echo "phase_footbreak_settlement_failures=$(count_journal_matches 'Footbreak reconciliation failed')"
           echo "phase_crown_settlement_failures=$(count_journal_matches 'Crown reconciliation failed')"
+          echo "phase_crown_history_shape_busy=$(count_journal_matches 'Crown local history-shape repair busy')"
+          echo "phase_crown_history_shape_failures=$(count_journal_matches 'Crown local history-shape repair failed')"
           echo "phase_learning_store_failures=$(count_journal_matches 'learning-store reconciliation failed')"
           echo "phase_integrity_audit_failures=$(count_journal_matches 'Prediction-history integrity audit failed')"
           echo "integrity_category_footbreak_history_shape=$(count_journal_matches 'integrity_check=footbreak_history_shape')"

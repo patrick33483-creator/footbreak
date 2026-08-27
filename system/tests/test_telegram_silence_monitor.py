@@ -146,7 +146,8 @@ class TelegramSilenceMonitorTests(unittest.TestCase):
                 )
         self.assertEqual(result["classification"], "system_fault")
         self.assertTrue(result["sent"])
-        self.assertIn("系統故障", delivered[0])
+        self.assertIn("後台系統故障", delivered[0])
+        self.assertIn("Telegram 通道正常", delivered[0])
         self.assertIn("Radar", delivered[0])
 
     def test_recovery_is_immediate_once_after_notified_fault(self) -> None:
