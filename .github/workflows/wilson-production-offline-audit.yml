@@ -13,18 +13,65 @@ concurrency:
 jobs:
   audit:
     name: Audit immutable Footbreak and Crown ledger copies
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, linux, x64, footbreak-audit-hardened]
     timeout-minutes: 15
     steps:
+      - name: Fail closed unless narrow root bundle wrapper is installed
+        id: sudo_policy_preflight
+        env:
+          AUDIT_BUNDLE_WRAPPER_SHA256: ${{ secrets.AUDIT_BUNDLE_WRAPPER_SHA256 }}
+          AUDIT_SUDO_POLICY_ROOT: ${{ secrets.AUDIT_SUDO_POLICY_ROOT }}
+          AUDIT_RUNNER_USER: ${{ secrets.AUDIT_RUNNER_USER }}
+        run: |
+          set -euo pipefail
+          wrapper=/usr/local/sbin/footbreak-audit-bundle
+          test "$AUDIT_BUNDLE_WRAPPER_SHA256" != ""
+          test "$AUDIT_SUDO_POLICY_ROOT" != ""
+          test "$AUDIT_RUNNER_USER" != ""
+          test "${#AUDIT_BUNDLE_WRAPPER_SHA256}" -eq 64
+          test "${#AUDIT_SUDO_POLICY_ROOT}" -eq 64
+          case "$AUDIT_BUNDLE_WRAPPER_SHA256" in (*[!0-9a-f]*) exit 2;; esac
+          case "$AUDIT_SUDO_POLICY_ROOT" in (*[!0-9a-f]*) exit 2;; esac
+          test ! -L "$wrapper"
+          test -f "$wrapper"
+          test "$(stat -c %u:%g:%a "$wrapper")" = "0:0:555"
+          test "$(sha256sum "$wrapper" | cut -d' ' -f1)" = "$AUDIT_BUNDLE_WRAPPER_SHA256"
+          receipt="$(/usr/bin/sudo -n "$wrapper" preflight \
+            --policy-root "$AUDIT_SUDO_POLICY_ROOT" \
+            --wrapper-sha256 "$AUDIT_BUNDLE_WRAPPER_SHA256" \
+            --runner-user "$AUDIT_RUNNER_USER")"
+          printf '%s' "$receipt" | /usr/bin/python3 -I -S -c '
+          import hashlib,json,os,re,sys
+          def pairs(items):
+            out={}
+            for key,value in items:
+              if key in out: raise SystemExit("duplicate_preflight_key")
+              out[key]=value
+            return out
+          value=json.load(sys.stdin,object_pairs_hook=pairs)
+          keys={"schema","policy_root","wrapper_sha256","runner_user","policy_file_count","receipt_sha256"}
+          if type(value) is not dict or set(value)!=keys: raise SystemExit("preflight_receipt_shape")
+          if value["schema"]!="footbreak-audit-sudo-preflight-v1": raise SystemExit("preflight_schema")
+          if value["policy_root"]!=os.environ["AUDIT_SUDO_POLICY_ROOT"] or value["wrapper_sha256"]!=os.environ["AUDIT_BUNDLE_WRAPPER_SHA256"] or value["runner_user"]!=os.environ["AUDIT_RUNNER_USER"]: raise SystemExit("preflight_binding")
+          if type(value["policy_file_count"]) is not int or value["policy_file_count"]<1 or re.fullmatch("[0-9a-f]{64}",value["receipt_sha256"]) is None: raise SystemExit("preflight_types")
+          supplied=value.pop("receipt_sha256")
+          calculated=hashlib.sha256(json.dumps(value,sort_keys=True,separators=(",",":")).encode()).hexdigest()
+          if supplied!=calculated: raise SystemExit("preflight_receipt_hash")
+          print("policy_root="+value["policy_root"])
+          print("receipt_sha256="+supplied)
+          ' >> "$GITHUB_OUTPUT"
+
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
 
       - name: Verify dispatched audit code
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test -s analysis/wilson_audit_gate.py
           test -s analysis/wilson_registry_manifest.py
           test -s analysis/wilson_validation.py
           sha256sum \
+            analysis/wilson_audit_gate.py \
             analysis/wilson_registry_manifest.py \
             analysis/wilson_validation.py
 
@@ -32,12 +79,150 @@ jobs:
         env:
           DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_SSH_KNOWN_HOSTS: ${{ secrets.DEPLOY_SSH_KNOWN_HOSTS }}
         run: |
           set -euo pipefail
           install -m 700 -d ~/.ssh
           printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
-          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+          python3 -m analysis.legacy_batch_discovery_publication host-pin \
+            --host "$DEPLOY_HOST" \
+            --output ~/.ssh/known_hosts
+          ssh-keygen -F "$DEPLOY_HOST" -f ~/.ssh/known_hosts >/dev/null
+          ssh-keygen -l -f ~/.ssh/known_hosts >/dev/null
+
+      - name: Capture authority-neutral legacy batch discovery
+        id: legacy_discovery
+        continue-on-error: true
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          AUDITED_COMMIT: ${{ github.sha }}
+        run: |
+          set +e
+          private_receipt=""
+          staging=""
+          calculation=""
+          process_log=""
+          staging_identity=""
+          calculation_identity=""
+          process_log_identity=""
+          cleanup() {
+            saved_rc=$?
+            trap - EXIT HUP INT TERM
+            set +e
+            if [ -n "$staging_identity" ]; then
+              python3 -m analysis.legacy_batch_discovery_publication cleanup \
+                --path "$staging" --identity "$staging_identity" >/dev/null 2>&1
+            fi
+            if [ -n "$calculation_identity" ]; then
+              python3 -m analysis.legacy_batch_discovery_publication cleanup \
+                --path "$calculation" --identity "$calculation_identity" >/dev/null 2>&1
+            fi
+            if [ -n "$process_log_identity" ]; then
+              python3 -m analysis.legacy_batch_discovery_publication cleanup \
+                --path "$process_log" --identity "$process_log_identity" >/dev/null 2>&1
+            fi
+            if [ -n "$private_receipt" ]; then
+              rmdir "$private_receipt" >/dev/null 2>&1
+            fi
+            exit "$saved_rc"
+          }
+          trap cleanup EXIT HUP INT TERM
+          private_receipt="$(mktemp -d)"
+          chmod 700 "$private_receipt"
+          staging="$private_receipt/remote-discovery.json"
+          calculation="$private_receipt/approved-calculation.json"
+          process_log="$private_receipt/process.log"
+          publication="footbreak-legacy-batch-live-discovery.json"
+          capture_receipt="$(python3 -m analysis.legacy_batch_discovery_publication capture \
+            --stdout "$staging" --stderr "$process_log" -- \
+            ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
+            -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "set -euo pipefail
+             remote_output=\$(sudo -n mktemp /var/lib/footbreak-audit/legacy-batch-discovery.XXXXXX)
+             remote_cleanup() {
+               sudo -n shred -u -- \"\$remote_output\" 2>/dev/null ||
+                 sudo -n rm -f -- \"\$remote_output\"
+             }
+             remote_signal() {
+               signal_number=\"\$1\"
+               trap - HUP INT TERM
+               remote_cleanup
+               exit \$((128 + signal_number))
+             }
+             trap remote_cleanup EXIT
+             trap 'remote_signal 1' HUP
+             trap 'remote_signal 2' INT
+             trap 'remote_signal 15' TERM
+             test \"\$(git -C /opt/footbreak rev-parse HEAD)\" = '$AUDITED_COMMIT'
+             sudo -n test -f /etc/footbreak/legacy-batch-runtime.json
+             sudo -n test \"\$(stat -c %u /etc/footbreak/legacy-batch-runtime.json)\" = 0
+             sudo -n test \"\$(stat -c %a /etc/footbreak/legacy-batch-runtime.json)\" = 600
+             sudo -n install -d -o root -g root -m 700 /var/lib/footbreak-audit
+             cd /opt/footbreak
+             sudo -n /opt/footbreak/.venv/bin/python3 -I -c \
+               'import sys; sys.path.insert(0,\"/opt/footbreak\"); from analysis.export_legacy_batch_live_authority import main; raise SystemExit(main())' \
+               --ledger /opt/footbreak/system/sim_ledger.json \
+               --runtime-config /etc/footbreak/legacy-batch-runtime.json \
+               --calculation /etc/footbreak/proposed-legacy-batch-authority-calculation.json \
+               --output \"\$remote_output\" \
+               --require-quiesced >/dev/null
+             sudo -n test -s \"\$remote_output\"
+             sudo -n cat -- \"\$remote_output\"
+             remote_cleanup
+             trap - EXIT HUP INT TERM")"
+          capture_helper_rc=$?
+          rc="$(printf '%s' "$capture_receipt" | python3 -c 'import json,sys; print(json.load(sys.stdin)["exit_code"])' 2>/dev/null)"
+          staging_identity="$(printf '%s' "$capture_receipt" | python3 -c 'import json,sys; print(json.load(sys.stdin)["stdout_identity"])' 2>/dev/null)"
+          process_log_identity="$(printf '%s' "$capture_receipt" | python3 -c 'import json,sys; print(json.load(sys.stdin)["stderr_identity"])' 2>/dev/null)"
+          if [ "$capture_helper_rc" -ne 0 ] || [ -z "$rc" ]; then
+            rc=2
+          fi
+          if [ "$rc" -eq 0 ]; then
+            calculation_receipt="$(python3 -m analysis.legacy_batch_discovery_publication capture \
+              --stdout "$calculation" --stderr "$process_log" \
+              --stderr-identity "$process_log_identity" -- \
+              ssh -o BatchMode=yes -o ConnectTimeout=20 \
+              -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
+              -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
+              "$DEPLOY_USER@$DEPLOY_HOST" \
+              "sudo -n cat -- /etc/footbreak/proposed-legacy-batch-authority-calculation.json")"
+            calculation_helper_rc=$?
+            rc="$(printf '%s' "$calculation_receipt" | python3 -c 'import json,sys; print(json.load(sys.stdin)["exit_code"])' 2>/dev/null)"
+            calculation_identity="$(printf '%s' "$calculation_receipt" | python3 -c 'import json,sys; print(json.load(sys.stdin)["stdout_identity"])' 2>/dev/null)"
+            if [ "$calculation_helper_rc" -ne 0 ] || [ -z "$rc" ]; then
+              rc=2
+            fi
+          fi
+          receipt="$(python3 -m analysis.legacy_batch_discovery_publication receipt \
+            --staging "$staging" \
+            --calculation "$calculation" \
+            --publication "$publication" \
+            --calculation-publication approved-legacy-batch-calculation.json \
+            --commit "$AUDITED_COMMIT" \
+            --remote-exit-code "$rc" \
+            --staging-identity "$staging_identity" \
+            --calculation-identity "$calculation_identity")"
+          validation_rc=$?
+          rc="$validation_rc"
+          printf '%s\n' "$receipt"
+          publication_sha256="$(printf '%s' "$receipt" | python3 -c 'import json,sys; print(json.load(sys.stdin)["sha256"])' 2>/dev/null)"
+          publication_identity="$(printf '%s' "$receipt" | python3 -c 'import json,sys; print(json.load(sys.stdin)["identity"])' 2>/dev/null)"
+          if [ ! -s "$publication" ]; then
+            python3 -m analysis.legacy_batch_discovery_publication invalid \
+              --publication "$publication" \
+              --commit "$AUDITED_COMMIT" \
+              --exit-code 2 \
+              --reason receipt_validation_failed_closed >/dev/null
+            rc=2
+          fi
+          printf 'legacy_discovery_rc=%s\n' "$rc" >> "$GITHUB_OUTPUT"
+          printf 'publication_sha256=%s\n' "$publication_sha256" >> "$GITHUB_OUTPUT"
+          printf 'publication_identity=%s\n' "$publication_identity" >> "$GITHUB_OUTPUT"
+          exit "$rc"
 
       - name: Capture immutable ledger copies under production locks
         id: capture
@@ -58,6 +243,7 @@ jobs:
             output_path="$3"
             ssh -o BatchMode=yes -o ConnectTimeout=20 \
               -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
+              -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
               "$DEPLOY_USER@$DEPLOY_HOST" \
               "sudo python3 - '$lock_path' '$ledger_path'" > "$output_path" <<'PY'
           import fcntl
@@ -119,6 +305,35 @@ jobs:
           printf 'crown_capture_rc=%s\n' "$crown_rc" >> "$GITHUB_OUTPUT"
           set -e
 
+      - name: Bind discovery to captured immutable Footbreak ledger
+        id: discovery_binding
+        if: always()
+        env:
+          LEGACY_DISCOVERY_RC: ${{ steps.legacy_discovery.outputs.legacy_discovery_rc }}
+        run: |
+          set +e
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          if int(os.environ.get("LEGACY_DISCOVERY_RC") or 2) != 0:
+              raise SystemExit(2)
+          discovery = json.loads(
+              Path("footbreak-legacy-batch-live-discovery.json").read_text()
+          )
+          ledger = Path("audit-input/footbreak-ledger.json")
+          if not ledger.is_file():
+              raise SystemExit(2)
+          digest = hashlib.sha256(ledger.read_bytes()).hexdigest()
+          if digest != discovery["capture"]["full_pre_ledger_sha256"]:
+              raise SystemExit(2)
+          print("LEGACY_BATCH_DISCOVERY_LEDGER_HASH_BOUND")
+          PY
+          rc=$?
+          printf 'binding_rc=%s\n' "$rc" >> "$GITHUB_OUTPUT"
+          exit "$rc"
+
       - name: Remove SSH credentials
         if: always()
         run: |
@@ -159,6 +374,20 @@ jobs:
           set -e
           printf 'footbreak_rc=%s\n' "$footbreak_rc" >> "$GITHUB_OUTPUT"
           printf 'crown_rc=%s\n' "$crown_rc" >> "$GITHUB_OUTPUT"
+
+      - name: Export sanitized registry evidence chains
+        id: chains
+        if: always()
+        run: |
+          set +e
+          for system in footbreak crown; do
+            python3 -m analysis.wilson_registry_export \
+              --system "$system" \
+              --ledger "audit-input/${system}-ledger.json" \
+              --output "${system}-wilson-registry-chains.json"
+            printf '%s_export_rc=%s\n' "$system" "$?" >> "$GITHUB_OUTPUT"
+          done
+          set -e
 
       - name: Build non-sensitive audit summary
         if: always()
@@ -201,6 +430,9 @@ jobs:
               manifests[system] = {
                   "valid": data.get("valid") is True,
                   "condition_count": data.get("condition_count"),
+                  "historical_condition_count": data.get("historical_condition_count"),
+                  "active_condition_count": data.get("active_condition_count"),
+                  "retired_duplicate_count": data.get("retired_duplicate_count"),
                   "decision_stage_counts": data.get("decision_stage_counts"),
                   "rejection_reasons": data.get("rejection_reasons"),
                   "recovery": data.get("recovery"),
@@ -236,32 +468,9 @@ jobs:
           )
           PY
 
-      - name: Print non-sensitive audit results
-        if: always()
-        run: |
-          printf '%s\n' 'WILSON_STRICT_SUMMARY_JSON_BEGIN'
-          cat wilson-production-audit-summary.json
-          printf '%s\n' 'WILSON_STRICT_SUMMARY_JSON_END'
-          for system in footbreak crown; do
-            printf 'WILSON_STRICT_MANIFEST_%s_BEGIN\n' "$system"
-            cat "${system}-wilson-registry-audit.json"
-            printf 'WILSON_STRICT_MANIFEST_%s_END\n' "$system"
-          done
-
-      - name: Upload audit evidence
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: wilson-production-offline-audit
-          path: |
-            ledger-sha256.txt
-            wilson-production-audit-summary.json
-            footbreak-wilson-registry-audit.json
-            crown-wilson-registry-audit.json
-          if-no-files-found: error
-          retention-days: 7
-
-      - name: Enforce valid manifests
+      - name: Pre-publication enforce valid audit
+        id: prepublication_gate
+        continue-on-error: true
         if: always()
         env:
           CAPTURE_OUTCOME: ${{ steps.capture.outcome }}
@@ -269,70 +478,199 @@ jobs:
           CROWN_CAPTURE_RC: ${{ steps.capture.outputs.crown_capture_rc }}
           FOOTBREAK_RC: ${{ steps.registry.outputs.footbreak_rc }}
           CROWN_RC: ${{ steps.registry.outputs.crown_rc }}
+          FOOTBREAK_EXPORT_RC: ${{ steps.chains.outputs.footbreak_export_rc }}
+          CROWN_EXPORT_RC: ${{ steps.chains.outputs.crown_export_rc }}
+          LEGACY_DISCOVERY_RC: ${{ steps.legacy_discovery.outputs.legacy_discovery_rc }}
+          LEGACY_DISCOVERY_BINDING_RC: ${{ steps.discovery_binding.outputs.binding_rc }}
         run: |
-          python3 - <<'PY'
-          import json
-          import re
-          from pathlib import Path
-
-          expected_counts = {"footbreak": 17, "crown": 20}
-          observed_total = 0
-          for system in ("footbreak", "crown"):
-              data = json.loads(
-                  Path(f"{system}-wilson-registry-audit.json").read_text(encoding="utf-8")
-              )
-              if not isinstance(data, dict):
-                  raise SystemExit(f"{system}: manifest is not an object")
-              if data.get("schema") != "wilson-registry-manifest-v2":
-                  raise SystemExit(f"{system}: unexpected manifest schema")
-              if data.get("system") != system:
-                  raise SystemExit(f"{system}: manifest system mismatch")
-              if data.get("condition_count") != expected_counts[system]:
-                  raise SystemExit(
-                      f"{system}: expected {expected_counts[system]} conditions, "
-                      f"found {data.get('condition_count')}"
-                  )
-              observed_total += data["condition_count"]
-              if data.get("valid") is not True:
-                  raise SystemExit(f"{system}: manifest is not valid")
-              conditions = data.get("conditions")
-              if not isinstance(conditions, list) or len(conditions) != expected_counts[system]:
-                  raise SystemExit(f"{system}: malformed condition manifest rows")
-              for position, condition in enumerate(conditions, start=1):
-                  if not isinstance(condition, dict):
-                      raise SystemExit(f"{system}: malformed condition row {position}")
-                  if condition.get("condition_number") != position:
-                      raise SystemExit(f"{system}: condition order mismatch at {position}")
-                  if condition.get("valid") is not True:
-                      raise SystemExit(f"{system}: condition {position} is not valid")
-                  if condition.get("own_stage_matcher_can_structurally_admit") is not True:
-                      raise SystemExit(
-                          f"{system}: condition {position} cannot be structurally admitted"
-                      )
-              recovery = data.get("recovery")
-              if not isinstance(recovery, dict) or recovery.get("implemented") is not False:
-                  raise SystemExit(f"{system}: recovery isolation is not proven")
-          if observed_total != 37:
-              raise SystemExit(f"expected 37 total conditions, found {observed_total}")
-
-          hashes = {}
-          for line in Path("ledger-sha256.txt").read_text(encoding="utf-8").splitlines():
-              parts = line.split()
-              if len(parts) != 2:
-                  raise SystemExit("malformed ledger hash line")
-              digest, path = parts
-              basename = Path(path).name
-              if basename in hashes:
-                  raise SystemExit(f"duplicate ledger hash: {basename}")
-              hashes[basename] = digest
-          expected = {"footbreak-ledger.json", "crown-ledger.json"}
-          if set(hashes) != expected:
-              raise SystemExit("ledger hash set mismatch")
-          if any(re.fullmatch(r"[0-9a-f]{64}", digest) is None for digest in hashes.values()):
-              raise SystemExit("invalid ledger SHA-256")
-          PY
+          python3 -m analysis.wilson_audit_gate \
+            --base-dir . \
+            --audited-commit "$GITHUB_SHA"
           test "$CAPTURE_OUTCOME" = "success"
           test "$FOOTBREAK_CAPTURE_RC" -eq 0
           test "$CROWN_CAPTURE_RC" -eq 0
           test "$FOOTBREAK_RC" -eq 0
           test "$CROWN_RC" -eq 0
+          test "$FOOTBREAK_EXPORT_RC" -eq 0
+          test "$CROWN_EXPORT_RC" -eq 0
+          test "$LEGACY_DISCOVERY_RC" -eq 0
+          test "$LEGACY_DISCOVERY_BINDING_RC" -eq 0
+
+      - name: Finalize sanitized discovery publication
+        id: finalize_discovery
+        if: always()
+        env:
+          AUDITED_COMMIT: ${{ github.sha }}
+          PREPUBLICATION_OUTCOME: ${{ steps.prepublication_gate.outcome }}
+          LEGACY_DISCOVERY_RC: ${{ steps.legacy_discovery.outputs.legacy_discovery_rc }}
+          LEGACY_DISCOVERY_BINDING_RC: ${{ steps.discovery_binding.outputs.binding_rc }}
+          EXPECTED_PUBLICATION_SHA256: ${{ steps.legacy_discovery.outputs.publication_sha256 }}
+          EXPECTED_PUBLICATION_IDENTITY: ${{ steps.legacy_discovery.outputs.publication_identity }}
+        run: |
+          set +e
+          gate_argument=()
+          if [ "$PREPUBLICATION_OUTCOME" = "success" ] \
+             && [ "${LEGACY_DISCOVERY_RC:-2}" -eq 0 ] \
+             && [ "${LEGACY_DISCOVERY_BINDING_RC:-2}" -eq 0 ]; then
+            gate_argument=(--gates-ok)
+          fi
+          final_receipt="$(python3 -m analysis.legacy_batch_discovery_publication finalize \
+            --publication footbreak-legacy-batch-live-discovery.json \
+            --commit "$AUDITED_COMMIT" \
+            --expected-sha256 "$EXPECTED_PUBLICATION_SHA256" \
+            --expected-identity "$EXPECTED_PUBLICATION_IDENTITY" \
+            "${gate_argument[@]}")"
+          rc=$?
+          printf '%s\n' "$final_receipt"
+          if [ "$rc" -ne 0 ]; then
+            final_receipt="$(python3 -m analysis.legacy_batch_discovery_publication invalid \
+              --publication footbreak-legacy-batch-live-discovery.json \
+              --commit "$AUDITED_COMMIT" \
+              --exit-code 2 \
+              --reason whole_workflow_gate_failed_closed)"
+          fi
+          final_sha256="$(printf '%s' "$final_receipt" | python3 -c 'import json,sys; print(json.load(sys.stdin)["sha256"])')"
+          final_identity="$(printf '%s' "$final_receipt" | python3 -c 'import json,sys; print(json.load(sys.stdin)["identity"])')"
+          printf 'final_sha256=%s\n' "$final_sha256" >> "$GITHUB_OUTPUT"
+          printf 'final_identity=%s\n' "$final_identity" >> "$GITHUB_OUTPUT"
+          if [ "$rc" -eq 0 ]; then
+            printf 'publication_valid=true\n' >> "$GITHUB_OUTPUT"
+          else
+            printf 'publication_valid=false\n' >> "$GITHUB_OUTPUT"
+          fi
+          exit 0
+
+      - name: Validate and hash exact seven workspace artifacts
+        id: workspace_artifacts
+        if: always() && steps.prepublication_gate.outcome == 'success' && steps.finalize_discovery.outputs.publication_valid == 'true'
+        run: |
+          set -euo pipefail
+          python3 -m analysis.wilson_audit_bundle \
+            --base-dir . \
+            --calculation approved-legacy-batch-calculation.json \
+            --output bundle-expected.json \
+            --audited-commit "$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Build root-owned immutable audit bundle
+        id: root_bundle
+        if: always() && steps.workspace_artifacts.outcome == 'success'
+        env:
+          EXPECTED_MANIFEST_SHA256: ${{ steps.workspace_artifacts.outputs.manifest_sha256 }}
+          RUN_KEY: ${{ github.run_id }}-${{ github.run_attempt }}
+          AUDIT_BUNDLE_WRAPPER_SHA256: ${{ secrets.AUDIT_BUNDLE_WRAPPER_SHA256 }}
+          AUDIT_SUDO_POLICY_ROOT: ${{ secrets.AUDIT_SUDO_POLICY_ROOT }}
+          AUDIT_RUNNER_USER: ${{ secrets.AUDIT_RUNNER_USER }}
+          PREFLIGHT_RECEIPT_SHA256: ${{ steps.sudo_policy_preflight.outputs.receipt_sha256 }}
+        run: |
+          set -euo pipefail
+          wrapper=/usr/local/sbin/footbreak-audit-bundle
+          second_receipt="$(/usr/bin/sudo -n "$wrapper" preflight \
+            --policy-root "$AUDIT_SUDO_POLICY_ROOT" \
+            --wrapper-sha256 "$AUDIT_BUNDLE_WRAPPER_SHA256" \
+            --runner-user "$AUDIT_RUNNER_USER")"
+          second_sha="$(printf '%s' "$second_receipt" | /usr/bin/python3 -I -S -c '
+          import hashlib,json,sys
+          value=json.load(sys.stdin)
+          supplied=value.pop("receipt_sha256")
+          actual=hashlib.sha256(json.dumps(value,sort_keys=True,separators=(",",":")).encode()).hexdigest()
+          if supplied!=actual: raise SystemExit("preflight_receipt_hash")
+          print(supplied)
+          ')"
+          test "$second_sha" = "$PREFLIGHT_RECEIPT_SHA256"
+          bundle_path="/var/tmp/footbreak-audit-bundle-$RUN_KEY"
+          printf 'bundle_path=%s\n' "$bundle_path" >> "$GITHUB_OUTPUT"
+          bundle_receipt="$(/usr/bin/sudo -n "$wrapper" seal \
+            --expected "$GITHUB_WORKSPACE/bundle-expected.json" \
+            --expected-sha256 "$EXPECTED_MANIFEST_SHA256" \
+            --workspace "$GITHUB_WORKSPACE" \
+            --run-key "$RUN_KEY" \
+            --policy-root "$AUDIT_SUDO_POLICY_ROOT" \
+            --wrapper-sha256 "$AUDIT_BUNDLE_WRAPPER_SHA256" \
+            --runner-user "$AUDIT_RUNNER_USER")"
+          bundle_path="$(printf '%s' "$bundle_receipt" | /usr/bin/python3 -I -S -c 'import json,sys;print(json.load(sys.stdin)["path"])')"
+          manifest_sha256="$(printf '%s' "$bundle_receipt" | /usr/bin/python3 -I -S -c 'import json,sys;print(json.load(sys.stdin)["manifest_sha256"])')"
+          test "$bundle_path" = "/var/tmp/footbreak-audit-bundle-$RUN_KEY"
+          printf 'manifest_sha256=%s\n' "$manifest_sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Verify root-owned bundle immediately before upload
+        id: verify_bundle
+        if: always() && steps.root_bundle.outcome == 'success'
+        env:
+          BUNDLE_PATH: ${{ steps.root_bundle.outputs.bundle_path }}
+          BUNDLE_MANIFEST_SHA256: ${{ steps.root_bundle.outputs.manifest_sha256 }}
+        run: |
+          set -euo pipefail
+          /usr/bin/python3 -I -S -c '
+          import hashlib,json,os,re,stat,sys
+          root,expected_manifest=sys.argv[1:]
+          names={"ledger-sha256.txt","wilson-production-audit-summary.json","footbreak-wilson-registry-audit.json","crown-wilson-registry-audit.json","footbreak-wilson-registry-chains.json","crown-wilson-registry-chains.json","footbreak-legacy-batch-live-discovery.json","bundle-manifest.json"}
+          ordered=("ledger-sha256.txt","wilson-production-audit-summary.json","footbreak-wilson-registry-audit.json","crown-wilson-registry-audit.json","footbreak-wilson-registry-chains.json","crown-wilson-registry-chains.json","footbreak-legacy-batch-live-discovery.json")
+          def pairs(items):
+            out={}
+            for key,value in items:
+              if key in out: raise SystemExit("duplicate_manifest_key")
+              out[key]=value
+            return out
+          dfd=os.open(root,os.O_RDONLY|os.O_CLOEXEC|os.O_DIRECTORY|os.O_NOFOLLOW)
+          try:
+            di=os.fstat(dfd)
+            if di.st_uid!=0 or di.st_gid!=0 or stat.S_IMODE(di.st_mode)!=0o555: raise SystemExit("bundle_dir")
+            if set(os.listdir(dfd))!=names: raise SystemExit("bundle_set")
+            mfd=os.open("bundle-manifest.json",os.O_RDONLY|os.O_CLOEXEC|os.O_NOFOLLOW,dir_fd=dfd)
+            try:
+              mi=os.fstat(mfd);mr=os.read(mfd,mi.st_size+1)
+            finally: os.close(mfd)
+            if mi.st_uid!=0 or mi.st_gid!=0 or mi.st_nlink!=1 or stat.S_IMODE(mi.st_mode)!=0o444: raise SystemExit("manifest_metadata")
+            if hashlib.sha256(mr).hexdigest()!=expected_manifest: raise SystemExit("bundle_manifest")
+            manifest=json.loads(mr,object_pairs_hook=pairs)
+            if type(manifest) is not dict or set(manifest)!={"schema","artifacts"} or manifest["schema"]!="footbreak-root-audit-bundle-v1" or type(manifest["artifacts"]) is not list or len(manifest["artifacts"])!=7: raise SystemExit("manifest_shape")
+            rows=manifest["artifacts"]
+            if any(type(x) is not dict or set(x)!={"filename","sha256","size","mode","uid","gid"} or type(x["filename"]) is not str or type(x["sha256"]) is not str or re.fullmatch("[0-9a-f]{64}",x["sha256"]) is None or type(x["size"]) is not int or x["size"]<1 or type(x["mode"]) is not int or type(x["uid"]) is not int or type(x["gid"]) is not int for x in rows): raise SystemExit("manifest_entry")
+            if tuple(x["filename"] for x in rows)!=ordered: raise SystemExit("manifest_set")
+            entries={x["filename"]:x for x in rows}
+            for name,item in entries.items():
+              fd=os.open(name,os.O_RDONLY|os.O_CLOEXEC|os.O_NOFOLLOW,dir_fd=dfd)
+              try:
+                si=os.fstat(fd);raw=b""
+                while True:
+                  c=os.read(fd,1048576)
+                  if not c: break
+                  raw+=c
+              finally: os.close(fd)
+              if si.st_uid!=0 or si.st_gid!=0 or si.st_nlink!=1 or stat.S_IMODE(si.st_mode)!=0o444: raise SystemExit("artifact_metadata")
+              if len(raw)!=item["size"] or hashlib.sha256(raw).hexdigest()!=item["sha256"]: raise SystemExit("artifact_hash")
+          finally: os.close(dfd)
+          ' -- "$BUNDLE_PATH" "$BUNDLE_MANIFEST_SHA256"
+          printf 'verified=true\n' >> "$GITHUB_OUTPUT"
+
+      - name: Upload root-owned validated audit bundle
+        id: upload_bundle
+        if: always() && steps.verify_bundle.outcome == 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: wilson-production-offline-audit
+          path: ${{ steps.root_bundle.outputs.bundle_path }}
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Enforce final bundle status
+        if: always()
+        env:
+          PREPUBLICATION_OUTCOME: ${{ steps.prepublication_gate.outcome }}
+          PUBLICATION_VALID: ${{ steps.finalize_discovery.outputs.publication_valid }}
+          BUNDLE_VERIFIED: ${{ steps.verify_bundle.outputs.verified }}
+          UPLOAD_OUTCOME: ${{ steps.upload_bundle.outcome }}
+        run: |
+          test "$PREPUBLICATION_OUTCOME" = "success"
+          test "$PUBLICATION_VALID" = "true"
+          test "$BUNDLE_VERIFIED" = "true"
+          test "$UPLOAD_OUTCOME" = "success"
+
+      - name: Remove root-owned audit bundle
+        if: always()
+        env:
+          RUN_KEY: ${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          /usr/bin/sudo -n /usr/local/sbin/footbreak-audit-bundle cleanup \
+            --run-key "$RUN_KEY"
