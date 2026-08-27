@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sqlite3
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -113,7 +114,34 @@ def _formal_rows(
     return output
 
 
-def replay(condition_number: int, since: datetime | None) -> dict[str, Any]:
+def _latest_learning_results(path: Path) -> dict[str, dict[str, Any]]:
+    if not path.is_file():
+        return {}
+    connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    connection.row_factory = sqlite3.Row
+    try:
+        rows = connection.execute("""
+            SELECT r.*
+              FROM results r
+              JOIN (
+                    SELECT system, fixture_id, MAX(result_attempt) AS result_attempt
+                      FROM results
+                     WHERE system = 'crown'
+                     GROUP BY system, fixture_id
+                   ) latest
+                ON latest.system=r.system
+               AND latest.fixture_id=r.fixture_id
+               AND latest.result_attempt=r.result_attempt
+             WHERE r.system = 'crown'
+        """)
+        return {str(row["fixture_id"]): dict(row) for row in rows}
+    finally:
+        connection.close()
+
+
+def replay(
+    condition_number: int, since: datetime | None, learning_db: Path
+) -> dict[str, Any]:
     config = settings()
     ledger_path = paths(config)["ledger"]
     history_path = config.state_dir / "prediction_history.json"
@@ -140,6 +168,7 @@ def replay(condition_number: int, since: datetime | None) -> dict[str, Any]:
     rows = [row for row in history.get("rows") or [] if isinstance(row, dict)]
     history_index = _history_row_index(rows)
     formal = _formal_rows(ledger, signature, condition_number)
+    learning_results = _latest_learning_results(learning_db)
     minimum_odds = float(active["minimum_acceptable_odds_raw"])
     candidates: list[dict[str, Any]] = []
     excluded_before_boundary = 0
@@ -168,6 +197,12 @@ def replay(condition_number: int, since: datetime | None) -> dict[str, Any]:
         kickoff = _time(terminal_row.get("kickoff") or terminal_row.get("kickoff_hkt"))
         grade = _hdc_grade(terminal_row)
         score = _score(terminal_row)
+        learning_result = learning_results.get(fixture)
+        if score is None and learning_result is not None:
+            home_score = learning_result.get("home_score")
+            away_score = learning_result.get("away_score")
+            if home_score is not None and away_score is not None:
+                score = f"{home_score}-{away_score}"
         result_known = bool(
             score
             or (
@@ -177,6 +212,18 @@ def replay(condition_number: int, since: datetime | None) -> dict[str, Any]:
         )
         recorded = formal.get(fixture, [])
         terminal = path[-1]
+        passes_wilson_price = float(terminal["odds"]) >= minimum_odds
+        expected_record_type = "formal_bet" if passes_wilson_price else "observation"
+        matching_records = [
+            row for row in recorded
+            if (
+                expected_record_type == "formal_bet"
+                and row.get("portfolio") == "crown_wilson_test"
+            ) or (
+                expected_record_type == "observation"
+                and row.get("portfolio") == "crown_wilson_observations"
+            )
+        ]
         candidates.append({
             "match_id": fixture,
             "league": terminal_row.get("league"),
@@ -188,14 +235,23 @@ def replay(condition_number: int, since: datetime | None) -> dict[str, Any]:
             "role_path": [item.get("role") for item in path],
             "selected_line_path": [item.get("selected_line") for item in path],
             "t5_odds": terminal.get("odds"),
-            "passes_wilson_price": float(terminal["odds"]) >= minimum_odds,
+            "passes_wilson_price": passes_wilson_price,
+            "expected_record_type": expected_record_type,
             "formal_row_count": len(recorded),
             "formal_row_ids": [
                 row.get("bet_id") or row.get("observation_id") for row in recorded
             ],
             "formal_statuses": [row.get("status") for row in recorded],
-            "missing_formal_row": not recorded,
+            "matching_record_count": len(matching_records),
+            "missing_expected_record": not matching_records,
             "result_known": result_known,
+            "result_source": (
+                "prediction_history"
+                if _score(terminal_row) is not None or grade is not None
+                else "learning_db"
+                if learning_result is not None and score is not None
+                else None
+            ),
             "result_status": terminal_row.get("result_status"),
             "score": score,
             "hdc_grade": (
@@ -209,12 +265,14 @@ def replay(condition_number: int, since: datetime | None) -> dict[str, Any]:
         })
 
     candidates.sort(key=lambda row: (row.get("kickoff_hkt") or "", row["match_id"]))
-    missing = [row for row in candidates if row["missing_formal_row"]]
+    missing = [row for row in candidates if row["missing_expected_record"]]
     unknown = [row for row in candidates if not row["result_known"]]
     recorded_unknown = [
         row for row in candidates
-        if not row["missing_formal_row"] and not row["result_known"]
+        if not row["missing_expected_record"] and not row["result_known"]
     ]
+    price_pass = [row for row in candidates if row["passes_wilson_price"]]
+    low_price = [row for row in candidates if not row["passes_wilson_price"]]
     return {
         "schema": "crown_condition_read_only_replay_v1",
         "read_only": True,
@@ -227,11 +285,14 @@ def replay(condition_number: int, since: datetime | None) -> dict[str, Any]:
         "definition": definition,
         "minimum_acceptable_odds_raw": minimum_odds,
         "history_source_rows": len(rows),
+        "learning_result_rows": len(learning_results),
         "excluded_matching_before_activation": excluded_before_boundary,
         "summary": {
             "matching_fixture_count": len(candidates),
-            "recorded_fixture_count": len(candidates) - len(missing),
-            "missing_formal_fixture_count": len(missing),
+            "wilson_price_pass_fixture_count": len(price_pass),
+            "low_price_observation_fixture_count": len(low_price),
+            "recorded_expected_fixture_count": len(candidates) - len(missing),
+            "missing_expected_record_fixture_count": len(missing),
             "unknown_result_fixture_count": len(unknown),
             "recorded_unknown_result_fixture_count": len(recorded_unknown),
         },
@@ -245,12 +306,17 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--condition-number", type=int, default=4)
     parser.add_argument("--since")
+    parser.add_argument(
+        "--learning-db",
+        type=Path,
+        default=Path("/var/lib/footbreak/learning/predictions.sqlite"),
+    )
     args = parser.parse_args()
     since = _time(args.since) if args.since else None
     if args.since and since is None:
         raise SystemExit("--since must be a valid ISO-8601 timestamp")
     print(json.dumps(
-        replay(args.condition_number, since),
+        replay(args.condition_number, since, args.learning_db),
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),

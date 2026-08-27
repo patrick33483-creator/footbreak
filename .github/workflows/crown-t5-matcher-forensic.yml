@@ -155,10 +155,12 @@ jobs:
               "",
               f"- 活躍邊界：{report['activation_boundary_hkt']}",
               f"- 歷史來源列數：{report['history_source_rows']}",
-              f"- 符合場次：{summary['matching_fixture_count']}",
-              f"- 已有正式記錄：{summary['recorded_fixture_count']}",
-              f"- 漏記候選：{summary['missing_formal_fixture_count']}",
-              f"- 未知賽果：{summary['unknown_result_fixture_count']}",
+              f"- 條件形態符合：{summary['matching_fixture_count']}",
+              f"- 達 Wilson 1.99 入注價：{summary['wilson_price_pass_fixture_count']}",
+              f"- 低於入注價、應記 observation：{summary['low_price_observation_fixture_count']}",
+              f"- 已有相應記錄：{summary['recorded_expected_fixture_count']}",
+              f"- 缺少相應記錄：{summary['missing_expected_record_fixture_count']}",
+              f"- 經歷史及 learning DB 仍未知賽果：{summary['unknown_result_fixture_count']}",
               "",
               "## 逐場",
           ]
@@ -167,7 +169,8 @@ jobs:
                   f"- {row.get('kickoff_hkt')}｜{row.get('league') or ''}｜"
                   f"{row.get('home') or ''} 對 {row.get('away') or ''}｜"
                   f"線 {row.get('selected_line_path')}｜T-5 賠率 {row.get('t5_odds')}｜"
-                  f"{'已記錄' if not row.get('missing_formal_row') else '漏記候選'}｜"
+                  f"{'達入注價' if row.get('passes_wilson_price') else '低賠 observation'}｜"
+                  f"{'已記錄' if not row.get('missing_expected_record') else '漏記候選'}｜"
                   f"{row.get('score') or row.get('result_status') or '未知賽果'}"
               )
           if not report["matching_fixtures"]:
