@@ -1,0 +1,149 @@
+name: Footbreak condition 17 Stage A bootstrap audit (read only)
+
+on:
+  workflow_dispatch:
+    inputs:
+      ssh_port:
+        description: Reviewed production SSH port bound by the pinned host key
+        required: true
+        default: "22"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    name: Read-only locked bootstrap audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    env:
+      WORK: ${{ runner.temp }}/condition17-stage-a-${{ github.run_id }}
+      E5_COMMIT: e5ca5f6e745bbb7671841b860aa81dbd0039210a
+      E5_TREE: 50a9e26a20d90a93f481b9ea4ccd002f162232ad
+      E5_VALIDATION_SHA: d0b2d4a4b9605459dbacb71dc18f099e684814546c75b5a3ff37cc870de1f47d
+      E5_QUARTER_SHA: f38c63c879ffe48f5bec77c289652152b215f8d24be9a9b8634f22b576cda3a9
+      DEPLOY_PORT: ${{ inputs.ssh_port }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+
+      - name: Verify reviewed audit implementation and e5 runtime modules
+        run: |
+          set -euo pipefail
+          test "$(sha256sum analysis/wilson_validation.py | awk '{print $1}')" = "$E5_VALIDATION_SHA"
+          test "$(sha256sum analysis/quarter_line.py | awk '{print $1}')" = "$E5_QUARTER_SHA"
+          python3 -m py_compile \
+            deploy/verify_ssh_host_key.py \
+            deploy/capture-condition17-production-snapshot.py \
+            deploy/condition17-production-preflight.py \
+            deploy/condition17-bootstrap-audit.py
+          [[ "$DEPLOY_PORT" =~ ^[0-9]{1,5}$ ]]
+          test "$DEPLOY_PORT" -ge 1
+          test "$DEPLOY_PORT" -le 65535
+
+      - name: Configure independently pinned SSH identity
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_SSH_HOST_KEY: ${{ secrets.DEPLOY_SSH_HOST_KEY }}
+          DEPLOY_SSH_HOST_FINGERPRINT: ${{ secrets.DEPLOY_SSH_HOST_FINGERPRINT }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          set -euo pipefail
+          umask 077
+          install -d -m 700 "$WORK"
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$WORK/id_ed25519"
+          printf '%s\n' "$DEPLOY_SSH_HOST_KEY" > "$WORK/known_hosts"
+          chmod 600 "$WORK/id_ed25519" "$WORK/known_hosts"
+          python3 deploy/verify_ssh_host_key.py \
+            --known-hosts "$WORK/known_hosts" \
+            --host "$DEPLOY_HOST" --port "$DEPLOY_PORT" \
+            --expected-fingerprint "$DEPLOY_SSH_HOST_FINGERPRINT"
+
+      - name: Verify exact clean e5 deployment and capture locked immutable ledger
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          umask 077
+          snapshot="$WORK/sim-ledger.snapshot"
+          trap 'rm -f "$snapshot"' EXIT
+          timeout --signal=TERM --kill-after=10s 180s \
+            ssh -p "$DEPLOY_PORT" \
+              -i "$WORK/id_ed25519" -o BatchMode=yes \
+              -o ConnectTimeout=20 -o ConnectionAttempts=1 \
+              -o StrictHostKeyChecking=yes \
+              -o UserKnownHostsFile="$WORK/known_hosts" \
+              -o GlobalKnownHostsFile=/dev/null \
+              "$DEPLOY_USER@$DEPLOY_HOST" \
+              "sudo python3 - --lock /var/lock/footbreak.lock \
+               --ledger /opt/footbreak/system/sim_ledger.json \
+               --repo /opt/footbreak \
+               --expected-commit '$E5_COMMIT' --expected-tree '$E5_TREE' \
+               --expected-validation-sha256 '$E5_VALIDATION_SHA' \
+               --activation-marker /var/lib/footbreak/activation/condition17-legacy-cohort-v1.json \
+               --lock-timeout 120" \
+              < deploy/capture-condition17-production-snapshot.py > "$snapshot"
+          chmod 400 "$snapshot"
+          test "$(stat -c '%h %a' "$snapshot")" = "1 400"
+
+          python3 - "$WORK/synthetic-marker.json" <<'PY'
+          import json, os, sys
+          from pathlib import Path
+          path = Path(sys.argv[1])
+          payload = {
+              "schema": "footbreak-condition17-legacy-cohort-v1",
+              "wilson_validation_sha256": os.environ["E5_VALIDATION_SHA"],
+              "quarter_line_sha256": os.environ["E5_QUARTER_SHA"],
+          }
+          fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o400)
+          with os.fdopen(fd, "w") as handle:
+              json.dump(payload, handle, sort_keys=True, separators=(",", ":"))
+              handle.flush()
+              os.fsync(handle.fileno())
+          PY
+          python3 deploy/condition17-bootstrap-audit.py \
+            --ledger "$snapshot" \
+            --deployed-commit "$E5_COMMIT" --deployed-tree "$E5_TREE" \
+            --validation-sha256 "$E5_VALIDATION_SHA" \
+            --quarter-line-sha256 "$E5_QUARTER_SHA" \
+            --activation-marker "$WORK/synthetic-marker.json" \
+            --output "$WORK/condition17-bootstrap-review.json"
+          rm -f "$snapshot" "$WORK/synthetic-marker.json" \
+            "$WORK/id_ed25519" "$WORK/known_hosts"
+          trap - EXIT
+
+      - name: Print non-secret review artifact
+        run: |
+          set -euo pipefail
+          review="$WORK/condition17-bootstrap-review.json"
+          test "$(stat -c '%h %a' "$review")" = "1 400"
+          python3 - "$review" <<'PY'
+          import json, sys
+          value = json.load(open(sys.argv[1], encoding="utf-8"))
+          assert value["result"] == "GO"
+          assert value["contains_fixture_ids_or_raw_rows"] is False
+          assert value["condition17"]["durable_progress"] == "18/20"
+          assert value["condition17"]["durable_hits"] == 10
+          assert all(v == 0 for v in value["condition17"]["exclusions"].values())
+          print(json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2))
+          PY
+
+      - name: Upload exact reviewer document
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: condition17-bootstrap-review-${{ github.run_id }}
+          path: ${{ runner.temp }}/condition17-stage-a-${{ github.run_id }}/condition17-bootstrap-review.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Remove credentials and private intermediates
+        if: always()
+        run: |
+          test -n "${RUNNER_TEMP:-}" && test -n "${GITHUB_RUN_ID:-}"
+          case "$WORK" in "$RUNNER_TEMP"/condition17-stage-a-"$GITHUB_RUN_ID") ;; *) exit 2 ;; esac
+          rm -rf -- "$WORK"

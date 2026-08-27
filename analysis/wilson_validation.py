@@ -10,7 +10,10 @@ import copy
 import hashlib
 import json
 import math
+import os
+import stat
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Iterable
 
 from .quarter_line import validate as validate_quarter_line_profile
@@ -37,6 +40,10 @@ PRODUCTION_IDENTITY_MANIFEST_VERSION = "wilson-production-identity-v1"
 BINARY_HIT_RESULTS = {"Won", "Half Won"}
 BINARY_MISS_RESULTS = {"Lost", "Half Lost"}
 BINARY_DECIDED_RESULTS = BINARY_HIT_RESULTS | BINARY_MISS_RESULTS
+CONDITION17_ACTIVATION_MARKER = Path(
+    "/var/lib/footbreak/activation/condition17-legacy-cohort-v1.json",
+)
+CONDITION17_ACTIVATION_SCHEMA = "footbreak-condition17-legacy-cohort-v1"
 
 FUNNEL_AUDIT_REJECTIONS = {
     "stage_not_strictly_after_evidence_activation_boundary": (
@@ -109,12 +116,137 @@ def _canonical_hash(value: Any) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
+def _condition17_activation_file_hash(path: Path) -> str | None:
+    """Hash one immutable source file without accepting links or replacement."""
+    try:
+        before = os.lstat(path)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_nlink != 1
+            or before.st_size > 8 * 1024 * 1024
+        ):
+            return None
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except (OSError, ValueError):
+        return None
+    try:
+        opened = os.fstat(fd)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_nlink != 1
+            or (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino)
+        ):
+            return None
+        payload = bytearray()
+        while len(payload) <= 8 * 1024 * 1024:
+            block = os.read(fd, min(1024 * 1024, 8 * 1024 * 1024 + 1 - len(payload)))
+            if not block:
+                break
+            payload.extend(block)
+        after_fd = os.fstat(fd)
+        after_path = os.lstat(path)
+        if (
+            len(payload) > 8 * 1024 * 1024
+            or len(payload) != opened.st_size
+            or (after_fd.st_dev, after_fd.st_ino)
+            != (opened.st_dev, opened.st_ino)
+            or (after_path.st_dev, after_path.st_ino)
+            != (opened.st_dev, opened.st_ino)
+            or after_fd.st_nlink != 1
+            or after_path.st_nlink != 1
+            or after_fd.st_size != opened.st_size
+            or after_fd.st_mtime_ns != opened.st_mtime_ns
+            or after_fd.st_ctime_ns != opened.st_ctime_ns
+        ):
+            return None
+        return hashlib.sha256(payload).hexdigest()
+    except (OSError, ValueError):
+        return None
+    finally:
+        os.close(fd)
+
+
+def _footbreak_17_legacy_cohort_is_activated() -> bool:
+    """Fail closed unless a private marker binds the exact runtime sources."""
+    marker_path = CONDITION17_ACTIVATION_MARKER
+    try:
+        before = os.lstat(marker_path)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_nlink != 1
+            or before.st_uid != os.geteuid()
+            or stat.S_IMODE(before.st_mode) & 0o077
+            or before.st_size > 1024
+        ):
+            return False
+        fd = os.open(
+            marker_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
+        )
+    except (OSError, ValueError):
+        return False
+    try:
+        opened = os.fstat(fd)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_nlink != 1
+            or (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino)
+        ):
+            return False
+        raw = os.read(fd, 1025)
+        after_fd = os.fstat(fd)
+        after_path = os.lstat(marker_path)
+        if (
+            len(raw) > 1024
+            or len(raw) != opened.st_size
+            or (after_fd.st_dev, after_fd.st_ino)
+            != (opened.st_dev, opened.st_ino)
+            or (after_path.st_dev, after_path.st_ino)
+            != (opened.st_dev, opened.st_ino)
+            or after_fd.st_nlink != 1
+            or after_path.st_nlink != 1
+            or after_fd.st_mtime_ns != opened.st_mtime_ns
+            or after_fd.st_ctime_ns != opened.st_ctime_ns
+        ):
+            return False
+        payload = json.loads(raw)
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return False
+    finally:
+        os.close(fd)
+    module_path = Path(__file__).resolve()
+    dependency_path = module_path.with_name("quarter_line.py")
+    return bool(
+        isinstance(payload, dict)
+        and set(payload) == {
+            "schema",
+            "wilson_validation_sha256",
+            "quarter_line_sha256",
+        }
+        and payload.get("schema") == CONDITION17_ACTIVATION_SCHEMA
+        and payload.get("wilson_validation_sha256")
+        == _condition17_activation_file_hash(module_path)
+        and payload.get("quarter_line_sha256")
+        == _condition17_activation_file_hash(dependency_path)
+    )
+
+
 def _time(value: Any) -> datetime | None:
     try:
         parsed = datetime.fromisoformat(str(value or "").replace("Z", "+00:00"))
     except (TypeError, ValueError):
         return None
     return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed.astimezone(timezone.utc)
+
+
+def _aware_time(value: Any) -> datetime | None:
+    """Parse only timestamps that carry an explicit UTC offset."""
+    try:
+        parsed = datetime.fromisoformat(str(value or "").replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        return None
+    return parsed.astimezone(timezone.utc)
 
 
 def _strictly_after(value: Any, boundary: Any) -> bool:
@@ -1191,6 +1323,276 @@ def _dashboard_evidence_row(
     return projected
 
 
+def _project_footbreak_17_schema1_settlement_anomaly(
+    row: dict[str, Any], *, signature: str, frozen: dict[str, Any],
+    active: dict[str, Any], projection_time: datetime,
+    ledger: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Validate one exact legacy #17 row without changing formal authority.
+
+    A production-only schema-1 cohort stored settlement timestamps before
+    kickoff and omitted the later top-level mirror of its marker's T-5 time.
+    This projection adapter accepts only that pair of historical storage
+    anomalies.  It validates every other current invariant through
+    ``validate_formal_row`` on a copy whose two anomalous fields are normalized;
+    the durable row and all mutation/rollover consumers remain untouched.
+    """
+    marker = row.get("rollover_provenance")
+    versions = frozen.get("evidence_versions")
+    stage_at = (
+        _aware_time(marker.get("stage_at"))
+        if isinstance(marker, dict) else None
+    )
+    created_at = _aware_time(row.get("created_at"))
+    kickoff = _aware_time(row.get("kickoff") or row.get("kickoff_hkt"))
+    settled_at = _aware_time(row.get("settled_at"))
+    active_hash = active.get("evidence_hash")
+    active_version = _strict_int(active.get("version"))
+    version_1 = (
+        versions[0]
+        if isinstance(versions, list)
+        and versions
+        and isinstance(versions[0], dict)
+        else None
+    )
+    version_2 = (
+        versions[1]
+        if isinstance(versions, list)
+        and len(versions) == 2
+        and isinstance(versions[1], dict)
+        else None
+    )
+    version_2_batch_hashes = (
+        version_2.get("batch_fixture_market_hashes")
+        if isinstance(version_2, dict)
+        and isinstance(version_2.get("batch_fixture_market_hashes"), list)
+        and all(
+            isinstance(value, str)
+            for value in version_2["batch_fixture_market_hashes"]
+        )
+        else None
+    )
+    fixture_hash = (
+        marker.get("fixture_market_hash")
+        if isinstance(marker, dict) else None
+    )
+    namespace = ledger.get(NAMESPACE)
+    conditions = (
+        namespace.get("conditions")
+        if isinstance(namespace, dict)
+        and isinstance(namespace.get("conditions"), dict)
+        else None
+    )
+    order = (
+        namespace.get("condition_order")
+        if isinstance(namespace, dict)
+        and isinstance(namespace.get("condition_order"), list)
+        else None
+    )
+    definition = frozen.get("definition")
+    rebuilt_signature = (
+        condition_signature(
+            "footbreak",
+            {**definition, "key": copy.deepcopy(definition["miner_key"])},
+        )[0]
+        if isinstance(definition, dict)
+        and isinstance(definition.get("miner_key"), list)
+        else None
+    )
+    registry_binding_valid = (
+        isinstance(conditions, dict)
+        and isinstance(order, list)
+        and len(order) == len(conditions)
+        and len(order) >= 17
+        and all(isinstance(value, str) for value in order)
+        and len(set(order)) == len(order)
+        and set(order) == set(conditions)
+        and order[16] == signature
+        and order.count(signature) == 1
+        and conditions.get(signature) is frozen
+        and all(
+            isinstance(conditions.get(value), dict)
+            and _strict_int(conditions[value].get("condition_number")) == index
+            for index, value in enumerate(order, start=1)
+        )
+        and rebuilt_signature == signature
+    )
+    active_window_valid = (
+        (
+            active_version == 1
+            and isinstance(versions, list)
+            and len(versions) == 1
+            and version_1 is not None
+            and active_hash == version_1.get("evidence_hash")
+        )
+        or (
+            active_version == 2
+            and isinstance(versions, list)
+            and len(versions) == 2
+            and version_1 is not None
+            and version_2 is not None
+            and _strict_int(version_2.get("version")) == 2
+            and version_2.get("condition_signature") == signature
+            and _strict_int(version_2.get("prior_version")) == 1
+            and version_2.get("prior_evidence_hash")
+            == version_1.get("evidence_hash")
+            and version_2.get("evidence_hash") == _version_hash(version_2)
+            and active_hash == version_2.get("evidence_hash")
+            and _strict_int(version_2.get("batch_hits")) is not None
+            and 0 <= _strict_int(version_2.get("batch_hits"))
+            <= ROLLOVER_BATCH_SIZE
+            and _strict_int(version_2.get("batch_decided"))
+            == ROLLOVER_BATCH_SIZE
+            and version_2_batch_hashes is not None
+            and len(version_2_batch_hashes) == ROLLOVER_BATCH_SIZE
+            and len(set(version_2_batch_hashes)) == ROLLOVER_BATCH_SIZE
+            and fixture_hash in version_2_batch_hashes
+        )
+    )
+    if (
+        not registry_binding_valid
+        or frozen.get("condition_number") != 17
+        or row.get("frozen_condition_signature") != signature
+        or row.get("frozen_condition_definition") != frozen.get("definition")
+        or "native_stage_at" in row
+        or row.get("status") != "SETTLED"
+        or row.get("result") not in BINARY_DECIDED_RESULTS
+        or not isinstance(marker, dict)
+        or marker.get("schema_version") != 1
+        or not _formal_marker_shape_valid(marker)
+        or _strict_int(row.get("evidence_version")) != 1
+        or _strict_int(marker.get("admitted_evidence_version")) != 1
+        or not isinstance(versions, list)
+        or version_1 is None
+        or _strict_int(version_1.get("version")) != 1
+        or version_1.get("condition_signature") != signature
+        or version_1.get("evidence_hash") != _version_hash(version_1)
+        or not active_window_valid
+        or _strict_int(frozen.get("active_evidence_version")) != active_version
+        or not isinstance(active_hash, str)
+        or row.get("evidence_hash") != version_1.get("evidence_hash")
+        or marker.get("admitted_evidence_hash") != version_1.get("evidence_hash")
+        or frozen.get("active_evidence_hash") != active_hash
+        or stage_at is None or created_at is None
+        or kickoff is None or settled_at is None
+        or settled_at != created_at
+        or not stage_at <= created_at < kickoff
+        or settled_at > projection_time
+    ):
+        return None
+
+    repaired = copy.deepcopy(row)
+    repaired["native_stage_at"] = marker["stage_at"]
+    # The strict validator permits equality here.  Replacing only the known
+    # bad settlement timestamp proves every other identity, definition,
+    # evidence, marker, fixture-hash, arithmetic and chronology invariant.
+    repaired["settled_at"] = (
+        row.get("kickoff") or row.get("kickoff_hkt")
+    )
+    admitted, reason = validate_formal_row(
+        repaired, system="footbreak", signature=signature, frozen=frozen,
+        projection_time=projection_time, require_settled=True, ledger=ledger,
+    )
+    return row if admitted is not None and reason is None else None
+
+
+def _footbreak_17_production_identity_is_pinned(
+    ledger: dict[str, Any], *, signature: str, frozen: dict[str, Any],
+) -> bool:
+    """Require the independently authorized production manifest, not the registry."""
+    namespace = ledger.get(NAMESPACE)
+    if (
+        not isinstance(namespace, dict)
+        or namespace.get("system") != "footbreak"
+    ):
+        return False
+    expected, validated, reason = _expected_production_identity_manifest(
+        namespace, "footbreak",
+    )
+    manifest = namespace.get("production_identity_manifest")
+    if (
+        reason is not None
+        or expected is None
+        or validated is None
+        or not isinstance(manifest, dict)
+        or manifest != expected
+    ):
+        return False
+    entries = manifest.get("entries")
+    versions = frozen.get("evidence_versions")
+    validated_condition = validated.get(signature)
+    validated_active = (
+        validated_condition[1][-1]
+        if isinstance(validated_condition, tuple)
+        and len(validated_condition) == 2
+        and isinstance(validated_condition[1], list)
+        and validated_condition[1]
+        else None
+    )
+    active_pointer = frozen.get("active_evidence")
+    pointer_keys = (
+        "version", "cumulative_hits", "cumulative_decided",
+        "wilson95_lower_raw", "minimum_acceptable_odds_raw",
+        "minimum_acceptable_odds_display", "activation_boundary_at",
+        "created_at", "evidence_hash",
+    )
+    return bool(
+        isinstance(entries, list)
+        and len(entries) == len(namespace.get("condition_order") or [])
+        and len(entries) >= 17
+        and isinstance(entries[16], dict)
+        and entries[16].get("condition_number") == 17
+        and entries[16].get("condition_signature") == signature
+        and entries[16].get("definition_hash")
+        == _canonical_hash(frozen.get("definition"))
+        and isinstance(versions, list)
+        and versions
+        and isinstance(versions[0], dict)
+        and entries[16].get("initial_evidence_hash")
+        == versions[0].get("evidence_hash")
+        and isinstance(validated_active, dict)
+        and isinstance(active_pointer, dict)
+        and all(key in active_pointer for key in pointer_keys)
+        and all(
+            active_pointer.get(key) == validated_active.get(key)
+            for key in pointer_keys
+        )
+    )
+
+
+def _resolve_footbreak_17_legacy_anomaly_cohort(
+    rows: Iterable[dict[str, Any]], *, signature: str,
+    frozen: dict[str, Any], active: dict[str, Any],
+    projection_time: datetime, ledger: dict[str, Any],
+) -> list[dict[str, Any]] | None:
+    """Resolve only the pinned immutable production cohort: 18 rows / 10 hits."""
+    if (
+        not _footbreak_17_legacy_cohort_is_activated()
+        or not _footbreak_17_production_identity_is_pinned(
+            ledger, signature=signature, frozen=frozen,
+        )
+    ):
+        return None
+    admitted = [
+        row for row in rows
+        if _project_footbreak_17_schema1_settlement_anomaly(
+            row, signature=signature, frozen=frozen, active=active,
+            projection_time=projection_time, ledger=ledger,
+        ) is not None
+    ]
+    hashes = [
+        row["rollover_provenance"]["fixture_market_hash"]
+        for row in admitted
+    ]
+    if (
+        len(admitted) != 18
+        or sum(row.get("result") in BINARY_HIT_RESULTS for row in admitted) != 10
+        or len(set(hashes)) != 18
+    ):
+        return None
+    return admitted
+
+
 def _project_pending_rollover_rows(
     ledger: dict[str, Any], system: str, signature: str,
     active: Any, pending: Any,
@@ -1249,7 +1651,20 @@ def _project_pending_rollover_rows(
     # rebuilding the cohort.  A legacy or malformed same-signature row must
     # never be borrowed merely because its loose provenance marker looks
     # similar to condition #7.
-    source_rows = active_bets(ledger, system) + active_observations(ledger, system)
+    observations = (
+        namespace.get("observations") or []
+        if isinstance(namespace, dict) else []
+    )
+    projection_observations = [
+        row for row in observations
+        if isinstance(row, dict)
+        and row.get("portfolio") == f"{system}_wilson_observations"
+        and row.get("strategy") == STRATEGY
+        and row.get("formal_bet") is False
+        and _formal_stage_provenance_valid(row, system)
+        and row.get("status") in {"PENDING", "SETTLED", "VOIDED"}
+    ] if isinstance(observations, list) else []
+    source_rows = active_bets(ledger, system) + projection_observations
     candidates: list[dict[str, Any]] = []
     rejected: list[tuple[dict[str, Any], str | None]] = []
     for row in source_rows:
@@ -1279,8 +1694,16 @@ def _project_pending_rollover_rows(
     # still agrees exactly with the durable pending count, hit count and
     # selector-exclusion counters.  Any other legacy difference, duplicate,
     # conflict or extra row remains fail-closed.
-    if expected_decided > 0:
+    if (
+        expected_decided > 0
+        or (
+            system == "footbreak"
+            and frozen.get("condition_number") == 17
+            and required == ROLLOVER_BATCH_SIZE
+        )
+    ):
         legacy_binding_rows: list[dict[str, Any]] = []
+        condition_17_settlement_anomaly_rows: list[dict[str, Any]] = []
         for row, reason in rejected:
             if reason != "invalid_formal_admission_binding":
                 continue
@@ -1317,6 +1740,22 @@ def _project_pending_rollover_rows(
             )
             if admitted is not None and repaired_reason is None:
                 legacy_binding_rows.append(row)
+            elif (
+                system == "footbreak"
+                and required == ROLLOVER_BATCH_SIZE
+                and _project_footbreak_17_schema1_settlement_anomaly(
+                    row, signature=signature, frozen=frozen, active=active,
+                    projection_time=projection_time, ledger=ledger,
+                ) is not None
+            ):
+                condition_17_settlement_anomaly_rows.append(row)
+        resolved_anomaly_rows = _resolve_footbreak_17_legacy_anomaly_cohort(
+            condition_17_settlement_anomaly_rows,
+            signature=signature, frozen=frozen, active=active,
+            projection_time=projection_time, ledger=ledger,
+        )
+        if resolved_anomaly_rows is not None:
+            legacy_binding_rows.extend(resolved_anomaly_rows)
         compatible_eligible, compatible_excluded = _eligible_rollover_rows(
             [*candidates, *legacy_binding_rows], system, signature, active,
         )
@@ -1486,11 +1925,23 @@ def _project_frozen_ranking_evidence(
         # Publication has no authority to synthesize a missing baseline,
         # normalize an old namespace, or select a replacement version.  It
         # displays only the already-durable final immutable version.
-        versions = frozen.get("evidence_versions")
-        active = versions[-1] if isinstance(versions, list) and versions else None
+        _stored_definition, versions, identity_reason = (
+            _validate_frozen_identity_and_chain(frozen, signature, system)
+        )
+        if identity_reason is not None or not isinstance(versions, list):
+            continue
+        active = versions[-1]
+        pointer = frozen.get("active_evidence")
+        pointer_keys = {
+            "version", "cumulative_hits", "cumulative_decided",
+            "wilson95_lower_raw", "minimum_acceptable_odds_raw",
+            "minimum_acceptable_odds_display", "activation_boundary_at",
+            "created_at", "evidence_hash",
+        }
         if (
-            not isinstance(active, dict)
-            or str(active.get("condition_signature") or "") != signature
+            not isinstance(pointer, dict)
+            or set(pointer) != pointer_keys
+            or any(pointer.get(key) != active.get(key) for key in pointer_keys)
         ):
             continue
         try:
@@ -1518,7 +1969,7 @@ def _project_frozen_ranking_evidence(
             "accuracy": hits / decided if decided else None,
             "wilson95": list(interval) if interval else None,
         }
-        current["active_evidence"] = copy.deepcopy(active)
+        current["active_evidence"] = copy.deepcopy(pointer)
         current["last_merged_batch"] = copy.deepcopy(last_batch) if isinstance(last_batch, dict) else None
         current["pending_progress"] = copy.deepcopy(pending)
         # The old holdout stays in immutable migration audit; no current card
@@ -2932,6 +3383,11 @@ def _rollover_condition(
         return False
     # Any malformed same-signature activity blocks the entire condition. It
     # must never be cherry-picked around to create an authoritative version.
+    # The sole exception is the independently pinned, exact 18-row/10-hit
+    # production #17 cohort. Those durable rows are not changed; they are
+    # admitted to this condition's selector only after the shared resolver has
+    # independently proved every invariant except the two known storage fields.
+    invalid_rows: list[dict[str, Any]] = []
     for row in rows:
         admitted, _reason = validate_formal_row(
             row, system=system, signature=signature, frozen=frozen,
@@ -2940,6 +3396,32 @@ def _rollover_condition(
             ledger=ledger,
         )
         if admitted is None:
+            invalid_rows.append(row)
+    if invalid_rows:
+        _definition, validated_versions, chain_reason = (
+            _validate_frozen_identity_and_chain(frozen, signature, system)
+        )
+        pinned_active = (
+            validated_versions[-1]
+            if chain_reason is None
+            and isinstance(validated_versions, list)
+            and validated_versions
+            else None
+        )
+        resolved = (
+            _resolve_footbreak_17_legacy_anomaly_cohort(
+                invalid_rows, signature=signature, frozen=frozen,
+                active=pinned_active,
+                projection_time=projection_time, ledger=ledger,
+            )
+            if system == "footbreak" and isinstance(pinned_active, dict)
+            else None
+        )
+        if (
+            resolved is None
+            or len(resolved) != len(invalid_rows)
+            or {id(row) for row in resolved} != {id(row) for row in invalid_rows}
+        ):
             return False
     active = active_evidence_version(
         frozen, migration_boundary=migration_boundary,
