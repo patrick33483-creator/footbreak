@@ -66,11 +66,11 @@ case "$bridge_value" in
       "$python" -m crown.reverse_t5_bridge_health mark-disabled
     ;;
 esac
-for timer in crown-round-update.timer crown-first-look-reconcile.timer crown-sweep.timer crown-tick.timer crown-settle.timer crown-reverse-t5-drain.timer; do
+for timer in crown-round-update.timer crown-first-look-reconcile.timer crown-early-admission-reconcile.timer crown-sweep.timer crown-tick.timer crown-settle.timer crown-reverse-t5-drain.timer; do
   systemctl enable "$timer"
   systemctl restart "$timer"
   systemctl is-enabled --quiet "$timer"
   systemctl is-active --quiet "$timer"
 done
 
-echo "Crown validation gate enabled; Crown daily-update/reconcile/sweep/tick/settle/reverse-T-5 timers are active."
+echo "Crown validation gate enabled; Crown daily-update/reconcile/early-admission/sweep/tick/settle/reverse-T-5 timers are active."

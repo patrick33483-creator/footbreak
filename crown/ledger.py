@@ -851,7 +851,7 @@ def sync_prediction(
 
 def reconcile_pending_formal_admissions(
     ledger: dict[str, Any], config: Settings, *, now: datetime | None = None,
-    max_items: int = 20,
+    max_items: int = 20, allowed_stages: set[str] | None = None,
 ) -> list[str]:
     """Consume a bounded set of exact, pre-kickoff durable snapshot jobs."""
     history = read_json(config.state_dir / "prediction_history.json", {})
@@ -875,6 +875,8 @@ def reconcile_pending_formal_admissions(
                 continue
             stage = str(snapshot.get("stage") or "")
             if stage not in STAGES:
+                continue
+            if allowed_stages is not None and stage not in allowed_stages:
                 continue
             if processed >= max(0, int(max_items)):
                 return emitted

@@ -1014,9 +1014,9 @@ def sync_granular_ranking_evidence(
 
     The historical ranking is recomputed from raw settled rows and therefore
     cannot own mutable prospective state.  This adapter gives each exact
-    ranking key a stable Wilson condition identity in the ledger, merges the
-    pre-cutover completed holdout exactly once, and later leaves that evidence
-    untouched while a fresh ranking is regenerated.
+    ranking key a stable Wilson condition identity in the ledger.  Discovery
+    train/holdout rows are both subsets of ``total`` and are retained only as
+    immutable research audit; neither is prospective evidence.
 
     ``granular_ranking_initial_migration_completed_at`` is intentionally a
     namespace-wide one-time latch.  A condition discovered after the migration
@@ -1058,9 +1058,7 @@ def sync_granular_ranking_evidence(
                     "holdout": copy.deepcopy(candidate.get("holdout") or {}),
                     "label": candidate.get("label"),
                 },
-                "prospective": (
-                    _ranking_holdout(candidate) if initial else {}
-                ) or {},
+                "prospective": {},
             }
             ns["conditions"][signature] = frozen
             pending_order.append(signature)
@@ -1069,14 +1067,15 @@ def sync_granular_ranking_evidence(
         ):
             # A pre-rollover condition may already have been frozen by an
             # early T-5 before the dashboard migration ran. It still has no
-            # evidence chain, so the explicitly authorised completed cohort
-            # can be attached once; a later rerun may never replace it.
+            # evidence chain.  Preserve the discovery split for audit only;
+            # attaching its holdout as prospective would count the same
+            # fixtures twice because ``total`` already contains it.
             frozen["ranking_discovery_snapshot"] = {
                 "total": copy.deepcopy(candidate.get("total") or {}),
                 "holdout": copy.deepcopy(candidate.get("holdout") or {}),
                 "label": candidate.get("label"),
             }
-            frozen["prospective"] = _ranking_holdout(candidate) or {}
+            frozen["prospective"] = {}
             pending_order.append(signature)
         # Do not replace definitions, historical counts, or a completed
         # migration from a later ranking rebuild.  Existing state wins.

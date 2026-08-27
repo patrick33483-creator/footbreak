@@ -64,7 +64,7 @@ for unit in \
 done
 
 if crown_is_enabled; then
-  for unit in crown-round-update.timer crown-first-look-reconcile.timer crown-tick.timer crown-sweep.timer crown-settle.timer; do
+  for unit in crown-round-update.timer crown-first-look-reconcile.timer crown-early-admission-reconcile.timer crown-tick.timer crown-sweep.timer crown-settle.timer; do
     systemctl is-enabled --quiet "$unit" || {
       state="$(systemctl is-enabled "$unit" 2>&1 || true)"
       echo "FAIL timer $unit enabled_state=$state" >&2

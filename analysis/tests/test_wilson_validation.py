@@ -880,8 +880,8 @@ class WilsonBatchRolloverTest(unittest.TestCase):
         ensure_namespace(legacy, "footbreak", now="2026-08-21T00:00:00+08:00")
         self.assertEqual(frozen["evidence_versions"], before)
 
-    def test_granular_card_initial_migration_is_active_evidence_for_both_systems(self):
-        """The screenshot card and Wilson admission share one exact identity."""
+    def test_granular_card_holdout_is_audit_only_for_both_systems(self):
+        """The discovery holdout is already inside total and is not re-added."""
         for system in ("footbreak", "crown"):
             ranking = [candidate(hits=141, decided=231, key="condition-2")]
             ranking[0]["key"] = [
@@ -904,27 +904,40 @@ class WilsonBatchRolloverTest(unittest.TestCase):
             )
             self.assertEqual(len(projected), 1)
             card = projected[0]
-            self.assertEqual((card["total"]["hits"], card["total"]["decided"]), (185, 302))
-            self.assertEqual(card["active_evidence"]["version"], 2)
-            self.assertAlmostEqual(card["active_evidence"]["wilson95_lower_raw"], .557, places=3)
-            self.assertAlmostEqual(card["active_evidence"]["minimum_acceptable_odds_raw"], 1.90, places=2)
+            self.assertEqual((card["total"]["hits"], card["total"]["decided"]), (141, 231))
+            self.assertEqual(card["active_evidence"]["version"], 1)
+            self.assertAlmostEqual(card["active_evidence"]["wilson95_lower_raw"], .546, places=3)
+            self.assertAlmostEqual(card["active_evidence"]["minimum_acceptable_odds_raw"], 1.94, places=2)
             self.assertEqual(card["validation_progress"]["display"], "0/20")
             self.assertEqual(card["validation_progress"]["pending_hits"], 0)
             self.assertIsNone(card["validation_progress"]["pending_accuracy"])
             self.assertEqual(
                 card["active_evidence"]["activation_boundary_at"],
-                "2026-08-20T22:00:00+08:00",
+                card["source_artifact"]["as_of"],
             )
-            # The current validation field is reset; the old 44/71 is only in
-            # immutable migration audit, never reused as a progress display.
+            # The current validation field starts empty.  The 44/71 remains
+            # visible only inside ranking_discovery_snapshot.holdout.
             self.assertEqual(card["holdout"]["decided"], 0)
             frozen = next(iter(ledger["wilson_validation"]["conditions"].values()))
+            discovery_holdout = frozen["ranking_discovery_snapshot"]["holdout"]
             self.assertEqual(
-                frozen["rollover_audit"][-1]["legacy_prospective_cohort"],
+                {
+                    key: discovery_holdout[key]
+                    for key in ("hits", "decided", "pushes")
+                },
                 {"hits": 44, "decided": 71, "pushes": 0},
             )
-            # A candidate supplied by this displayed card enters through the
-            # active version, rather than falling back to its old 141/231.
+            self.assertEqual(len(frozen["evidence_versions"]), 1)
+            self.assertTrue(frozen["evidence_versions"][0]["migration_baseline"])
+            self.assertEqual(
+                (
+                    frozen["evidence_versions"][0]["cumulative_hits"],
+                    frozen["evidence_versions"][0]["cumulative_decided"],
+                ),
+                (141, 231),
+            )
+            # A candidate supplied by this displayed card uses the unduplicated
+            # baseline.
             admission, reason = apply_active_evidence(
                 ledger, system,
                 matching_admissions(system, "HDC", selected(), [card],
@@ -936,7 +949,7 @@ class WilsonBatchRolloverTest(unittest.TestCase):
             assert admission is not None
             self.assertEqual(
                 (admission["history"]["hits"], admission["history"]["decided"]),
-                (185, 302),
+                (141, 231),
             )
 
     def test_granular_card_numbers_survive_a_later_ranking_reorder(self):
