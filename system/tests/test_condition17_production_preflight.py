@@ -52,6 +52,9 @@ CAPTURE = load_script(
     "condition17_secure_capture", "capture-condition17-production-snapshot.py",
 )
 HOST_KEY = load_script("condition17_host_key", "verify_ssh_host_key.py")
+BOOTSTRAP = load_script(
+    "condition17_bootstrap_audit", "condition17-bootstrap-audit.py",
+)
 
 
 def production_shape() -> tuple[dict, dict, str]:
@@ -638,8 +641,61 @@ class Condition17PinnedHostKeyTests(unittest.TestCase):
                         )
 
 
+class Condition17BootstrapAuditTests(unittest.TestCase):
+    def test_bootstrap_artifact_has_full_manifest_and_no_rows(self) -> None:
+        ledger, trusted, secret = production_shape()
+        ledger["wilson_validation"].pop("production_identity_manifest")
+        with tempfile.TemporaryDirectory() as directory:
+            snapshot = Path(directory) / "snapshot"
+            snapshot.write_text(json.dumps(ledger), encoding="utf-8")
+            snapshot.chmod(0o400)
+            marker = Path(directory) / "marker"
+            marker.write_text(json.dumps({
+                "schema": wv.CONDITION17_ACTIVATION_SCHEMA,
+                "wilson_validation_sha256": hashlib.sha256(
+                    Path(wv.__file__).read_bytes(),
+                ).hexdigest(),
+                "quarter_line_sha256": hashlib.sha256(
+                    Path(wv.__file__).with_name("quarter_line.py").read_bytes(),
+                ).hexdigest(),
+            }), encoding="utf-8")
+            marker.chmod(0o400)
+            with patch.object(
+                BOOTSTRAP, "PINNED_CONDITION17_SIGNATURE",
+                trusted["expected_signature"],
+            ), patch.object(
+                BOOTSTRAP, "PINNED_CONDITION17_INITIAL_EVIDENCE_HASH",
+                trusted["expected_initial_evidence_hash"],
+            ), patch.object(
+                BOOTSTRAP.wv, "CONDITION17_ACTIVATION_MARKER", marker,
+            ):
+                result = BOOTSTRAP.build_review(
+                    snapshot,
+                    deployed_commit=BOOTSTRAP.PINNED_DEPLOYED_COMMIT,
+                    deployed_tree=BOOTSTRAP.PINNED_DEPLOYED_TREE,
+                    validation_sha256=BOOTSTRAP.PINNED_VALIDATION_SHA256,
+                    quarter_line_sha256=BOOTSTRAP.PINNED_QUARTER_LINE_SHA256,
+                )
+        encoded = json.dumps(result)
+        self.assertEqual(result["result"], "GO")
+        self.assertEqual(
+            len(result["candidate_production_identity_manifest"]["entries"]), 17,
+        )
+        self.assertEqual(result["condition17"]["durable_progress"], "18/20")
+        self.assertEqual(
+            set(result["condition17"]["exclusions"]),
+            PREFLIGHT.EXCLUSION_KEYS,
+        )
+        self.assertTrue(
+            all(value == 0 for value in result["condition17"]["exclusions"].values()),
+        )
+        self.assertNotIn(secret, encoded)
+        self.assertNotIn('"bets"', encoded)
+        self.assertFalse(result["contains_fixture_ids_or_raw_rows"])
+
+
 class Condition17ProductionPreflightWorkflowTests(unittest.TestCase):
-    def test_workflow_is_manual_read_only_and_requires_trusted_hashes(self) -> None:
+    def test_workflow_is_manual_read_only_and_pins_exact_e5_code(self) -> None:
         text = WORKFLOW.read_text(encoding="utf-8")
         parsed = yaml.safe_load(text)
         trigger = parsed.get(True, {})
@@ -649,27 +705,12 @@ class Condition17ProductionPreflightWorkflowTests(unittest.TestCase):
         self.assertNotIn("push", trigger)
         self.assertNotIn("schedule", trigger)
         self.assertEqual(parsed.get("permissions"), {"contents": "read"})
-        self.assertEqual(
-            set(inputs),
-            {
-                "expected_deployed_sha",
-                "expected_wilson_validation_sha256",
-                "expected_repository_tree",
-                "expected_manifest_hash",
-                "expected_condition_signature",
-                "expected_initial_evidence_hash",
-                "ssh_port",
-            },
-        )
+        self.assertEqual(set(inputs), {"ssh_port"})
         self.assertTrue(all(value.get("required") is True for value in inputs.values()))
-        self.assertIn('test "$(git rev-parse HEAD)" = "$GITHUB_SHA"', text)
-        self.assertIn('test "$GITHUB_SHA" = "$EXPECTED_DEPLOYED_SHA"', text)
-        self.assertIn(
-            'git rev-parse "${EXPECTED_DEPLOYED_SHA}^{tree}"', text,
-        )
-        self.assertIn("git fsck --strict --no-dangling", text)
-        self.assertIn("git diff-index --cached --quiet", text)
-        self.assertIn("git diff-files --quiet", text)
+        self.assertIn(BOOTSTRAP.PINNED_DEPLOYED_COMMIT, text)
+        self.assertIn(BOOTSTRAP.PINNED_DEPLOYED_TREE, text)
+        self.assertIn(BOOTSTRAP.PINNED_VALIDATION_SHA256, text)
+        self.assertIn(BOOTSTRAP.PINNED_QUARTER_LINE_SHA256, text)
         self.assertIn(
             "test \"$(sha256sum analysis/wilson_validation.py | awk '{print $1}')\"",
             text,
@@ -682,23 +723,23 @@ class Condition17ProductionPreflightWorkflowTests(unittest.TestCase):
         self.assertIn("/var/lock/footbreak.lock", text)
         self.assertIn("/opt/footbreak/system/sim_ledger.json", text)
         self.assertIn("capture-condition17-production-snapshot.py", text)
-        self.assertIn("--expected-commit '$EXPECTED_DEPLOYED_SHA'", text)
-        self.assertIn("--expected-tree '$EXPECTED_REPOSITORY_TREE'", text)
+        self.assertIn("--expected-commit '$E5_COMMIT'", text)
+        self.assertIn("--expected-tree '$E5_TREE'", text)
         self.assertIn(
-            "--expected-validation-sha256 '$EXPECTED_VALIDATION_SHA'", text,
+            "--expected-validation-sha256 '$E5_VALIDATION_SHA'", text,
         )
         self.assertIn("--lock-timeout 120", text)
         self.assertIn('chmod 400 "$snapshot"', text)
         self.assertIn("timeout --signal=TERM --kill-after=10s 180s", text)
         self.assertEqual(
-            parsed_workflow()["jobs"]["preflight"]["timeout-minutes"], 10,
+            parsed_workflow()["jobs"]["audit"]["timeout-minutes"], 12,
         )
         self.assertEqual(
             parsed_workflow()["concurrency"]["group"], "production-maintenance",
         )
-        upload = text.split("Upload bounded preflight result", 1)[1]
+        upload = text.split("Upload exact reviewer document", 1)[1]
         self.assertNotIn("sim-ledger.snapshot", upload)
-        self.assertIn("condition17-production-preflight-summary.json", upload)
+        self.assertIn("condition17-bootstrap-review.json", upload)
 
     def test_workflow_uses_pinned_host_key_and_cleans_all_temporary_files(self) -> None:
         text = WORKFLOW.read_text(encoding="utf-8")
@@ -710,18 +751,15 @@ class Condition17ProductionPreflightWorkflowTests(unittest.TestCase):
         self.assertIn("secrets.DEPLOY_SSH_HOST_FINGERPRINT", text)
         self.assertNotIn("ssh-keyscan", text)
         self.assertIn("-o StrictHostKeyChecking=yes", text)
-        self.assertIn('-o UserKnownHostsFile="$PREFLIGHT_DIR/known_hosts"', text)
+        self.assertIn('-o UserKnownHostsFile="$WORK/known_hosts"', text)
         self.assertIn("-o GlobalKnownHostsFile=/dev/null", text)
-        self.assertIn("trap cleanup_on_error EXIT", text)
-        self.assertIn("trap cleanup_snapshot EXIT", text)
-        self.assertIn("trap cleanup EXIT", text)
-        self.assertGreaterEqual(text.count("trap 'exit 130' HUP INT TERM"), 3)
-        self.assertIn("--activation-marker \"$activation_marker\"", text)
+        self.assertIn("trap 'rm -f \"$snapshot\"' EXIT", text)
+        self.assertIn('--activation-marker "$WORK/synthetic-marker.json"', text)
         self.assertIn(
             "/var/lib/footbreak/activation/condition17-legacy-cohort-v1.json",
             text,
         )
-        self.assertIn('rm -rf -- "$PREFLIGHT_DIR"', text)
+        self.assertIn('rm -rf -- "$WORK"', text)
         self.assertNotIn("cat ~/.ssh/id_ed25519", text)
 
     def test_deployment_does_not_activate_condition_17(self) -> None:
