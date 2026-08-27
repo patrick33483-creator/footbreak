@@ -22,9 +22,11 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test -s analysis/wilson_audit_gate.py
           test -s analysis/wilson_registry_manifest.py
           test -s analysis/wilson_validation.py
           sha256sum \
+            analysis/wilson_audit_gate.py \
             analysis/wilson_registry_manifest.py \
             analysis/wilson_validation.py
 
@@ -160,6 +162,20 @@ jobs:
           printf 'footbreak_rc=%s\n' "$footbreak_rc" >> "$GITHUB_OUTPUT"
           printf 'crown_rc=%s\n' "$crown_rc" >> "$GITHUB_OUTPUT"
 
+      - name: Export sanitized registry evidence chains
+        id: chains
+        if: always()
+        run: |
+          set +e
+          for system in footbreak crown; do
+            python3 -m analysis.wilson_registry_export \
+              --system "$system" \
+              --ledger "audit-input/${system}-ledger.json" \
+              --output "${system}-wilson-registry-chains.json"
+            printf '%s_export_rc=%s\n' "$system" "$?" >> "$GITHUB_OUTPUT"
+          done
+          set -e
+
       - name: Build non-sensitive audit summary
         if: always()
         env:
@@ -201,6 +217,9 @@ jobs:
               manifests[system] = {
                   "valid": data.get("valid") is True,
                   "condition_count": data.get("condition_count"),
+                  "historical_condition_count": data.get("historical_condition_count"),
+                  "active_condition_count": data.get("active_condition_count"),
+                  "retired_duplicate_count": data.get("retired_duplicate_count"),
                   "decision_stage_counts": data.get("decision_stage_counts"),
                   "rejection_reasons": data.get("rejection_reasons"),
                   "recovery": data.get("recovery"),
@@ -246,6 +265,9 @@ jobs:
             printf 'WILSON_STRICT_MANIFEST_%s_BEGIN\n' "$system"
             cat "${system}-wilson-registry-audit.json"
             printf 'WILSON_STRICT_MANIFEST_%s_END\n' "$system"
+            printf 'WILSON_SANITIZED_CHAINS_%s_BEGIN\n' "$system"
+            cat "${system}-wilson-registry-chains.json"
+            printf 'WILSON_SANITIZED_CHAINS_%s_END\n' "$system"
           done
 
       - name: Upload audit evidence
@@ -258,6 +280,8 @@ jobs:
             wilson-production-audit-summary.json
             footbreak-wilson-registry-audit.json
             crown-wilson-registry-audit.json
+            footbreak-wilson-registry-chains.json
+            crown-wilson-registry-chains.json
           if-no-files-found: error
           retention-days: 7
 
@@ -269,70 +293,16 @@ jobs:
           CROWN_CAPTURE_RC: ${{ steps.capture.outputs.crown_capture_rc }}
           FOOTBREAK_RC: ${{ steps.registry.outputs.footbreak_rc }}
           CROWN_RC: ${{ steps.registry.outputs.crown_rc }}
+          FOOTBREAK_EXPORT_RC: ${{ steps.chains.outputs.footbreak_export_rc }}
+          CROWN_EXPORT_RC: ${{ steps.chains.outputs.crown_export_rc }}
         run: |
-          python3 - <<'PY'
-          import json
-          import re
-          from pathlib import Path
-
-          expected_counts = {"footbreak": 17, "crown": 20}
-          observed_total = 0
-          for system in ("footbreak", "crown"):
-              data = json.loads(
-                  Path(f"{system}-wilson-registry-audit.json").read_text(encoding="utf-8")
-              )
-              if not isinstance(data, dict):
-                  raise SystemExit(f"{system}: manifest is not an object")
-              if data.get("schema") != "wilson-registry-manifest-v2":
-                  raise SystemExit(f"{system}: unexpected manifest schema")
-              if data.get("system") != system:
-                  raise SystemExit(f"{system}: manifest system mismatch")
-              if data.get("condition_count") != expected_counts[system]:
-                  raise SystemExit(
-                      f"{system}: expected {expected_counts[system]} conditions, "
-                      f"found {data.get('condition_count')}"
-                  )
-              observed_total += data["condition_count"]
-              if data.get("valid") is not True:
-                  raise SystemExit(f"{system}: manifest is not valid")
-              conditions = data.get("conditions")
-              if not isinstance(conditions, list) or len(conditions) != expected_counts[system]:
-                  raise SystemExit(f"{system}: malformed condition manifest rows")
-              for position, condition in enumerate(conditions, start=1):
-                  if not isinstance(condition, dict):
-                      raise SystemExit(f"{system}: malformed condition row {position}")
-                  if condition.get("condition_number") != position:
-                      raise SystemExit(f"{system}: condition order mismatch at {position}")
-                  if condition.get("valid") is not True:
-                      raise SystemExit(f"{system}: condition {position} is not valid")
-                  if condition.get("own_stage_matcher_can_structurally_admit") is not True:
-                      raise SystemExit(
-                          f"{system}: condition {position} cannot be structurally admitted"
-                      )
-              recovery = data.get("recovery")
-              if not isinstance(recovery, dict) or recovery.get("implemented") is not False:
-                  raise SystemExit(f"{system}: recovery isolation is not proven")
-          if observed_total != 37:
-              raise SystemExit(f"expected 37 total conditions, found {observed_total}")
-
-          hashes = {}
-          for line in Path("ledger-sha256.txt").read_text(encoding="utf-8").splitlines():
-              parts = line.split()
-              if len(parts) != 2:
-                  raise SystemExit("malformed ledger hash line")
-              digest, path = parts
-              basename = Path(path).name
-              if basename in hashes:
-                  raise SystemExit(f"duplicate ledger hash: {basename}")
-              hashes[basename] = digest
-          expected = {"footbreak-ledger.json", "crown-ledger.json"}
-          if set(hashes) != expected:
-              raise SystemExit("ledger hash set mismatch")
-          if any(re.fullmatch(r"[0-9a-f]{64}", digest) is None for digest in hashes.values()):
-              raise SystemExit("invalid ledger SHA-256")
-          PY
+          python3 -m analysis.wilson_audit_gate \
+            --base-dir . \
+            --audited-commit "$GITHUB_SHA"
           test "$CAPTURE_OUTCOME" = "success"
           test "$FOOTBREAK_CAPTURE_RC" -eq 0
           test "$CROWN_CAPTURE_RC" -eq 0
           test "$FOOTBREAK_RC" -eq 0
           test "$CROWN_RC" -eq 0
+          test "$FOOTBREAK_EXPORT_RC" -eq 0
+          test "$CROWN_EXPORT_RC" -eq 0
