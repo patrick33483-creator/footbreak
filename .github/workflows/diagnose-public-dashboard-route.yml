@@ -368,6 +368,35 @@ jobs:
                           else False
                       ),
                       "evidence_version": row.get("evidence_version"),
+                      "created_at_present": row.get("created_at") is not None,
+                      "kickoff_present": (
+                          row.get("kickoff") is not None
+                          or row.get("kickoff_hkt") is not None
+                      ),
+                      "settled_at_present": row.get("settled_at") is not None,
+                      "timeline_valid": (
+                          (
+                              _time(
+                                  (row.get("rollover_provenance") or {}).get("stage_at")
+                              )
+                              <= _time(row.get("created_at"))
+                              < _time(row.get("kickoff") or row.get("kickoff_hkt"))
+                              <= _time(row.get("settled_at"))
+                              <= projection_time
+                          )
+                          if (
+                              isinstance(row.get("rollover_provenance"), dict)
+                              and _time(
+                                  (row.get("rollover_provenance") or {}).get("stage_at")
+                              ) is not None
+                              and _time(row.get("created_at")) is not None
+                              and _time(
+                                  row.get("kickoff") or row.get("kickoff_hkt")
+                              ) is not None
+                              and _time(row.get("settled_at")) is not None
+                          )
+                          else False
+                      ),
                       "marker_evidence_version": (
                           (row.get("rollover_provenance") or {}).get(
                               "admitted_evidence_version"
