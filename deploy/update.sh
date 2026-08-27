@@ -173,7 +173,8 @@ fi
 systemctl enable --now \
   footbreak-tick.timer footbreak-sweep.timer footbreak-settle.timer \
   footbreak-result-reconcile.timer footbreak-dashboard-self-heal.timer \
-  footbreak-server-health-monitor.timer telegram-silence-monitor.timer
+  footbreak-server-health-monitor.timer telegram-silence-monitor.timer \
+  footbreak-daily-condition-report.timer
 # An already-active timer keeps its previous next-elapse calculation after a
 # unit-file update on some systemd versions. Restart it explicitly so a
 # 30-minute installation becomes the new 15-minute schedule immediately.
@@ -234,6 +235,29 @@ systemctl is-active --quiet telegram-silence-monitor.timer || {
   echo "ERROR: telegram-silence-monitor.timer did not restart" >&2
   exit 1
 }
+# The report is generated entirely on this host from locked local snapshots.
+# Reenable creates the durable timers.target symlink on both fresh and upgraded
+# servers.  Persistent=true makes a missed 12:15 HKT fire once after boot.
+install -d -o root -g root -m 0700 /var/lib/footbreak/daily-condition-reports
+systemctl unmask footbreak-daily-condition-report.timer 2>/dev/null || true
+systemctl reenable footbreak-daily-condition-report.timer
+systemctl restart footbreak-daily-condition-report.timer
+systemctl is-enabled --quiet footbreak-daily-condition-report.timer || {
+  systemctl show footbreak-daily-condition-report.timer \
+    -p LoadState -p ActiveState -p SubState -p UnitFileState -p Result
+  echo "ERROR: footbreak-daily-condition-report.timer did not become enabled" >&2
+  exit 1
+}
+systemctl is-active --quiet footbreak-daily-condition-report.timer || {
+  systemctl show footbreak-daily-condition-report.timer \
+    -p LoadState -p ActiveState -p SubState -p Result
+  echo "ERROR: footbreak-daily-condition-report.timer did not restart" >&2
+  exit 1
+}
+# Run once after deployment.  Per-window send state makes this idempotent, so
+# a later deployment regenerates the files but cannot duplicate either the
+# Telegram summary or document for an already delivered window.
+systemctl start footbreak-daily-condition-report.service
 systemctl enable crown-dashboard-api.service footbreak-dashboard-api.service
 systemctl restart crown-dashboard-api.service footbreak-dashboard-api.service
 # `systemctl is-active` can briefly report active while a crashing process is

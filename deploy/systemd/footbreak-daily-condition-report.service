@@ -1,0 +1,23 @@
+[Unit]
+Description=Generate and send the daily Footbreak and Crown condition report
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+WorkingDirectory=/opt/footbreak
+EnvironmentFile=-/etc/footbreak.env
+EnvironmentFile=-/etc/footbreak-crown.env
+Environment=PYTHONPATH=/opt/footbreak
+ExecStart=/opt/footbreak/.venv/bin/python3 /opt/footbreak/system/daily_condition_report.py
+TimeoutStartSec=10min
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target
