@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stage Engine v2 · 歷史紀錄</title>
+<style>
+:root {
+  --bg: #171614;
+  --surface: #1C1B19;
+  --surface-alt: #201F1D;
+  --border: #393836;
+  --text: #CDCCCA;
+  --text-muted: #797876;
+  --text-faint: #5A5957;
+  --accent: #4F98A3;
+  --pub: #6DAA45;
+  --gate: #7A7974;
+  --shadow: #BB653B;
+  --stage-first: #4F98A3;
+  --stage-t30: #FDAB43;
+  --stage-t5: #D163A7;
+  --pos: #6DAA45;
+  --neg: #D163A7;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang HK", "Noto Sans CJK TC", sans-serif;
+  background: var(--bg); color: var(--text);
+  padding: 24px; line-height: 1.5;
+  font-size: 14px;
+}
+h1 { font-size: 22px; font-weight: 600; margin-bottom: 4px; }
+.subtitle { color: var(--text-muted); font-size: 13px; margin-bottom: 20px; }
+.shadow-badge {
+  display: inline-block; padding: 2px 8px; border-radius: 4px;
+  background: var(--shadow); color: var(--bg); font-weight: 600;
+  font-size: 11px; margin-left: 8px; vertical-align: middle;
+}
+.nav { margin-bottom: 20px; }
+.nav a {
+  color: var(--text-muted); text-decoration: none; margin-right: 16px;
+  padding-bottom: 4px; font-size: 13px;
+}
+.nav a.active { color: var(--text); border-bottom: 2px solid var(--accent); }
+.nav a:hover { color: var(--text); }
+
+.filter-row {
+  display: flex; gap: 12px; margin-bottom: 20px; align-items: center;
+  flex-wrap: wrap;
+}
+.filter-row label { color: var(--text-muted); font-size: 12px; margin-right: 4px; }
+.filter-row select, .filter-row input {
+  background: var(--surface); border: 1px solid var(--border);
+  color: var(--text); padding: 6px 10px; border-radius: 4px; font-size: 13px;
+  font-family: inherit;
+}
+.filter-row button {
+  background: var(--accent); color: var(--bg); border: none;
+  padding: 6px 14px; border-radius: 4px; font-size: 13px;
+  font-weight: 600; cursor: pointer; font-family: inherit;
+}
+.filter-row button.secondary { background: var(--surface); color: var(--text); border: 1px solid var(--border); }
+.filter-row button:hover { opacity: 0.85; }
+.summary { color: var(--text-muted); font-size: 12px; margin-left: auto; }
+
+.match-card {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 8px; padding: 16px; margin-bottom: 14px;
+}
+.match-head {
+  display: flex; justify-content: space-between; align-items: baseline;
+  padding-bottom: 10px; border-bottom: 1px solid var(--border);
+  margin-bottom: 12px; flex-wrap: wrap; gap: 8px;
+}
+.match-title { font-size: 15px; font-weight: 600; }
+.match-title .league {
+  color: var(--text-muted); font-weight: 400; font-size: 12px; margin-right: 8px;
+}
+.match-meta { color: var(--text-faint); font-size: 12px; font-variant-numeric: tabular-nums; }
+
+.stages { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+@media (max-width: 720px) { .stages { grid-template-columns: 1fr; } }
+
+.stage-cell {
+  background: var(--surface-alt); border: 1px solid var(--border);
+  border-radius: 6px; padding: 10px 12px;
+}
+.stage-cell.missing { opacity: 0.35; }
+.stage-hdr { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+.stage-tag {
+  display: inline-block; padding: 1px 8px; border-radius: 3px;
+  font-size: 11px; font-weight: 600;
+}
+.stage-tag.首預 { background: var(--stage-first); color: var(--bg); }
+.stage-tag.T-30 { background: var(--stage-t30); color: var(--bg); }
+.stage-tag.T-5  { background: var(--stage-t5); color: var(--bg); }
+.stage-ts { color: var(--text-faint); font-size: 11px; font-variant-numeric: tabular-nums; }
+.stage-body { font-size: 12.5px; }
+.stage-pick {
+  color: var(--text); font-weight: 500; margin-bottom: 4px;
+  font-variant-numeric: tabular-nums;
+}
+.stage-nums {
+  color: var(--text-muted); font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+.stage-nums b { color: var(--text); font-weight: 500; }
+.stage-decision {
+  margin-top: 6px; padding-top: 6px; border-top: 1px dashed var(--border);
+  font-size: 11px;
+}
+.decision-yes { color: var(--pub); font-weight: 600; }
+.decision-no { color: var(--gate); }
+.delta {
+  display: inline-block; margin-left: 6px; font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.delta.pos { color: var(--pos); }
+.delta.neg { color: var(--neg); }
+.delta.same { color: var(--text-faint); }
+
+.empty {
+  padding: 40px; text-align: center; color: var(--text-muted);
+  background: var(--surface); border: 1px dashed var(--border);
+  border-radius: 8px;
+}
+
+footer { margin-top: 24px; color: var(--text-faint); font-size: 12px; }
+footer a { color: var(--accent); text-decoration: none; }
+</style>
+</head>
+<body>
+<h1>Stage Engine v2 · 歷史紀錄<span class="shadow-badge">SHADOW</span></h1>
+<div class="subtitle">按場次顯示 <b>首預 / T-30 / T-5</b> 三個時點嘅完整預測 snapshot（原始資料喺 <code>ledger.json</code>）</div>
+
+<div class="nav">
+  <a href="./">即時 dashboard</a>
+  <a href="./history.html" class="active">歷史紀錄</a>
+</div>
+
+<div class="filter-row">
+  <label>顯示：</label>
+  <select id="filter-completeness">
+    <option value="all">全部場次</option>
+    <option value="3" selected>三 stage 齊備</option>
+    <option value="2">最少 2 stage</option>
+    <option value="1">最少 1 stage</option>
+  </select>
+  <label>推播：</label>
+  <select id="filter-publish">
+    <option value="all">任何</option>
+    <option value="yes">曾有 stage 通過 gate</option>
+    <option value="no">全部被 gate</option>
+  </select>
+  <label>排序：</label>
+  <select id="sort-by">
+    <option value="kickoff-asc">開賽時間（早到夜）</option>
+    <option value="kickoff-desc">開賽時間（夜到早）</option>
+    <option value="conviction-desc">最高 conviction</option>
+  </select>
+  <button class="secondary" id="btn-refresh">重新載入</button>
+  <button class="secondary" id="btn-csv">匯出 CSV</button>
+  <span class="summary" id="summary">載入中…</span>
+</div>
+
+<div id="matches"></div>
+
+<footer>
+  資料由 <code>/stage-v2/data.json</code> 提供 · 每次載入都係最新快照 ·
+  完整原始資料喺 droplet <code>/var/lib/footbreak/stage_engine_v2/ledger.json</code>
+</footer>
+
+<script>
+const STAGE_ORDER = ['首預', 'T-30', 'T-5'];
+
+function fmtOdds(x) { return (x == null) ? '—' : Number(x).toFixed(2); }
+function fmtProb(x) { return (x == null) ? '—' : (Number(x) * 100).toFixed(1) + '%'; }
+function fmtEV(x) {
+  if (x == null) return '—';
+  const v = Number(x);
+  const s = (v >= 0 ? '+' : '') + (v * 100).toFixed(1) + '%';
+  return s;
+}
+function fmtConviction(x) { return (x == null) ? '—' : Number(x).toFixed(1); }
+function fmtHKT(iso) {
+  if (!iso) return '—';
+  try {
+    const d = new Date(iso);
+    // 加 8 小時：iso 係 UTC，用 toLocaleString HK
+    return d.toLocaleString('zh-HK', { timeZone: 'Asia/Hong_Kong', hour12: false, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+  } catch { return iso; }
+}
+
+function stageDelta(prev, curr, key) {
+  if (!prev || prev[key] == null || !curr || curr[key] == null) return null;
+  return Number(curr[key]) - Number(prev[key]);
+}
+
+function renderStage(stageName, rec, prevRec) {
+  if (!rec) {
+    return `<div class="stage-cell missing">
+      <div class="stage-hdr"><span class="stage-tag ${stageName}">${stageName}</span><span class="stage-ts">未觸發</span></div>
+    </div>`;
+  }
+  const dOdds = stageDelta(prevRec, rec, 'lead_odds');
+  const dProb = stageDelta(prevRec, rec, 'lead_prob');
+  const dEV = stageDelta(prevRec, rec, 'lead_ev');
+  const dConv = stageDelta(prevRec, rec, 'conviction');
+
+  const dodgeSame = (d, threshold) => (d == null || Math.abs(d) < threshold) ? 'same' : (d > 0 ? 'pos' : 'neg');
+  const fmtDelta = (d, formatter, threshold) => {
+    if (d == null) return '';
+    const cls = dodgeSame(d, threshold);
+    if (cls === 'same' && Math.abs(d) < threshold) return '';
+    const sign = d > 0 ? '+' : '';
+    return `<span class="delta ${cls}">${sign}${formatter(d)}</span>`;
+  };
+
+  const pubYes = rec.publish_decision === true;
+  return `<div class="stage-cell">
+    <div class="stage-hdr">
+      <span class="stage-tag ${stageName}">${stageName}</span>
+      <span class="stage-ts">${fmtHKT(rec.predicted_at_utc)}</span>
+    </div>
+    <div class="stage-body">
+      <div class="stage-pick">${rec.lead_label || rec.lead_market || '—'}</div>
+      <div class="stage-nums">
+        賠 <b>${fmtOdds(rec.lead_odds)}</b>${fmtDelta(dOdds, v => v.toFixed(2), 0.005)}
+        · 機率 <b>${fmtProb(rec.lead_prob)}</b>${fmtDelta(dProb, v => (v * 100).toFixed(1) + 'pt', 0.001)}
+      </div>
+      <div class="stage-nums">
+        EV <b>${fmtEV(rec.lead_ev)}</b>${fmtDelta(dEV, v => (v * 100).toFixed(1) + 'pt', 0.001)}
+        · conviction <b>${fmtConviction(rec.conviction)}</b>${fmtDelta(dConv, v => v.toFixed(1), 0.05)}
+      </div>
+      <div class="stage-decision">
+        ${pubYes
+          ? '<span class="decision-yes">✓ 通過 gate（shadow）</span>'
+          : `<span class="decision-no">被 gate · ${rec.publish_reason || 'n/a'}</span>`}
+      </div>
+    </div>
+  </div>`;
+}
+
+function renderMatch(fx) {
+  const stages = fx.stages || {};
+  const cells = [];
+  let prev = null;
+  for (const s of STAGE_ORDER) {
+    const rec = stages[s] || null;
+    cells.push(renderStage(s, rec, prev));
+    if (rec) prev = rec;
+  }
+  return `<div class="match-card" data-fixture-id="${fx.id}">
+    <div class="match-head">
+      <div class="match-title">
+        <span class="league">${fx.league || ''}</span>
+        ${fx.home || '—'} vs ${fx.away || '—'}
+      </div>
+      <div class="match-meta">開賽 ${fmtHKT(fx.kickoff_utc)}</div>
+    </div>
+    <div class="stages">${cells.join('')}</div>
+  </div>`;
+}
+
+let LATEST = null;
+
+function applyFilters() {
+  if (!LATEST) return;
+  const compMin = document.getElementById('filter-completeness').value;
+  const pubMode = document.getElementById('filter-publish').value;
+  const sortBy = document.getElementById('sort-by').value;
+
+  let rows = (LATEST.fixtures || []).map(fx => {
+    const stages = fx.stages || {};
+    const nStages = STAGE_ORDER.filter(s => stages[s]).length;
+    const anyPub = STAGE_ORDER.some(s => stages[s] && stages[s].publish_decision === true);
+    const maxConv = Math.max(0, ...STAGE_ORDER.filter(s => stages[s]).map(s => stages[s].conviction || 0));
+    return { fx, nStages, anyPub, maxConv };
+  });
+
+  if (compMin !== 'all') {
+    const min = parseInt(compMin, 10);
+    rows = rows.filter(r => r.nStages >= min);
+  }
+  if (pubMode === 'yes') rows = rows.filter(r => r.anyPub);
+  if (pubMode === 'no') rows = rows.filter(r => !r.anyPub);
+
+  if (sortBy === 'kickoff-asc') rows.sort((a, b) => (a.fx.kickoff_utc || '').localeCompare(b.fx.kickoff_utc || ''));
+  else if (sortBy === 'kickoff-desc') rows.sort((a, b) => (b.fx.kickoff_utc || '').localeCompare(a.fx.kickoff_utc || ''));
+  else if (sortBy === 'conviction-desc') rows.sort((a, b) => b.maxConv - a.maxConv);
+
+  const container = document.getElementById('matches');
+  if (rows.length === 0) {
+    container.innerHTML = '<div class="empty">冇符合條件嘅場次</div>';
+  } else {
+    container.innerHTML = rows.map(r => renderMatch(r.fx)).join('');
+  }
+
+  document.getElementById('summary').textContent =
+    `顯示 ${rows.length} 場 / 總 ${LATEST.fixtures.length} 場 · snapshot ${LATEST.generated_at_hkt || '—'}`;
+}
+
+async function load() {
+  document.getElementById('summary').textContent = '載入中…';
+  try {
+    const res = await fetch('./data.json', { cache: 'no-store' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    LATEST = await res.json();
+    applyFilters();
+  } catch (e) {
+    document.getElementById('matches').innerHTML =
+      `<div class="empty">載入失敗：${e.message}</div>`;
+    document.getElementById('summary').textContent = '載入失敗';
+  }
+}
+
+function exportCSV() {
+  if (!LATEST) return;
+  const cols = ['fixture_id', 'league', 'home', 'away', 'kickoff_hkt', 'stage',
+    'predicted_at_utc', 'lead_market', 'lead_label', 'lead_odds', 'lead_prob', 'lead_ev',
+    'conviction', 'publish_decision', 'publish_reason'];
+  const rows = [cols.join(',')];
+  for (const fx of (LATEST.fixtures || [])) {
+    const stages = fx.stages || {};
+    for (const s of STAGE_ORDER) {
+      const rec = stages[s];
+      if (!rec) continue;
+      const line = [
+        fx.id, fx.league, fx.home, fx.away, fx.kickoff_hkt, s,
+        rec.predicted_at_utc, rec.lead_market, rec.lead_label,
+        rec.lead_odds, rec.lead_prob, rec.lead_ev,
+        rec.conviction, rec.publish_decision, rec.publish_reason,
+      ].map(v => {
+        if (v == null) return '';
+        const s = String(v);
+        if (s.includes(',') || s.includes('"') || s.includes('\n')) {
+          return '"' + s.replace(/"/g, '""') + '"';
+        }
+        return s;
+      }).join(',');
+      rows.push(line);
+    }
+  }
+  const blob = new Blob(['\uFEFF' + rows.join('\n')], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  const ts = new Date().toISOString().slice(0, 19).replace(/[T:]/g, '-');
+  a.href = url;
+  a.download = `stage-v2-history-${ts}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+document.getElementById('btn-refresh').addEventListener('click', load);
+document.getElementById('btn-csv').addEventListener('click', exportCSV);
+for (const id of ['filter-completeness', 'filter-publish', 'sort-by']) {
+  document.getElementById(id).addEventListener('change', applyFilters);
+}
+load();
+</script>
+</body>
+</html>
