@@ -1,0 +1,29 @@
+name: 全睇 unified-dashboard
+on: workflow_dispatch
+jobs:
+  s:
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          mkdir -p ~/.ssh && printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519 && chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+      - env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          echo "===== 全個 unified-dashboard 加行號 ====="
+          cat -n /etc/nginx/sites-available/unified-dashboard
+          echo ""
+          echo "===== nginx -T 中 stage-v2 出現 ====="
+          nginx -T 2>/dev/null | grep -c "stage-v2" || echo 0
+          echo ""
+          echo "===== ss :80/5001/8083 ====="
+          ss -ltnp 2>/dev/null | grep -E ":80\s|:5001\s|:8083\s"
+          echo ""
+          echo "===== curl -v /stage-v2/（trace nginx） ====="
+          curl -v http://127.0.0.1/stage-v2/ 2>&1 | head -30
+          REMOTE
