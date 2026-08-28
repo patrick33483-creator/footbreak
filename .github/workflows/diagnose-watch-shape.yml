@@ -1,0 +1,100 @@
+name: 診斷 sim_ledger watch shape (raw dump)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: 設定 SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: Raw watch dump
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh "$DEPLOY_USER@$DEPLOY_HOST" "sudo bash -s" <<'REMOTE'
+          set -uo pipefail
+          python3 - <<'PY'
+          import json, pathlib, datetime as dt
+          from collections import Counter
+          from dateutil.parser import parse
+          UTC = dt.timezone.utc
+          path = pathlib.Path("/opt/footbreak/system/sim_ledger.json")
+          data = json.loads(path.read_text("utf-8"))
+          watches = data.get("watch") or {}
+          print({"top_level_keys": sorted(list(data.keys())), "watch_count": len(watches)})
+          
+          # Dump top-level shape of first 3 watches
+          shown = 0
+          for wid, w in watches.items():
+              if not isinstance(w, dict): continue
+              shown += 1
+              if shown > 3: break
+              print("---")
+              print({"watch_id": str(wid), "top_keys": sorted(list(w.keys()))})
+              # show any kickoff-like fields at top level
+              for k in w:
+                  if "kickoff" in k.lower():
+                      print({k: w[k]})
+              # nested manifest structures
+              for mk in ("native_stage_manifest","manifest","stage_manifest","stages"):
+                  if mk in w:
+                      v = w[mk]
+                      if isinstance(v, dict):
+                          print({mk+"_keys": sorted(list(v.keys()))})
+                          if "identity" in v:
+                              print({mk+".identity": v["identity"]})
+                          if "jobs" in v:
+                              print({mk+".jobs": v["jobs"]})
+                      elif isinstance(v, list):
+                          print({mk+"_len": len(v), mk+"[0]_keys": sorted(list(v[0].keys())) if v and isinstance(v[0], dict) else None})
+          
+          # Aggregate: how many watches have any kickoff hint, and their distribution
+          now = dt.datetime.now(UTC)
+          kickoff_bucket = Counter()
+          manifest_key_counter = Counter()
+          any_ko = 0
+          for w in watches.values():
+              if not isinstance(w, dict): continue
+              # count which manifest key exists
+              for mk in ("native_stage_manifest","manifest"):
+                  if mk in w:
+                      manifest_key_counter[mk] += 1
+              # try to find kickoff anywhere
+              ko_raw = None
+              for k in ("native_stage_manifest","manifest"):
+                  m = w.get(k) or {}
+                  if isinstance(m, dict):
+                      ident = m.get("identity") or {}
+                      ko_raw = ident.get("kickoff_at_utc") or ident.get("kickoff")
+                      if ko_raw: break
+              if not ko_raw:
+                  ko_raw = w.get("kickoff_utc") or w.get("kickoff") or w.get("kickoff_hkt")
+              if not ko_raw: continue
+              try:
+                  ko = parse(str(ko_raw))
+                  if ko.tzinfo is None: ko = ko.replace(tzinfo=UTC)
+                  any_ko += 1
+                  mins = (ko - now).total_seconds() / 60.0
+                  if mins < -1440: b = "older_than_1d"
+                  elif mins < -60: b = "past_1d"
+                  elif mins < 0: b = "past_1h"
+                  elif mins < 60: b = "next_1h"
+                  elif mins < 1440: b = "next_1d"
+                  else: b = "future_1d+"
+                  kickoff_bucket[b] += 1
+              except Exception:
+                  pass
+          print({"watches_with_kickoff": any_ko, "kickoff_buckets": dict(kickoff_bucket), "manifest_keys_present": dict(manifest_key_counter)})
+          PY
+          REMOTE
