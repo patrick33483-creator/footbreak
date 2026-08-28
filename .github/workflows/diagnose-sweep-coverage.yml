@@ -1,0 +1,125 @@
+name: 診斷 sweep 覆蓋（HKJC 拎到幾場 vs ledger.watch 有幾多場）
+
+# 唯讀：檢查
+# 1. footbreak-sweep.timer / service 狀態
+# 2. sweep service 最近日誌
+# 3. HKJC 拎到當日全部場 vs ledger.watch 對比
+
+on:
+  workflow_dispatch:
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: 設定 SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: Sweep coverage
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh "$DEPLOY_USER@$DEPLOY_HOST" "sudo bash -s" <<'REMOTE'
+          set -uo pipefail
+          echo "=== sweep timer state ==="
+          systemctl is-enabled footbreak-sweep.timer || true
+          systemctl is-active footbreak-sweep.timer || true
+          systemctl show footbreak-sweep.timer -p ActiveState -p SubState -p Result -p LastTriggerUSec -p NextElapseUSecRealtime || true
+          echo
+          echo "=== sweep service state ==="
+          systemctl show footbreak-sweep.service -p ActiveState -p SubState -p Result -p ExecMainStartTimestamp -p ExecMainExitTimestamp -p ExecMainStatus || true
+          echo
+          echo "=== sweep service last 200 lines ==="
+          journalctl -u footbreak-sweep.service --since "6 hours ago" --no-pager | tail -200 || true
+          echo
+          echo "=== HKJC 拎到嘅場 vs ledger.watch 對比 ==="
+          python3 - <<'PY'
+          import json, pathlib, sys, datetime as dt
+          from dateutil.parser import parse
+          from collections import Counter
+          HKT = dt.timezone(dt.timedelta(hours=8))
+          UTC = dt.timezone.utc
+          now = dt.datetime.now(UTC)
+          
+          # ledger.watch
+          ledger_path = pathlib.Path("/opt/footbreak/system/sim_ledger.json")
+          ledger = json.loads(ledger_path.read_text("utf-8"))
+          watch = ledger.get("watch") or {}
+          watch_ids_by_bucket = {"past_1h": set(), "next_1h": set(), "next_12h": set(), "next_24h": set()}
+          watch_kickoffs = {}
+          for wid, w in watch.items():
+              if not isinstance(w, dict): continue
+              man = w.get("native_stage_manifest") or {}
+              ident = man.get("identity") if isinstance(man, dict) else {}
+              ko_raw = None
+              if isinstance(ident, dict):
+                  ko_raw = ident.get("kickoff_at_utc")
+              if not ko_raw:
+                  ko_raw = w.get("kickoff")  # fallback naive HKT
+              try:
+                  ko = parse(str(ko_raw))
+                  if ko.tzinfo is None: ko = ko.replace(tzinfo=HKT)
+                  ko_utc = ko.astimezone(UTC)
+              except Exception:
+                  continue
+              mins = (ko_utc - now).total_seconds() / 60.0
+              wid_s = str(wid)
+              watch_kickoffs[wid_s] = ko_utc
+              if -60 <= mins < 0: watch_ids_by_bucket["past_1h"].add(wid_s)
+              if 0 <= mins < 60: watch_ids_by_bucket["next_1h"].add(wid_s)
+              if 0 <= mins < 720: watch_ids_by_bucket["next_12h"].add(wid_s)
+              if 0 <= mins < 1440: watch_ids_by_bucket["next_24h"].add(wid_s)
+          print({"watch_total": len(watch), "watch_by_bucket": {k: len(v) for k,v in watch_ids_by_bucket.items()}})
+          
+          # HKJC live source
+          sys.path.insert(0, "/opt/footbreak")
+          try:
+              from system import hkjc_source as H
+          except Exception as e:
+              try:
+                  from system import hkjc_fetch as H
+              except Exception:
+                  print({"hkjc_import_error": str(e)}); raise SystemExit(0)
+          try:
+              matches = H.fetch_matches()
+              print({"hkjc_fetch_matches_count": len(matches)})
+          except Exception as e:
+              print({"hkjc_fetch_error": str(e)}); raise SystemExit(0)
+          
+          hkjc_by_bucket = {"past_1h": [], "next_1h": [], "next_12h": []}
+          hkjc_missing_from_watch = []
+          for m in matches:
+              mid = str(m.get("id") or m.get("match_id") or "")
+              ko_raw = m.get("kickoffTime") or m.get("kickoff") or m.get("matchTime")
+              try:
+                  ko = parse(str(ko_raw))
+                  if ko.tzinfo is None: ko = ko.replace(tzinfo=HKT)
+                  ko_utc = ko.astimezone(UTC)
+              except Exception:
+                  continue
+              mins = (ko_utc - now).total_seconds() / 60.0
+              row = {"id": mid, "home": m.get("homeTeam",{}).get("name_ch") if isinstance(m.get("homeTeam"), dict) else m.get("home"),
+                     "kickoff": ko.isoformat(), "mins_to_ko": round(mins,1),
+                     "in_watch": mid in watch_kickoffs}
+              if -60 <= mins < 0: hkjc_by_bucket["past_1h"].append(row)
+              if 0 <= mins < 60: hkjc_by_bucket["next_1h"].append(row)
+              if 0 <= mins < 720: hkjc_by_bucket["next_12h"].append(row)
+              if 0 <= mins < 720 and mid and mid not in watch_kickoffs:
+                  hkjc_missing_from_watch.append(row)
+          
+          for b, rows in hkjc_by_bucket.items():
+              print({"hkjc_"+b: len(rows), "in_watch": sum(1 for r in rows if r["in_watch"]), "missing": sum(1 for r in rows if not r["in_watch"])})
+          
+          print({"hkjc_missing_from_watch_in_next_12h": len(hkjc_missing_from_watch)})
+          for r in hkjc_missing_from_watch[:15]:
+              print({"missing_hkjc_match": r})
+          PY
+          REMOTE
