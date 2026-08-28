@@ -78,7 +78,7 @@ jobs:
       - name: Reconstruct condition 5 and find missed admissions
         run: |
           set -euo pipefail
-          python3 analysis/audit_crown_condition5_history.py \
+          PYTHONPATH="$GITHUB_WORKSPACE" python3 analysis/audit_crown_condition5_history.py \
             --ledger audit-input/ledger.json \
             --history audit-input/prediction_history.json \
             --output crown-condition5-history-audit.json
