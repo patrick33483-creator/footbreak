@@ -251,7 +251,10 @@ def apply_verified_results(
         row = target_rows.get(fixture)
         if not isinstance(row, dict):
             raise ValueError(f"postponed condition #5 observation missing: {fixture}")
-        if row.get("status") != "PENDING" or row.get("result") != "PENDING":
+        if (
+            row.get("status") != "PENDING"
+            or row.get("result") not in (None, "PENDING")
+        ):
             raise ValueError(f"postponed fixture is no longer pending: {fixture}")
         result["postponed_pending"].append({
             "match_id": fixture,
