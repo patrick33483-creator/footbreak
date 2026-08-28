@@ -1,0 +1,59 @@
+name: 檢查 v2 ledger 內容結構
+on:
+  workflow_dispatch:
+jobs:
+  c:
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          mkdir -p ~/.ssh && printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519 && chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+      - env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          echo "===== ledger 文件 size / mtime ====="
+          ls -la /var/lib/footbreak/stage_engine_v2/ledger.json
+          echo ""
+          echo "===== ledger structure (top-level keys) ====="
+          python3 -c "
+          import json
+          d = json.load(open('/var/lib/footbreak/stage_engine_v2/ledger.json'))
+          print('top-level keys:', list(d.keys())[:10])
+          if 'fixtures' in d:
+              fx = d['fixtures']
+              print('fixtures count:', len(fx))
+              first = next(iter(fx.values()))
+              print()
+              print('=== 一場 sample (fixture id):', next(iter(fx.keys())), '===')
+              print('fixture keys:', list(first.keys()))
+              if 'stages' in first:
+                  print('stages recorded:', list(first['stages'].keys()))
+                  for stage_name, rec in first['stages'].items():
+                      print(f'  === stage {stage_name} ===')
+                      print('    keys:', list(rec.keys()))
+                      # 打印關鍵 fields
+                      for k in ['predicted_at_utc','lead_market','lead_label','lead_odds','lead_prob','lead_ev','conviction','publish_decision','publish_reason']:
+                          if k in rec:
+                              print(f'    {k}: {rec[k]!r}')
+          "
+          echo ""
+          echo "===== 有幾多場已有 3 個 stage record ====="
+          python3 -c "
+          import json
+          d = json.load(open('/var/lib/footbreak/stage_engine_v2/ledger.json'))
+          fx = d.get('fixtures', {})
+          c1=c2=c3=0
+          for f in fx.values():
+              stages = f.get('stages', {}) if isinstance(f, dict) else {}
+              n = len(stages)
+              if n>=1: c1+=1
+              if n>=2: c2+=1
+              if n>=3: c3+=1
+          print(f'≥1 stage: {c1}  ≥2 stages: {c2}  ≥3 stages: {c3}')
+          "
+          REMOTE
