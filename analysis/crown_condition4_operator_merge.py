@@ -190,7 +190,10 @@ def _normalized_team(value: Any) -> str:
         if not unicodedata.combining(character)
     )
     return " ".join(
-        re.sub(r"[^a-z0-9]+", " ", without_marks.casefold()).split()
+        "".join(
+            character if character.isalnum() else " "
+            for character in without_marks.casefold()
+        ).split()
     )
 
 
