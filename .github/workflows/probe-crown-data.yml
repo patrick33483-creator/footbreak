@@ -1,0 +1,48 @@
+name: 睇 crown data.json 完整 fixture record
+on: workflow_dispatch
+jobs:
+  c:
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          mkdir -p ~/.ssh && printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519 && chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+      - env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          set -uo pipefail
+          /opt/footbreak/.venv/bin/python3 - <<'PY'
+          import json
+          d = json.load(open('/var/www/crown/data.json'))
+          print(f"type={type(d).__name__}")
+          if isinstance(d, dict):
+              print(f"top keys: {list(d.keys())}")
+              for k, v in d.items():
+                  if isinstance(v, list):
+                      print(f"  {k}: list len={len(v)}")
+                  elif isinstance(v, dict):
+                      print(f"  {k}: dict len={len(v)} sample_keys={list(v.keys())[:5]}")
+                  else:
+                      print(f"  {k}: {type(v).__name__} = {str(v)[:80]}")
+              # 揾第一個 fixture
+              for k in ('fixtures','matches','items','rows','predictions','watch','data'):
+                  v = d.get(k)
+                  if isinstance(v, list) and v:
+                      print(f"\n=== first item of '{k}' ===")
+                      print(json.dumps(v[0], ensure_ascii=False, indent=2)[:4500])
+                      break
+                  if isinstance(v, dict) and v:
+                      fk = next(iter(v))
+                      print(f"\n=== first item of '{k}' [{fk}] ===")
+                      print(json.dumps(v[fk], ensure_ascii=False, indent=2)[:4500])
+                      break
+          elif isinstance(d, list):
+              print(f"list len={len(d)}")
+              if d: print(json.dumps(d[0], ensure_ascii=False, indent=2)[:4500])
+          PY
+          REMOTE
