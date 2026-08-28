@@ -126,10 +126,54 @@ def _identity_rows(
     ]
 
 
+def _admission_map(
+    ledger: dict[str, Any],
+) -> dict[tuple[str, str], dict[str, Any]]:
+    output: dict[tuple[str, str], dict[str, Any]] = {}
+    watches = ledger.get("watch") or {}
+    if not isinstance(watches, dict):
+        return output
+    for watch_key, watch in watches.items():
+        if not isinstance(watch, dict):
+            continue
+        fixture = str(
+            watch.get("match_id") or watch.get("fixture_id") or watch_key or ""
+        ).strip()
+        if not fixture:
+            continue
+        for row in watch.get("stages") or []:
+            if not isinstance(row, dict):
+                continue
+            stage = str(row.get("stage") or "").strip()
+            if stage not in {"首預", "T-30"}:
+                continue
+            output[(fixture, stage)] = {
+                "status": str(row.get("formal_admission_status") or "UNMARKED"),
+                "reason": row.get("formal_admission_reason"),
+                "pending": row.get("formal_admission_pending") is True,
+                "snapshot_id": row.get("formal_admission_snapshot_id"),
+                "completed_at": row.get("formal_admission_completed_at"),
+            }
+    return output
+
+
+def _admission(
+    admissions: dict[tuple[str, str], dict[str, Any]], fixture: str, stage: str,
+) -> dict[str, Any]:
+    return admissions.get((fixture, stage), {
+        "status": "NOT_IN_LEDGER_WATCH",
+        "reason": None,
+        "pending": False,
+        "snapshot_id": None,
+        "completed_at": None,
+    })
+
+
 def _detail(
     item: dict[str, Any], raw: dict[tuple[str, str], dict[str, Any]],
     settled: dict[str, dict[str, Any]], enrolled: dict[str, list[dict[str, Any]]],
     audits: dict[str, list[dict[str, Any]]],
+    admissions: dict[tuple[str, str], dict[str, Any]],
 ) -> dict[str, Any]:
     panel, path = item["panel"], item["path"]
     fixture = str(panel["fixture"])
@@ -168,6 +212,10 @@ def _detail(
             row.get("observation_id") or row.get("bet_id")
             for row in enrolled.get(fixture, [])
         ],
+        "formal_admission": {
+            "first": _admission(admissions, fixture, "首預"),
+            "t30": _admission(admissions, fixture, "T-30"),
+        },
         "audit_reasons": [
             row.get("reason") for row in audits.get(fixture, [])
             if row.get("reason")
@@ -198,9 +246,11 @@ def audit(ledger: dict[str, Any], history: dict[str, Any]) -> dict[str, Any]:
     for row in namespace.get("audit") or []:
         if isinstance(row, dict):
             audits.setdefault(str(row.get("match_id") or ""), []).append(row)
+    admissions = _admission_map(ledger)
 
     details = [
-        _detail(item, raw, settled, enrolled, audits) for item in all_matches
+        _detail(item, raw, settled, enrolled, audits, admissions)
+        for item in all_matches
     ]
     boundary = _time(
         (frozen.get("active_evidence") or {}).get("activation_boundary_at")
@@ -216,6 +266,13 @@ def audit(ledger: dict[str, Any], history: dict[str, Any]) -> dict[str, Any]:
     settled_metrics = Counter(row["grade"] for row in details)
     missing_reasons = Counter(
         reason for row in missing for reason in row.get("audit_reasons") or []
+    )
+    missing_t30_statuses = Counter(
+        row["formal_admission"]["t30"]["status"] for row in missing
+    )
+    missing_t30_reasons = Counter(
+        row["formal_admission"]["t30"].get("reason") or "NO_REASON_RECORDED"
+        for row in missing
     )
     historical = frozen.get("historical_evidence") or {}
     active = frozen.get("active_evidence") or {}
@@ -248,6 +305,8 @@ def audit(ledger: dict[str, Any], history: dict[str, Any]) -> dict[str, Any]:
         "post_activation_matches": post_boundary,
         "missing_enrolments": missing,
         "missing_audit_reason_counts": dict(missing_reasons),
+        "missing_t30_admission_status_counts": dict(missing_t30_statuses),
+        "missing_t30_admission_reason_counts": dict(missing_t30_reasons),
         "all_exact_matches": details,
     }
 
