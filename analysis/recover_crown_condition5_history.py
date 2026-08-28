@@ -20,9 +20,9 @@ from analysis.recover_crown_condition2_history import (
     _grade, _hash, _selected, _watch, _with_quarter_line_profile,
 )
 from analysis.wilson_validation import (
-    _canonical_hash, _time, active_evidence_version, formal_registry_candidates,
-    match_formal_registry, matching_admissions, recompute_namespace,
-    record_match_observation, validate_formal_row,
+    _canonical_hash, _time, active_evidence_version, apply_active_evidence,
+    formal_registry_candidates, match_formal_registry, matching_admissions,
+    recompute_namespace, record_match_observation, validate_formal_row,
 )
 
 
@@ -206,8 +206,18 @@ def recover(
             result["rejected"] += 1
             result["reasons"][reason or "exact_condition_admission_missing"] += 1
             continue
+        adjusted, binding_reason = apply_active_evidence(
+            ledger, SYSTEM, exact[0], stage_at=match["stage_at"],
+            now=match["stage_at"], authority_context=authority,
+        )
+        if adjusted is None:
+            result["rejected"] += 1
+            result["reasons"][
+                binding_reason or "active_evidence_binding_failed"
+            ] += 1
+            continue
         row = record_match_observation(
-            ledger, SYSTEM, _watch(match), "HIL", selected, exact[0],
+            ledger, SYSTEM, _watch(match), "HIL", selected, adjusted,
             now=match["stage_at"], market_label="入球大細", selected_role="大",
             selected_line=float(match["terminal"]["selected_line"]),
             decision_stage="T-30", authority_context=authority,
