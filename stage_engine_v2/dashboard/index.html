@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stage Engine v2 · Shadow</title>
+<style>
+:root {
+  --bg: #171614;
+  --surface: #1C1B19;
+  --surface-alt: #201F1D;
+  --border: #393836;
+  --text: #CDCCCA;
+  --text-muted: #797876;
+  --text-faint: #5A5957;
+  --accent: #4F98A3;
+  --pub: #6DAA45;
+  --shadow: #BB653B;
+  --stage-first: #4F98A3;
+  --stage-t30: #FDAB43;
+  --stage-t5: #D163A7;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang HK", "Noto Sans CJK TC", sans-serif;
+  background: var(--bg); color: var(--text);
+  padding: 24px; line-height: 1.5;
+  font-size: 14px;
+}
+h1 { font-size: 22px; font-weight: 600; margin-bottom: 4px; }
+.subtitle { color: var(--text-muted); font-size: 13px; margin-bottom: 24px; }
+.subtitle .shadow-badge {
+  display: inline-block; padding: 2px 8px; border-radius: 4px;
+  background: var(--shadow); color: var(--bg); font-weight: 600;
+  font-size: 11px; margin-left: 8px; vertical-align: middle;
+}
+.kpi-row { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 12px; margin-bottom: 24px; }
+.kpi {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 8px; padding: 12px 16px;
+}
+.kpi-label { color: var(--text-muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; }
+.kpi-value { font-size: 26px; font-weight: 600; margin-top: 4px; font-variant-numeric: tabular-nums; }
+.kpi-sub { color: var(--text-faint); font-size: 11px; margin-top: 2px; }
+table {
+  width: 100%; border-collapse: collapse; background: var(--surface);
+  border: 1px solid var(--border); border-radius: 8px; overflow: hidden;
+  font-variant-numeric: tabular-nums;
+}
+th, td { padding: 8px 10px; text-align: left; border-bottom: 1px solid var(--border); font-size: 13px; }
+th { background: var(--surface-alt); color: var(--text-muted); font-weight: 500; font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px; }
+tr:last-child td { border-bottom: none; }
+.stage-tag {
+  display: inline-block; padding: 1px 6px; border-radius: 3px;
+  font-size: 11px; font-weight: 600; margin-right: 4px;
+}
+.stage-首預 { background: var(--stage-first); color: var(--bg); }
+.stage-T-30 { background: var(--stage-t30); color: var(--bg); }
+.stage-T-5  { background: var(--stage-t5); color: var(--bg); }
+.pub-yes { color: var(--pub); font-weight: 600; }
+.pub-no { color: var(--text-faint); }
+.time-cell { color: var(--text-muted); font-size: 12px; white-space: nowrap; }
+.pill {
+  display: inline-block; padding: 1px 6px; border-radius: 10px;
+  font-size: 11px; background: var(--surface-alt); border: 1px solid var(--border); color: var(--text-muted);
+}
+.error { padding: 16px; background: var(--surface); border: 1px solid var(--shadow); border-radius: 8px; color: var(--shadow); }
+.stage-list { white-space: nowrap; }
+.muted { color: var(--text-muted); }
+.footer { color: var(--text-faint); font-size: 11px; margin-top: 24px; text-align: center; }
+</style>
+</head>
+<body>
+<h1>Stage Engine v2<span class="subtitle shadow-badge">SHADOW</span></h1>
+<div class="subtitle" id="meta">載入中...</div>
+<div class="kpi-row" id="kpis"></div>
+<h3 style="margin-bottom: 8px; font-weight: 500;">未來 upcoming fixture</h3>
+<div id="content">載入中...</div>
+<div class="footer">Shadow 模式：v2 記錄所有 stage 但唔發 Telegram · <a href="./data.json" style="color: var(--accent);">raw data.json</a></div>
+
+<script>
+async function load() {
+  try {
+    const r = await fetch("./data.json?ts=" + Date.now());
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const d = await r.json();
+    render(d);
+  } catch (e) {
+    document.getElementById("content").innerHTML =
+      `<div class="error">載入失敗：${e.message}<br>係咪 tick 未跑過？check <code>/var/www/stage_engine_v2/data.json</code></div>`;
+  }
+}
+function render(d) {
+  document.getElementById("meta").innerHTML =
+    `Generated <span class="pill">${d.generated_at_hkt || "?"}</span> · schema <span class="pill">${d.schema_version}</span> · ${d.fixtures_count} fixtures`;
+
+  // KPI 統計
+  const fixtures = d.fixtures || [];
+  const stageCounts = { "首預": 0, "T-30": 0, "T-5": 0 };
+  const pubCounts = { "首預": 0, "T-30": 0, "T-5": 0 };
+  for (const fx of fixtures) {
+    for (const [stage, row] of Object.entries(fx.stages || {})) {
+      if (stage in stageCounts) {
+        stageCounts[stage]++;
+        if (row.publish_decision === true) pubCounts[stage]++;
+      }
+    }
+  }
+  const kpiHTML = [
+    kpi("Upcoming 場數", fixtures.length, ""),
+    kpi("首預 fired", stageCounts["首預"], `推播 ${pubCounts["首預"]}`),
+    kpi("T-30 fired", stageCounts["T-30"], `推播 ${pubCounts["T-30"]}`),
+    kpi("T-5 fired", stageCounts["T-5"], `推播 ${pubCounts["T-5"]}`),
+    kpi("三 stage 齊備", fixtures.filter(f => Object.keys(f.stages || {}).length === 3).length, ""),
+  ].join("");
+  document.getElementById("kpis").innerHTML = kpiHTML;
+
+  // Fixture 表
+  const sorted = fixtures.slice().sort((a, b) =>
+    (a.kickoff_utc || "").localeCompare(b.kickoff_utc || ""));
+  const rows = sorted.map(fx => {
+    const stages = fx.stages || {};
+    const stageBadges = ["首預", "T-30", "T-5"].map(s =>
+      stages[s] ? `<span class="stage-tag stage-${s}">${s}</span>` : `<span class="pill">${s}</span>`
+    ).join("");
+    // 最新有 fire 嘅 stage 揀嚟顯示 lead
+    let lead = "—", pub = "";
+    for (const s of ["T-5", "T-30", "首預"]) {
+      if (stages[s]) {
+        const r = stages[s];
+        const ev = r.lead_ev != null ? `EV ${(r.lead_ev * 100).toFixed(1)}%` : "";
+        const conv = r.conviction != null ? `conv ${r.conviction.toFixed(1)}` : "";
+        lead = `${r.lead_label || "?"} @ ${(r.lead_odds || 0).toFixed(2)} <span class="muted">· prob ${((r.lead_prob || 0) * 100).toFixed(0)}% ${ev} ${conv}</span>`;
+        pub = r.publish_decision === true
+          ? `<span class="pub-yes">✓ 推播</span>`
+          : `<span class="pub-no">${r.publish_reason || "—"}</span>`;
+        break;
+      }
+    }
+    const kickoffTime = (fx.kickoff_hkt || "").slice(11, 16);
+    const kickoffDate = (fx.kickoff_hkt || "").slice(5, 10);
+    return `
+      <tr>
+        <td class="time-cell">${kickoffDate} ${kickoffTime}</td>
+        <td>${escapeHTML(fx.league || "")}</td>
+        <td>${escapeHTML(fx.home || "")} <span class="muted">vs</span> ${escapeHTML(fx.away || "")}</td>
+        <td class="stage-list">${stageBadges}</td>
+        <td>${lead}</td>
+        <td>${pub}</td>
+      </tr>`;
+  }).join("");
+  document.getElementById("content").innerHTML = `
+    <table>
+      <thead>
+        <tr><th>Kickoff HKT</th><th>League</th><th>Match</th><th>Stages</th><th>Lead</th><th>推播</th></tr>
+      </thead>
+      <tbody>${rows || `<tr><td colspan="6" class="muted" style="text-align:center; padding: 24px;">（暫無 fixture）</td></tr>`}</tbody>
+    </table>`;
+}
+function kpi(label, value, sub) {
+  return `<div class="kpi"><div class="kpi-label">${label}</div><div class="kpi-value">${value}</div><div class="kpi-sub">${sub}</div></div>`;
+}
+function escapeHTML(s) { return String(s || "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+load();
+setInterval(load, 60_000);  // 每分鐘 refresh
+</script>
+</body>
+</html>

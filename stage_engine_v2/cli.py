@@ -19,6 +19,7 @@ from typing import Any
 
 from .fixtures import DEFAULT_CROWN_DATA_PATH, refresh_fixtures, HKT
 from .predictor import build_prediction
+from .publisher import decide_publish
 from .scheduler import due_stages
 from .telegram import DEFAULT_SENT_LOG, send_stage
 from .writer import DEFAULT_LEDGER_PATH, already_fired, load_ledger, record_stage, save_ledger
@@ -68,14 +69,25 @@ def _run_tick(
                 skipped_no_prediction.append(f"{fx.id}:{stage}")
                 continue
             pred_body["stage"] = stage
+            publish_ok, publish_reason = decide_publish(pred_body, stage)
+            pred_body["publish_decision"] = publish_ok
+            pred_body["publish_reason"] = publish_reason
             record_stage(ledger, fx, stage, pred_body)
-            notify_result = send_stage(
-                {**pred_body, "stage": stage},
-                sent_log_path=sent_log_path,
-            )
+            if publish_ok:
+                notify_result = send_stage(
+                    {**pred_body, "stage": stage},
+                    sent_log_path=sent_log_path,
+                )
+            else:
+                notify_result = {
+                    "sent": False, "shadow": False, "skipped": True,
+                    "reason": f"gate_rejected:{publish_reason}",
+                }
             fired.append({
                 "fixture_id": fx.id,
                 "stage": stage,
+                "publish": publish_ok,
+                "publish_reason": publish_reason,
                 "notify": notify_result,
             })
 
@@ -117,6 +129,9 @@ def _write_dashboard(
                 "lead_odds": row.get("lead_odds"),
                 "lead_prob": row.get("lead_prob"),
                 "lead_ev": row.get("lead_ev"),
+                "conviction": row.get("conviction"),
+                "publish_decision": row.get("publish_decision"),
+                "publish_reason": row.get("publish_reason"),
             }
             for name, row in stages.items()
             if isinstance(row, dict)
