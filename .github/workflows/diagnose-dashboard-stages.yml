@@ -1,0 +1,128 @@
+name: 診斷儀表板已開賽場嘅 stages array
+
+# 唯讀 diagnostic：登入 server dump /var/www/footbreak/data.json 同
+# /var/www/crown/data.json 入面，開賽時間喺過去 30 分鐘至將來 20 分鐘之間
+# 嘅場，佢哋每場實際 committed 咗邊啲 stage（首預／T-30／T-5）。
+# 唔會寫入任何檔案，唔會 restart 任何 service。
+
+on:
+  workflow_dispatch:
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: 設定 SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: Dump 已開賽及即將開賽場嘅 stages array
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh "$DEPLOY_USER@$DEPLOY_HOST" "sudo bash -s" <<'REMOTE'
+          set -uo pipefail
+          echo "=== 現時 server 時間 ==="
+          date
+          echo
+          echo "=== /var/www/footbreak/data.json 已開賽/T-5 window 場 ==="
+          python3 - <<'PY'
+          import json, pathlib, datetime as dt
+          from dateutil.parser import parse
+          HKT = dt.timezone(dt.timedelta(hours=8))
+          now = dt.datetime.now(HKT)
+          try:
+              data = json.loads(pathlib.Path("/var/www/footbreak/data.json").read_text("utf-8"))
+          except Exception as e:
+              print({"error": f"read data.json: {e}"}); raise SystemExit(0)
+          matches = data.get("matches") or data.get("fixtures") or []
+          rows = []
+          for m in matches:
+              ko_raw = m.get("kickoff_hkt") or m.get("kickoff_utc") or m.get("kickoff")
+              try:
+                  ko = parse(ko_raw)
+              except Exception:
+                  continue
+              mins = (ko - now).total_seconds() / 60.0
+              # 開賽前 20 分鐘至開賽後 30 分鐘
+              if not (-30 <= mins <= 20):
+                  continue
+              stages = []
+              for s in (m.get("stages") or []):
+                  stages.append({
+                      "stage": s.get("stage"),
+                      "committed_at": s.get("committed_at") or s.get("captured_at"),
+                      "has_pick": bool(s.get("pick") or s.get("selection")),
+                      "no_bet_reason": s.get("no_bet_reason"),
+                  })
+              rows.append({
+                  "match_id": m.get("match_id") or m.get("id"),
+                  "home": m.get("home"), "away": m.get("away"),
+                  "kickoff": ko_raw,
+                  "minutes_to_kickoff": round(mins, 1),
+                  "status": m.get("status") or m.get("state"),
+                  "current_stage": m.get("stage") or m.get("current_stage"),
+                  "stage_count": len(stages),
+                  "stages": stages,
+              })
+          rows.sort(key=lambda r: r["kickoff"])
+          for r in rows:
+              print(json.dumps(r, ensure_ascii=False))
+          print({"total_rows_in_window": len(rows)})
+          PY
+
+          echo
+          echo "=== /var/www/crown/data.json 已開賽/T-5 window 場 ==="
+          python3 - <<'PY'
+          import json, pathlib, datetime as dt
+          from dateutil.parser import parse
+          HKT = dt.timezone(dt.timedelta(hours=8))
+          now = dt.datetime.now(HKT)
+          try:
+              data = json.loads(pathlib.Path("/var/www/crown/data.json").read_text("utf-8"))
+          except Exception as e:
+              print({"error": f"read crown data.json: {e}"}); raise SystemExit(0)
+          matches = data.get("matches") or data.get("fixtures") or []
+          rows = []
+          for m in matches:
+              ko_raw = m.get("kickoff_hkt") or m.get("kickoff_utc") or m.get("kickoff")
+              try:
+                  ko = parse(ko_raw)
+              except Exception:
+                  continue
+              mins = (ko - now).total_seconds() / 60.0
+              if not (-30 <= mins <= 20):
+                  continue
+              stages = []
+              for s in (m.get("stages") or []):
+                  stages.append({
+                      "stage": s.get("stage"),
+                      "committed_at": s.get("committed_at") or s.get("captured_at"),
+                      "has_pick": bool(s.get("pick") or s.get("selection")),
+                  })
+              rows.append({
+                  "match_id": m.get("match_id") or m.get("id"),
+                  "home": m.get("home"), "away": m.get("away"),
+                  "kickoff": ko_raw,
+                  "minutes_to_kickoff": round(mins, 1),
+                  "current_stage": m.get("stage") or m.get("current_stage"),
+                  "stage_count": len(stages),
+                  "stages": stages,
+              })
+          rows.sort(key=lambda r: r["kickoff"])
+          for r in rows:
+              print(json.dumps(r, ensure_ascii=False))
+          print({"total_rows_in_window": len(rows)})
+          PY
+
+          echo
+          echo "=== 最近 tick service 日誌（最近 15 分鐘） ==="
+          journalctl -u footbreak-tick.service --since "15 min ago" --no-pager | tail -80 || true
+          REMOTE
