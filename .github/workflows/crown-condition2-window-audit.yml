@@ -1,0 +1,197 @@
+name: Crown condition 2 kickoff window audit
+
+on:
+  workflow_dispatch:
+    inputs:
+      start_hkt:
+        description: Inclusive HKT start, ISO 8601
+        required: true
+        type: string
+      end_hkt:
+        description: Inclusive HKT end, ISO 8601
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: Read exact condition 2 admissions in kickoff window
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          START_HKT: ${{ inputs.start_hkt }}
+          END_HKT: ${{ inputs.end_hkt }}
+        run: |
+          set -euo pipefail
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "sudo env START_HKT='$START_HKT' END_HKT='$END_HKT' python3 -" \
+            <<'PY' | tee crown-condition2-window-audit.json
+          import json
+          import os
+          from datetime import datetime
+          from pathlib import Path
+          from zoneinfo import ZoneInfo
+
+          HKT = ZoneInfo("Asia/Hong_Kong")
+          SIGNATURE = "8c240fb81cb9dda4fb50ecf7"
+
+          def stamp(value):
+              if not value:
+                  return None
+              try:
+                  parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+              except ValueError:
+                  return None
+              if parsed.tzinfo is None:
+                  parsed = parsed.replace(tzinfo=HKT)
+              return parsed.astimezone(HKT)
+
+          def number(value):
+              try:
+                  return float(value)
+              except (TypeError, ValueError):
+                  return None
+
+          def quote(watch, stage_name):
+              rows = [
+                  row for row in (watch.get("stages") or [])
+                  if isinstance(row, dict) and row.get("stage") == stage_name
+              ]
+              if len(rows) != 1:
+                  return None
+              stage = rows[0]
+              markets = stage.get("market_predictions") or []
+              choices = [
+                  row for row in markets
+                  if isinstance(row, dict)
+                  and str(row.get("code") or row.get("market") or "") == "HIL"
+              ]
+              if len(choices) != 1:
+                  return None
+              row = choices[0]
+              return {
+                  "side": row.get("side"),
+                  "line": number(row.get("line", row.get("condition"))),
+                  "odds": number(row.get("odds")),
+                  "observed_at": row.get("observed_at"),
+                  "stage_at": stage.get("ts", stage.get("source_snapshot_at")),
+              }
+
+          start = stamp(os.environ["START_HKT"])
+          end = stamp(os.environ["END_HKT"])
+          if start is None or end is None or end < start:
+              raise SystemExit("invalid inclusive HKT window")
+
+          state = Path("/var/lib/footbreak/crown")
+          ledger = json.loads((state / "ledger.json").read_text(encoding="utf-8"))
+          try:
+              notify = json.loads(
+                  (state / "notify_state.json").read_text(encoding="utf-8")
+              )
+          except (OSError, json.JSONDecodeError):
+              notify = {}
+          sent = {
+              str(value)
+              for value in notify.get("wilson_condition2_bet_alerts") or []
+          }
+          watches = ledger.get("watch") or {}
+          rows = []
+          for observation in (
+              (ledger.get("wilson_validation") or {}).get("observations") or []
+          ):
+              if not isinstance(observation, dict):
+                  continue
+              fixture = str(observation.get("match_id") or "").strip()
+              kickoff = stamp(
+                  observation.get("kickoff_hkt", observation.get("kickoff"))
+              )
+              line = number(
+                  observation.get("selected_line", observation.get("line"))
+              )
+              odds = number(observation.get("odds"))
+              if (
+                  not fixture
+                  or kickoff is None
+                  or not start <= kickoff <= end
+                  or str(observation.get("frozen_condition_signature") or "")
+                  != SIGNATURE
+                  or str(observation.get("stage") or "") != "首預"
+                  or str(
+                      observation.get("code") or observation.get("market") or ""
+                  ) != "HIL"
+                  or str(
+                      observation.get("selected_side")
+                      or observation.get("side") or ""
+                  ) != "H"
+                  or str(observation.get("selected_role") or "") != "大"
+                  or line is None or not 2.75 <= line <= 3.0
+                  or odds is None or odds < 1.70
+              ):
+                  continue
+              watch = watches.get(fixture)
+              if not isinstance(watch, dict):
+                  watch = {}
+              rows.append({
+                  "match_id": fixture,
+                  "kickoff_hkt": kickoff.isoformat(),
+                  "league": (
+                      observation.get("league") or watch.get("league")
+                  ),
+                  "home": observation.get("home") or watch.get("home"),
+                  "away": observation.get("away") or watch.get("away"),
+                  "observation_status": observation.get("status"),
+                  "result": observation.get("result"),
+                  "first_look": {
+                      "side": "H", "line": line, "odds": odds,
+                      "observed_at": observation.get("observed_at"),
+                  },
+                  "T-30": quote(watch, "T-30"),
+                  "T-5": quote(watch, "T-5"),
+                  "telegram_alert_sent": (
+                      f"crown|{fixture}|wilson-condition-2|first-qualifying-v1"
+                      in sent
+                  ),
+              })
+          rows.sort(key=lambda row: (row["kickoff_hkt"], row["match_id"]))
+          print(json.dumps({
+              "mode": "read_only",
+              "condition": 2,
+              "condition_signature": SIGNATURE,
+              "window": {
+                  "start_hkt_inclusive": start.isoformat(),
+                  "end_hkt_inclusive": end.isoformat(),
+              },
+              "as_of_hkt": datetime.now(HKT).isoformat(),
+              "count": len(rows),
+              "matches": rows,
+          }, ensure_ascii=False, indent=2, sort_keys=True))
+          PY
+
+      - name: Remove SSH key
+        if: always()
+        run: shred -u ~/.ssh/id_ed25519 2>/dev/null || rm -f ~/.ssh/id_ed25519
+
+      - name: Upload audit
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: crown-condition2-window-audit-${{ github.run_id }}
+          path: crown-condition2-window-audit.json
+          retention-days: 30
+          if-no-files-found: error
