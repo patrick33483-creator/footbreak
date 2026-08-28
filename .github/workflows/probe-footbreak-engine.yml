@@ -1,0 +1,79 @@
+name: 探勘 footbreak 預測 engine（read-only）
+on: workflow_dispatch
+jobs:
+  p:
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          mkdir -p ~/.ssh && printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519 && chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+      - env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          set -uo pipefail
+
+          echo "===== 1. /opt/footbreak/ top-level ====="
+          ls -la /opt/footbreak/ 2>&1 | head -40
+
+          echo ""
+          echo "===== 2. Python packages ====="
+          ls -la /opt/footbreak/*/ 2>&1 | grep -E "^d|__init__" | head -30
+
+          echo ""
+          echo "===== 3. 搵 Dixon-Coles 相關 module ====="
+          grep -rli "dixon" /opt/footbreak/ --include="*.py" 2>/dev/null | grep -v ".venv" | head
+
+          echo ""
+          echo "===== 4. 搵 negative binomial / 負二項 module ====="
+          grep -rli "negative.binomial\|negbinom\|neg_binom\|NegativeBinomial" /opt/footbreak/ --include="*.py" 2>/dev/null | grep -v ".venv" | head
+
+          echo ""
+          echo "===== 5. 搵 predict / prediction 主入口 ====="
+          grep -rli "def predict\|class Predict\|def compute_prediction" /opt/footbreak/ --include="*.py" 2>/dev/null | grep -v ".venv" | head -10
+
+          echo ""
+          echo "===== 6. 三階段 T-5/T-30/首預 module ====="
+          grep -rlE "T[_-]?5|T[_-]?30|prelim|first_pred|initial_prediction" /opt/footbreak/ --include="*.py" 2>/dev/null | grep -v ".venv" | head -10
+
+          echo ""
+          echo "===== 7. tick / scheduler 主 entry ====="
+          find /opt/footbreak -name "tick*.py" -not -path "*/.venv/*" 2>/dev/null | head
+          find /opt/footbreak -name "*schedule*.py" -not -path "*/.venv/*" 2>/dev/null | head
+
+          echo ""
+          echo "===== 8. 條件身份 registry / Wilson ====="
+          grep -rli "wilson\|condition_registry\|condition_id" /opt/footbreak/ --include="*.py" 2>/dev/null | grep -v ".venv" | head
+
+          echo ""
+          echo "===== 9. HKJC / Pinnacle 賠率 adapter ====="
+          grep -rli "class.*Pinnacle\|hkjc_client\|pinnacle_client" /opt/footbreak/ --include="*.py" 2>/dev/null | grep -v ".venv" | head
+
+          echo ""
+          echo "===== 10. footbreak 用邊個 systemd tick service ====="
+          systemctl cat footbreak-tick.service 2>&1 | grep -E "ExecStart|WorkingDir" | head
+          echo ""
+          echo "-- 呢個 tick 用嘅 python module: --"
+          systemctl cat footbreak-tick.service 2>&1 | grep "ExecStart" | grep -oE "\-m [a-zA-Z_.]+|/opt/footbreak/[^ ]+"
+
+          echo ""
+          echo "===== 11. system module (self-heal 用嘅) ====="
+          ls -la /opt/footbreak/system/ 2>&1 | head -20
+          
+          echo ""
+          echo "===== 12. footbreak 嘅 python entry-points 列表 ====="
+          ls /opt/footbreak/*.py 2>&1 | head
+          find /opt/footbreak -maxdepth 2 -name "__init__.py" -not -path "*/.venv/*" 2>&1 | head -20
+
+          echo ""
+          echo "===== 13. Dixon-Coles module 內容 preview（頭 50 行） ====="
+          DC=$(grep -rli "dixon" /opt/footbreak/ --include="*.py" 2>/dev/null | grep -v ".venv" | head -1)
+          if [ -n "$DC" ]; then
+            echo "檔案: $DC"
+            head -80 "$DC"
+          fi
+          REMOTE
