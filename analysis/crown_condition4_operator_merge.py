@@ -21,6 +21,7 @@ from types import ModuleType
 from typing import Any
 
 from analysis import crown_condition4_recovery as recovery
+from analysis.wilson_validation import _prospective, _rollover_condition
 from analysis.wilson_registry_manifest import build_manifest
 from crown.config import Settings, settings
 from crown.state import paths, state_lock
@@ -39,6 +40,27 @@ EXPECTED_FINAL = {
     "hits": 73,
     "pending": 1,
 }
+LEGACY_REJECTION_FINGERPRINT = {
+    "rejection_reasons": {
+        "invalid_migration_v2": 1,
+        "pending_progress_mismatch": 8,
+        "unverifiable_same_signature_activity": 8,
+    },
+    "conditions": {
+        1: ("pending_progress_mismatch", "unverifiable_same_signature_activity"),
+        2: (
+            "invalid_migration_v2",
+            "pending_progress_mismatch",
+            "unverifiable_same_signature_activity",
+        ),
+        8: ("pending_progress_mismatch", "unverifiable_same_signature_activity"),
+        12: ("pending_progress_mismatch", "unverifiable_same_signature_activity"),
+        13: ("pending_progress_mismatch", "unverifiable_same_signature_activity"),
+        14: ("pending_progress_mismatch", "unverifiable_same_signature_activity"),
+        16: ("pending_progress_mismatch", "unverifiable_same_signature_activity"),
+        20: ("pending_progress_mismatch", "unverifiable_same_signature_activity"),
+    },
+}
 
 
 class OperatorMergeBlocked(recovery.RecoveryBlocked):
@@ -47,6 +69,121 @@ class OperatorMergeBlocked(recovery.RecoveryBlocked):
 
 class PostWriteVerificationFailure(OperatorMergeBlocked):
     """The new inode failed verification and the original had to be restored."""
+
+
+def _manifest_fingerprint(manifest: dict[str, Any]) -> dict[str, Any]:
+    reasons = manifest.get("rejection_reasons")
+    conditions = manifest.get("conditions")
+    if not isinstance(reasons, dict) or not isinstance(conditions, list):
+        return {"invalid_shape": True}
+    if any(
+        not isinstance(key, str)
+        or not isinstance(value, int)
+        or isinstance(value, bool)
+        for key, value in reasons.items()
+    ):
+        return {"invalid_shape": True}
+    rejected: dict[int, tuple[str, ...]] = {}
+    for row in conditions:
+        if not isinstance(row, dict):
+            return {"invalid_shape": True}
+        row_reasons = row.get("rejection_reasons")
+        if not isinstance(row_reasons, list) or any(
+            not isinstance(reason, str) for reason in row_reasons
+        ):
+            return {"invalid_shape": True}
+        if not row_reasons:
+            continue
+        number = row.get("condition_number")
+        if (
+            not isinstance(number, int)
+            or isinstance(number, bool)
+            or number in rejected
+        ):
+            return {"invalid_shape": True}
+        rejected[number] = tuple(sorted(row_reasons))
+    return {
+        "rejection_reasons": dict(sorted(reasons.items())),
+        "conditions": rejected,
+    }
+
+
+def _condition_four_manifest_row(manifest: dict[str, Any]) -> dict[str, Any] | None:
+    rows = [
+        row
+        for row in manifest.get("conditions", [])
+        if isinstance(row, dict) and row.get("condition_number") == 4
+    ]
+    return rows[0] if len(rows) == 1 else None
+
+
+def _accept_input_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
+    condition = _condition_four_manifest_row(manifest)
+    if (
+        not isinstance(condition, dict)
+        or condition.get("valid") is not True
+        or condition.get("rejection_reasons") != []
+    ):
+        raise OperatorMergeBlocked("condition_4_input_manifest_invalid")
+    fingerprint = _manifest_fingerprint(manifest)
+    if manifest.get("valid") is True:
+        return fingerprint
+    if fingerprint != LEGACY_REJECTION_FINGERPRINT:
+        raise OperatorMergeBlocked(
+            "input_ledger_strict_manifest_invalid:"
+            + _sanitized_manifest_reasons(manifest)
+        )
+    return fingerprint
+
+
+def _sanitized_manifest_reasons(manifest: dict[str, Any]) -> str:
+    fingerprint = _manifest_fingerprint(manifest)
+    reasons = fingerprint.get("rejection_reasons")
+    conditions = fingerprint.get("conditions")
+    sanitized = ",".join(
+        f"{key}:{value}" for key, value in (reasons or {}).items()
+        if isinstance(key, str) and key.replace("_", "").isalnum()
+    )
+    condition_reasons = ";".join(
+        f"{number}=" + ",".join(reason for reason in row_reasons)
+        for number, row_reasons in (conditions or {}).items()
+        if isinstance(number, int)
+        and all(reason.replace("_", "").isalnum() for reason in row_reasons)
+    )
+    return (
+        f"{sanitized or 'unknown:1'}:"
+        f"conditions:{condition_reasons or 'unknown'}"
+    )
+
+
+def _recompute_condition_four_only(
+    ledger: dict[str, Any], signature: str, frozen: dict[str, Any],
+) -> None:
+    namespace = ledger["wilson_validation"]
+    rows = [
+        row
+        for collection in (ledger.get("bets") or [], namespace.get("observations") or [])
+        for row in collection
+        if isinstance(row, dict)
+        and row.get("frozen_condition_signature") == signature
+    ]
+    if not _rollover_condition(
+        frozen,
+        rows,
+        "crown",
+        signature,
+        now=APPROVED_AT,
+        migration_boundary=namespace["activation_at"],
+        ledger=ledger,
+    ):
+        raise OperatorMergeBlocked("condition_4_rollover_recompute_failed")
+    observations = [
+        row for row in namespace.get("observations") or []
+        if isinstance(row, dict)
+        and row.get("frozen_condition_signature") == signature
+    ]
+    frozen["prospective"] = _prospective(rows)
+    frozen["prospective_observations"] = _prospective(observations)
 
 
 def _strict_object(raw: bytes, label: str) -> dict[str, Any]:
@@ -241,8 +378,21 @@ def verify_final_ledger(
     binding: str,
 ) -> None:
     manifest = build_manifest(ledger, "crown")
-    if not manifest.get("valid"):
-        raise OperatorMergeBlocked("final_ledger_strict_manifest_invalid")
+    condition = _condition_four_manifest_row(manifest)
+    if (
+        not isinstance(condition, dict)
+        or condition.get("valid") is not True
+        or condition.get("rejection_reasons") != []
+    ):
+        raise OperatorMergeBlocked("final_condition_4_manifest_invalid")
+    if (
+        manifest.get("valid") is not True
+        and _manifest_fingerprint(manifest) != LEGACY_REJECTION_FINGERPRINT
+    ):
+        raise OperatorMergeBlocked(
+            "final_ledger_manifest_rejections_changed:"
+            + _sanitized_manifest_reasons(manifest)
+        )
     frozen = ledger["wilson_validation"]["conditions"].get(signature)
     if not isinstance(frozen, dict):
         raise OperatorMergeBlocked("final_condition_missing")
@@ -295,35 +445,27 @@ def plan_operator_merge(
 ) -> tuple[dict[str, Any], dict[str, Any], str, str]:
     before = recovery.canonical_hash(ledger), recovery.canonical_hash(replay)
     input_manifest = build_manifest(ledger, "crown")
-    if not input_manifest.get("valid"):
-        reasons = input_manifest.get("rejection_reasons")
-        if not isinstance(reasons, dict):
-            reasons = {"manifest_reason_shape_invalid": 1}
-        sanitized = ",".join(
-            f"{key}:{value}"
-            for key, value in sorted(reasons.items())
-            if isinstance(key, str)
-            and key.replace("_", "").isalnum()
-            and isinstance(value, int)
-            and not isinstance(value, bool)
-        )
-        condition_reasons = ";".join(
-            f"{row.get('condition_number')}="
-            + ",".join(
-                reason
-                for reason in row.get("rejection_reasons", [])
-                if isinstance(reason, str)
-                and reason.replace("_", "").isalnum()
-            )
-            for row in input_manifest.get("conditions", [])
-            if isinstance(row, dict) and row.get("rejection_reasons")
-        )
-        raise OperatorMergeBlocked(
-            f"input_ledger_strict_manifest_invalid:{sanitized or 'unknown:1'}"
-            f":conditions:{condition_reasons or 'unknown'}"
-        )
+    input_fingerprint = _accept_input_manifest(input_manifest)
     proposed = copy.deepcopy(ledger)
     signature, frozen, namespace = recovery._condition(proposed)
+    unrelated_conditions = {
+        key: copy.deepcopy(value)
+        for key, value in namespace["conditions"].items()
+        if key != signature
+    }
+    unrelated_namespace = {
+        key: copy.deepcopy(value)
+        for key, value in namespace.items()
+        if key not in {"conditions", "observations", "audit"}
+    }
+    unrelated_top_level = {
+        key: copy.deepcopy(value)
+        for key, value in proposed.items()
+        if key != "wilson_validation"
+    }
+    existing_bets = copy.deepcopy(proposed.get("bets") or [])
+    existing_observations = copy.deepcopy(namespace.get("observations") or [])
+    existing_audit = copy.deepcopy(namespace.get("audit") or [])
     rows = recovery._validate_replay(replay, signature, frozen)
     if replay.get("summary") != {
         "matching_fixture_count": 40,
@@ -358,8 +500,34 @@ def plan_operator_merge(
     binding = _approval_binding(signature, rows)
     for candidate in rows:
         _draft_operator_row(proposed, candidate, signature, frozen, binding)
-    recovery.recompute_namespace(proposed, "crown", now=APPROVED_AT)
+    _recompute_condition_four_only(proposed, signature, frozen)
+    if (
+        proposed.get("bets") != existing_bets
+        or namespace.get("observations", [])[:len(existing_observations)]
+        != existing_observations
+        or len(namespace.get("observations", [])) != len(existing_observations) + 40
+        or namespace.get("audit", [])[:len(existing_audit)] != existing_audit
+        or {
+            key: value
+            for key, value in namespace["conditions"].items()
+            if key != signature
+        } != unrelated_conditions
+        or {
+            key: value
+            for key, value in namespace.items()
+            if key not in {"conditions", "observations", "audit"}
+        } != unrelated_namespace
+        or {
+            key: value
+            for key, value in proposed.items()
+            if key != "wilson_validation"
+        } != unrelated_top_level
+    ):
+        raise RuntimeError("operator_preexisting_state_changed")
     verify_final_ledger(proposed, signature=signature, binding=binding)
+    final_fingerprint = _manifest_fingerprint(build_manifest(proposed, "crown"))
+    if final_fingerprint != input_fingerprint:
+        raise OperatorMergeBlocked("manifest_rejection_fingerprint_changed")
     if (recovery.canonical_hash(ledger), recovery.canonical_hash(replay)) != before:
         raise RuntimeError("operator_plan_mutated_input")
     report = {
@@ -383,7 +551,9 @@ def plan_operator_merge(
         },
         "safety": {
             "canonical_state_lock": True,
-            "strict_manifest_before_after": True,
+            "condition_4_manifest_valid_before_after": True,
+            "legacy_rejection_fingerprint_preserved": True,
+            "unrelated_conditions_unchanged": True,
             "candidate_duplicates": 0,
             "external_authority_fabricated": False,
         },
@@ -558,10 +728,7 @@ def apply_operator_merge(config: Settings, replay_program: Path) -> dict[str, An
                         or stat.S_IMODE(restored_info.st_mode) != ledger_mode
                     ):
                         raise OperatorMergeBlocked("rollback_bytes_mismatch")
-                    if not build_manifest(restored, "crown").get("valid"):
-                        raise OperatorMergeBlocked(
-                            "rollback_ledger_manifest_invalid"
-                        )
+                    _accept_input_manifest(build_manifest(restored, "crown"))
                 except BaseException as rollback_exc:
                     raise PostWriteVerificationFailure(
                         f"post_write_failure:{type(exc).__name__};"
