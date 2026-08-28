@@ -112,6 +112,7 @@ jobs:
           }
           watches = ledger.get("watch") or {}
           rows = []
+          seen = set()
           for observation in (
               (ledger.get("wilson_validation") or {}).get("observations") or []
           ):
@@ -167,6 +168,41 @@ jobs:
                       f"crown|{fixture}|wilson-condition-2|first-qualifying-v1"
                       in sent
                   ),
+              })
+              seen.add(fixture)
+          for fixture, watch in watches.items():
+              fixture = str(fixture).strip()
+              if not fixture or fixture in seen or not isinstance(watch, dict):
+                  continue
+              kickoff = stamp(watch.get("kickoff_hkt", watch.get("kickoff")))
+              first = quote(watch, "首預")
+              if (
+                  kickoff is None
+                  or not start <= kickoff <= end
+                  or not isinstance(first, dict)
+                  or first.get("side") != "H"
+                  or first.get("line") is None
+                  or not 2.75 <= first["line"] <= 3.0
+                  or first.get("odds") is None
+                  or first["odds"] < 1.70
+              ):
+                  continue
+              rows.append({
+                  "match_id": fixture,
+                  "kickoff_hkt": kickoff.isoformat(),
+                  "league": watch.get("league"),
+                  "home": watch.get("home"),
+                  "away": watch.get("away"),
+                  "observation_status": None,
+                  "result": None,
+                  "first_look": first,
+                  "T-30": quote(watch, "T-30"),
+                  "T-5": quote(watch, "T-5"),
+                  "telegram_alert_sent": (
+                      f"crown|{fixture}|wilson-condition-2|first-qualifying-v1"
+                      in sent
+                  ),
+                  "formal_observation_missing": True,
               })
           rows.sort(key=lambda row: (row["kickoff_hkt"], row["match_id"]))
           print(json.dumps({
