@@ -251,7 +251,7 @@ def _apply_operator_verified_result_overlay(
         raise OperatorMergeBlocked("verified_result_overlay_input_projection_mismatch")
 
     matched_indexes: set[int] = set()
-    for spec in _VERIFIED_RESULT_SPECS:
+    for spec_index, spec in enumerate(_VERIFIED_RESULT_SPECS, start=1):
         home_aliases = {_normalized_team(alias) for alias in spec["home"]}
         away_aliases = {_normalized_team(alias) for alias in spec["away"]}
         matches = [
@@ -262,7 +262,8 @@ def _apply_operator_verified_result_overlay(
         ]
         if len(matches) != 1:
             raise OperatorMergeBlocked(
-                "verified_result_overlay_spec_match_not_unique"
+                "verified_result_overlay_spec_match_not_unique:"
+                f"spec_{spec_index}:matches_{len(matches)}"
             )
         index = matches[0]
         if index in matched_indexes:
