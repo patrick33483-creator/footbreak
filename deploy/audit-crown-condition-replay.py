@@ -147,16 +147,29 @@ def _latest_learning_results(path: Path) -> dict[str, dict[str, Any]]:
 
 
 def replay(
-    condition_number: int, since: datetime | None, learning_db: Path
+    condition_number: int,
+    since: datetime | None,
+    learning_db: Path,
+    *,
+    locked_persisted_snapshot: tuple[dict[str, Any], dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     config = settings()
-    ledger_path = paths(config)["ledger"]
-    history_path = config.state_dir / "prediction_history.json"
-    with state_lock(config) as acquired:
-        if not acquired:
-            raise RuntimeError("could not acquire Crown state lock")
-        ledger = _read_object(ledger_path)
-        history = _read_object(history_path)
+    if locked_persisted_snapshot is None:
+        ledger_path = paths(config)["ledger"]
+        history_path = config.state_dir / "prediction_history.json"
+        with state_lock(config) as acquired:
+            if not acquired:
+                raise RuntimeError("could not acquire Crown state lock")
+            ledger = _read_object(ledger_path)
+            history = _read_object(history_path)
+    else:
+        # One-time operator migrations can own the canonical state lock across
+        # replay, validation, backup and commit.  The caller supplies objects
+        # read while holding that lock; this function deliberately performs no
+        # second (self-deadlocking) flock and no production file discovery.
+        ledger, history = locked_persisted_snapshot
+        if not isinstance(ledger, dict) or not isinstance(history, dict):
+            raise ValueError("locked persisted snapshot must contain two objects")
 
     signature, condition = _condition(ledger, condition_number)
     definition = condition.get("definition")
