@@ -201,21 +201,6 @@ def _detail(
     t30_raw = raw.get((fixture, "T-30"), {})
     settled_item = settled.get(fixture)
     terminal = settled_item["path"][-1] if settled_item else {}
-    summary = {
-        "history_rows": len(rows),
-        "exact_unique_matches": len(details),
-        "exact_settled_matches": len(settled_matches),
-        "wins": settled_metrics["Won"],
-        "losses": settled_metrics["Lost"],
-        "pushes": settled_metrics["Refunded"],
-        "pending_results": settled_metrics["PENDING"],
-        "post_activation_exact_matches": len(post_boundary),
-        "post_activation_enrolled": sum(row["enrolled"] for row in post_boundary),
-        "post_activation_missing_enrolment": len(missing),
-        "ledger_condition_rows": len(identity_rows),
-    }
-    if condition_number == 5:
-        summary["ledger_condition5_rows"] = len(identity_rows)
     return {
         "fixture": fixture,
         "league": t30_raw.get("league") or first_raw.get("league"),
@@ -317,6 +302,21 @@ def audit(
     )
     historical = frozen.get("historical_evidence") or {}
     active = frozen.get("active_evidence") or {}
+    summary = {
+        "history_rows": len(rows),
+        "exact_unique_matches": len(details),
+        "exact_settled_matches": len(settled_matches),
+        "wins": settled_metrics["Won"],
+        "losses": settled_metrics["Lost"],
+        "pushes": settled_metrics["Refunded"],
+        "pending_results": settled_metrics["PENDING"],
+        "post_activation_exact_matches": len(post_boundary),
+        "post_activation_enrolled": sum(row["enrolled"] for row in post_boundary),
+        "post_activation_missing_enrolment": len(missing),
+        "ledger_condition_rows": len(identity_rows),
+    }
+    if condition_number == 5:
+        summary["ledger_condition5_rows"] = len(identity_rows)
     return {
         "report": f"crown_condition{condition_number}_history_audit",
         "read_only": True,
