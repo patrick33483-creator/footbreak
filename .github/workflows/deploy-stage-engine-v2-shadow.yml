@@ -1,0 +1,158 @@
+name: 部署 stage-engine-v2 shadow 模式
+
+# Shadow 部署：v2 記錄所有 stage 但唔發 Telegram
+# 舊 crown-tick 唔動、舊 dashboard 唔動
+# 只裝: /opt/footbreak/stage_engine_v2/  +  /var/www/stage_engine_v2/dashboard/
+#       + systemd timer stage-engine-v2-tick.timer（30s cadence）
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: '要部署嘅 branch（預設 stage-engine-v2）'
+        required: true
+        default: 'stage-engine-v2'
+      enable_timer:
+        description: '部署後啟動 timer（true）定只裝唔啟動（false）'
+        required: true
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+
+jobs:
+  shadow-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout 分支
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.branch }}
+          fetch-depth: 1
+
+      - name: 設定 SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: 打包 stage_engine_v2 tarball
+        run: |
+          tar czf /tmp/stage_engine_v2.tgz \
+            stage_engine_v2/ \
+            design/stage-engine-v2-thresholds.md
+          ls -lh /tmp/stage_engine_v2.tgz
+
+      - name: 上傳到 droplet
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          scp /tmp/stage_engine_v2.tgz "$DEPLOY_USER@$DEPLOY_HOST:/tmp/stage_engine_v2.tgz"
+
+      - name: 遠端部署（不 touch 舊 pipeline）
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          ENABLE_TIMER: ${{ inputs.enable_timer }}
+        run: |
+          ssh "$DEPLOY_USER@$DEPLOY_HOST" ENABLE_TIMER="$ENABLE_TIMER" 'sudo -E bash -s' <<'REMOTE'
+          set -euo pipefail
+          echo "===== BEGIN shadow deploy $(date -u +%FT%TZ) ====="
+
+          # 1. 備份現有 stage_engine_v2 目錄（如有）
+          if [ -d /opt/footbreak/stage_engine_v2 ]; then
+            BACKUP=/opt/footbreak/backup-stage-engine-v2-$(date +%Y%m%d-%H%M%S)
+            cp -a /opt/footbreak/stage_engine_v2 "$BACKUP"
+            echo "backed up old to $BACKUP"
+          fi
+
+          # 2. 解壓新版本
+          cd /opt/footbreak
+          tar xzf /tmp/stage_engine_v2.tgz
+          chown -R footbreak:footbreak /opt/footbreak/stage_engine_v2 2>/dev/null || true
+
+          # 3. 建立資料 / 日誌目錄
+          install -d -m 755 /var/lib/footbreak/stage_engine_v2
+          install -d -m 755 /var/log/footbreak
+          install -d -m 755 /var/www/stage_engine_v2
+          chown -R footbreak:footbreak /var/lib/footbreak/stage_engine_v2 2>/dev/null || true
+          chown -R www-data:www-data /var/www/stage_engine_v2 2>/dev/null || true
+
+          # 4. 派前端（dashboard/index.html → /var/www/stage_engine_v2/index.html）
+          install -m 644 /opt/footbreak/stage_engine_v2/dashboard/index.html \
+                         /var/www/stage_engine_v2/index.html
+
+          # 5. 派 systemd unit files
+          cat > /etc/systemd/system/stage-engine-v2-tick.service <<'UNIT'
+          [Unit]
+          Description=Stage engine v2 tick (shadow)
+          After=network.target
+
+          [Service]
+          Type=oneshot
+          User=footbreak
+          Group=footbreak
+          Environment=STAGE_V2_TELEGRAM_ENABLED=0
+          Environment=PYTHONPATH=/opt/footbreak
+          WorkingDirectory=/opt/footbreak
+          ExecStart=/opt/footbreak/.venv/bin/python3 -m stage_engine_v2 tick \
+            --crown-data /var/www/crown/data.json \
+            --ledger /var/lib/footbreak/stage_engine_v2/ledger.json \
+            --dashboard /var/www/stage_engine_v2/data.json \
+            --sent-log /var/log/footbreak/stage-v2-sent.jsonl \
+            --window-hours 48
+          StandardOutput=append:/var/log/footbreak/stage-v2-tick.log
+          StandardError=append:/var/log/footbreak/stage-v2-tick.log
+          UNIT
+
+          cat > /etc/systemd/system/stage-engine-v2-tick.timer <<'UNIT'
+          [Unit]
+          Description=Trigger stage-engine-v2 tick every 30s
+
+          [Timer]
+          OnBootSec=30s
+          OnUnitActiveSec=30s
+          AccuracySec=5s
+          Unit=stage-engine-v2-tick.service
+
+          [Install]
+          WantedBy=timers.target
+          UNIT
+
+          systemctl daemon-reload
+
+          # 6. 驗證 Python module 可以 import（試跑不寫任何嘢）
+          sudo -u footbreak /opt/footbreak/.venv/bin/python3 -c \
+            "import stage_engine_v2; from stage_engine_v2.cli import build_parser; build_parser().parse_args(['tick', '--help'])" \
+            > /tmp/import_check.log 2>&1 || {
+              echo "!!! import check FAILED"
+              cat /tmp/import_check.log
+              exit 1
+            }
+          echo "import check OK"
+
+          # 7. 按參數決定啟唔啟 timer
+          if [ "$ENABLE_TIMER" = "true" ]; then
+            systemctl enable --now stage-engine-v2-tick.timer
+            echo "timer ENABLED"
+            systemctl status stage-engine-v2-tick.timer --no-pager | head -12
+          else
+            echo "timer NOT enabled (enable_timer=$ENABLE_TIMER)"
+            echo "手動起 timer 用: sudo systemctl enable --now stage-engine-v2-tick.timer"
+          fi
+
+          # 8. 顯示部署摘要
+          echo "===== 部署摘要 ====="
+          ls -la /opt/footbreak/stage_engine_v2/ | head -20
+          echo "---"
+          ls -la /var/www/stage_engine_v2/ 2>/dev/null || echo "(dashboard dir 空)"
+          echo "---"
+          ls -la /var/lib/footbreak/stage_engine_v2/ 2>/dev/null || echo "(ledger dir 空)"
+          echo "===== END shadow deploy $(date -u +%FT%TZ) ====="
+          REMOTE
