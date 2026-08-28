@@ -1,0 +1,58 @@
+name: 診斷 stage-v2 tick 失敗
+
+on:
+  workflow_dispatch:
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 設定 SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: 抓 tick service 詳情
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          set -e
+          echo "===== systemctl status service ====="
+          systemctl status stage-engine-v2-tick.service --no-pager 2>&1 | head -30 || true
+
+          echo ""
+          echo "===== journalctl 最近 60 行 ====="
+          journalctl -u stage-engine-v2-tick.service --no-pager -n 60 2>&1 | tail -60 || true
+
+          echo ""
+          echo "===== 手動試跑 tick (root) ====="
+          cd /opt/footbreak
+          PYTHONPATH=/opt/footbreak /opt/footbreak/.venv/bin/python3 -m stage_engine_v2 tick \
+            --crown-data /var/www/crown/data.json \
+            --ledger /var/lib/footbreak/stage_engine_v2/ledger.json \
+            --dashboard /var/www/stage_engine_v2/data.json \
+            --sent-log /var/log/footbreak/stage-v2-sent.jsonl \
+            --window-hours 48 2>&1 | head -30 || echo "(exit non-zero)"
+
+          echo ""
+          echo "===== 手動試跑 tick (footbreak user via runuser) ====="
+          runuser -u footbreak -- env PYTHONPATH=/opt/footbreak /opt/footbreak/.venv/bin/python3 -m stage_engine_v2 tick \
+            --crown-data /var/www/crown/data.json \
+            --ledger /var/lib/footbreak/stage_engine_v2/ledger.json \
+            --dashboard /var/www/stage_engine_v2/data.json \
+            --sent-log /var/log/footbreak/stage-v2-sent.jsonl \
+            --window-hours 48 2>&1 | head -30 || echo "(exit non-zero)"
+
+          echo ""
+          echo "===== 目錄權限 ====="
+          ls -ld /var/lib/footbreak/stage_engine_v2 /var/www/stage_engine_v2 /var/log/footbreak 2>&1
+          echo ""
+          id footbreak 2>&1 || echo "(footbreak user 唔存在?)"
+          REMOTE
