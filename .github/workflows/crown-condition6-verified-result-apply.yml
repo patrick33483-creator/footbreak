@@ -82,7 +82,7 @@ jobs:
             stamp="$(date -u +%Y%m%dT%H%M%SZ)"
             install -m 0600 "$ledger" "$ledger.before-condition6-results-$stamp"
             "${args[@]}" --apply > "$output"
-            PYTHONPATH="$app" "$app/.venv/bin/python3" -m crown.run refresh >/dev/null
+            APP_DIR="$app" "$app/deploy/crown-run.sh" refresh >/dev/null
           else
             "${args[@]}" > "$output"
           fi
