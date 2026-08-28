@@ -155,6 +155,25 @@ def _candidates(
     boundary: Any,
 ) -> list[dict[str, Any]]:
     raw = _raw_stage_map(history_rows)
+    boundary_at = _time(boundary)
+    if boundary_at is None:
+        raise ValueError("condition #6 discovery boundary is unavailable")
+    baseline_rows = [
+        row for row in history_rows
+        if _kickoff(row) is not None
+        and _kickoff(row) <= boundary_at
+        and _time(row.get("verified_at")) is not None
+        and _time(row.get("verified_at")) <= boundary_at
+    ]
+    baseline_fixtures = {
+        str(item["panel"].get("fixture") or "").strip()
+        for item in _matches(baseline_rows, definition, settled_only=True)
+    }
+    if len(baseline_fixtures) != EXPECTED_BASELINE["decided"]:
+        raise ValueError(
+            "condition #6 reconstructed baseline fixture count changed: "
+            f"{len(baseline_fixtures)}"
+        )
     output: list[dict[str, Any]] = []
     for item in _matches(history_rows, definition, settled_only=False):
         fixture = str(item["panel"].get("fixture") or "")
@@ -162,10 +181,9 @@ def _candidates(
         stage_at = _stamp(source or {})
         if (
             not fixture
+            or fixture in baseline_fixtures
             or not isinstance(source, dict)
             or stage_at is None
-            or _time(boundary) is None
-            or stage_at <= _time(boundary)
         ):
             continue
         output.append({
@@ -311,7 +329,7 @@ def recover(
             "independent_baseline": copy.deepcopy(EXPECTED_BASELINE),
             "duplicate_holdout_removed": copy.deepcopy(EXPECTED_DUPLICATE),
         },
-        "matched_after_boundary": len(candidates),
+        "matched_outside_independent_baseline": len(candidates),
         "accepted": 0,
         "settled": 0,
         "pending_result": 0,
