@@ -1,0 +1,51 @@
+name: 抓取舊 sim_ledger.json 快照
+on:
+  workflow_dispatch:
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 設定 SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+      - name: 抓 watch/kickoff/stages 精簡索引
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' > /tmp/legacy_index.json <<'REMOTE'
+          set -e
+          /opt/footbreak/.venv/bin/python3 <<'PY'
+          import json
+          with open('/opt/footbreak/system/sim_ledger.json') as f:
+              L = json.load(f)
+          watch = L.get('watch') or {}
+          out = {}
+          for wid, entry in watch.items():
+              if not isinstance(entry, dict):
+                  continue
+              stages_list = entry.get('stages') or []
+              stage_names = sorted({s.get('stage') for s in stages_list if isinstance(s, dict) and s.get('stage')})
+              out[str(wid)] = {
+                  'kickoff': entry.get('kickoff') or entry.get('kickoff_hkt') or entry.get('kickoff_utc'),
+                  'match_id': entry.get('match_id') or entry.get('native_fixture_id') or entry.get('hkjc_match_id'),
+                  'league': entry.get('league'),
+                  'home': entry.get('home'),
+                  'away': entry.get('away'),
+                  'stages_fired': stage_names,
+              }
+          print(json.dumps(out, ensure_ascii=False))
+          PY
+          REMOTE
+      - name: 上傳
+        uses: actions/upload-artifact@v4
+        with:
+          name: legacy-index
+          path: /tmp/legacy_index.json
+          retention-days: 7
