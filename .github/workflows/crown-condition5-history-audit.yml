@@ -2,6 +2,15 @@ name: Crown condition 5 history audit
 
 on:
   workflow_dispatch:
+    inputs:
+      condition_number:
+        description: Crown condition number to audit
+        required: true
+        default: "5"
+        type: choice
+        options:
+          - "5"
+          - "10"
 
 concurrency:
   group: crown-condition5-history-audit
@@ -75,15 +84,18 @@ jobs:
           python3 -m json.tool audit-input/ledger.json >/dev/null
           python3 -m json.tool audit-input/prediction_history.json >/dev/null
 
-      - name: Reconstruct condition 5 and find missed admissions
+      - name: Reconstruct selected condition and find missed admissions
+        env:
+          CONDITION_NUMBER: ${{ inputs.condition_number }}
         run: |
           set -euo pipefail
           PYTHONPATH="$GITHUB_WORKSPACE" python3 analysis/audit_crown_condition5_history.py \
             --ledger audit-input/ledger.json \
             --history audit-input/prediction_history.json \
-            --output crown-condition5-history-audit.json
+            --condition-number "$CONDITION_NUMBER" \
+            --output crown-condition-history-audit.json
           jq '.summary, .condition.definition, .missing_enrolments' \
-            crown-condition5-history-audit.json
+            crown-condition-history-audit.json
 
       - name: Diagnose early-stage admission runtime
         env:
@@ -174,7 +186,7 @@ jobs:
         with:
           name: crown-condition5-history-audit-${{ github.run_id }}
           path: |
-            crown-condition5-history-audit.json
+            crown-condition-history-audit.json
             crown-condition5-runtime-diagnostic.json
           retention-days: 14
           if-no-files-found: error

@@ -13,7 +13,31 @@ from analysis.granular_conditions import _descriptor, _paths, _time, canonical_p
 
 
 SYSTEM = "crown"
-CONDITION_NUMBER = 5
+DEFAULT_CONDITION_NUMBER = 5
+EXPECTED_DEFINITIONS = {
+    5: {
+        "market": "HIL",
+        "path": "首預→T-30",
+        "stage": "T-30",
+        "odds_tier": "≥1.70",
+        "direction": "A→B",
+        "role": "大",
+        "line_bucket": "2.75–3.0",
+        "movement": "不變",
+        "odds_trajectory": "≥1.70→≥1.70",
+    },
+    10: {
+        "market": "HIL",
+        "path": "首預→T-30",
+        "stage": "T-30",
+        "odds_tier": "≥1.70",
+        "direction": "A→A",
+        "role": "大",
+        "line_bucket": "2.75–3.0",
+        "movement": "不變",
+        "odds_trajectory": "",
+    },
+}
 
 
 def _read(path: Path) -> dict[str, Any]:
@@ -58,7 +82,7 @@ def _raw_stage_map(
 
 
 def _condition(
-    ledger: dict[str, Any],
+    ledger: dict[str, Any], condition_number: int = DEFAULT_CONDITION_NUMBER,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     namespace = ledger.get("wilson_validation")
     if not isinstance(namespace, dict) or namespace.get("system") != SYSTEM:
@@ -69,27 +93,23 @@ def _condition(
     found = [
         row for row in conditions.values()
         if isinstance(row, dict)
-        and int(row.get("condition_number") or 0) == CONDITION_NUMBER
+        and int(row.get("condition_number") or 0) == condition_number
     ]
     if len(found) != 1:
-        raise ValueError(f"expected one Crown condition #5, found {len(found)}")
+        raise ValueError(
+            f"expected one Crown condition #{condition_number}, found {len(found)}"
+        )
     frozen = found[0]
     definition = frozen.get("definition")
     if not isinstance(definition, dict):
-        raise ValueError("condition #5 definition is unavailable")
-    expected = {
-        "market": "HIL",
-        "path": "首預→T-30",
-        "stage": "T-30",
-        "odds_tier": "≥1.70",
-        "direction": "A→B",
-        "role": "大",
-        "line_bucket": "2.75–3.0",
-        "movement": "不變",
-        "odds_trajectory": "≥1.70→≥1.70",
-    }
+        raise ValueError(f"condition #{condition_number} definition is unavailable")
+    expected = EXPECTED_DEFINITIONS.get(condition_number)
+    if expected is None:
+        raise ValueError(f"unsupported Crown condition #{condition_number}")
     if any(definition.get(key) != value for key, value in expected.items()):
-        raise ValueError(f"condition #5 immutable axes changed: {definition}")
+        raise ValueError(
+            f"condition #{condition_number} immutable axes changed: {definition}"
+        )
     return namespace, frozen
 
 
@@ -181,6 +201,21 @@ def _detail(
     t30_raw = raw.get((fixture, "T-30"), {})
     settled_item = settled.get(fixture)
     terminal = settled_item["path"][-1] if settled_item else {}
+    summary = {
+        "history_rows": len(rows),
+        "exact_unique_matches": len(details),
+        "exact_settled_matches": len(settled_matches),
+        "wins": settled_metrics["Won"],
+        "losses": settled_metrics["Lost"],
+        "pushes": settled_metrics["Refunded"],
+        "pending_results": settled_metrics["PENDING"],
+        "post_activation_exact_matches": len(post_boundary),
+        "post_activation_enrolled": sum(row["enrolled"] for row in post_boundary),
+        "post_activation_missing_enrolment": len(missing),
+        "ledger_condition_rows": len(identity_rows),
+    }
+    if condition_number == 5:
+        summary["ledger_condition5_rows"] = len(identity_rows)
     return {
         "fixture": fixture,
         "league": t30_raw.get("league") or first_raw.get("league"),
@@ -223,12 +258,16 @@ def _detail(
     }
 
 
-def audit(ledger: dict[str, Any], history: dict[str, Any]) -> dict[str, Any]:
-    namespace, frozen = _condition(ledger)
+def audit(
+    ledger: dict[str, Any],
+    history: dict[str, Any],
+    condition_number: int = DEFAULT_CONDITION_NUMBER,
+) -> dict[str, Any]:
+    namespace, frozen = _condition(ledger, condition_number)
     definition = frozen["definition"]
     target = tuple(definition.get("miner_key") or [])
     if not target:
-        raise ValueError("condition #5 miner key is unavailable")
+        raise ValueError(f"condition #{condition_number} miner key is unavailable")
     rows = _rows(history)
     raw = _raw_stage_map(rows)
     all_matches = _matched_panels(rows, target, settled_only=False)
@@ -256,7 +295,9 @@ def audit(ledger: dict[str, Any], history: dict[str, Any]) -> dict[str, Any]:
         (frozen.get("active_evidence") or {}).get("activation_boundary_at")
     )
     if boundary is None:
-        raise ValueError("condition #5 activation boundary is unavailable")
+        raise ValueError(
+            f"condition #{condition_number} activation boundary is unavailable"
+        )
     post_boundary = [
         row for row in details
         if _time(row.get("t30_stage_at")) is not None
@@ -277,7 +318,7 @@ def audit(ledger: dict[str, Any], history: dict[str, Any]) -> dict[str, Any]:
     historical = frozen.get("historical_evidence") or {}
     active = frozen.get("active_evidence") or {}
     return {
-        "report": "crown_condition5_history_audit",
+        "report": f"crown_condition{condition_number}_history_audit",
         "read_only": True,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "condition": {
@@ -289,19 +330,7 @@ def audit(ledger: dict[str, Any], history: dict[str, Any]) -> dict[str, Any]:
             "active_evidence": active,
             "pending_rollover_progress": frozen.get("pending_rollover_progress"),
         },
-        "summary": {
-            "history_rows": len(rows),
-            "exact_unique_matches": len(details),
-            "exact_settled_matches": len(settled_matches),
-            "wins": settled_metrics["Won"],
-            "losses": settled_metrics["Lost"],
-            "pushes": settled_metrics["Refunded"],
-            "pending_results": settled_metrics["PENDING"],
-            "post_activation_exact_matches": len(post_boundary),
-            "post_activation_enrolled": sum(row["enrolled"] for row in post_boundary),
-            "post_activation_missing_enrolment": len(missing),
-            "ledger_condition5_rows": len(identity_rows),
-        },
+        "summary": summary,
         "post_activation_matches": post_boundary,
         "missing_enrolments": missing,
         "missing_audit_reason_counts": dict(missing_reasons),
@@ -315,9 +344,19 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--ledger", type=Path, required=True)
     parser.add_argument("--history", type=Path, required=True)
+    parser.add_argument(
+        "--condition-number",
+        type=int,
+        choices=sorted(EXPECTED_DEFINITIONS),
+        default=DEFAULT_CONDITION_NUMBER,
+    )
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
-    result = audit(_read(args.ledger), _read(args.history))
+    result = audit(
+        _read(args.ledger),
+        _read(args.history),
+        condition_number=args.condition_number,
+    )
     encoded = json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
     if args.output:
         args.output.write_text(encoded, encoding="utf-8")
