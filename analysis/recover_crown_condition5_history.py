@@ -22,7 +22,7 @@ from analysis.recover_crown_condition2_history import (
 from analysis.wilson_validation import (
     _canonical_hash, _time, active_evidence_version, formal_registry_candidates,
     match_formal_registry, matching_admissions, recompute_namespace,
-    record_match_observation,
+    record_match_observation, validate_formal_row,
 )
 
 
@@ -253,6 +253,36 @@ def recover(
             "matched_without_result_input": True,
         })
 
+    validation_reasons: Counter[str] = Counter()
+    validation_samples: list[dict[str, Any]] = []
+    projection_time = _time(now)
+    if projection_time is None:
+        raise ValueError("recovery projection time is invalid")
+    for row in namespace.get("observations") or []:
+        if (
+            not isinstance(row, dict)
+            or str(row.get("frozen_condition_signature") or "") != SIGNATURE
+        ):
+            continue
+        admitted, validation_reason = validate_formal_row(
+            row, system=SYSTEM, signature=SIGNATURE, frozen=frozen,
+            projection_time=projection_time,
+            require_settled=row.get("status") == "SETTLED",
+            ledger=ledger, authority_context=authority,
+        )
+        key = "VALID" if admitted is not None else (
+            validation_reason or "UNKNOWN_INVALID"
+        )
+        validation_reasons[key] += 1
+        if admitted is None and len(validation_samples) < 10:
+            validation_samples.append({
+                "observation_id": row.get("observation_id"),
+                "status": row.get("status"),
+                "result": row.get("result"),
+                "reason": key,
+            })
+    result["formal_validation_counts"] = dict(validation_reasons)
+    result["formal_validation_invalid_samples"] = validation_samples
     recompute_namespace(ledger, SYSTEM, authority_context=authority)
     active = active_evidence_version(
         frozen, migration_boundary=namespace["activation_at"],
