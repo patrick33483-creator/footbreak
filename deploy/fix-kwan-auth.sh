@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 用 openssl crypt-md5 rewrite htpasswd（保證 nginx worker 認），restart nginx，確認 realm 
-set -euo pipefail
+set -uo pipefail
 
 USER=kin
 PASS=fb2026
