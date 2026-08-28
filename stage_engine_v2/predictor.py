@@ -98,6 +98,7 @@ def build_prediction(
     if lead is None:
         return None
     now = now_utc or datetime.now(timezone.utc)
+    # 追加 crown 頂層 conviction / pick / forecast（如果有）
     return {
         "captured_at_utc": now.isoformat(),
         "fixture_id": fx.id,
@@ -107,6 +108,10 @@ def build_prediction(
         "home": fx.home,
         "away": fx.away,
         "source": fx.source,
+        "conviction": _as_float(fx.raw.get("conviction")),
+        "pick": fx.raw.get("pick"),
+        "forecast": fx.raw.get("forecast"),
+        "crown_quote_status": fx.raw.get("crown_quote_status"),
         **lead,
     }
 
