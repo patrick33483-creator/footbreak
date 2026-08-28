@@ -1,0 +1,55 @@
+name: 診斷 Watch 結構
+on:
+  workflow_dispatch:
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 設定 SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+      - name: 拆解 watch 結構
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          python3 <<'PY'
+          import json, time
+          with open('/opt/footbreak/system/sim_ledger.json') as f:
+              led = json.load(f)
+          watches = led.get('watch') or {}
+          print(f"total watches: {len(watches)}")
+          print(f"top-level ledger keys: {list(led.keys())[:20]}")
+          items = list(watches.items())
+          print(f"\n===== first 3 raw watches =====")
+          for wid, w in items[:3]:
+              print(f"\n--- watch id: {wid}")
+              print(json.dumps(w, ensure_ascii=False, indent=2)[:2000])
+          print(f"\n===== all keys across watches (frequency) =====")
+          keys_freq = {}
+          for wid, w in items:
+              if isinstance(w, dict):
+                  for k in w.keys():
+                      keys_freq[k] = keys_freq.get(k, 0) + 1
+          for k, v in sorted(keys_freq.items(), key=lambda x: -x[1]):
+              print(f"  {k}: {v}")
+          # check for kickoff-like fields
+          print(f"\n===== samples with 'kickoff' in keys =====")
+          for wid, w in items[:20]:
+              if isinstance(w, dict):
+                  ko_keys = [k for k in w.keys() if 'kick' in k.lower() or 'time' in k.lower() or 'date' in k.lower() or 'start' in k.lower()]
+                  if ko_keys:
+                      print(f"  {wid[:40]}: {[(k, w[k]) for k in ko_keys]}")
+                      break
+          PY
+          echo ""
+          echo "===== crown/engine.py 中 kickoff_epoch 引用 ====="
+          grep -n "kickoff_epoch\|kickoff_time" /opt/footbreak/crown/engine.py | head -30
+          REMOTE
