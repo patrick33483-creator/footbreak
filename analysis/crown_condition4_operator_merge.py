@@ -294,8 +294,22 @@ def plan_operator_merge(
     ledger: dict[str, Any], replay: dict[str, Any]
 ) -> tuple[dict[str, Any], dict[str, Any], str, str]:
     before = recovery.canonical_hash(ledger), recovery.canonical_hash(replay)
-    if not build_manifest(ledger, "crown").get("valid"):
-        raise OperatorMergeBlocked("input_ledger_strict_manifest_invalid")
+    input_manifest = build_manifest(ledger, "crown")
+    if not input_manifest.get("valid"):
+        reasons = input_manifest.get("rejection_reasons")
+        if not isinstance(reasons, dict):
+            reasons = {"manifest_reason_shape_invalid": 1}
+        sanitized = ",".join(
+            f"{key}:{value}"
+            for key, value in sorted(reasons.items())
+            if isinstance(key, str)
+            and key.replace("_", "").isalnum()
+            and isinstance(value, int)
+            and not isinstance(value, bool)
+        )
+        raise OperatorMergeBlocked(
+            f"input_ledger_strict_manifest_invalid:{sanitized or 'unknown:1'}"
+        )
     proposed = copy.deepcopy(ledger)
     signature, frozen, namespace = recovery._condition(proposed)
     rows = recovery._validate_replay(replay, signature, frozen)
