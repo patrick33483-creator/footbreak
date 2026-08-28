@@ -128,7 +128,15 @@ jobs:
             python3 analysis/recover_crown_condition10_history.py \
               --ledger audit-input/ledger.json \
               --history audit-input/prediction_history.json \
+              --result-overrides audit/crown-condition-10-result-overrides-20260828.json \
+              --audit-ledger-output crown-condition10-formal-simulated-ledger.json \
               --output crown-condition10-formal-recovery-audit.json
+          PYTHONPATH="$GITHUB_WORKSPACE" \
+            python3 analysis/recover_crown_condition10_history.py \
+              --ledger crown-condition10-formal-simulated-ledger.json \
+              --history audit-input/prediction_history.json \
+              --output crown-condition10-formal-recovery-second-pass-audit.json
+          rm -f crown-condition10-formal-simulated-ledger.json
           after="$(sha256sum audit-input/ledger.json | awk '{print $1}')"
           test "$before" = "$after"
           jq '{
@@ -144,9 +152,23 @@ jobs:
             reasons,
             formal_validation_counts,
             after_recovery,
+            result_overrides,
             before_ledger_hash,
             after_ledger_hash
           }' crown-condition10-formal-recovery-audit.json
+          jq '{
+            mode,
+            status,
+            matched_after_boundary,
+            accepted,
+            settled,
+            pending_result,
+            existing_skipped,
+            rejected,
+            reasons,
+            formal_validation_counts,
+            after_recovery
+          }' crown-condition10-formal-recovery-second-pass-audit.json
 
       - name: Diagnose early-stage admission runtime
         env:
@@ -241,5 +263,6 @@ jobs:
             crown-condition5-runtime-diagnostic.json
             crown-condition10-recovery-dry-run.json
             crown-condition10-formal-recovery-audit.json
+            crown-condition10-formal-recovery-second-pass-audit.json
           retention-days: 14
           if-no-files-found: error
