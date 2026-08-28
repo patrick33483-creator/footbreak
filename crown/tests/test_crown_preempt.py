@@ -2,6 +2,9 @@
 
 from pathlib import Path
 import io
+import json
+import os
+import subprocess
 import sys
 import tempfile
 import time
@@ -19,6 +22,114 @@ def _hang_dashboard_projection(_config) -> None:
 
 
 class CrownTickPreemptionTests(unittest.TestCase):
+    def _preempt_check(self, minutes_to_kickoff: int) -> subprocess.CompletedProcess:
+        from datetime import datetime, timedelta, timezone
+
+        now = datetime(2026, 8, 28, 12, 0, tzinfo=timezone.utc)
+        kickoff = now + timedelta(minutes=minutes_to_kickoff)
+        ledger = {
+            "watch": {
+                "m1": {
+                    "kickoff_utc": kickoff.isoformat(),
+                    "stage_jobs": {
+                        "T-30": {
+                            "stage": "T-30",
+                            "due_at_utc": (kickoff - timedelta(minutes=30)).isoformat(),
+                            "kickoff_utc": kickoff.isoformat(),
+                            "state": "PENDING",
+                        },
+                    },
+                },
+            },
+        }
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        state_dir = Path(directory.name)
+        (state_dir / "ledger.json").write_text(json.dumps(ledger), encoding="utf-8")
+        env = {
+            **os.environ,
+            "APP_DIR": str(Path(__file__).resolve().parents[2]),
+            "CROWN_STATE_DIR": str(state_dir),
+            "CROWN_PYTHON": sys.executable,
+            "CROWN_PREEMPT_NOW": now.isoformat(),
+            "CROWN_PREEMPT_CHECK_ONLY": "1",
+        }
+        return subprocess.run(
+            ["bash", str(Path(__file__).resolve().parents[2] / "deploy" / "crown-tick-preempt.sh")],
+            text=True, capture_output=True, check=False, env=env,
+        )
+
+    def test_t40_does_not_stop_sweep_but_due_t30_does(self) -> None:
+        early = self._preempt_check(40)
+        self.assertEqual(early.returncode, 1, early.stderr)
+        self.assertIn("no missing urgent timed stage", early.stdout)
+        due = self._preempt_check(30)
+        self.assertEqual(due.returncode, 0, due.stderr)
+        self.assertIn("urgent timed stage due", due.stdout)
+
+    def test_unrelated_malformed_legacy_job_does_not_block_due_active_job(self) -> None:
+        from datetime import datetime, timedelta, timezone
+        from deploy.crown_tick_preempt import urgent_stage_due
+
+        now = datetime(2026, 8, 28, 12, 0, tzinfo=timezone.utc)
+        kickoff = now + timedelta(minutes=5)
+        ledger = {
+            "watch": {
+                "active": {
+                    "kickoff_utc": kickoff.isoformat(),
+                    "stage_jobs": {"T-5": {
+                        "due_at_utc": now.isoformat(),
+                        "kickoff_utc": kickoff.isoformat(),
+                        "state": "PENDING",
+                    }},
+                },
+                "legacy": {"stage_jobs": {"T-30": {"state": "FAILED"}}},
+            },
+        }
+        self.assertTrue(urgent_stage_due(ledger, now))
+
+    def test_malformed_active_job_still_fails_closed(self) -> None:
+        from datetime import datetime, timedelta, timezone
+        from deploy.crown_tick_preempt import urgent_stage_due
+
+        now = datetime(2026, 8, 28, 12, 0, tzinfo=timezone.utc)
+        kickoff = now + timedelta(minutes=5)
+        ledger = {"watch": {"active": {
+            "kickoff_utc": kickoff.isoformat(),
+            "stage_jobs": {"T-5": {
+                "due_at_utc": now.isoformat(),
+                "kickoff_utc": kickoff.isoformat(),
+            }},
+        }}}
+        with self.assertRaises(ValueError):
+            urgent_stage_due(ledger, now)
+
+    def test_malformed_not_yet_due_state_does_not_block_tick(self) -> None:
+        from datetime import datetime, timedelta, timezone
+        from deploy.crown_tick_preempt import urgent_stage_due
+
+        now = datetime(2026, 8, 28, 12, 0, tzinfo=timezone.utc)
+        kickoff = now + timedelta(minutes=30)
+        ledger = {"watch": {"active": {
+            "kickoff_utc": kickoff.isoformat(),
+            "stage_jobs": {"T-5": {
+                "due_at_utc": (now + timedelta(minutes=25)).isoformat(),
+                "kickoff_utc": kickoff.isoformat(),
+            }},
+        }}}
+        self.assertFalse(urgent_stage_due(ledger, now))
+
+    def test_ended_malformed_job_is_ignored(self) -> None:
+        from datetime import datetime, timedelta, timezone
+        from deploy.crown_tick_preempt import urgent_stage_due
+
+        now = datetime(2026, 8, 28, 12, 0, tzinfo=timezone.utc)
+        ledger = {"watch": {"ended": {
+            "kickoff_utc": (now - timedelta(minutes=1)).isoformat(),
+            "stage_jobs": {"T-5": {"state": "FAILED"}},
+        }}}
+        self.assertFalse(urgent_stage_due(ledger, now))
+
     def test_urgent_tick_does_not_kill_bounded_first_look_reconciliation(self) -> None:
         script = (
             Path(__file__).resolve().parents[2] / "deploy" / "crown-tick-preempt.sh"

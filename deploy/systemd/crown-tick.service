@@ -11,6 +11,9 @@ ExecStartPre=/bin/sh -c '/usr/bin/date +%%s > /run/crown-tick-start-epoch'
 ExecStartPre=/opt/footbreak/.venv/bin/python3 /opt/footbreak/system/disk_guard.py --preflight
 ExecStartPre=/opt/footbreak/deploy/crown-tick-preempt.sh
 ExecStart=/opt/footbreak/deploy/crown-run.sh tick
+# Queue ledger-driven projection only after the capture process exits. The
+# independent self-heal timer retries without changing committed stage state.
+ExecStartPost=-/usr/bin/systemctl start --no-block footbreak-dashboard-self-heal.service
 # The native stage journal + exact-ID snapshot + atomic commit are the only
 # critical path.  Consumers use leftover time; the 55-second unit timeout
 # retains the final stop margin.

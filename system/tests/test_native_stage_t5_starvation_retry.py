@@ -11,11 +11,13 @@ per fixture, that:
     `persistence_timeout_or_error`, `analysis_timeout_or_error`,
     `provider_fetch_*`) remains selectable by `due_stage_work` while
     `now < kickoff`, and a new attempt may be started for it;
-  * a non-retryable terminal state (COMMITTED, DATA_MISSING, EXPIRED, or a
-    FAILED with any other reason) is never re-offered;
+  * every DATA_MISSING and operational FAILED outcome remains selectable
+    before kickoff, regardless of its diagnostic reason;
+  * only COMMITTED is successful terminal; unresolved work becomes EXPIRED
+    at or after kickoff;
   * post-kickoff, an unresolved retryable-FAILED is still swept to EXPIRED
     exactly like any other unfinished attempt -- it cannot leak forever;
-  * a later genuine terminal outcome (COMMITTED/DATA_MISSING) for the same
+  * a later genuine terminal outcome (COMMITTED) for the same
     identity always wins and stops further retries;
   * `_fair_rotate_due` in system/run_predict.py rotates a large same-due
     cluster across ticks so no single fixture is permanently last;
@@ -110,16 +112,21 @@ class RetryableFailureClassificationTests(unittest.TestCase):
         due = state.due_stage_work(ledger, now=self.now + timedelta(seconds=2))
         self.assertEqual(len(due), 1)
 
-    def test_non_retryable_failed_reason_is_never_reoffered(self) -> None:
+    def test_identity_mismatch_failed_reason_is_reoffered(self) -> None:
         ledger, watch = self._ledger_with_watch("A4")
         started = state.start_attempt(ledger, watch, "T-5", now=self.now)
         state.finish_attempt(ledger, started, "FAILED", now=self.now + timedelta(seconds=1), reason="provider_kickoff_identity_mismatch")
         due = state.due_stage_work(ledger, now=self.now + timedelta(seconds=2))
-        self.assertEqual(due, [])
-        with self.assertRaises(ValueError):
-            state.start_attempt(ledger, watch, "T-5", now=self.now + timedelta(seconds=3))
+        self.assertEqual(
+            [(row["hkjc_match_id"], row["stage"]) for row in due],
+            [("A4", "T-5")],
+        )
+        retried = state.start_attempt(
+            ledger, watch, "T-5", now=self.now + timedelta(seconds=3),
+        )
+        self.assertNotEqual(retried["attempt_id"], started["attempt_id"])
 
-    def test_committed_and_data_missing_are_never_reoffered(self) -> None:
+    def test_committed_is_terminal_but_data_missing_is_reoffered(self) -> None:
         for match_id, terminal in (("A5", "COMMITTED"), ("A6", "DATA_MISSING")):
             with self.subTest(terminal=terminal):
                 ledger, watch = self._ledger_with_watch(match_id)
@@ -129,14 +136,23 @@ class RetryableFailureClassificationTests(unittest.TestCase):
                     watch["stages"].append({"stage": "T-5"})
                 state.finish_attempt(ledger, started, terminal, now=self.now + timedelta(seconds=1), reason="provider_fixture_missing" if terminal == "DATA_MISSING" else None)
                 due = state.due_stage_work(ledger, now=self.now + timedelta(seconds=2))
-                self.assertEqual(due, [])
+                if terminal == "COMMITTED":
+                    self.assertEqual(due, [])
+                else:
+                    self.assertEqual(
+                        [(row["hkjc_match_id"], row["stage"]) for row in due],
+                        [(match_id, "T-5")],
+                    )
 
-    def test_genuine_terminal_after_retry_wins_and_stops_further_retries(self) -> None:
+    def test_committed_after_retry_wins_and_stops_further_retries(self) -> None:
         ledger, watch = self._ledger_with_watch("A7")
         started = state.start_attempt(ledger, watch, "T-5", now=self.now)
         state.finish_attempt(ledger, started, "FAILED", now=self.now + timedelta(seconds=1), reason="tick_deadline_elapsed")
         retried = state.start_attempt(ledger, watch, "T-5", now=self.now + timedelta(seconds=2))
-        state.finish_attempt(ledger, retried, "DATA_MISSING", now=self.now + timedelta(seconds=3), reason="provider_fixture_missing")
+        watch["stages"].append({"stage": "T-5"})
+        state.finish_attempt(
+            ledger, retried, "COMMITTED", now=self.now + timedelta(seconds=3),
+        )
         due = state.due_stage_work(ledger, now=self.now + timedelta(seconds=4))
         self.assertEqual(due, [])
         with self.assertRaises(ValueError):

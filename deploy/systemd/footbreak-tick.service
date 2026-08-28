@@ -13,6 +13,9 @@ ExecStartPre=/opt/footbreak/.venv/bin/python3 /opt/footbreak/system/disk_guard.p
 # 完成 T-30 嘅等待期唔可以反覆殺死賽果結算。
 ExecStartPre=/opt/footbreak/deploy/footbreak-tick-preempt.sh
 ExecStart=/opt/footbreak/deploy/run.sh tick
+# Capture is already durable when this runs. Queue projection separately so a
+# dashboard failure cannot roll back or fail the committed timed snapshot.
+ExecStartPost=-/usr/bin/systemctl start --no-block footbreak-dashboard-self-heal.service
 ExecStopPost=-/usr/bin/rm -f /run/footbreak-t5-priority
 # Give a just-finishing state writer enough time to release the shared lock.
 # Exit 75 is deliberate duplicate/pre-emption rejection; the timer retries.

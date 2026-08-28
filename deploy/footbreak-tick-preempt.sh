@@ -73,8 +73,10 @@ for raw_id, row in watch.items():
             except (TypeError, ValueError):
                 raise SystemExit(2)
             event = latest.get((match_id, kickoff_utc, stage))
+            # FAILED and DATA_MISSING remain due before kickoff and must get
+            # the same priority path as a first attempt.
             terminal = str((event or {}).get("status") or "") in {
-                "COMMITTED", "FAILED", "DATA_MISSING", "EXPIRED",
+                "COMMITTED", "EXPIRED",
             }
             if now.astimezone(utc) >= due_at and stage not in stages and not terminal:
                 raise SystemExit(0)
