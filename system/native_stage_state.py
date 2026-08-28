@@ -15,29 +15,18 @@ HKT = timezone(timedelta(hours=8))
 UTC = timezone.utc
 SCHEDULED_STAGES: tuple[tuple[str, int], ...] = (("T-30", 30), ("T-5", 5))
 TERMINAL = frozenset({"COMMITTED", "FAILED", "DATA_MISSING", "EXPIRED"})
-
-# A same-kickoff batch that exceeds one tick's bounded pass budget, a single
-# slow persistence call, or a transient direct-read exception must not
-# permanently discard an otherwise-legitimate pre-kickoff due stage.  These
-# exact FAILED reasons describe the tick's own capacity/timing, not a
-# genuine provider/analysis absence, so they remain retryable while
-# `now < kickoff`.  A later terminal COMMITTED/DATA_MISSING/EXPIRED event for
-# the same identity still wins because `latest_attempts` always returns the
-# most recent event; `expire_lapsed_work` still converts any non-COMMITTED
-# stage to EXPIRED the instant kickoff passes, so this cannot leak past
-# kickoff or create an unbounded retry loop.
-RETRYABLE_FAILURE_REASONS = frozenset({
-    "tick_deadline_elapsed",
-    "persistence_timeout_or_error",
-    "analysis_timeout_or_error",
-})
+RETRYABLE = frozenset({"FAILED", "DATA_MISSING"})
 
 
-def _is_retryable_failure(event: dict[str, Any]) -> bool:
-    if str(event.get("status") or "") != "FAILED":
-        return False
-    reason = str(event.get("reason") or "")
-    return reason in RETRYABLE_FAILURE_REASONS or reason.startswith("provider_fetch_")
+def _is_retryable_outcome(event: dict[str, Any]) -> bool:
+    """Whether an attempted-but-uncommitted stage may run again pre-kickoff.
+
+    Provider rows, provider identity, analysis input, and operational calls can
+    all recover on the next tick.  The reason is retained as audit evidence but
+    must not decide liveness.  Only a snapshot COMMITTED for the manifest
+    identity is successful terminal state; EXPIRED is the post-kickoff closure.
+    """
+    return str(event.get("status") or "") in RETRYABLE
 
 
 def parse_time(value: Any) -> datetime | None:
@@ -223,12 +212,13 @@ def start_attempt(
         state = str(current.get("status") or "")
         if state == "STARTED":
             return current
-        # A retryable FAILED (tick capacity/timing, not a genuine provider or
-        # analysis absence) may start a fresh attempt while still pre-kickoff.
-        # Every other terminal state (COMMITTED/DATA_MISSING/EXPIRED, or a
-        # FAILED with a non-retryable reason) is immutable.
-        if state in TERMINAL and not _is_retryable_failure(current):
+        # Every pre-kickoff DATA_MISSING/FAILED result is an attempt outcome,
+        # not completion. COMMITTED and EXPIRED remain immutable.
+        if state in TERMINAL and not _is_retryable_outcome(current):
             raise ValueError("native_stage_attempt_already_terminal")
+    kickoff = parse_time(key[1])
+    if kickoff is None or now.astimezone(UTC) >= kickoff.astimezone(UTC):
+        raise ValueError("native_stage_attempt_not_pre_kickoff")
     event = _event_payload(
         watch, stage, attempt_id=uuid.uuid4().hex, status="STARTED", now=now,
     )
@@ -251,12 +241,18 @@ def finish_attempt(
         raise ValueError("native_stage_attempt_identity_missing")
     latest = latest_attempts(ledger).get((match_id, kickoff_utc, stage))
     if isinstance(latest, dict) and str(latest.get("status") or "") in TERMINAL:
-        # A post-kickoff EXPIRED sweep may still close out a retryable FAILED
-        # attempt that never got a further retry before kickoff; every other
-        # terminal record (including the attempt's own matching FAILED, once
-        # already superseded by a newer terminal event) is immutable.
-        if not (status == "EXPIRED" and attempt_id == str(latest.get("attempt_id") or "") and _is_retryable_failure(latest)):
+        # A post-kickoff sweep closes the latest failed/missing attempt. Other
+        # terminal transitions are immutable, especially COMMITTED.
+        if not (
+            status == "EXPIRED"
+            and attempt_id == str(latest.get("attempt_id") or "")
+            and _is_retryable_outcome(latest)
+        ):
             return latest
+    elif isinstance(latest, dict) and attempt_id != str(latest.get("attempt_id") or ""):
+        # Never let a stale worker finish over a newer retry for the same
+        # immutable snapshot identity.
+        return latest
     event = {
         key: attempt.get(key)
         for key in (
@@ -309,11 +305,7 @@ def due_stage_work(
                 continue
             latest_event = latest.get((match_id, iso_utc(kickoff_utc), stage))
             if isinstance(latest_event, dict) and str(latest_event.get("status") or "") in TERMINAL:
-                # A retryable FAILED (tick deadline/persistence/analysis
-                # timing, or a transient direct-read exception) remains due
-                # while still pre-kickoff; every other terminal outcome is
-                # final and is never re-offered.
-                if not _is_retryable_failure(latest_event):
+                if not _is_retryable_outcome(latest_event):
                     continue
             work.append({
                 "hkjc_match_id": match_id,
@@ -352,7 +344,7 @@ def expire_lapsed_work(ledger: dict[str, Any], *, now: datetime) -> int:
             if (
                 isinstance(last, dict)
                 and str(last.get("status") or "") in TERMINAL
-                and not _is_retryable_failure(last)
+                and not _is_retryable_outcome(last)
             ):
                 continue
             attempt = last if isinstance(last, dict) else _event_payload(
@@ -421,7 +413,7 @@ def completeness_projection(ledger: dict[str, Any], *, now: datetime) -> dict[st
                 isinstance(event, dict)
                 and kickoff_dt is not None
                 and kickoff_dt.astimezone(UTC) > now.astimezone(UTC)
-                and _is_retryable_failure(event)
+                and _is_retryable_outcome(event)
             )
             stages[stage] = {
                 "status": status,

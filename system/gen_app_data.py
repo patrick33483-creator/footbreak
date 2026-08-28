@@ -676,22 +676,6 @@ def _write_json_atomic(path, payload):
             os.unlink(temporary)
 
 
-def _write_ledger_atomic(path, payload):
-    """Persist a local evidence migration without exposing it as dashboard data."""
-    directory = os.path.dirname(path) or "."
-    os.makedirs(directory, exist_ok=True)
-    fd, temporary = tempfile.mkstemp(prefix=".sim-ledger-", dir=directory)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(payload, handle, ensure_ascii=False, separators=(",", ":"))
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, path)
-    finally:
-        if os.path.exists(temporary):
-            os.unlink(temporary)
-
-
 def _public_log_entries(rows):
     """Never leak retained legacy/shadow state while reset is pending."""
     output = []
@@ -1095,23 +1079,22 @@ def main(out_path=None):
     from analysis.wilson_validation import (
         project_dashboard_research_matches,
         project_frozen_ranking_evidence,
-        project_granular_ranking_evidence,
     )
     raw_ranking = (
         (prediction_history.get("stats") or {})
         .get("granular_conditions", {}).get("ranking") or []
     )
-    projected_ranking = project_granular_ranking_evidence(
-        led, "footbreak", raw_ranking,
-        now=dt.datetime.now(HKT).isoformat(timespec="seconds"),
-    )
+    # Dashboard publication may only read already-persisted active evidence.
+    # Registration/rollover belongs to capture and settlement writers.
     projected_ranking = project_frozen_ranking_evidence(
-        led, "footbreak", projected_ranking,
+        led, "footbreak", raw_ranking,
     )
     projected_ranking.sort(
         key=lambda item: int(item.get("condition_number") or 10**9)
     )
-    _write_ledger_atomic(lp, led)
+    # Dashboard generation is a read-only ledger consumer. Persisting this
+    # in-memory projection could overwrite a newer tick/settlement commit that
+    # atomically replaced the ledger while the full dashboard was building.
     if isinstance((prediction_history.get("stats") or {}).get("granular_conditions"), dict):
         prediction_history["stats"]["granular_conditions"]["ranking"] = projected_ranking
     # Match explanations come solely from the frozen T-5 admission decision.

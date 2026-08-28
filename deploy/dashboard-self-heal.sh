@@ -2,6 +2,8 @@
 set -euo pipefail
 
 LOCK_FILE="${DASHBOARD_SELF_HEAL_LOCK:-/run/lock/footbreak-dashboard-self-heal.lock}"
+APP_DIR="${APP_DIR:-/opt/footbreak}"
+PYTHON="${DASHBOARD_SELF_HEAL_PYTHON:-/opt/footbreak/.venv/bin/python3}"
 exec 9>"$LOCK_FILE"
 flock -n 9 || exit 0
 
@@ -45,6 +47,12 @@ dashboard_json_is_healthy() {
   unset dashboard_password
 }
 
+dashboard_projection_is_current() {
+  local system="$1" ledger="$2" dashboard="$3"
+  "$PYTHON" "$APP_DIR/deploy/check_dashboard_stage_projection.py" \
+    --system "$system" --ledger "$ledger" --dashboard "$dashboard"
+}
+
 public_dashboard_json_is_healthy() {
   local system="$1" user="$2" password_file="$3" contract="$4" endpoint="$5"
   local dashboard_password
@@ -66,13 +74,13 @@ republish_dashboard_json() {
   local system="$1"
   case "$system" in
     footbreak)
-      /opt/footbreak/.venv/bin/python3 -m system.gen_app_data \
+      "$PYTHON" -m system.gen_app_data \
         --out /var/www/footbreak/data.json
       chown root:www-data /var/www/footbreak/data.json
       chmod 0644 /var/www/footbreak/data.json
       ;;
     crown)
-      /opt/footbreak/.venv/bin/python3 -m crown.dashboard_data \
+      "$PYTHON" -m crown.dashboard_data \
         --out /var/www/crown/data.json
       chown root:www-data /var/www/crown/data.json
       chmod 0644 /var/www/crown/data.json
@@ -176,6 +184,29 @@ dashboard_json_is_healthy \
   8081 footbreak /root/footbreak-dashboard-password.txt footbreak-dashboard || failed=1
 dashboard_json_is_healthy \
   8082 crown /root/crown-dashboard-password.txt crown-dashboard-v2 || failed=1
+
+# A syntactically valid dashboard can still be stale after a crash or bounded
+# tick projection timeout. The ledger remains authoritative; rebuild missing
+# committed timed stages here, independently of capture success.
+for projection_spec in \
+  "footbreak:/opt/footbreak/system/sim_ledger.json:/var/www/footbreak/data.json" \
+  "crown:/var/lib/footbreak/crown/ledger.json:/var/www/crown/data.json"; do
+  IFS=: read -r system ledger_path dashboard_path <<< "$projection_spec"
+  if dashboard_projection_is_current "$system" "$ledger_path" "$dashboard_path"; then
+    continue
+  else
+    projection_status=$?
+  fi
+  if [ "$projection_status" = 1 ]; then
+    log "$system dashboard is missing a ledger-committed timed stage; republishing"
+    republish_dashboard_json "$system" || failed=1
+    dashboard_projection_is_current \
+      "$system" "$ledger_path" "$dashboard_path" || failed=1
+  else
+    log "$system dashboard projection state is unreadable; repair deferred"
+    failed=1
+  fi
+done
 
 public_routes_healthy=1
 for public_spec in \

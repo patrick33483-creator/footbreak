@@ -1020,7 +1020,7 @@ class WilsonBatchRolloverTest(unittest.TestCase):
         self.assertNotIn("fixture-", json.dumps(batch, ensure_ascii=False))
         root = Path(__file__).resolve().parents[2]
         for path, projection in (
-            (root / "system" / "gen_app_data.py", "project_granular_ranking_evidence"),
+            (root / "system" / "gen_app_data.py", "project_frozen_ranking_evidence"),
             # Crown's browser must project only the already-durable registry;
             # it may not initialize or persist condition evidence itself.
             (root / "crown" / "dashboard_data.py", "project_frozen_ranking_evidence"),

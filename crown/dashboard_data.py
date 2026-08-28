@@ -53,7 +53,9 @@ def _dashboard_publish_lock(destination: Path):
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
-def _dashboard_watch_card(watch: dict[str, Any]) -> dict[str, Any] | None:
+def _dashboard_watch_card(
+    watch: dict[str, Any], *, now: datetime | None = None,
+) -> dict[str, Any] | None:
     """Recover one current-period card from a committed first-look watch.
 
     A watch is eligible only after ``sync_prediction`` has persisted an
@@ -86,7 +88,7 @@ def _dashboard_watch_card(watch: dict[str, Any]) -> dict[str, Any] | None:
         return None
     kickoff_raw = top_kickoff_raw or stage_kickoff_raw
     kickoff = top_kickoff or stage_kickoff
-    if not match_id or kickoff is None or not in_current_period(kickoff):
+    if not match_id or kickoff is None or not in_current_period(kickoff, now):
         return None
     identity = {
         "match_id": match_id,
@@ -166,6 +168,14 @@ def _native_watch_stages(
     card: dict[str, Any],
     watch: dict[str, Any],
 ) -> dict[str, dict[str, Any]]:
+    snapshots, ambiguous = _native_watch_stage_contract(card, watch)
+    return {} if ambiguous else snapshots
+
+
+def _native_watch_stage_contract(
+    card: dict[str, Any],
+    watch: dict[str, Any],
+) -> tuple[dict[str, dict[str, Any]], bool]:
     """Return only verifiable native snapshots for one identity-matched card.
 
     The watch ledger is authoritative for native stage completion, but it is
@@ -176,14 +186,14 @@ def _native_watch_stages(
     """
     match_id = str(card.get("match_id") or "").strip()
     if not match_id or str(watch.get("match_id") or "").strip() != match_id:
-        return {}
+        return {}, False
     card_kickoff = parse_time(card.get("kickoff_hkt") or card.get("kickoff"))
     watch_kickoff = parse_time(watch.get("kickoff_hkt") or watch.get("kickoff"))
     if card_kickoff is None or watch_kickoff is None or card_kickoff != watch_kickoff:
-        return {}
+        return {}, False
     rows = watch.get("stages")
     if not isinstance(rows, list):
-        return {}
+        return {}, False
     snapshots: dict[str, dict[str, Any]] = {}
     for row in rows:
         if not isinstance(row, dict):
@@ -194,20 +204,29 @@ def _native_watch_stages(
         # A native timed snapshot must carry the immutable observation facts
         # established by ``sync_prediction``.  In particular, never publish a
         # stage recorded after kickoff as if it had been a pre-kickoff decision.
-        if stage in {"T-30", "T-5"}:
-            observed_at = parse_time(row.get("ts"))
-            if (
-                observed_at is None
-                or observed_at >= card_kickoff
-                or not str(row.get("status") or "").strip()
-            ):
-                continue
+        if (
+            stage in {"T-30", "T-5"}
+            and not _valid_native_timed_stage(row, card_kickoff)
+        ):
+            continue
         # One identity can have only one native stage.  Ambiguous authoritative
         # state fails closed instead of choosing a row or duplicating a card.
         if stage in snapshots:
-            return {}
+            return {}, True
         snapshots[stage] = copy.deepcopy(row)
-    return snapshots
+    return snapshots, False
+
+
+def _valid_native_timed_stage(
+    row: dict[str, Any], kickoff: datetime,
+) -> bool:
+    """Shared pure timed-stage predicate for builder and repair checker."""
+    observed_at = parse_time(row.get("ts"))
+    return bool(
+        observed_at is not None
+        and observed_at < kickoff
+        and str(row.get("status") or "").strip()
+    )
 
 
 def _project_authoritative_watch_stages(

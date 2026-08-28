@@ -162,7 +162,8 @@ class SchedulerPreemptionTests(unittest.TestCase):
         helper = (ROOT / "deploy/footbreak-tick-preempt.sh").read_text(encoding="utf-8")
         self.assertIn('row.get("native_stage_manifest")', helper)
         self.assertIn('now.astimezone(utc) >= due_at', helper)
-        self.assertIn('"COMMITTED", "FAILED", "DATA_MISSING", "EXPIRED"', helper)
+        self.assertIn('"COMMITTED", "EXPIRED"', helper)
+        self.assertNotIn('"FAILED", "DATA_MISSING"', helper)
         self.assertIn("/usr/bin/systemctl stop footbreak-sweep.service footbreak-settle.service", helper)
 
     def test_crown_tick_preempts_only_when_a_local_t5_is_due(self):
@@ -176,8 +177,11 @@ class SchedulerPreemptionTests(unittest.TestCase):
         self.assertIn("TimeoutStopSec=5", unit)
         self.assertIn("ExecStopPost=-/usr/bin/rm -f /run/crown-t5-priority", unit)
         helper = (ROOT / "deploy/crown-tick-preempt.sh").read_text(encoding="utf-8")
-        self.assertIn('0.0 < minutes <= 10.5 and not complete("T-5")', helper)
-        self.assertIn('20.0 <= minutes <= 40.5 and not complete("T-30")', helper)
+        decision = (ROOT / "deploy/crown_tick_preempt.py").read_text(encoding="utf-8")
+        self.assertIn("if kickoff is None or kickoff <= current", decision)
+        self.assertIn("if current < due_at", decision)
+        self.assertIn('state != "COMMITTED"', decision)
+        self.assertNotIn("20.0 <= minutes <= 40.5", helper)
         self.assertIn(
             "/usr/bin/systemctl stop --no-block crown-round-update.service crown-sweep.service crown-settle.service",
             helper,
@@ -205,32 +209,47 @@ class SchedulerPreemptionTests(unittest.TestCase):
             state = Path(tmp)
             now = dt.datetime.now(record_picks.HKT)
             env = os.environ | {
+                "APP_DIR": str(ROOT),
                 "CROWN_STATE_DIR": str(state), "CROWN_PYTHON": sys.executable,
                 "CROWN_T5_PRIORITY_MARKER": str(state / "marker"),
+                "CROWN_PREEMPT_NOW": now.isoformat(),
+                "CROWN_PREEMPT_CHECK_ONLY": "1",
             }
             # No predictions.json exists.  The due ledger row must still set
             # the priority marker rather than emitting an all-clear.
+            kickoff = now + dt.timedelta(minutes=5)
             (state / "ledger.json").write_text(json.dumps({"watch": {
-                "due": {"kickoff": (now + dt.timedelta(minutes=5)).isoformat(), "stages": []}
+                "due": {
+                    "kickoff_utc": kickoff.isoformat(),
+                    "stage_jobs": {"T-5": {
+                        "due_at_utc": (kickoff - dt.timedelta(minutes=5)).isoformat(),
+                        "kickoff_utc": kickoff.isoformat(),
+                        "state": "PENDING",
+                    }},
+                },
             }}), encoding="utf-8")
             due_without_projection = subprocess.run(["bash", str(helper)], env=env, text=True, capture_output=True)
-            self.assertTrue((state / "marker").exists())
+            self.assertEqual(due_without_projection.returncode, 0)
             self.assertNotIn("no missing urgent", due_without_projection.stdout)
-            (state / "marker").unlink()
             (state / "ledger.json").write_text(json.dumps({"watch": {
                 "complete": {
-                    "kickoff": (now + dt.timedelta(minutes=5)).isoformat(),
+                    "kickoff_utc": kickoff.isoformat(),
                     # A native no-pick/Wilson-rejected row is complete even when
                     # the dashboard projection is missing or malformed.
                     "stages": [{"stage": "T-5", "status": "WILSON_REJECTED", "pick": None}],
+                    "stage_jobs": {"T-5": {
+                        "due_at_utc": (kickoff - dt.timedelta(minutes=5)).isoformat(),
+                        "kickoff_utc": kickoff.isoformat(),
+                        "state": "COMMITTED",
+                    }},
                 }
             }}), encoding="utf-8")
             missing_projection = subprocess.run(["bash", str(helper)], env=env, text=True, capture_output=True)
-            self.assertEqual(missing_projection.returncode, 0, missing_projection.stderr)
+            self.assertEqual(missing_projection.returncode, 1, missing_projection.stderr)
             self.assertIn("no missing urgent", missing_projection.stdout)
             (state / "predictions.json").write_text("not-json", encoding="utf-8")
             malformed_projection = subprocess.run(["bash", str(helper)], env=env, text=True, capture_output=True)
-            self.assertEqual(malformed_projection.returncode, 0, malformed_projection.stderr)
+            self.assertEqual(malformed_projection.returncode, 1, malformed_projection.stderr)
             self.assertIn("no missing urgent", malformed_projection.stdout)
             (state / "ledger.json").write_text("not-json", encoding="utf-8")
             unreadable = subprocess.run(["bash", str(helper)], env=env, text=True, capture_output=True)

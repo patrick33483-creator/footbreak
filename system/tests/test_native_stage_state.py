@@ -64,7 +64,7 @@ class NativeStageStateTests(unittest.TestCase):
         self.assertNotIn("native_stage_manifest", watch)
         self.assertEqual(watch["stages"], [])
 
-    def test_due_is_utc_based_restart_safe_and_only_before_kickoff(self) -> None:
+    def test_first_data_missing_is_offered_again_next_tick_and_expires_at_kickoff(self) -> None:
         watch = self._watch()
         state.ensure_first_look_manifest(watch, now=self.now)
         ledger = {"watch": {"50073037": watch}}
@@ -80,9 +80,66 @@ class NativeStageStateTests(unittest.TestCase):
             [("50073037", "T-30")],
         )
         state.finish_attempt(ledger, started, "DATA_MISSING", now=self.now + timedelta(seconds=6), reason="provider_fixture_missing")
-        self.assertEqual(state.due_stage_work(ledger, now=self.now + timedelta(seconds=7)), [])
-        self.assertEqual([item["status"] for item in ledger["native_stage_attempts"]], ["STARTED", "DATA_MISSING"])
+        offered = state.due_stage_work(ledger, now=self.now + timedelta(seconds=7))
+        self.assertEqual([(row["hkjc_match_id"], row["stage"]) for row in offered], [("50073037", "T-30")])
+        retried = state.start_attempt(
+            ledger, watch, "T-30", now=self.now + timedelta(seconds=7),
+        )
+        self.assertNotEqual(retried["attempt_id"], started["attempt_id"])
+        state.finish_attempt(
+            ledger, retried, "FAILED", now=self.now + timedelta(seconds=8),
+            reason="unexpected_operational_failure",
+        )
+        self.assertEqual(len(state.due_stage_work(
+            ledger, now=self.now + timedelta(seconds=9),
+        )), 1)
         self.assertEqual(state.due_stage_work(ledger, now=self.kickoff), [])
+        self.assertEqual(state.expire_lapsed_work(ledger, now=self.kickoff), 2)
+        self.assertEqual(
+            state.latest_attempts(ledger)[
+                ("50073037", "2026-08-23T12:00:00+00:00", "T-30")
+            ]["status"],
+            "EXPIRED",
+        )
+
+    def test_retry_commit_keeps_exactly_one_snapshot_per_three_stage_fixture(self) -> None:
+        watch = self._watch()
+        first = {"stage": "首預", "ts": (self.now - timedelta(hours=1)).isoformat()}
+        watch["stages"].append(first)
+        state.ensure_first_look_manifest(watch, now=self.now - timedelta(hours=1))
+        ledger = {"watch": {"50073037": watch}}
+        for stage, at in (
+            ("T-30", self.now),
+            ("T-5", self.kickoff - timedelta(minutes=5)),
+        ):
+            failed = state.start_attempt(ledger, watch, stage, now=at)
+            state.finish_attempt(
+                ledger, failed, "DATA_MISSING", now=at + timedelta(seconds=1),
+                reason="analysis_data_missing",
+            )
+            retry = state.start_attempt(
+                ledger, watch, stage, now=at + timedelta(seconds=2),
+            )
+            snapshot = state.enrich_snapshot(
+                {"stage": stage, "ts": (at + timedelta(seconds=2)).isoformat()},
+                watch, stage,
+            )
+            if not any(row.get("stage") == stage for row in watch["stages"]):
+                watch["stages"].append(snapshot)
+            state.finish_attempt(
+                ledger, retry, "COMMITTED", now=at + timedelta(seconds=3),
+            )
+            # A complete snapshot identity cannot be scheduled or appended again.
+            self.assertNotIn(
+                stage,
+                [row["stage"] for row in state.due_stage_work(
+                    ledger, now=at + timedelta(seconds=4),
+                )],
+            )
+        self.assertEqual(
+            [row["stage"] for row in watch["stages"]],
+            ["首預", "T-30", "T-5"],
+        )
 
     def test_post_kickoff_only_expires_pending_attempt_without_quote_or_stage_backfill(self) -> None:
         watch = self._watch()
