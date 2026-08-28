@@ -497,7 +497,10 @@ class CrownTickSystemdTimeoutBoundaryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             out = self._run_wrapper_budget_calc(8, directory)
             self.assertEqual(out["returncode"], 0, out["stderr"])
-            self.assertEqual(out["stdout"], "43")
+            # The child shell can cross a wall-clock second after the epoch
+            # sentinel is written. Both 42 and 43 prove that the wrapper
+            # deducted the intended 8-9 seconds from the 51-second ceiling.
+            self.assertIn(out["stdout"], {"42", "43"})
 
     def test_worst_observed_execstartpre_elapsed_still_leaves_native_commit_room(self) -> None:
         # Worst production journal sample: crown-tick-preempt.sh alone took
