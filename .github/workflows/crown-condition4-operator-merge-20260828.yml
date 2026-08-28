@@ -70,6 +70,7 @@ jobs:
             -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
             crown-condition4-operator-payload.tgz \
             "$DEPLOY_USER@$DEPLOY_HOST:$REMOTE_ARCHIVE"
+          set +e
           ssh -o BatchMode=yes -o ConnectTimeout=20 \
             -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
             -o StrictHostKeyChecking=yes \
@@ -88,9 +89,15 @@ jobs:
           env PYTHONPATH="$work:/opt/footbreak" \
             /opt/footbreak/.venv/bin/python3 \
             "$work/analysis/crown_condition4_operator_merge.py" \
-            --replay-program \
-            "$work/deploy/audit-crown-condition-replay.py"
+              --replay-program \
+              "$work/deploy/audit-crown-condition-replay.py"
           EOSSH
+          remote_status="$?"
+          set -e
+          if [[ -s crown-condition4-sanitized-report.json ]]; then
+            cat crown-condition4-sanitized-report.json
+          fi
+          exit "$remote_status"
 
       - name: Verify and publish only the sanitized aggregate report
         run: |
