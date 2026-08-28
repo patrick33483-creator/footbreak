@@ -1,0 +1,121 @@
+name: 加 /stage-v2/ nginx route
+
+# 喺 unified-dashboard config 加多 3 個 location：
+#   /stage-v2/            → /var/www/stage_engine_v2/
+#   /stage-v2/data.json   → 唔快取
+#   /stage-v2             → 301 /stage-v2/
+# 用 htpasswd-crown（同 crown dashboard 一樣）
+# 修改前備份 config，nginx -t 通過先 reload
+
+on:
+  workflow_dispatch:
+
+jobs:
+  add-route:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 設定 SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: 加 route 並 reload nginx
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          set -euo pipefail
+          CONF=/etc/nginx/sites-available/unified-dashboard
+          BACKUP=/etc/nginx/sites-available/unified-dashboard.bak-$(date +%Y%m%d-%H%M%S)
+
+          echo "===== 備份 $CONF -> $BACKUP ====="
+          cp -a "$CONF" "$BACKUP"
+
+          echo ""
+          echo "===== 檢查是否已有 /stage-v2/ route ====="
+          if grep -q "/stage-v2" "$CONF"; then
+            echo "已經有 /stage-v2/ route，直接測 config 唔改文件"
+            nginx -t
+            exit 0
+          fi
+
+          echo ""
+          echo "===== 插入 /stage-v2/ block 到 crown block 之後 ====="
+          # 用 Python 精準改：搵到 /crown/ 個 alias block 結尾嘅 } 之後插入
+          python3 <<'PY'
+          import re
+          from pathlib import Path
+          conf = Path("/etc/nginx/sites-available/unified-dashboard")
+          text = conf.read_text()
+
+          insert = """
+              location = /stage-v2 { return 301 /stage-v2/; }
+              location = /stage-v2/data.json {
+                  auth_basic "Footbreak Crown";
+                  auth_basic_user_file /etc/nginx/.htpasswd-crown;
+                  alias /var/www/stage_engine_v2/data.json;
+                  add_header Cache-Control "no-store, must-revalidate";
+                  expires -1;
+              }
+              location ^~ /stage-v2/ {
+                  auth_basic "Footbreak Crown";
+                  auth_basic_user_file /etc/nginx/.htpasswd-crown;
+                  alias /var/www/stage_engine_v2/;
+                  index index.html;
+              }
+
+          """
+          # 搵 /crown/ 個 ^~ block 結尾嘅 }
+          marker = 'location ^~ /crown/ {'
+          idx = text.find(marker)
+          if idx < 0:
+              raise SystemExit("搵唔到 /crown/ location marker")
+          # 由 marker 開始搵下一個 top-level } (簡單 brace matcher)
+          depth = 0
+          i = idx
+          while i < len(text):
+              c = text[i]
+              if c == '{':
+                  depth += 1
+              elif c == '}':
+                  depth -= 1
+                  if depth == 0:
+                      # i 就係 crown block 結尾嘅 }，喺 i+1 之後插入
+                      new_text = text[:i+1] + '\n' + insert + text[i+1:]
+                      conf.write_text(new_text)
+                      print("插入成功")
+                      break
+              i += 1
+          else:
+              raise SystemExit("匹配 crown block 結尾 } 失敗")
+          PY
+
+          echo ""
+          echo "===== nginx -t ====="
+          if ! nginx -t; then
+            echo "!!! nginx test FAILED, revert"
+            cp -a "$BACKUP" "$CONF"
+            exit 1
+          fi
+
+          echo ""
+          echo "===== reload nginx ====="
+          systemctl reload nginx
+          echo "nginx reloaded"
+
+          echo ""
+          echo "===== 驗證：本機 curl /stage-v2/data.json ====="
+          # 讀 htpasswd-crown 第一個 user (只提取 username；密碼你自己知)
+          USER=$(head -1 /etc/nginx/.htpasswd-crown | cut -d: -f1)
+          echo "會用 user='$USER' 試 request (但唔喺 log 顯示密碼)"
+          # 唔真係試登入，只確認 401 (需要 auth) 而唔係 404
+          curl -sS -o /dev/null -w "GET /stage-v2/ -> HTTP %{http_code}\n" http://127.0.0.1/stage-v2/ || true
+          curl -sS -o /dev/null -w "GET /stage-v2/data.json -> HTTP %{http_code}\n" http://127.0.0.1/stage-v2/data.json || true
+          echo "(401 = route OK 只係要 auth, 404 = route 有問題)"
+          REMOTE
