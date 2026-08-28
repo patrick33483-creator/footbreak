@@ -1,0 +1,85 @@
+name: 確認 v2 ledger 存嘅預測嚟源
+on: workflow_dispatch
+jobs:
+  v:
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          mkdir -p ~/.ssh && printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519 && chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+      - env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          set -uo pipefail
+
+          echo "===== 1. crown data.json 一個 fixture 完整 record ====="
+          /opt/footbreak/.venv/bin/python3 - <<'PY'
+          import json
+          d = json.load(open('/var/www/crown/data.json'))
+          if isinstance(d, dict):
+              print('type=dict, keys:', list(d.keys())[:15])
+              # 揾 fixture list
+              for k in ('fixtures', 'matches', 'items', 'watch', 'predictions', 'rows'):
+                  if k in d:
+                      v = d[k]
+                      if isinstance(v, list):
+                          print(f'{k}: list len={len(v)}')
+                          if v: print(json.dumps(v[0], ensure_ascii=False, indent=2)[:3500])
+                      elif isinstance(v, dict):
+                          print(f'{k}: dict len={len(v)}')
+                          first_k = next(iter(v), None)
+                          if first_k: print(json.dumps(v[first_k], ensure_ascii=False, indent=2)[:3500])
+                      break
+          elif isinstance(d, list):
+              print('type=list len=', len(d))
+              if d: print(json.dumps(d[0], ensure_ascii=False, indent=2)[:3500])
+          PY
+
+          echo ""
+          echo "===== 2. stage_engine_v2 __main__ / tick 邏輯 ====="
+          for f in /opt/footbreak/stage_engine_v2/*.py; do
+            echo "--- $f ---"
+            [ "$(basename $f)" != "scheduler.py" ] && head -100 "$f"
+          done
+
+          echo ""
+          echo "===== 3. crown ledger.json 一個 fixture watch record（含 raw odds） ====="
+          /opt/footbreak/.venv/bin/python3 - <<'PY'
+          import json
+          d = json.load(open('/var/lib/footbreak/crown/ledger.json'))
+          watch = d.get('watch', {})
+          keys = list(watch.keys())
+          print(f'watch len={len(watch)}')
+          if keys:
+              first = watch[keys[0]]
+              print(f'\nfirst watch fixture id={keys[0]}')
+              print(f'top keys: {list(first.keys())[:30]}')
+              # 揾 raw odds
+              for oddskey in ('odds', 'hkjc_odds', 'market_odds', 'raw_odds', 'hkjc', 'crown_quote', 'quote'):
+                  if oddskey in first:
+                      o = first[oddskey]
+                      print(f'\n  {oddskey}: type={type(o).__name__}')
+                      if isinstance(o, dict):
+                          print(f'    keys: {list(o.keys())[:15]}')
+                          for mk in ('HAD', 'HDC', 'HIL', 'CHL'):
+                              if mk in o:
+                                  v = o[mk]
+                                  print(f'    {mk}: {type(v).__name__} len={len(v) if hasattr(v, "__len__") else "?"}')
+                                  if isinstance(v, list) and v:
+                                      print(f'      first: {json.dumps(v[0], ensure_ascii=False)[:400]}')
+          PY
+
+          echo ""
+          echo "===== 4. crown/predictions.json 第一 item 完整（用 python file 唔用 subprocess）====="
+          /opt/footbreak/.venv/bin/python3 - <<'PY'
+          import json
+          d = json.load(open('/var/lib/footbreak/crown/predictions.json'))
+          if isinstance(d, list) and d:
+              print(json.dumps(d[0], ensure_ascii=False, indent=2)[:5000])
+          PY
+          REMOTE
