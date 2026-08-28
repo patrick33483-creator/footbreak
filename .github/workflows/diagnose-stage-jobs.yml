@@ -21,7 +21,7 @@ jobs:
         run: |
           ssh "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
           cd /opt/footbreak
-          sudo -u www-data /opt/footbreak/.venv/bin/python3 <<'PY'
+          /opt/footbreak/.venv/bin/python3 <<'PY'
           import json, sys
           from datetime import datetime, timezone, timedelta
           sys.path.insert(0, '/opt/footbreak')
