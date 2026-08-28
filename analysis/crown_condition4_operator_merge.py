@@ -12,8 +12,10 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
 import stat
 import tempfile
+import unicodedata
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
@@ -61,6 +63,108 @@ LEGACY_REJECTION_FINGERPRINT = {
         20: ("pending_progress_mismatch", "unverifiable_same_signature_activity"),
     },
 }
+OPERATOR_RESULT_SOURCE = "operator_verified_public_result"
+_CANDIDATE_HASH_FIELDS = (
+    "match_id", "league", "home", "away", "market", "selected_side",
+    "selected_line", "selected_role", "t5_odds", "t5_recorded_at",
+    "kickoff_hkt", "stage_path", "role_path", "selected_line_path", "score",
+    "hdc_grade", "result_known", "result_source", "result_status",
+)
+_VERIFIED_RESULT_SPECS = (
+    {
+        "home": ("CSKA Moscow Youth", "CSKA Moscow U19", "PFC CSKA Moscow Youth"),
+        "away": (
+            "Lokomotiv Moscow Youth", "Lokomotiv Moscow U19",
+            "FC Lokomotiv Moscow Youth",
+        ),
+        "score": "3-2",
+    },
+    {
+        "home": ("Orsha", "FC Orsha"),
+        "away": (
+            "BATE Borisov B", "BATE Borisov II", "BATE-2 Borisov",
+            "BATE Borisov Reserves",
+        ),
+        "score": "1-2",
+    },
+    {
+        "home": ("Babrungas", "FK Babrungas", "Babrungas Plunge"),
+        "away": ("Tauras", "FK Tauras", "Tauras Taurage"),
+        "score": "1-1",
+    },
+    {
+        "home": ("Real Betis", "Real Betis Balompie"),
+        "away": ("Real Sociedad", "Real Sociedad San Sebastian"),
+        "score": "1-0",
+    },
+    {
+        "home": ("West Adelaide Women", "West Adelaide SC Women"),
+        "away": ("Salisbury Inter Women", "Salisbury Inter SC Women"),
+        "score": "0-1",
+    },
+    {
+        "home": (
+            "Jeonbuk Hyundai", "Jeonbuk Hyundai Motors",
+            "Jeonbuk Hyundai Motors FC",
+        ),
+        "away": ("Ulsan HD", "Ulsan HD FC", "Ulsan Hyundai"),
+        "score": "1-0",
+    },
+    {
+        "home": ("Vasas", "Vasas FC", "Vasas SC"),
+        "away": ("Puskas Akademia", "Puskas Akademia FC"),
+        "score": "0-1",
+    },
+    {
+        "home": ("Sudtirol", "FC Sudtirol"),
+        "away": ("Virtus Entella", "ACD Virtus Entella"),
+        "score": "1-0",
+    },
+    {
+        "home": ("Tristan Suarez", "CS Tristan Suarez"),
+        "away": ("Agropecuario", "Agropecuario Argentino", "Club Agropecuario"),
+        "score": "2-0",
+    },
+    {
+        "home": ("Athlone Town Women", "Athlone Town AFC Women", "Athlone Town WFC"),
+        "away": (
+            "Galway United Women", "Galway United FC Women",
+            "Galway United WFC",
+        ),
+        "score": "1-1",
+    },
+    {
+        "home": ("Monagas", "Monagas SC"),
+        "away": ("Portuguesa FC", "Portuguesa"),
+        "score": "0-0",
+    },
+    {
+        "home": (
+            "QPR U21", "Queens Park Rangers U21",
+            "Queens Park Rangers Under 21",
+        ),
+        "away": ("Hull City U21", "Hull City Under 21"),
+        "score": "3-3",
+    },
+    {
+        "home": ("Beroe", "Beroe Stara Zagora", "PFC Beroe Stara Zagora"),
+        "away": ("Spartak Pleven", "OFC Spartak Pleven"),
+        "score": "3-0",
+    },
+    {
+        "home": ("Vaxjo Norra", "Vaxjo Norra IF"),
+        "away": ("Solvesborg", "Solvesborgs GoIF", "Solvesborgs GIF"),
+        "score": "1-2",
+    },
+    {
+        "home": (
+            "Kahraba Ismailia", "Kahrabaa Ismailia",
+            "Kahraba Al Ismailia", "Electricity Ismailia",
+        ),
+        "away": ("Proxy SC", "Proxy Club"),
+        "score": "3-0",
+    },
+)
 
 
 class OperatorMergeBlocked(recovery.RecoveryBlocked):
@@ -69,6 +173,152 @@ class OperatorMergeBlocked(recovery.RecoveryBlocked):
 
 class PostWriteVerificationFailure(OperatorMergeBlocked):
     """The new inode failed verification and the original had to be restored."""
+
+
+def _normalized_team(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    decomposed = unicodedata.normalize("NFKD", value)
+    without_marks = "".join(
+        character for character in decomposed
+        if not unicodedata.combining(character)
+    )
+    return " ".join(
+        re.sub(r"[^a-z0-9]+", " ", without_marks.casefold()).split()
+    )
+
+
+def _candidate_hash(row: dict[str, Any]) -> str:
+    return recovery.canonical_hash({
+        key: row.get(key) for key in _CANDIDATE_HASH_FIELDS
+    })
+
+
+def _replay_summary(rows: list[dict[str, Any]]) -> dict[str, int]:
+    missing = [row for row in rows if row.get("missing_expected_record") is True]
+    unknown = [row for row in rows if row.get("result_known") is False]
+    return {
+        "matching_fixture_count": len(rows),
+        "wilson_price_pass_fixture_count": sum(
+            row.get("passes_wilson_price") is True for row in rows
+        ),
+        "low_price_observation_fixture_count": sum(
+            row.get("passes_wilson_price") is False for row in rows
+        ),
+        "recorded_expected_fixture_count": len(rows) - len(missing),
+        "missing_expected_record_fixture_count": len(missing),
+        "unknown_result_fixture_count": len(unknown),
+        "recorded_unknown_result_fixture_count": sum(
+            row.get("result_known") is False
+            and row.get("missing_expected_record") is not True
+            for row in rows
+        ),
+    }
+
+
+def _apply_operator_verified_result_overlay(
+    locked_replay: dict[str, Any],
+) -> dict[str, Any]:
+    """Return a replay copy with only the 15 approved public scores overlaid."""
+    if not isinstance(locked_replay, dict):
+        raise OperatorMergeBlocked("verified_result_overlay_replay_not_object")
+    replay = copy.deepcopy(locked_replay)
+    rows = replay.get("matching_fixtures")
+    if not isinstance(rows, list) or len(rows) != 40 or any(
+        not isinstance(row, dict) for row in rows
+    ):
+        raise OperatorMergeBlocked("verified_result_overlay_candidate_shape_mismatch")
+
+    identities = [recovery._candidate_identity(row) for row in rows]
+    if (
+        any(not fixture or market != "HDC" for fixture, market in identities)
+        or len(set(identities)) != len(identities)
+    ):
+        raise OperatorMergeBlocked("verified_result_overlay_duplicate_candidate")
+
+    initial_unknown = [
+        row for row in rows if row.get("result_known") is False
+    ]
+    initial_missing = [
+        row for row in rows if row.get("missing_expected_record") is True
+    ]
+    if (
+        len(initial_unknown) != 16
+        or replay.get("summary") != _replay_summary(rows)
+        or replay.get("missing_formal_fixtures") != initial_missing
+        or replay.get("unknown_result_fixtures") != initial_unknown
+    ):
+        raise OperatorMergeBlocked("verified_result_overlay_input_projection_mismatch")
+
+    matched_indexes: set[int] = set()
+    for spec in _VERIFIED_RESULT_SPECS:
+        home_aliases = {_normalized_team(alias) for alias in spec["home"]}
+        away_aliases = {_normalized_team(alias) for alias in spec["away"]}
+        matches = [
+            index for index, row in enumerate(rows)
+            if row.get("result_known") is False
+            and _normalized_team(row.get("home")) in home_aliases
+            and _normalized_team(row.get("away")) in away_aliases
+        ]
+        if len(matches) != 1:
+            raise OperatorMergeBlocked(
+                "verified_result_overlay_spec_match_not_unique"
+            )
+        index = matches[0]
+        if index in matched_indexes:
+            raise OperatorMergeBlocked("verified_result_overlay_duplicate_match")
+        row = rows[index]
+        if (
+            row.get("score") is not None
+            or row.get("hdc_grade") is not None
+            or row.get("result_source") is not None
+        ):
+            raise OperatorMergeBlocked(
+                "verified_result_overlay_candidate_not_previously_unknown"
+            )
+        score = str(spec["score"])
+        row["score"] = score
+        hit = recovery._score_hit(row)
+        result = "Won" if hit else "Lost"
+        row.update({
+            "hdc_grade": {
+                "grade_status": "GRADED",
+                "hit": hit,
+                "result": result,
+            },
+            "result_known": True,
+            "result_source": OPERATOR_RESULT_SOURCE,
+            "result_status": "SETTLED",
+        })
+        row["replay_candidate_hash"] = _candidate_hash(row)
+        matched_indexes.add(index)
+
+    remaining_unknown = [
+        row for row in rows if row.get("result_known") is False
+    ]
+    if (
+        len(matched_indexes) != 15
+        or len(remaining_unknown) != 1
+        or not recovery._pending_fixture(remaining_unknown[0])
+        or remaining_unknown[0].get("score") is not None
+        or remaining_unknown[0].get("hdc_grade") is not None
+        or remaining_unknown[0].get("result_source") is not None
+        or remaining_unknown[0].get("result_status") != "POSTPONED"
+    ):
+        raise OperatorMergeBlocked(
+            "verified_result_overlay_remaining_unknown_not_exact_pending_fixture"
+        )
+
+    replay["missing_formal_fixtures"] = [
+        copy.deepcopy(row) for row in rows
+        if row.get("missing_expected_record") is True
+    ]
+    replay["unknown_result_fixtures"] = [
+        copy.deepcopy(row) for row in rows
+        if row.get("result_known") is False
+    ]
+    replay["summary"] = _replay_summary(rows)
+    return replay
 
 
 def _manifest_fingerprint(manifest: dict[str, Any]) -> dict[str, Any]:
@@ -704,6 +954,7 @@ def apply_operator_merge(config: Settings, replay_program: Path) -> dict[str, An
             Path("/var/lib/footbreak/learning/predictions.sqlite"),
             locked_persisted_snapshot=(ledger, history),
         )
+        replay = _apply_operator_verified_result_overlay(replay)
         report, proposed, signature, binding = plan_operator_merge(ledger, replay)
         backup = _create_root_backup(ledger_path, original_raw)
         proposed_raw = _ledger_bytes(proposed)

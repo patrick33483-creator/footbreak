@@ -19,6 +19,158 @@ from analysis.tests.test_crown_condition4_recovery import (
 from crown.config import settings
 
 
+def replay_with_unresolved_verified_results(ledger: dict) -> dict:
+    replay = replay_fixture(ledger)
+    rows = replay["matching_fixtures"]
+    for index, spec in enumerate(operator._VERIFIED_RESULT_SPECS):
+        row = rows[index]
+        row["home"] = spec["home"][0]
+        row["away"] = spec["away"][0]
+        home_score, away_score = (
+            int(value) for value in str(spec["score"]).split("-")
+        )
+        should_hit = index < 9
+        if should_hit:
+            side = "H" if home_score >= away_score else "A"
+            line = 0.25 if home_score == away_score else -0.25
+        else:
+            side = "A" if home_score > away_score else "H"
+            line = -0.25
+        row["selected_side"] = side
+        row["selected_line"] = line
+        row["selected_line_path"][-1] = line
+        row.update({
+            "score": None,
+            "hdc_grade": None,
+            "result_known": False,
+            "result_source": None,
+            "result_status": None,
+        })
+        rehash_candidate(row)
+    sync_replay_projections(replay)
+    replay["summary"] = operator._replay_summary(rows)
+    return replay
+
+
+class CrownCondition4VerifiedResultOverlayTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.ledger = ledger_fixture()
+        self.replay = replay_with_unresolved_verified_results(self.ledger)
+
+    def test_all_fifteen_scores_overlay_and_leave_only_atlanta_pending(self) -> None:
+        original = copy.deepcopy(self.replay)
+        overlaid = operator._apply_operator_verified_result_overlay(self.replay)
+
+        self.assertEqual(self.replay, original)
+        verified = [
+            row for row in overlaid["matching_fixtures"]
+            if row.get("result_source") == operator.OPERATOR_RESULT_SOURCE
+        ]
+        self.assertEqual(len(verified), 15)
+        self.assertEqual(len({row["match_id"] for row in verified}), 15)
+        self.assertTrue(all(row["result_known"] is True for row in verified))
+        self.assertTrue(all(row["result_status"] == "SETTLED" for row in verified))
+        self.assertTrue(all(
+            row["replay_candidate_hash"] == operator._candidate_hash(row)
+            for row in verified
+        ))
+        self.assertTrue(all(
+            row["hdc_grade"]["result"]
+            == ("Won" if row["hdc_grade"]["hit"] else "Lost")
+            for row in verified
+        ))
+
+        settled = [
+            row for row in overlaid["matching_fixtures"]
+            if row.get("result_known") is True
+        ]
+        self.assertEqual(len(settled), 39)
+        self.assertEqual(
+            sum(operator.recovery._score_hit(row) for row in settled), 21
+        )
+        self.assertEqual(overlaid["summary"]["unknown_result_fixture_count"], 1)
+        self.assertEqual(len(overlaid["unknown_result_fixtures"]), 1)
+        self.assertTrue(operator.recovery._pending_fixture(
+            overlaid["unknown_result_fixtures"][0]
+        ))
+
+        report, _proposed, _signature, _binding = operator.plan_operator_merge(
+            self.ledger, overlaid
+        )
+        self.assertEqual(report["changes"], {
+            "added": 40,
+            "settled": 39,
+            "hits": 21,
+            "non_hits": 18,
+            "pending": 1,
+            "deleted": 0,
+        })
+        self.assertEqual(report["final"], {
+            "observations": 121,
+            "decided": 120,
+            "hits": 73,
+            "pending": 1,
+        })
+
+    def test_overlay_does_not_change_unrelated_rows_or_replay_metadata(self) -> None:
+        original = copy.deepcopy(self.replay)
+        overlaid = operator._apply_operator_verified_result_overlay(self.replay)
+
+        self.assertEqual(
+            overlaid["matching_fixtures"][15:],
+            original["matching_fixtures"][15:],
+        )
+        projected_keys = {
+            "matching_fixtures", "missing_formal_fixtures",
+            "unknown_result_fixtures", "summary",
+        }
+        self.assertEqual(
+            {key: value for key, value in overlaid.items()
+             if key not in projected_keys},
+            {key: value for key, value in original.items()
+             if key not in projected_keys},
+        )
+
+    def test_missing_verified_fixture_fails_closed(self) -> None:
+        replay = copy.deepcopy(self.replay)
+        replay["matching_fixtures"][0]["home"] = "Different Team"
+        rehash_candidate(replay["matching_fixtures"][0])
+        sync_replay_projections(replay)
+        replay["summary"] = operator._replay_summary(replay["matching_fixtures"])
+        with self.assertRaisesRegex(
+            operator.OperatorMergeBlocked,
+            "verified_result_overlay_spec_match_not_unique",
+        ):
+            operator._apply_operator_verified_result_overlay(replay)
+
+    def test_ambiguous_verified_fixture_fails_closed(self) -> None:
+        replay = copy.deepcopy(self.replay)
+        replay["matching_fixtures"][1]["home"] = replay["matching_fixtures"][0]["home"]
+        replay["matching_fixtures"][1]["away"] = replay["matching_fixtures"][0]["away"]
+        rehash_candidate(replay["matching_fixtures"][1])
+        sync_replay_projections(replay)
+        replay["summary"] = operator._replay_summary(replay["matching_fixtures"])
+        with self.assertRaisesRegex(
+            operator.OperatorMergeBlocked,
+            "verified_result_overlay_spec_match_not_unique",
+        ):
+            operator._apply_operator_verified_result_overlay(replay)
+
+    def test_duplicate_candidate_identity_fails_closed(self) -> None:
+        replay = copy.deepcopy(self.replay)
+        replay["matching_fixtures"][1]["match_id"] = (
+            replay["matching_fixtures"][0]["match_id"]
+        )
+        rehash_candidate(replay["matching_fixtures"][1])
+        sync_replay_projections(replay)
+        replay["summary"] = operator._replay_summary(replay["matching_fixtures"])
+        with self.assertRaisesRegex(
+            operator.OperatorMergeBlocked,
+            "verified_result_overlay_duplicate_candidate",
+        ):
+            operator._apply_operator_verified_result_overlay(replay)
+
+
 class CrownCondition4OperatorPlanTests(unittest.TestCase):
     def setUp(self) -> None:
         self.ledger = ledger_fixture()
@@ -221,7 +373,7 @@ class CrownCondition4OperatorTransactionTests(unittest.TestCase):
         self,
     ) -> None:
         ledger = ledger_fixture()
-        replay = replay_fixture(ledger)
+        replay = replay_with_unresolved_verified_results(ledger)
         with tempfile.TemporaryDirectory() as directory:
             state_dir = Path(directory)
             ledger_path = state_dir / "ledger.json"
