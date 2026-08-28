@@ -58,6 +58,7 @@ EXPECTED = {
 }
 PENDING_HOME_ALIASES = {
     "atlanta reserves",
+    "阿特兰大竞技后备队",
     "亚特兰大竞技后备队",
 }
 PENDING_AWAY_ALIASES = {
