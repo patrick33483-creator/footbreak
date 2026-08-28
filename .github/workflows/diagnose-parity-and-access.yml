@@ -1,0 +1,119 @@
+name: 診斷預測一致性 + 網頁 access
+on: workflow_dispatch
+jobs:
+  d:
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          mkdir -p ~/.ssh && printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519 && chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+      - env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          set -uo pipefail
+
+          echo "===== PART A. 預測一致性驗證 ====="
+          echo ""
+          echo "--- A1. crown data.json 同 v2 ledger 對比同一場 fixture ---"
+          /opt/footbreak/.venv/bin/python3 - <<'PY'
+          import json
+          crown = json.load(open('/var/www/crown/data.json'))
+          v2 = json.load(open('/var/lib/footbreak/stage_engine_v2/ledger.json'))
+
+          # crown data.json 用 list of matches
+          crown_matches = {m.get('match_id') or m.get('hkjc_match_id'): m for m in crown.get('matches', [])}
+          v2_fixtures = v2.get('fixtures', {})
+
+          print(f"crown data.json matches count: {len(crown_matches)}")
+          print(f"v2 ledger fixtures count: {len(v2_fixtures)}")
+
+          # 揾同時出現喺兩邊嘅 fixture
+          shared = []
+          for fid in v2_fixtures:
+              if fid in crown_matches:
+                  shared.append(fid)
+          print(f"同時存在: {len(shared)} 場")
+          if not shared:
+              print("!!! 冇 fixture id overlap，可能兩邊用唔同 id 系統")
+              print(f"v2 sample ids: {list(v2_fixtures.keys())[:5]}")
+              print(f"crown sample ids: {list(crown_matches.keys())[:5]}")
+
+          # 對前 3 個 shared fixture 做深度對比
+          for fid in shared[:3]:
+              c = crown_matches[fid]
+              v = v2_fixtures[fid]
+              print(f"\n=== fixture {fid} ===")
+              print(f"crown home/away: {c.get('home')} vs {c.get('away')}")
+              print(f"v2    home/away: {v.get('home')} vs {v.get('away')}")
+              print(f"crown kickoff_hkt: {c.get('kickoff_hkt')}")
+              print(f"v2    kickoff_hkt: {v.get('kickoff_hkt')}")
+              print(f"crown forecast:    {c.get('forecast')}")
+              print(f"crown conviction:  {c.get('conviction')}")
+              # v2 stage 對比
+              stages = v.get('stages', {})
+              for sn in ('首預', 'T-30', 'T-5'):
+                  s = stages.get(sn, {})
+                  if s:
+                      print(f"  v2[{sn}] lead_prob={s.get('lead_prob')} lead_odds={s.get('lead_odds')} lead_market={s.get('lead_market')} forecast={s.get('forecast')} conviction={s.get('conviction')}")
+              # crown forecast_candidates 對照
+              fc = c.get('forecast_candidates', [])
+              if fc:
+                  best = max(fc, key=lambda x: x.get('conviction', 0))
+                  print(f"  crown top candidate: market={best.get('market')} label={best.get('label')} prob={best.get('prob')} odds={best.get('odds')} conviction={best.get('conviction')}")
+          PY
+
+          echo ""
+          echo "--- A2. v2 tick.py 邏輯：確認唔會做獨立計算 ---"
+          grep -n "score_matrix\|fit_goals\|Dixon\|dixon\|poisson\|Poisson\|negbin\|fair_odds\|no_vig\|devig" /opt/footbreak/stage_engine_v2/*.py 2>&1 | grep -v "\.pyc" | head -20 || echo "(冇獨立計算，只 copy crown output)"
+
+          echo ""
+          echo "--- A3. v2 從 crown data.json 讀邊啲 field 落 ledger ---"
+          grep -n "prediction\.get\|match\.get\|lead_" /opt/footbreak/stage_engine_v2/tick.py 2>&1 | head -30
+
+          echo ""
+          echo "===== PART B. 網頁 access 診斷 ====="
+          echo ""
+          echo "--- B1. 三個 endpoint HTTP 狀態 ---"
+          for path in "/" "/stage-v2/" "/crown/"; do
+              echo "URL: http://146.190.93.148${path}"
+              curl -sS -o /dev/null -w "  code=%{http_code} size=%{size_download} time=%{time_total}s server=%{header_server}\n" "http://146.190.93.148${path}" -u crown:toberich 2>&1
+              curl -sS -I "http://146.190.93.148${path}" -u crown:toberich 2>&1 | head -8
+              echo ""
+          done
+
+          echo "--- B2. stage-v2 index.html 頭 500 char ---"
+          curl -sS -u crown:toberich "http://146.190.93.148/stage-v2/" 2>&1 | head -c 800
+          echo ""
+
+          echo "--- B3. data.json endpoint ---"
+          curl -sS -o /tmp/d.json -w "code=%{http_code} size=%{size_download}\n" -u crown:toberich "http://146.190.93.148/stage-v2/data.json"
+          head -c 300 /tmp/d.json
+          echo ""
+
+          echo ""
+          echo "--- B4. nginx 兩個 vhost 狀態 ---"
+          systemctl is-active nginx
+          nginx -T 2>/dev/null | grep -E "server_name|listen|location|proxy_pass|root " | grep -A1 -B1 -E "stage-v2|8083|/var/www" | head -40
+
+          echo ""
+          echo "--- B5. self-heal timer 狀態 ---"
+          systemctl list-timers 2>&1 | grep -iE "self-heal|footbreak-dash" | head -5
+
+          echo ""
+          echo "--- B6. 最近 nginx error log ---"
+          tail -30 /var/log/nginx/error.log 2>&1 | tail -20
+
+          echo ""
+          echo "--- B7. 檢查 http://146.190.93.148/stage-v2/ 有無 redirect 去 https ---"
+          curl -sS -I -L "http://146.190.93.148/stage-v2/" -u crown:toberich --max-redirs 5 2>&1 | grep -iE "HTTP|Location|Strict-Transport|Upgrade" | head -20
+
+          echo ""
+          echo "--- B8. v2 tick timer 有冇跑，最近 log ---"
+          systemctl status stage-engine-v2-tick.timer --no-pager 2>&1 | head -10
+          tail -20 /var/log/footbreak/stage-v2-tick.log 2>&1 | tail -15
+          REMOTE
