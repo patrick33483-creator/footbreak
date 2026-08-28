@@ -1,0 +1,95 @@
+name: 最終 install stage-v2（self-heal 停咗）
+on: workflow_dispatch
+jobs:
+  x:
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          mkdir -p ~/.ssh && printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519 && chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+      - env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          set -euo pipefail
+
+          echo "===== 1. 確認 self-heal 已停 ====="
+          systemctl is-active footbreak-dashboard-self-heal.timer || echo "(inactive)"
+          systemctl is-enabled footbreak-dashboard-self-heal.timer || echo "(disabled)"
+
+          echo ""
+          echo "===== 2. 改動 self-heal 個 source of truth ====="
+          # /opt/footbreak/deploy/nginx-unified-dashboard.conf 就係 self-heal restore 嘅嚟源
+          # 直接向呢個 file 加入 stage-v2 block，令將來就算 self-heal 再啟動都自動包含
+          SRC=/opt/footbreak/deploy/nginx-unified-dashboard.conf
+          if [ -f "$SRC" ]; then
+            cp -a "$SRC" "${SRC}.bak-$(date +%s)"
+            if grep -q "stage-v2" "$SRC"; then
+              echo "source 已含 stage-v2，跳過"
+            else
+              python3 <<'PY'
+          import pathlib, re
+          p = pathlib.Path("/opt/footbreak/deploy/nginx-unified-dashboard.conf")
+          text = p.read_text()
+          insert = """
+              # ---- Stage Engine v2 (皇冠系統V2) ----
+              location ^~ /stage-v2/ {
+                  proxy_pass http://127.0.0.1:8083/;
+                  proxy_http_version 1.1;
+                  proxy_set_header Host $host;
+                  proxy_set_header X-Real-IP $remote_addr;
+                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                  proxy_set_header X-Forwarded-Proto $scheme;
+              }
+              location = /stage-v2 { return 301 /stage-v2/; }
+              # ---- end Stage Engine v2 ----
+          """
+          m = re.search(r'\n[ \t]*location\s*/\s*\{[^}]*proxy_pass[^}]*5001', text)
+          if not m: raise SystemExit("搵唔到 location / 5001")
+          idx = m.start() + 1
+          p.write_text(text[:idx] + insert + text[idx:])
+          print("source 已加入 stage-v2 block")
+          PY
+            fi
+          else
+            echo "!! source $SRC 唔存在，只改 live config"
+          fi
+
+          echo ""
+          echo "===== 3. 同步派到 live unified-dashboard ====="
+          if [ -f "$SRC" ]; then
+            install -m 0644 "$SRC" /etc/nginx/sites-available/unified-dashboard
+            echo "由 source 完整 install"
+          fi
+
+          echo ""
+          echo "===== 4. 驗證 stage-v2 出現 ====="
+          grep -c "stage-v2" /etc/nginx/sites-available/unified-dashboard
+
+          nginx -t
+          systemctl reload nginx
+
+          echo ""
+          echo "===== 5. 內部 curl ====="
+          for u in "/stage-v2/" "/stage-v2/history.html" "/stage-v2/data.json"; do
+            code=$(curl -sS -o /dev/null -w "%{http_code}" "http://127.0.0.1$u")
+            realm=$(curl -sSI "http://127.0.0.1$u" | grep -i "^WWW-Authenticate:" | head -1 | tr -d '\r')
+            xpow=$(curl -sSI "http://127.0.0.1$u" | grep -i "^X-Powered-By:" | head -1 | tr -d '\r')
+            echo "$u -> $code | $realm | ${xpow:-(nginx-only, good)}"
+          done
+
+          echo ""
+          echo "===== 6. 60 秒後再驗（確認 self-heal 唔會再蓋） ====="
+          sleep 60
+          count=$(grep -c "stage-v2" /etc/nginx/sites-available/unified-dashboard)
+          echo "60 秒後 stage-v2 count: $count"
+          if [ "$count" = "0" ]; then
+            echo "!!! FAIL: config 又被清"
+            exit 1
+          fi
+          curl -sSI http://127.0.0.1/stage-v2/ | grep -iE "^(HTTP|Server|WWW-Auth|X-Powered)" | tr -d '\r'
+          REMOTE
