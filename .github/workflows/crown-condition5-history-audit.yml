@@ -94,7 +94,7 @@ jobs:
             --history audit-input/prediction_history.json \
             --condition-number "$CONDITION_NUMBER" \
             --output crown-condition-history-audit.json
-          jq '.summary, .condition.definition, .missing_enrolments' \
+          jq '.summary, .condition.definition, .missing_enrolments, .condition10_funnel' \
             crown-condition-history-audit.json
 
       - name: Diagnose early-stage admission runtime

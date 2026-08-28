@@ -9,7 +9,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
-from analysis.granular_conditions import _descriptor, _paths, _time, canonical_panels
+from analysis.granular_conditions import (
+    _descriptor, _movement, _paths, _relative_direction, _time, canonical_panels,
+)
 
 
 SYSTEM = "crown"
@@ -131,6 +133,87 @@ def _matched_panels(
         item["panel"].get("kickoff") or datetime.min.replace(tzinfo=timezone.utc),
         str(item["panel"].get("fixture") or ""),
     ))
+
+
+def _condition10_funnel(
+    rows: list[dict[str, Any]], raw: dict[tuple[str, str], dict[str, Any]],
+) -> dict[str, Any]:
+    panels = [
+        panel for panel in canonical_panels(rows, settled_only=False)
+        if panel.get("market") == "HIL"
+    ]
+    first = [panel for panel in panels if "首預" in panel["stages"]]
+    t30 = [panel for panel in panels if "T-30" in panel["stages"]]
+    paired = [
+        panel for panel in panels
+        if {"首預", "T-30"}.issubset(panel["stages"])
+    ]
+    criteria = {
+        "terminal_tier_gte_1_70": lambda path: path[-1]["odds_tier"] == "≥1.70",
+        "direction_a_to_a": lambda path: _relative_direction(
+            "HIL", (item["side"] for item in path)
+        ) == "A→A",
+        "terminal_role_over": lambda path: path[-1]["role"] == "大",
+        "terminal_bucket_2_75_to_3_0": lambda path: (
+            path[-1]["line_bucket"] == "2.75–3.0"
+        ),
+        "line_movement_unchanged": lambda path: _movement(
+            item["selected_line"] for item in path
+        ) == "不變",
+    }
+    sequential = {"paired_first_to_t30": len(paired)}
+    survivors: list[tuple[dict[str, Any], tuple[dict[str, Any], ...]]] = [
+        (panel, (panel["stages"]["首預"], panel["stages"]["T-30"]))
+        for panel in paired
+    ]
+    independent_failures: dict[str, int] = {}
+    scored: list[dict[str, Any]] = []
+    for panel, path in survivors:
+        checks = {name: test(path) for name, test in criteria.items()}
+        fixture = str(panel["fixture"])
+        source = raw.get((fixture, "T-30"), {}) or raw.get((fixture, "首預"), {})
+        scored.append({
+            "fixture": fixture,
+            "league": source.get("league"),
+            "home": source.get("home"),
+            "away": source.get("away"),
+            "kickoff": (
+                panel["kickoff"].isoformat()
+                if isinstance(panel.get("kickoff"), datetime) else None
+            ),
+            "matched_axes": sum(checks.values()),
+            "checks": checks,
+            "first": {
+                key: path[0].get(key)
+                for key in ("side", "role", "selected_line", "odds", "odds_tier")
+            },
+            "t30": {
+                key: path[1].get(key)
+                for key in ("side", "role", "selected_line", "odds", "odds_tier")
+            },
+        })
+    for name, test in criteria.items():
+        independent_failures[name] = sum(
+            not test((panel["stages"]["首預"], panel["stages"]["T-30"]))
+            for panel in paired
+        )
+        survivors = [
+            item for item in survivors if test(item[1])
+        ]
+        sequential[f"after_{name}"] = len(survivors)
+    scored.sort(key=lambda item: (
+        -item["matched_axes"],
+        item.get("kickoff") or "",
+        item["fixture"],
+    ))
+    return {
+        "hil_unique_fixtures": len(panels),
+        "with_first_stage": len(first),
+        "with_t30_stage": len(t30),
+        "sequential_counts": sequential,
+        "independent_failure_counts_among_paired": independent_failures,
+        "nearest_matches": scored[:20],
+    }
 
 
 def _identity_rows(
@@ -317,6 +400,9 @@ def audit(
     }
     if condition_number == 5:
         summary["ledger_condition5_rows"] = len(identity_rows)
+    condition10_funnel = (
+        _condition10_funnel(rows, raw) if condition_number == 10 else None
+    )
     return {
         "report": f"crown_condition{condition_number}_history_audit",
         "read_only": True,
@@ -331,6 +417,7 @@ def audit(
             "pending_rollover_progress": frozen.get("pending_rollover_progress"),
         },
         "summary": summary,
+        "condition10_funnel": condition10_funnel,
         "post_activation_matches": post_boundary,
         "missing_enrolments": missing,
         "missing_audit_reason_counts": dict(missing_reasons),
