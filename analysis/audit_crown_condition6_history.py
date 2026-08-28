@@ -102,16 +102,35 @@ def _condition(
     if not isinstance(versions, list) or len(versions) < 2:
         raise ValueError("condition #6 evidence chain is unavailable")
     v1, v2 = versions[:2]
+    pre_recovery = (
+        isinstance(v2, dict)
+        and (v2.get("batch_hits"), v2.get("batch_decided")) == (19, 30)
+        and (v2.get("cumulative_hits"), v2.get("cumulative_decided"))
+        == (80, 127)
+    )
+    recovery = (
+        v2.get("condition6_independent_history_recovery")
+        if isinstance(v2, dict) else None
+    )
+    post_recovery = (
+        isinstance(v2, dict)
+        and (v2.get("batch_hits"), v2.get("batch_decided")) == (26, 47)
+        and (v2.get("cumulative_hits"), v2.get("cumulative_decided"))
+        == (87, 144)
+        and isinstance(recovery, dict)
+        and recovery.get("migration")
+        == "crown-condition6-independent-history-v1"
+    )
     if (
         not isinstance(v1, dict)
-        or not isinstance(v2, dict)
         or (v1.get("cumulative_hits"), v1.get("cumulative_decided"))
         != (61, 97)
-        or (v2.get("batch_hits"), v2.get("batch_decided")) != (19, 30)
-        or (v2.get("cumulative_hits"), v2.get("cumulative_decided"))
-        != (80, 127)
+        or not (pre_recovery or post_recovery)
     ):
-        raise ValueError("condition #6 stored 61/97 + 19/30 evidence changed")
+        raise ValueError(
+            "condition #6 evidence is neither the audited pre-recovery "
+            "61/97 + 19/30 state nor the recovered 61/97 + 26/47 state"
+        )
     return namespace, frozen
 
 

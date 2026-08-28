@@ -1,0 +1,128 @@
+name: Crown condition 6 independent history recovery
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: audit is read-only; apply corrects duplicate evidence and merges independent history
+        required: true
+        default: audit
+        type: choice
+        options: [audit, apply]
+      confirmation:
+        description: "Required for apply: APPLY_CROWN_CONDITION6_INDEPENDENT_HISTORY_V1"
+        required: false
+        type: string
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  recover:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: Prove or apply condition 6 independent history
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          MODE: ${{ inputs.mode }}
+          CONFIRMATION: ${{ inputs.confirmation }}
+          EXPECTED_COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$MODE" = apply ] &&
+             [ "$CONFIRMATION" != APPLY_CROWN_CONDITION6_INDEPENDENT_HISTORY_V1 ]; then
+            echo "apply requires exact confirmation token" >&2
+            exit 2
+          fi
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=8 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "sudo env MODE='$MODE' EXPECTED_COMMIT='$EXPECTED_COMMIT' bash -s" \
+            <<'REMOTE' | tee crown-condition6-history-recovery.json
+          set -euo pipefail
+          cd /opt/footbreak
+          test "$(git rev-parse HEAD)" = "$EXPECTED_COMMIT"
+          python=/opt/footbreak/.venv/bin/python3
+          [ -x "$python" ] || python=python3
+          if [ -f /etc/footbreak.env ]; then set -a; . /etc/footbreak.env; set +a; fi
+          if [ -f /etc/footbreak-crown.env ]; then
+            set -a; . /etc/footbreak-crown.env; set +a
+          fi
+          export CROWN_STATE_DIR="${CROWN_STATE_DIR:-/var/lib/footbreak/crown}"
+          ledger="$CROWN_STATE_DIR/ledger.json"
+          history="$CROWN_STATE_DIR/prediction_history.json"
+          test -s "$ledger"
+          test -s "$history"
+          work="$(mktemp -d)"
+          cleanup() {
+            rm -rf "$work"
+            if [ "${stopped:-0}" = 1 ]; then
+              for timer in $active_timers; do systemctl start "$timer" || true; done
+            fi
+          }
+          trap cleanup EXIT
+          stopped=0
+          active_timers=""
+          if [ "$MODE" = apply ]; then
+            for timer in \
+              crown-round-update.timer crown-first-look-reconcile.timer \
+              crown-early-admission-reconcile.timer crown-sweep.timer \
+              crown-tick.timer crown-settle.timer crown-reverse-t5-drain.timer; do
+              if systemctl is-active --quiet "$timer"; then
+                active_timers="$active_timers $timer"
+              fi
+              systemctl stop "$timer" || true
+            done
+            systemctl stop \
+              crown-round-update.service crown-first-look-reconcile.service \
+              crown-early-admission-reconcile.service crown-sweep.service \
+              crown-tick.service crown-settle.service \
+              crown-reverse-t5-drain.service || true
+            stopped=1
+          fi
+          exec 8>"$CROWN_STATE_DIR/.state.lock"
+          flock -w 120 8
+          cp --preserve=mode,timestamps "$ledger" "$work/ledger.json"
+          cp --preserve=mode,timestamps "$history" "$work/history.json"
+          if [ "$MODE" = apply ]; then
+            stamp="$(TZ=Asia/Hong_Kong date +%Y%m%d-%H%M%S)"
+            install -m 0600 "$ledger" "$ledger.before-condition6-$stamp"
+            PYTHONPATH=/opt/footbreak "$python" \
+              analysis/recover_crown_condition6_history.py \
+              --ledger "$ledger" --history "$history" --apply
+          else
+            PYTHONPATH=/opt/footbreak "$python" \
+              analysis/recover_crown_condition6_history.py \
+              --ledger "$work/ledger.json" --history "$work/history.json"
+          fi
+          flock -u 8
+          REMOTE
+
+      - name: Remove SSH key
+        if: always()
+        run: shred -u ~/.ssh/id_ed25519 2>/dev/null || rm -f ~/.ssh/id_ed25519
+
+      - name: Upload recovery evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: crown-condition6-history-recovery-${{ github.run_id }}
+          path: crown-condition6-history-recovery.json
+          retention-days: 30
+          if-no-files-found: error
