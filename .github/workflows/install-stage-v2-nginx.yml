@@ -1,0 +1,202 @@
+name: 建立 stage-v2 nginx include (可靠版)
+on: workflow_dispatch
+jobs:
+  i:
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          mkdir -p ~/.ssh && printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519 && chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+      - env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          set -euo pipefail
+          CONF=/etc/nginx/sites-available/unified-dashboard
+          BACKUP=/etc/nginx/sites-available/unified-dashboard.bak-install-$(date +%Y%m%d-%H%M%S)
+          cp -a "$CONF" "$BACKUP"
+          echo "備份 $BACKUP"
+
+          # 清除任何舊 stage-v2 相關行（用 python 精準刪除 location = /stage-v2 / location ^~ /stage-v2/ blocks）
+          python3 <<'PY'
+          import re, pathlib
+          p = pathlib.Path("/etc/nginx/sites-available/unified-dashboard")
+          text = p.read_text()
+
+          # 由頭到尾掃描，遇到 location.*stage-v2 就跳過 balanced braces 或者 semicolon-terminated 行
+          # 用一個 tokenizer 處理
+          result = []
+          i = 0
+          n = len(text)
+          while i < n:
+              # 檢查是否喺 location xxx stage-v2 開頭
+              m = re.match(r'\s*location\s+[^{;]*stage-v2[^{;]*[{;]', text[i:])
+              if m:
+                  # 找到 stage-v2 location
+                  hit_end = i + m.end()
+                  # 若以 ; 結尾（單行 return）：直接跳到 ;
+                  if text[hit_end - 1] == ';':
+                      # 跳過埋前面 whitespace
+                      j = i
+                      while j > 0 and text[j-1] in ' \t':
+                          j -= 1
+                      # 跳過後面 newline
+                      k = hit_end
+                      while k < n and text[k] in ' \t\r\n':
+                          if text[k] == '\n':
+                              k += 1
+                              break
+                          k += 1
+                      # 刪除 text[j:k]
+                      result.append(text[:j])  # 只喺第一次啦？
+                      # 唔對，用 diff 模式
+                      break
+                  else:
+                      # { 開始的 block，用 brace depth
+                      depth = 1
+                      k = hit_end
+                      while k < n and depth > 0:
+                          if text[k] == '{':
+                              depth += 1
+                          elif text[k] == '}':
+                              depth -= 1
+                          k += 1
+                      # k = 塊尾 } 之後
+                      while k < n and text[k] in ' \t\r\n':
+                          if text[k] == '\n':
+                              k += 1
+                              break
+                          k += 1
+                      i = k
+                      continue
+              result.append(text[i])
+              i += 1
+          new_text = ''.join(result)
+
+          # 用另一個更簡單方法：正則刪除 stage-v2 block（brace-balanced）
+          # 因為上面邏輯錯，重寫：
+          out = []
+          i = 0
+          while i < n:
+              m = re.match(r'([ \t]*location[^{;]*stage-v2[^{;]*)([{;])', text[i:])
+              if m:
+                  start_line = i
+                  # 回退到行首
+                  while start_line > 0 and text[start_line-1] != '\n':
+                      start_line -= 1
+                  # out 應該裁走 text[start_line:i]（if any）
+                  # 但 out 建構到 i 嘅位置，所以 pop 掉尾部 leading whitespace
+                  while out and out[-1] in ' \t':
+                      out.pop()
+                  # 若最尾係 \n 唔洗郁
+                  end = i + m.end()
+                  if m.group(2) == '{':
+                      depth = 1
+                      k = end
+                      while k < n and depth > 0:
+                          if text[k] == '{': depth += 1
+                          elif text[k] == '}': depth -= 1
+                          k += 1
+                      # k 過咗塊尾 }
+                      # 吞埋後面 \n
+                      while k < n and text[k] in ' \t':
+                          k += 1
+                      if k < n and text[k] == '\n':
+                          k += 1
+                      i = k
+                  else:
+                      # ; 結尾單行
+                      k = end
+                      while k < n and text[k] in ' \t':
+                          k += 1
+                      if k < n and text[k] == '\n':
+                          k += 1
+                      i = k
+                  continue
+              out.append(text[i])
+              i += 1
+
+          cleaned = ''.join(out)
+          p.write_text(cleaned)
+          print(f"clean 後 size: {len(cleaned)} (原 {n})")
+          PY
+
+          echo ""
+          echo "===== clean 後有冇留低 stage-v2 ====="
+          grep -c "stage-v2" "$CONF" || echo 0
+
+          # 而家插入正確嘅 block 喺 server {} 最尾 } 之前
+          python3 <<'PY'
+          import pathlib
+          p = pathlib.Path("/etc/nginx/sites-available/unified-dashboard")
+          text = p.read_text()
+
+          insert = """
+              # ---- Stage Engine v2 shadow dashboard (皇冠系統V2) ----
+              location = /stage-v2 { return 301 /stage-v2/; }
+              location = /stage-v2/data.json {
+                  auth_basic "皇冠系統V2";
+                  auth_basic_user_file /etc/nginx/.htpasswd-crown;
+                  alias /var/www/stage_engine_v2/data.json;
+                  add_header Cache-Control "no-store, must-revalidate";
+                  expires -1;
+              }
+              location = /stage-v2/history.html {
+                  auth_basic "皇冠系統V2";
+                  auth_basic_user_file /etc/nginx/.htpasswd-crown;
+                  alias /var/www/stage_engine_v2/history.html;
+                  add_header Cache-Control "no-store, must-revalidate";
+                  expires -1;
+              }
+              location = /stage-v2/index.html {
+                  auth_basic "皇冠系統V2";
+                  auth_basic_user_file /etc/nginx/.htpasswd-crown;
+                  alias /var/www/stage_engine_v2/index.html;
+                  add_header Cache-Control "no-store, must-revalidate";
+                  expires -1;
+              }
+              location ^~ /stage-v2/ {
+                  auth_basic "皇冠系統V2";
+                  auth_basic_user_file /etc/nginx/.htpasswd-crown;
+                  alias /var/www/stage_engine_v2/;
+                  index index.html;
+              }
+              # ---- end Stage Engine v2 ----
+          """
+          # 搵最後嘅 } (server block 結尾)
+          idx = text.rfind('}')
+          if idx < 0:
+              raise SystemExit("搵唔到收尾 }")
+          new = text[:idx] + insert + '\n' + text[idx:]
+          p.write_text(new)
+          print(f"插入 stage-v2 block 到 offset {idx}, 新 size {len(new)}")
+          PY
+
+          echo ""
+          echo "===== 新 config 檢查 ====="
+          grep -c "stage-v2" "$CONF"
+
+          echo ""
+          echo "===== nginx -t ====="
+          if ! nginx -t; then
+            echo "!!!! nginx test 失敗，rollback"
+            cp -a "$BACKUP" "$CONF"
+            exit 1
+          fi
+
+          systemctl reload nginx
+          echo "nginx reloaded"
+
+          echo ""
+          echo "===== 驗證 curl ====="
+          curl -sS -o /dev/null -w "HTTP %{http_code}  " http://127.0.0.1/stage-v2/
+          curl -sSI http://127.0.0.1/stage-v2/ 2>&1 | grep -iE "^HTTP|WWW-Authenticate|X-Powered"
+          echo ""
+          curl -sSI http://127.0.0.1/stage-v2/history.html 2>&1 | grep -iE "^HTTP|WWW-Authenticate|X-Powered"
+          echo ""
+          curl -sSI http://127.0.0.1/stage-v2/data.json 2>&1 | grep -iE "^HTTP|WWW-Authenticate|X-Powered"
+          REMOTE
