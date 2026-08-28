@@ -439,7 +439,10 @@ def _validate_replay(
             or set(grade) != GRADE_KEYS
             or grade.get("result") not in {"Won", "Lost"}
             or row.get("result_status") != "SETTLED"
-            or row.get("result_source") not in {"prediction_history", "learning_db"}
+            or row.get("result_source") not in {
+                "prediction_history", "learning_db",
+                "operator_verified_public_result",
+            }
             or row.get("score") is None
             or grade.get("hit") is not _score_hit(row)
             or grade.get("result") != ("Won" if _score_hit(row) else "Lost")
