@@ -1,5 +1,10 @@
-"""Patch nginx-unified-dashboard.conf 加 kwan-v2 location block（喺 stage-v2 block 之後）。
-用 brace counting 避免 nested {} 令 regex 提早收尾。
+"""同時加 stage-v2 + kwan-v2 兩個 location block 落 unified-dashboard source of truth。
+兩個都 proxy 去自己 port backend，實現：
+  /stage-v2/  → 127.0.0.1:8083  (舊 realm 「皇冠系統V2」)
+  /kwan-v2/   → 127.0.0.1:8084  (新 realm 「kwan_v2_2026」)
+
+先 idempotent 檢查，已存在就跳過對應 block。
+Insertion 位置：喺 fallback `location / {` 之前。
 """
 import re
 from pathlib import Path
@@ -7,8 +12,16 @@ from pathlib import Path
 p = Path("/opt/footbreak/deploy/nginx-unified-dashboard.conf")
 txt = p.read_text()
 
-new_block = """
-    location ^~ /kwan-v2/ {
+stage_v2_block = """    location ^~ /stage-v2/ {
+        proxy_pass http://127.0.0.1:8083/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+"""
+
+kwan_v2_block = """    location ^~ /kwan-v2/ {
         proxy_pass http://127.0.0.1:8084/;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
@@ -17,36 +30,31 @@ new_block = """
     }
 """
 
-# 揾 stage-v2 block 開始位
-m = re.search(r"location \^~ /stage-v2/ \{", txt)
+# 揾 fallback `location / {`（尾）
+m = re.search(r"(    location / \{)", txt)
 if not m:
-    # 亦可能唔係 ^~ ，fallback
-    m = re.search(r"location\s+[^\n]*/stage-v2/\s*\{", txt)
-if not m:
-    print("!!! stage-v2 location line 揾唔到 — abort")
-    print("--- 頭 3000 char of conf ---")
-    print(txt[:3000])
+    print("!!! fallback 'location /' 揾唔到 — abort")
     raise SystemExit(1)
 
-# brace counting：由 block 開始 { 位置開始，數到對應 }
-start = m.end() - 1  # 指住 {
-depth = 0
-i = start
-while i < len(txt):
-    if txt[i] == "{":
-        depth += 1
-    elif txt[i] == "}":
-        depth -= 1
-        if depth == 0:
-            block_end = i + 1
-            break
-    i += 1
+insert_pos = m.start()
+
+blocks_to_add = ""
+if "/stage-v2/" not in txt:
+    blocks_to_add += stage_v2_block
+    print("→ 加入 stage-v2 block")
 else:
-    print("!!! stage-v2 block 收尾唔到")
-    raise SystemExit(1)
+    print("→ stage-v2 block 已存在，skip")
 
-new_txt = txt[:block_end] + new_block + txt[block_end:]
+if "/kwan-v2/" not in txt:
+    blocks_to_add += kwan_v2_block
+    print("→ 加入 kwan-v2 block")
+else:
+    print("→ kwan-v2 block 已存在，skip")
+
+if not blocks_to_add:
+    print("(nothing to patch)")
+    raise SystemExit(0)
+
+new_txt = txt[:insert_pos] + blocks_to_add + "\n" + txt[insert_pos:]
 p.write_text(new_txt)
-print(f"patched: added kwan-v2 block after stage-v2 block (insert_pos={block_end})")
-print(f"stage-v2 block context:")
-print(txt[m.start():block_end])
+print(f"patched OK (insert_pos={insert_pos}, added {len(blocks_to_add)} bytes)")
