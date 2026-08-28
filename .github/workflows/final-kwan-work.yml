@@ -1,0 +1,23 @@
+name: 最終 kwan-v2 生效
+on:
+  workflow_dispatch:
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+      - env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          scp deploy/final-kwan-work.sh "$DEPLOY_USER@$DEPLOY_HOST:/tmp/final-kwan-work.sh"
+          scp deploy/patch-kwan-v2.py "$DEPLOY_USER@$DEPLOY_HOST:/tmp/patch-kwan-v2.py" 2>/dev/null || true
+          ssh "$DEPLOY_USER@$DEPLOY_HOST" "sudo cp /tmp/patch-kwan-v2.py /opt/footbreak/deploy/patch-kwan-v2.py 2>/dev/null || true; sudo chmod +x /tmp/final-kwan-work.sh && sudo /tmp/final-kwan-work.sh"
