@@ -1,0 +1,39 @@
+name: 深診 stage-v2 route
+on: workflow_dispatch
+jobs:
+  d:
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          mkdir -p ~/.ssh && printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519 && chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+      - env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          echo "===== A: /etc/nginx/sites-enabled 全部 ====="
+          ls -la /etc/nginx/sites-enabled/
+          echo ""
+          echo "===== B: nginx -T 中所有 server_name + listen ====="
+          nginx -T 2>/dev/null | grep -E "^\s*(server_name|listen|server \{|# configuration file)" | head -80
+          echo ""
+          echo "===== C: nginx -T 全部 stage-v2 出現位置 ====="
+          nginx -T 2>/dev/null | grep -n "stage-v2" | head -20
+          echo ""
+          echo "===== D: unified-dashboard 全個 file 尾 60 行 ====="
+          tail -60 /etc/nginx/sites-available/unified-dashboard
+          echo ""
+          echo "===== E: 內部 curl 試各種方法 ====="
+          echo ">> curl http://127.0.0.1/stage-v2/"
+          curl -sSI http://127.0.0.1/stage-v2/ 2>&1 | head -10
+          echo ""
+          echo ">> curl -H Host:146.190.93.148 http://127.0.0.1/stage-v2/"
+          curl -sSI -H "Host: 146.190.93.148" http://127.0.0.1/stage-v2/ 2>&1 | head -10
+          echo ""
+          echo "===== F: 邊個 process 聽 port 80 / 5001 ====="
+          ss -ltnp 2>/dev/null | grep -E ":80\s|:5001\s"
+          REMOTE
