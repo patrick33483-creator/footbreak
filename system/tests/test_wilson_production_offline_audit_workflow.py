@@ -32,9 +32,13 @@ from analysis.legacy_batch_aggregate import (
     validate_sanitized_calculation,
 )
 from analysis.legacy_batch_discovery_publication import (
-    INVALID_KEYS, INVALID_SCHEMA, finalize_publication,
+    CapturedSignal, INVALID_KEYS, INVALID_SCHEMA, finalize_publication,
     publish_remote_receipt, run_captured_command, seal_publication,
-    verify_root_sealed, write_known_hosts_pin, _secure_delete,
+    unpack_private_capture_envelope, verify_root_sealed, write_known_hosts_pin,
+    _secure_delete,
+)
+from analysis.export_legacy_batch_live_authority import (
+    CAPTURE_ENVELOPE_KEYS, build_private_capture_envelope,
 )
 from analysis.tests.test_legacy_batch_aggregate import (
     calculation_document, fixture_ledger, test_runtime,
@@ -220,6 +224,330 @@ class WilsonProductionOfflineAuditWorkflowTests(unittest.TestCase):
         staging.chmod(0o600)
         approved.chmod(0o600)
         return discovery, staging, approved, publication, commit
+
+    def _capture_envelope(self, root: Path, ledger=None):
+        ledger = fixture_ledger() if ledger is None else ledger
+        raw = serialize_ledger_bytes_v1(ledger)
+        discovery, _staging, _approved, _publication, _commit = (
+            self._staged_discovery(root, ledger=ledger)
+        )
+        envelope = build_private_capture_envelope(discovery, raw)
+        path = root / "envelope.json"
+        path.write_bytes(serialize_ledger_bytes_v1(envelope))
+        path.chmod(0o600)
+        info = path.stat()
+        return envelope, path, (info.st_dev, info.st_ino), raw, discovery
+
+    def test_single_envelope_snapshot_survives_writer_update_between_old_steps(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            private = root / "private"
+            audit_input = root / "audit-input"
+            private.mkdir(mode=0o700)
+            audit_input.mkdir(mode=0o700)
+            production = root / "production-ledger.json"
+            old_ledger = fixture_ledger()
+            old_raw = serialize_ledger_bytes_v1(old_ledger)
+            production.write_bytes(old_raw)
+            envelope, envelope_path, identity, _raw, discovery = (
+                self._capture_envelope(private, old_ledger)
+            )
+            self.assertEqual(set(envelope), CAPTURE_ENVELOPE_KEYS)
+
+            # This is the update that broke the former second lock capture.
+            updated = copy.deepcopy(old_ledger)
+            updated["writer_update_between_legacy_and_audit_capture"] = True
+            production.write_bytes(serialize_ledger_bytes_v1(updated))
+
+            discovery_path = private / "discovery.json"
+            ledger_path = audit_input / "footbreak-ledger.json"
+            _discovery_identity, _ledger_identity, digest = (
+                unpack_private_capture_envelope(
+                    envelope_path, discovery_path, ledger_path, identity,
+                )
+            )
+            self.assertEqual(ledger_path.read_bytes(), old_raw)
+            self.assertNotEqual(ledger_path.read_bytes(), production.read_bytes())
+            self.assertEqual(
+                digest, discovery["capture"]["full_pre_ledger_sha256"],
+            )
+            self.assertEqual(digest, envelope["footbreak_ledger_sha256"])
+            self.assertFalse(envelope_path.exists())
+            self.assertEqual(ledger_path.stat().st_mode & 0o777, 0o600)
+
+    def test_capture_envelope_rejects_malformed_duplicate_extra_and_payload_mismatch(self):
+        def duplicate(raw, _value):
+            return raw.replace(
+                b'{\n  "discovery_base64"',
+                b'{\n  "schema": "duplicate",\n  "discovery_base64"',
+                1,
+            )
+
+        mutations = {
+            "malformed": lambda _raw, _value: b"{not-json",
+            "duplicate": duplicate,
+            "extra": lambda _raw, value: serialize_ledger_bytes_v1({
+                **value, "extra": True,
+            }),
+            "base64": lambda _raw, value: serialize_ledger_bytes_v1({
+                **value, "footbreak_ledger_base64": "!!!",
+            }),
+            "length": lambda _raw, value: serialize_ledger_bytes_v1({
+                **value,
+                "footbreak_ledger_length":
+                    value["footbreak_ledger_length"] + 1,
+            }),
+            "hash": lambda _raw, value: serialize_ledger_bytes_v1({
+                **value, "footbreak_ledger_sha256": "f" * 64,
+            }),
+        }
+        for name, mutate in mutations.items():
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                private = root / "private"
+                audit_input = root / "audit-input"
+                private.mkdir(mode=0o700)
+                audit_input.mkdir(mode=0o700)
+                envelope, path, _identity, _ledger, _discovery = (
+                    self._capture_envelope(private)
+                )
+                path.write_bytes(mutate(path.read_bytes(), envelope))
+                info = path.stat()
+                with self.assertRaises(ValueError):
+                    unpack_private_capture_envelope(
+                        path, private / "discovery.json",
+                        audit_input / "footbreak-ledger.json",
+                        (info.st_dev, info.st_ino),
+                    )
+                self.assertFalse(path.exists())
+                self.assertFalse((private / "discovery.json").exists())
+                self.assertFalse((audit_input / "footbreak-ledger.json").exists())
+
+    def test_capture_envelope_output_aliases_and_inode_swap_fail_closed(self):
+        for alias in ("symlink", "hardlink"):
+            with self.subTest(alias=alias), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                private = root / "private"
+                audit_input = root / "audit-input"
+                private.mkdir(mode=0o700)
+                audit_input.mkdir(mode=0o700)
+                _envelope, path, identity, _raw, _discovery = (
+                    self._capture_envelope(private)
+                )
+                target = root / "target"
+                target.write_bytes(b"TARGET-MUST-NOT-CHANGE")
+                target.chmod(0o600)
+                output = audit_input / "footbreak-ledger.json"
+                if alias == "symlink":
+                    output.symlink_to(target)
+                else:
+                    os.link(target, output)
+                with self.assertRaises((FileExistsError, OSError, ValueError)):
+                    unpack_private_capture_envelope(
+                        path, private / "discovery.json", output, identity,
+                    )
+                self.assertEqual(target.read_bytes(), b"TARGET-MUST-NOT-CHANGE")
+                self.assertFalse(path.exists())
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            private = root / "private"
+            audit_input = root / "audit-input"
+            private.mkdir(mode=0o700)
+            audit_input.mkdir(mode=0o700)
+            _envelope, path, identity, _raw, _discovery = (
+                self._capture_envelope(private)
+            )
+            replacement = private / "replacement"
+            replacement.write_bytes(b'{"secret":"REPLACEMENT-MUST-SURVIVE"}')
+            replacement.chmod(0o600)
+            os.replace(replacement, path)
+            with self.assertRaises(ValueError):
+                unpack_private_capture_envelope(
+                    path, private / "discovery.json",
+                    audit_input / "footbreak-ledger.json", identity,
+                )
+            self.assertEqual(
+                path.read_bytes(), b'{"secret":"REPLACEMENT-MUST-SURVIVE"}',
+            )
+
+    def test_unpack_cli_never_prints_private_ledger_and_cleans_envelope(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            private = root / "private"
+            audit_input = root / "audit-input"
+            private.mkdir(mode=0o700)
+            audit_input.mkdir(mode=0o700)
+            ledger = fixture_ledger()
+            ledger["private_marker"] = "SECRET-LEDGER-MARKER"
+            _envelope, path, identity, raw, _discovery = (
+                self._capture_envelope(private, ledger)
+            )
+            result = subprocess.run([
+                "python", "-m", "analysis.legacy_batch_discovery_publication",
+                "unpack", "--envelope", str(path),
+                "--envelope-identity", f"{identity[0]}:{identity[1]}",
+                "--discovery", str(private / "discovery.json"),
+                "--ledger", str(audit_input / "footbreak-ledger.json"),
+            ], cwd=ROOT, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertNotIn(b"SECRET-LEDGER-MARKER", result.stdout)
+            self.assertNotIn(b"SECRET-LEDGER-MARKER", result.stderr)
+            self.assertEqual(
+                (audit_input / "footbreak-ledger.json").read_bytes(), raw,
+            )
+            self.assertFalse(path.exists())
+
+    def test_reviewer_envelope_swap_cleans_retained_outputs_and_original_inode(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            private = root / "private"
+            audit_input = root / "audit-input"
+            private.mkdir(mode=0o700)
+            audit_input.mkdir(mode=0o700)
+            _envelope, path, identity, _raw, _discovery = (
+                self._capture_envelope(private)
+            )
+            discovery_path = private / "discovery.json"
+            ledger_path = audit_input / "footbreak-ledger.json"
+            moved = private / "renamed-original-envelope"
+            replacement = b'{"attacker":"REPLACEMENT-MUST-SURVIVE"}'
+
+            def swap(envelope_file, _discovery_file, _ledger_file):
+                os.rename(envelope_file.path, moved)
+                envelope_file.path.write_bytes(replacement)
+                envelope_file.path.chmod(0o600)
+
+            with self.assertRaisesRegex(
+                ValueError, "retained_private_path_replaced",
+            ):
+                unpack_private_capture_envelope(
+                    path, discovery_path, ledger_path, identity,
+                    race_hook=swap,
+                )
+            self.assertEqual(path.read_bytes(), replacement)
+            self.assertFalse(moved.exists())
+            self.assertFalse(discovery_path.exists())
+            self.assertFalse(ledger_path.exists())
+
+    def test_reviewer_output_swap_wipes_renamed_raw_inode_without_touching_replacement(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            private = root / "private"
+            audit_input = root / "audit-input"
+            private.mkdir(mode=0o700)
+            audit_input.mkdir(mode=0o700)
+            _envelope, path, identity, _raw, _discovery = (
+                self._capture_envelope(private)
+            )
+            discovery_path = private / "discovery.json"
+            ledger_path = audit_input / "footbreak-ledger.json"
+            moved = audit_input / "renamed-original-ledger"
+            replacement = b'{"attacker":"LEDGER-REPLACEMENT-MUST-SURVIVE"}'
+
+            def swap(_envelope_file, _discovery_file, ledger_file):
+                os.rename(ledger_file.path, moved)
+                ledger_file.path.write_bytes(replacement)
+                ledger_file.path.chmod(0o600)
+
+            with self.assertRaisesRegex(
+                ValueError, "private_capture_output_identity_changed",
+            ):
+                unpack_private_capture_envelope(
+                    path, discovery_path, ledger_path, identity,
+                    race_hook=swap,
+                )
+            self.assertEqual(ledger_path.read_bytes(), replacement)
+            self.assertFalse(moved.exists())
+            self.assertFalse(discovery_path.exists())
+            self.assertFalse(path.exists())
+
+    def test_retained_envelope_fd_zeroes_unremovable_external_hardlink(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            private = root / "private"
+            audit_input = root / "audit-input"
+            private.mkdir(mode=0o700)
+            audit_input.mkdir(mode=0o700)
+            _envelope, path, identity, _raw, _discovery = (
+                self._capture_envelope(private)
+            )
+            external = root / "external-hardlink"
+
+            def link(envelope_file, _discovery_file, _ledger_file):
+                os.link(envelope_file.path, external)
+
+            with self.assertRaisesRegex(
+                ValueError, "retained_private_inode_still_linked",
+            ):
+                unpack_private_capture_envelope(
+                    path, private / "discovery.json",
+                    audit_input / "footbreak-ledger.json", identity,
+                    race_hook=link,
+                )
+            self.assertFalse(path.exists())
+            self.assertTrue(external.exists())
+            self.assertEqual(external.read_bytes(), b"")
+            self.assertFalse((private / "discovery.json").exists())
+            self.assertFalse((audit_input / "footbreak-ledger.json").exists())
+
+    def test_unpack_signal_wipes_envelope_discovery_and_raw_ledger(self):
+        for signum in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
+            with self.subTest(signum=signum), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                private = root / "private"
+                audit_input = root / "audit-input"
+                private.mkdir(mode=0o700)
+                audit_input.mkdir(mode=0o700)
+                _envelope, path, identity, _raw, _discovery = (
+                    self._capture_envelope(private)
+                )
+                discovery_path = private / "discovery.json"
+                ledger_path = audit_input / "footbreak-ledger.json"
+                prior = signal.getsignal(signum)
+
+                def interrupt(_envelope_file, _discovery_file, _ledger_file):
+                    os.kill(os.getpid(), signum)
+
+                with self.assertRaises(CapturedSignal):
+                    unpack_private_capture_envelope(
+                        path, discovery_path, ledger_path, identity,
+                        race_hook=interrupt,
+                    )
+                self.assertIs(signal.getsignal(signum), prior)
+                self.assertFalse(path.exists())
+                self.assertFalse(discovery_path.exists())
+                self.assertFalse(ledger_path.exists())
+
+    def test_workflow_uses_single_footbreak_capture_and_final_private_cleanup(self):
+        text = WORKFLOW.read_text()
+        discovery = text.split(
+            "- name: Capture authority-neutral legacy batch discovery", 1,
+        )[1].split(
+            "- name: Capture immutable ledger copies under production locks", 1,
+        )[0]
+        capture = text.split(
+            "- name: Capture immutable ledger copies under production locks", 1,
+        )[1].split(
+            "- name: Bind discovery to captured immutable Footbreak ledger", 1,
+        )[0]
+        self.assertIn("--capture-envelope", discovery)
+        self.assertIn("legacy_batch_discovery_publication unpack", discovery)
+        self.assertIn("--ledger audit-input/footbreak-ledger.json", discovery)
+        self.assertNotIn("/var/lock/footbreak.lock", capture)
+        self.assertNotIn("/opt/footbreak/system/sim_ledger.json", capture)
+        self.assertIn(
+            "FOOTBREAK_CAPTURE_RC: "
+            "${{ steps.legacy_discovery.outputs.footbreak_capture_rc }}",
+            capture,
+        )
+        self.assertNotIn("FOOTBREAK_CAPTURE_RC:", discovery)
+        self.assertIn("/var/lib/footbreak/crown/.state.lock", capture)
+        self.assertIn("Remove private ledger audit inputs", text)
+        cleanup = text.split("- name: Remove private ledger audit inputs", 1)[1]
+        self.assertNotIn("upload-artifact", cleanup)
+        self.assertIn("footbreak-ledger.json", cleanup)
+        self.assertIn("crown-ledger.json", cleanup)
 
     def test_malformed_sensitive_remote_bytes_are_destroyed_and_never_published(self):
         with tempfile.TemporaryDirectory() as directory:

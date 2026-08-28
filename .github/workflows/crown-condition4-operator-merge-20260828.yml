@@ -1,0 +1,156 @@
+name: One-time Crown condition 4 confirmed merge (20260828)
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: >-
+          Type exactly MERGE_CONFIRMED_CROWN_CONDITION_4_20260828.
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: crown-condition4-operator-merge-20260828
+  cancel-in-progress: false
+
+jobs:
+  merge:
+    name: Merge the confirmed 40-row Crown replay
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Enforce the one-time production confirmation
+        env:
+          CONFIRMATION: ${{ inputs.confirmation }}
+          DISPATCH_REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          test "$DISPATCH_REF" = "refs/heads/main"
+          test "$CONFIRMATION" = \
+            "MERGE_CONFIRMED_CROWN_CONDITION_4_20260828"
+
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Configure strict pinned SSH host identity
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_SSH_KNOWN_HOSTS: ${{ secrets.DEPLOY_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          test -n "$DEPLOY_SSH_KEY"
+          test -n "$DEPLOY_SSH_KNOWN_HOSTS"
+          install -m 700 -d "$HOME/.ssh"
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$HOME/.ssh/id_ed25519"
+          printf '%s\n' "$DEPLOY_SSH_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/id_ed25519" "$HOME/.ssh/known_hosts"
+          test -s "$HOME/.ssh/id_ed25519"
+          test -s "$HOME/.ssh/known_hosts"
+
+      - name: Run locked replay and atomic production merge
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          test -n "$DEPLOY_HOST"
+          test -n "$DEPLOY_USER"
+          tar -czf crown-condition4-operator-payload.tgz \
+            analysis/*.py \
+            deploy/audit-crown-condition-replay.py
+          PAYLOAD_SHA256="$(
+            sha256sum crown-condition4-operator-payload.tgz | awk '{print $1}'
+          )"
+          REMOTE_ARCHIVE="/tmp/crown-condition4-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.tgz"
+          scp -o BatchMode=yes -o ConnectTimeout=20 \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
+            crown-condition4-operator-payload.tgz \
+            "$DEPLOY_USER@$DEPLOY_HOST:$REMOTE_ARCHIVE"
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "sudo env EXPECTED_SHA256=$PAYLOAD_SHA256 REMOTE_ARCHIVE=$REMOTE_ARCHIVE bash -s" \
+            > crown-condition4-sanitized-report.json <<'EOSSH'
+          set -euo pipefail
+          work="$(mktemp -d /run/crown-condition4-merge.XXXXXX)"
+          trap 'rm -rf "$work" "$REMOTE_ARCHIVE"' EXIT
+          test "$(sha256sum "$REMOTE_ARCHIVE" | awk '{print $1}')" = \
+            "$EXPECTED_SHA256"
+          tar -xzf "$REMOTE_ARCHIVE" -C "$work"
+          chown -R root:root "$work"
+          chmod -R go-w "$work"
+          env PYTHONPATH="$work:/opt/footbreak" \
+            /opt/footbreak/.venv/bin/python3 \
+            "$work/analysis/crown_condition4_operator_merge.py" \
+            --replay-program \
+            "$work/deploy/audit-crown-condition-replay.py"
+          EOSSH
+
+      - name: Verify and publish only the sanitized aggregate report
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          path = Path("crown-condition4-sanitized-report.json")
+          report = json.loads(path.read_text(encoding="utf-8"))
+          expected_keys = {
+              "schema", "status", "condition_number", "changes", "final",
+              "rollover", "safety", "backup",
+          }
+          if set(report) != expected_keys:
+              raise SystemExit("unexpected report fields")
+          if report != {
+              "schema": "crown-condition-4-operator-merge-report-v1",
+              "status": "APPLIED_AND_VERIFIED",
+              "condition_number": 4,
+              "changes": {
+                  "added": 40, "settled": 39, "hits": 21,
+                  "non_hits": 18, "pending": 1, "deleted": 0,
+              },
+              "final": {
+                  "observations": 121, "decided": 120,
+                  "hits": 73, "pending": 1,
+              },
+              "rollover": {
+                  "active_hits": 61, "active_decided": 101,
+                  "tail_hits": 12, "tail_decided": 19,
+              },
+              "safety": {
+                  "canonical_state_lock": True,
+                  "strict_manifest_before_after": True,
+                  "candidate_duplicates": 0,
+                  "external_authority_fabricated": False,
+              },
+              "backup": {
+                  "created": True, "root_owned": True,
+                  "mode": "0600", "timestamped": True,
+              },
+          }:
+              raise SystemExit("aggregate report mismatch")
+          sanitized = json.dumps(
+              report, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+          )
+          path.write_text(sanitized + "\n", encoding="utf-8")
+          print(sanitized)
+          with Path(__import__("os").environ["GITHUB_STEP_SUMMARY"]).open(
+              "a", encoding="utf-8"
+          ) as handle:
+              handle.write("## Crown condition #4 merge\n\n")
+              handle.write("```json\n" + sanitized + "\n```\n")
+          PY
+
+      - name: Remove local SSH and transient files
+        if: always()
+        run: |
+          shred -u "$HOME/.ssh/id_ed25519" "$HOME/.ssh/known_hosts" \
+            crown-condition4-operator-payload.tgz 2>/dev/null || \
+            rm -f "$HOME/.ssh/id_ed25519" "$HOME/.ssh/known_hosts" \
+              crown-condition4-operator-payload.tgz

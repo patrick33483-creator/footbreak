@@ -18,6 +18,11 @@ from .legacy_batch_aggregate import (
     parse_json_bytes_v1, serialize_ledger_bytes_v1,
     validate_live_discovery, validate_sanitized_calculation,
 )
+from .export_legacy_batch_live_authority import (
+    CAPTURE_ENVELOPE_KEYS, CAPTURE_ENVELOPE_SCHEMA,
+    MAX_CAPTURE_ENVELOPE_BYTES, MAX_DISCOVERY_CAPTURE_BYTES,
+    MAX_LEDGER_CAPTURE_BYTES,
+)
 
 INVALID_SCHEMA = "footbreak-legacy-batch-live-discovery-invalid-v1"
 INVALID_KEYS = {
@@ -124,10 +129,14 @@ def _open_verified(
         raise
 
 
-def _read_verified(path: Path, expected: Identity | None = None) -> bytes:
+def _read_verified(
+    path: Path, expected: Identity | None = None, maximum: int | None = None,
+) -> bytes:
     descriptor = _open_verified(path, os.O_RDONLY, expected)
     try:
         size = os.fstat(descriptor).st_size
+        if maximum is not None and size > maximum:
+            raise ValueError("private_file_exceeds_bound")
         chunks = []
         remaining = size + 1
         while remaining:
@@ -148,6 +157,308 @@ def _verified_identity(path: Path) -> Identity:
         return opened.st_dev, opened.st_ino
     finally:
         os.close(descriptor)
+
+
+def _decode_envelope_payload(
+    document: dict[str, Any], prefix: str, maximum: int,
+) -> bytes:
+    encoded = document.get(prefix + "_base64")
+    length = document.get(prefix + "_length")
+    digest = document.get(prefix + "_sha256")
+    if (
+        not isinstance(encoded, str)
+        or not isinstance(length, int) or isinstance(length, bool)
+        or length < 1 or length > maximum
+        or not isinstance(digest, str) or len(digest) != 64
+        or any(character not in "0123456789abcdef" for character in digest)
+    ):
+        raise ValueError("capture_envelope_payload_metadata_invalid")
+    try:
+        raw = base64.b64decode(encoded, validate=True)
+    except Exception as exc:
+        raise ValueError("capture_envelope_base64_invalid") from exc
+    if len(raw) != length:
+        raise ValueError("capture_envelope_length_mismatch")
+    if hashlib.sha256(raw).hexdigest() != digest:
+        raise ValueError("capture_envelope_hash_mismatch")
+    return raw
+
+
+class _RetainedPrivateFile:
+    """A private file and parent directory held until commit or destruction."""
+
+    def __init__(
+        self, path: Path, descriptor: int, parent_descriptor: int,
+        identity: Identity,
+    ) -> None:
+        self.path = path
+        self.name = path.name
+        self.descriptor = descriptor
+        self.parent_descriptor = parent_descriptor
+        self.identity = identity
+        self.closed = False
+
+    @classmethod
+    def _parent(cls, path: Path) -> int:
+        descriptor = os.open(
+            path.parent,
+            os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY | os.O_NOFOLLOW,
+        )
+        info = os.fstat(descriptor)
+        if (
+            not stat.S_ISDIR(info.st_mode)
+            or stat.S_IMODE(info.st_mode) != 0o700
+            or info.st_uid != os.geteuid()
+        ):
+            os.close(descriptor)
+            raise ValueError("unsafe_private_capture_directory")
+        return descriptor
+
+    @classmethod
+    def open_existing(
+        cls, path: Path, expected: Identity | None,
+    ) -> "_RetainedPrivateFile":
+        parent_descriptor = cls._parent(path)
+        try:
+            descriptor = os.open(
+                path.name,
+                os.O_RDWR | os.O_CLOEXEC | os.O_NOFOLLOW,
+                dir_fd=parent_descriptor,
+            )
+        except Exception:
+            os.close(parent_descriptor)
+            raise
+        try:
+            opened = os.fstat(descriptor)
+            by_path = os.stat(
+                path.name, dir_fd=parent_descriptor, follow_symlinks=False,
+            )
+            identity = (opened.st_dev, opened.st_ino)
+            if (
+                not stat.S_ISREG(opened.st_mode)
+                or opened.st_nlink != 1
+                or stat.S_IMODE(opened.st_mode) != 0o600
+                or identity != (by_path.st_dev, by_path.st_ino)
+                or expected is not None and identity != expected
+            ):
+                raise ValueError("unsafe_file_identity")
+            return cls(path, descriptor, parent_descriptor, identity)
+        except Exception:
+            os.close(descriptor)
+            os.close(parent_descriptor)
+            raise
+
+    @classmethod
+    def create(cls, path: Path, data: bytes) -> "_RetainedPrivateFile":
+        parent_descriptor = cls._parent(path)
+        try:
+            descriptor = os.open(
+                path.name,
+                os.O_RDWR | os.O_CREAT | os.O_EXCL
+                | os.O_CLOEXEC | os.O_NOFOLLOW,
+                0o600,
+                dir_fd=parent_descriptor,
+            )
+        except Exception:
+            os.close(parent_descriptor)
+            raise
+        retained = None
+        try:
+            opened = os.fstat(descriptor)
+            identity = (opened.st_dev, opened.st_ino)
+            retained = cls(path, descriptor, parent_descriptor, identity)
+            if (
+                not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1
+                or stat.S_IMODE(opened.st_mode) != 0o600
+            ):
+                raise ValueError("unsafe_private_capture_output")
+            view = memoryview(data)
+            while view:
+                written = os.write(descriptor, view)
+                view = view[written:]
+            os.fsync(descriptor)
+            retained.verify(data)
+            os.fsync(parent_descriptor)
+            return retained
+        except BaseException:
+            if retained is not None:
+                retained.destroy()
+            else:
+                os.close(descriptor)
+                os.close(parent_descriptor)
+            raise
+
+    def read(self, maximum: int | None = None) -> bytes:
+        size = os.fstat(self.descriptor).st_size
+        if maximum is not None and size > maximum:
+            raise ValueError("private_file_exceeds_bound")
+        os.lseek(self.descriptor, 0, os.SEEK_SET)
+        chunks = []
+        remaining = size + 1
+        while remaining:
+            chunk = os.read(
+                self.descriptor, min(1024 * 1024, remaining),
+            )
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        return b"".join(chunks)
+
+    def verify(self, expected_bytes: bytes | None = None) -> None:
+        opened = os.fstat(self.descriptor)
+        by_path = os.stat(
+            self.name, dir_fd=self.parent_descriptor, follow_symlinks=False,
+        )
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_nlink != 1
+            or stat.S_IMODE(opened.st_mode) != 0o600
+            or self.identity != (opened.st_dev, opened.st_ino)
+            or self.identity != (by_path.st_dev, by_path.st_ino)
+        ):
+            raise ValueError("private_capture_output_identity_changed")
+        if expected_bytes is not None and self.read() != expected_bytes:
+            raise ValueError("private_capture_output_readback_mismatch")
+
+    def close(self) -> None:
+        if not self.closed:
+            os.close(self.descriptor)
+            os.close(self.parent_descriptor)
+            self.closed = True
+
+    def destroy(self) -> None:
+        """Wipe through the retained FD and unlink only matching inodes."""
+        if self.closed:
+            return
+        blocked = {signal.SIGHUP, signal.SIGINT, signal.SIGTERM}
+        prior_mask = signal.pthread_sigmask(signal.SIG_BLOCK, blocked)
+        path_replaced = False
+        try:
+            info = os.fstat(self.descriptor)
+            os.lseek(self.descriptor, 0, os.SEEK_SET)
+            remaining = info.st_size
+            block = b"\0" * min(remaining, 1024 * 1024)
+            while remaining:
+                written = os.write(self.descriptor, block[:remaining])
+                remaining -= written
+            os.fsync(self.descriptor)
+            os.ftruncate(self.descriptor, 0)
+            os.fsync(self.descriptor)
+            try:
+                current = os.stat(
+                    self.name, dir_fd=self.parent_descriptor,
+                    follow_symlinks=False,
+                )
+            except FileNotFoundError:
+                path_replaced = True
+            else:
+                path_replaced = self.identity != (
+                    current.st_dev, current.st_ino,
+                )
+            for name in os.listdir(self.parent_descriptor):
+                try:
+                    candidate = os.stat(
+                        name, dir_fd=self.parent_descriptor,
+                        follow_symlinks=False,
+                    )
+                except FileNotFoundError:
+                    continue
+                if self.identity == (candidate.st_dev, candidate.st_ino):
+                    os.unlink(name, dir_fd=self.parent_descriptor)
+            os.fsync(self.parent_descriptor)
+            if os.fstat(self.descriptor).st_nlink:
+                raise ValueError("retained_private_inode_still_linked")
+            if path_replaced:
+                raise ValueError("retained_private_path_replaced")
+        finally:
+            self.close()
+            signal.pthread_sigmask(signal.SIG_SETMASK, prior_mask)
+
+
+def unpack_private_capture_envelope(
+    envelope_path: Path, discovery_path: Path, ledger_path: Path,
+    envelope_identity: Identity | None = None, race_hook: Any = None,
+) -> tuple[Identity, Identity, str]:
+    """Strictly unpack one private transport object into two mode-0600 files."""
+    envelope_file = None
+    output_files: list[_RetainedPrivateFile] = []
+    completed = False
+    prior_handlers: dict[int, Any] = {}
+    def on_signal(signum: int, _frame: Any) -> None:
+        raise CapturedSignal(signum)
+    for signum in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
+        prior_handlers[signum] = signal.signal(signum, on_signal)
+    try:
+        envelope_file = _RetainedPrivateFile.open_existing(
+            envelope_path, envelope_identity,
+        )
+        envelope_raw = envelope_file.read(MAX_CAPTURE_ENVELOPE_BYTES)
+        envelope = parse_json_bytes_v1(envelope_raw)
+        if (
+            not isinstance(envelope, dict)
+            or set(envelope) != CAPTURE_ENVELOPE_KEYS
+            or envelope.get("schema") != CAPTURE_ENVELOPE_SCHEMA
+            or serialize_ledger_bytes_v1(envelope) != envelope_raw
+        ):
+            raise ValueError("capture_envelope_schema_invalid")
+        discovery_raw = _decode_envelope_payload(
+            envelope, "discovery", MAX_DISCOVERY_CAPTURE_BYTES,
+        )
+        ledger_raw = _decode_envelope_payload(
+            envelope, "footbreak_ledger", MAX_LEDGER_CAPTURE_BYTES,
+        )
+        discovery = parse_json_bytes_v1(discovery_raw)
+        if (
+            not isinstance(discovery, dict)
+            or serialize_ledger_bytes_v1(discovery) != discovery_raw
+            or discovery.get("capture", {}).get("full_pre_ledger_sha256")
+            != envelope["footbreak_ledger_sha256"]
+        ):
+            raise ValueError("capture_envelope_discovery_binding_invalid")
+        # Strict parsing here prevents a malformed private ledger from reaching
+        # any audit command; its exact original bytes remain the hash authority.
+        parse_json_bytes_v1(ledger_raw)
+        if discovery_path.resolve() == ledger_path.resolve():
+            raise ValueError("capture_outputs_alias")
+        discovery_file = _RetainedPrivateFile.create(
+            discovery_path, discovery_raw,
+        )
+        output_files.append(discovery_file)
+        ledger_file = _RetainedPrivateFile.create(ledger_path, ledger_raw)
+        output_files.append(ledger_file)
+        if race_hook is not None:
+            race_hook(envelope_file, discovery_file, ledger_file)
+        envelope_file.destroy()
+        envelope_file = None
+        discovery_file.verify(discovery_raw)
+        ledger_file.verify(ledger_raw)
+        discovery_identity = discovery_file.identity
+        ledger_identity = ledger_file.identity
+        completed = True
+        for retained in output_files:
+            retained.close()
+        return (
+            discovery_identity, ledger_identity,
+            envelope["footbreak_ledger_sha256"],
+        )
+    finally:
+        cleanup_error = None
+        if envelope_file is not None:
+            try:
+                envelope_file.destroy()
+            except Exception as exc:
+                cleanup_error = exc
+        if not completed:
+            for retained in output_files:
+                try:
+                    retained.destroy()
+                except Exception as exc:
+                    cleanup_error = cleanup_error or exc
+        for signum, prior in prior_handlers.items():
+            signal.signal(signum, prior)
+        if cleanup_error is not None and completed:
+            raise cleanup_error
 
 
 def run_captured_command(
@@ -614,11 +925,18 @@ def main() -> int:
     cleanup = subparsers.add_parser("cleanup")
     cleanup.add_argument("--path", required=True, type=Path)
     cleanup.add_argument("--identity", required=True)
+    identify = subparsers.add_parser("identify")
+    identify.add_argument("--path", required=True, type=Path)
     capture = subparsers.add_parser("capture")
     capture.add_argument("--stdout", required=True, type=Path)
     capture.add_argument("--stderr", required=True, type=Path)
     capture.add_argument("--stderr-identity")
     capture.add_argument("child", nargs=argparse.REMAINDER)
+    unpack = subparsers.add_parser("unpack")
+    unpack.add_argument("--envelope", required=True, type=Path)
+    unpack.add_argument("--envelope-identity", required=True)
+    unpack.add_argument("--discovery", required=True, type=Path)
+    unpack.add_argument("--ledger", required=True, type=Path)
     seal = subparsers.add_parser("seal")
     seal.add_argument("--publication", required=True, type=Path)
     seal.add_argument("--sealed", required=True, type=Path)
@@ -667,6 +985,23 @@ def main() -> int:
             "stderr_identity": f"{stderr_identity[0]}:{stderr_identity[1]}",
         }, sort_keys=True, separators=(",", ":")))
         return 0
+    if args.command == "unpack":
+        try:
+            discovery_identity, ledger_identity, digest = (
+                unpack_private_capture_envelope(
+                    args.envelope, args.discovery, args.ledger,
+                    identity(args.envelope_identity),
+                )
+            )
+        except CapturedSignal as exc:
+            return 128 + exc.signum
+        print(json.dumps({
+            "discovery_identity":
+                f"{discovery_identity[0]}:{discovery_identity[1]}",
+            "ledger_identity": f"{ledger_identity[0]}:{ledger_identity[1]}",
+            "ledger_sha256": digest,
+        }, sort_keys=True, separators=(",", ":")))
+        return 0
     if args.command == "seal":
         digest, sealed_identity = seal_publication(
             args.publication, args.sealed, args.expected_sha256,
@@ -693,6 +1028,10 @@ def main() -> int:
         return 0
     if args.command == "cleanup":
         _secure_delete(args.path, identity(args.identity))
+        return 0
+    if args.command == "identify":
+        found = _verified_identity(args.path)
+        print(f"{found[0]}:{found[1]}")
         return 0
     if args.command == "invalid":
         _atomic_write(

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import copy
 import fcntl
 import hashlib
@@ -19,6 +20,21 @@ from .legacy_batch_aggregate import (
     REQUIRED_RUNTIME_MODULES, runtime_identity_from_checkout,
     read_root_owned_json_config, serialize_ledger_bytes_v1,
     validate_sanitized_calculation,
+)
+
+CAPTURE_ENVELOPE_SCHEMA = "footbreak-legacy-batch-private-capture-v1"
+CAPTURE_ENVELOPE_KEYS = {
+    "schema",
+    "discovery_base64", "discovery_length", "discovery_sha256",
+    "footbreak_ledger_base64", "footbreak_ledger_length",
+    "footbreak_ledger_sha256",
+}
+MAX_LEDGER_CAPTURE_BYTES = 128 * 1024 * 1024
+MAX_DISCOVERY_CAPTURE_BYTES = 16 * 1024 * 1024
+MAX_CAPTURE_ENVELOPE_BYTES = (
+    4 * ((MAX_LEDGER_CAPTURE_BYTES + 2) // 3)
+    + 4 * ((MAX_DISCOVERY_CAPTURE_BYTES + 2) // 3)
+    + 4096
 )
 
 
@@ -52,6 +68,77 @@ def _read_fd(descriptor: int) -> bytes:
         if not chunk:
             return b"".join(chunks)
         chunks.append(chunk)
+
+
+def build_private_capture_envelope(
+    discovery: dict[str, Any], raw_ledger_bytes: bytes,
+) -> dict[str, Any]:
+    """Bind sanitized discovery and the exact private audit input bytes."""
+    discovery_bytes = serialize_ledger_bytes_v1(discovery)
+    if len(raw_ledger_bytes) > MAX_LEDGER_CAPTURE_BYTES:
+        raise ValueError("ledger_exceeds_capture_bound")
+    if len(discovery_bytes) > MAX_DISCOVERY_CAPTURE_BYTES:
+        raise ValueError("discovery_exceeds_capture_bound")
+    ledger_digest = hashlib.sha256(raw_ledger_bytes).hexdigest()
+    if discovery["capture"]["full_pre_ledger_sha256"] != ledger_digest:
+        raise ValueError("capture_envelope_ledger_binding_mismatch")
+    return {
+        "schema": CAPTURE_ENVELOPE_SCHEMA,
+        "discovery_base64": base64.b64encode(discovery_bytes).decode("ascii"),
+        "discovery_length": len(discovery_bytes),
+        "discovery_sha256": hashlib.sha256(discovery_bytes).hexdigest(),
+        "footbreak_ledger_base64": base64.b64encode(raw_ledger_bytes).decode("ascii"),
+        "footbreak_ledger_length": len(raw_ledger_bytes),
+        "footbreak_ledger_sha256": ledger_digest,
+    }
+
+
+def _atomic_private_write(path: Path, data: bytes) -> None:
+    """Create or replace one private single-link regular output."""
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=path.name + ".", suffix=".tmp", dir=path.parent,
+    )
+    temporary = Path(temporary_name)
+    try:
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        if path.exists() or path.is_symlink():
+            opened = os.lstat(path)
+            if (
+                not stat.S_ISREG(opened.st_mode)
+                or opened.st_nlink != 1
+                or opened.st_mode & 0o022
+            ):
+                raise ValueError("unsafe_existing_private_output")
+        os.replace(temporary, path)
+        final_fd = os.open(
+            path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW,
+        )
+        try:
+            info = os.fstat(final_fd)
+            by_path = os.stat(path, follow_symlinks=False)
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or info.st_nlink != 1
+                or stat.S_IMODE(info.st_mode) != 0o600
+                or (info.st_dev, info.st_ino) != (by_path.st_dev, by_path.st_ino)
+                or _read_fd(final_fd) != data
+            ):
+                raise ValueError("private_output_verification_failed")
+        finally:
+            os.close(final_fd)
+        directory_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
 
 
 def _verify_writer_inventory(
@@ -121,6 +208,7 @@ def _verify_writer_inventory(
 def export_live_authority(
     ledger_path: Path, runtime_config_path: Path, calculation_path: Path,
     output_path: Path, *, require_quiesced: bool,
+    capture_envelope_path: Path | None = None,
 ) -> dict[str, Any]:
     config, _config_bytes, config_identity = read_root_owned_json_config(
         runtime_config_path
@@ -148,8 +236,6 @@ def export_live_authority(
     calculation = validate_sanitized_calculation(
         parse_json_bytes_v1(calculation_path.read_bytes())
     )
-    initial_path_bytes = ledger_path.read_bytes()
-    initial_hash = hashlib.sha256(initial_path_bytes).hexdigest()
     lock_fd = os.open(
         lock_path,
         os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | os.O_NOFOLLOW,
@@ -177,8 +263,8 @@ def export_live_authority(
             )
             started = _now()
             raw = _read_fd(ledger_fd)
-            if hashlib.sha256(raw).hexdigest() != initial_hash:
-                raise ValueError("ledger_changed_before_locked_read")
+            if len(raw) > MAX_LEDGER_CAPTURE_BYTES:
+                raise ValueError("ledger_exceeds_capture_bound")
             ledger = parse_json_bytes_v1(raw)
             repository_root = Path(str(config.get("repository_root") or "")).resolve()
             if not repository_root.is_absolute():
@@ -215,34 +301,32 @@ def export_live_authority(
             # The timestamp is part of the canonical discovery document.
             discovery.pop("discovery_document_sha256")
             discovery["discovery_document_sha256"] = canonical_hash_v1(discovery)
+            envelope = (
+                build_private_capture_envelope(discovery, raw)
+                if capture_envelope_path is not None else None
+            )
             _file_identity(lock_path, lock_fd)
             if ledger_path.read_bytes() != raw:
                 raise ValueError("ledger_changed_before_unlock")
+            _file_identity(ledger_path, ledger_fd)
         finally:
             os.close(ledger_fd)
-        output_bytes = serialize_ledger_bytes_v1(discovery)
-        descriptor, temporary = tempfile.mkstemp(
-            prefix=output_path.name + ".", dir=output_path.parent,
-        )
-        try:
-            with os.fdopen(descriptor, "wb") as handle:
-                handle.write(output_bytes)
-                handle.flush()
-                os.fsync(handle.fileno())
+        _atomic_private_write(output_path, serialize_ledger_bytes_v1(discovery))
+        if capture_envelope_path is not None:
             if (
-                output_path.resolve() == ledger_path.resolve()
-                or output_path.exists() and os.path.samefile(output_path, ledger_path)
+                capture_envelope_path.resolve() == ledger_path.resolve()
+                or capture_envelope_path.resolve() == output_path.resolve()
+                or capture_envelope_path.exists()
+                and (
+                    os.path.samefile(capture_envelope_path, ledger_path)
+                    or os.path.samefile(capture_envelope_path, output_path)
+                )
             ):
-                raise ValueError("output_aliases_ledger")
-            os.replace(temporary, output_path)
-            directory_fd = os.open(output_path.parent, os.O_RDONLY)
-            try:
-                os.fsync(directory_fd)
-            finally:
-                os.close(directory_fd)
-        finally:
-            if os.path.exists(temporary):
-                os.unlink(temporary)
+                raise ValueError("capture_envelope_output_alias")
+            assert envelope is not None
+            _atomic_private_write(
+                capture_envelope_path, serialize_ledger_bytes_v1(envelope),
+            )
         return discovery
     finally:
         try:
@@ -257,12 +341,14 @@ def main() -> int:
     parser.add_argument("--runtime-config", required=True, type=Path)
     parser.add_argument("--calculation", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--capture-envelope", type=Path)
     parser.add_argument("--require-quiesced", action="store_true")
     args = parser.parse_args()
     try:
         discovery = export_live_authority(
             args.ledger, args.runtime_config, args.calculation, args.output,
             require_quiesced=args.require_quiesced,
+            capture_envelope_path=args.capture_envelope,
         )
         print(json.dumps({
             "valid": True,
