@@ -1,0 +1,35 @@
+name: quickcheck config
+on: workflow_dispatch
+jobs:
+  q:
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          mkdir -p ~/.ssh && printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519 && chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+      - env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          echo "=== unified-dashboard 有無 stage-v2 ==="
+          grep -c "stage-v2" /etc/nginx/sites-available/unified-dashboard || echo 0
+          echo ""
+          echo "=== nginx -T running config 有無 stage-v2 ==="
+          nginx -T 2>/dev/null | grep -c "stage-v2" || echo 0
+          echo ""
+          echo "=== 內部 curl 而家個 realm ==="
+          curl -sSI http://127.0.0.1/stage-v2/ 2>&1 | grep -iE "WWW-Authen|X-Powered|Server"
+          echo ""
+          echo "=== 檔案 mtime + 全部 bak ==="
+          ls -la /etc/nginx/sites-available/ | grep -iE "unified|stage-v2|bak"
+          echo ""
+          echo "=== 可能定期蓋走 config 嘅 process ==="
+          systemctl list-timers --all | grep -iE "nginx|config|dashboard|footbreak" | head
+          echo ""
+          echo "=== crontab -l root ==="
+          crontab -l 2>&1 | head -20
+          REMOTE
