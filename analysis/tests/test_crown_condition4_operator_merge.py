@@ -220,6 +220,53 @@ class CrownCondition4OperatorPlanTests(unittest.TestCase):
         ):
             operator.plan_operator_merge(proposed, self.replay)
 
+    def test_same_fixture_market_in_other_condition_is_not_condition_four_duplicate(
+        self,
+    ) -> None:
+        ledger = copy.deepcopy(self.ledger)
+        accepted_manifest = operator.build_manifest(ledger, "crown")
+        condition_one = next(
+            row
+            for row in ledger["wilson_validation"]["conditions"].values()
+            if row["condition_number"] == 1
+        )
+        candidate = self.replay["matching_fixtures"][0]
+        ledger["bets"].append({
+            "match_id": candidate["match_id"],
+            "market": candidate["market"],
+            "condition_number": 1,
+            "frozen_condition_signature": condition_one["signature"],
+            "status": "SETTLED",
+            "result": "Won",
+        })
+        replay = replay_fixture(ledger)
+        with patch.object(
+            operator, "build_manifest", return_value=accepted_manifest
+        ):
+            report, _proposed, _signature, _binding = operator.plan_operator_merge(
+                ledger, replay
+            )
+        self.assertEqual(report["changes"]["added"], 40)
+
+    def test_same_fixture_market_with_legacy_condition_four_number_is_duplicate(
+        self,
+    ) -> None:
+        ledger = copy.deepcopy(self.ledger)
+        candidate = self.replay["matching_fixtures"][0]
+        ledger["bets"].append({
+            "match_id": candidate["match_id"],
+            "market": candidate["market"],
+            "condition_number": 4,
+            "status": "SETTLED",
+            "result": "Won",
+        })
+        replay = replay_fixture(ledger)
+        with self.assertRaisesRegex(
+            operator.OperatorMergeBlocked,
+            "candidate_fixture_market_already_exists",
+        ):
+            operator.plan_operator_merge(ledger, replay)
+
     def test_approved_hit_count_mismatch_fails_closed(self) -> None:
         replay = copy.deepcopy(self.replay)
         row = replay["matching_fixtures"][0]
