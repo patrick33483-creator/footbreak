@@ -42,7 +42,6 @@ jobs:
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
-          EXPECTED_COMMIT: ${{ github.sha }}
           MODE: ${{ inputs.mode }}
           CONFIRMATION: ${{ inputs.confirmation }}
         run: |
@@ -50,14 +49,36 @@ jobs:
           if [ "$MODE" = apply ]; then
             test "$CONFIRMATION" = APPLY_CROWN_CONDITION5_VERIFIED_RESULTS
           fi
+          target="$DEPLOY_USER@$DEPLOY_HOST"
+          remote_work="$(
+            ssh -o BatchMode=yes -o ConnectTimeout=20 "$target" \
+              'umask 077; mktemp -d /tmp/crown-condition5-results.XXXXXX'
+          )"
+          cleanup_remote() {
+            ssh -o BatchMode=yes -o ConnectTimeout=20 "$target" \
+              "rm -rf -- $(printf '%q' "$remote_work")" >/dev/null 2>&1 || true
+          }
+          trap cleanup_remote EXIT
+          scp -q -o BatchMode=yes -o ConnectTimeout=20 \
+            analysis/apply_crown_condition5_verified_results.py \
+            analysis/crown_condition5_verified_results_20260828.json \
+            "$target:$remote_work/"
+          script_sha="$(
+            sha256sum analysis/apply_crown_condition5_verified_results.py |
+              awk '{print $1}'
+          )"
+          manifest_sha="$(
+            sha256sum analysis/crown_condition5_verified_results_20260828.json |
+              awk '{print $1}'
+          )"
           ssh -o BatchMode=yes -o ConnectTimeout=20 \
             -o ServerAliveInterval=15 -o ServerAliveCountMax=8 \
-            "$DEPLOY_USER@$DEPLOY_HOST" \
-            "sudo env EXPECTED_COMMIT='$EXPECTED_COMMIT' MODE='$MODE' bash -s" \
+            "$target" \
+            "sudo env MODE='$MODE' REMOTE_WORK='$remote_work' \
+              SCRIPT_SHA='$script_sha' MANIFEST_SHA='$manifest_sha' bash -s" \
             <<'REMOTE' | tee crown-condition5-verified-results.json
           set -euo pipefail
           cd /opt/footbreak
-          test "$(git rev-parse HEAD)" = "$EXPECTED_COMMIT"
           python=/opt/footbreak/.venv/bin/python3
           [ -x "$python" ] || python=python3
           if [ -f /etc/footbreak.env ]; then set -a; . /etc/footbreak.env; set +a; fi
@@ -66,8 +87,11 @@ jobs:
           fi
           state="${CROWN_STATE_DIR:-/var/lib/footbreak/crown}"
           ledger="$state/ledger.json"
-          manifest="analysis/crown_condition5_verified_results_20260828.json"
-          test -s "$ledger" && test -s "$manifest"
+          script="$REMOTE_WORK/apply_crown_condition5_verified_results.py"
+          manifest="$REMOTE_WORK/crown_condition5_verified_results_20260828.json"
+          test -s "$ledger" && test -s "$script" && test -s "$manifest"
+          test "$(sha256sum "$script" | awk '{print $1}')" = "$SCRIPT_SHA"
+          test "$(sha256sum "$manifest" | awk '{print $1}')" = "$MANIFEST_SHA"
           work="$(mktemp -d)"
           active_timers=""
           stopped=0
@@ -103,7 +127,7 @@ jobs:
           install -m 0600 "$ledger" "$work/ledger.before"
           install -m 0600 "$ledger" "$work/ledger.audit"
           PYTHONPATH=/opt/footbreak "$python" \
-            analysis/apply_crown_condition5_verified_results.py \
+            "$script" \
             --ledger "$work/ledger.audit" --manifest "$manifest" \
             > "$work/audit.json"
           if [ "$MODE" = apply ]; then
@@ -116,7 +140,7 @@ jobs:
             install -m 0600 "$work/ledger.before" \
               "$ledger.before-condition5-verified-results-$stamp"
             PYTHONPATH=/opt/footbreak "$python" \
-              analysis/apply_crown_condition5_verified_results.py \
+              "$script" \
               --ledger "$ledger" --manifest "$manifest" --apply \
               > "$work/apply.json"
             test "$(jq -r .status "$work/apply.json")" = applied
@@ -129,7 +153,7 @@ jobs:
             chmod 0644 /var/www/crown/data.json
             install -m 0600 "$ledger" "$work/ledger.verify"
             PYTHONPATH=/opt/footbreak "$python" \
-              analysis/apply_crown_condition5_verified_results.py \
+              "$script" \
               --ledger "$work/ledger.verify" --manifest "$manifest" \
               >"$work/verify.json"
             test "$(jq -r .status "$work/verify.json")" = already_applied
