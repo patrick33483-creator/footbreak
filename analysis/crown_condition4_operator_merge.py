@@ -307,8 +307,20 @@ def plan_operator_merge(
             and isinstance(value, int)
             and not isinstance(value, bool)
         )
+        condition_reasons = ";".join(
+            f"{row.get('condition_number')}="
+            + ",".join(
+                reason
+                for reason in row.get("rejection_reasons", [])
+                if isinstance(reason, str)
+                and reason.replace("_", "").isalnum()
+            )
+            for row in input_manifest.get("conditions", [])
+            if isinstance(row, dict) and row.get("rejection_reasons")
+        )
         raise OperatorMergeBlocked(
             f"input_ledger_strict_manifest_invalid:{sanitized or 'unknown:1'}"
+            f":conditions:{condition_reasons or 'unknown'}"
         )
     proposed = copy.deepcopy(ledger)
     signature, frozen, namespace = recovery._condition(proposed)
