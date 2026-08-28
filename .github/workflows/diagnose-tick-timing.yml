@@ -1,0 +1,74 @@
+name: 診斷 Crown Tick 時間預算
+on:
+  workflow_dispatch:
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 設定 SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+      - name: 收集 tick timing probe
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          echo "===== TIMING PROBE tail 200 ====="
+          tail -n 200 /var/lib/footbreak/crown/tick-timing-probe.jsonl 2>/dev/null || echo "no probe file"
+          echo ""
+          echo "===== crown-tick.service 最近 5 次 journal ====="
+          journalctl -u crown-tick.service --since "20min ago" --no-pager -o short-precise | tail -200
+          echo ""
+          echo "===== crown-tick systemctl status ====="
+          systemctl status crown-tick.service --no-pager -l | head -50
+          echo ""
+          echo "===== crown-sweep 最近 journal 有無寫入 dashboard ====="
+          journalctl -u crown-sweep.service --since "1h ago" --no-pager -o short-precise | tail -100
+          echo ""
+          echo "===== /var/www/crown/data.json mtime ====="
+          stat /var/www/crown/data.json 2>/dev/null | grep -E "Modify|Size" || echo "missing"
+          echo ""
+          echo "===== HKJC feed 目前狀態 (今日賽事) ====="
+          ls -la /var/lib/footbreak/crown/ | head -20
+          echo ""
+          echo "===== ledger.watch 中 kickoff 分布 (未來 24h) ====="
+          python3 <<'PY'
+          import json, time
+          try:
+              with open('/opt/footbreak/system/sim_ledger.json') as f:
+                  led = json.load(f)
+              watches = led.get('watch') or {}
+              now = time.time()
+              buckets = {'past': 0, '0-1h': 0, '1-3h': 0, '3-12h': 0, '12-24h': 0, '24h+': 0}
+              hkjc_count = 0
+              for wid, w in watches.items():
+                  ko = w.get('kickoff_epoch') or 0
+                  if not ko: continue
+                  d = ko - now
+                  if 'hkjc' in str(w.get('source', '')).lower() or 'HKJC' in str(w):
+                      hkjc_count += 1
+                  if d < 0: buckets['past'] += 1
+                  elif d < 3600: buckets['0-1h'] += 1
+                  elif d < 10800: buckets['1-3h'] += 1
+                  elif d < 43200: buckets['3-12h'] += 1
+                  elif d < 86400: buckets['12-24h'] += 1
+                  else: buckets['24h+'] += 1
+              print(f"total watches: {len(watches)}, hkjc-tagged: {hkjc_count}")
+              print(f"kickoff buckets: {buckets}")
+              # sample first 3 upcoming HKJC-looking watches
+              upcoming = [(w.get('kickoff_epoch'), wid, w) for wid, w in watches.items()
+                          if (w.get('kickoff_epoch') or 0) > now]
+              upcoming.sort()
+              for ko, wid, w in upcoming[:5]:
+                  print(f"  ko={time.strftime('%m-%d %H:%M', time.localtime(ko))} id={wid[:40]} src={w.get('source', 'n/a')} home={w.get('home_team', '?')} away={w.get('away_team', '?')}")
+          except Exception as e:
+              print(f"ledger read failed: {e}")
+          PY
+          REMOTE
