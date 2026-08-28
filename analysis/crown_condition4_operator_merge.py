@@ -278,9 +278,16 @@ def _apply_operator_verified_result_overlay(
             and _team_matches(row.get("away"), spec["away"])
         ]
         if len(matches) != 1:
+            unknown_labels = "|".join(
+                f"{_normalized_team(row.get('home'))}"
+                f"_vs_{_normalized_team(row.get('away'))}"
+                for row in rows
+                if row.get("result_known") is False
+            )
             raise OperatorMergeBlocked(
                 "verified_result_overlay_spec_match_not_unique:"
-                f"spec_{spec_index}:matches_{len(matches)}"
+                f"spec_{spec_index}:matches_{len(matches)}:"
+                f"unknown_{unknown_labels}"
             )
         index = matches[0]
         if index in matched_indexes:
