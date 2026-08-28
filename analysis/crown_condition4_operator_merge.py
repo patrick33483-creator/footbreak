@@ -756,10 +756,36 @@ def main() -> int:
     except Exception as exc:
         # Never emit fixture rows, ledger bytes, paths containing secrets, or
         # exception detail that could include them.
+        safe_recovery_codes = {
+            "missing_or_wrong_crown_wilson_namespace",
+            "condition_4_not_unique",
+            "condition_4_frozen_shape_mismatch",
+            "condition_4_evidence_versions_malformed",
+            "condition_4_legacy_counts_mismatch",
+            "legacy_19_identity_unavailability_not_proven",
+            "condition_4_active_evidence_binding_mismatch",
+            "replay_header_or_condition_binding_invalid",
+            "replay_counts_or_duplicate_audit_mismatch",
+            "postponed_fixture_count_mismatch",
+            "replay_row_projection_mismatch",
+            "candidate_is_not_low_odds_under_active_v2",
+            "formal_observation_constructor_rejected_candidate",
+            "deterministic_recovered_row_schema_drift",
+            "input_ledger_strict_manifest_invalid",
+            "partial_existing_recovery_requires_review",
+            "post_recovery_rollover_assertion_failed",
+            "proposed_ledger_strict_manifest_invalid",
+        }
+        recovery_code = (
+            str(exc)
+            if isinstance(exc, recovery.RecoveryBlocked)
+            and str(exc) in safe_recovery_codes
+            else None
+        )
         error_code = (
             str(exc)
             if isinstance(exc, OperatorMergeBlocked)
-            else type(exc).__name__
+            else recovery_code or type(exc).__name__
         )
         print(json.dumps({
             "schema": SCHEMA,
