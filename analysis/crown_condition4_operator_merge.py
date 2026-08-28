@@ -563,10 +563,16 @@ def main() -> int:
     except Exception as exc:
         # Never emit fixture rows, ledger bytes, paths containing secrets, or
         # exception detail that could include them.
+        error_code = (
+            str(exc)
+            if isinstance(exc, OperatorMergeBlocked)
+            else type(exc).__name__
+        )
         print(json.dumps({
             "schema": SCHEMA,
             "status": "BLOCKED",
             "error": type(exc).__name__,
+            "error_code": error_code,
         }, sort_keys=True))
         return 2
     print(json.dumps(report, sort_keys=True, separators=(",", ":")))
