@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "condition_number": 5,
+  "condition_signature": "7d990edf3c230cf5a21ead44",
+  "decision_stage": "T-30",
+  "market": "HIL",
+  "selection": "H",
+  "score_scope": "90_minutes_including_stoppage_time_excluding_extra_time",
+  "verified_at": "2026-08-28T10:45:00+08:00",
+  "results": [
+    {"match_id":"3004363","home_score":1,"away_score":1,"line":3.0,"expected_result":"Lost","sources":["https://www.futbol24.com/match/2026/08/20/national/Sweden/Svenska-Cupen/2026-2027/Round-2/Vasalunds-IF/vs/Norrkoping","https://www.livescore.com/en/football/sweden/cup-qualification/vasalunds-vs-ifk-norrkoeping/1797943/"]},
+    {"match_id":"3064838","home_score":0,"away_score":0,"line":2.75,"expected_result":"Lost","sources":["https://www.bbc.com/sport/football/live/cmkgvvnx93vlt","https://www.espn.com/soccer/match/_/gameId/401910953/brighton-hove-albion-tromso"]},
+    {"match_id":"3000414","home_score":4,"away_score":2,"line":2.75,"expected_result":"Won","sources":["https://www.bbc.com/sport/football/live/cmkgvvkw26gdt","https://www.transfermarkt.com/spielbericht/index/spielbericht/4901519"]},
+    {"match_id":"2995123","home_score":1,"away_score":2,"line":3.0,"expected_result":"Refunded","sources":["https://datencenter.dfb.de/en/data-center/dfb-pokal/2026-27/round-1/2418323","https://www.bbc.com/sport/football/live/ckqx775j4w2vt"]},
+    {"match_id":"3005365","home_score":2,"away_score":1,"line":2.75,"expected_result":"Half Won","sources":["https://www.365scores.com/football/match/challenger-pro-league-6142/k.s.c.-lokeren-temse-kas-eupen-1180-1199-6142","https://www.the-sports.org/football-soccer-belgium-division-2-exqi-league-2026-2027-results-eprd138891.html"]},
+    {"match_id":"2914388","home_score":1,"away_score":2,"line":3.0,"expected_result":"Refunded","sources":["https://www.bbc.com/sport/football/live/ck2044v7x1g6t","https://www.sofascore.com/football/match/galway-united-dundalk-fc/EnbsHXeb"]},
+    {"match_id":"3011571","home_score":1,"away_score":0,"line":2.75,"expected_result":"Lost","sources":["https://www.bbc.com/sport/football/live/c6n9nn0l112dt","https://www.transfermarkt.com/spielbericht/index/spielbericht/4916732"]},
+    {"match_id":"2920947","home_score":3,"away_score":2,"line":2.75,"expected_result":"Won","sources":["https://www.futbol24.com/match/2026/08/22/national/Australia/NPL-Victoria/2026/Regular-Season/Hume-City/vs/George-Cross","https://www.betexplorer.com/football/australia/npl-victoria/hume-city-george-cross/lU4LO1tK/"]},
+    {"match_id":"2929695","home_score":1,"away_score":0,"line":2.75,"expected_result":"Lost","sources":["https://www.sofascore.com/football/match/ulsan-hd-jeonbuk-hyundai-motors/iNcsddd","https://news.sbs.co.kr/english/article.do?news_id=N1008717028"]},
+    {"match_id":"3007045","home_score":0,"away_score":0,"line":2.75,"expected_result":"Lost","sources":["https://www.bbc.com/sport/football/live/ckz7dzpr3dwxt","https://www.skysports.com/football/doncaster-rovers-vs-barnsley/live/561616"]},
+    {"match_id":"3007047","home_score":2,"away_score":2,"line":2.75,"expected_result":"Won","sources":["https://www.skysports.com/football/luton-town-vs-notts-county/live/561618","https://www.espn.co.uk/football/match/_/gameId/401880906/notts-county-luton-town"]},
+    {"match_id":"3039858","home_score":0,"away_score":4,"line":3.0,"expected_result":"Won","sources":["https://www.bbc.com/sport/football/live/cw8dn3r7ped9t","https://www.futbol24.com/match/2026/08/22/national/Czech-Rep/1-Liga/2026-2027/Artis-Brno/vs/Sparta-Prague"]},
+    {"match_id":"3017884","home_score":3,"away_score":1,"line":3.0,"expected_result":"Won","sources":["https://www.skysports.com/football/sc-bregenz-vs-sturm-graz-amateure/562474","https://www.5min.at/graz/5202608231011/sturm-ii-muss-sich-in-bregenz-mit-13-geschlagen-geben/"]},
+    {"match_id":"3010000","home_score":0,"away_score":2,"line":2.75,"expected_result":"Lost","sources":["https://www.espn.com/soccer/match/_/gameId/401886215/deportivo-moquegua-sport-huancayo","https://www.futbol24.com/match/2026/08/22/national/Peru/Liga-1/2026/Clausura/Sport-Huancayo/vs/Moquegua"]},
+    {"match_id":"2993760","home_score":4,"away_score":1,"line":3.0,"expected_result":"Won","sources":["https://www.espn.com/soccer/match/_/gameId/401874931/monza-internazionale","https://www.sofascore.com/football/match/monza-inter/XdbsEeb"]},
+    {"match_id":"3009466","home_score":6,"away_score":0,"line":3.0,"expected_result":"Won","sources":["https://www.ruik.cz/fotbal/zive-zapasy/jablonec-b-velke-hamry/18232351/","https://www.futbol24.com/match/2026/08/23/national/Czech-Rep/CFL/2026-2027/Group-B/Jablonec-B/vs/Velke-Hamry"]},
+    {"match_id":"3067977","home_score":1,"away_score":1,"line":3.0,"expected_result":"Lost","sources":["https://sportnet.sme.sk/futbalnet/z/sfz/zapas/6a3c437fe5a4847e6278fdbc/","https://www.futbol24.com/match/2026/08/23/national/Slovakia/3-liga/2026-2027/3-liga-Centre/Dukla-B-B/vs/Tatran-O-V"]},
+    {"match_id":"3035876","home_score":6,"away_score":1,"line":3.0,"expected_result":"Won","sources":["https://legionisci.com/news/105908/ii-liga-legia-ii-warszawa-6-1-sokol-kleczew","http://www.90minut.pl/mecz.php?id_mecz=2114359"]},
+    {"match_id":"2998226","home_score":1,"away_score":0,"line":3.0,"expected_result":"Lost","sources":["https://www.bbc.com/sport/football/live/c9zrjdmzxrjgt","https://www.espn.com/soccer/match/_/gameId/401874507/randers-fc-fc-midtjylland"]},
+    {"match_id":"3010400","home_score":3,"away_score":1,"line":2.75,"expected_result":"Won","sources":["https://agerpres.ro/sport/2026/08/23/fotbal-victorie-fara-emotii-pentru-universitatea-craiova-in-superliga-3-1-cu-fc-voluntari--1587124","https://www.365scores.com/football/match/liga-1-136/cs-universitatea-craiova-fc-voluntari-2048-14432-136"]},
+    {"match_id":"2994884","home_score":2,"away_score":0,"line":2.75,"expected_result":"Lost","sources":["https://www.futbol24.com/match/2026/08/23/national/Lithuania/A-Lyga/2026/Suduva/vs/FK-Panevezys","https://www.footlive.com/score/fk-suduva-marijampole-vs-fk-panevezys-2026-08-23/"]},
+    {"match_id":"3001795","home_score":3,"away_score":1,"line":2.75,"expected_result":"Won","sources":["https://www.transfermarkt.de/spielbericht/index/spielbericht/4963357","https://www.footlive.com/score/bnei-yehuda-vs-hapoel-kfar-shalem-2026-08-23/"]},
+    {"match_id":"3072251","home_score":3,"away_score":1,"line":3.0,"expected_result":"Won","sources":["https://www.soccerpunter.com/h2h/Beitar-Jerusalem-U19-vs-Hapoel-Haifa-U19/264491/264496/","https://www.365scores.com/en-uk/football/match/youth-league-525/hapoel-haifa-u19-ironi-ramat-hasharon-u19-8184-9855-525"]},
+    {"match_id":"3056253","home_score":2,"away_score":1,"line":2.75,"expected_result":"Half Won","sources":["https://oddslot.com/scorematch/liga-revela%C3%A7%C3%A3o-u23/academico-viseu-u23/vizela-u23/25-aug-2026/","https://www.footlive.com/score/academico-viseu-u23-vs-vizela-u23-2026-08-25/"]},
+    {"match_id":"3062528","home_score":3,"away_score":2,"line":2.75,"expected_result":"Won","sources":["https://www.bbc.com/sport/football/live/cwm2gmjpj5jqt","https://www.sofascore.com/football/match/sabah-fk-hapoel-beer-sheva/cecsDghc"]},
+    {"match_id":"2933126","home_score":4,"away_score":1,"line":2.75,"expected_result":"Won","sources":["https://www.livescore.com/en/football/uzbekistan/superliga/lokomotiv-tashkent-vs-bunyodkor-tashkent/1743510/","https://www.365scores.com/football/match/super-league-5664/fc-bunyodkor-lokomotiv-tashkent-7209-12976-5664"]},
+    {"match_id":"2933127","home_score":0,"away_score":2,"line":2.75,"expected_result":"Lost","sources":["https://championat.asia/news/mashal-navbahor-tarkiblar-malum","https://www.sofascore.com/football/match/mash-al-mubarek-navbahor-namangan/nfqsofq"]},
+    {"match_id":"3037785","home_score":1,"away_score":3,"line":3.0,"expected_result":"Won","sources":["https://www.livescore.com/en/football/qatar/qatar-stars-league/al-gharafa-vs-al-shamal/1838540/","https://www.sportsmole.co.uk/football/qatar-stars-league/al-gharafa-vs-al-shamal_game_255824.html"]}
+  ],
+  "postponed_pending": [
+    {"match_id":"3041538","reason":"postponed_no_result"}
+  ]
+}
