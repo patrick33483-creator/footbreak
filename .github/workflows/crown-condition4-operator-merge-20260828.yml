@@ -132,7 +132,9 @@ jobs:
               },
               "safety": {
                   "canonical_state_lock": True,
-                  "strict_manifest_before_after": True,
+                  "condition_4_manifest_valid_before_after": True,
+                  "legacy_rejection_fingerprint_preserved": True,
+                  "unrelated_conditions_unchanged": True,
                   "candidate_duplicates": 0,
                   "external_authority_fabricated": False,
               },
