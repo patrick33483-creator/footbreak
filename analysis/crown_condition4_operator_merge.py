@@ -72,9 +72,12 @@ _CANDIDATE_HASH_FIELDS = (
 )
 _VERIFIED_RESULT_SPECS = (
     {
-        "home": ("CSKA Moscow Youth", "CSKA Moscow U19", "PFC CSKA Moscow Youth"),
+        "home": (
+            "CSKA", "CSKA Moscow Youth", "CSKA Moscow U19",
+            "PFC CSKA Moscow Youth",
+        ),
         "away": (
-            "Lokomotiv Moscow Youth", "Lokomotiv Moscow U19",
+            "Lokomotiv", "Lokomotiv Moscow Youth", "Lokomotiv Moscow U19",
             "FC Lokomotiv Moscow Youth",
         ),
         "score": "3-2",
@@ -82,7 +85,7 @@ _VERIFIED_RESULT_SPECS = (
     {
         "home": ("Orsha", "FC Orsha"),
         "away": (
-            "BATE Borisov B", "BATE Borisov II", "BATE-2 Borisov",
+            "BATE", "BATE Borisov B", "BATE Borisov II", "BATE-2 Borisov",
             "BATE Borisov Reserves",
         ),
         "score": "1-2",
@@ -98,26 +101,26 @@ _VERIFIED_RESULT_SPECS = (
         "score": "1-0",
     },
     {
-        "home": ("West Adelaide Women", "West Adelaide SC Women"),
-        "away": ("Salisbury Inter Women", "Salisbury Inter SC Women"),
+        "home": ("West Adelaide", "West Adelaide Women", "West Adelaide SC Women"),
+        "away": ("Salisbury Inter", "Salisbury Inter Women", "Salisbury Inter SC Women"),
         "score": "0-1",
     },
     {
         "home": (
-            "Jeonbuk Hyundai", "Jeonbuk Hyundai Motors",
+            "Jeonbuk", "Jeonbuk Hyundai", "Jeonbuk Hyundai Motors",
             "Jeonbuk Hyundai Motors FC",
         ),
-        "away": ("Ulsan HD", "Ulsan HD FC", "Ulsan Hyundai"),
+        "away": ("Ulsan", "Ulsan HD", "Ulsan HD FC", "Ulsan Hyundai"),
         "score": "1-0",
     },
     {
         "home": ("Vasas", "Vasas FC", "Vasas SC"),
-        "away": ("Puskas Akademia", "Puskas Akademia FC"),
+        "away": ("Puskas", "Puskas Akademia", "Puskas Akademia FC"),
         "score": "0-1",
     },
     {
         "home": ("Sudtirol", "FC Sudtirol"),
-        "away": ("Virtus Entella", "ACD Virtus Entella"),
+        "away": ("Entella", "Virtus Entella", "ACD Virtus Entella"),
         "score": "1-0",
     },
     {
@@ -126,9 +129,12 @@ _VERIFIED_RESULT_SPECS = (
         "score": "2-0",
     },
     {
-        "home": ("Athlone Town Women", "Athlone Town AFC Women", "Athlone Town WFC"),
+        "home": (
+            "Athlone Town", "Athlone Town Women", "Athlone Town AFC Women",
+            "Athlone Town WFC",
+        ),
         "away": (
-            "Galway United Women", "Galway United FC Women",
+            "Galway United", "Galway United Women", "Galway United FC Women",
             "Galway United WFC",
         ),
         "score": "1-1",
@@ -140,10 +146,10 @@ _VERIFIED_RESULT_SPECS = (
     },
     {
         "home": (
-            "QPR U21", "Queens Park Rangers U21",
+            "QPR", "QPR U21", "Queens Park Rangers U21",
             "Queens Park Rangers Under 21",
         ),
-        "away": ("Hull City U21", "Hull City Under 21"),
+        "away": ("Hull City", "Hull City U21", "Hull City Under 21"),
         "score": "3-3",
     },
     {
@@ -152,7 +158,7 @@ _VERIFIED_RESULT_SPECS = (
         "score": "3-0",
     },
     {
-        "home": ("Vaxjo Norra", "Vaxjo Norra IF"),
+        "home": ("Vaxjo", "Vaxjo Norra", "Vaxjo Norra IF"),
         "away": ("Solvesborg", "Solvesborgs GoIF", "Solvesborgs GIF"),
         "score": "1-2",
     },
@@ -161,7 +167,7 @@ _VERIFIED_RESULT_SPECS = (
             "Kahraba Ismailia", "Kahrabaa Ismailia",
             "Kahraba Al Ismailia", "Electricity Ismailia",
         ),
-        "away": ("Proxy SC", "Proxy Club"),
+        "away": ("Proxy", "Proxy SC", "Proxy Club"),
         "score": "3-0",
     },
 )
@@ -186,6 +192,19 @@ def _normalized_team(value: Any) -> str:
     return " ".join(
         re.sub(r"[^a-z0-9]+", " ", without_marks.casefold()).split()
     )
+
+
+def _team_matches(value: Any, aliases: tuple[str, ...]) -> bool:
+    candidate_tokens = set(_normalized_team(value).split())
+    if not candidate_tokens:
+        return False
+    for alias in aliases:
+        alias_tokens = set(_normalized_team(alias).split())
+        if alias_tokens and (
+            alias_tokens <= candidate_tokens or candidate_tokens <= alias_tokens
+        ):
+            return True
+    return False
 
 
 def _candidate_hash(row: dict[str, Any]) -> str:
@@ -252,13 +271,11 @@ def _apply_operator_verified_result_overlay(
 
     matched_indexes: set[int] = set()
     for spec_index, spec in enumerate(_VERIFIED_RESULT_SPECS, start=1):
-        home_aliases = {_normalized_team(alias) for alias in spec["home"]}
-        away_aliases = {_normalized_team(alias) for alias in spec["away"]}
         matches = [
             index for index, row in enumerate(rows)
             if row.get("result_known") is False
-            and _normalized_team(row.get("home")) in home_aliases
-            and _normalized_team(row.get("away")) in away_aliases
+            and _team_matches(row.get("home"), spec["home"])
+            and _team_matches(row.get("away"), spec["away"])
         ]
         if len(matches) != 1:
             raise OperatorMergeBlocked(
