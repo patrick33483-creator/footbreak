@@ -119,13 +119,18 @@ def _matched_panels(
     rows: list[dict[str, Any]], target: tuple[str, ...], *, settled_only: bool,
 ) -> list[dict[str, Any]]:
     matches: list[dict[str, Any]] = []
+    descriptor_level = (
+        3 if any(axis.startswith("tier_path=") for axis in target) else 2
+    )
     for panel in canonical_panels(rows, settled_only=settled_only):
         if panel.get("market") != "HIL":
             continue
         for path in _paths(panel, "T-30"):
             if tuple(item.get("stage") for item in path) != ("首預", "T-30"):
                 continue
-            key, _label, _specificity = _descriptor(SYSTEM, path, 3)
+            key, _label, _specificity = _descriptor(
+                SYSTEM, path, descriptor_level
+            )
             if key != target:
                 continue
             matches.append({"panel": panel, "path": path})
