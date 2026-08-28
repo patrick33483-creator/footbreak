@@ -433,7 +433,8 @@ def _validate_replay(
             if (
                 not _pending_fixture(row) or grade is not None
                 or row.get("score") is not None
-                or row.get("result_status") != "POSTPONED"
+                or row.get("result_status")
+                not in {"POSTPONED", "PENDING_RESULT_UNKNOWN"}
                 or row.get("result_source") is not None
             ):
                 raise RecoveryBlocked("unknown_result_is_not_exact_postponed_fixture")
