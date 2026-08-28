@@ -1,0 +1,27 @@
+name: 檢查舊 crown-tick 服務用邊個 user
+on:
+  workflow_dispatch:
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          mkdir -p ~/.ssh && printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519 && chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+      - env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          echo "===== 所有 stage / crown 相關 systemd unit ====="
+          systemctl list-units --all --no-pager | grep -iE "crown|stage|tick|footbreak" | head -20
+          echo ""
+          echo "===== 舊 crown-tick.service 內容 ====="
+          cat /etc/systemd/system/crown-tick.service 2>&1 | head -20 || echo "(唔存在)"
+          echo ""
+          echo "===== /etc/systemd/system 內所有相關 units ====="
+          ls /etc/systemd/system/ | grep -iE "crown|stage|tick|footbreak" | head -20
+          REMOTE
