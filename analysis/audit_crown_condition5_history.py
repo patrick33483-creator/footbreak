@@ -1,0 +1,270 @@
+#!/usr/bin/env python3
+"""Read-only reconstruction and admission audit for Crown Wilson condition #5."""
+from __future__ import annotations
+
+import argparse
+import json
+from collections import Counter
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Iterable
+
+from analysis.granular_conditions import _descriptor, _paths, _time, canonical_panels
+
+
+SYSTEM = "crown"
+CONDITION_NUMBER = 5
+
+
+def _read(path: Path) -> dict[str, Any]:
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(value, dict):
+        raise ValueError(f"{path} must contain one JSON object")
+    return value
+
+
+def _rows(document: dict[str, Any]) -> list[dict[str, Any]]:
+    value = document.get("rows")
+    if not isinstance(value, list):
+        raise ValueError("prediction history rows are unavailable")
+    return [row for row in value if isinstance(row, dict)]
+
+
+def _stamp(row: dict[str, Any]) -> datetime | None:
+    return _time(
+        row.get("predicted_at")
+        or row.get("ts")
+        or row.get("source_snapshot_at")
+        or row.get("created_at")
+    )
+
+
+def _raw_stage_map(
+    rows: Iterable[dict[str, Any]],
+) -> dict[tuple[str, str], dict[str, Any]]:
+    output: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in rows:
+        fixture = str(row.get("match_id") or row.get("history_key") or "").strip()
+        stage = str(row.get("stage") or "").strip()
+        if not fixture or not stage:
+            continue
+        key = fixture, stage
+        previous = output.get(key)
+        if previous is None or (_stamp(row) or datetime.min.replace(
+            tzinfo=timezone.utc
+        )) >= (_stamp(previous) or datetime.min.replace(tzinfo=timezone.utc)):
+            output[key] = row
+    return output
+
+
+def _condition(
+    ledger: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    namespace = ledger.get("wilson_validation")
+    if not isinstance(namespace, dict) or namespace.get("system") != SYSTEM:
+        raise ValueError("Crown Wilson namespace is unavailable")
+    conditions = namespace.get("conditions")
+    if not isinstance(conditions, dict):
+        raise ValueError("Crown condition registry is unavailable")
+    found = [
+        row for row in conditions.values()
+        if isinstance(row, dict)
+        and int(row.get("condition_number") or 0) == CONDITION_NUMBER
+    ]
+    if len(found) != 1:
+        raise ValueError(f"expected one Crown condition #5, found {len(found)}")
+    frozen = found[0]
+    definition = frozen.get("definition")
+    if not isinstance(definition, dict):
+        raise ValueError("condition #5 definition is unavailable")
+    expected = {
+        "market": "HIL",
+        "path": "首預→T-30",
+        "stage": "T-30",
+        "odds_tier": "≥1.70",
+        "direction": "A→B",
+        "role": "大",
+        "line_bucket": "2.75–3.0",
+        "movement": "不變",
+        "odds_trajectory": "≥1.70→≥1.70",
+    }
+    if any(definition.get(key) != value for key, value in expected.items()):
+        raise ValueError(f"condition #5 immutable axes changed: {definition}")
+    return namespace, frozen
+
+
+def _matched_panels(
+    rows: list[dict[str, Any]], target: tuple[str, ...], *, settled_only: bool,
+) -> list[dict[str, Any]]:
+    matches: list[dict[str, Any]] = []
+    for panel in canonical_panels(rows, settled_only=settled_only):
+        if panel.get("market") != "HIL":
+            continue
+        for path in _paths(panel, "T-30"):
+            if tuple(item.get("stage") for item in path) != ("首預", "T-30"):
+                continue
+            key, _label, _specificity = _descriptor(SYSTEM, path, 3)
+            if key != target:
+                continue
+            matches.append({"panel": panel, "path": path})
+    return sorted(matches, key=lambda item: (
+        item["panel"].get("kickoff") or datetime.min.replace(tzinfo=timezone.utc),
+        str(item["panel"].get("fixture") or ""),
+    ))
+
+
+def _identity_rows(
+    ledger: dict[str, Any], namespace: dict[str, Any], signature: str,
+) -> list[dict[str, Any]]:
+    rows = list(ledger.get("bets") or []) + list(namespace.get("observations") or [])
+    return [
+        row for row in rows
+        if isinstance(row, dict)
+        and str(row.get("frozen_condition_signature") or "") == signature
+        and str(row.get("stage") or "") == "T-30"
+        and str(row.get("code") or row.get("market") or "") == "HIL"
+    ]
+
+
+def _detail(
+    item: dict[str, Any], raw: dict[tuple[str, str], dict[str, Any]],
+    settled: dict[str, dict[str, Any]], enrolled: dict[str, list[dict[str, Any]]],
+    audits: dict[str, list[dict[str, Any]]],
+) -> dict[str, Any]:
+    panel, path = item["panel"], item["path"]
+    fixture = str(panel["fixture"])
+    first_raw = raw.get((fixture, "首預"), {})
+    t30_raw = raw.get((fixture, "T-30"), {})
+    settled_item = settled.get(fixture)
+    terminal = settled_item["path"][-1] if settled_item else {}
+    return {
+        "fixture": fixture,
+        "league": t30_raw.get("league") or first_raw.get("league"),
+        "home": t30_raw.get("home") or first_raw.get("home"),
+        "away": t30_raw.get("away") or first_raw.get("away"),
+        "kickoff": (
+            panel["kickoff"].isoformat()
+            if isinstance(panel.get("kickoff"), datetime) else None
+        ),
+        "first_stage_at": (
+            _stamp(first_raw).isoformat() if _stamp(first_raw) else None
+        ),
+        "t30_stage_at": _stamp(t30_raw).isoformat() if _stamp(t30_raw) else None,
+        "first": {
+            key: path[0].get(key)
+            for key in ("role", "selected_line", "odds", "odds_tier")
+        },
+        "t30": {
+            key: path[1].get(key)
+            for key in ("role", "selected_line", "odds", "odds_tier")
+        },
+        "grade": (
+            "Won" if terminal.get("hit") is True
+            else "Lost" if terminal.get("hit") is False
+            else "Refunded" if settled_item else "PENDING"
+        ),
+        "enrolled": fixture in enrolled,
+        "enrolment_ids": [
+            row.get("observation_id") or row.get("bet_id")
+            for row in enrolled.get(fixture, [])
+        ],
+        "audit_reasons": [
+            row.get("reason") for row in audits.get(fixture, [])
+            if row.get("reason")
+        ],
+    }
+
+
+def audit(ledger: dict[str, Any], history: dict[str, Any]) -> dict[str, Any]:
+    namespace, frozen = _condition(ledger)
+    definition = frozen["definition"]
+    target = tuple(definition.get("miner_key") or [])
+    if not target:
+        raise ValueError("condition #5 miner key is unavailable")
+    rows = _rows(history)
+    raw = _raw_stage_map(rows)
+    all_matches = _matched_panels(rows, target, settled_only=False)
+    settled_matches = _matched_panels(rows, target, settled_only=True)
+    settled = {
+        str(item["panel"]["fixture"]): item for item in settled_matches
+    }
+    identity_rows = _identity_rows(
+        ledger, namespace, str(frozen.get("signature") or "")
+    )
+    enrolled: dict[str, list[dict[str, Any]]] = {}
+    for row in identity_rows:
+        enrolled.setdefault(str(row.get("match_id") or ""), []).append(row)
+    audits: dict[str, list[dict[str, Any]]] = {}
+    for row in namespace.get("audit") or []:
+        if isinstance(row, dict):
+            audits.setdefault(str(row.get("match_id") or ""), []).append(row)
+
+    details = [
+        _detail(item, raw, settled, enrolled, audits) for item in all_matches
+    ]
+    boundary = _time(
+        (frozen.get("active_evidence") or {}).get("activation_boundary_at")
+    )
+    if boundary is None:
+        raise ValueError("condition #5 activation boundary is unavailable")
+    post_boundary = [
+        row for row in details
+        if _time(row.get("t30_stage_at")) is not None
+        and _time(row.get("t30_stage_at")) > boundary
+    ]
+    missing = [row for row in post_boundary if not row["enrolled"]]
+    settled_metrics = Counter(row["grade"] for row in details)
+    missing_reasons = Counter(
+        reason for row in missing for reason in row.get("audit_reasons") or []
+    )
+    historical = frozen.get("historical_evidence") or {}
+    active = frozen.get("active_evidence") or {}
+    return {
+        "report": "crown_condition5_history_audit",
+        "read_only": True,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "condition": {
+            "condition_number": frozen.get("condition_number"),
+            "signature": frozen.get("signature"),
+            "definition": definition,
+            "activation_boundary_at": active.get("activation_boundary_at"),
+            "stored_historical_evidence": historical,
+            "active_evidence": active,
+            "pending_rollover_progress": frozen.get("pending_rollover_progress"),
+        },
+        "summary": {
+            "history_rows": len(rows),
+            "exact_unique_matches": len(details),
+            "exact_settled_matches": len(settled_matches),
+            "wins": settled_metrics["Won"],
+            "losses": settled_metrics["Lost"],
+            "pushes": settled_metrics["Refunded"],
+            "pending_results": settled_metrics["PENDING"],
+            "post_activation_exact_matches": len(post_boundary),
+            "post_activation_enrolled": sum(row["enrolled"] for row in post_boundary),
+            "post_activation_missing_enrolment": len(missing),
+            "ledger_condition5_rows": len(identity_rows),
+        },
+        "post_activation_matches": post_boundary,
+        "missing_enrolments": missing,
+        "missing_audit_reason_counts": dict(missing_reasons),
+        "all_exact_matches": details,
+    }
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--ledger", type=Path, required=True)
+    parser.add_argument("--history", type=Path, required=True)
+    parser.add_argument("--output", type=Path)
+    args = parser.parse_args()
+    result = audit(_read(args.ledger), _read(args.history))
+    encoded = json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    if args.output:
+        args.output.write_text(encoded, encoding="utf-8")
+    print(encoded, end="")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

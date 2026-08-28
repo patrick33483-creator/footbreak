@@ -1,0 +1,99 @@
+name: Crown condition 5 history audit
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: crown-condition5-history-audit
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: Capture immutable Crown ledger and prediction history
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          umask 077
+          install -d -m 700 audit-input
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "sudo python3 -" > audit-input/bundle.tar <<'PY'
+          import fcntl
+          import io
+          import os
+          import signal
+          import sys
+          import tarfile
+
+          state = "/var/lib/footbreak/crown"
+          files = ("ledger.json", "prediction_history.json")
+          signal.alarm(180)
+          lock_fd = os.open(f"{state}/.state.lock", os.O_RDWR | os.O_NOFOLLOW)
+          try:
+              fcntl.flock(lock_fd, fcntl.LOCK_EX)
+              output = io.BytesIO()
+              with tarfile.open(fileobj=output, mode="w") as archive:
+                  for name in files:
+                      path = f"{state}/{name}"
+                      with open(path, "rb") as handle:
+                          payload = handle.read(134_217_729)
+                      if len(payload) > 134_217_728:
+                          raise RuntimeError(f"{name} exceeds 128 MiB")
+                      info = tarfile.TarInfo(name)
+                      info.size = len(payload)
+                      info.mode = 0o600
+                      archive.addfile(info, io.BytesIO(payload))
+          finally:
+              fcntl.flock(lock_fd, fcntl.LOCK_UN)
+              os.close(lock_fd)
+          signal.alarm(0)
+          sys.stdout.buffer.write(output.getvalue())
+          PY
+          tar -xf audit-input/bundle.tar -C audit-input
+          rm -f audit-input/bundle.tar
+          python3 -m json.tool audit-input/ledger.json >/dev/null
+          python3 -m json.tool audit-input/prediction_history.json >/dev/null
+
+      - name: Reconstruct condition 5 and find missed admissions
+        run: |
+          set -euo pipefail
+          python3 analysis/audit_crown_condition5_history.py \
+            --ledger audit-input/ledger.json \
+            --history audit-input/prediction_history.json \
+            --output crown-condition5-history-audit.json
+          jq '.summary, .condition.definition, .missing_enrolments' \
+            crown-condition5-history-audit.json
+
+      - name: Remove SSH key
+        if: always()
+        run: shred -u ~/.ssh/id_ed25519 2>/dev/null || rm -f ~/.ssh/id_ed25519
+
+      - name: Upload read-only evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: crown-condition5-history-audit-${{ github.run_id }}
+          path: crown-condition5-history-audit.json
+          retention-days: 14
+          if-no-files-found: error
