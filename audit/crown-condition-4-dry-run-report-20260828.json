@@ -1,0 +1,80 @@
+{
+  "blocker": "An executable dry-run report and authority hash require the exact production ledger bytes and the full replay JSON containing all 40 immutable fixture-market identities. Aggregate facts alone are deliberately insufficient.",
+  "contract_verified_by_focused_test_fixture": {
+    "active_cumulative": {
+      "decided": 101,
+      "hits": 61
+    },
+    "decided": 120,
+    "duplicate_policy": {
+      "conflicting_fixture_market_rejected": true,
+      "exact_existing_fixture_market_may_skip": true,
+      "partial_prior_apply_rejected": true
+    },
+    "first_ordinary_batch": {
+      "decided": 20,
+      "hits": 9,
+      "sealed": true
+    },
+    "hits": 73,
+    "idempotent_rerun": {
+      "additional_rows": 0,
+      "exact_skips": 40
+    },
+    "legacy_19": {
+      "deleted": false,
+      "guessed": false,
+      "identities_available": false
+    },
+    "new_hits": 21,
+    "new_non_hits": 18,
+    "new_rows": 40,
+    "new_settled": 39,
+    "observations": 121,
+    "pending": 1,
+    "tail": {
+      "decided": 19,
+      "hits": 12,
+      "pending": 1,
+      "sealed": false
+    }
+  },
+  "deletes": 0,
+  "independent_review_remediation": {
+    "all_transaction_open_link_unlink_relative_to_dirfd": true,
+    "canonical_output_dedupe_and_dotdot_rejection": true,
+    "cleanup_actions_best_effort_independent": true,
+    "cleanup_residue_reported_fail_closed": true,
+    "complete_row_deterministically_reconstructed_from_signed_inputs": true,
+    "exact_recovered_row_allowed_key_schema": true,
+    "external_ed25519_root_pin_required": true,
+    "externally_signed_order_required": true,
+    "failure_cleanup_removes_all_staged_and_published_artifacts": true,
+    "final_stage_dev_inode_nlink_mode_bytes_verified": true,
+    "identity_safe_cleanup_only": true,
+    "mutable_self_row_hash_trusted": false,
+    "original_error_separate_from_cleanup_failures": true,
+    "output_parent_owner_and_mode_gate": true,
+    "pending_exact_external_proof_required": true,
+    "replacement_inode_preserved": true,
+    "require_new_output_with_exclusive_nofollow_fd": true,
+    "retained_trusted_output_directory_fds": true,
+    "self_authorize_removed": true,
+    "settled_score_line_recomputed": true,
+    "strict_json_and_exact_schemas": true,
+    "strict_manifest_before_and_after": true,
+    "transactional_staging_readback_and_proposal_last_publish": true
+  },
+  "input_availability": {
+    "full_40_row_replay_in_workspace": false,
+    "legacy_v2_batch_identities_available": false,
+    "production_ledger_in_workspace": false
+  },
+  "mode": "offline-contract-dry-run",
+  "production_touched": false,
+  "schema": "crown-condition-4-offline-dry-run-summary-v1",
+  "source_branch": "audit/crown-condition-4-replay-20260828",
+  "source_head": "9cda9b94ae5725dec1b20fc88364d82c2f183ae8",
+  "status": "BLOCKED_NO_PRODUCTION_LEDGER_OR_FULL_REPLAY_IN_WORKSPACE",
+  "writes": 0
+}

@@ -1,0 +1,108 @@
+{
+  "apply_authorized": false,
+  "apply_note": "This request artifact is intentionally non-executable. A separate trusted signer must approve the exact input hashes, ordered 40-row identity sequence, pending evidence, expected totals, and proposed-ledger hash. The recovery CLI has no authority-generation function and can only create a new distinct proposed copy.",
+  "authorized_facts_to_verify": {
+    "duplicate_audit": {
+      "cross_boundary": 0,
+      "new_40": 0,
+      "reconstructed_legacy_62": 0
+    },
+    "final_cohort": {
+      "decided": 120,
+      "hits": 73,
+      "observations": 121,
+      "pending": 1
+    },
+    "legacy_active_v2": {
+      "decided": 81,
+      "hits": 52
+    },
+    "legacy_v1": {
+      "decided": 62,
+      "hits": 41
+    },
+    "legacy_v2_batch": {
+      "decided": 19,
+      "fixture_market_identities_available": false,
+      "hits": 11
+    },
+    "ordinary_rollover": {
+      "active_cumulative_decided": 101,
+      "active_cumulative_hits": 61,
+      "first_20_decided": 20,
+      "first_20_hits": 9,
+      "tail_decided": 19,
+      "tail_hits": 12,
+      "tail_may_be_sealed": false,
+      "tail_pending": 1
+    },
+    "post_boundary_replay": {
+      "hits": 21,
+      "low_odds_observations": 40,
+      "non_hits": 18,
+      "pending": 1,
+      "settled": 39,
+      "structural_matches": 40
+    }
+  },
+  "condition_number": 4,
+  "deletions_authorized": false,
+  "external_trust_requirement": {
+    "algorithm": "Ed25519",
+    "authority_schema": "crown-condition-4-recovery-authority-v2",
+    "cli_can_create_or_override_authority": false,
+    "payload_schema": "crown-condition-4-external-approval-v2",
+    "trusted_pin_must_be_root_owned_and_not_group_or_world_writable": true,
+    "trusted_public_key_sha256_path": "/etc/footbreak/crown-condition-4-recovery-ed25519-public-key.sha256"
+  },
+  "pending_fixture": {
+    "away": "Estudiantes de Caseros Reserves",
+    "home": "Atlanta Reserves",
+    "must_not_be_graded": true,
+    "reason": "adverse_weather_postponement"
+  },
+  "production_touched": false,
+  "required_input_bindings": {
+    "ledger_sha256": null,
+    "ordered_candidate_hashes": null,
+    "pending_evidence_sha256": null,
+    "proposed_ledger_sha256": null,
+    "replay_sha256": null
+  },
+  "review_commands": [
+    "python deploy/audit-crown-condition-replay.py --condition-number 4 > /secure/review/crown-condition-4-replay.json",
+    "python -m analysis.crown_condition4_recovery --ledger /secure/review/crown-ledger.json --replay /secure/review/crown-condition-4-replay.json --authority /secure/external-authority/crown-condition-4-dry-run-authority.json --report /secure/review/crown-condition-4-dry-run.json",
+    "python -m analysis.crown_condition4_recovery --ledger /secure/review/crown-ledger.json --replay /secure/review/crown-condition-4-replay.json --authority /secure/external-authority/crown-condition-4-apply-authority.json --apply-to-copy /secure/review/crown-ledger.proposed.json",
+    "python -m analysis.wilson_registry_manifest --system crown --ledger /secure/review/crown-ledger.json --output /secure/review/crown-before-manifest.json --require-valid"
+  ],
+  "safety_contract": {
+    "all_transaction_open_link_unlink_relative_to_dirfd": true,
+    "apply_must_write_distinct_copy": true,
+    "canonical_output_path_dedupe": true,
+    "cleanup_actions_best_effort_independent": true,
+    "cleanup_residue_reported_fail_closed": true,
+    "complete_row_derived_from_signed_replay_and_authority": true,
+    "delete_count": 0,
+    "dotdot_output_alias_rejected": true,
+    "dry_run_default": true,
+    "exact_fixture_market_identity_required_for_skip": true,
+    "failure_residue_allowed": false,
+    "final_stage_dev_inode_nlink_mode_bytes_verified": true,
+    "identity_safe_cleanup_only": true,
+    "legacy_19_must_not_be_guessed_or_deleted": true,
+    "multi_output_transactional_staging": true,
+    "mutable_row_self_hash_forbidden": true,
+    "original_error_separate_from_cleanup_failures": true,
+    "output_parent_owner_and_mode_gate": true,
+    "partial_apply_fails_closed": true,
+    "proposal_published_last_as_commit_artifact": true,
+    "recovered_row_exact_allowed_keys": true,
+    "replacement_inode_preserved": true,
+    "retained_trusted_output_directory_fds": true
+  },
+  "schema": "crown-condition-4-recovery-authority-request-v2",
+  "source_branch": "audit/crown-condition-4-replay-20260828",
+  "source_head": "9cda9b94ae5725dec1b20fc88364d82c2f183ae8",
+  "status": "BLOCKED_AWAITING_PRODUCTION_SNAPSHOT_AND_ROW_IDENTITIES",
+  "system": "crown"
+}

@@ -4538,6 +4538,7 @@ def apply_active_evidence(
 
 def recompute_namespace(
     ledger: dict[str, Any], system: str, *, authority_context: Any = None,
+    now: str | None = None,
 ) -> dict[str, Any]:
     retired, migration_reason = _validate_condition_identity_migrations(
         ledger, system, authority_context=authority_context,
@@ -4601,7 +4602,8 @@ def recompute_namespace(
             continue
         if isinstance(frozen, dict):
             valid_activity = _rollover_condition(
-                frozen, raw_grouped.get(str(signature), []), system, str(signature), now=_now(),
+                frozen, raw_grouped.get(str(signature), []), system, str(signature),
+                now=now or _now(),
                 migration_boundary=ns["activation_at"],
                 ledger=ledger, authority_context=authority_context,
             )

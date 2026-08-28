@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sqlite3
 from collections import defaultdict
@@ -76,6 +77,12 @@ def _score(row: dict[str, Any]) -> str | None:
     if home is not None and away is not None:
         return f"{home}-{away}"
     return None
+
+
+def _hash(value: Any) -> str:
+    return hashlib.sha256(json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")).hexdigest()
 
 
 def _hdc_grade(row: dict[str, Any]) -> dict[str, Any] | None:
@@ -263,6 +270,10 @@ def replay(
             "stage_path": [item.get("stage") for item in path],
             "role_path": [item.get("role") for item in path],
             "selected_line_path": [item.get("selected_line") for item in path],
+            "market": "HDC",
+            "selected_side": terminal.get("side"),
+            "selected_line": terminal.get("selected_line"),
+            "selected_role": terminal.get("role"),
             "t5_odds": terminal.get("odds"),
             "passes_wilson_price": passes_wilson_price,
             "expected_record_type": expected_record_type,
@@ -291,6 +302,43 @@ def replay(
                 }
                 if isinstance(grade, dict) else None
             ),
+            # The recovery consumer is allowed to trust only a byte-exact row
+            # from this read-only replay. It still independently checks every
+            # field against the ledger and the report-wide digest.
+            "replay_candidate_hash": _hash({
+                "match_id": fixture,
+                "league": terminal_row.get("league"),
+                "home": terminal_row.get("home"),
+                "away": terminal_row.get("away"),
+                "market": "HDC",
+                "selected_side": terminal.get("side"),
+                "selected_line": terminal.get("selected_line"),
+                "selected_role": terminal.get("role"),
+                "t5_odds": terminal.get("odds"),
+                "t5_recorded_at": stage_at.isoformat(),
+                "kickoff_hkt": kickoff.isoformat() if kickoff else None,
+                "stage_path": [item.get("stage") for item in path],
+                "role_path": [item.get("role") for item in path],
+                "selected_line_path": [item.get("selected_line") for item in path],
+                "score": score,
+                "result_known": result_known,
+                "result_source": (
+                    "prediction_history"
+                    if _score(terminal_row) is not None or grade is not None
+                    else "learning_db"
+                    if learning_result is not None and score is not None
+                    else None
+                ),
+                "result_status": terminal_row.get("result_status"),
+                "hdc_grade": (
+                    {
+                        "grade_status": grade.get("grade_status"),
+                        "hit": grade.get("hit"),
+                        "result": grade.get("result"),
+                    }
+                    if isinstance(grade, dict) else None
+                ),
+            }),
         })
 
     candidates.sort(key=lambda row: (row.get("kickoff_hkt") or "", row["match_id"]))
