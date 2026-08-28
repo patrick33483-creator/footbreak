@@ -829,6 +829,10 @@ def plan_operator_merge(
         for collection in (proposed.get("bets") or [], namespace.get("observations") or [])
         for row in collection
         if isinstance(row, dict)
+        and (
+            row.get("frozen_condition_signature") == signature
+            or row.get("condition_number") == 4
+        )
         and recovery._candidate_identity(row) in candidates
     ]
     if existing:
