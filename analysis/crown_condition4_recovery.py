@@ -56,8 +56,14 @@ EXPECTED = {
     "final_hits": 73,
     "final_pending": 1,
 }
-PENDING_HOME = "atlanta reserves"
-PENDING_AWAY = "estudiantes de caseros reserves"
+PENDING_HOME_ALIASES = {
+    "atlanta reserves",
+    "亚特兰大竞技后备队",
+}
+PENDING_AWAY_ALIASES = {
+    "estudiantes de caseros reserves",
+    "卡塞罗斯学生队后备队",
+}
 REPLAY_KEYS = {
     "schema", "read_only", "provider_calls", "writes", "generated_at",
     "condition_number", "condition_signature", "activation_boundary_hkt",
@@ -259,7 +265,7 @@ def _condition(ledger: dict[str, Any]) -> tuple[str, dict[str, Any], dict[str, A
 def _pending_fixture(row: dict[str, Any]) -> bool:
     home = " ".join(str(row.get("home") or "").lower().split())
     away = " ".join(str(row.get("away") or "").lower().split())
-    return home == PENDING_HOME and away == PENDING_AWAY
+    return home in PENDING_HOME_ALIASES and away in PENDING_AWAY_ALIASES
 
 
 def _candidate_identity(row: dict[str, Any]) -> tuple[str, str]:
