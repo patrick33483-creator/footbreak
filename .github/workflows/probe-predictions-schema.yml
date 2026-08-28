@@ -1,0 +1,112 @@
+name: 探勘 predictions.json + fixture 來源
+on: workflow_dispatch
+jobs:
+  s:
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          mkdir -p ~/.ssh && printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519 && chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+      - env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          set -uo pipefail
+
+          echo "===== 1. footbreak state file 位置 ====="
+          ls -la /var/lib/footbreak/*.json 2>&1 | head
+          ls -la /var/lib/footbreak/crown/*.json 2>&1 | head
+          ls -la /var/lib/footbreak/footbreak/*.json 2>&1 | head
+
+          echo ""
+          echo "===== 2. crown ledger.json / predictions.json 頂層 keys ====="
+          for f in /var/lib/footbreak/crown/ledger.json /var/lib/footbreak/crown/predictions.json /var/lib/footbreak/footbreak/ledger.json /var/lib/footbreak/footbreak/predictions.json; do
+            if [ -f "$f" ]; then
+              echo "== $f =="
+              /opt/footbreak/.venv/bin/python3 -c "
+          import json, sys
+          d = json.load(open('$f'))
+          if isinstance(d, dict):
+              print('type=dict, top keys:', list(d.keys())[:20])
+              print('key count:', len(d))
+          elif isinstance(d, list):
+              print('type=list, len:', len(d))
+              if d:
+                  print('first item keys:', list(d[0].keys())[:20] if isinstance(d[0], dict) else 'not dict')
+          "
+            fi
+          done
+
+          echo ""
+          echo "===== 3. 一個 sample fixture 完整 schema ====="
+          /opt/footbreak/.venv/bin/python3 <<'PY'
+          import json, sys, glob
+          candidates = glob.glob("/var/lib/footbreak/crown/predictions.json") + glob.glob("/var/lib/footbreak/footbreak/predictions.json")
+          for f in candidates:
+              try:
+                  d = json.load(open(f))
+              except Exception as e:
+                  print(f"skip {f}: {e}"); continue
+              print(f"\n=== {f} ===")
+              if isinstance(d, dict):
+                  keys = list(d.keys())
+                  if not keys: continue
+                  first = d[keys[0]]
+                  print(f"first fixture id: {keys[0]}")
+                  if isinstance(first, dict):
+                      print(f"fixture-level keys: {list(first.keys())[:30]}")
+                      # 睇有無 odds snapshot 三個階段
+                      for stage in ("initial", "first_pred", "t30", "t5", "T-30", "T-5", "first", "stage_snapshots", "stages"):
+                          if stage in first:
+                              val = first[stage]
+                              print(f"  {stage}: keys={list(val.keys())[:20] if isinstance(val, dict) else type(val).__name__}")
+                      # 睇 odds
+                      for odds_key in ("odds", "hkjc_odds", "market_odds", "hkjc"):
+                          if odds_key in first:
+                              o = first[odds_key]
+                              print(f"  {odds_key}: keys={list(o.keys())[:15] if isinstance(o, dict) else type(o).__name__}")
+                              if isinstance(o, dict):
+                                  for mk in ("HAD", "HDC", "HIL", "CHL"):
+                                      if mk in o:
+                                          v = o[mk]
+                                          print(f"    {mk}: {type(v).__name__} len={len(v) if hasattr(v, '__len__') else '?'}")
+                                          if isinstance(v, list) and v:
+                                              print(f"      first line: {json.dumps(v[0], ensure_ascii=False)[:300]}")
+              break
+          PY
+
+          echo ""
+          echo "===== 4. 完整 sample fixture 頭 2000 char ====="
+          /opt/footbreak/.venv/bin/python3 -c "
+          import json
+          for f in ['/var/lib/footbreak/crown/predictions.json', '/var/lib/footbreak/footbreak/predictions.json']:
+              try:
+                  d = json.load(open(f))
+                  keys = list(d.keys())
+                  if not keys: continue
+                  print(f'=== {f} first fixture ===')
+                  print(json.dumps(d[keys[0]], ensure_ascii=False, indent=2)[:2500])
+                  break
+              except Exception as e: pass
+          "
+
+          echo ""
+          echo "===== 5. stage_engine_v2 現有 ledger.json 樣本 ====="
+          if [ -f /var/lib/footbreak/stage_engine_v2/ledger.json ]; then
+            head -c 2000 /var/lib/footbreak/stage_engine_v2/ledger.json
+            echo ""
+            echo "... size=$(stat -c%s /var/lib/footbreak/stage_engine_v2/ledger.json) bytes"
+          fi
+
+          echo ""
+          echo "===== 6. stage_engine_v2 scheduler.py 內容 ====="
+          head -120 /opt/footbreak/stage_engine_v2/scheduler.py 2>&1
+
+          echo ""
+          echo "===== 7. stage_engine_v2 systemd unit ====="
+          systemctl cat stage-engine-v2-tick.service 2>&1 | grep -vE "^#" | head -30
+          REMOTE
