@@ -1,0 +1,97 @@
+name: Crown condition 6 verified result apply
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: audit is read-only; apply settles 57 verified results
+        required: true
+        default: audit
+        type: choice
+        options: [audit, apply]
+      confirmation:
+        description: "Required for apply: APPLY_CROWN_CONDITION6_VERIFIED_RESULTS"
+        required: false
+        type: string
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  settle:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: Audit or apply exact condition 6 results
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          MODE: ${{ inputs.mode }}
+          CONFIRMATION: ${{ inputs.confirmation }}
+        run: |
+          set -euo pipefail
+          if [ "$MODE" = apply ]; then
+            test "$CONFIRMATION" = APPLY_CROWN_CONDITION6_VERIFIED_RESULTS
+          fi
+          target="$DEPLOY_USER@$DEPLOY_HOST"
+          remote_work="$(
+            ssh -o BatchMode=yes -o ConnectTimeout=20 "$target" \
+              'umask 077; mktemp -d /tmp/crown-condition6-results.XXXXXX'
+          )"
+          cleanup_remote() {
+            ssh -o BatchMode=yes -o ConnectTimeout=20 "$target" \
+              "rm -rf -- $(printf '%q' "$remote_work")" >/dev/null 2>&1 || true
+          }
+          trap cleanup_remote EXIT
+          scp -q -o BatchMode=yes -o ConnectTimeout=20 \
+            analysis/apply_crown_condition6_verified_results.py \
+            analysis/crown_condition6_verified_results_20260828.json \
+            "$target:$remote_work/"
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=8 \
+            "$target" \
+            "sudo env MODE='$MODE' REMOTE_WORK='$remote_work' bash -s" \
+            <<'REMOTE' | tee crown-condition6-verified-results.json
+          set -euo pipefail
+          app=/opt/footbreak
+          ledger=/var/lib/footbreak/crown/ledger.json
+          output="$REMOTE_WORK/output.json"
+          args=(
+            "$app/.venv/bin/python3"
+            "$REMOTE_WORK/apply_crown_condition6_verified_results.py"
+            --ledger "$ledger"
+            --manifest "$REMOTE_WORK/crown_condition6_verified_results_20260828.json"
+          )
+          if [ "$MODE" = apply ]; then
+            stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+            install -m 0600 "$ledger" "$ledger.before-condition6-results-$stamp"
+            "${args[@]}" --apply > "$output"
+            PYTHONPATH="$app" "$app/.venv/bin/python3" -m crown.run refresh >/dev/null
+          else
+            "${args[@]}" > "$output"
+          fi
+          cat "$output"
+          REMOTE
+
+      - name: Upload exact audit evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: crown-condition6-verified-results-${{ github.run_id }}
+          path: crown-condition6-verified-results.json
+          retention-days: 7

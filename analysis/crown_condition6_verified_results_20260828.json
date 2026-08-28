@@ -1,0 +1,935 @@
+{
+  "condition_number": 6,
+  "condition_signature": "09ba238cb8400670519ce95a",
+  "decision_stage": "T-30",
+  "market": "HDC",
+  "postponed_pending": [
+    {
+      "match_id": "3072870",
+      "notes": "Both sources show Postponed / Hoan with no score; source_1 URL carries same fixture id 3072870",
+      "reason": "postponed_no_result",
+      "sources": [
+        "https://taxisports.com/football/match/ca-atlanta-reserves-vs-ca-estudiantes-caseros-reserves-3072870/",
+        "https://kqbd.mobi/argentina-reserve-league/ket-qua-tran-dau-ca-atlanta-reserves-vs-ca-estudiantes-caseros-reserves-207827037"
+      ]
+    }
+  ],
+  "results": [
+    {
+      "away": "奥萨苏纳B队",
+      "away_score": 0,
+      "expected_result": "Won",
+      "home": "皇家联邦",
+      "home_score": 3,
+      "kickoff_hkt": "2026-08-13T01:00:00+08:00",
+      "league": "球会友谊",
+      "line": -0.5,
+      "match_id": "3062164",
+      "notes": "Real Union 3-0 Osasuna B, club friendly 12 Aug local (HT 1-0)",
+      "sources": [
+        "https://www.futbol24.com/match/2026/08/12/international/International/Club-Friendly/2026/Real-Union/vs/Osasuna-B",
+        "https://www.espn.com/soccer/match/_/gameId/401907177/osasuna-ii-real-union-irun"
+      ]
+    },
+    {
+      "away": "沙巴度尔",
+      "away_score": 0,
+      "expected_result": "Lost",
+      "home": "希洪竞技",
+      "home_score": 0,
+      "kickoff_hkt": "2026-08-18T01:00:00+08:00",
+      "league": "西乙",
+      "line": -0.5,
+      "match_id": "3014031",
+      "notes": "LaLiga 2 round 1, Sporting Gijon 0-0 Sabadell",
+      "sources": [
+        "https://www.espn.com/football/match/_/gameId/401883257/cd-sabadell-sporting-gijon",
+        "https://www.sofascore.com/football/match/ce-sabadell-sporting-gijon/chbsKLj"
+      ]
+    },
+    {
+      "away": "卡法尔卡瑟姆",
+      "away_score": 0,
+      "expected_result": "Won",
+      "home": "夏雷姆",
+      "home_score": 2,
+      "kickoff_hkt": "2026-08-19T00:30:00+08:00",
+      "league": "以甲",
+      "line": -0.5,
+      "match_id": "3001789",
+      "notes": "Israel Liga Leumit; Hapoel Kfar Shalem 2-0 MS Kafr Qasim, HT 0-0",
+      "sources": [
+        "https://www.footlive.com/score/hapoel-kfar-shalem-vs-fc-kafr-qasim-2026-08-18/",
+        "https://en.24score.com/football/match/873617-hapoel_kfar_shalem-ms_kafr_qasim"
+      ]
+    },
+    {
+      "away": "伊凡诺沃",
+      "away_score": 1,
+      "expected_result": "Lost",
+      "home": "卡马斯",
+      "home_score": 0,
+      "kickoff_hkt": "2026-08-19T23:00:00+08:00",
+      "league": "俄甲",
+      "line": -0.5,
+      "match_id": "3021945",
+      "notes": "Russian First League round 7; KAMAZ 0-1 Tekstilshchik Ivanovo",
+      "sources": [
+        "https://www.transfermarkt.com/spielbericht/index/spielbericht/5019762",
+        "https://www.futbol24.com/match/2026/08/19/national/Russia/1-Division/2026-2027/KAMAZ-NCh/vs/Tekstilshchik"
+      ]
+    },
+    {
+      "away": "洛兹尼察",
+      "away_score": 2,
+      "expected_result": "Half Lost",
+      "home": "格拉菲卡贝尔格莱德",
+      "home_score": 2,
+      "kickoff_hkt": "2026-08-19T23:00:00+08:00",
+      "league": "塞尔甲",
+      "line": -0.25,
+      "match_id": "3050216",
+      "notes": "Serbian Prva Liga round 4; equaliser in stoppage time, HT 0-1",
+      "sources": [
+        "https://www.sofascore.com/football/match/rfk-graficar-beograd-fk-loznica/QkGbsyuic",
+        "https://www.365scores.com/football/match/prva-liga-5522/graficar-beograd-loznica-26348-57056-5522"
+      ]
+    },
+    {
+      "away": "佐维耶茨基",
+      "away_score": 3,
+      "expected_result": "Lost",
+      "home": "姆拉维安卡",
+      "home_score": 2,
+      "kickoff_hkt": "2026-08-19T23:00:00+08:00",
+      "league": "波兰丙",
+      "line": -0.25,
+      "match_id": "3063294",
+      "notes": "Away-team Chinese name does not match; identified by league/time/home team as Mlawianka Mlawa 2-3 Lechia Tomaszow Mazowiecki (III liga gr.1 round 4)",
+      "sources": [
+        "https://www.transfermarkt.co.uk/spielbericht/index/spielbericht/4909301",
+        "https://www.podkarpacielive.pl/mecz/154184,mlawianka-mlawa-vs-lechia-tomaszow-mazowiecki"
+      ]
+    },
+    {
+      "away": "锡卜青年人",
+      "away_score": 0,
+      "expected_result": "Lost",
+      "home": "锡卜",
+      "home_score": 0,
+      "kickoff_hkt": "2026-08-19T23:15:00+08:00",
+      "league": "阿曼杯",
+      "line": -0.5,
+      "match_id": "3064939",
+      "notes": "Oman Federation Cup group B; source_1 URL carries same fixture id 3064939",
+      "sources": [
+        "https://taxisports.com/football/match/al-seeb-vs-al-shabab-3064939/",
+        "https://www.oddsmath.com/football/oman/cup-1704/2026-08-19/al-seeb-vs-al-shabab-seeb-5068685/"
+      ]
+    },
+    {
+      "away": "巴特克扎林",
+      "away_score": 1,
+      "expected_result": "Lost",
+      "home": "科特威尼克",
+      "home_score": 0,
+      "kickoff_hkt": "2026-08-20T00:00:00+08:00",
+      "league": "波兰丙",
+      "line": -0.25,
+      "match_id": "3063303",
+      "notes": "III liga group 2 round 4; Kotwica Kornik 0-1 Baltyk Koszalin (79')",
+      "sources": [
+        "https://www.futbol24.com/match/2026/08/19/national/Poland/III-Liga/2026-2027/Group-2/Kotwica-Kornik/vs/Baltyk-Koszalin",
+        "https://www.flashscore.com/match/football/baltyk-koszalin-YuBxcoMI/kotwica-kornik-llKEYUiS/"
+      ]
+    },
+    {
+      "away": "欧登塞女足",
+      "away_score": 1,
+      "expected_result": "Won",
+      "home": "科尔丁女足",
+      "home_score": 3,
+      "kickoff_hkt": "2026-08-20T01:00:00+08:00",
+      "league": "丹女超",
+      "line": -0.5,
+      "match_id": "3040375",
+      "notes": "Denmark women top flight; HT 2-1",
+      "sources": [
+        "https://kickoff-hq.com/match/football-1346372990-kolding-if-q-denmark-vs-odense-women-denmark",
+        "https://www.soccerpunter.com/match/19787300/KoldingQ-W-vs-Odense-Q-W"
+      ]
+    },
+    {
+      "away": "弗查达比德莱克尼尔",
+      "away_score": 2,
+      "expected_result": "Lost",
+      "home": "富佐尼",
+      "home_score": 1,
+      "kickoff_hkt": "2026-08-20T02:00:00+08:00",
+      "league": "冰岛乙",
+      "line": -0.5,
+      "match_id": "2932232",
+      "notes": "Iceland 2. deild round 18; source_2 URL carries same fixture id 2932232",
+      "sources": [
+        "https://www.footlive.com/score/fjolnir-reykjavik-vs-kf-fjardabyggd-2026-08-19/",
+        "https://taxisports.com/football/match/fjolnir-vs-fjardabyggd-leiknir-2932232/"
+      ]
+    },
+    {
+      "away": "皇家贝蒂斯B队",
+      "away_score": 1,
+      "expected_result": "Won",
+      "home": "艾斯马度华",
+      "home_score": 3,
+      "kickoff_hkt": "2026-08-20T03:00:00+08:00",
+      "league": "球会友谊",
+      "line": -0.25,
+      "match_id": "3067824",
+      "notes": "Friendly (Trofeo Almendralejo): CD Extremadura 3-1 Betis Deportivo, HT 1-1",
+      "sources": [
+        "https://www.espn.com/soccer/match/_/gameId/401909665/betis-deportivo-cd-extremadura",
+        "https://www.futbol24.com/match/2026/08/19/international/International/Club-Friendly/2026/CD-Extremadura/vs/Betis-B"
+      ]
+    },
+    {
+      "away": "埃及电信",
+      "away_score": 0,
+      "expected_result": "Won",
+      "home": "哈伊赫多",
+      "home_score": 2,
+      "kickoff_hkt": "2026-08-20T21:30:00+08:00",
+      "league": "埃及甲",
+      "line": -0.5,
+      "match_id": "3064980",
+      "notes": "Egyptian Second Division A; Haras El Hodood 2-0 Telecom Egypt, HT 1-0",
+      "sources": [
+        "https://www.365scores.com/es/football/team/haras-el-hodood-8307",
+        "https://nofluffpicks.com/match/haras-el-hodood-vs-telecom-egypt-sc-2026-08-20"
+      ]
+    },
+    {
+      "away": "伊希库斯尼斯塔史后备队",
+      "away_score": 1,
+      "expected_result": "Won",
+      "home": "皇家皮拉尔后备队",
+      "home_score": 3,
+      "kickoff_hkt": "2026-08-20T22:00:00+08:00",
+      "league": "阿后备",
+      "line": -0.25,
+      "match_id": "3068633",
+      "notes": "Argentine reserve league matchday 12; Real Pilar reserves 3-1 Excursionistas reserves",
+      "sources": [
+        "https://sporty.com/football/primera-b-reserve/match/real-pilar-fc-reserves-vs-ca-excursionistas-reserve/sr:match:73724306",
+        "https://www.pilaradiario.com/la-liga/la-reserva-real-pilar-gano-casa-y-sigue-tiro-las-semifinales-n5471699"
+      ]
+    },
+    {
+      "away": "阿特兰大竞技后备队",
+      "away_score": 2,
+      "expected_result": "Lost",
+      "home": "萨尔塔迈特竞技后备队",
+      "home_score": 1,
+      "kickoff_hkt": "2026-08-20T23:00:00+08:00",
+      "league": "阿后备",
+      "line": -0.25,
+      "match_id": "3068686",
+      "notes": "Home side is Mitre (Santiago del Estero) reserves, not Salta; 1-2 to Atlanta reserves",
+      "sources": [
+        "https://odds-fan.com/football/event/ca-atlanta-reserves-vs-ca-mitre-santiago-del-estero-reserves",
+        "https://kushvsporte.ru/event/6826545-klub-atletiko-mitre-ii-atlanta-ii"
+      ]
+    },
+    {
+      "away": "莫斯科火车头青年队",
+      "away_score": 2,
+      "expected_result": "Won",
+      "home": "莫斯科中央陆军青年队",
+      "home_score": 3,
+      "kickoff_hkt": "2026-08-21T22:00:00+08:00",
+      "league": "俄青联",
+      "line": -0.5,
+      "match_id": "2952549",
+      "notes": "Russian youth league (MFL) round 20; CSKA 3-2 Lokomotiv, HT 2-1",
+      "sources": [
+        "https://www.transfermarkt.com/spielbericht/index/spielbericht/4915855",
+        "https://cskainfo.com/203178/"
+      ]
+    },
+    {
+      "away": "波里索夫巴特B队",
+      "away_score": 2,
+      "expected_result": "Lost",
+      "home": "奥尔沙",
+      "home_score": 1,
+      "kickoff_hkt": "2026-08-21T22:30:00+08:00",
+      "league": "白俄甲",
+      "line": -0.25,
+      "match_id": "2969756",
+      "notes": "Belarus Pershaya Liga round 21; Orsha 1-2 BATE-2, HT 0-1",
+      "sources": [
+        "https://www.transfermarkt.de/spielbericht/index/spielbericht/4857980",
+        "https://metaratings.by/news/orsha-poterpela-porazhenie-ot-bate-2-v-matche-pervoi-ligi-645904/"
+      ]
+    },
+    {
+      "away": "莱茨纳",
+      "away_score": 1,
+      "expected_result": "Half Lost",
+      "home": "桑德克亚",
+      "home_score": 1,
+      "kickoff_hkt": "2026-08-22T00:00:00+08:00",
+      "league": "波兰乙",
+      "line": -0.25,
+      "match_id": "3035879",
+      "notes": "Polish II liga round 5; HT 0-1",
+      "sources": [
+        "https://www.futbol24.com/match/2026/08/21/national/Poland/II-Liga/2026-2027/Sandecja/vs/Gornik-Leczna",
+        "https://www.transfermarkt.com/spielbericht/index/spielbericht/4904359"
+      ]
+    },
+    {
+      "away": "皇家社会",
+      "away_score": 0,
+      "expected_result": "Won",
+      "home": "皇家贝蒂斯",
+      "home_score": 1,
+      "kickoff_hkt": "2026-08-22T03:00:00+08:00",
+      "league": "西甲",
+      "line": -0.25,
+      "match_id": "3013654",
+      "notes": "LaLiga; Riquelme 63', HT 0-0",
+      "sources": [
+        "https://www.bbc.com/sport/football/live/cmz644qxd96yt",
+        "https://www.espn.com/soccer/match/_/gameId/401882914/real-sociedad-real-betis"
+      ]
+    },
+    {
+      "away": "索尔兹伯里女足",
+      "away_score": 1,
+      "expected_result": "Lost",
+      "home": "西阿德莱女足",
+      "home_score": 0,
+      "kickoff_hkt": "2026-08-22T13:30:00+08:00",
+      "league": "澳南女超",
+      "line": -0.5,
+      "match_id": "3069156",
+      "notes": "NPL South Australia Women; West Adelaide 0-1 Salisbury Inter",
+      "sources": [
+        "https://www.footlive.com/score/west-adelaide-w-vs-salisbury-inter-w-2026-08-22/",
+        "https://bookmaker-ratings.ru/match/football/326-npl-south-australia-women/west-adelaide-sc-w-salisbury-inter-w-22-08-2026/"
+      ]
+    },
+    {
+      "away": "伊分埼玉女足",
+      "away_score": 0,
+      "expected_result": "Won",
+      "home": "野岛斯特拉女足",
+      "home_score": 1,
+      "kickoff_hkt": "2026-08-22T17:00:00+08:00",
+      "league": "日女联",
+      "line": -0.5,
+      "match_id": "3067109",
+      "notes": "WE League; Nojima Stella 1-0 Elfen Saitama, HT 1-0",
+      "sources": [
+        "https://www.matchendirect.fr/live-score/nojima-stella-elfen-sayama_647k6orsltezuex2guclt3z84.html",
+        "https://www.footlive.com/score/nojima-stella-women-vs-elfen-saitama-2026-08-22/"
+      ]
+    },
+    {
+      "away": "雷索维亚",
+      "away_score": 1,
+      "expected_result": "Half Lost",
+      "home": "新塔尔格",
+      "home_score": 1,
+      "kickoff_hkt": "2026-08-22T18:00:00+08:00",
+      "league": "波兰乙",
+      "line": -0.25,
+      "match_id": "3035877",
+      "notes": "Home side identified as Podhale Nowy Targ; II liga round 5, HT 0-0",
+      "sources": [
+        "https://www.futbol24.com/match/2026/08/22/national/Poland/II-Liga/2026-2027/Podhale-Nowy-Targ/vs/Resovia",
+        "http://www.90minut.pl/news/342/news3424097-Betclic-II-liga-Podhale-1-1-Resovia.html"
+      ]
+    },
+    {
+      "away": "蔚山HD",
+      "away_score": 0,
+      "expected_result": "Won",
+      "home": "全北现代",
+      "home_score": 1,
+      "kickoff_hkt": "2026-08-22T18:30:00+08:00",
+      "league": "韩K联",
+      "line": -0.25,
+      "match_id": "2929695",
+      "notes": "K League 1 round 24; Motta 55', HT 0-0",
+      "sources": [
+        "https://www.sofascore.com/football/match/ulsan-hd-jeonbuk-hyundai-motors/iNcsddd",
+        "https://news.sbs.co.kr/english/article.do?news_id=N1008717028"
+      ]
+    },
+    {
+      "away": "切斯特菲尔德",
+      "away_score": 1,
+      "expected_result": "Lost",
+      "home": "索尔福德市",
+      "home_score": 0,
+      "kickoff_hkt": "2026-08-22T19:30:00+08:00",
+      "league": "英乙",
+      "line": -0.25,
+      "match_id": "3007609",
+      "notes": "League Two; Bonis 2', HT 0-1",
+      "sources": [
+        "https://www.bbc.com/sport/football/live/cxvgjy795j15t",
+        "https://www.skysports.com/football/salford-city-vs-chesterfield/live/561070"
+      ]
+    },
+    {
+      "away": "格茨海德",
+      "away_score": 0,
+      "expected_result": "Won",
+      "home": "耶奥维尔",
+      "home_score": 3,
+      "kickoff_hkt": "2026-08-22T19:30:00+08:00",
+      "league": "英议联",
+      "line": -0.25,
+      "match_id": "3027705",
+      "notes": "National League; HT 1-0",
+      "sources": [
+        "https://www.bbc.com/sport/football/live/cr78g0145pqpt",
+        "https://www.skysports.com/football/yeovil-town-vs-gateshead/live/566386"
+      ]
+    },
+    {
+      "away": "上海申花",
+      "away_score": 5,
+      "expected_result": "Lost",
+      "home": "成都蓉城",
+      "home_score": 4,
+      "kickoff_hkt": "2026-08-22T19:35:00+08:00",
+      "league": "中超",
+      "line": -0.5,
+      "match_id": "2944792",
+      "notes": "CSL round 24; 'End of 90 Minutes 4-5', HT 2-1",
+      "sources": [
+        "https://www.365scores.com/football/match/super-league-150/chengdu-rongcheng-shanghai-shenhua-2179-29675-150",
+        "https://www.bbc.com/sport/football/live/ckedj7651vyvt"
+      ]
+    },
+    {
+      "away": "费雷堡青年队",
+      "away_score": 2,
+      "expected_result": "Half Lost",
+      "home": "史特加踢球者",
+      "home_score": 2,
+      "kickoff_hkt": "2026-08-22T20:00:00+08:00",
+      "league": "德地区南",
+      "line": -0.25,
+      "match_id": "3031502",
+      "notes": "Regionalliga Suedwest round 3; club official report confirms 2:2, HT 1-0",
+      "sources": [
+        "https://www.stuttgarter-kickers.de/team/spielplan/rlsw-26-27-stuttgarter-kickers-sc-freiburg",
+        "https://www.futbol24.com/match/2026/08/22/national/Germany/Regionalliga-Sud-Sudwest/2026-2027/Stutt-Kickers/vs/Freiburg-II"
+      ]
+    },
+    {
+      "away": "布洛马波卡纳女足",
+      "away_score": 2,
+      "expected_result": "Lost",
+      "home": "佐加顿斯女足",
+      "home_score": 2,
+      "kickoff_hkt": "2026-08-22T21:00:00+08:00",
+      "league": "瑞典女超",
+      "line": -0.5,
+      "match_id": "2911343",
+      "notes": "Damallsvenskan round 15; HT 1-1",
+      "sources": [
+        "https://www.footlive.com/score/djurgarden-if-women-vs-brommapojkarna-women-2026-08-22/",
+        "https://www.footballfixtures.org/match/djurgarden-vs-brommapojkarna-w-2026-08-22"
+      ]
+    },
+    {
+      "away": "明斯克迪纳摩后备队",
+      "away_score": 1,
+      "expected_result": "Won",
+      "home": "坎普罗姆",
+      "home_score": 2,
+      "kickoff_hkt": "2026-08-22T21:00:00+08:00",
+      "league": "白俄甲",
+      "line": -0.5,
+      "match_id": "2969751",
+      "notes": "Home side identified as FK Bumprom; Pershaya Liga round 21, HT 1-0",
+      "sources": [
+        "https://www.soccerpunter.com/match/19690307/Bumprom-vs-Dinamo-Minsk-II",
+        "https://www.matchendirect.fr/live-score/bumprom-dinamo-minsk-ii_cn38xjz0tbxkgdczzbyq0o7x0.html"
+      ]
+    },
+    {
+      "away": "普斯卡什学院",
+      "away_score": 1,
+      "expected_result": "Lost",
+      "home": "华萨斯",
+      "home_score": 0,
+      "kickoff_hkt": "2026-08-22T21:30:00+08:00",
+      "league": "匈甲",
+      "line": -0.25,
+      "match_id": "3011385",
+      "notes": "Hungarian NB I; HT 0-0, goal 85'",
+      "sources": [
+        "https://www.futbol24.com/match/2026/08/22/national/Hungary/NB-I/2026-2027/Vasas/vs/Puskas-Akadem",
+        "https://www.sportsmole.co.uk/football/hungarian-nb-i/vasas-vs-puskas-academy_game_255127.html"
+      ]
+    },
+    {
+      "away": "斯洛瓦科",
+      "away_score": 1,
+      "expected_result": "Won",
+      "home": "博雷斯拉夫",
+      "home_score": 2,
+      "kickoff_hkt": "2026-08-22T23:00:00+08:00",
+      "league": "捷甲",
+      "line": -0.5,
+      "match_id": "3039859",
+      "notes": "Czech Chance Liga round 5; HT 1-0",
+      "sources": [
+        "https://www.sofascore.com/football/match/1-fc-slovacko-mlada-boleslav/zUswXb",
+        "https://www.sport.cz/clanek/online-fotbal-chance-liga-ml-boleslav-slovacko-22-08-2026-5486968"
+      ]
+    },
+    {
+      "away": "胡内多阿拉",
+      "away_score": 0,
+      "expected_result": "Half Lost",
+      "home": "阿拉德联队",
+      "home_score": 0,
+      "kickoff_hkt": "2026-08-22T23:30:00+08:00",
+      "league": "罗甲",
+      "line": -0.25,
+      "match_id": "3010401",
+      "notes": "Official Romanian Superliga page: UTA 0:0 (0:0) Corvinul",
+      "sources": [
+        "https://www.superliga.ro/meci/superliga-26-27-regular-uta-cor",
+        "https://www.futbol24.com/match/2026/08/22/national/Romania/Liga-I/2026-2027/UTA-Arad/vs/Corvinul-H"
+      ]
+    },
+    {
+      "away": "蒙特维迪奥",
+      "away_score": 0,
+      "expected_result": "Won",
+      "home": "切里托",
+      "home_score": 3,
+      "kickoff_hkt": "2026-08-23T00:00:00+08:00",
+      "league": "乌拉乙",
+      "line": -0.25,
+      "match_id": "3066250",
+      "notes": "Uruguay Segunda Division round 15; away side is Uruguay Montevideo FC, HT 2-0",
+      "sources": [
+        "https://www.futbol24.com/match/2026/08/22/national/Uruguay/Segunda-Division/2026/Torneo-Campeonato/Cerrito/vs/Uruguay-Mvo",
+        "https://www.transfermarkt.com/spielbericht/index/spielbericht/5027889"
+      ]
+    },
+    {
+      "away": "恩特拉",
+      "away_score": 0,
+      "expected_result": "Won",
+      "home": "南蒂罗尔",
+      "home_score": 1,
+      "kickoff_hkt": "2026-08-23T01:00:00+08:00",
+      "league": "意乙",
+      "line": -0.25,
+      "match_id": "3040713",
+      "notes": "Serie B round 1; Davi 90', HT 0-0",
+      "sources": [
+        "https://www.sofascore.com/football/match/virtus-entella-sudtirol/kfbsFyr",
+        "https://www.skysports.com/football/sudtirol-vs-virtus-entella/live/573904"
+      ]
+    },
+    {
+      "away": "卡洛斯卡萨雷斯农业",
+      "away_score": 0,
+      "expected_result": "Won",
+      "home": "特里斯顿",
+      "home_score": 2,
+      "kickoff_hkt": "2026-08-23T02:00:00+08:00",
+      "league": "阿乙",
+      "line": -0.5,
+      "match_id": "2916626",
+      "notes": "Primera Nacional matchday 26; HT 0-0",
+      "sources": [
+        "https://www.sofascore.com/es/football/match/agropecuario-argentino-tristan-suarez/nvMsMpgc",
+        "https://www.lanacion.com.ar/deportes/canchallena/tristan-suarez-vencio-por-2-0-a-agropecuario-por-la-primera-nacional-2026-nid22082026/"
+      ]
+    },
+    {
+      "away": "阿尔米兰提布朗",
+      "away_score": 2,
+      "expected_result": "Lost",
+      "home": "贝尔格拉诺防卫队",
+      "home_score": 0,
+      "kickoff_hkt": "2026-08-23T02:30:00+08:00",
+      "league": "阿乙",
+      "line": -0.25,
+      "match_id": "2916616",
+      "notes": "Primera Nacional matchday 26; second goal 90+6, HT 0-1",
+      "sources": [
+        "https://www.futbol24.com/match/2026/08/22/national/Argentina/Nacional-B/2026/Primera-fase/Def-Belgrano/vs/Ate-Brown",
+        "https://www.lanacion.com.ar/deportes/canchallena/almirante-brown-vencio-por-2-0-a-defensores-de-belgrano-por-la-primera-nacional-2026-nid22082026/"
+      ]
+    },
+    {
+      "away": "克卢日大学",
+      "away_score": 1,
+      "expected_result": "Won",
+      "home": "布加勒斯特迪纳摩(中)",
+      "home_score": 2,
+      "kickoff_hkt": "2026-08-23T02:30:00+08:00",
+      "league": "罗甲",
+      "line": -0.5,
+      "match_id": "3010395",
+      "notes": "Romanian Liga I; HT 1-0",
+      "sources": [
+        "https://www.futbol24.com/match/2026/08/22/national/Romania/Liga-I/2026-2027/Dinamo-Buc/vs/Univ-Cluj",
+        "https://scorwave.com/football/match/dinamo-bucuresti-vs-universitatea-cluj-2026-08-22/"
+      ]
+    },
+    {
+      "away": "慕拉斯堡",
+      "away_score": 0,
+      "expected_result": "Lost",
+      "home": "波德鲁姆士邦",
+      "home_score": 0,
+      "kickoff_hkt": "2026-08-23T02:30:00+08:00",
+      "league": "土甲",
+      "line": -0.5,
+      "match_id": "3030107",
+      "notes": "TFF 1. Lig week 3; Bodrum FK 0-0 Muglaspor",
+      "sources": [
+        "https://www.futbol24.com/match/2026/08/22/national/Turkiye/TFF-1-Lig/2026-2027/Bodrum-FK/vs/Muglaspor",
+        "https://www.haberturk.com/spor/bodrum-fk-0-muglaspor-0-mac-sonucu-3907438"
+      ]
+    },
+    {
+      "away": "戈尔韦女足",
+      "away_score": 1,
+      "expected_result": "Lost",
+      "home": "阿斯隆城女足",
+      "home_score": 1,
+      "kickoff_hkt": "2026-08-23T02:35:00+08:00",
+      "league": "爱足女杯",
+      "line": -0.5,
+      "match_id": "3069471",
+      "notes": "Women's FAI Cup semi-final: 1-1 after 90 (HT 1-0); 0-0 in extra time; Athlone won 4-3 on penalties - shootout excluded",
+      "sources": [
+        "https://www.sofascore.com/football/match/athlone-town-fc-galway-united/GHTbsdmRc",
+        "https://www.livescore.mobi/football/ireland/womens-fai-cup/athlone-town-w-vs-galway-united-fc-w/1855033/"
+      ]
+    },
+    {
+      "away": "甘拿斯亚门多萨",
+      "away_score": 3,
+      "expected_result": "Lost",
+      "home": "拉普拉塔体操",
+      "home_score": 2,
+      "kickoff_hkt": "2026-08-23T03:00:00+08:00",
+      "league": "阿甲",
+      "line": -0.5,
+      "match_id": "2962583",
+      "notes": "Liga Profesional Argentina; HT 0-2",
+      "sources": [
+        "https://www.bbc.com/sport/football/live/c6y9wzpnez13t",
+        "https://www.365scores.com/es/football/match/liga-profesional-72/gimnasia-la-plata-gimnasia-mendoza-880-11915-72"
+      ]
+    },
+    {
+      "away": "阿雷佐",
+      "away_score": 2,
+      "expected_result": "Lost",
+      "home": "阿维利诺",
+      "home_score": 1,
+      "kickoff_hkt": "2026-08-23T03:00:00+08:00",
+      "league": "意乙",
+      "line": -0.25,
+      "match_id": "3040705",
+      "notes": "Serie B round 1; ended 90+7, HT 1-0",
+      "sources": [
+        "https://sport.virgilio.it/dirette/live/serie-b/22-8-2026/avellino-arezzo/2670669/",
+        "https://www.skysports.com/football/avellino-vs-arezzo/573896"
+      ]
+    },
+    {
+      "away": "弗罗勒斯塔",
+      "away_score": 2,
+      "expected_result": "Lost",
+      "home": "沃尔特雷东达",
+      "home_score": 1,
+      "kickoff_hkt": "2026-08-23T04:00:00+08:00",
+      "league": "巴丙",
+      "line": -0.5,
+      "match_id": "2949399",
+      "notes": "Brazil Serie C round 18; HT 1-1",
+      "sources": [
+        "https://www.365scores.com/pt-br/football/match/serie-c-5518/floresta-ec-volta-redonda-7068-50729-5518",
+        "https://www.sofascore.com/pt/football/match/floresta-volta-redonda/HOcsLKjc"
+      ]
+    },
+    {
+      "away": "FC波图加沙",
+      "away_score": 0,
+      "expected_result": "Half Lost",
+      "home": "莫纳加斯",
+      "home_score": 0,
+      "kickoff_hkt": "2026-08-23T04:00:00+08:00",
+      "league": "委内超秋",
+      "line": -0.25,
+      "match_id": "3068550",
+      "notes": "Liga FUTVE Clausura; ESPN shows final 0-0",
+      "sources": [
+        "https://www.espn.com.do/futbol/partido/_/juegoId/401903359/portuguesa-monagas-sc",
+        "https://livescore.ownedcore.com/match/monagas-vs-portuguesa-848332"
+      ]
+    },
+    {
+      "away": "查尔斯顿女足",
+      "away_score": 0,
+      "expected_result": "Won",
+      "home": "布罗德美度兰女足",
+      "home_score": 1,
+      "kickoff_hkt": "2026-08-23T13:00:00+08:00",
+      "league": "澳北女超",
+      "line": -0.5,
+      "match_id": "3069163",
+      "notes": "NPL Northern NSW Women; source_1 URL carries same fixture id 3069163, HT 1-0",
+      "sources": [
+        "https://www.golsinyali.com/en/match/3069163/broadmeadow-magic-w-charlestown-azzuri-w",
+        "https://www.soccerpunter.com/football/Australia-Northern-NSW-NPL-Women/2612/"
+      ]
+    },
+    {
+      "away": "阿斯顿维拉",
+      "away_score": 0,
+      "expected_result": "Won",
+      "home": "布莱顿",
+      "home_score": 4,
+      "kickoff_hkt": "2026-08-23T21:00:00+08:00",
+      "league": "英超",
+      "line": -0.25,
+      "match_id": "3003855",
+      "notes": "Premier League; HT 4-0",
+      "sources": [
+        "https://www.bbc.com/sport/football/live/c6wyqd9zkd9wt",
+        "https://www.espn.com/soccer/match/_/gameId/401879297/aston-villa-brighton-hove-albion"
+      ]
+    },
+    {
+      "away": "朗斯U19",
+      "away_score": 0,
+      "expected_result": "Won",
+      "home": "勒瓦卢瓦竞技U19",
+      "home_score": 1,
+      "kickoff_hkt": "2026-08-23T21:00:00+08:00",
+      "league": "法U19",
+      "line": -0.5,
+      "match_id": "3054180",
+      "notes": "Championnat National U19 group A week 1; goal in 90+ stoppage time",
+      "sources": [
+        "https://www.matchendirect.fr/live-score/racing-club-u19-lens-u19_eyf0at5l9dse24dyfkbpea7f8.html",
+        "https://www.sofascore.com/football/team/lens-u19/296210"
+      ]
+    },
+    {
+      "away": "莫迪恩",
+      "away_score": 4,
+      "expected_result": "Lost",
+      "home": "法萨巴夏普尔",
+      "home_score": 1,
+      "kickoff_hkt": "2026-08-24T00:00:00+08:00",
+      "league": "以甲",
+      "line": -0.25,
+      "match_id": "3001796",
+      "notes": "Liga Leumit round 2; Hapoel Kfar Saba 1-4 Ironi Modiin, HT 0-0",
+      "sources": [
+        "https://www.transfermarkt.co.uk/spielbericht/index/spielbericht/4963354",
+        "https://www.rezilta.com/en/football/results/foot2943309.html"
+      ]
+    },
+    {
+      "away": "麦卡比",
+      "away_score": 1,
+      "expected_result": "Lost",
+      "home": "奇亚亚蒙SC",
+      "home_score": 0,
+      "kickoff_hkt": "2026-08-24T00:00:00+08:00",
+      "league": "以甲",
+      "line": -0.5,
+      "match_id": "3001798",
+      "notes": "Identified as SC Kiryat Yam vs Maccabi Bnei Reineh (Liga Leumit round 2, same kickoff); HT 0-0",
+      "sources": [
+        "https://www.sofascore.com/football/match/sc-kiryat-yam-maccabi-bney-reine/UXjcsUNUc",
+        "https://www.rezilta.com/football/results/foot2943312.html"
+      ]
+    },
+    {
+      "away": "皮阿尼斯",
+      "away_score": 0,
+      "expected_result": "Won",
+      "home": "坎伯巴索",
+      "home_score": 2,
+      "kickoff_hkt": "2026-08-24T00:00:00+08:00",
+      "league": "意丙",
+      "line": -0.5,
+      "match_id": "3050881",
+      "notes": "Serie C group B round 1; HT 1-0",
+      "sources": [
+        "https://www.futbol24.com/match/2026/08/23/national/Italy/Serie-C/2026-2027/Girone-B/Campobasso/vs/US-Pianese",
+        "https://www.transfermarkt.com/spielbericht/index/spielbericht/4978770"
+      ]
+    },
+    {
+      "away": "萨沃亚",
+      "away_score": 2,
+      "expected_result": "Won",
+      "home": "AZ皮切尔诺",
+      "home_score": 3,
+      "kickoff_hkt": "2026-08-24T00:00:00+08:00",
+      "league": "意丙",
+      "line": -0.5,
+      "match_id": "3051268",
+      "notes": "Serie C group C round 1; HT 1-1",
+      "sources": [
+        "https://www.futbol24.com/match/2026/08/23/national/Italy/Serie-C/2026-2027/Girone-C/AZ-Picerno/vs/Savoia",
+        "https://www.corrieredellosport.it/live/partita/picerno-savoia-2675575"
+      ]
+    },
+    {
+      "away": "凡恩尼斯",
+      "away_score": 0,
+      "expected_result": "Won",
+      "home": "马尔寇",
+      "home_score": 2,
+      "kickoff_hkt": "2026-08-24T00:00:00+08:00",
+      "league": "葡乙",
+      "line": -0.25,
+      "match_id": "3068033",
+      "notes": "Portugal Liga 3 group A round 3; AD Marco 09 2-0 Vianense, HT 0-0",
+      "sources": [
+        "https://www.365scores.com/pt-br/football/match/liga-3-7927/ad-marco-09-vianense-21786-82468-7927",
+        "https://www.matchendirect.fr/live-score/marco-vianense_6re52tqov2c95rwwtdyp8pw4.html"
+      ]
+    },
+    {
+      "away": "赫尔城U21",
+      "away_score": 3,
+      "expected_result": "Lost",
+      "home": "昆士柏流浪U21",
+      "home_score": 3,
+      "kickoff_hkt": "2026-08-25T21:00:00+08:00",
+      "league": "英乙U21",
+      "line": -0.5,
+      "match_id": "3059173",
+      "notes": "Professional Development League; equaliser 90+4, HT 0-1",
+      "sources": [
+        "https://www.sofascore.com/football/match/queens-park-rangers-u21-hull-city-u21/MYFbscqzc",
+        "https://www.futbol24.com/match/2026/08/25/national/England/U21-PDL-2/2026-2027/QPR-U21/vs/Hull-City-U21"
+      ]
+    },
+    {
+      "away": "保利文斯巴达",
+      "away_score": 0,
+      "expected_result": "Won",
+      "home": "贝尔罗",
+      "home_score": 3,
+      "kickoff_hkt": "2026-08-25T23:30:00+08:00",
+      "league": "保乙",
+      "line": -0.5,
+      "match_id": "3017117",
+      "notes": "Bulgaria Vtora Liga; 3-0 confirmed by 365Scores, Footlive, Oddslot and Soccerpunter (one minor aggregator showed 2-0)",
+      "sources": [
+        "https://www.365scores.com/football/team/spartak-pleven-25225",
+        "https://www.footlive.com/score/beroe-stara-zagora-vs-spartak-pleven-2026-08-25/"
+      ]
+    },
+    {
+      "away": "索尔韦斯堡",
+      "away_score": 2,
+      "expected_result": "Lost",
+      "home": "华克斯乔诺拉",
+      "home_score": 1,
+      "kickoff_hkt": "2026-08-26T00:00:00+08:00",
+      "league": "瑞典丙SG",
+      "line": -0.5,
+      "match_id": "2927121",
+      "notes": "Sweden Division 2 Sodra Gotaland round 15; HT 0-2, home goal in stoppage time",
+      "sources": [
+        "https://www.footlive.com/score/vaxjo-norra-if-vs-solvesborg-2026-08-25/",
+        "https://oddslot.com/scorematch/division-2---s%C3%B6dra-g%C3%B6taland/v%C3%A4xj%C3%B6-norra/s%C3%B6lvesborg/25-aug-2026/"
+      ]
+    },
+    {
+      "away": "贝尔谢巴夏普尔",
+      "away_score": 2,
+      "expected_result": "Won",
+      "home": "萨巴赫(中)",
+      "home_score": 3,
+      "kickoff_hkt": "2026-08-26T00:45:00+08:00",
+      "league": "欧冠杯",
+      "line": -0.5,
+      "match_id": "3062528",
+      "notes": "UCL play-off leg 2: 3-2 at full time of 90 minutes (HT 1-1); finished 5-2 after extra time, 6-4 on aggregate - extra time excluded",
+      "sources": [
+        "https://www.bbc.com/sport/football/live/cwm2gmjpj5jqt",
+        "https://www.nytimes.com/athletic/football/game/hapoel-be%27er-sheva-vs-sabah/3FJN1VyWq3OicMGu/"
+      ]
+    },
+    {
+      "away": "维拉诺瓦加图",
+      "away_score": 0,
+      "expected_result": "Lost",
+      "home": "泰拿沙",
+      "home_score": 0,
+      "kickoff_hkt": "2026-08-27T01:00:00+08:00",
+      "league": "球会友谊",
+      "line": -0.5,
+      "match_id": "3072623",
+      "notes": "Club friendly Terrassa 0-0 CF Vilanova Geltru, 26 Aug 17:00 UTC",
+      "sources": [
+        "https://www.futbol24.com/match/2026/08/26/international/International/Club-Friendly/2026/Terrassa/vs/Vilanova",
+        "https://www.sofascore.com/football/match/cf-vilanova-geltru-terrassa-fc/hhbsqLbd"
+      ]
+    },
+    {
+      "away": "普斯SC",
+      "away_score": 0,
+      "expected_result": "Won",
+      "home": "卡巴阿斯玛利",
+      "home_score": 3,
+      "kickoff_hkt": "2026-08-27T21:30:00+08:00",
+      "league": "埃及甲",
+      "line": -0.25,
+      "match_id": "3069282",
+      "notes": "Egypt Second Division A round 2; Kahraba Ismailia 3-0 Proxy, HT 2-0",
+      "sources": [
+        "https://www.footlive.com/score/kahrabaa-ismailia-vs-proxy-2026-08-27/",
+        "https://oddslot.com/scorematch/second-league/kahraba-ismailia/proxy/27-aug-2026/"
+      ]
+    },
+    {
+      "away": "坦塔",
+      "away_score": 0,
+      "expected_result": "Half Lost",
+      "home": "玛列亚特",
+      "home_score": 0,
+      "kickoff_hkt": "2026-08-27T21:30:00+08:00",
+      "league": "埃及甲",
+      "line": -0.25,
+      "match_id": "3069283",
+      "notes": "Egypt Second Division A round 2; 'End of 90 Minutes 0-0'",
+      "sources": [
+        "https://www.365scores.com/football/match/second-division-6994/maleyeit-kafr-el-zayiat-tanta-fc-12255-19481-6994",
+        "https://www.sofascore.com/football/match/tanta-malyet-kafr-el-zayat/lhAbsACLb"
+      ]
+    }
+  ],
+  "schema_version": 1,
+  "score_scope": "90_minutes_including_stoppage_time_excluding_extra_time",
+  "selection": "H",
+  "verified_at": "2026-08-28T09:20:00Z"
+}
