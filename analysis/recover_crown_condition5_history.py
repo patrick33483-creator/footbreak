@@ -148,10 +148,13 @@ def _bind_recovered_quarter_snapshot(
         if isinstance(row, dict)
         and row.get("stage") == "T-30"
         and _time(row.get("ts")) == _time(match["stage_at"])
+        and not str(row.get("formal_admission_snapshot_id") or "").startswith(
+            "recovered:"
+        )
     ]
     if len(stage_matches) != 1:
         raise ValueError(f"quarter-line T-30 stage is ambiguous: {fixture}")
-    stage = stage_matches[0]
+    stage = copy.deepcopy(stage_matches[0])
     quotes = [
         row for row in stage.get("market_predictions") or []
         if isinstance(row, dict)
@@ -170,6 +173,8 @@ def _bind_recovered_quarter_snapshot(
     if existing_profile not in (None, profile):
         raise ValueError(f"quarter-line settlement profile conflicts: {fixture}")
     quotes[0]["quarter_line_settlement"] = copy.deepcopy(profile)
+    for key in _CROWN_SNAPSHOT_MUTABLE:
+        stage.pop(key, None)
     payload = {
         key: value for key, value in stage.items()
         if key not in _CROWN_SNAPSHOT_MUTABLE
@@ -178,14 +183,26 @@ def _bind_recovered_quarter_snapshot(
         payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
         default=str,
     ).encode()).hexdigest()
-    existing_hash = stage.get("formal_admission_snapshot_hash")
-    if existing_hash not in (None, snapshot_hash):
-        raise ValueError(f"quarter-line snapshot hash conflicts: {fixture}")
-    snapshot_id = stage.get("formal_admission_snapshot_id") or (
-        f"recovered:{fixture}:T-30:{stage['ts']}"
-    )
+    snapshot_id = f"recovered:{fixture}:T-30:{stage['ts']}"
     stage["formal_admission_snapshot_id"] = snapshot_id
     stage["formal_admission_snapshot_hash"] = snapshot_hash
+    stage["formal_admission_pending"] = False
+    stage["formal_admission_status"] = "COMPLETED"
+    stage["formal_admission_reason"] = "condition5_missed_admission_recovery"
+    existing_recovery = [
+        row for row in watch.get("stages") or []
+        if isinstance(row, dict)
+        and row.get("formal_admission_snapshot_id") == snapshot_id
+    ]
+    if existing_recovery:
+        if (
+            len(existing_recovery) != 1
+            or existing_recovery[0].get("formal_admission_snapshot_hash")
+            != snapshot_hash
+        ):
+            raise ValueError(f"recovered snapshot conflicts: {fixture}")
+    else:
+        watch.setdefault("stages", []).append(stage)
     selected["native_snapshot_binding"] = {
         "schema_version": 1,
         "system": SYSTEM,
