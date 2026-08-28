@@ -73,101 +73,101 @@ _CANDIDATE_HASH_FIELDS = (
 _VERIFIED_RESULT_SPECS = (
     {
         "home": (
-            "CSKA", "CSKA Moscow Youth", "CSKA Moscow U19",
+            "莫斯科中央陆军青年队", "CSKA", "CSKA Moscow Youth", "CSKA Moscow U19",
             "PFC CSKA Moscow Youth",
         ),
         "away": (
-            "Lokomotiv", "Lokomotiv Moscow Youth", "Lokomotiv Moscow U19",
+            "莫斯科火车头青年队", "Lokomotiv", "Lokomotiv Moscow Youth", "Lokomotiv Moscow U19",
             "FC Lokomotiv Moscow Youth",
         ),
         "score": "3-2",
     },
     {
-        "home": ("Orsha", "FC Orsha"),
+        "home": ("奥尔沙", "Orsha", "FC Orsha"),
         "away": (
-            "BATE", "BATE Borisov B", "BATE Borisov II", "BATE-2 Borisov",
+            "波里索夫巴特B队", "BATE", "BATE Borisov B", "BATE Borisov II", "BATE-2 Borisov",
             "BATE Borisov Reserves",
         ),
         "score": "1-2",
     },
     {
-        "home": ("Babrungas", "FK Babrungas", "Babrungas Plunge"),
-        "away": ("Tauras", "FK Tauras", "Tauras Taurage"),
+        "home": ("巴布伦加斯", "Babrungas", "FK Babrungas", "Babrungas Plunge"),
+        "away": ("托拉斯", "Tauras", "FK Tauras", "Tauras Taurage"),
         "score": "1-1",
     },
     {
-        "home": ("Real Betis", "Real Betis Balompie"),
-        "away": ("Real Sociedad", "Real Sociedad San Sebastian"),
+        "home": ("皇家贝蒂斯", "Real Betis", "Real Betis Balompie"),
+        "away": ("皇家社会", "Real Sociedad", "Real Sociedad San Sebastian"),
         "score": "1-0",
     },
     {
-        "home": ("West Adelaide", "West Adelaide Women", "West Adelaide SC Women"),
-        "away": ("Salisbury Inter", "Salisbury Inter Women", "Salisbury Inter SC Women"),
+        "home": ("西阿德莱女足", "West Adelaide", "West Adelaide Women", "West Adelaide SC Women"),
+        "away": ("索尔兹伯里女足", "Salisbury Inter", "Salisbury Inter Women", "Salisbury Inter SC Women"),
         "score": "0-1",
     },
     {
         "home": (
-            "Jeonbuk", "Jeonbuk Hyundai", "Jeonbuk Hyundai Motors",
+            "全北现代", "Jeonbuk", "Jeonbuk Hyundai", "Jeonbuk Hyundai Motors",
             "Jeonbuk Hyundai Motors FC",
         ),
-        "away": ("Ulsan", "Ulsan HD", "Ulsan HD FC", "Ulsan Hyundai"),
+        "away": ("蔚山HD", "Ulsan", "Ulsan HD", "Ulsan HD FC", "Ulsan Hyundai"),
         "score": "1-0",
     },
     {
-        "home": ("Vasas", "Vasas FC", "Vasas SC"),
-        "away": ("Puskas", "Puskas Akademia", "Puskas Akademia FC"),
+        "home": ("华萨斯", "Vasas", "Vasas FC", "Vasas SC"),
+        "away": ("普斯卡什学院", "Puskas", "Puskas Akademia", "Puskas Akademia FC"),
         "score": "0-1",
     },
     {
-        "home": ("Sudtirol", "FC Sudtirol"),
-        "away": ("Entella", "Virtus Entella", "ACD Virtus Entella"),
+        "home": ("南蒂罗尔", "Sudtirol", "FC Sudtirol"),
+        "away": ("恩特拉", "Entella", "Virtus Entella", "ACD Virtus Entella"),
         "score": "1-0",
     },
     {
-        "home": ("Tristan Suarez", "CS Tristan Suarez"),
-        "away": ("Agropecuario", "Agropecuario Argentino", "Club Agropecuario"),
+        "home": ("特里斯顿", "Tristan Suarez", "CS Tristan Suarez"),
+        "away": ("卡洛斯卡萨雷斯农业", "Agropecuario", "Agropecuario Argentino", "Club Agropecuario"),
         "score": "2-0",
     },
     {
         "home": (
-            "Athlone Town", "Athlone Town Women", "Athlone Town AFC Women",
+            "阿斯隆城女足", "Athlone Town", "Athlone Town Women", "Athlone Town AFC Women",
             "Athlone Town WFC",
         ),
         "away": (
-            "Galway United", "Galway United Women", "Galway United FC Women",
+            "戈尔韦女足", "Galway United", "Galway United Women", "Galway United FC Women",
             "Galway United WFC",
         ),
         "score": "1-1",
     },
     {
-        "home": ("Monagas", "Monagas SC"),
-        "away": ("Portuguesa FC", "Portuguesa"),
+        "home": ("莫纳加斯", "Monagas", "Monagas SC"),
+        "away": ("FC波图加沙", "Portuguesa FC", "Portuguesa"),
         "score": "0-0",
     },
     {
         "home": (
-            "QPR", "QPR U21", "Queens Park Rangers U21",
+            "昆士柏流浪U21", "QPR", "QPR U21", "Queens Park Rangers U21",
             "Queens Park Rangers Under 21",
         ),
-        "away": ("Hull City", "Hull City U21", "Hull City Under 21"),
+        "away": ("赫尔城U21", "Hull City", "Hull City U21", "Hull City Under 21"),
         "score": "3-3",
     },
     {
-        "home": ("Beroe", "Beroe Stara Zagora", "PFC Beroe Stara Zagora"),
-        "away": ("Spartak Pleven", "OFC Spartak Pleven"),
+        "home": ("贝尔罗", "Beroe", "Beroe Stara Zagora", "PFC Beroe Stara Zagora"),
+        "away": ("保利文斯巴达", "Spartak Pleven", "OFC Spartak Pleven"),
         "score": "3-0",
     },
     {
-        "home": ("Vaxjo", "Vaxjo Norra", "Vaxjo Norra IF"),
-        "away": ("Solvesborg", "Solvesborgs GoIF", "Solvesborgs GIF"),
+        "home": ("华克斯乔诺拉", "Vaxjo", "Vaxjo Norra", "Vaxjo Norra IF"),
+        "away": ("索尔韦斯堡", "Solvesborg", "Solvesborgs GoIF", "Solvesborgs GIF"),
         "score": "1-2",
     },
     {
         "home": (
-            "Kahraba Ismailia", "Kahrabaa Ismailia",
+            "卡巴阿斯玛利", "Kahraba Ismailia", "Kahrabaa Ismailia",
             "Kahraba Al Ismailia", "Electricity Ismailia",
         ),
-        "away": ("Proxy", "Proxy SC", "Proxy Club"),
+        "away": ("普斯SC", "Proxy", "Proxy SC", "Proxy Club"),
         "score": "3-0",
     },
 )
