@@ -1,0 +1,164 @@
+name: 獨立 stage-v2 nginx site (唔會被覆蓋)
+on: workflow_dispatch
+jobs:
+  m:
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          mkdir -p ~/.ssh && printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519 && chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+      - env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          set -euo pipefail
+
+          # 策略：喺 unified-dashboard 個 server block 入面 include 一個獨立 conf.d 檔
+          # 呢個 include 檔平時 script 唔會碰，所以就算 unified-dashboard 被還原
+          # 只要 include 檔仲喺度，就唔怕失效
+          #
+          # 但因為 unified-dashboard 每次都會被還原到「無 include 行」嘅版本
+          # 反而用更穩陣做法：獨立 sites-enabled/stage-v2 site，用 8083 port
+          # 然後 unified-dashboard 加一個穩定 location /stage-v2/ proxy 去 127.0.0.1:8083
+
+          # Plan A：一個獨立 nginx server 聽 127.0.0.1:8083 serve stage-v2
+          cat > /etc/nginx/sites-available/stage-v2-backend <<'CONF'
+          server {
+              listen 127.0.0.1:8083;
+              server_name _;
+
+              root /var/www/stage_engine_v2;
+              index index.html;
+
+              auth_basic "皇冠系統V2";
+              auth_basic_user_file /etc/nginx/.htpasswd-crown;
+
+              location / {
+                  try_files $uri $uri/ =404;
+                  add_header Cache-Control "no-store, must-revalidate";
+                  expires -1;
+              }
+          }
+          CONF
+          ln -sf /etc/nginx/sites-available/stage-v2-backend /etc/nginx/sites-enabled/stage-v2-backend
+          echo "獨立 backend 建立好"
+
+          # Plan B：喺 unified-dashboard config 尾部（location / 之前）加一個 location /stage-v2/ proxy
+          # 因為 config 會被還原，我加一個 marker 方便追查
+          CONF=/etc/nginx/sites-available/unified-dashboard
+          BACKUP=/etc/nginx/sites-available/unified-dashboard.bak-mount-$(date +%Y%m%d-%H%M%S)
+          cp -a "$CONF" "$BACKUP"
+          echo "備份 $BACKUP"
+
+          # 先清走任何舊 stage-v2 相關（可能之前 install 留低嘅殘留）
+          python3 <<'PY'
+          import re, pathlib
+          p = pathlib.Path("/etc/nginx/sites-available/unified-dashboard")
+          text = p.read_text()
+          # 移除任何有 stage-v2 嘅 location block（brace-balanced）或 single-line
+          out = []
+          i, n = 0, len(text)
+          while i < n:
+              m = re.match(r'[ \t]*location[^{;]*stage-v2[^{;]*[{;]', text[i:])
+              m2 = re.match(r'[ \t]*#.*Stage Engine v2', text[i:])
+              if m:
+                  # 回退到行首
+                  s = i
+                  while s > 0 and text[s-1] != '\n':
+                      s -= 1
+                  # trim out 尾部 whitespace
+                  while out and out[-1] in ' \t':
+                      out.pop()
+                  end = i + m.end()
+                  if m.group(0).rstrip().endswith('{'):
+                      depth = 1
+                      k = end
+                      while k < n and depth > 0:
+                          if text[k] == '{': depth += 1
+                          elif text[k] == '}': depth -= 1
+                          k += 1
+                      while k < n and text[k] in ' \t':
+                          k += 1
+                      if k < n and text[k] == '\n':
+                          k += 1
+                      i = k
+                  else:
+                      k = end
+                      while k < n and text[k] in ' \t':
+                          k += 1
+                      if k < n and text[k] == '\n':
+                          k += 1
+                      i = k
+                  continue
+              if m2:
+                  # skip 到行尾
+                  k = i
+                  while k < n and text[k] != '\n':
+                      k += 1
+                  if k < n:
+                      k += 1
+                  # 再吞下面 -- end 行
+                  if 'end Stage Engine' in text[k:k+400]:
+                      end_line = text.find('\n', k + text[k:].find('end Stage Engine'))
+                      if end_line > 0:
+                          k = end_line + 1
+                  i = k
+                  continue
+              out.append(text[i])
+              i += 1
+          cleaned = ''.join(out)
+          p.write_text(cleaned)
+          print(f"clean 後 {len(cleaned)} bytes（原 {n}）")
+          PY
+
+          # 而家喺 location / { proxy_pass 5001... } 之前插入 stage-v2 proxy
+          python3 <<'PY'
+          import pathlib, re
+          p = pathlib.Path("/etc/nginx/sites-available/unified-dashboard")
+          text = p.read_text()
+
+          insert = """
+              # ---- Stage Engine v2 (皇冠系統V2) proxy → 127.0.0.1:8083 ----
+              location ^~ /stage-v2/ {
+                  proxy_pass http://127.0.0.1:8083/;
+                  proxy_http_version 1.1;
+                  proxy_set_header Host $host;
+                  proxy_set_header X-Real-IP $remote_addr;
+                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                  proxy_set_header X-Forwarded-Proto $scheme;
+              }
+              location = /stage-v2 { return 301 /stage-v2/; }
+              # ---- end Stage Engine v2 ----
+          """
+          # 搵 location / { 位置（fallback proxy）
+          m = re.search(r'\n[ \t]*location\s*/\s*\{[^}]*proxy_pass[^}]*5001', text)
+          if not m:
+              raise SystemExit("搵唔到 location / proxy 5001")
+          idx = m.start() + 1  # 跳過前面 \n
+          new = text[:idx] + insert + text[idx:]
+          p.write_text(new)
+          print(f"插入喺 offset {idx}, 新 size {len(new)}")
+          PY
+
+          echo ""
+          echo "===== 新 config 尾 40 行 ====="
+          tail -40 "$CONF"
+
+          echo ""
+          nginx -t
+          systemctl reload nginx
+          echo "reloaded"
+
+          echo ""
+          echo "===== 內部 curl ====="
+          for u in "/stage-v2/" "/stage-v2/history.html" "/stage-v2/data.json"; do
+            code=$(curl -sS -o /dev/null -w "%{http_code}" "http://127.0.0.1$u")
+            realm=$(curl -sSI "http://127.0.0.1$u" | grep -i "^WWW-Authenticate:" | head -1)
+            xpow=$(curl -sSI "http://127.0.0.1$u" | grep -i "^X-Powered-By:" | head -1)
+            echo "$u -> $code | $realm | $xpow"
+          done
+          REMOTE
