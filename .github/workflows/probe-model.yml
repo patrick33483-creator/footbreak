@@ -1,0 +1,44 @@
+name: 探勘 model.py + crown tick 主入口
+on: workflow_dispatch
+jobs:
+  m:
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          mkdir -p ~/.ssh && printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519 && chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+      - env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          set -uo pipefail
+
+          echo "===== 1. system/model.py 主 engine (前 300 行) ====="
+          head -300 /opt/footbreak/system/model.py 2>&1
+
+          echo ""
+          echo "===== 2. crown 產 prediction 嘅入口 ====="
+          grep -rn "def build_stage_prediction\|def build_prediction\|def build_first_pred\|def build_t5\|def compute_stage_prediction\|native_stage_write\|stage_engine" /opt/footbreak/crown/ 2>&1 | grep -v test | grep -v backup | head -30
+
+          echo ""
+          echo "===== 3. crown/tick.py or scheduler.py ====="
+          for f in /opt/footbreak/crown/tick*.py /opt/footbreak/crown/scheduler*.py /opt/footbreak/crown/native_stage*.py; do
+            [ -f "$f" ] && echo "== $f ==" && head -60 "$f"
+          done
+
+          echo ""
+          echo "===== 4. 睇 run.sh tick 呼叫邊個 module ====="
+          grep -A3 "tick" /opt/footbreak/deploy/run.sh 2>&1 | head -30
+
+          echo ""
+          echo "===== 5. crown 全部 .py ====="
+          ls /opt/footbreak/crown/ | grep -v test | grep -v __pycache__ | grep "\.py$" | head -50
+
+          echo ""
+          echo "===== 6. system 全部 .py ====="
+          ls /opt/footbreak/system/ | grep -v test | grep -v __pycache__ | grep -v ".sim-ledger" | grep -v ".urgent-stage" | grep -v ".tmp-" | grep "\.py$" | head -50
+          REMOTE
