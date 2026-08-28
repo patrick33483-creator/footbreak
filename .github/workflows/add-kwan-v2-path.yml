@@ -1,0 +1,136 @@
+name: 新增 /kwan-v2/ subpath（fresh realm，bypass Chrome cache）
+on: workflow_dispatch
+jobs:
+  add:
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          mkdir -p ~/.ssh && printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519 && chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+      - env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          set -euo pipefail
+
+          echo "===== 1. 檢查現有 unified-dashboard conf source of truth ====="
+          test -f /opt/footbreak/deploy/nginx-unified-dashboard.conf && echo "found" || { echo "NOT FOUND — abort"; exit 1; }
+
+          echo ""
+          echo "===== 2. Backup 現行 config ====="
+          BAK=/opt/footbreak/deploy/nginx-unified-dashboard.conf.bak.$(date +%s)
+          cp /opt/footbreak/deploy/nginx-unified-dashboard.conf "$BAK"
+          echo "backup: $BAK"
+
+          echo ""
+          echo "===== 3. 檢查 stage-v2 block 目前形式 ====="
+          grep -n "stage-v2\|8083" /opt/footbreak/deploy/nginx-unified-dashboard.conf | head -10
+
+          echo ""
+          echo "===== 4. 加 /kwan-v2/ block 到 source of truth ====="
+          # 檢查是否已加咗
+          if grep -q "kwan-v2" /opt/footbreak/deploy/nginx-unified-dashboard.conf; then
+              echo "already patched, skip"
+          else
+              # 在 stage-v2 block 之後插入 kwan-v2 block（proxy 去同一個 8083）
+              python3 <<'PY'
+          import re
+          from pathlib import Path
+          p = Path("/opt/footbreak/deploy/nginx-unified-dashboard.conf")
+          txt = p.read_text()
+          # 揾 stage-v2 block 結尾
+          # pattern: location ^~ /stage-v2/ { ... }
+          # 我地插入喺 stage-v2 block 之後
+          new_block = """
+      location ^~ /kwan-v2/ {
+          proxy_pass http://127.0.0.1:8084/;
+          proxy_set_header Host $host;
+          proxy_set_header X-Real-IP $remote_addr;
+          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+          proxy_set_header X-Forwarded-Proto $scheme;
+      }
+  """
+          # 揾 location ^~ /stage-v2/ 個 block 完結 (匹配 { 到對應 })
+          m = re.search(r"(location \^~ /stage-v2/ \{[^}]*\})", txt, re.DOTALL)
+          if not m:
+              print("!!! stage-v2 block 揾唔到 — abort")
+              raise SystemExit(1)
+          insert_pos = m.end()
+          new_txt = txt[:insert_pos] + new_block + txt[insert_pos:]
+          p.write_text(new_txt)
+          print(f"patched: added kwan-v2 block after stage-v2 block (pos={insert_pos})")
+          PY
+          fi
+
+          echo ""
+          echo "===== 5. 建立 port 8084 backend nginx conf（新 realm） ====="
+          cat > /etc/nginx/sites-available/kwan-v2-backend <<'NGINX'
+  server {
+      listen 127.0.0.1:8084;
+      server_name _;
+      root /var/www/stage_engine_v2;
+
+      auth_basic "kwan_v2_2026";
+      auth_basic_user_file /etc/nginx/.htpasswd-crown;
+
+      location / {
+          try_files $uri $uri/ =404;
+          add_header Cache-Control "no-cache, no-store, must-revalidate";
+      }
+
+      location = /data.json {
+          try_files /data.json =404;
+          add_header Cache-Control "no-cache";
+      }
+
+      location = /history.html {
+          try_files /history.html =404;
+          add_header Cache-Control "no-cache";
+      }
+  }
+  NGINX
+          ln -sf /etc/nginx/sites-available/kwan-v2-backend /etc/nginx/sites-enabled/kwan-v2-backend
+
+          echo ""
+          echo "===== 6. nginx -t 驗證 ====="
+          nginx -t 2>&1
+
+          echo ""
+          echo "===== 7. 執行 self-heal 令 unified-dashboard 生效（因為改咗 source of truth） ====="
+          # self-heal timer 每 30 秒跑一次；直接 trigger 一次
+          systemctl start footbreak-dashboard-self-heal.service 2>&1 | head -5
+          sleep 3
+          systemctl reload nginx 2>&1
+
+          echo ""
+          echo "===== 8. 驗證 unified-dashboard 有 kwan-v2 block ====="
+          grep -A6 "kwan-v2" /etc/nginx/sites-enabled/unified-dashboard 2>&1 | head -15
+
+          echo ""
+          echo "===== 9. Curl 測試 ====="
+          echo "--- 冇 auth: 應該 401 ---"
+          curl -sS -o /dev/null -w "code=%{http_code}\n" "http://127.0.0.1/kwan-v2/"
+
+          echo "--- 用 crown:toberich: 應該 200 ---"
+          curl -sS -o /dev/null -w "code=%{http_code} size=%{size_download}\n" -u crown:toberich "http://127.0.0.1/kwan-v2/"
+
+          echo "--- Realm 是否 kwan_v2_2026 ---"
+          curl -sS -I "http://127.0.0.1/kwan-v2/" 2>&1 | grep -i "www-authenticate\|http/"
+
+          echo "--- data.json 拎到 ---"
+          curl -sS -o /dev/null -w "code=%{http_code} size=%{size_download}\n" -u crown:toberich "http://127.0.0.1/kwan-v2/data.json"
+
+          echo "--- history.html 拎到 ---"
+          curl -sS -o /dev/null -w "code=%{http_code} size=%{size_download}\n" -u crown:toberich "http://127.0.0.1/kwan-v2/history.html"
+
+          echo ""
+          echo "===== 10. 外部 IP 測試 ====="
+          curl -sS -I "http://146.190.93.148/kwan-v2/" 2>&1 | head -8
+
+          echo ""
+          echo "===== DONE — 新 URL: http://146.190.93.148/kwan-v2/  realm=kwan_v2_2026  auth=crown:toberich ====="
+          REMOTE
