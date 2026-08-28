@@ -29,6 +29,9 @@ from analysis.wilson_validation import (
 
 SIGNATURE = "7d990edf3c230cf5a21ead44"
 MIGRATION = "crown-condition5-t30-missed-admission-v1"
+MIGRATION_FIELD = "condition5_history_recovery_v1"
+RECOVERY_REASON = "condition5_missed_admission_recovery"
+RECOVERY_ACTION = "條件 #5 漏入組修復：套用既有正常賽果"
 _CROWN_SNAPSHOT_MUTABLE = {
     "collection_attempts",
     "formal_admission_pending",
@@ -188,7 +191,7 @@ def _bind_recovered_quarter_snapshot(
     stage["formal_admission_snapshot_hash"] = snapshot_hash
     stage["formal_admission_pending"] = False
     stage["formal_admission_status"] = "COMPLETED"
-    stage["formal_admission_reason"] = "condition5_missed_admission_recovery"
+    stage["formal_admission_reason"] = RECOVERY_REASON
     existing_recovery = [
         row for row in watch.get("stages") or []
         if isinstance(row, dict)
@@ -219,7 +222,7 @@ def recover(
     namespace, frozen = _condition(ledger)
     if str(frozen.get("signature") or "") != SIGNATURE:
         raise ValueError("condition #5 signature changed")
-    existing_migration = namespace.get("condition5_history_recovery_v1")
+    existing_migration = namespace.get(MIGRATION_FIELD)
     if isinstance(existing_migration, dict) and existing_migration.get("completed"):
         return {
             "mode": "apply" if apply else "audit",
@@ -333,7 +336,7 @@ def recover(
             row.setdefault("history", []).append({
                 "ts": settled_at,
                 "stage": "SETTLED",
-                "action": "條件 #5 漏入組修復：套用既有正常賽果",
+                "action": RECOVERY_ACTION,
                 "result": fixture_result,
             })
             result["settled"] += 1
@@ -407,7 +410,7 @@ def recover(
     result["reasons"] = dict(result["reasons"])
     result["before_ledger_hash"] = before_hash
     if apply:
-        namespace["condition5_history_recovery_v1"] = {
+        namespace[MIGRATION_FIELD] = {
             "completed": True,
             "migration": MIGRATION,
             "completed_at": now,

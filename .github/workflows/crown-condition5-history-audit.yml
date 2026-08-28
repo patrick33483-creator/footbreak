@@ -119,6 +119,35 @@ jobs:
             rollover
           }' crown-condition10-recovery-dry-run.json
 
+      - name: Replay formal Crown condition 10 admission
+        if: inputs.condition_number == '10'
+        run: |
+          set -euo pipefail
+          before="$(sha256sum audit-input/ledger.json | awk '{print $1}')"
+          PYTHONPATH="$GITHUB_WORKSPACE" \
+            python3 analysis/recover_crown_condition10_history.py \
+              --ledger audit-input/ledger.json \
+              --history audit-input/prediction_history.json \
+              --output crown-condition10-formal-recovery-audit.json
+          after="$(sha256sum audit-input/ledger.json | awk '{print $1}')"
+          test "$before" = "$after"
+          jq '{
+            mode,
+            status,
+            condition_signature,
+            matched_after_boundary,
+            accepted,
+            settled,
+            pending_result,
+            existing_skipped,
+            rejected,
+            reasons,
+            formal_validation_counts,
+            after_recovery,
+            before_ledger_hash,
+            after_ledger_hash
+          }' crown-condition10-formal-recovery-audit.json
+
       - name: Diagnose early-stage admission runtime
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
@@ -211,5 +240,6 @@ jobs:
             crown-condition-history-audit.json
             crown-condition5-runtime-diagnostic.json
             crown-condition10-recovery-dry-run.json
+            crown-condition10-formal-recovery-audit.json
           retention-days: 14
           if-no-files-found: error
