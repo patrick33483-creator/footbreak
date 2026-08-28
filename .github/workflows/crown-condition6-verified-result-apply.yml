@@ -73,7 +73,7 @@ jobs:
           ledger=/var/lib/footbreak/crown/ledger.json
           output="$REMOTE_WORK/output.json"
           args=(
-            "$app/.venv/bin/python3"
+            env PYTHONPATH="$app" "$app/.venv/bin/python3"
             "$REMOTE_WORK/apply_crown_condition6_verified_results.py"
             --ledger "$ledger"
             --manifest "$REMOTE_WORK/crown_condition6_verified_results_20260828.json"
