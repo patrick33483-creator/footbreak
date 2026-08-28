@@ -36,6 +36,7 @@ jobs:
 
       - name: 驗證 Crown 與 Footbreak PinnAPI 離線回歸測試
         run: |
+          python3 -m pip install --disable-pip-version-check --quiet pytest
           bash crown/validate.sh
           python3 -m unittest discover -s system/tests -t .
           python3 -m unittest discover -s analysis/tests -t .
