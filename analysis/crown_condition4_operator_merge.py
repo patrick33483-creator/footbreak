@@ -1087,12 +1087,14 @@ def main() -> int:
             "post_recovery_rollover_assertion_failed",
             "proposed_ledger_strict_manifest_invalid",
         }
-        recovery_code = (
-            str(exc)
-            if isinstance(exc, recovery.RecoveryBlocked)
-            and str(exc) in safe_recovery_codes
-            else None
-        )
+        recovery_code = None
+        if isinstance(exc, recovery.RecoveryBlocked):
+            candidate_code = str(exc)
+            if (
+                candidate_code in safe_recovery_codes
+                or re.fullmatch(r"[a-z0-9_]+", candidate_code)
+            ):
+                recovery_code = candidate_code
         error_code = (
             str(exc)
             if isinstance(exc, OperatorMergeBlocked)
