@@ -1,0 +1,50 @@
+name: 診斷 Crown sweep 建立 watch 情況
+
+on:
+  workflow_dispatch:
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: 設定 SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: Crown sweep status
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh "$DEPLOY_USER@$DEPLOY_HOST" "sudo bash -s" <<'REMOTE'
+          set -uo pipefail
+          echo "=== crown-sweep.timer / service ==="
+          systemctl is-enabled crown-sweep.timer || true
+          systemctl is-active crown-sweep.timer || true
+          systemctl show crown-sweep.timer -p LastTriggerUSec -p NextElapseUSecRealtime || true
+          systemctl show crown-sweep.service -p ActiveState -p SubState -p Result -p ExecMainStartTimestamp -p ExecMainStatus || true
+          echo
+          echo "=== crown-first-look-reconcile.timer / service ==="
+          systemctl is-enabled crown-first-look-reconcile.timer || true
+          systemctl is-active crown-first-look-reconcile.timer || true
+          systemctl show crown-first-look-reconcile.service -p ActiveState -p SubState -p Result -p ExecMainStartTimestamp -p ExecMainStatus || true
+          echo
+          echo "=== crown-tick.timer / service ==="
+          systemctl is-active crown-tick.timer || true
+          systemctl show crown-tick.service -p ActiveState -p SubState -p Result -p ExecMainStartTimestamp -p ExecMainStatus || true
+          echo
+          echo "=== crown-sweep last 100 lines (last 8h) ==="
+          journalctl -u crown-sweep.service --since "8 hours ago" --no-pager | tail -100
+          echo
+          echo "=== crown-first-look-reconcile last 100 lines (last 8h) ==="
+          journalctl -u crown-first-look-reconcile.service --since "8 hours ago" --no-pager | tail -100
+          echo
+          echo "=== crown-tick last 60 lines (last 2h) ==="
+          journalctl -u crown-tick.service --since "2 hours ago" --no-pager | tail -60
+          REMOTE
