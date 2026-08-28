@@ -84,9 +84,17 @@ jobs:
           # root 跑 tick，但 dashboard 目錄 www-data 充得讀
           chown -R www-data:www-data /var/www/stage_engine_v2 2>/dev/null || true
 
-          # 4. 派前端（dashboard/index.html → /var/www/stage_engine_v2/index.html）
+          # 4. 派前端（dashboard 目錄 → /var/www/stage_engine_v2/）
           install -m 644 /opt/footbreak/stage_engine_v2/dashboard/index.html \
                          /var/www/stage_engine_v2/index.html
+          # 歷史頁 history.html（如果仱存在就派，向後兼容舊 branch）
+          if [ -f /opt/footbreak/stage_engine_v2/dashboard/history.html ]; then
+            install -m 644 /opt/footbreak/stage_engine_v2/dashboard/history.html \
+                           /var/www/stage_engine_v2/history.html
+            echo "history.html 已派"
+          else
+            echo "(舊 branch、無 history.html、跳過)"
+          fi
 
           # 5. 派 systemd unit files
           cat > /etc/systemd/system/stage-engine-v2-tick.service <<'UNIT'
