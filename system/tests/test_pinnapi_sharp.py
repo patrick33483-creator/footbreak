@@ -252,7 +252,10 @@ class FootbreakPinnapiSharpTests(unittest.TestCase):
                      patch.object(run_predict, "analyse_match", return_value={"skip": "no full-match lines"}):
                     results = run_predict.main(mode="due", horizon_min=90)
                 self.assertEqual(results, [])
-                self.assertEqual(run_predict.pending_watch_match_ids(), [])
+                # Missing full-match lines are an honest fail-closed attempt,
+                # not proof that the timed stage is permanently complete.
+                # Keep the pre-kickoff fixture due so a later tick can retry.
+                self.assertEqual(run_predict.pending_watch_match_ids(), ["m1"])
                 ledger = json.loads(Path(directory, "sim_ledger.json").read_text(encoding="utf-8"))
                 self.assertEqual(
                     ledger["native_stage_attempts"][-1]["status"], "DATA_MISSING",
