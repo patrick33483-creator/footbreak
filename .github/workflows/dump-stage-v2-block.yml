@@ -1,0 +1,27 @@
+name: dump stage-v2 block
+on: workflow_dispatch
+jobs:
+  d:
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          mkdir -p ~/.ssh && printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519 && chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+      - env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          echo "===== 由 unified-dashboard config 撿 stage-v2 前後 ====="
+          grep -n "" /etc/nginx/sites-available/unified-dashboard | sed -n '/stage-v2/,+15p'
+          echo ""
+          echo "===== 由 nginx -T 睇實際 running config (crown vs unified) ====="
+          nginx -T 2>/dev/null | grep -B2 -A5 "stage-v2\|Odds Radar" | head -60
+          echo ""
+          echo "===== curl 詳細 header ====="
+          curl -sSI http://127.0.0.1/stage-v2/history.html 2>&1 | head -10
+          curl -sSI -H "Host: 146.190.93.148" http://127.0.0.1/stage-v2/history.html 2>&1 | head -10
+          REMOTE
