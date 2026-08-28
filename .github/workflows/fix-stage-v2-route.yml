@@ -1,0 +1,83 @@
+name: 修 /stage-v2/ route（直接改 unified-dashboard）
+on:
+  workflow_dispatch:
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          mkdir -p ~/.ssh && printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519 && chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+      - env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          set -euo pipefail
+          CONF=/etc/nginx/sites-available/unified-dashboard
+          BACKUP=/etc/nginx/sites-available/unified-dashboard.bak-fix-$(date +%Y%m%d-%H%M%S)
+          echo "備份到 $BACKUP"
+          cp -a "$CONF" "$BACKUP"
+
+          # 若已含 /stage-v2/，直接 reload
+          if grep -q "/stage-v2" "$CONF"; then
+            echo "已含 stage-v2 blocks，直接 test/reload"
+            nginx -t && systemctl reload nginx
+          else
+            # 用 sed 喺 crown ^~ /crown/ block 對應嘅 close-brace 之後插入
+            # 策略：搵最尾 } 前一行插入
+            python3 <<'PY'
+          import re, pathlib
+          p = pathlib.Path("/etc/nginx/sites-available/unified-dashboard")
+          text = p.read_text()
+
+          insert = """
+              location = /stage-v2 { return 301 /stage-v2/; }
+              location = /stage-v2/data.json {
+                  auth_basic "Footbreak Crown";
+                  auth_basic_user_file /etc/nginx/.htpasswd-crown;
+                  alias /var/www/stage_engine_v2/data.json;
+                  add_header Cache-Control "no-store, must-revalidate";
+                  expires -1;
+              }
+              location ^~ /stage-v2/ {
+                  auth_basic "Footbreak Crown";
+                  auth_basic_user_file /etc/nginx/.htpasswd-crown;
+                  alias /var/www/stage_engine_v2/;
+                  index index.html;
+              }
+          """
+          # 搵最外層 server { ... } 嘅結尾 }
+          # unified-dashboard 只有一個 server block
+          # 由 尾巴倒數第一個 } 之前插入
+          i = text.rfind("}")
+          if i < 0:
+              raise SystemExit("搵唔到收尾 }")
+          # 插入喺 } 之前
+          new = text[:i] + insert + "\n" + text[i:]
+          p.write_text(new)
+          print(f"插入 {len(insert)} 個 bytes 到 offset {i}")
+          PY
+            nginx -t || { echo "test 失敗，回滾"; cp -a "$BACKUP" "$CONF"; exit 1; }
+            systemctl reload nginx
+          fi
+
+          echo ""
+          echo "===== reload 後嘅 stage-v2 相關 config ====="
+          grep -nE "stage-v2|Footbreak Crown" "$CONF" | head -20
+          echo ""
+          echo "===== curl 驗證 ====="
+          curl -sS -o /dev/null -w "GET /stage-v2/  -> HTTP %{http_code}\n" http://127.0.0.1/stage-v2/
+          curl -sS -o /dev/null -w "GET /stage-v2/data.json -> HTTP %{http_code}\n" http://127.0.0.1/stage-v2/data.json
+          curl -sS -o /dev/null -w "GET /crown/ -> HTTP %{http_code}\n" http://127.0.0.1/crown/
+          echo ""
+          echo "===== 帶 crown auth 驗證（用 crown htpasswd 第一個 user 隨機測試唔會 log 密碼）====="
+          # 唔知你嘅密碼，只 confirm HTTP header WWW-Authenticate realm
+          curl -sS -I http://127.0.0.1/stage-v2/ | grep -iE "^HTTP|WWW-Authenticate"
+          echo ""
+          echo "===== 檔案存在? ====="
+          ls -la /var/www/stage_engine_v2/index.html /var/www/stage_engine_v2/data.json
+          REMOTE
