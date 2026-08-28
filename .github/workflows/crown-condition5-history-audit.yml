@@ -85,6 +85,77 @@ jobs:
           jq '.summary, .condition.definition, .missing_enrolments' \
             crown-condition5-history-audit.json
 
+      - name: Diagnose early-stage admission runtime
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" "sudo python3 -" <<'PY'
+          import collections
+          import json
+          import subprocess
+
+          ledger = json.load(open("/var/lib/footbreak/crown/ledger.json", encoding="utf-8"))
+          stages = collections.Counter()
+          reasons = collections.Counter()
+          pending = []
+          for watch in (ledger.get("watch") or {}).values():
+              if not isinstance(watch, dict):
+                  continue
+              for row in watch.get("stages") or []:
+                  if not isinstance(row, dict):
+                      continue
+                  stage = str(row.get("stage") or "")
+                  if stage not in {"首預", "T-30"}:
+                      continue
+                  status = str(row.get("formal_admission_status") or "UNMARKED")
+                  stages[(stage, status)] += 1
+                  reason = str(row.get("formal_admission_reason") or "")
+                  if reason:
+                      reasons[(stage, reason)] += 1
+                  if row.get("formal_admission_pending") is True:
+                      pending.append({
+                          "match_id": watch.get("match_id"),
+                          "stage": stage,
+                          "kickoff": watch.get("kickoff_hkt") or watch.get("kickoff"),
+                          "status": status,
+                      })
+          units = {}
+          for unit in (
+              "crown-early-admission-reconcile.timer",
+              "crown-early-admission-reconcile.service",
+          ):
+              result = subprocess.run(
+                  ["systemctl", "show", unit,
+                   "--property=LoadState,ActiveState,SubState,Result,ExecMainStatus,"
+                              "LastTriggerUSec,NextElapseUSecRealtime"],
+                  text=True, capture_output=True,
+              )
+              units[unit] = {
+                  "returncode": result.returncode,
+                  "properties": dict(
+                      line.split("=", 1) for line in result.stdout.splitlines()
+                      if "=" in line
+                  ),
+                  "stderr": result.stderr.strip(),
+              }
+          print(json.dumps({
+              "stage_status_counts": {
+                  f"{stage}|{status}": count
+                  for (stage, status), count in sorted(stages.items())
+              },
+              "stage_reason_counts": {
+                  f"{stage}|{reason}": count
+                  for (stage, reason), count in sorted(reasons.items())
+              },
+              "pending_count": len(pending),
+              "pending_sample": pending[:20],
+              "units": units,
+          }, ensure_ascii=False, indent=2, sort_keys=True))
+          PY
+
       - name: Remove SSH key
         if: always()
         run: shred -u ~/.ssh/id_ed25519 2>/dev/null || rm -f ~/.ssh/id_ed25519
