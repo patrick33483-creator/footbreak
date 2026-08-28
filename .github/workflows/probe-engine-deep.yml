@@ -1,0 +1,65 @@
+name: 深探 footbreak engine（read-only）
+on: workflow_dispatch
+jobs:
+  d:
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          mkdir -p ~/.ssh && printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519 && chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+      - env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          set -uo pipefail
+
+          echo "===== 1. analysis 目錄 layout ====="
+          ls -la /opt/footbreak/analysis/ 2>&1 | grep -vE "^total|test" | head -60
+
+          echo ""
+          echo "===== 2. 搵 from_dixon_coles 定義所在 ====="
+          grep -rn "def from_dixon_coles\|from_dixon_coles\s*=" /opt/footbreak/analysis/ 2>&1 | grep -v test | head
+
+          echo ""
+          echo "===== 3. quarter_line.py 頭 100 行（Dixon-Coles 入口）====="
+          head -100 /opt/footbreak/analysis/quarter_line.py 2>&1
+
+          echo ""
+          echo "===== 4. 搵基礎 win/draw/loss + over/under probability 計算 ====="
+          grep -rn "def.*probability\|def.*fair_odds\|def fit_.*\|def simulate.*match\|def match_probabilities\|def score_matrix" /opt/footbreak/analysis/ /opt/footbreak/crown/ /opt/footbreak/system/ 2>&1 | grep -v test | head -30
+
+          echo ""
+          echo "===== 5. crown/system 邊個 module 產生預測 (produce_prediction / build_stage / compute) ====="
+          grep -rn "def produce_prediction\|def compute_prediction\|def build_stage\|def build_first_pred\|def predict_fixture\|class .*Predictor" /opt/footbreak/crown/ /opt/footbreak/system/ /opt/footbreak/analysis/ 2>&1 | grep -v test | head -30
+
+          echo ""
+          echo "===== 6. crown tick 用邊個 module 產 stage prediction ====="
+          if [ -f /opt/footbreak/crown/tick.py ]; then
+            head -80 /opt/footbreak/crown/tick.py
+          fi
+          if [ -f /opt/footbreak/crown/__init__.py ]; then
+            head -30 /opt/footbreak/crown/__init__.py
+          fi
+
+          echo ""
+          echo "===== 7. crown 主要 py 檔 ====="
+          ls /opt/footbreak/crown/*.py 2>&1 | head -30
+
+          echo ""
+          echo "===== 8. system 主要 py 檔 (tick 入口 disk_guard 隔離)  ====="
+          ls /opt/footbreak/system/*.py 2>&1 | head -30
+
+          echo ""
+          echo "===== 9. deploy/run.sh tick 內容 ====="
+          cat /opt/footbreak/deploy/run.sh 2>&1 | head -60
+
+          echo ""
+          echo "===== 10. crown scheduler / stage engine 主入口 ====="
+          for f in tick scheduler stage_engine stages prediction predict; do
+            find /opt/footbreak -maxdepth 3 -name "${f}.py" -not -path "*.venv*" -not -path "*backup*" -not -path "*test*" 2>&1 | head
+          done
+          REMOTE
