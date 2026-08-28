@@ -1,0 +1,60 @@
+name: 抓取 crown data.json 快照
+on:
+  workflow_dispatch:
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 設定 SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+      - name: 抓 data.json 及 metadata
+        id: snap
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE' > /tmp/output.txt
+          set -e
+          echo "===== SERVER TIME UTC ====="
+          date -u +%FT%TZ
+          echo "===== SERVER TIME HKT ====="
+          TZ=Asia/Hong_Kong date +%FT%T%z
+          echo "===== crown data.json size / mtime ====="
+          stat -c 'size=%s mtime=%y' /var/www/crown/data.json
+          echo "===== BEGIN_DATA_JSON ====="
+          cat /var/www/crown/data.json
+          echo ""
+          echo "===== END_DATA_JSON ====="
+          echo "===== ledger watch counts ====="
+          /opt/footbreak/.venv/bin/python3 -c "
+          import json
+          with open('/opt/footbreak/system/sim_ledger.json') as f:
+              L = json.load(f)
+          w = L.get('watch') or {}
+          print(f'watch_total={len(w)}')
+          # stages 觸發過幾多場？
+          with_first = sum(1 for x in w.values() if isinstance(x, dict)
+                           and any(isinstance(s, dict) and s.get('stage') == '首預' for s in (x.get('stages') or [])))
+          with_t30 = sum(1 for x in w.values() if isinstance(x, dict)
+                          and any(isinstance(s, dict) and s.get('stage') == 'T-30' for s in (x.get('stages') or [])))
+          with_t5 = sum(1 for x in w.values() if isinstance(x, dict)
+                         and any(isinstance(s, dict) and s.get('stage') == 'T-5' for s in (x.get('stages') or [])))
+          print(f'watch_with_首預={with_first}')
+          print(f'watch_with_T-30={with_t30}')
+          print(f'watch_with_T-5={with_t5}')
+          "
+          REMOTE
+          cat /tmp/output.txt
+      - name: 上傳快照
+        uses: actions/upload-artifact@v4
+        with:
+          name: crown-snapshot
+          path: /tmp/output.txt
+          retention-days: 7
