@@ -324,6 +324,15 @@ def _apply_operator_verified_result_overlay(
     remaining_unknown = [
         row for row in rows if row.get("result_known") is False
     ]
+    if len(remaining_unknown) == 1 and recovery._pending_fixture(
+        remaining_unknown[0]
+    ) and remaining_unknown[0].get("result_status") not in {
+        "POSTPONED", "PENDING_RESULT_UNKNOWN",
+    }:
+        remaining_unknown[0]["result_status"] = "PENDING_RESULT_UNKNOWN"
+        remaining_unknown[0]["replay_candidate_hash"] = _candidate_hash(
+            remaining_unknown[0]
+        )
     if (
         len(matched_indexes) != 15
         or len(remaining_unknown) != 1
@@ -331,7 +340,8 @@ def _apply_operator_verified_result_overlay(
         or remaining_unknown[0].get("score") is not None
         or remaining_unknown[0].get("hdc_grade") is not None
         or remaining_unknown[0].get("result_source") is not None
-        or remaining_unknown[0].get("result_status") != "POSTPONED"
+        or remaining_unknown[0].get("result_status")
+        not in {"POSTPONED", "PENDING_RESULT_UNKNOWN"}
     ):
         raise OperatorMergeBlocked(
             "verified_result_overlay_remaining_unknown_not_exact_pending_fixture"
@@ -606,7 +616,7 @@ def _draft_operator_row(
     else:
         row.update({
             "status": "PENDING",
-            "pending_reason": "user_approved_postponed_fixture",
+            "pending_reason": "user_approved_unknown_result",
             "postponement_proof": {
                 "schema_version": 1,
                 "operator_approval_context": APPROVAL_CONTEXT,
@@ -617,7 +627,7 @@ def _draft_operator_row(
                 "home": candidate["home"],
                 "away": candidate["away"],
                 "kickoff_hkt": candidate["kickoff_hkt"],
-                "result_status": "POSTPONED",
+                "result_status": candidate["result_status"],
                 "score": None,
             },
         })
