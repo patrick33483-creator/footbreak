@@ -1,0 +1,27 @@
+name: 檢查 stage-v2 route 而家嘅實際 config
+on:
+  workflow_dispatch:
+jobs:
+  v:
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          mkdir -p ~/.ssh && printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519 && chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+      - env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          echo "===== unified-dashboard config: stage-v2 相關行 ====="
+          grep -nA1 "stage-v2\|Odds Radar\|Footbreak Crown" /etc/nginx/sites-available/unified-dashboard | head -60
+          echo ""
+          echo "===== 而家 /var/www/stage_engine_v2 目錄 ====="
+          ls -la /var/www/stage_engine_v2/
+          echo ""
+          echo "===== history.html size ====="
+          [ -f /var/www/stage_engine_v2/history.html ] && wc -c /var/www/stage_engine_v2/history.html || echo "(唔存在)"
+          REMOTE
