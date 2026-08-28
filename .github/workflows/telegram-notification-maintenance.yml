@@ -8,7 +8,7 @@ on:
         required: true
         default: audit
         type: choice
-        options: [audit, system-test]
+        options: [audit, system-test, crown-condition2-demo]
       test_id:
         description: Required unique ID for system-test (never re-sent after acknowledgement)
         required: false
@@ -53,9 +53,9 @@ jobs:
           ENABLE_CROWN_TELEGRAM: ${{ inputs.enable_crown_telegram }}
         run: |
           set -euo pipefail
-          case "$ACTION" in audit|system-test) ;; *) exit 2;; esac
-          if [ "$ACTION" = system-test ] && ! [[ "$TEST_ID" =~ ^[A-Za-z0-9._-]{8,96}$ ]]; then
-            echo "system-test requires an 8–96 character safe test_id" >&2
+          case "$ACTION" in audit|system-test|crown-condition2-demo) ;; *) exit 2;; esac
+          if [ "$ACTION" != audit ] && ! [[ "$TEST_ID" =~ ^[A-Za-z0-9._-]{8,96}$ ]]; then
+            echo "$ACTION requires an 8–96 character safe test_id" >&2
             exit 2
           fi
           case "$ENABLE_CROWN_TELEGRAM" in true|false) ;; *) exit 2;; esac
@@ -76,6 +76,43 @@ jobs:
           [ ! -f /etc/footbreak.env ] || . /etc/footbreak.env
           [ ! -f /etc/footbreak-crown.env ] || . /etc/footbreak-crown.env
           set +a
+          if [ "$ACTION" = crown-condition2-demo ]; then
+            cd /opt/footbreak
+            PYTHONPATH=/opt/footbreak /opt/footbreak/.venv/bin/python3 - <<'PY'
+          import json
+          from crown.config import settings
+          from crown.notify import _send
+
+          text = "\n".join([
+              "【測試示範，非真實投注訊號】",
+              "【皇冠 Wilson #2】",
+              "20:00 測試聯賽",
+              "測試主隊 vs 測試客隊",
+              "",
+              "達標時點：T-30",
+              "皇冠訊號：入球大細 · 大 2.75 @1.95",
+              "Wilson 最低賠率要求：1.93",
+              "決定：投注",
+              "投注平台：皇冠",
+              "同一場 #2 只通知一次",
+          ])
+          response = _send(settings(), text, return_response=True)
+          if not response.get("ok"):
+              raise RuntimeError(f"Crown condition #2 demo failed: {response}")
+          print(json.dumps({
+              "generated_at": __import__("datetime").datetime.now(
+                  __import__("datetime").timezone.utc
+              ).isoformat(),
+              "safe_read_only": False,
+              "crown_condition2_demo": {
+                  "telegram_response_ok": True,
+                  "message_id": response.get("message_id"),
+                  "transport": response.get("transport"),
+              },
+          }, ensure_ascii=False))
+          PY
+            exit 0
+          fi
           args=()
           if [ "$ACTION" = system-test ]; then
             args+=(--system-test-id "$TEST_ID")
