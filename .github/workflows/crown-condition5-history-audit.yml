@@ -92,7 +92,8 @@ jobs:
         run: |
           set -euo pipefail
           ssh -o BatchMode=yes -o ConnectTimeout=20 \
-            "$DEPLOY_USER@$DEPLOY_HOST" "sudo python3 -" <<'PY'
+            "$DEPLOY_USER@$DEPLOY_HOST" "sudo python3 -" \
+            > crown-condition5-runtime-diagnostic.json <<'PY'
           import collections
           import json
           import subprocess
@@ -155,6 +156,13 @@ jobs:
               "units": units,
           }, ensure_ascii=False, indent=2, sort_keys=True))
           PY
+          {
+            echo '## Crown condition 5 early-stage runtime'
+            echo
+            echo '```json'
+            cat crown-condition5-runtime-diagnostic.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Remove SSH key
         if: always()
@@ -165,6 +173,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: crown-condition5-history-audit-${{ github.run_id }}
-          path: crown-condition5-history-audit.json
+          path: |
+            crown-condition5-history-audit.json
+            crown-condition5-runtime-diagnostic.json
           retention-days: 14
           if-no-files-found: error
