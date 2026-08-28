@@ -466,6 +466,28 @@ def plan_operator_merge(
     existing_bets = copy.deepcopy(proposed.get("bets") or [])
     existing_observations = copy.deepcopy(namespace.get("observations") or [])
     existing_audit = copy.deepcopy(namespace.get("audit") or [])
+    summary = replay.get("summary")
+    audit = replay.get("v2_duplicate_audit")
+    expected_replay_scalars = {
+        "summary.matching_fixture_count": 40,
+        "summary.wilson_price_pass_fixture_count": 0,
+        "summary.low_price_observation_fixture_count": 40,
+        "summary.missing_expected_record_fixture_count": 40,
+        "summary.unknown_result_fixture_count": 1,
+        "audit.stored_v2_cumulative_hits": 52,
+        "audit.stored_v2_cumulative_decided": 81,
+        "audit.reconstructed_pre_boundary_fixture_count": 62,
+        "audit.reconstructed_pre_boundary_hits": 41,
+        "audit.reconstructed_pre_boundary_decided": 62,
+    }
+    for qualified, expected in expected_replay_scalars.items():
+        section_name, field = qualified.split(".", 1)
+        section = summary if section_name == "summary" else audit
+        actual = section.get(field) if isinstance(section, dict) else None
+        if actual != expected:
+            raise OperatorMergeBlocked(
+                f"replay_contract_mismatch:{qualified}:expected_{expected}:actual_{actual}"
+            )
     rows = recovery._validate_replay(replay, signature, frozen)
     if replay.get("summary") != {
         "matching_fixture_count": 40,
