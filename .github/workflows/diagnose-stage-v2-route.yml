@@ -1,0 +1,37 @@
+name: 診斷 stage-v2 route 邊個 auth
+on:
+  workflow_dispatch:
+jobs:
+  d:
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          mkdir -p ~/.ssh && printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519 && chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+      - env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          echo "===== 邊個 site 佔咗 listen 80 default ====="
+          nginx -T 2>/dev/null | grep -B1 -A20 "listen 80 default" | head -60
+          echo ""
+          echo "===== 有邊啲 htpasswd file ====="
+          ls -la /etc/nginx/.htpasswd* 2>&1
+          echo ""
+          echo "===== unified-dashboard config 而家嘅內容 (只 grep stage/auth) ====="
+          grep -nE "stage-v2|auth_basic|location" /etc/nginx/sites-available/unified-dashboard | head -50
+          echo ""
+          echo "===== 邊個 server block 有 Odds Radar realm ====="
+          nginx -T 2>/dev/null | grep -B3 "Odds Radar" | head -20
+          echo ""
+          echo "===== 443 有冇 server ====="
+          nginx -T 2>/dev/null | grep -E "listen.*443|listen.*ssl" | head -10
+          echo ""
+          echo "===== 舊 crown dashboard 平時透過邊個 port / URL ====="
+          # 邊個 htpasswd realm 對應邊個 URL
+          nginx -T 2>/dev/null | grep -B1 "htpasswd-crown" | head -20
+          REMOTE
