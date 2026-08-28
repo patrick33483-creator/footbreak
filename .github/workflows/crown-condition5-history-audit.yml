@@ -97,6 +97,28 @@ jobs:
           jq '.summary, .condition.definition, .missing_enrolments, .condition10_funnel' \
             crown-condition-history-audit.json
 
+      - name: Build Crown condition 10 recovery dry-run
+        if: inputs.condition_number == '10'
+        run: |
+          set -euo pipefail
+          PYTHONPATH="$GITHUB_WORKSPACE" \
+            python3 analysis/dry_run_crown_condition10_recovery.py \
+              --audit crown-condition-history-audit.json \
+              --result-overrides audit/crown-condition-10-result-overrides-20260828.json \
+              --output crown-condition10-recovery-dry-run.json
+          jq '{
+            schema,
+            mode,
+            production_touched,
+            writes,
+            deletes,
+            candidate_count,
+            grade_counts,
+            first_pass,
+            idempotent_second_pass,
+            rollover
+          }' crown-condition10-recovery-dry-run.json
+
       - name: Diagnose early-stage admission runtime
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
@@ -188,5 +210,6 @@ jobs:
           path: |
             crown-condition-history-audit.json
             crown-condition5-runtime-diagnostic.json
+            crown-condition10-recovery-dry-run.json
           retention-days: 14
           if-no-files-found: error

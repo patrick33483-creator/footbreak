@@ -1,0 +1,61 @@
+{
+  "schema": "crown-condition-10-result-overrides-v1",
+  "verified_at": "2026-08-28T10:50:00+08:00",
+  "results": [
+    {
+      "fixture": "2995124",
+      "score_90_minutes": "0-0",
+      "grade": "Lost",
+      "terminal_status": "FT_90",
+      "sources": [
+        "https://datencenter.dfb.de/datencenter/dfb-pokal/2026-27/1-runde/sv-waldhof-mannheim-1-fc-kaiserslautern-2418334"
+      ]
+    },
+    {
+      "fixture": "2996425",
+      "score_90_minutes": "0-1",
+      "grade": "Lost",
+      "terminal_status": "FT_90",
+      "sources": [
+        "https://www.espn.nl/voetbal/wedstrijd/_/wedstrijdId/401875973/roda-jc-kerkrade-fc-dordrecht"
+      ]
+    },
+    {
+      "fixture": "2996427",
+      "score_90_minutes": "1-1",
+      "grade": "Lost",
+      "terminal_status": "FT_90",
+      "sources": [
+        "https://www.transfermarkt.com/spielbericht/index/spielbericht/4913042"
+      ]
+    },
+    {
+      "fixture": "2996428",
+      "score_90_minutes": "1-0",
+      "grade": "Lost",
+      "terminal_status": "FT_90",
+      "sources": [
+        "https://fcvolendam.nl/wedstrijdnieuws/fc-volendam-met-lege-handen-uit-maastricht-de-reacties-op-een-rij/"
+      ]
+    },
+    {
+      "fixture": "3041537",
+      "score_90_minutes": null,
+      "grade": "PENDING",
+      "terminal_status": "POSTPONED",
+      "sources": [
+        "https://www.idman.biz/az/news/azerbaijan-championship/151532",
+        "https://www.soccerway.com/match/kapaz-hEojvsib/qarabag-agdam-Qgd3eSin/"
+      ]
+    },
+    {
+      "fixture": "3064856",
+      "score_90_minutes": "4-1",
+      "grade": "Won",
+      "terminal_status": "FT_90",
+      "sources": [
+        "https://www.espn.com/soccer/match/_/gameId/401909628/gornik-zabrze-as-monaco"
+      ]
+    }
+  ]
+}
