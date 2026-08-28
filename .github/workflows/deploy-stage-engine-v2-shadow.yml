@@ -81,7 +81,7 @@ jobs:
           install -d -m 755 /var/lib/footbreak/stage_engine_v2
           install -d -m 755 /var/log/footbreak
           install -d -m 755 /var/www/stage_engine_v2
-          chown -R footbreak:footbreak /var/lib/footbreak/stage_engine_v2 2>/dev/null || true
+          # root 跑 tick，但 dashboard 目錄 www-data 充得讀
           chown -R www-data:www-data /var/www/stage_engine_v2 2>/dev/null || true
 
           # 4. 派前端（dashboard/index.html → /var/www/stage_engine_v2/index.html）
@@ -96,8 +96,7 @@ jobs:
 
           [Service]
           Type=oneshot
-          User=footbreak
-          Group=footbreak
+          # 對齊舊 crown-tick.service：不指定 User=（舊 pipeline 也係 root 跑）
           Environment=STAGE_V2_TELEGRAM_ENABLED=0
           Environment=PYTHONPATH=/opt/footbreak
           WorkingDirectory=/opt/footbreak
@@ -109,6 +108,8 @@ jobs:
             --window-hours 48
           StandardOutput=append:/var/log/footbreak/stage-v2-tick.log
           StandardError=append:/var/log/footbreak/stage-v2-tick.log
+          # 防識止跑太久非 mask timer trigger
+          TimeoutStartSec=25s
           UNIT
 
           cat > /etc/systemd/system/stage-engine-v2-tick.timer <<'UNIT'
