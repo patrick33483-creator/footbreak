@@ -1,0 +1,31 @@
+name: 檢查 nginx config
+on:
+  workflow_dispatch:
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          mkdir -p ~/.ssh && printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519 && chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+      - env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          echo "===== sites-enabled ====="
+          ls -la /etc/nginx/sites-enabled/ 2>&1
+          echo ""
+          echo "===== crown 相關 site config ====="
+          for f in /etc/nginx/sites-enabled/*; do
+            echo "--- $f ---"
+            cat "$f"
+            echo ""
+          done
+          echo ""
+          echo "===== nginx -T (server_name 同 root 摘要) ====="
+          nginx -T 2>/dev/null | grep -E "server_name|root|location.*/crown|location.*/stage" | head -30
+          REMOTE
