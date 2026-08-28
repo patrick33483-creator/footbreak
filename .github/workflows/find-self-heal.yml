@@ -1,0 +1,29 @@
+name: 搵 self-heal 用嘅 template
+on: workflow_dispatch
+jobs:
+  f:
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          mkdir -p ~/.ssh && printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519 && chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+      - env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          echo "===== 1. self-heal service unit ====="
+          cat /etc/systemd/system/footbreak-dashboard-self-heal.service 2>/dev/null || echo "唔喺 /etc/systemd/system"
+          echo ""
+          echo "===== 2. 佢 ExecStart 嘅 script 睇下 ====="
+          grep -h "ExecStart" /etc/systemd/system/footbreak-dashboard-self-heal.service | head
+          echo ""
+          echo "===== 3. 相關 script 位置 (probable /opt/footbreak) ====="
+          find /opt/footbreak /usr/local -name "*self-heal*" -o -name "*dashboard-heal*" 2>/dev/null | head
+          echo ""
+          echo "===== 4. journal 最近一次 heal 做過乜 ====="
+          journalctl -u footbreak-dashboard-self-heal.service --since "2 hours ago" --no-pager | tail -40
+          REMOTE
