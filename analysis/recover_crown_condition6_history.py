@@ -449,7 +449,9 @@ def recover(
             "migration": MIGRATION,
             "completed_at": migration_at,
             "proof_hash": _hash(result["starting_proof"]),
-            "matched_after_boundary": result["matched_after_boundary"],
+            "matched_outside_independent_baseline": result[
+                "matched_outside_independent_baseline"
+            ],
             "accepted": result["accepted"],
             "settled": result["settled"],
             "pending_result": result["pending_result"],
