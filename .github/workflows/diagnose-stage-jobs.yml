@@ -1,0 +1,98 @@
+name: 診斷 stage_jobs 建立
+on:
+  workflow_dispatch:
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 設定 SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+      - name: 檢查 stage_jobs 為何空
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          cd /opt/footbreak
+          sudo -u www-data /opt/footbreak/.venv/bin/python3 <<'PY'
+          import json, sys
+          from datetime import datetime, timezone, timedelta
+          sys.path.insert(0, '/opt/footbreak')
+          HKT = timezone(timedelta(hours=8))
+          now = datetime.now(HKT)
+          print(f"NOW: {now.isoformat()}")
+
+          with open('/opt/footbreak/system/sim_ledger.json') as f:
+              led = json.load(f)
+          watches = led.get('watch') or {}
+          # Pick an upcoming watch, e.g. wid=50073785 kickoff 00:30
+          test_wid = "50073785"
+          w = watches.get(test_wid)
+          if not w:
+              upcoming = []
+              for wid, ww in watches.items():
+                  ko_str = ww.get('kickoff') or ''
+                  try:
+                      ko = datetime.fromisoformat(ko_str.replace(' ', 'T')).replace(tzinfo=HKT)
+                      if ko > now and (ko - now).total_seconds() < 7200:
+                          upcoming.append((ko, wid, ww))
+                  except: pass
+              upcoming.sort()
+              if upcoming:
+                  test_wid = upcoming[0][1]
+                  w = upcoming[0][2]
+          if not w:
+              print("no upcoming watch found")
+              sys.exit(0)
+          print(f"\n===== BEFORE watch id={test_wid} =====")
+          print(f"kickoff: {w.get('kickoff')}")
+          print(f"kickoff_hkt: {w.get('kickoff_hkt')}")
+          print(f"kickoff_utc: {w.get('kickoff_utc')}")
+          print(f"stage_jobs (existing): {w.get('stage_jobs')}")
+          print(f"stages count: {len(w.get('stages') or [])}")
+          # Try calling ensure_stage_jobs directly
+          from crown.ledger import ensure_stage_jobs, parse_time
+          import copy
+          w2 = copy.deepcopy(w)
+          ko = parse_time(w2.get('kickoff_utc') or w2.get('kickoff_hkt') or w2.get('kickoff'))
+          print(f"\nparse_time result: {ko}")
+          if ko is None:
+              print("!!! parse_time returned None — 呢個係 root cause")
+              print(f"kickoff raw: {repr(w2.get('kickoff'))}")
+          else:
+              jobs = ensure_stage_jobs(w2, ko)
+              print(f"jobs after ensure: {list(jobs.keys())}")
+              for stage, job in jobs.items():
+                  print(f"  {stage}: due_at_utc={job.get('due_at_utc')}, state={job.get('state')}")
+
+          # Check parse_time internals
+          print(f"\n===== parse_time diagnostic =====")
+          test_vals = ['2026-08-29 00:30', '2026-08-29T00:30:00', '2026-08-29 00:30:00+08:00']
+          for v in test_vals:
+              r = parse_time(v)
+              print(f"  parse_time({v!r}) = {r}")
+
+          # Check if lock is being held or ledger not saveable
+          print(f"\n===== ledger writability check =====")
+          import os, stat
+          st = os.stat('/opt/footbreak/system/sim_ledger.json')
+          print(f"  ledger mode: {oct(st.st_mode)}")
+          print(f"  ledger owner uid: {st.st_uid}, gid: {st.st_gid}")
+          import pwd, grp
+          print(f"  owner: {pwd.getpwuid(st.st_uid).pw_name}:{grp.getgrgid(st.st_gid).gr_name}")
+          print(f"  crown service runs as: (crown-tick.service User=?)")
+          PY
+          echo ""
+          echo "===== crown-tick.service User line ====="
+          grep -E "^User=|^Group=" /etc/systemd/system/crown-tick.service 2>/dev/null || grep -E "^User=|^Group=" /opt/footbreak/deploy/systemd/crown-tick.service
+          echo ""
+          echo "===== process running crown ====="
+          ps -eo user,pid,cmd | grep -E "crown-run|crown\.run" | grep -v grep | head -3
+          REMOTE
