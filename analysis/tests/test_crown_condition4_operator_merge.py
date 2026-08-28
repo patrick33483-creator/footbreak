@@ -90,6 +90,131 @@ class CrownCondition4OperatorPlanTests(unittest.TestCase):
         ):
             operator.plan_operator_merge(self.ledger, replay)
 
+    def test_known_production_legacy_rejections_are_preserved_not_repaired(
+        self,
+    ) -> None:
+        ledger = copy.deepcopy(self.ledger)
+        namespace = ledger["wilson_validation"]
+        condition_one = next(
+            row for row in namespace["conditions"].values()
+            if row["condition_number"] == 1
+        )
+        existing = {
+            "bet_id": "legacy-condition-one-row",
+            "match_id": "legacy-fixture",
+            "market": "HDC",
+            "score": "2-1",
+            "result": "Won",
+            "status": "SETTLED",
+            "frozen_condition_signature": condition_one["signature"],
+        }
+        ledger["bets"].append(copy.deepcopy(existing))
+        replay = replay_fixture(ledger)
+        original = copy.deepcopy(ledger)
+        real_build_manifest = operator.build_manifest
+
+        def production_reason_shaped_manifest(
+            value: dict, system: str,
+        ) -> dict:
+            manifest = real_build_manifest(value, system)
+            by_number = {
+                row["condition_number"]: row
+                for row in manifest["conditions"]
+                if isinstance(row, dict)
+                and isinstance(row.get("condition_number"), int)
+            }
+            for number, reasons in operator.LEGACY_REJECTION_FINGERPRINT[
+                "conditions"
+            ].items():
+                row = by_number.get(number)
+                if row is None:
+                    row = {"condition_number": number}
+                    manifest["conditions"].append(row)
+                row["valid"] = False
+                row["rejection_reasons"] = list(reasons)
+            condition_four = by_number[4]
+            condition_four["valid"] = True
+            condition_four["rejection_reasons"] = []
+            manifest["valid"] = False
+            manifest["rejection_reasons"] = copy.deepcopy(
+                operator.LEGACY_REJECTION_FINGERPRINT["rejection_reasons"]
+            )
+            return manifest
+
+        unrelated_before = {
+            key: copy.deepcopy(value)
+            for key, value in namespace["conditions"].items()
+            if value["condition_number"] != 4
+        }
+        with patch.object(
+            operator,
+            "build_manifest",
+            side_effect=production_reason_shaped_manifest,
+        ):
+            report, proposed, signature, binding = operator.plan_operator_merge(
+                ledger, replay
+            )
+            operator.verify_final_ledger(
+                proposed, signature=signature, binding=binding
+            )
+
+        self.assertEqual(ledger, original)
+        self.assertEqual(proposed["bets"], original["bets"])
+        self.assertEqual(proposed["bets"][0], existing)
+        self.assertEqual(
+            proposed["wilson_validation"]["observations"][
+                :len(namespace.get("observations") or [])
+            ],
+            original["wilson_validation"].get("observations") or [],
+        )
+        self.assertEqual(
+            {
+                key: value
+                for key, value in proposed["wilson_validation"][
+                    "conditions"
+                ].items()
+                if key != signature
+            },
+            unrelated_before,
+        )
+        self.assertEqual(
+            len(proposed["wilson_validation"]["observations"]),
+            len(original["wilson_validation"].get("observations") or []) + 40,
+        )
+        self.assertEqual(report["final"], {
+            "observations": 121,
+            "decided": 120,
+            "hits": 73,
+            "pending": 1,
+        })
+        self.assertTrue(
+            report["safety"]["legacy_rejection_fingerprint_preserved"]
+        )
+
+    def test_any_change_to_legacy_rejection_fingerprint_fails_closed(self) -> None:
+        manifest = operator.build_manifest(self.ledger, "crown")
+        manifest["valid"] = False
+        manifest["rejection_reasons"] = {
+            **operator.LEGACY_REJECTION_FINGERPRINT["rejection_reasons"],
+            "evidence_hash_drift": 1,
+        }
+        for number, reasons in operator.LEGACY_REJECTION_FINGERPRINT[
+            "conditions"
+        ].items():
+            manifest["conditions"].append({
+                "condition_number": number,
+                "valid": False,
+                "rejection_reasons": list(reasons),
+            })
+        with (
+            patch.object(operator, "build_manifest", return_value=manifest),
+            self.assertRaisesRegex(
+                operator.OperatorMergeBlocked,
+                "input_ledger_strict_manifest_invalid",
+            ),
+        ):
+            operator.plan_operator_merge(self.ledger, self.replay)
+
 
 class CrownCondition4OperatorTransactionTests(unittest.TestCase):
     def test_post_write_verification_failure_restores_exact_original_bytes(

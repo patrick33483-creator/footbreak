@@ -20,7 +20,11 @@ from analysis.crown_condition4_recovery import (
     _strict_json_bytes, _write_retained, bytes_hash, canonical_hash,
     main as recovery_main, plan_recovery, verify_external_authority,
 )
-from analysis.wilson_validation import project_granular_ranking_evidence
+from analysis.wilson_validation import (
+    _initial_migration_version,
+    active_evidence_version,
+    project_granular_ranking_evidence,
+)
 from analysis.wilson_registry_manifest import build_manifest
 from analysis import crown_condition4_recovery as recovery
 from cryptography.hazmat.primitives import serialization
@@ -80,6 +84,24 @@ def ledger_fixture() -> dict:
     frozen = next(
         row for row in ledger["wilson_validation"]["conditions"].values()
         if row["condition_number"] == 4
+    )
+    baseline = frozen["evidence_versions"][0]
+    frozen["prospective"] = {"hits": 11, "decided": 19, "pushes": 0}
+    migrated = _initial_migration_version(
+        frozen,
+        baseline,
+        migration_boundary="2026-08-20T12:00:00+08:00",
+    )
+    assert migrated is not None
+    frozen["evidence_versions"].append(migrated)
+    frozen["rollover_audit"] = [copy.deepcopy(migrated)]
+    frozen["prospective_before_rollover_migration"] = copy.deepcopy(
+        frozen["prospective"]
+    )
+    frozen["prospective"] = {}
+    active_evidence_version(
+        frozen,
+        migration_boundary=ledger["wilson_validation"]["activation_at"],
     )
     assert (frozen["active_evidence"]["cumulative_hits"],
             frozen["active_evidence"]["cumulative_decided"]) == (52, 81)
