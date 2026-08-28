@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import hashlib
 import json
 import os
 import tempfile
@@ -28,6 +29,17 @@ from analysis.wilson_validation import (
 
 SIGNATURE = "7d990edf3c230cf5a21ead44"
 MIGRATION = "crown-condition5-t30-missed-admission-v1"
+_CROWN_SNAPSHOT_MUTABLE = {
+    "collection_attempts",
+    "formal_admission_pending",
+    "formal_admission_snapshot_id",
+    "formal_admission_snapshot_hash",
+    "formal_admission_watch_context_hash",
+    "formal_admission_status",
+    "formal_admission_reason",
+    "formal_admission_completed_at",
+    "wilson_validation",
+}
 
 
 def _read(path: Path) -> dict[str, Any]:
@@ -119,6 +131,69 @@ def _deduplicate_condition_rows(
     return kept, removed
 
 
+def _bind_recovered_quarter_snapshot(
+    ledger: dict[str, Any], match: dict[str, Any], selected: dict[str, Any],
+) -> None:
+    line = float(selected.get("line", selected.get("condition")))
+    if abs((abs(line) % 1) - 0.25) > 1e-8 and abs(
+        (abs(line) % 1) - 0.75
+    ) > 1e-8:
+        return
+    fixture = str(match["fixture"])
+    watch = (ledger.get("watch") or {}).get(fixture)
+    if not isinstance(watch, dict):
+        raise ValueError(f"quarter-line fixture missing from watch: {fixture}")
+    stage_matches = [
+        row for row in watch.get("stages") or []
+        if isinstance(row, dict)
+        and row.get("stage") == "T-30"
+        and _time(row.get("ts")) == _time(match["stage_at"])
+    ]
+    if len(stage_matches) != 1:
+        raise ValueError(f"quarter-line T-30 stage is ambiguous: {fixture}")
+    stage = stage_matches[0]
+    quotes = [
+        row for row in stage.get("market_predictions") or []
+        if isinstance(row, dict)
+        and str(row.get("code") or "").upper() == "HIL"
+        and str(row.get("side") or "").upper()
+        == str(selected.get("side") or "").upper()
+        and abs(float(row.get("line", row.get("condition"))) - line) <= 1e-8
+        and abs(float(row.get("odds")) - float(selected.get("odds"))) <= 1e-8
+    ]
+    if len(quotes) != 1:
+        raise ValueError(f"quarter-line selected quote is ambiguous: {fixture}")
+    profile = selected.get("quarter_line_settlement")
+    if not isinstance(profile, dict):
+        raise ValueError(f"quarter-line settlement profile unavailable: {fixture}")
+    existing_profile = quotes[0].get("quarter_line_settlement")
+    if existing_profile not in (None, profile):
+        raise ValueError(f"quarter-line settlement profile conflicts: {fixture}")
+    quotes[0]["quarter_line_settlement"] = copy.deepcopy(profile)
+    payload = {
+        key: value for key, value in stage.items()
+        if key not in _CROWN_SNAPSHOT_MUTABLE
+    }
+    snapshot_hash = hashlib.sha256(json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        default=str,
+    ).encode()).hexdigest()
+    existing_hash = stage.get("formal_admission_snapshot_hash")
+    if existing_hash not in (None, snapshot_hash):
+        raise ValueError(f"quarter-line snapshot hash conflicts: {fixture}")
+    snapshot_id = stage.get("formal_admission_snapshot_id") or (
+        f"recovered:{fixture}:T-30:{stage['ts']}"
+    )
+    stage["formal_admission_snapshot_id"] = snapshot_id
+    stage["formal_admission_snapshot_hash"] = snapshot_hash
+    selected["native_snapshot_binding"] = {
+        "schema_version": 1,
+        "system": SYSTEM,
+        "snapshot_id": snapshot_id,
+        "snapshot_hash": snapshot_hash,
+    }
+
+
 def recover(
     ledger: dict[str, Any], history: dict[str, Any], *, apply: bool,
 ) -> dict[str, Any]:
@@ -188,6 +263,7 @@ def recover(
             result["reasons"]["selected_prediction_missing_or_ambiguous"] += 1
             continue
         selected = _with_quarter_line_profile(selected, match["source"])
+        _bind_recovered_quarter_snapshot(ledger, match, selected)
         exact_registry = [
             row for row in formal_matches.get(fixture, [])
             if row.get("__formal_frozen_signature") == SIGNATURE

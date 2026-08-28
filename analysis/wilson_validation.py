@@ -344,7 +344,7 @@ def _snapshot_binding_valid(binding: Any, system: str) -> bool:
 def _quarter_snapshot_binding_valid(
     ledger: dict[str, Any] | None, row: dict[str, Any], system: str,
 ) -> bool:
-    """Bind a quarter-line formal row to its exact immutable native T-5 row."""
+    """Bind a quarter-line formal row to its exact native decision-stage row."""
     binding = row.get("native_snapshot_binding")
     if not _snapshot_binding_valid(binding, system) or not isinstance(ledger, dict):
         return False
@@ -362,7 +362,7 @@ def _quarter_snapshot_binding_valid(
     matches = [
         stage for stage in watch.get("stages") or []
         if isinstance(stage, dict)
-        and stage.get("stage") == DECISION_STAGE
+        and stage.get("stage") == row.get("stage")
         and stage.get(snapshot_id_key) == binding["snapshot_id"]
         and stage.get(snapshot_hash_key) == binding["snapshot_hash"]
     ]
