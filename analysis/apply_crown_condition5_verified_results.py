@@ -189,7 +189,10 @@ def apply_verified_results(
                 raise ValueError(f"existing result conflicts: {fixture}")
             state = "already_same"
             result["already_settled_same"] += 1
-        elif row.get("status") == "PENDING" and row.get("result") == "PENDING":
+        elif (
+            row.get("status") == "PENDING"
+            and row.get("result") in (None, "PENDING")
+        ):
             admitted, reason = validate_formal_row(
                 row, system=SYSTEM, signature=SIGNATURE, frozen=frozen,
                 projection_time=projection_time, require_settled=False,
