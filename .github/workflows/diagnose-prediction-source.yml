@@ -1,0 +1,111 @@
+name: 診斷 Predictions 來源
+on:
+  workflow_dispatch:
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 設定 SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+      - name: 檢查 predictions 與 crown data
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          python3 <<'PY'
+          import json, time
+          from datetime import datetime, timezone, timedelta
+          HKT = timezone(timedelta(hours=8))
+          now = datetime.now(HKT)
+          print(f"NOW: {now.isoformat()}")
+
+          # dashboard data
+          print("\n===== /var/www/crown/data.json 分析 =====")
+          try:
+              with open('/var/www/crown/data.json') as f:
+                  d = json.load(f)
+              print(f"top-level keys: {list(d.keys())[:20]}")
+              cards = d.get('cards') or d.get('predictions') or []
+              print(f"cards count: {len(cards)}")
+              # count by kickoff bucket
+              buckets = {'past': 0, 'in_5min': 0, 'in_30min': 0, '30-120min': 0, '2-6h': 0, '6-24h': 0, '24h+': 0, 'no_ko': 0}
+              hkjc_upcoming = []
+              for c in cards[:200]:
+                  ko_str = c.get('kickoff') or c.get('kickoff_hkt') or ''
+                  if not ko_str:
+                      buckets['no_ko'] += 1
+                      continue
+                  try:
+                      ko = datetime.fromisoformat(ko_str.replace(' ', 'T'))
+                      if ko.tzinfo is None:
+                          ko = ko.replace(tzinfo=HKT)
+                  except:
+                      buckets['no_ko'] += 1
+                      continue
+                  delta = (ko - now).total_seconds() / 60
+                  if delta < 0: buckets['past'] += 1
+                  elif delta < 5: buckets['in_5min'] += 1
+                  elif delta < 30: buckets['in_30min'] += 1
+                  elif delta < 120: buckets['30-120min'] += 1
+                  elif delta < 360: buckets['2-6h'] += 1
+                  elif delta < 1440: buckets['6-24h'] += 1
+                  else: buckets['24h+'] += 1
+                  src = str(c.get('source', ''))
+                  lg = str(c.get('league', ''))
+                  if 'hkjc' in src.lower() or '香港' in lg or 'HKJC' in str(c):
+                      if 0 < delta < 1440:
+                          hkjc_upcoming.append((delta, c.get('match_id'), lg, c.get('home'), c.get('away'), ko_str))
+              print(f"kickoff buckets: {buckets}")
+              print(f"HKJC-tagged upcoming (24h): {len(hkjc_upcoming)}")
+              hkjc_upcoming.sort()
+              for d, mid, lg, h, a, k in hkjc_upcoming[:10]:
+                  print(f"  +{d:.0f}min mid={mid} {lg} {h} vs {a} ({k})")
+          except Exception as e:
+              print(f"data.json read failed: {e}")
+
+          # ledger recent watches created
+          print("\n===== ledger.watch: 未來 24 小時 =====")
+          with open('/opt/footbreak/system/sim_ledger.json') as f:
+              led = json.load(f)
+          watches = led.get('watch') or {}
+          upcoming = []
+          for wid, w in watches.items():
+              ko_str = w.get('kickoff') or w.get('kickoff_hkt') or ''
+              if not ko_str: continue
+              try:
+                  ko = datetime.fromisoformat(ko_str.replace(' ', 'T'))
+                  if ko.tzinfo is None:
+                      ko = ko.replace(tzinfo=HKT)
+              except:
+                  continue
+              delta = (ko - now).total_seconds() / 60
+              if 0 < delta < 1440:
+                  upcoming.append((delta, wid, w.get('league', ''), w.get('home', ''), w.get('away', ''), ko_str, list((w.get('stage_jobs') or {}).keys())))
+          upcoming.sort()
+          print(f"watches upcoming (24h): {len(upcoming)}")
+          for d, wid, lg, h, a, k, jobs in upcoming[:10]:
+              print(f"  +{d:.0f}min wid={wid} {lg} {h} vs {a} ({k}) jobs={jobs}")
+
+          # check top-level titan feed cache
+          print("\n===== Crown state files =====")
+          import os
+          for path in ['/var/lib/footbreak/crown', '/var/lib/footbreak']:
+              try:
+                  for f in sorted(os.listdir(path))[:15]:
+                      full = os.path.join(path, f)
+                      try:
+                          st = os.stat(full)
+                          age = time.time() - st.st_mtime
+                          print(f"  {full}: size={st.st_size}, age={age:.0f}s")
+                      except: pass
+              except: pass
+          PY
+          REMOTE
