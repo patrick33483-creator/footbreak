@@ -1,0 +1,96 @@
+name: 診斷 sim_ledger watch manifest（首預有冇寫 T-30／T-5 due_at）
+
+# 唯讀：登入 server 讀 /opt/footbreak/system/sim_ledger.json 入面
+# ledger.watch 每場嘅 manifest，確認首預係咪有正確寫入
+# T-30／T-5 嘅 due_at_utc（賽前 30／5 分鐘）。呢個係
+# 「tick 每分鐘 0 場已處理」嘅直接根因診斷。
+
+on:
+  workflow_dispatch:
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: 設定 SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: 抽取 watch manifest jobs
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh "$DEPLOY_USER@$DEPLOY_HOST" "sudo bash -s" <<'REMOTE'
+          set -uo pipefail
+          echo "=== ledger watch manifest summary ==="
+          python3 - <<'PY'
+          import json, pathlib, datetime as dt
+          from dateutil.parser import parse
+          HKT = dt.timezone(dt.timedelta(hours=8))
+          UTC = dt.timezone.utc
+          now = dt.datetime.now(UTC)
+          path = pathlib.Path("/opt/footbreak/system/sim_ledger.json")
+          if not path.exists():
+              print({"error": "ledger missing", "path": str(path)}); raise SystemExit(0)
+          data = json.loads(path.read_text("utf-8"))
+          watches = data.get("watch") or {}
+          print({"watch_count": len(watches), "now_utc": now.isoformat()})
+          within = []
+          for wid, w in watches.items():
+              if not isinstance(w, dict): continue
+              man = w.get("native_stage_manifest") or w.get("manifest") or {}
+              if not isinstance(man, dict):
+                  man = {}
+              ident = man.get("identity") or {}
+              jobs = man.get("jobs") or {}
+              ko_raw = ident.get("kickoff_at_utc") or ident.get("kickoff") or w.get("kickoff")
+              try:
+                  ko = parse(ko_raw) if ko_raw else None
+              except Exception:
+                  ko = None
+              if ko is None: continue
+              if ko.tzinfo is None: ko = ko.replace(tzinfo=UTC)
+              mins = (ko - now).total_seconds() / 60.0
+              if not (-30 <= mins <= 60):  # 拎過去半個鐘同下個鐘嘅場
+                  continue
+              info = {
+                  "watch_id": str(wid)[:80],
+                  "home": ident.get("home") or w.get("home"),
+                  "away": ident.get("away") or w.get("away"),
+                  "kickoff_utc": ident.get("kickoff_at_utc"),
+                  "minutes_to_kickoff": round(mins, 1),
+                  "manifest_key_used": "native_stage_manifest" if "native_stage_manifest" in w else ("manifest" if "manifest" in w else "NONE"),
+                  "has_identity": bool(ident),
+                  "identity_keys": sorted(list(ident.keys()))[:8],
+                  "has_jobs": bool(jobs),
+                  "job_stages": sorted(list(jobs.keys())) if isinstance(jobs, dict) else None,
+                  "t30_due_at": (jobs.get("T-30") or {}).get("due_at_utc") if isinstance(jobs, dict) else None,
+                  "t5_due_at": (jobs.get("T-5") or {}).get("due_at_utc") if isinstance(jobs, dict) else None,
+                  "existing_stages": [s.get("stage") for s in (w.get("stages") or []) if isinstance(s, dict)],
+              }
+              within.append(info)
+          within.sort(key=lambda r: r["kickoff_utc"] or "")
+          for row in within:
+              print(json.dumps(row, ensure_ascii=False))
+          print({"in_window_watches": len(within)})
+          
+          # 額外：驗證 due_stage_work 對現時場返 0 場係咪真嘅
+          import sys
+          sys.path.insert(0, "/opt/footbreak")
+          try:
+              from system import native_stage_state
+              due = native_stage_state.due_stage_work(data, now=now, horizon_minutes=90)
+              print({"due_stage_work_result_count": len(due)})
+              for d in due[:5]:
+                  print({"due_row": {k: d.get(k) for k in ("hkjc_match_id","stage","due_at_utc","kickoff_at_utc")}})
+          except Exception as e:
+              print({"due_stage_work_error": str(e)})
+          PY
+          REMOTE
