@@ -321,6 +321,32 @@ def _apply_operator_verified_result_overlay(
         row["replay_candidate_hash"] = _candidate_hash(row)
         matched_indexes.add(index)
 
+    # Normalize every settled candidate from immutable score/selection/line
+    # bytes.  Historical provider grade shapes are not trusted.
+    for row in rows:
+        if row.get("result_known") is not True:
+            continue
+        if (
+            row.get("score") is None
+            or row.get("result_source")
+            not in {
+                "prediction_history",
+                "learning_db",
+                OPERATOR_RESULT_SOURCE,
+            }
+        ):
+            raise OperatorMergeBlocked(
+                "settled_replay_result_provenance_incomplete"
+            )
+        hit = recovery._score_hit(row)
+        row["hdc_grade"] = {
+            "grade_status": "GRADED",
+            "hit": hit,
+            "result": "Won" if hit else "Lost",
+        }
+        row["result_status"] = "SETTLED"
+        row["replay_candidate_hash"] = _candidate_hash(row)
+
     remaining_unknown = [
         row for row in rows if row.get("result_known") is False
     ]
