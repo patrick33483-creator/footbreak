@@ -46,6 +46,9 @@ echo "===== 5. Dry-run tick 驗證 code 正常 ====="
 cd /opt/footbreak
 DRY=$(PYTHONPATH=/opt/footbreak ./.venv/bin/python3 -m stage_engine_v2_fb dry-run --data /var/www/footbreak/data.json 2>&1)
 echo "$DRY" | python3 -c "import sys, json; d=json.loads(sys.stdin.read()); print(f'dry-run OK: fixtures={d[\"fixtures_upcoming\"]}, fired={d[\"fired_count\"]}, elapsed={d[\"elapsed_seconds\"]:.3f}s'); s=d.get('fired',[]); p=sum(1 for x in s if x.get('publish')); print(f'  publish approved: {p}, gate rejected: {len(s)-p}')" || { echo 'DRY-RUN FAILED:'; echo "$DRY" | head -20; exit 1; }
+mkdir -p /var/lib/footbreak/footbreak-direction-path-conditions
+echo "===== 5b. 直接生成三階段條件基線 ====="
+PYTHONPATH=/opt/footbreak ./.venv/bin/python3 -m analysis.footbreak_direction_path_conditions
 
 echo "===== 6. 部署 systemd unit + timer ====="
 cp "$CODE_SRC/stage-engine-v2-fb-tick.service" /etc/systemd/system/stage-engine-v2-fb-tick.service
@@ -72,9 +75,12 @@ fi
 
 echo "===== 9. Enable + start timer ====="
 systemctl enable --now stage-engine-v2-fb-tick.timer
-mkdir -p /var/lib/footbreak/footbreak-direction-path-conditions
 systemctl enable --now footbreak-direction-path-conditions.timer
-systemctl start footbreak-direction-path-conditions.service
+if ! systemctl start footbreak-direction-path-conditions.service; then
+  systemctl status footbreak-direction-path-conditions.service --no-pager -l || true
+  journalctl -u footbreak-direction-path-conditions.service -n 80 --no-pager || true
+  exit 1
+fi
 systemctl list-timers stage-engine-v2-fb-tick.timer --no-pager | head -5
 systemctl list-timers footbreak-direction-path-conditions.timer --no-pager | head -5
 
