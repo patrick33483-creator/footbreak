@@ -113,7 +113,7 @@ function render(d) {
   }
   const kpiHTML = [
     kpi("Upcoming 場數", fixtures.length, ""),
-    kpi("初盤 fired", stageCounts["首預"], `推播 ${pubCounts["首預"]}`),
+    kpi("首預／初盤 fired", stageCounts["首預"], `推播 ${pubCounts["首預"]}`),
     kpi("T-30 fired", stageCounts["T-30"], `推播 ${pubCounts["T-30"]}`),
     kpi("T-5 fired", stageCounts["T-5"], `推播 ${pubCounts["T-5"]}`),
     kpi("三 stage 齊備", fixtures.filter(f => Object.keys(f.stages || {}).length === 3).length, ""),
@@ -126,7 +126,10 @@ function render(d) {
   const rows = sorted.map(fx => {
     const stages = fx.stages || {};
     const stageBadges = ["首預", "T-30", "T-5"].map(s => {
-      const label = s === "首預" ? "初盤" : s;
+      const rec = stages[s];
+      const label = s === "首預"
+        ? (rec?.prediction_model === "crown-opening-fixed-v1" ? "初盤" : "舊首預")
+        : s;
       return stages[s] ? `<span class="stage-tag stage-${s}">${label}</span>` : `<span class="pill">${label}</span>`;
     }
     ).join("");

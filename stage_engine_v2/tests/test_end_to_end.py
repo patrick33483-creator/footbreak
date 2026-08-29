@@ -13,6 +13,21 @@ UTC = timezone.utc
 
 
 def _crown_payload(kickoff_hkt: str, fx_id: str = "50073785") -> dict:
+    def market_rows(label: str = "over 2.5") -> list[dict]:
+        return [
+            {
+                "market": "OU",
+                "label": label,
+                "probability": 0.58,
+                "odds": 1.95,
+            },
+            {
+                "market": "1X2",
+                "label": "H",
+                "probability": 0.45,
+                "odds": 2.20,
+            },
+        ]
     return {
         "matches": [
             {
@@ -23,18 +38,24 @@ def _crown_payload(kickoff_hkt: str, fx_id: str = "50073785") -> dict:
                 "home": "布倫瑞克",
                 "away": "哈化柏林",
                 "kickoff": kickoff_hkt,
-                "market_predictions": [
+                "stages": [
                     {
-                        "market": "OU",
-                        "label": "over 2.5",
-                        "probability": 0.58,
-                        "odds": 1.95,
+                        "stage": "首預",
+                        "prediction_model": "crown-opening-fixed-v1",
+                        "input_policy": "first_complete_crown_quote_plus_pre_cutoff_results",
+                        "input_cutoff_at": "2026-08-28T10:00:00+00:00",
+                        "opening_snapshot_hash": "opening-hash",
+                        "opening_model_status": "market_plus_team_history",
+                        "late_inputs_used": [],
+                        "market_predictions": market_rows(),
                     },
                     {
-                        "market": "1X2",
-                        "label": "H",
-                        "probability": 0.45,
-                        "odds": 2.20,
+                        "stage": "T-30",
+                        "market_predictions": market_rows("under 2.5"),
+                    },
+                    {
+                        "stage": "T-5",
+                        "market_predictions": market_rows("over 3.0"),
                     },
                 ],
             }
@@ -130,6 +151,10 @@ def test_full_lifecycle_three_ticks(tmp_path: Path):
     assert set(fixture_slot["stages"].keys()) == {"首預", "T-30", "T-5"}
     for stage_row in fixture_slot["stages"].values():
         assert stage_row["lead_market"] == "OU"  # 揀最高 EV
+    assert fixture_slot["stages"]["首預"]["prediction_model"] == "crown-opening-fixed-v1"
+    assert fixture_slot["stages"]["首預"]["opening_snapshot_hash"] == "opening-hash"
+    assert fixture_slot["stages"]["T-30"]["source_stage"] == "T-30"
+    assert fixture_slot["stages"]["T-5"]["source_stage"] == "T-5"
 
 
 def test_no_fire_after_kickoff(tmp_path: Path):

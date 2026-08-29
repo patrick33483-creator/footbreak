@@ -132,6 +132,16 @@ def _write_dashboard(
                 "conviction": row.get("conviction"),
                 "publish_decision": row.get("publish_decision"),
                 "publish_reason": row.get("publish_reason"),
+                "source_stage": row.get("source_stage"),
+                "source_predicted_at": row.get("source_predicted_at"),
+                "prediction_model": row.get("prediction_model"),
+                "input_policy": row.get("input_policy"),
+                "input_cutoff_at": row.get("input_cutoff_at"),
+                "opening_snapshot_hash": row.get("opening_snapshot_hash"),
+                "opening_model_status": row.get("opening_model_status"),
+                "team_history_as_of": row.get("team_history_as_of"),
+                "team_history_sample": row.get("team_history_sample"),
+                "late_inputs_used": row.get("late_inputs_used"),
             }
             for name, row in stages.items()
             if isinstance(row, dict)

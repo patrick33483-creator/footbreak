@@ -1,10 +1,9 @@
-"""Reuse 舊 crown data.json 已算好嘅預測。
+"""Read the matching immutable Crown snapshot for each V2 stage.
 
-v2 唔重做預測模型。舊系統 predict 得到，只係唔 fire 時點。
-v2 只做「攞最新 market_predictions → 揀 lead → 寫入 v2 ledger」。
-
-同 stage 唔同時間讀取 crown data.json 都會攞到當時 authoritative snapshot；
-v2 記錄嘅 lead 反映觸發時刻嘅市場觀察。
+Opening observations are accepted only from the leakage-safe fixed-input
+opening model.  T-30 and T-5 keep using Crown's existing prediction snapshots,
+but each V2 stage must read its namesake source stage rather than whichever
+snapshot happens to be newest.
 """
 from __future__ import annotations
 
@@ -13,33 +12,59 @@ from typing import Any
 
 from .fixtures import Fixture
 
+OPENING_MODEL_VERSION = "crown-opening-fixed-v1"
 
-def _extract_market_predictions(match_card: dict[str, Any]) -> list[dict[str, Any]]:
-    """從 crown match card 攞最新 stage 嘅 market_predictions。
 
-    優先順序：直接 top-level market_predictions（若 dashboard 已 flatten）
-    否則從 stages list 取最新 (ts 最大者)。
+def _source_snapshot(
+    match_card: dict[str, Any], stage: str,
+) -> dict[str, Any] | None:
+    """Return the exact Crown snapshot for ``stage``.
+
+    Never substitute a later snapshot for an earlier decision point.  This is
+    the key leakage guard for the three-stage ledger.
     """
-    top = match_card.get("market_predictions")
-    if isinstance(top, list) and top:
-        return [row for row in top if isinstance(row, dict)]
-
     stages = match_card.get("stages")
-    if not isinstance(stages, list):
-        return []
-    dated = []
-    for stage in stages:
-        if not isinstance(stage, dict):
-            continue
-        rows = stage.get("market_predictions")
-        if not isinstance(rows, list) or not rows:
-            continue
-        ts = str(stage.get("ts") or stage.get("source_snapshot_at") or "")
-        dated.append((ts, rows))
-    if not dated:
-        return []
-    dated.sort(key=lambda item: item[0])
-    return [row for row in dated[-1][1] if isinstance(row, dict)]
+    if isinstance(stages, list):
+        candidates: list[tuple[str, dict[str, Any]]] = []
+        for row in stages:
+            if not isinstance(row, dict) or str(row.get("stage") or "") != stage:
+                continue
+            predictions = row.get("market_predictions")
+            if not isinstance(predictions, list) or not predictions:
+                continue
+            timestamp = str(row.get("ts") or row.get("source_snapshot_at") or "")
+            candidates.append((timestamp, row))
+        if candidates:
+            candidates.sort(key=lambda item: item[0])
+            return candidates[0][1]
+
+    # Compatibility for fixtures whose dashboard card is already flattened.
+    # It is safe only when the card explicitly identifies the requested stage.
+    if str(match_card.get("stage") or "") != stage:
+        return None
+    predictions = match_card.get("market_predictions")
+    if not isinstance(predictions, list) or not predictions:
+        return None
+    return match_card
+
+
+def _extract_market_predictions(
+    match_card: dict[str, Any], stage: str,
+) -> tuple[list[dict[str, Any]], dict[str, Any]] | None:
+    snapshot = _source_snapshot(match_card, stage)
+    if snapshot is None:
+        return None
+    if stage == "首預" and snapshot.get("prediction_model") != OPENING_MODEL_VERSION:
+        # A legacy first-look row is not a genuine fixed-input opening model.
+        # Leave it pending so it cannot be relabelled or accumulated as one.
+        return None
+    rows = snapshot.get("market_predictions")
+    if not isinstance(rows, list):
+        return None
+    clean = [row for row in rows if isinstance(row, dict)]
+    if not clean:
+        return None
+    return clean, snapshot
 
 
 def _as_float(value: Any) -> float | None:
@@ -93,8 +118,11 @@ def build_prediction(
     Returns None 表示暫未有可用嘅預測（例如 crown 未算好），
     tick 會下次再試——因為 v2 ledger append-only，唔會鎖死。
     """
-    rows = _extract_market_predictions(fx.raw)
-    lead = _pick_lead(rows) if rows else None
+    extracted = _extract_market_predictions(fx.raw, stage)
+    if extracted is None:
+        return None
+    rows, snapshot = extracted
+    lead = _pick_lead(rows)
     if lead is None:
         return None
     now = now_utc or datetime.now(timezone.utc)
@@ -108,10 +136,22 @@ def build_prediction(
         "home": fx.home,
         "away": fx.away,
         "source": fx.source,
-        "conviction": _as_float(fx.raw.get("conviction")),
-        "pick": fx.raw.get("pick"),
-        "forecast": fx.raw.get("forecast"),
-        "crown_quote_status": fx.raw.get("crown_quote_status"),
+        "conviction": _as_float(snapshot.get("conviction")),
+        "pick": snapshot.get("pick"),
+        "forecast": snapshot.get("forecast"),
+        "crown_quote_status": snapshot.get("crown_quote_status"),
+        "source_stage": stage,
+        "source_predicted_at": (
+            snapshot.get("ts") or snapshot.get("source_snapshot_at")
+        ),
+        "prediction_model": snapshot.get("prediction_model"),
+        "input_policy": snapshot.get("input_policy"),
+        "input_cutoff_at": snapshot.get("input_cutoff_at"),
+        "opening_snapshot_hash": snapshot.get("opening_snapshot_hash"),
+        "opening_model_status": snapshot.get("opening_model_status"),
+        "team_history_as_of": snapshot.get("team_history_as_of"),
+        "team_history_sample": snapshot.get("team_history_sample"),
+        "late_inputs_used": snapshot.get("late_inputs_used"),
         **lead,
     }
 
