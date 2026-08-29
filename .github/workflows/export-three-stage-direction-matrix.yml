@@ -67,6 +67,9 @@ jobs:
           print(json.dumps(payload["summary"], ensure_ascii=False, sort_keys=True))
           PY
           sha256sum three-stage-direction-matrix.json
+          echo "THREE_STAGE_MATRIX_JSON_BEGIN"
+          cat three-stage-direction-matrix.json
+          echo "THREE_STAGE_MATRIX_JSON_END"
 
       - name: 上載完整矩陣
         uses: actions/upload-artifact@v4
