@@ -1,0 +1,22 @@
+name: inspect fb and v2 crown
+on:
+  workflow_dispatch:
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+      - env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          scp deploy/inspect-fb-and-v2-crown.sh "$DEPLOY_USER@$DEPLOY_HOST:/tmp/inspect-fb-and-v2-crown.sh"
+          ssh "$DEPLOY_USER@$DEPLOY_HOST" "sudo chmod +x /tmp/inspect-fb-and-v2-crown.sh && sudo /tmp/inspect-fb-and-v2-crown.sh"
