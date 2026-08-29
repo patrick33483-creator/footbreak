@@ -16,13 +16,44 @@ OPENING_MODEL_VERSION = "crown-opening-fixed-v1"
 
 
 def _source_snapshot(
-    match_card: dict[str, Any], stage: str,
+    match_card: dict[str, Any],
+    stage: str,
+    native_payload: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """Return the exact Crown snapshot for ``stage``.
 
     Never substitute a later snapshot for an earlier decision point.  This is
     the key leakage guard for the three-stage ledger.
     """
+    # Timed stages use Crown's independently committed per-fixture payload
+    # first.  This survives a slow/failed legacy ledger projection and is the
+    # only source guaranteed to represent the exact collection instant.
+    if stage in {"T-30", "T-5"} and isinstance(native_payload, dict):
+        if str(native_payload.get("stage") or "") == stage:
+            forecasts = native_payload.get("forecast_candidates")
+            if isinstance(forecasts, list) and forecasts:
+                market_predictions = []
+                for row in forecasts:
+                    if not isinstance(row, dict):
+                        continue
+                    line = row.get("line")
+                    side = str(row.get("side") or "")
+                    label = row.get("label") or row.get("selection")
+                    if not label:
+                        label = f"{side} {line}".strip()
+                    market_predictions.append({
+                        **row,
+                        "market": row.get("market") or row.get("code") or "",
+                        "label": label,
+                        "probability": row.get("probability") or row.get("prob"),
+                    })
+                if market_predictions:
+                    return {
+                        **native_payload,
+                        "market_predictions": market_predictions,
+                        "_v2_source": "crown_native_stage_queue",
+                    }
+
     stages = match_card.get("stages")
     if isinstance(stages, list):
         candidates: list[tuple[str, dict[str, Any]]] = []
@@ -49,9 +80,11 @@ def _source_snapshot(
 
 
 def _extract_market_predictions(
-    match_card: dict[str, Any], stage: str,
+    match_card: dict[str, Any],
+    stage: str,
+    native_payload: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]] | None:
-    snapshot = _source_snapshot(match_card, stage)
+    snapshot = _source_snapshot(match_card, stage, native_payload)
     if snapshot is None:
         return None
     if stage == "首預" and snapshot.get("prediction_model") != OPENING_MODEL_VERSION:
@@ -112,13 +145,14 @@ def build_prediction(
     stage: str,
     *,
     now_utc: datetime | None = None,
+    native_payload: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """組裝 v2 stage prediction record。
 
     Returns None 表示暫未有可用嘅預測（例如 crown 未算好），
     tick 會下次再試——因為 v2 ledger append-only，唔會鎖死。
     """
-    extracted = _extract_market_predictions(fx.raw, stage)
+    extracted = _extract_market_predictions(fx.raw, stage, native_payload)
     if extracted is None:
         return None
     rows, snapshot = extracted
@@ -142,8 +176,11 @@ def build_prediction(
         "crown_quote_status": snapshot.get("crown_quote_status"),
         "source_stage": stage,
         "source_predicted_at": (
-            snapshot.get("ts") or snapshot.get("source_snapshot_at")
+            snapshot.get("generated_at")
+            or snapshot.get("ts")
+            or snapshot.get("source_snapshot_at")
         ),
+        "stage_payload_source": snapshot.get("_v2_source") or "legacy_crown_projection",
         "prediction_model": snapshot.get("prediction_model"),
         "input_policy": snapshot.get("input_policy"),
         "input_cutoff_at": snapshot.get("input_cutoff_at"),

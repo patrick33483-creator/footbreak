@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from .fixtures import DEFAULT_CROWN_DATA_PATH, refresh_fixtures, HKT
+from .native_queue import DEFAULT_NATIVE_QUEUE_DIR, load_native_payloads
 from .predictor import build_prediction
 from .publisher import decide_publish
 from .scheduler import due_stages
@@ -49,6 +50,7 @@ def _run_tick(
     now_utc: datetime,
     window_hours: int,
     dry_run: bool,
+    native_queue_dir: Path = DEFAULT_NATIVE_QUEUE_DIR,
 ) -> dict[str, Any]:
     started_at = datetime.now(timezone.utc)
     fixtures = refresh_fixtures(
@@ -57,6 +59,7 @@ def _run_tick(
         now_utc=now_utc,
     )
     ledger = load_ledger(ledger_path)
+    native_payloads = load_native_payloads(native_queue_dir)
 
     fired: list[dict[str, Any]] = []
     skipped_no_prediction: list[str] = []
@@ -64,7 +67,12 @@ def _run_tick(
     for fx in fixtures:
         done = already_fired(ledger, fx.id)
         for stage in due_stages(fx, now_utc, done):
-            pred_body = build_prediction(fx, stage, now_utc=now_utc)
+            pred_body = build_prediction(
+                fx,
+                stage,
+                now_utc=now_utc,
+                native_payload=native_payloads.get((fx.id, stage)),
+            )
             if pred_body is None:
                 skipped_no_prediction.append(f"{fx.id}:{stage}")
                 continue
@@ -134,6 +142,7 @@ def _write_dashboard(
                 "publish_reason": row.get("publish_reason"),
                 "source_stage": row.get("source_stage"),
                 "source_predicted_at": row.get("source_predicted_at"),
+                "stage_payload_source": row.get("stage_payload_source"),
                 "prediction_model": row.get("prediction_model"),
                 "input_policy": row.get("input_policy"),
                 "input_cutoff_at": row.get("input_cutoff_at"),
@@ -183,6 +192,10 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--now", default=None,
                         help="覆蓋現在時間（ISO 格式，缺 tz 當 HKT）")
         sp.add_argument("--window-hours", type=int, default=48)
+        sp.add_argument(
+            "--native-queue-dir",
+            default=str(DEFAULT_NATIVE_QUEUE_DIR),
+        )
 
     sp = sub.add_parser("dashboard")
     sp.add_argument("--ledger", default=str(DEFAULT_LEDGER_PATH))
@@ -202,6 +215,7 @@ def main(argv: list[str] | None = None) -> int:
             now_utc=_parse_now(args.now),
             window_hours=args.window_hours,
             dry_run=(args.cmd == "dry-run"),
+            native_queue_dir=Path(args.native_queue_dir),
         )
         json.dump(result, sys.stdout, ensure_ascii=False, indent=2)
         sys.stdout.write("\n")

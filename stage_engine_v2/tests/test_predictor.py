@@ -82,6 +82,52 @@ def test_uses_exact_stage_instead_of_latest_stage():
     assert pred["source_stage"] == "T-30"
 
 
+def test_timed_stage_prefers_exact_native_payload_over_legacy_projection():
+    raw = {
+        "stages": [{
+            "stage": "T-30",
+            "market_predictions": [
+                {"market": "OU", "label": "legacy under", "probability": 0.51, "odds": 1.9}
+            ],
+        }]
+    }
+    native = {
+        "match_id": "F1",
+        "stage": "T-30",
+        "generated_at": "2026-08-29T11:30:02+08:00",
+        "status": "OK",
+        "forecast_candidates": [{
+            "code": "HIL",
+            "market": "入球大細",
+            "side": "O",
+            "line": 2.75,
+            "odds": 1.95,
+            "prob": 0.60,
+        }],
+    }
+    pred = build_prediction(_fx(raw), "T-30", native_payload=native)
+    assert pred is not None
+    assert pred["lead_market"] == "入球大細"
+    assert pred["lead_label"] == "O 2.75"
+    assert pred["lead_odds"] == 1.95
+    assert pred["lead_prob"] == 0.60
+    assert pred["stage_payload_source"] == "crown_native_stage_queue"
+    assert pred["source_predicted_at"] == "2026-08-29T11:30:02+08:00"
+
+
+def test_native_payload_cannot_cross_stage():
+    native_t5 = {
+        "match_id": "F1",
+        "stage": "T-5",
+        "status": "OK",
+        "forecast_candidates": [{
+            "code": "HIL", "side": "O", "line": 2.5,
+            "odds": 1.9, "prob": 0.6,
+        }],
+    }
+    assert build_prediction(_fx({}), "T-30", native_payload=native_t5) is None
+
+
 def test_opening_rejects_legacy_first_prediction():
     raw = {
         "stages": [{
