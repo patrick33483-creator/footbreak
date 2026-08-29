@@ -44,6 +44,62 @@ jobs:
             --public "$TMP_DIR/report.json" \
             --lock "$TMP_DIR/report.lock" \
             >/dev/null
+          PYTHONPATH=/opt/footbreak /opt/footbreak/.venv/bin/python3 - "$TMP_DIR" <<'PY'
+          import json
+          import sys
+          from collections import Counter
+          from pathlib import Path
+
+          from analysis.direction_path_conditions import normalized_line, qualifies
+
+          root = Path(sys.argv[1])
+          state = json.loads((root / "ledger.json").read_text(encoding="utf-8"))
+          report = json.loads((root / "report.json").read_text(encoding="utf-8"))
+          thresholds = (1.70, 1.75, 1.80, 1.85, 1.95)
+          funnel = Counter()
+          for row in state.get("observations", {}).values():
+              provider = str(row.get("provider"))
+              market = str(row.get("market"))
+              cohort = str(row.get("cohort"))
+              dimensions = (
+                  ("all", "all", "all"),
+                  (provider, market, cohort),
+                  (provider, market, "all"),
+                  ("all", market, "all"),
+              )
+              for dimension in dimensions:
+                  funnel[(*dimension, "complete_path")] += 1
+                  if normalized_line(row) is not None:
+                      funnel[(*dimension, "same_line")] += 1
+                  for threshold in thresholds:
+                      if qualifies(row, threshold):
+                          funnel[(*dimension, f"odds_gt_{threshold:g}")] += 1
+          rows = []
+          dimensions = sorted({key[:3] for key in funnel})
+          for provider, market, cohort in dimensions:
+              rows.append({
+                  "provider": provider,
+                  "market": market,
+                  "cohort": cohort,
+                  **{
+                      metric: funnel[(provider, market, cohort, metric)]
+                      for metric in (
+                          "complete_path",
+                          "same_line",
+                          "odds_gt_1.7",
+                          "odds_gt_1.75",
+                          "odds_gt_1.8",
+                          "odds_gt_1.85",
+                          "odds_gt_1.95",
+                      )
+                  },
+              })
+          report["audit_funnel"] = rows
+          (root / "report.json").write_text(
+              json.dumps(report, ensure_ascii=False, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
           cat "$TMP_DIR/report.json"
           REMOTE
           python - <<'PY'
