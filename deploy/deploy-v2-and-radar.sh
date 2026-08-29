@@ -2,8 +2,8 @@
 set -euo pipefail
 
 CONF_SRC="/tmp/nginx-unified-dashboard.conf"
-CONF_DST="/etc/nginx/sites-available/footbreak"
-BACKUP="/etc/nginx/sites-available/footbreak.bak.$(date +%Y%m%d-%H%M%S)"
+CONF_DST="/etc/nginx/sites-available/unified-dashboard"
+BACKUP="/etc/nginx/sites-available/unified-dashboard.bak.$(date +%Y%m%d-%H%M%S)"
 
 echo "===== 1. Backup ====="
 sudo cp "$CONF_DST" "$BACKUP"
