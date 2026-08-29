@@ -1,0 +1,64 @@
+name: 匯出三階段方向矩陣（只讀）
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: export-three-stage-direction-matrix
+  cancel-in-progress: false
+
+jobs:
+  export:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: 設定 SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: 匯出正式環境三階段報表
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            'sudo cat /var/www/stage_engine_v2/direction-path-conditions.json' \
+            > three-stage-direction-matrix.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          path = Path("three-stage-direction-matrix.json")
+          payload = json.loads(path.read_text(encoding="utf-8"))
+          assert payload.get("schema_version") == 2
+          assert payload.get("report") == "direction_path_conditions"
+          assert payload.get("conditions")
+          expected = {
+              "odds_gt_1_7",
+              "odds_gt_1_75",
+              "odds_gt_1_8",
+              "odds_gt_1_85",
+              "odds_gt_1_95",
+          }
+          for condition in payload["conditions"]:
+              assert expected <= set(condition["combined"])
+          print(json.dumps(payload["summary"], ensure_ascii=False, sort_keys=True))
+          PY
+          sha256sum three-stage-direction-matrix.json
+
+      - name: 上載完整矩陣
+        uses: actions/upload-artifact@v4
+        with:
+          name: three-stage-direction-matrix
+          path: three-stage-direction-matrix.json
+          retention-days: 3
+          if-no-files-found: error
