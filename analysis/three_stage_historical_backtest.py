@@ -289,6 +289,132 @@ def summarize(rows: Iterable[dict[str, Any]], label: str) -> dict[str, Any]:
     }
 
 
+def direction_path_backtest(
+    observations: list[dict[str, Any]],
+    common_keys: set[tuple[str, str, str]],
+) -> dict[str, Any]:
+    by_identity: dict[
+        tuple[str, str, str], dict[str, dict[str, Any]]
+    ] = collections.defaultdict(dict)
+    for row in observations:
+        identity = (
+            str(row["fixture_id"]),
+            str(row["provider"]),
+            str(row["market"]),
+        )
+        if identity in common_keys:
+            by_identity[identity][str(row["stage"])] = row
+
+    grouped: dict[tuple[str, str, str], list[dict[str, Any]]] = (
+        collections.defaultdict(list)
+    )
+    fixture_rows = []
+    for (fixture_id, provider, market), stage_rows in by_identity.items():
+        if not set(STAGES).issubset(stage_rows):
+            continue
+        initial = stage_rows["initial"]
+        t30 = stage_rows["T30"]
+        t5 = stage_rows["T5"]
+        path = f'{initial["side"]}→{t30["side"]}→{t5["side"]}'
+        bet_row = dict(t5)
+        bet_row["direction_path"] = path
+        grouped[(provider, market, path)].append(bet_row)
+        fixture_rows.append({
+            "fixture_id": fixture_id,
+            "kickoff": t5["kickoff"],
+            "provider": provider,
+            "market": market,
+            "direction_path": path,
+            "initial": {
+                "side": initial["side"],
+                "line": initial["line"],
+                "odds": initial["odds"],
+            },
+            "T30": {
+                "side": t30["side"],
+                "line": t30["line"],
+                "odds": t30["odds"],
+            },
+            "T5": {
+                "side": t5["side"],
+                "line": t5["line"],
+                "odds": t5["odds"],
+            },
+            "T5_settlement": t5["settlement"],
+            "T5_unit_return": round(float(t5["return"]), 6),
+        })
+
+    conditions = {}
+    for (provider, market, path), rows in sorted(grouped.items()):
+        ordered = sorted(
+            rows,
+            key=lambda row: (
+                str(row.get("kickoff") or ""),
+                str(row["fixture_id"]),
+            ),
+        )
+        cut = max(1, min(len(ordered) - 1, math.floor(len(ordered) * 0.7)))
+        discovery = ordered[:cut] if len(ordered) > 1 else ordered
+        holdout = ordered[cut:] if len(ordered) > 1 else []
+        label = f"{provider}_{market}_{path}"
+        discovery_summary = summarize(discovery, f"path-discovery:{label}")
+        holdout_summary = summarize(holdout, f"path-holdout:{label}")
+        all_summary = summarize(ordered, f"path-all:{label}")
+        discovery_roi = discovery_summary["roi"]
+        holdout_roi = holdout_summary["roi"]
+        holdout_ci_low = holdout_summary["roi_fixture_bootstrap_95"][0]
+        conditions[label] = {
+            "provider": provider,
+            "market": market,
+            "direction_path": path,
+            "decision_stage": "T5",
+            "bet_stage": "T5",
+            "chronological_split": "earliest 70% discovery / latest 30% holdout",
+            "all": all_summary,
+            "discovery": discovery_summary,
+            "holdout": holdout_summary,
+            "screening": {
+                "minimum_full_sample_30": len(ordered) >= 30,
+                "minimum_holdout_sample_10": len(holdout) >= 10,
+                "positive_roi_both_periods": (
+                    discovery_roi is not None
+                    and holdout_roi is not None
+                    and discovery_roi > 0
+                    and holdout_roi > 0
+                ),
+                "holdout_roi_ci_above_zero": (
+                    holdout_ci_low is not None and holdout_ci_low > 0
+                ),
+            },
+        }
+
+    return {
+        "definition": {
+            "direction": "lower decimal-odds side at each stage",
+            "path": "initial direction → T30 direction → T5 direction",
+            "decision_stage": "T5 because the full path is only known at T5",
+            "settlement": "T5 side, line and decimal odds",
+            "validation": "chronological 70/30 split within each fixed path",
+            "promotion_rule": (
+                "at least 30 full observations, at least 10 holdout observations, "
+                "positive discovery and holdout ROI, and holdout ROI 95% lower "
+                "bound above zero"
+            ),
+        },
+        "condition_count": len(conditions),
+        "conditions": conditions,
+        "fixture_rows": sorted(
+            fixture_rows,
+            key=lambda row: (
+                row["kickoff"],
+                row["provider"],
+                row["market"],
+                row["fixture_id"],
+            ),
+        ),
+    }
+
+
 def radar_backtest(db: sqlite3.Connection) -> dict[str, Any]:
     query = """
     SELECT q.match_id,q.stage,q.provider,q.market,q.line_key,q.selection,
@@ -485,6 +611,8 @@ def radar_backtest(db: sqlite3.Connection) -> dict[str, Any]:
                 ]
                 same_fixture[label] = summarize(subset, f"common:{label}")
 
+    direction_paths = direction_path_backtest(observations, common_keys)
+
     return {
         "definition": {
             "role": "market benchmark, not a trained prediction model",
@@ -500,6 +628,7 @@ def radar_backtest(db: sqlite3.Connection) -> dict[str, Any]:
         "three_stage_common_identities": len(common_keys),
         "all_available": all_available,
         "same_fixture_all_three_stages": same_fixture,
+        "direction_paths": direction_paths,
     }
 
 
