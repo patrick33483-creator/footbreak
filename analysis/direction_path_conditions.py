@@ -33,7 +33,7 @@ from analysis.three_stage_historical_backtest import (
 
 DEFAULT_RADAR_URI = "file:/opt/odds-radar/data/data.db?mode=ro"
 DEFAULT_STATE = "/var/lib/footbreak/direction-path-conditions/ledger.json"
-DEFAULT_PUBLIC = "/var/www/crown/direction-path-conditions.json"
+DEFAULT_PUBLIC = "/var/www/stage_engine_v2/direction-path-conditions.json"
 DEFAULT_SEED = str(
     Path(__file__).with_name("seeds") / "direction_path_conditions_20260829.json"
 )

@@ -95,6 +95,13 @@ jobs:
           else
             echo "(舊 branch、無 history.html、跳過)"
           fi
+          if [ -f /opt/footbreak/stage_engine_v2/dashboard/conditions.html ]; then
+            install -m 644 /opt/footbreak/stage_engine_v2/dashboard/conditions.html \
+                           /var/www/stage_engine_v2/conditions.html
+            echo "conditions.html 已派"
+          else
+            echo "(舊 branch、無 conditions.html、跳過)"
+          fi
 
           # 5. 派 systemd unit files
           cat > /etc/systemd/system/stage-engine-v2-tick.service <<'UNIT'
@@ -164,6 +171,23 @@ jobs:
           ls -la /opt/footbreak/stage_engine_v2/ | head -20
           echo "---"
           ls -la /var/www/stage_engine_v2/ 2>/dev/null || echo "(dashboard dir 空)"
+          test -s /var/www/stage_engine_v2/conditions.html
+          grep -q "皇冠系統V2 · 三階段細分" /var/www/stage_engine_v2/conditions.html
+          if [ -s /var/www/stage_engine_v2/direction-path-conditions.json ]; then
+            python3 - <<'PY'
+          import json
+          from pathlib import Path
+          path = Path("/var/www/stage_engine_v2/direction-path-conditions.json")
+          payload = json.loads(path.read_text(encoding="utf-8"))
+          assert payload.get("report") == "direction_path_conditions"
+          assert payload.get("mode") == "shadow_only_no_bets_no_notifications"
+          assert int((payload.get("summary") or {}).get("historical") or 0) == 471
+          assert payload.get("conditions")
+          print("direction-path JSON: OK")
+          PY
+          else
+            echo "direction-path JSON 尚未生成，等 main worker 下一輪建立"
+          fi
           echo "---"
           ls -la /var/lib/footbreak/stage_engine_v2/ 2>/dev/null || echo "(ledger dir 空)"
           echo "===== END shadow deploy $(date -u +%FT%TZ) ====="

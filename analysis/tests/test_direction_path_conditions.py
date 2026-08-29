@@ -4,10 +4,16 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from analysis.direction_path_conditions import build_report, update
+from analysis.direction_path_conditions import DEFAULT_PUBLIC, build_report, update
 
 
 class DirectionPathConditionsTest(unittest.TestCase):
+    def test_public_report_belongs_to_v2(self):
+        self.assertEqual(
+            DEFAULT_PUBLIC,
+            "/var/www/stage_engine_v2/direction-path-conditions.json",
+        )
+
     def test_wilson_versions_and_price_tier_are_separate(self):
         rows = []
         for index in range(21):

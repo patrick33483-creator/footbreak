@@ -305,7 +305,7 @@ for name in ("/var/www/footbreak/challenger-status.json", "/var/www/crown/challe
         raise SystemExit(f"FAIL challenger artifact permits auto apply: {path}")
     print(f"OK isolated challenger status {path}")
 
-path = Path("/var/www/crown/direction-path-conditions.json")
+path = Path("/var/www/stage_engine_v2/direction-path-conditions.json")
 if not path.is_file():
     raise SystemExit(f"FAIL direction-path condition artifact missing: {path}")
 payload = json.loads(path.read_text(encoding="utf-8"))

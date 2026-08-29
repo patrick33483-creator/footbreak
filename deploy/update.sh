@@ -398,6 +398,7 @@ fi
 # historical seed plus the local Odds Radar SQLite database.  This never calls
 # an external API and never enters the betting or Telegram paths.
 install -d -o root -g root -m 0700 /var/lib/footbreak/direction-path-conditions
+install -d -o root -g www-data -m 0755 /var/www/stage_engine_v2
 if [ -s /opt/odds-radar/data/data.db ]; then
   if ! PYTHONPATH="$APP_DIR" "$APP_DIR/.venv/bin/python3" -m analysis.direction_path_conditions >/dev/null; then
     echo "三階段細分條件報告生成失敗；timer 會在 5 分鐘內重試" >&2
