@@ -141,6 +141,39 @@ button:focus-visible, select:focus-visible, a:focus-visible {
   outline-offset: 3px;
 }
 .count { margin-left: auto; align-self: center; color: var(--muted); }
+.pipeline { margin: 18px 0; padding: 16px; }
+.section-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 12px;
+}
+.section-head h2 { margin: 0; font-size: 18px; }
+.section-head p { margin: 3px 0 0; color: var(--muted); }
+.pipeline-summary { color: var(--accent); font-weight: 700; white-space: nowrap; }
+.pipeline-list { display: grid; gap: 8px; }
+.pipeline-row {
+  display: grid;
+  grid-template-columns: minmax(190px, 1.25fr) repeat(3, minmax(110px, .8fr)) minmax(150px, 1fr);
+  gap: 8px;
+  align-items: stretch;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface-alt);
+}
+.fixture strong, .stage-box strong { display: block; }
+.fixture span, .stage-box span, .eligibility small { color: var(--muted); font-size: 12px; }
+.stage-box {
+  padding: 7px 9px;
+  border-left: 2px solid var(--border);
+}
+.stage-box.captured { border-left-color: var(--accent); }
+.stage-box.missing strong { color: var(--faint); }
+.eligibility { align-self: center; }
+.eligibility strong { display: block; color: var(--warning); }
+.eligibility.accepted strong { color: var(--success); }
 .list { display: grid; gap: 14px; }
 .condition { padding: 18px; }
 .condition-head {
@@ -212,6 +245,8 @@ footer { margin-top: 20px; color: var(--faint); font-size: 11px; text-align: cen
 @media (max-width: 880px) {
   .summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .pipeline-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .fixture, .eligibility { grid-column: 1 / -1; }
 }
 @media (max-width: 560px) {
   body { padding: 16px; }
@@ -227,6 +262,10 @@ footer { margin-top: 20px; color: var(--faint); font-size: 11px; text-align: cen
   .condition-head { display: block; }
   .condition-head .status { margin-top: 9px; }
   .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .section-head { display: block; }
+  .pipeline-summary { margin-top: 6px; white-space: normal; }
+  .pipeline-row { grid-template-columns: 1fr; }
+  .fixture, .eligibility { grid-column: auto; }
 }
 </style>
 </head>
@@ -251,7 +290,7 @@ footer { margin-top: 20px; color: var(--faint); font-size: 11px; text-align: cen
   <main id="main">
     <section class="notice" aria-label="隔離模式說明">
       <strong>只累積及統計</strong>
-      <p>完整三階段路徑就會入組。Wilson 下限及賠率門檻只作評估，唔會阻止場次累積，亦唔會自動投注或發 Telegram。</p>
+      <p>完整三階段、三段主盤同線，而且三段方向賠率均嚴格 &gt;1.70 先會入組。Wilson 下限只作評估，亦唔會自動投注或發 Telegram。</p>
     </section>
 
     <section class="summary" id="summary" aria-label="數據摘要">
@@ -259,6 +298,19 @@ footer { margin-top: 20px; color: var(--faint); font-size: 11px; text-align: cen
       <div class="kpi"><span>新前瞻</span><b>—</b></div>
       <div class="kpi"><span>Pending</span><b>—</b></div>
       <div class="kpi"><span>細分路徑</span><b>—</b></div>
+    </section>
+
+    <section class="pipeline card" aria-labelledby="pipeline-title">
+      <div class="section-head">
+        <div>
+          <h2 id="pipeline-title">Odds Radar 三階段進度</h2>
+          <p>直接讀取 Radar 已保存報價；未齊三段只顯示進度，不會計入新前瞻。</p>
+        </div>
+        <div class="pipeline-summary" id="pipeline-summary">載入中…</div>
+      </div>
+      <div class="pipeline-list" id="pipeline-list">
+        <div class="state">正在讀取三階段進度…</div>
+      </div>
     </section>
 
     <section class="controls card" aria-label="篩選條件">
@@ -301,8 +353,10 @@ footer { margin-top: 20px; color: var(--faint); font-size: 11px; text-align: cen
       <div class="field">
         <label for="price">賠率視圖</label>
         <select id="price">
-          <option value="all_odds">全部賠率</option>
-          <option value="odds_gte_1_70">T-5 賠率 ≥1.70</option>
+          <option value="odds_gt_1_7">三段賠率均 &gt;1.70</option>
+          <option value="odds_gt_1_75">三段賠率均 &gt;1.75</option>
+          <option value="odds_gt_1_8">三段賠率均 &gt;1.80</option>
+          <option value="odds_gt_1_9">三段賠率均 &gt;1.90</option>
         </select>
       </div>
       <button id="reload" type="button">重新載入</button>
@@ -317,6 +371,8 @@ footer { margin-top: 20px; color: var(--faint); font-size: 11px; text-align: cen
       <h2>統計口徑</h2>
       <ul>
         <li>每個時點以同一盤口雙邊 decimal odds 較低的一方定義方向。</li>
+        <li>初盤、T-30、T-5 三段主盤線位必須完全相同；不同線位分成不同條件。</li>
+        <li>三段各自選中方向的 decimal odds 必須全部嚴格大於 1.70；等於 1.70 不計。</li>
         <li>完整路徑到 T-5 才成立，按 T-5 方向、線位及實際賠率結算。</li>
         <li>贏及半贏計命中；輸及半輸計不中；走盤不計入 decided。</li>
         <li>每 20 個新前瞻 decided observations 完成一個證據版本。</li>
@@ -363,6 +419,50 @@ function renderSummary(summary) {
     ["細分路徑", summary.condition_count]
   ].map(([label, value]) => `<div class="kpi"><span>${label}</span><b>${number(value)}</b></div>`).join("");
 }
+function stageBox(name, stage) {
+  if (!stage) {
+    return `<div class="stage-box missing"><span>${name}</span><strong>等待報價</strong></div>`;
+  }
+  return `<div class="stage-box captured">
+    <span>${name}</span>
+    <strong>${esc(stage.side)} · ${esc(stage.line)}</strong>
+    <span>${Number(stage.odds).toFixed(2)} / 對邊 ${Number(stage.other_odds).toFixed(2)}</span>
+  </div>`;
+}
+function renderTracking() {
+  const tracking = state.payload?.tracking || {};
+  const rows = Array.isArray(tracking.rows) ? tracking.rows : [];
+  const provider = document.getElementById("provider").value;
+  const market = document.getElementById("market").value;
+  const visible = rows.filter(item =>
+    (provider === "all" || item.provider === provider) &&
+    (market === "all" || item.market === market)
+  );
+  const eligible = visible.filter(item => item.eligible).length;
+  document.getElementById("pipeline-summary").textContent =
+    `${visible.length} 組監察 · ${eligible} 組可入條件`;
+  document.getElementById("pipeline-list").innerHTML = visible.length
+    ? visible.map(item => {
+        const kickoff = new Date(Number(item.kickoff)).toLocaleString("zh-HK", {
+          timeZone: "Asia/Hong_Kong", hour12: false, month: "2-digit", day: "2-digit",
+          hour: "2-digit", minute: "2-digit"
+        });
+        return `<article class="pipeline-row">
+          <div class="fixture">
+            <strong>${esc(item.home_team || item.fixture_id)} 對 ${esc(item.away_team || "")}</strong>
+            <span>${kickoff} · ${esc(item.provider).toUpperCase()} · ${esc(item.market)}</span>
+          </div>
+          ${stageBox("初盤", (item.stages || {}).initial)}
+          ${stageBox("T-30", (item.stages || {}).T30)}
+          ${stageBox("T-5", (item.stages || {}).T5)}
+          <div class="eligibility ${item.eligible ? "accepted" : ""}">
+            <strong>${item.eligible ? esc(item.condition_id) : esc(item.eligibility_reason)}</strong>
+            <small>${esc(item.direction_path)}</small>
+          </div>
+        </article>`;
+      }).join("")
+    : `<div class="state">目前篩選組合未有 Radar 三階段報價。</div>`;
+}
 function renderCard(item, cohort, price) {
   const group = item[cohort] || {};
   const m = group[price] || {};
@@ -377,7 +477,7 @@ function renderCard(item, cohort, price) {
     : activeDecided
       ? `目前命中 ${number(active.hits)} / ${activeDecided} · ${pct(active.hit_rate)}`
       : "目前尚未有有效勝負";
-  const title = `${esc(item.provider).toUpperCase()} · ${esc(item.market)} · <span class="path">${esc(item.direction_path)}</span>`;
+  const title = `${esc(item.provider).toUpperCase()} · ${esc(item.market)} ${esc(item.line)} · <span class="path">${esc(item.direction_path)}</span>`;
   return `<article class="condition card">
     <div class="condition-head">
       <div><div class="eyebrow">${esc(item.id)}</div><h2>${title}</h2></div>
@@ -416,6 +516,7 @@ function render() {
   document.getElementById("list").innerHTML = rows.length
     ? rows.map(item => renderCard(item, cohort, price)).join("")
     : `<div class="card state">目前篩選組合冇符合路徑。</div>`;
+  renderTracking();
 }
 async function load() {
   const list = document.getElementById("list");
