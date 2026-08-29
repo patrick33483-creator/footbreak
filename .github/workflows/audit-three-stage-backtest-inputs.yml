@@ -1,0 +1,225 @@
+name: 三階段回測輸入審計（只讀）
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: audit-three-stage-backtest-inputs
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: 設定 SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: 審計三階段歷史資料
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          umask 077
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            'sudo /opt/footbreak/.venv/bin/python3 -' \
+            > three-stage-input-audit.json <<'PY'
+          import collections
+          import datetime as dt
+          import json
+          import sqlite3
+          import statistics
+
+          FB_URI = "file:/var/lib/footbreak/learning/predictions.sqlite?mode=ro"
+          RADAR_URI = "file:/opt/odds-radar/data/data.db?mode=ro"
+
+          def ro(uri):
+              db = sqlite3.connect(uri, uri=True)
+              db.row_factory = sqlite3.Row
+              db.execute("PRAGMA query_only=ON")
+              db.execute("BEGIN")
+              return db
+
+          def table_names(db):
+              return {
+                  row["name"] for row in db.execute(
+                      "SELECT name FROM sqlite_master WHERE type='table'"
+                  )
+              }
+
+          def columns(db, table):
+              return [
+                  row["name"] for row in db.execute(f"PRAGMA table_info({table})")
+              ]
+
+          def parse_time(value):
+              if value is None:
+                  return None
+              if isinstance(value, (int, float)):
+                  return dt.datetime.fromtimestamp(value / 1000, dt.timezone.utc)
+              text = str(value).strip().replace("Z", "+00:00")
+              try:
+                  value = dt.datetime.fromisoformat(text)
+              except ValueError:
+                  return None
+              if value.tzinfo is None:
+                  value = value.replace(tzinfo=dt.timezone.utc)
+              return value.astimezone(dt.timezone.utc)
+
+          def grouped(db, sql):
+              return [dict(row) for row in db.execute(sql)]
+
+          fb = ro(FB_URI)
+          radar = ro(RADAR_URI)
+          fb_tables = table_names(fb)
+          radar_tables = table_names(radar)
+
+          lead_minutes = collections.defaultdict(list)
+          payload_keys = collections.Counter()
+          prediction_keys = collections.Counter()
+          prediction_codes = collections.Counter()
+          for row in fb.execute(
+              """
+              SELECT system,stage,generated_at,kickoff,payload_json
+              FROM prediction_snapshots
+              WHERE system IN ('footbreak','crown') AND pre_kickoff=1
+              """
+          ):
+              generated = parse_time(row["generated_at"])
+              kickoff = parse_time(row["kickoff"])
+              if generated and kickoff and generated < kickoff:
+                  lead_minutes[(row["system"], row["stage"])].append(
+                      (kickoff - generated).total_seconds() / 60
+                  )
+              try:
+                  payload = json.loads(row["payload_json"])
+              except (TypeError, ValueError):
+                  continue
+              payload_keys.update(payload.keys())
+              for prediction in payload.get("market_predictions") or []:
+                  if not isinstance(prediction, dict):
+                      continue
+                  prediction_keys.update(prediction.keys())
+                  prediction_codes[str(prediction.get("code"))] += 1
+
+          lead_summary = []
+          for (system, stage), values in sorted(lead_minutes.items()):
+              values.sort()
+              lead_summary.append({
+                  "system": system,
+                  "stage": stage,
+                  "n": len(values),
+                  "min": round(values[0], 2),
+                  "p25": round(values[len(values) // 4], 2),
+                  "median": round(statistics.median(values), 2),
+                  "p75": round(values[(3 * len(values)) // 4], 2),
+                  "max": round(values[-1], 2),
+              })
+
+          radar_schema = {}
+          for table in (
+              "matches",
+              "research_timeline_points",
+              "research_timeline_snapshots",
+              "research_results",
+              "results",
+          ):
+              if table in radar_tables:
+                  radar_schema[table] = columns(radar, table)
+
+          result_counts = {}
+          for table in ("research_results", "results"):
+              if table in radar_tables:
+                  result_counts[table] = radar.execute(
+                      f"SELECT COUNT(*) AS n FROM {table}"
+                  ).fetchone()["n"]
+
+          result = {
+              "mode": "read_only",
+              "footbreak": {
+                  "tables_present": sorted(fb_tables),
+                  "snapshot_counts": grouped(
+                      fb,
+                      """
+                      SELECT system,stage,
+                             COUNT(*) AS rows,
+                             COUNT(DISTINCT fixture_id) AS fixtures,
+                             SUM(CASE WHEN pre_kickoff=1 THEN 1 ELSE 0 END) AS pre_kickoff_rows
+                      FROM prediction_snapshots
+                      WHERE system IN ('footbreak','crown')
+                      GROUP BY system,stage
+                      ORDER BY system,stage
+                      """,
+                  ),
+                  "graded_counts": grouped(
+                      fb,
+                      """
+                      SELECT s.system,s.stage,g.market,
+                             COUNT(*) AS graded_rows,
+                             COUNT(DISTINCT s.fixture_id) AS fixtures
+                      FROM prediction_snapshots s
+                      JOIN grades g ON g.snapshot_id=s.snapshot_id
+                      WHERE s.system IN ('footbreak','crown')
+                        AND s.pre_kickoff=1 AND g.state='GRADED'
+                      GROUP BY s.system,s.stage,g.market
+                      ORDER BY s.system,s.stage,g.market
+                      """,
+                  ),
+                  "lead_minutes": lead_summary,
+                  "top_payload_keys": payload_keys.most_common(80),
+                  "top_prediction_keys": prediction_keys.most_common(80),
+                  "prediction_codes": prediction_codes.most_common(),
+              },
+              "radar": {
+                  "tables_present": sorted(radar_tables),
+                  "schema": radar_schema,
+                  "timeline_counts": grouped(
+                      radar,
+                      """
+                      SELECT stage,provider,market,
+                             COALESCE(origin,'') AS origin,
+                             COUNT(*) AS rows,
+                             COUNT(DISTINCT match_id) AS fixtures
+                      FROM research_timeline_snapshots
+                      GROUP BY stage,provider,market,COALESCE(origin,'')
+                      ORDER BY stage,provider,market,origin
+                      """,
+                  ),
+                  "point_counts": grouped(
+                      radar,
+                      """
+                      SELECT stage,status,COUNT(*) AS rows
+                      FROM research_timeline_points
+                      GROUP BY stage,status
+                      ORDER BY stage,status
+                      """,
+                  ),
+                  "result_counts": result_counts,
+              },
+          }
+          print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
+          fb.rollback()
+          radar.rollback()
+          fb.close()
+          radar.close()
+          PY
+          python -m json.tool three-stage-input-audit.json >/dev/null
+          sha256sum three-stage-input-audit.json
+
+      - name: 上載審計結果
+        uses: actions/upload-artifact@v4
+        with:
+          name: three-stage-input-audit
+          path: three-stage-input-audit.json
+          retention-days: 3
+          if-no-files-found: error
