@@ -68,6 +68,7 @@ jobs:
 
               show_process_tree crown-tick.service
               show_process_tree crown-settle.service
+              show_lock_holders /var/lib/footbreak/crown/.state.lock
               show_lock_holders /var/lock/footbreak-crown-settle.lock
               show_lock_holders /var/lib/footbreak/crown/.settlement.lock
             '
