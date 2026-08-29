@@ -48,6 +48,22 @@ jobs:
           cat three-stage-historical-backtest.json
           echo THREE_STAGE_HISTORICAL_BACKTEST_JSON_END
 
+      - name: 寫入工作摘要
+        run: |
+          {
+            echo '## 初盤、T-30、T-5 歷史回測結果'
+            echo
+            echo '完整結果如下，所有百分率以小數表示。'
+            echo
+            echo '<details open><summary>完整 JSON</summary>'
+            echo
+            echo '```json'
+            cat three-stage-historical-backtest.json
+            echo '```'
+            echo
+            echo '</details>'
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: 上載回測結果
         uses: actions/upload-artifact@v4
         with:
