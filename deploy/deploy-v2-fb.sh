@@ -11,6 +11,8 @@ STAGE=/tmp/v2fb-stage
 CONF_DST=/etc/nginx/sites-available/unified-dashboard
 CODE_SRC="${STAGE}/stage_engine_v2_fb"
 CODE_DST=/opt/footbreak/stage_engine_v2_fb
+ANALYSIS_SRC="${STAGE}/analysis"
+ANALYSIS_DST=/opt/footbreak/analysis
 WWW_DST=/var/www/stage_engine_v2_fb
 LEDGER_DIR=/var/lib/footbreak/stage_engine_v2_fb
 LOG_DIR=/var/log/footbreak
@@ -21,11 +23,16 @@ ls -R "$STAGE"
 echo "===== 2. 部署 Python 模組 ====="
 mkdir -p "$CODE_DST"
 cp "$CODE_SRC/__init__.py" "$CODE_SRC/__main__.py" "$CODE_SRC/predictor_fb.py" "$CODE_SRC/cli_fb.py" "$CODE_DST/"
+mkdir -p "$ANALYSIS_DST"
+cp "$ANALYSIS_SRC/footbreak_direction_path_conditions.py" \
+   "$ANALYSIS_SRC/direction_path_conditions.py" \
+   "$ANALYSIS_SRC/three_stage_historical_backtest.py" "$ANALYSIS_DST/"
 ls -l "$CODE_DST/"
 
 echo "===== 3. 部署 dashboard html + 建立 dirs ====="
 mkdir -p "$WWW_DST" "$LEDGER_DIR" "$LOG_DIR"
 cp "$CODE_SRC/index.html" "$WWW_DST/index.html"
+cp "$CODE_SRC/conditions.html" "$WWW_DST/conditions.html"
 # 生成 initial empty data.json 避免第一次 fetch 404
 if [ ! -f "$WWW_DST/data.json" ]; then
   echo '{"schema_version":"stage-engine-v2-fb","fixtures_count":0,"fixtures":[]}' > "$WWW_DST/data.json"
@@ -43,6 +50,8 @@ echo "$DRY" | python3 -c "import sys, json; d=json.loads(sys.stdin.read()); prin
 echo "===== 6. 部署 systemd unit + timer ====="
 cp "$CODE_SRC/stage-engine-v2-fb-tick.service" /etc/systemd/system/stage-engine-v2-fb-tick.service
 cp "$CODE_SRC/stage-engine-v2-fb-tick.timer" /etc/systemd/system/stage-engine-v2-fb-tick.timer
+cp "$CODE_SRC/footbreak-direction-path-conditions.service" /etc/systemd/system/footbreak-direction-path-conditions.service
+cp "$CODE_SRC/footbreak-direction-path-conditions.timer" /etc/systemd/system/footbreak-direction-path-conditions.timer
 systemctl daemon-reload
 
 echo "===== 7. 首次 tick（唔啟用 timer 先驗證 service）====="
@@ -63,7 +72,11 @@ fi
 
 echo "===== 9. Enable + start timer ====="
 systemctl enable --now stage-engine-v2-fb-tick.timer
+mkdir -p /var/lib/footbreak/footbreak-direction-path-conditions
+systemctl enable --now footbreak-direction-path-conditions.timer
+systemctl start footbreak-direction-path-conditions.service
 systemctl list-timers stage-engine-v2-fb-tick.timer --no-pager | head -5
+systemctl list-timers footbreak-direction-path-conditions.timer --no-pager | head -5
 
 echo "===== 10. 更新 nginx conf 加 /v2/footbreak/ ====="
 # 只有喺 unified-dashboard conf 未有 /v2/footbreak 時先加
@@ -107,6 +120,29 @@ else
   echo "  -- /v2/footbreak/ 已存在 --"
 fi
 
+# 舊伺服器已有主 route 時，仍要補上條件 JSON 的 no-cache exact route。
+if ! grep -q "location = /v2/footbreak/direction-path-conditions.json" "$CONF_DST"; then
+  cp "$CONF_DST" "$CONF_DST.bak-conditions-$(date +%s)"
+  python3 <<PY
+p = "$CONF_DST"
+text = open(p).read()
+anchor = """    location ^~ /v2/footbreak/ {"""
+block = """    location = /v2/footbreak/direction-path-conditions.json {
+        auth_basic "v2_2026";
+        auth_basic_user_file /etc/nginx/.htpasswd-fbv2;
+        alias /var/www/stage_engine_v2_fb/direction-path-conditions.json;
+        add_header Cache-Control "no-store, no-cache, must-revalidate" always;
+        add_header Pragma "no-cache" always;
+        expires -1;
+    }
+"""
+if anchor not in text:
+    raise SystemExit("missing /v2/footbreak/ nginx anchor")
+open(p, "w").write(text.replace(anchor, block + anchor, 1))
+print("  added Footbreak V2 conditions JSON route")
+PY
+fi
+
 echo "===== 11. nginx test ====="
 nginx -t
 
@@ -121,5 +157,8 @@ curl -s -o /dev/null -w "HTTP %{http_code}\n" -u kin:fb2026 http://127.0.0.1/v2/
 echo "-- GET /v2/footbreak/data.json --"
 curl -s -o /tmp/v2fb-data.json -w "HTTP %{http_code}\n" -u kin:fb2026 http://127.0.0.1/v2/footbreak/data.json
 python3 -c "import json; d=json.load(open('/tmp/v2fb-data.json')); print(f'fixtures_count: {d.get(\"fixtures_count\")}, schema: {d.get(\"schema_version\")}')" 2>&1 | head -3
+echo "-- GET /v2/footbreak/direction-path-conditions.json --"
+curl -s -o /tmp/v2fb-conditions.json -w "HTTP %{http_code}\n" -u kin:fb2026 http://127.0.0.1/v2/footbreak/direction-path-conditions.json
+python3 -c "import json; d=json.load(open('/tmp/v2fb-conditions.json')); assert d.get('system') == 'footbreak'; print(f'conditions: {d[\"summary\"][\"condition_count\"]}, historical: {d[\"summary\"][\"historical\"]}, prospective: {d[\"summary\"][\"prospective\"]}')"
 
 echo "===== Deploy complete ====="

@@ -1,0 +1,17 @@
+[Unit]
+Description=Footbreak V2 three-stage direction-path condition report
+After=network.target
+
+[Service]
+Type=oneshot
+Environment=PYTHONPATH=/opt/footbreak
+ExecStart=/opt/footbreak/.venv/bin/python3 -m analysis.footbreak_direction_path_conditions
+TimeoutStartSec=45s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadOnlyPaths=/var/lib/footbreak/learning
+ReadWritePaths=/var/lib/footbreak/footbreak-direction-path-conditions /var/www/stage_engine_v2_fb
+StandardOutput=append:/var/log/footbreak/footbreak-direction-path-conditions.log
+StandardError=append:/var/log/footbreak/footbreak-direction-path-conditions.log

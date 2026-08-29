@@ -75,7 +75,7 @@ tr:last-child td { border-bottom: none; }
 <div class="subtitle" id="meta">載入中...</div>
 <div style="margin-bottom: 16px;">
   <a href="./" style="color: var(--text); text-decoration: none; border-bottom: 2px solid var(--accent); padding-bottom: 4px; margin-right: 16px; font-size: 13px;">即時 dashboard</a>
-  <a href="./history.html" style="color: var(--text-muted); text-decoration: none; padding-bottom: 4px; font-size: 13px;">歷史紀錄</a>
+  <a href="./conditions.html" style="color: var(--text-muted); text-decoration: none; padding-bottom: 4px; font-size: 13px;">三階段細分</a>
 </div>
 <div class="kpi-row" id="kpis"></div>
 <h3 style="margin-bottom: 8px; font-weight: 500;">未來 upcoming fixture</h3>
@@ -112,7 +112,7 @@ function render(d) {
   }
   const kpiHTML = [
     kpi("Upcoming 場數", fixtures.length, ""),
-    kpi("首預 fired", stageCounts["首預"], `推播 ${pubCounts["首預"]}`),
+    kpi("初盤 fired", stageCounts["首預"], `推播 ${pubCounts["首預"]}`),
     kpi("T-30 fired", stageCounts["T-30"], `推播 ${pubCounts["T-30"]}`),
     kpi("T-5 fired", stageCounts["T-5"], `推播 ${pubCounts["T-5"]}`),
     kpi("三 stage 齊備", fixtures.filter(f => Object.keys(f.stages || {}).length === 3).length, ""),
@@ -125,7 +125,7 @@ function render(d) {
   const rows = sorted.map(fx => {
     const stages = fx.stages || {};
     const stageBadges = ["首預", "T-30", "T-5"].map(s =>
-      stages[s] ? `<span class="stage-tag stage-${s}">${s}</span>` : `<span class="pill">${s}</span>`
+      stages[s] ? `<span class="stage-tag stage-${s}">${s === "首預" ? "初盤" : s}</span>` : `<span class="pill">${s === "首預" ? "初盤" : s}</span>`
     ).join("");
     // 最新有 fire 嘅 stage 揀嚟顯示 lead
     let lead = "—", pub = "";

@@ -18,14 +18,21 @@ jobs:
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
         run: |
           # Stage all V2 fb files
-          ssh "$DEPLOY_USER@$DEPLOY_HOST" "sudo rm -rf /tmp/v2fb-stage && mkdir -p /tmp/v2fb-stage/stage_engine_v2_fb"
+          ssh "$DEPLOY_USER@$DEPLOY_HOST" "sudo rm -rf /tmp/v2fb-stage && mkdir -p /tmp/v2fb-stage/stage_engine_v2_fb /tmp/v2fb-stage/analysis"
           scp stage_engine_v2_fb/__init__.py \
               stage_engine_v2_fb/__main__.py \
               stage_engine_v2_fb/predictor_fb.py \
               stage_engine_v2_fb/cli_fb.py \
               stage_engine_v2_fb/index.html \
+              stage_engine_v2_fb/conditions.html \
               stage_engine_v2_fb/stage-engine-v2-fb-tick.service \
               stage_engine_v2_fb/stage-engine-v2-fb-tick.timer \
+              stage_engine_v2_fb/footbreak-direction-path-conditions.service \
+              stage_engine_v2_fb/footbreak-direction-path-conditions.timer \
               "$DEPLOY_USER@$DEPLOY_HOST:/tmp/v2fb-stage/stage_engine_v2_fb/"
+          scp analysis/footbreak_direction_path_conditions.py \
+              analysis/direction_path_conditions.py \
+              analysis/three_stage_historical_backtest.py \
+              "$DEPLOY_USER@$DEPLOY_HOST:/tmp/v2fb-stage/analysis/"
           scp deploy/deploy-v2-fb.sh "$DEPLOY_USER@$DEPLOY_HOST:/tmp/deploy-v2-fb.sh"
           ssh "$DEPLOY_USER@$DEPLOY_HOST" "sudo chmod +x /tmp/deploy-v2-fb.sh && sudo /tmp/deploy-v2-fb.sh"

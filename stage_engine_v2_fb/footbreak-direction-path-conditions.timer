@@ -1,0 +1,12 @@
+[Unit]
+Description=Refresh Footbreak V2 three-stage conditions every five minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+AccuracySec=15s
+Persistent=true
+Unit=footbreak-direction-path-conditions.service
+
+[Install]
+WantedBy=timers.target
