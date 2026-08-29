@@ -43,7 +43,7 @@ jobs:
           cat > /etc/systemd/system/crown-tick.service.d/timed-stage-budget.conf <<'EOF'
           [Service]
           Environment=CROWN_TICK_PASS_DEADLINE_SECONDS=50
-          Environment=CROWN_TIMED_STAGE_DIRECT_MAX_SECONDS=20
+          Environment=CROWN_TIMED_STAGE_DIRECT_MAX_SECONDS=6
           EOF
           install -d -m 0755 /etc/systemd/system/footbreak-tick.service.d
           cat > /etc/systemd/system/footbreak-tick.service.d/timed-stage-batch.conf <<'EOF'
