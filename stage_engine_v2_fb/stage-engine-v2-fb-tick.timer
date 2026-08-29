@@ -1,0 +1,11 @@
+[Unit]
+Description=Trigger stage-engine-v2-fb tick every 30s
+
+[Timer]
+OnBootSec=45s
+OnUnitActiveSec=30s
+AccuracySec=5s
+Unit=stage-engine-v2-fb-tick.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,17 @@
+[Unit]
+Description=Stage engine v2 footbreak tick (shadow)
+After=network.target
+
+[Service]
+Type=oneshot
+Environment=STAGE_V2_TELEGRAM_ENABLED=0
+Environment=PYTHONPATH=/opt/footbreak
+ExecStart=/opt/footbreak/.venv/bin/python3 -m stage_engine_v2_fb tick \
+  --data /var/www/footbreak/data.json \
+  --ledger /var/lib/footbreak/stage_engine_v2_fb/ledger.json \
+  --dashboard /var/www/stage_engine_v2_fb/data.json \
+  --sent-log /var/log/footbreak/stage-v2-fb-sent.jsonl \
+  --window-hours 48
+StandardOutput=append:/var/log/footbreak/stage-v2-fb-tick.log
+StandardError=append:/var/log/footbreak/stage-v2-fb-tick.log
+TimeoutStartSec=25s
