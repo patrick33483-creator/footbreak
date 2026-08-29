@@ -1,0 +1,1482 @@
+{
+  "generated_at_utc": "2026-08-29T03:09:32.287816+00:00",
+  "interpretation": {
+    "T30_T5_market": "Odds Radar checkpoint market benchmark",
+    "T30_T5_models": "Footbreak and Crown graded model predictions",
+    "initial": "Odds Radar true external opening market benchmark",
+    "not_available": "No immutable as-of-opening team-feature model predictions exist; therefore no historical trained opening model is claimed."
+  },
+  "legacy_first_prediction_lead_time": [
+    {
+      "maximum_minutes": 1378.17,
+      "median_minutes": 683.2,
+      "minimum_minutes": 6.18,
+      "n": 4124,
+      "system": "crown"
+    },
+    {
+      "maximum_minutes": 2159.88,
+      "median_minutes": 1856.42,
+      "minimum_minutes": 24.05,
+      "n": 1258,
+      "system": "footbreak"
+    }
+  ],
+  "market_timeline": {
+    "all_available": {
+      "hkjc_AH_T30": {
+        "bets": 155,
+        "brier": 0.198504,
+        "hit_rate_ex_push": 0.520548,
+        "hit_wilson_95": [
+          0.44003,
+          0.600013
+        ],
+        "log_loss": 0.691766,
+        "max_drawdown_units": 11.845,
+        "mean_odds": 1.7852,
+        "probability_rows": 155,
+        "roi": -0.040097,
+        "roi_fixture_bootstrap_95": [
+          -0.168432,
+          0.081262
+        ],
+        "settlements": {
+          "half_loss": 18,
+          "half_win": 12,
+          "loss": 52,
+          "push": 9,
+          "win": 64
+        },
+        "unique_fixtures": 155,
+        "unit_pnl": -6.215
+      },
+      "hkjc_AH_T5": {
+        "bets": 161,
+        "brier": 0.202359,
+        "hit_rate_ex_push": 0.486842,
+        "hit_wilson_95": [
+          0.408692,
+          0.565641
+        ],
+        "log_loss": 0.693357,
+        "max_drawdown_units": 21.755,
+        "mean_odds": 1.7802,
+        "probability_rows": 161,
+        "roi": -0.111056,
+        "roi_fixture_bootstrap_95": [
+          -0.236253,
+          0.014819
+        ],
+        "settlements": {
+          "half_loss": 16,
+          "half_win": 13,
+          "loss": 62,
+          "push": 9,
+          "win": 61
+        },
+        "unique_fixtures": 161,
+        "unit_pnl": -17.88
+      },
+      "hkjc_AH_initial": {
+        "bets": 0,
+        "brier": null,
+        "hit_rate_ex_push": null,
+        "hit_wilson_95": [
+          null,
+          null
+        ],
+        "log_loss": null,
+        "max_drawdown_units": 0.0,
+        "mean_odds": null,
+        "probability_rows": 0,
+        "roi": null,
+        "roi_fixture_bootstrap_95": [
+          null,
+          null
+        ],
+        "settlements": {},
+        "unique_fixtures": 0,
+        "unit_pnl": 0
+      },
+      "hkjc_COU_T30": {
+        "bets": 0,
+        "brier": null,
+        "hit_rate_ex_push": null,
+        "hit_wilson_95": [
+          null,
+          null
+        ],
+        "log_loss": null,
+        "max_drawdown_units": 0.0,
+        "mean_odds": null,
+        "probability_rows": 0,
+        "roi": null,
+        "roi_fixture_bootstrap_95": [
+          null,
+          null
+        ],
+        "settlements": {},
+        "unique_fixtures": 0,
+        "unit_pnl": 0
+      },
+      "hkjc_COU_T5": {
+        "bets": 0,
+        "brier": null,
+        "hit_rate_ex_push": null,
+        "hit_wilson_95": [
+          null,
+          null
+        ],
+        "log_loss": null,
+        "max_drawdown_units": 0.0,
+        "mean_odds": null,
+        "probability_rows": 0,
+        "roi": null,
+        "roi_fixture_bootstrap_95": [
+          null,
+          null
+        ],
+        "settlements": {},
+        "unique_fixtures": 0,
+        "unit_pnl": 0
+      },
+      "hkjc_COU_initial": {
+        "bets": 0,
+        "brier": null,
+        "hit_rate_ex_push": null,
+        "hit_wilson_95": [
+          null,
+          null
+        ],
+        "log_loss": null,
+        "max_drawdown_units": 0.0,
+        "mean_odds": null,
+        "probability_rows": 0,
+        "roi": null,
+        "roi_fixture_bootstrap_95": [
+          null,
+          null
+        ],
+        "settlements": {},
+        "unique_fixtures": 0,
+        "unit_pnl": 0
+      },
+      "hkjc_OU_T30": {
+        "bets": 247,
+        "brier": 0.252424,
+        "hit_rate_ex_push": 0.493927,
+        "hit_wilson_95": [
+          0.432149,
+          0.555891
+        ],
+        "log_loss": 0.698003,
+        "max_drawdown_units": 51.33,
+        "mean_odds": 1.6568,
+        "probability_rows": 247,
+        "roi": -0.185911,
+        "roi_fixture_bootstrap_95": [
+          -0.287296,
+          -0.082508
+        ],
+        "settlements": {
+          "loss": 125,
+          "win": 122
+        },
+        "unique_fixtures": 247,
+        "unit_pnl": -45.92
+      },
+      "hkjc_OU_T5": {
+        "bets": 248,
+        "brier": 0.252489,
+        "hit_rate_ex_push": 0.491935,
+        "hit_wilson_95": [
+          0.430314,
+          0.553803
+        ],
+        "log_loss": 0.698128,
+        "max_drawdown_units": 51.46,
+        "mean_odds": 1.6569,
+        "probability_rows": 248,
+        "roi": -0.189516,
+        "roi_fixture_bootstrap_95": [
+          -0.289439,
+          -0.086007
+        ],
+        "settlements": {
+          "loss": 126,
+          "win": 122
+        },
+        "unique_fixtures": 248,
+        "unit_pnl": -47.0
+      },
+      "hkjc_OU_initial": {
+        "bets": 0,
+        "brier": null,
+        "hit_rate_ex_push": null,
+        "hit_wilson_95": [
+          null,
+          null
+        ],
+        "log_loss": null,
+        "max_drawdown_units": 0.0,
+        "mean_odds": null,
+        "probability_rows": 0,
+        "roi": null,
+        "roi_fixture_bootstrap_95": [
+          null,
+          null
+        ],
+        "settlements": {},
+        "unique_fixtures": 0,
+        "unit_pnl": 0
+      },
+      "pinnacle_AH_T30": {
+        "bets": 240,
+        "brier": 0.17296,
+        "hit_rate_ex_push": 0.643617,
+        "hit_wilson_95": [
+          0.572908,
+          0.708574
+        ],
+        "log_loss": 0.651315,
+        "max_drawdown_units": 7.9047,
+        "mean_odds": 1.5824,
+        "probability_rows": 240,
+        "roi": -0.002783,
+        "roi_fixture_bootstrap_95": [
+          -0.088119,
+          0.082878
+        ],
+        "settlements": {
+          "half_loss": 1,
+          "half_win": 3,
+          "loss": 66,
+          "push": 52,
+          "win": 118
+        },
+        "unique_fixtures": 240,
+        "unit_pnl": -0.668
+      },
+      "pinnacle_AH_T5": {
+        "bets": 243,
+        "brier": 0.175806,
+        "hit_rate_ex_push": 0.602094,
+        "hit_wilson_95": [
+          0.531325,
+          0.668838
+        ],
+        "log_loss": 0.659286,
+        "max_drawdown_units": 16.8766,
+        "mean_odds": 1.5865,
+        "probability_rows": 243,
+        "roi": -0.056931,
+        "roi_fixture_bootstrap_95": [
+          -0.1451,
+          0.027958
+        ],
+        "settlements": {
+          "half_loss": 2,
+          "half_win": 4,
+          "loss": 74,
+          "push": 52,
+          "win": 111
+        },
+        "unique_fixtures": 243,
+        "unit_pnl": -13.8342
+      },
+      "pinnacle_AH_initial": {
+        "bets": 0,
+        "brier": null,
+        "hit_rate_ex_push": null,
+        "hit_wilson_95": [
+          null,
+          null
+        ],
+        "log_loss": null,
+        "max_drawdown_units": 0.0,
+        "mean_odds": null,
+        "probability_rows": 0,
+        "roi": null,
+        "roi_fixture_bootstrap_95": [
+          null,
+          null
+        ],
+        "settlements": {},
+        "unique_fixtures": 0,
+        "unit_pnl": 0
+      },
+      "pinnacle_COU_T30": {
+        "bets": 0,
+        "brier": null,
+        "hit_rate_ex_push": null,
+        "hit_wilson_95": [
+          null,
+          null
+        ],
+        "log_loss": null,
+        "max_drawdown_units": 0.0,
+        "mean_odds": null,
+        "probability_rows": 0,
+        "roi": null,
+        "roi_fixture_bootstrap_95": [
+          null,
+          null
+        ],
+        "settlements": {},
+        "unique_fixtures": 0,
+        "unit_pnl": 0
+      },
+      "pinnacle_COU_T5": {
+        "bets": 0,
+        "brier": null,
+        "hit_rate_ex_push": null,
+        "hit_wilson_95": [
+          null,
+          null
+        ],
+        "log_loss": null,
+        "max_drawdown_units": 0.0,
+        "mean_odds": null,
+        "probability_rows": 0,
+        "roi": null,
+        "roi_fixture_bootstrap_95": [
+          null,
+          null
+        ],
+        "settlements": {},
+        "unique_fixtures": 0,
+        "unit_pnl": 0
+      },
+      "pinnacle_COU_initial": {
+        "bets": 0,
+        "brier": null,
+        "hit_rate_ex_push": null,
+        "hit_wilson_95": [
+          null,
+          null
+        ],
+        "log_loss": null,
+        "max_drawdown_units": 0.0,
+        "mean_odds": null,
+        "probability_rows": 0,
+        "roi": null,
+        "roi_fixture_bootstrap_95": [
+          null,
+          null
+        ],
+        "settlements": {},
+        "unique_fixtures": 0,
+        "unit_pnl": 0
+      },
+      "pinnacle_OU_T30": {
+        "bets": 244,
+        "brier": 0.187556,
+        "hit_rate_ex_push": 0.594737,
+        "hit_wilson_95": [
+          0.523722,
+          0.661997
+        ],
+        "log_loss": 0.678679,
+        "max_drawdown_units": 13.7888,
+        "mean_odds": 1.6356,
+        "probability_rows": 244,
+        "roi": -0.026459,
+        "roi_fixture_bootstrap_95": [
+          -0.11599,
+          0.063725
+        ],
+        "settlements": {
+          "loss": 77,
+          "push": 54,
+          "win": 113
+        },
+        "unique_fixtures": 244,
+        "unit_pnl": -6.456
+      },
+      "pinnacle_OU_T5": {
+        "bets": 241,
+        "brier": 0.187746,
+        "hit_rate_ex_push": 0.588235,
+        "hit_wilson_95": [
+          0.516611,
+          0.656307
+        ],
+        "log_loss": 0.680712,
+        "max_drawdown_units": 16.6421,
+        "mean_odds": 1.6338,
+        "probability_rows": 241,
+        "roi": -0.036207,
+        "roi_fixture_bootstrap_95": [
+          -0.125215,
+          0.052531
+        ],
+        "settlements": {
+          "loss": 77,
+          "push": 54,
+          "win": 110
+        },
+        "unique_fixtures": 241,
+        "unit_pnl": -8.7258
+      },
+      "pinnacle_OU_initial": {
+        "bets": 0,
+        "brier": null,
+        "hit_rate_ex_push": null,
+        "hit_wilson_95": [
+          null,
+          null
+        ],
+        "log_loss": null,
+        "max_drawdown_units": 0.0,
+        "mean_odds": null,
+        "probability_rows": 0,
+        "roi": null,
+        "roi_fixture_bootstrap_95": [
+          null,
+          null
+        ],
+        "settlements": {},
+        "unique_fixtures": 0,
+        "unit_pnl": 0
+      }
+    },
+    "coverage": {
+      "paired_stage_markets": 4093,
+      "unique_main_stage_markets": 2449
+    },
+    "definition": {
+      "T30_T5": "origin=live_observation only and strictly pre-kickoff",
+      "initial": "origin=external_opening only",
+      "pick": "lower decimal-odds side on the unique paired main line",
+      "probability": "two-sided de-vig implied probability",
+      "role": "market benchmark, not a trained prediction model",
+      "settlement": "Asian quarter-line returns; COU requires hkjc_official corner total"
+    },
+    "diagnostics": {
+      "ambiguous_main_paired_line": 13,
+      "equal_odds_no_market_lean": 36,
+      "missing_official_corner_result": 597,
+      "missing_result": 37,
+      "no_main_paired_line": 1631,
+      "not_strictly_pre_kickoff": 66
+    },
+    "same_fixture_all_three_stages": {
+      "hkjc_AH_T30": {
+        "bets": 0,
+        "brier": null,
+        "hit_rate_ex_push": null,
+        "hit_wilson_95": [
+          null,
+          null
+        ],
+        "log_loss": null,
+        "max_drawdown_units": 0.0,
+        "mean_odds": null,
+        "probability_rows": 0,
+        "roi": null,
+        "roi_fixture_bootstrap_95": [
+          null,
+          null
+        ],
+        "settlements": {},
+        "unique_fixtures": 0,
+        "unit_pnl": 0
+      },
+      "hkjc_AH_T5": {
+        "bets": 0,
+        "brier": null,
+        "hit_rate_ex_push": null,
+        "hit_wilson_95": [
+          null,
+          null
+        ],
+        "log_loss": null,
+        "max_drawdown_units": 0.0,
+        "mean_odds": null,
+        "probability_rows": 0,
+        "roi": null,
+        "roi_fixture_bootstrap_95": [
+          null,
+          null
+        ],
+        "settlements": {},
+        "unique_fixtures": 0,
+        "unit_pnl": 0
+      },
+      "hkjc_AH_initial": {
+        "bets": 0,
+        "brier": null,
+        "hit_rate_ex_push": null,
+        "hit_wilson_95": [
+          null,
+          null
+        ],
+        "log_loss": null,
+        "max_drawdown_units": 0.0,
+        "mean_odds": null,
+        "probability_rows": 0,
+        "roi": null,
+        "roi_fixture_bootstrap_95": [
+          null,
+          null
+        ],
+        "settlements": {},
+        "unique_fixtures": 0,
+        "unit_pnl": 0
+      },
+      "hkjc_COU_T30": {
+        "bets": 0,
+        "brier": null,
+        "hit_rate_ex_push": null,
+        "hit_wilson_95": [
+          null,
+          null
+        ],
+        "log_loss": null,
+        "max_drawdown_units": 0.0,
+        "mean_odds": null,
+        "probability_rows": 0,
+        "roi": null,
+        "roi_fixture_bootstrap_95": [
+          null,
+          null
+        ],
+        "settlements": {},
+        "unique_fixtures": 0,
+        "unit_pnl": 0
+      },
+      "hkjc_COU_T5": {
+        "bets": 0,
+        "brier": null,
+        "hit_rate_ex_push": null,
+        "hit_wilson_95": [
+          null,
+          null
+        ],
+        "log_loss": null,
+        "max_drawdown_units": 0.0,
+        "mean_odds": null,
+        "probability_rows": 0,
+        "roi": null,
+        "roi_fixture_bootstrap_95": [
+          null,
+          null
+        ],
+        "settlements": {},
+        "unique_fixtures": 0,
+        "unit_pnl": 0
+      },
+      "hkjc_COU_initial": {
+        "bets": 0,
+        "brier": null,
+        "hit_rate_ex_push": null,
+        "hit_wilson_95": [
+          null,
+          null
+        ],
+        "log_loss": null,
+        "max_drawdown_units": 0.0,
+        "mean_odds": null,
+        "probability_rows": 0,
+        "roi": null,
+        "roi_fixture_bootstrap_95": [
+          null,
+          null
+        ],
+        "settlements": {},
+        "unique_fixtures": 0,
+        "unit_pnl": 0
+      },
+      "hkjc_OU_T30": {
+        "bets": 0,
+        "brier": null,
+        "hit_rate_ex_push": null,
+        "hit_wilson_95": [
+          null,
+          null
+        ],
+        "log_loss": null,
+        "max_drawdown_units": 0.0,
+        "mean_odds": null,
+        "probability_rows": 0,
+        "roi": null,
+        "roi_fixture_bootstrap_95": [
+          null,
+          null
+        ],
+        "settlements": {},
+        "unique_fixtures": 0,
+        "unit_pnl": 0
+      },
+      "hkjc_OU_T5": {
+        "bets": 0,
+        "brier": null,
+        "hit_rate_ex_push": null,
+        "hit_wilson_95": [
+          null,
+          null
+        ],
+        "log_loss": null,
+        "max_drawdown_units": 0.0,
+        "mean_odds": null,
+        "probability_rows": 0,
+        "roi": null,
+        "roi_fixture_bootstrap_95": [
+          null,
+          null
+        ],
+        "settlements": {},
+        "unique_fixtures": 0,
+        "unit_pnl": 0
+      },
+      "hkjc_OU_initial": {
+        "bets": 0,
+        "brier": null,
+        "hit_rate_ex_push": null,
+        "hit_wilson_95": [
+          null,
+          null
+        ],
+        "log_loss": null,
+        "max_drawdown_units": 0.0,
+        "mean_odds": null,
+        "probability_rows": 0,
+        "roi": null,
+        "roi_fixture_bootstrap_95": [
+          null,
+          null
+        ],
+        "settlements": {},
+        "unique_fixtures": 0,
+        "unit_pnl": 0
+      },
+      "pinnacle_AH_T30": {
+        "bets": 0,
+        "brier": null,
+        "hit_rate_ex_push": null,
+        "hit_wilson_95": [
+          null,
+          null
+        ],
+        "log_loss": null,
+        "max_drawdown_units": 0.0,
+        "mean_odds": null,
+        "probability_rows": 0,
+        "roi": null,
+        "roi_fixture_bootstrap_95": [
+          null,
+          null
+        ],
+        "settlements": {},
+        "unique_fixtures": 0,
+        "unit_pnl": 0
+      },
+      "pinnacle_AH_T5": {
+        "bets": 0,
+        "brier": null,
+        "hit_rate_ex_push": null,
+        "hit_wilson_95": [
+          null,
+          null
+        ],
+        "log_loss": null,
+        "max_drawdown_units": 0.0,
+        "mean_odds": null,
+        "probability_rows": 0,
+        "roi": null,
+        "roi_fixture_bootstrap_95": [
+          null,
+          null
+        ],
+        "settlements": {},
+        "unique_fixtures": 0,
+        "unit_pnl": 0
+      },
+      "pinnacle_AH_initial": {
+        "bets": 0,
+        "brier": null,
+        "hit_rate_ex_push": null,
+        "hit_wilson_95": [
+          null,
+          null
+        ],
+        "log_loss": null,
+        "max_drawdown_units": 0.0,
+        "mean_odds": null,
+        "probability_rows": 0,
+        "roi": null,
+        "roi_fixture_bootstrap_95": [
+          null,
+          null
+        ],
+        "settlements": {},
+        "unique_fixtures": 0,
+        "unit_pnl": 0
+      },
+      "pinnacle_COU_T30": {
+        "bets": 0,
+        "brier": null,
+        "hit_rate_ex_push": null,
+        "hit_wilson_95": [
+          null,
+          null
+        ],
+        "log_loss": null,
+        "max_drawdown_units": 0.0,
+        "mean_odds": null,
+        "probability_rows": 0,
+        "roi": null,
+        "roi_fixture_bootstrap_95": [
+          null,
+          null
+        ],
+        "settlements": {},
+        "unique_fixtures": 0,
+        "unit_pnl": 0
+      },
+      "pinnacle_COU_T5": {
+        "bets": 0,
+        "brier": null,
+        "hit_rate_ex_push": null,
+        "hit_wilson_95": [
+          null,
+          null
+        ],
+        "log_loss": null,
+        "max_drawdown_units": 0.0,
+        "mean_odds": null,
+        "probability_rows": 0,
+        "roi": null,
+        "roi_fixture_bootstrap_95": [
+          null,
+          null
+        ],
+        "settlements": {},
+        "unique_fixtures": 0,
+        "unit_pnl": 0
+      },
+      "pinnacle_COU_initial": {
+        "bets": 0,
+        "brier": null,
+        "hit_rate_ex_push": null,
+        "hit_wilson_95": [
+          null,
+          null
+        ],
+        "log_loss": null,
+        "max_drawdown_units": 0.0,
+        "mean_odds": null,
+        "probability_rows": 0,
+        "roi": null,
+        "roi_fixture_bootstrap_95": [
+          null,
+          null
+        ],
+        "settlements": {},
+        "unique_fixtures": 0,
+        "unit_pnl": 0
+      },
+      "pinnacle_OU_T30": {
+        "bets": 0,
+        "brier": null,
+        "hit_rate_ex_push": null,
+        "hit_wilson_95": [
+          null,
+          null
+        ],
+        "log_loss": null,
+        "max_drawdown_units": 0.0,
+        "mean_odds": null,
+        "probability_rows": 0,
+        "roi": null,
+        "roi_fixture_bootstrap_95": [
+          null,
+          null
+        ],
+        "settlements": {},
+        "unique_fixtures": 0,
+        "unit_pnl": 0
+      },
+      "pinnacle_OU_T5": {
+        "bets": 0,
+        "brier": null,
+        "hit_rate_ex_push": null,
+        "hit_wilson_95": [
+          null,
+          null
+        ],
+        "log_loss": null,
+        "max_drawdown_units": 0.0,
+        "mean_odds": null,
+        "probability_rows": 0,
+        "roi": null,
+        "roi_fixture_bootstrap_95": [
+          null,
+          null
+        ],
+        "settlements": {},
+        "unique_fixtures": 0,
+        "unit_pnl": 0
+      },
+      "pinnacle_OU_initial": {
+        "bets": 0,
+        "brier": null,
+        "hit_rate_ex_push": null,
+        "hit_wilson_95": [
+          null,
+          null
+        ],
+        "log_loss": null,
+        "max_drawdown_units": 0.0,
+        "mean_odds": null,
+        "probability_rows": 0,
+        "roi": null,
+        "roi_fixture_bootstrap_95": [
+          null,
+          null
+        ],
+        "settlements": {},
+        "unique_fixtures": 0,
+        "unit_pnl": 0
+      }
+    },
+    "scorable_observations": 1779,
+    "three_stage_common_identities": 0
+  },
+  "methodology_version": "three-stage-historical-v1",
+  "mode": "read_only",
+  "models": {
+    "all_available": {
+      "crown_CHL_T-30": {
+        "bets": 12,
+        "brier": 0.21212,
+        "hit_rate_ex_push": 0.666667,
+        "hit_wilson_95": [
+          0.390622,
+          0.86188
+        ],
+        "log_loss": 0.615999,
+        "max_drawdown_units": 3.0,
+        "mean_odds": 1.6142,
+        "probability_rows": 12,
+        "roi": 0.0575,
+        "roi_fixture_bootstrap_95": [
+          -0.360833,
+          0.451667
+        ],
+        "settlements": {
+          "loss": 4,
+          "win": 8
+        },
+        "unique_fixtures": 12,
+        "unit_pnl": 0.69
+      },
+      "crown_CHL_T-5": {
+        "bets": 12,
+        "brier": 0.21702,
+        "hit_rate_ex_push": 0.666667,
+        "hit_wilson_95": [
+          0.390622,
+          0.86188
+        ],
+        "log_loss": 0.626072,
+        "max_drawdown_units": 3.0,
+        "mean_odds": 1.6208,
+        "probability_rows": 12,
+        "roi": 0.069167,
+        "roi_fixture_bootstrap_95": [
+          -0.349167,
+          0.473375
+        ],
+        "settlements": {
+          "loss": 4,
+          "win": 8
+        },
+        "unique_fixtures": 12,
+        "unit_pnl": 0.83
+      },
+      "crown_HDC_T-30": {
+        "bets": 1673,
+        "brier": 0.208466,
+        "hit_rate_ex_push": 0.52524,
+        "hit_wilson_95": [
+          0.500468,
+          0.549888
+        ],
+        "log_loss": 0.692571,
+        "max_drawdown_units": 85.48,
+        "mean_odds": 1.8204,
+        "probability_rows": 1673,
+        "roi": -0.042388,
+        "roi_fixture_bootstrap_95": [
+          -0.084058,
+          -0.001902
+        ],
+        "settlements": {
+          "half_loss": 97,
+          "half_win": 127,
+          "loss": 646,
+          "push": 108,
+          "win": 695
+        },
+        "unique_fixtures": 1673,
+        "unit_pnl": -70.915
+      },
+      "crown_HDC_T-5": {
+        "bets": 1939,
+        "brier": 0.206446,
+        "hit_rate_ex_push": 0.521499,
+        "hit_wilson_95": [
+          0.49849,
+          0.544418
+        ],
+        "log_loss": 0.692038,
+        "max_drawdown_units": 121.56,
+        "mean_odds": 1.8165,
+        "probability_rows": 1939,
+        "roi": -0.055776,
+        "roi_fixture_bootstrap_95": [
+          -0.092331,
+          -0.019812
+        ],
+        "settlements": {
+          "half_loss": 113,
+          "half_win": 165,
+          "loss": 755,
+          "push": 125,
+          "win": 781
+        },
+        "unique_fixtures": 1939,
+        "unit_pnl": -108.15
+      },
+      "crown_HIL_T-30": {
+        "bets": 1673,
+        "brier": 0.213992,
+        "hit_rate_ex_push": 0.536168,
+        "hit_wilson_95": [
+          0.511489,
+          0.56067
+        ],
+        "log_loss": 0.691133,
+        "max_drawdown_units": 50.38,
+        "mean_odds": 1.8234,
+        "probability_rows": 1673,
+        "roi": -0.02402,
+        "roi_fixture_bootstrap_95": [
+          -0.064045,
+          0.0166
+        ],
+        "settlements": {
+          "half_loss": 79,
+          "half_win": 104,
+          "loss": 652,
+          "push": 97,
+          "win": 741
+        },
+        "unique_fixtures": 1673,
+        "unit_pnl": -40.185
+      },
+      "crown_HIL_T-5": {
+        "bets": 2008,
+        "brier": 0.21537,
+        "hit_rate_ex_push": 0.535695,
+        "hit_wilson_95": [
+          0.513167,
+          0.558079
+        ],
+        "log_loss": 0.690927,
+        "max_drawdown_units": 67.18,
+        "mean_odds": 1.8237,
+        "probability_rows": 2008,
+        "roi": -0.027657,
+        "roi_fixture_bootstrap_95": [
+          -0.064415,
+          0.007876
+        ],
+        "settlements": {
+          "half_loss": 81,
+          "half_win": 122,
+          "loss": 797,
+          "push": 117,
+          "win": 891
+        },
+        "unique_fixtures": 2008,
+        "unit_pnl": -55.535
+      },
+      "footbreak_CHL_T-30": {
+        "bets": 231,
+        "brier": 0.245936,
+        "hit_rate_ex_push": 0.575758,
+        "hit_wilson_95": [
+          0.511296,
+          0.637741
+        ],
+        "log_loss": 0.685012,
+        "max_drawdown_units": 14.7,
+        "mean_odds": 1.7368,
+        "probability_rows": 231,
+        "roi": 0.000519,
+        "roi_fixture_bootstrap_95": [
+          -0.109831,
+          0.109873
+        ],
+        "settlements": {
+          "loss": 98,
+          "win": 133
+        },
+        "unique_fixtures": 231,
+        "unit_pnl": 0.12
+      },
+      "footbreak_CHL_T-5": {
+        "bets": 216,
+        "brier": 0.247262,
+        "hit_rate_ex_push": 0.564815,
+        "hit_wilson_95": [
+          0.498136,
+          0.629229
+        ],
+        "log_loss": 0.687742,
+        "max_drawdown_units": 17.0,
+        "mean_odds": 1.7375,
+        "probability_rows": 216,
+        "roi": -0.017083,
+        "roi_fixture_bootstrap_95": [
+          -0.131346,
+          0.099123
+        ],
+        "settlements": {
+          "loss": 94,
+          "win": 122
+        },
+        "unique_fixtures": 216,
+        "unit_pnl": -3.69
+      },
+      "footbreak_HDC_T-30": {
+        "bets": 81,
+        "brier": 0.192623,
+        "hit_rate_ex_push": 0.459016,
+        "hit_wilson_95": [
+          0.340129,
+          0.58276
+        ],
+        "log_loss": 0.701896,
+        "max_drawdown_units": 13.66,
+        "mean_odds": 1.8312,
+        "probability_rows": 81,
+        "roi": -0.117654,
+        "roi_fixture_bootstrap_95": [
+          -0.298031,
+          0.058519
+        ],
+        "settlements": {
+          "loss": 33,
+          "push": 20,
+          "win": 28
+        },
+        "unique_fixtures": 81,
+        "unit_pnl": -9.53
+      },
+      "footbreak_HDC_T-5": {
+        "bets": 81,
+        "brier": 0.200059,
+        "hit_rate_ex_push": 0.435484,
+        "hit_wilson_95": [
+          0.319426,
+          0.55907
+        ],
+        "log_loss": 0.711885,
+        "max_drawdown_units": 14.8,
+        "mean_odds": 1.8178,
+        "probability_rows": 81,
+        "roi": -0.158272,
+        "roi_fixture_bootstrap_95": [
+          -0.327037,
+          0.011614
+        ],
+        "settlements": {
+          "loss": 35,
+          "push": 19,
+          "win": 27
+        },
+        "unique_fixtures": 81,
+        "unit_pnl": -12.82
+      },
+      "footbreak_HIL_T-30": {
+        "bets": 613,
+        "brier": 0.246073,
+        "hit_rate_ex_push": 0.531811,
+        "hit_wilson_95": [
+          0.492234,
+          0.570991
+        ],
+        "log_loss": 0.685204,
+        "max_drawdown_units": 81.55,
+        "mean_odds": 1.6617,
+        "probability_rows": 613,
+        "roi": -0.122953,
+        "roi_fixture_bootstrap_95": [
+          -0.190262,
+          -0.057796
+        ],
+        "settlements": {
+          "loss": 287,
+          "win": 326
+        },
+        "unique_fixtures": 613,
+        "unit_pnl": -75.37
+      },
+      "footbreak_HIL_T-5": {
+        "bets": 596,
+        "brier": 0.245099,
+        "hit_rate_ex_push": 0.548658,
+        "hit_wilson_95": [
+          0.508522,
+          0.58817
+        ],
+        "log_loss": 0.683224,
+        "max_drawdown_units": 68.73,
+        "mean_odds": 1.66,
+        "probability_rows": 596,
+        "roi": -0.094295,
+        "roi_fixture_bootstrap_95": [
+          -0.161383,
+          -0.029226
+        ],
+        "settlements": {
+          "loss": 269,
+          "win": 327
+        },
+        "unique_fixtures": 596,
+        "unit_pnl": -56.2
+      }
+    },
+    "definition": {
+      "canonical_snapshot": "latest unreconciled pre-kickoff snapshot per fixture-stage",
+      "dedupe": "exactly one unambiguous target per fixture-market-stage",
+      "grade": "latest GRADED revision per snapshot-market-target",
+      "legacy_initial": "excluded because 首預 lead time is not fixed",
+      "settlement": "stored grade target mapped to Asian quarter-line unit return",
+      "stages": [
+        "T-30",
+        "T-5"
+      ]
+    },
+    "diagnostics": {
+      "missing_or_invalid_odds": 870,
+      "no_unique_matching_prediction": 8
+    },
+    "same_fixture_T30_T5": {
+      "crown_CHL_T-30": {
+        "bets": 12,
+        "brier": 0.21212,
+        "hit_rate_ex_push": 0.666667,
+        "hit_wilson_95": [
+          0.390622,
+          0.86188
+        ],
+        "log_loss": 0.615999,
+        "max_drawdown_units": 3.0,
+        "mean_odds": 1.6142,
+        "probability_rows": 12,
+        "roi": 0.0575,
+        "roi_fixture_bootstrap_95": [
+          -0.361667,
+          0.456687
+        ],
+        "settlements": {
+          "loss": 4,
+          "win": 8
+        },
+        "unique_fixtures": 12,
+        "unit_pnl": 0.69
+      },
+      "crown_CHL_T-5": {
+        "bets": 12,
+        "brier": 0.21702,
+        "hit_rate_ex_push": 0.666667,
+        "hit_wilson_95": [
+          0.390622,
+          0.86188
+        ],
+        "log_loss": 0.626072,
+        "max_drawdown_units": 3.0,
+        "mean_odds": 1.6208,
+        "probability_rows": 12,
+        "roi": 0.069167,
+        "roi_fixture_bootstrap_95": [
+          -0.3475,
+          0.476687
+        ],
+        "settlements": {
+          "loss": 4,
+          "win": 8
+        },
+        "unique_fixtures": 12,
+        "unit_pnl": 0.83
+      },
+      "crown_HDC_T-30": {
+        "bets": 1504,
+        "brier": 0.207478,
+        "hit_rate_ex_push": 0.523843,
+        "hit_wilson_95": [
+          0.497699,
+          0.549858
+        ],
+        "log_loss": 0.692633,
+        "max_drawdown_units": 80.99,
+        "mean_odds": 1.821,
+        "probability_rows": 1504,
+        "roi": -0.044338,
+        "roi_fixture_bootstrap_95": [
+          -0.086776,
+          -0.003147
+        ],
+        "settlements": {
+          "half_loss": 90,
+          "half_win": 117,
+          "loss": 579,
+          "push": 99,
+          "win": 619
+        },
+        "unique_fixtures": 1504,
+        "unit_pnl": -66.685
+      },
+      "crown_HDC_T-5": {
+        "bets": 1504,
+        "brier": 0.205995,
+        "hit_rate_ex_push": 0.522792,
+        "hit_wilson_95": [
+          0.496639,
+          0.548821
+        ],
+        "log_loss": 0.691742,
+        "max_drawdown_units": 94.15,
+        "mean_odds": 1.8148,
+        "probability_rows": 1504,
+        "roi": -0.052626,
+        "roi_fixture_bootstrap_95": [
+          -0.0933,
+          -0.011459
+        ],
+        "settlements": {
+          "half_loss": 90,
+          "half_win": 124,
+          "loss": 580,
+          "push": 100,
+          "win": 610
+        },
+        "unique_fixtures": 1504,
+        "unit_pnl": -79.15
+      },
+      "crown_HIL_T-30": {
+        "bets": 1512,
+        "brier": 0.214753,
+        "hit_rate_ex_push": 0.538192,
+        "hit_wilson_95": [
+          0.512258,
+          0.563921
+        ],
+        "log_loss": 0.690686,
+        "max_drawdown_units": 50.255,
+        "mean_odds": 1.8232,
+        "probability_rows": 1512,
+        "roi": -0.021779,
+        "roi_fixture_bootstrap_95": [
+          -0.063771,
+          0.020552
+        ],
+        "settlements": {
+          "half_loss": 68,
+          "half_win": 93,
+          "loss": 591,
+          "push": 85,
+          "win": 675
+        },
+        "unique_fixtures": 1512,
+        "unit_pnl": -32.93
+      },
+      "crown_HIL_T-5": {
+        "bets": 1512,
+        "brier": 0.214316,
+        "hit_rate_ex_push": 0.532723,
+        "hit_wilson_95": [
+          0.506729,
+          0.558542
+        ],
+        "log_loss": 0.691055,
+        "max_drawdown_units": 58.875,
+        "mean_odds": 1.8222,
+        "probability_rows": 1512,
+        "roi": -0.030876,
+        "roi_fixture_bootstrap_95": [
+          -0.073061,
+          0.011521
+        ],
+        "settlements": {
+          "half_loss": 68,
+          "half_win": 90,
+          "loss": 596,
+          "push": 91,
+          "win": 667
+        },
+        "unique_fixtures": 1512,
+        "unit_pnl": -46.685
+      },
+      "footbreak_CHL_T-30": {
+        "bets": 209,
+        "brier": 0.247481,
+        "hit_rate_ex_push": 0.569378,
+        "hit_wilson_95": [
+          0.501592,
+          0.63466
+        ],
+        "log_loss": 0.688146,
+        "max_drawdown_units": 14.7,
+        "mean_odds": 1.7376,
+        "probability_rows": 209,
+        "roi": -0.008708,
+        "roi_fixture_bootstrap_95": [
+          -0.127609,
+          0.109188
+        ],
+        "settlements": {
+          "loss": 90,
+          "win": 119
+        },
+        "unique_fixtures": 209,
+        "unit_pnl": -1.82
+      },
+      "footbreak_CHL_T-5": {
+        "bets": 209,
+        "brier": 0.247007,
+        "hit_rate_ex_push": 0.564593,
+        "hit_wilson_95": [
+          0.496808,
+          0.630047
+        ],
+        "log_loss": 0.687224,
+        "max_drawdown_units": 15.76,
+        "mean_odds": 1.738,
+        "probability_rows": 209,
+        "roi": -0.017225,
+        "roi_fixture_bootstrap_95": [
+          -0.1359,
+          0.103636
+        ],
+        "settlements": {
+          "loss": 91,
+          "win": 118
+        },
+        "unique_fixtures": 209,
+        "unit_pnl": -3.6
+      },
+      "footbreak_HDC_T-30": {
+        "bets": 61,
+        "brier": 0.189647,
+        "hit_rate_ex_push": 0.422222,
+        "hit_wilson_95": [
+          0.289687,
+          0.566992
+        ],
+        "log_loss": 0.70363,
+        "max_drawdown_units": 13.91,
+        "mean_odds": 1.8352,
+        "probability_rows": 61,
+        "roi": -0.163443,
+        "roi_fixture_bootstrap_95": [
+          -0.361152,
+          0.03623
+        ],
+        "settlements": {
+          "loss": 26,
+          "push": 16,
+          "win": 19
+        },
+        "unique_fixtures": 61,
+        "unit_pnl": -9.97
+      },
+      "footbreak_HDC_T-5": {
+        "bets": 61,
+        "brier": 0.189777,
+        "hit_rate_ex_push": 0.444444,
+        "hit_wilson_95": [
+          0.309389,
+          0.588239
+        ],
+        "log_loss": 0.703898,
+        "max_drawdown_units": 10.53,
+        "mean_odds": 1.8115,
+        "probability_rows": 61,
+        "roi": -0.141148,
+        "roi_fixture_bootstrap_95": [
+          -0.329357,
+          0.056578
+        ],
+        "settlements": {
+          "loss": 25,
+          "push": 16,
+          "win": 20
+        },
+        "unique_fixtures": 61,
+        "unit_pnl": -8.61
+      },
+      "footbreak_HIL_T-30": {
+        "bets": 592,
+        "brier": 0.246109,
+        "hit_rate_ex_push": 0.530405,
+        "hit_wilson_95": [
+          0.490136,
+          0.570283
+        ],
+        "log_loss": 0.685264,
+        "max_drawdown_units": 82.21,
+        "mean_odds": 1.6622,
+        "probability_rows": 592,
+        "roi": -0.125017,
+        "roi_fixture_bootstrap_95": [
+          -0.190135,
+          -0.058275
+        ],
+        "settlements": {
+          "loss": 278,
+          "win": 314
+        },
+        "unique_fixtures": 592,
+        "unit_pnl": -74.01
+      },
+      "footbreak_HIL_T-5": {
+        "bets": 592,
+        "brier": 0.245245,
+        "hit_rate_ex_push": 0.548986,
+        "hit_wilson_95": [
+          0.508716,
+          0.588626
+        ],
+        "log_loss": 0.683535,
+        "max_drawdown_units": 67.73,
+        "mean_odds": 1.6601,
+        "probability_rows": 592,
+        "roi": -0.093412,
+        "roi_fixture_bootstrap_95": [
+          -0.160881,
+          -0.029557
+        ],
+        "settlements": {
+          "loss": 267,
+          "win": 325
+        },
+        "unique_fixtures": 592,
+        "unit_pnl": -55.3
+      }
+    },
+    "scorable_observations": 9135,
+    "two_stage_common_identities": 3890
+  },
+  "statistical_notes": [
+    "Wilson intervals describe hit-rate uncertainty only.",
+    "ROI intervals use deterministic fixture-level bootstrap resampling.",
+    "Stage variants are exploratory and are not independent confirmations.",
+    "A positive point estimate is not promoted when its 95% ROI interval crosses zero."
+  ]
+}
