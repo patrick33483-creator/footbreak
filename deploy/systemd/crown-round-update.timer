@@ -1,8 +1,8 @@
 [Unit]
-Description=足破 · 皇冠每日 11:00 future-round update
+Description=足破 · 皇冠每日 11:15 future-round update (offset from T-5 burst)
 
 [Timer]
-OnCalendar=*-*-* 11:00:00 Asia/Hong_Kong
+OnCalendar=*-*-* 11:15:00 Asia/Hong_Kong
 Persistent=true
 AccuracySec=30s
 Unit=crown-round-update.service
