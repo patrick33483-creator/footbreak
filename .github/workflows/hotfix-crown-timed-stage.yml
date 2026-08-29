@@ -36,6 +36,13 @@ jobs:
           install -m 0644 /tmp/crown-engine.py /opt/footbreak/crown/engine.py
           rm -f /tmp/crown-engine.py
 
+          install -d -m 0755 /etc/systemd/system/crown-tick.service.d
+          cat > /etc/systemd/system/crown-tick.service.d/timed-stage-budget.conf <<'EOF'
+          [Service]
+          Environment=CROWN_TICK_PASS_DEADLINE_SECONDS=50
+          Environment=CROWN_TIMED_STAGE_DIRECT_MAX_SECONDS=20
+          EOF
+          systemctl daemon-reload
           systemctl reset-failed crown-tick.service >/dev/null 2>&1 || true
           timeout 150s systemctl start crown-tick.service || true
           systemctl enable --now crown-tick.timer >/dev/null 2>&1
@@ -44,4 +51,5 @@ jobs:
             -p ExecMainStartTimestamp -p ExecMainExitTimestamp
           grep -n 'CROWN_TIMED_STAGE_DIRECT_MAX_SECONDS' \
             /opt/footbreak/crown/engine.py
+          systemctl show crown-tick.service -p Environment
           REMOTE
