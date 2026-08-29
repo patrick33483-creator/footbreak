@@ -31,8 +31,21 @@ jobs:
         run: |
           ssh -o BatchMode=yes -o ConnectTimeout=20 \
             "$DEPLOY_USER@$DEPLOY_HOST" \
-            'sudo cat /var/www/stage_engine_v2/direction-path-conditions.json' \
-            > three-stage-direction-matrix.json
+            'sudo bash -s' \
+            > three-stage-direction-matrix.json <<'REMOTE'
+          set -euo pipefail
+          TMP_DIR=$(mktemp -d)
+          trap 'rm -rf "$TMP_DIR"' EXIT
+          cp /var/lib/footbreak/direction-path-conditions/ledger.json "$TMP_DIR/ledger.json"
+          cd /opt/footbreak
+          PYTHONPATH=/opt/footbreak /opt/footbreak/.venv/bin/python3 \
+            -m analysis.direction_path_conditions \
+            --state "$TMP_DIR/ledger.json" \
+            --public "$TMP_DIR/report.json" \
+            --lock "$TMP_DIR/report.lock" \
+            >/dev/null
+          cat "$TMP_DIR/report.json"
+          REMOTE
           python - <<'PY'
           import json
           from pathlib import Path
