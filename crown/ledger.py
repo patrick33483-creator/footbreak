@@ -543,6 +543,10 @@ def _snapshot(prediction: dict[str, Any], stage: str) -> dict[str, Any]:
         "matching_version", "origin", "crown_quote_cached_forecast_only", "crown_cached_source_at",
         "crown_quote_source", "crown_quote_status", "crown_cached_t5_fallback",
         "native_snapshot_status", "native_snapshot_reason", "collection_attempt",
+        "prediction_model", "input_policy", "input_cutoff_at",
+        "opening_snapshot_hash", "opening_model_status", "team_history_as_of",
+        "team_history_sample", "team_history_features", "blend",
+        "late_inputs_used",
     )} | {
         "prediction_era": PREDICTION_ERA,
         "schema_version": PREDICTION_SCHEMA_VERSION,
@@ -616,7 +620,9 @@ def _record_learning_snapshot(
             snapshot["ts"],
             str(prediction["kickoff_hkt"]),
             payload,
-            model_version=PREDICTION_ERA,
+            model_version=str(
+                prediction.get("prediction_model") or PREDICTION_ERA
+            ),
             schema_version=str(PREDICTION_SCHEMA_VERSION),
         )
 

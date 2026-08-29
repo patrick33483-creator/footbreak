@@ -958,7 +958,7 @@ class CrownSafetyTests(unittest.TestCase):
         self.assertEqual(tightened["confidence_floor"], 62)
         self.assertEqual(tightened["reason"], "severe_market_underperformance")
 
-    def test_every_crown_fixture_gets_scoreable_prediction_without_any_quote(self) -> None:
+    def test_opening_prediction_waits_for_complete_quote_instead_of_inventing_baseline(self) -> None:
         config = replace(settings(), source_max_age_seconds=90)
         kickoff = self.now + timedelta(minutes=30)
         titan = {
@@ -978,13 +978,17 @@ class CrownSafetyTests(unittest.TestCase):
             prediction = _prediction(
                 titan, bridge, None, "首預", config, titan_client, pinnapi_client
             )
-        self.assertEqual(prediction["status"], "PREDICTION_READY")
-        self.assertEqual(prediction["verdict"], "已預測")
-        self.assertIn(prediction["forecast"], {"主勝", "和", "客勝"})
-        self.assertGreater(prediction["probability"], 0)
-        self.assertTrue(prediction["baseline_low_confidence"])
-        self.assertEqual(prediction["prediction_source"], "fixture_prior_low_confidence_v1")
-        self.assertIsNone(prediction["no_bet_reason"])
+        self.assertEqual(prediction["status"], "DATA_MISSING")
+        self.assertEqual(prediction["verdict"], "無法完整預測")
+        self.assertIsNone(prediction["forecast"])
+        self.assertIsNone(prediction["probability"])
+        self.assertEqual(prediction["prediction_model"], "crown-opening-fixed-v1")
+        self.assertEqual(
+            prediction["opening_model_status"],
+            "waiting_for_first_complete_crown_quote",
+        )
+        self.assertEqual(prediction["late_inputs_used"], [])
+        self.assertIn("等待下一次重試", prediction["no_bet_reason"])
         self.assertEqual(prediction["candidates"], [])
         self.assertIsNone(prediction["pick"])
         pinnapi_client.lines.assert_not_called()
@@ -993,9 +997,9 @@ class CrownSafetyTests(unittest.TestCase):
         self.assertEqual(sync_prediction(ledger, prediction, config), [])
         snapshot = ledger["watch"]["crown-only"]["stages"][0]
         self.assertEqual(snapshot["stage"], "首預")
-        self.assertEqual(snapshot["status"], "PREDICTION_READY")
-        self.assertEqual(snapshot["forecast"], prediction["forecast"])
-        self.assertTrue(snapshot["baseline_low_confidence"])
+        self.assertEqual(snapshot["status"], "DATA_MISSING")
+        self.assertIsNone(snapshot["forecast"])
+        self.assertEqual(snapshot["prediction_model"], "crown-opening-fixed-v1")
         self.assertEqual(snapshot["prediction_era"], "2026-08-12-hkjc-corner-forecast-v4")
         self.assertEqual(ledger["bets"], [])
 
@@ -2885,7 +2889,12 @@ class CrownSafetyTests(unittest.TestCase):
             stage = watch["stages"][0]
             self.assertEqual(stage["stage"], "首預")
             self.assertEqual(stage["status"], "PREDICTION_READY")
-            self.assertEqual(stage["market_predictions"][0]["source"], "crown_full_market_no_vig")
+            self.assertEqual(
+                stage["market_predictions"][0]["source"],
+                "opening_market_no_vig_history_unavailable",
+            )
+            self.assertEqual(stage["prediction_model"], "crown-opening-fixed-v1")
+            self.assertEqual(stage["late_inputs_used"], [])
             self.assertEqual(watch["native_fixture_id"], "native-only-1")
 
     def test_hourly_first_look_reconciliation_records_native_quote_failure(self) -> None:
