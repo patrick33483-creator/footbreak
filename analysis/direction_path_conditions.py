@@ -38,7 +38,7 @@ DEFAULT_SEED = str(
     Path(__file__).with_name("seeds") / "direction_path_conditions_20260829.json"
 )
 ODDS_THRESHOLD = 1.70
-ODDS_THRESHOLDS = (1.70, 1.75, 1.80, 1.90)
+ODDS_THRESHOLDS = (1.70, 1.75, 1.80, 1.85, 1.95)
 VERSION_SIZE = 20
 DECIDED = {"win", "half_win", "half_loss", "loss"}
 HITS = {"win", "half_win"}
@@ -650,7 +650,7 @@ def build_report(
             "decision_and_settlement": "完整路徑在 T-5 才成立；用 T-5 方向、線位及賠率結算",
             "line_rule": "初盤、T-30、T-5 三段主盤線位必須完全相同；不同線位屬不同條件",
             "accumulation": "完整三階段路徑、三段同線，且每段選中方向 decimal odds 均嚴格 >1.70 才入組",
-            "price_view": "另列三段方向賠率同時 >1.75、>1.80、>1.90 的統計",
+            "price_view": "另列三段方向賠率同時 >1.75、>1.80、>1.85、>1.95 的統計",
             "wilson": "命中為 win/half_win；push 不計 decided；95% Wilson score interval",
             "versioning": "新前瞻每 20 個 decided observations 完成一個版本",
             "tracking": "只顯示 Radar 已有有效報價的近場賽事；未齊初盤、T-30、T-5 不會入組",

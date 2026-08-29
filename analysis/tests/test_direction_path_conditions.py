@@ -85,6 +85,10 @@ class DirectionPathConditionsTest(unittest.TestCase):
         condition = build_report(rows)["conditions"][0]
         self.assertEqual(condition["prospective"]["odds_gt_1_7"]["observations"], 21)
         self.assertEqual(condition["prospective"]["odds_gt_1_75"]["observations"], 20)
+        self.assertEqual(condition["prospective"]["odds_gt_1_8"]["observations"], 20)
+        self.assertEqual(condition["prospective"]["odds_gt_1_85"]["observations"], 20)
+        self.assertEqual(condition["prospective"]["odds_gt_1_95"]["observations"], 0)
+        self.assertNotIn("odds_gt_1_9", condition["prospective"])
         versions = condition["prospective"]["versions"]
         self.assertEqual(versions["active_version"], 2)
         self.assertEqual(versions["progress"], 1)
