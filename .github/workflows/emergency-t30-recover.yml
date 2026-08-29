@@ -110,6 +110,22 @@ jobs:
                       "home": watch.get("home"),
                       "away": watch.get("away"),
                       "stages": stages,
+                      "stage_jobs": {
+                          stage: {
+                              "state": ((watch.get("stage_jobs") or {}).get(stage) or {}).get("state"),
+                              "retry_count": ((watch.get("stage_jobs") or {}).get(stage) or {}).get("retry_count"),
+                              "reason": ((watch.get("stage_jobs") or {}).get(stage) or {}).get("reason"),
+                          }
+                          for stage in ("T-30", "T-5")
+                      },
+                      "stage_attempts": {
+                          stage: {
+                              "state": ((watch.get("stage_attempts") or {}).get(stage) or {}).get("state"),
+                              "retry_count": ((watch.get("stage_attempts") or {}).get(stage) or {}).get("retry_count"),
+                              "reason": ((watch.get("stage_attempts") or {}).get(stage) or {}).get("reason"),
+                          }
+                          for stage in ("T-30", "T-5")
+                      },
                   })
               rows.sort(key=lambda row: (row["kickoff_hkt"], row["id"]))
               return {"count": len(rows), "fixtures": rows[:200]}
