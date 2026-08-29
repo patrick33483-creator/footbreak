@@ -120,6 +120,26 @@ class DirectionPathConditionsTest(unittest.TestCase):
         self.assertEqual(tracking[0]["condition_id"], "AUTO-PINNACLE-OU-OOU-L2_5")
         self.assertTrue(tracking[0]["complete"])
 
+    def test_ah_ou_and_cou_use_the_same_three_stage_direction_rule(self):
+        db = self.make_radar_db()
+        kickoff = 2_000_000
+        db.execute("INSERT INTO matches VALUES(1,?,?,?)", (kickoff, "主隊", "客隊"))
+        for market in ("AH", "OU", "COU"):
+            self.add_pair(db, "initial", 1.80, 2.05, market=market, captured=1_000_000)
+            self.add_pair(db, "T30", 2.03, 1.82, market=market, captured=1_500_000)
+            self.add_pair(db, "T5", 1.84, 2.01, market=market, captured=1_900_000)
+        complete, tracking = extract_radar_data(db, tracking_now_ms=kickoff)
+        self.assertEqual(
+            {row["market"]: row["direction_path"] for row in complete},
+            {
+                "AH": "H→A→H",
+                "OU": "O→U→O",
+                "COU": "O→U→O",
+            },
+        )
+        self.assertEqual({row["market"] for row in tracking}, {"AH", "OU", "COU"})
+        self.assertTrue(all(row["eligible"] for row in tracking))
+
     def test_fake_live_initial_is_rejected(self):
         db = self.make_radar_db()
         kickoff = 2_000_000
