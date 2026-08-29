@@ -1,0 +1,156 @@
+name: Diagnose Footbreak V2 stage coverage
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: Compare raw Footbreak and V2 stages
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "sudo /opt/footbreak/.venv/bin/python3 -" <<'PY'
+          import json
+          import subprocess
+          from collections import Counter
+          from datetime import datetime, timedelta, timezone
+          from pathlib import Path
+
+          HKT = timezone(timedelta(hours=8))
+          target_date = "2026-08-29"
+
+          def load(path):
+              return json.loads(Path(path).read_text(encoding="utf-8"))
+
+          def parse(value):
+              try:
+                  dt = datetime.fromisoformat(str(value or "").replace("Z", "+00:00"))
+              except (TypeError, ValueError):
+                  return None
+              return dt.replace(tzinfo=HKT) if dt.tzinfo is None else dt.astimezone(HKT)
+
+          def stage_names(rows):
+              return sorted({
+                  str(row.get("stage"))
+                  for row in (rows or [])
+                  if isinstance(row, dict) and row.get("stage")
+              })
+
+          raw_ledger = load("/opt/footbreak/system/sim_ledger.json")
+          v2_ledger = load("/var/lib/footbreak/stage_engine_v2_fb/ledger.json")
+          public = load("/var/www/footbreak/data.json")
+          v2_public = load("/var/www/stage_engine_v2_fb/data.json")
+
+          raw_watch = raw_ledger.get("watch") or {}
+          v2_fixtures = v2_ledger.get("fixtures") or {}
+          rows = []
+          raw_by_id = {}
+          for raw_id, watch in raw_watch.items():
+              if not isinstance(watch, dict):
+                  continue
+              kickoff = parse(
+                  watch.get("kickoff_hkt")
+                  or watch.get("kickoff")
+                  or ((watch.get("native_stage_manifest") or {}).get("kickoff_at_hkt"))
+              )
+              if kickoff is None or kickoff.date().isoformat() != target_date:
+                  continue
+              match_id = str(watch.get("match_id") or raw_id)
+              raw_by_id[match_id] = watch
+
+          for fixture_id, fixture in v2_fixtures.items():
+              if not isinstance(fixture, dict):
+                  continue
+              kickoff = parse(fixture.get("kickoff_hkt") or fixture.get("kickoff_utc"))
+              if kickoff is None or kickoff.date().isoformat() != target_date:
+                  continue
+              fixture_id = str(fixture_id)
+              raw = raw_by_id.get(fixture_id) or {}
+              raw_stages = stage_names(raw.get("stages"))
+              v2_stages = sorted((fixture.get("stages") or {}).keys())
+              manifest = raw.get("native_stage_manifest") or {}
+              jobs = manifest.get("jobs") or {}
+              attempts = [
+                  event for event in (raw_ledger.get("native_stage_attempts") or [])
+                  if isinstance(event, dict)
+                  and str(
+                      event.get("hkjc_match_id") or event.get("match_id") or ""
+                  ) == fixture_id
+              ]
+              rows.append({
+                  "id": fixture_id,
+                  "kickoff_hkt": kickoff.isoformat(),
+                  "fixture": f"{fixture.get('home','')} vs {fixture.get('away','')}",
+                  "raw_stages": raw_stages,
+                  "v2_stages": v2_stages,
+                  "manifest_jobs": sorted(jobs),
+                  "attempts": [
+                      {
+                          "stage": event.get("stage"),
+                          "status": event.get("status"),
+                          "reason": event.get("reason"),
+                          "at": event.get("at"),
+                      }
+                      for event in attempts[-8:]
+                  ],
+              })
+
+          rows.sort(key=lambda row: (row["kickoff_hkt"], row["id"]))
+          raw_counts = Counter(stage for row in rows for stage in row["raw_stages"])
+          v2_counts = Counter(stage for row in rows for stage in row["v2_stages"])
+          incomplete = [
+              row for row in rows
+              if "T-30" not in row["v2_stages"] or "T-5" not in row["v2_stages"]
+          ]
+
+          units = {}
+          for unit in (
+              "footbreak-tick.timer",
+              "footbreak-tick.service",
+              "stage-engine-v2-fb-tick.timer",
+              "stage-engine-v2-fb-tick.service",
+          ):
+              units[unit] = subprocess.check_output(
+                  ["systemctl", "show", unit, "--no-pager",
+                   "-p", "ActiveState", "-p", "SubState", "-p", "Result",
+                   "-p", "ExecMainStatus", "-p", "LastTriggerUSec"],
+                  text=True,
+              ).strip().splitlines()
+
+          print(json.dumps({
+              "at_hkt": datetime.now(HKT).isoformat(),
+              "date": target_date,
+              "v2_fixture_count": len(rows),
+              "raw_stage_counts": raw_counts,
+              "v2_stage_counts": v2_counts,
+              "incomplete_count": len(incomplete),
+              "incomplete_rows": incomplete,
+              "public_generated": (
+                  public.get("generated_at_hkt")
+                  or public.get("generated_at")
+                  or public.get("updated_at")
+              ),
+              "v2_public_generated": v2_public.get("generated_at_hkt"),
+              "units": units,
+          }, ensure_ascii=False, indent=2, default=dict))
+          PY
