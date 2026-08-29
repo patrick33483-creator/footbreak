@@ -1,6 +1,7 @@
 [Unit]
 Description=足破 · 皇冠首預及 T-30 正式條件本地累積
 After=network-online.target
+ConditionPathExists=!/run/crown-t5-priority
 OnFailure=footbreak-incident-alert@%n.service
 
 [Service]

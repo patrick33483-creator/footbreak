@@ -565,6 +565,32 @@ class NativeBatchPathCutoverEnabledTests(CutoverCallsiteTestBase):
             self.assertIsNotNone(item, f"{match_id} should have been enqueued at native-commit time")
             self.assertEqual(item.get("state"), deferred_mod.COMPLETED)
 
+    def test_bulk_fallback_success_is_natively_committed_and_enqueued(self) -> None:
+        """A direct-ID miss followed by a valid same-ID bulk quote must have
+        the same durable native and deferred-projection guarantees as a
+        direct-ID success."""
+        self._enable_cutover(deferred=True)
+        match_ids = ["bulk-fallback-a", "bulk-fallback-b"]
+        now, _cards = self._seed_due_t5_fixtures(match_ids)
+        titan_client = self._titan_client(match_ids, now)
+        titan_client.crown_price_snapshot.return_value = {
+            "prices": [], "asian_ok": False, "total_ok": False,
+            "quote_source": "titan007-crown-id-3",
+        }
+        titan_client.crown_price_snapshot.side_effect = None
+
+        with patch("crown.engine.TitanClient", return_value=titan_client):
+            result = run("tick", self.config)
+
+        self.assertEqual(result["predictions"], len(match_ids))
+        self.assertEqual(result["direct_id_predictions"], 0)
+        self._assert_all_committed_natively(match_ids)
+        queue = deferred_mod.DeferredProjectionQueue(self.state_dir)
+        for match_id in match_ids:
+            item = queue.read(match_id, "T-5")
+            self.assertIsNotNone(item, f"{match_id} bulk fallback was not queued")
+            self.assertEqual(item.get("state"), deferred_mod.COMPLETED)
+
     def test_bounded_drain_call_is_a_noop_when_queue_empty_and_flag_off(self) -> None:
         """The bounded deferred-drain call added at the end of this batch
         path's non-critical section must be a safe no-op when nothing was

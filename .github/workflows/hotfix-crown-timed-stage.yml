@@ -34,13 +34,18 @@ jobs:
           git show origin/main:crown/engine.py > /tmp/crown-engine.py
           git show origin/main:system/run_predict.py > /tmp/footbreak-run-predict.py
           git show origin/main:deploy/crown-tick-preempt.sh > /tmp/crown-tick-preempt.sh
+          git show origin/main:deploy/systemd/crown-early-admission-reconcile.service \
+            > /tmp/crown-early-admission-reconcile.service
           /opt/footbreak/.venv/bin/python3 -m py_compile /tmp/crown-engine.py
           /opt/footbreak/.venv/bin/python3 -m py_compile /tmp/footbreak-run-predict.py
           bash -n /tmp/crown-tick-preempt.sh
           install -m 0644 /tmp/crown-engine.py /opt/footbreak/crown/engine.py
           install -m 0644 /tmp/footbreak-run-predict.py /opt/footbreak/system/run_predict.py
           install -m 0755 /tmp/crown-tick-preempt.sh /opt/footbreak/deploy/crown-tick-preempt.sh
-          rm -f /tmp/crown-engine.py /tmp/footbreak-run-predict.py /tmp/crown-tick-preempt.sh
+          install -m 0644 /tmp/crown-early-admission-reconcile.service \
+            /etc/systemd/system/crown-early-admission-reconcile.service
+          rm -f /tmp/crown-engine.py /tmp/footbreak-run-predict.py \
+            /tmp/crown-tick-preempt.sh /tmp/crown-early-admission-reconcile.service
 
           install -d -m 0755 /etc/systemd/system/crown-tick.service.d
           cat > /etc/systemd/system/crown-tick.service.d/timed-stage-budget.conf <<'EOF'

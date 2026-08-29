@@ -2829,6 +2829,26 @@ def _run_local_bulk_timed_stages(
     except Exception:
         pass
 
+    # Direct-ID successes are committed and queued immediately by
+    # ``_on_direct_result`` above.  A usable same-ID bulk fallback does not
+    # pass through that callback, however, so it previously reached the
+    # native shadow store without receiving a deferred-projection queue item.
+    # Re-assert native durability for the complete normalized batch here and
+    # enqueue every COMMITTED item.  Both operations are idempotent: direct
+    # successes become harmless no-ops, while bulk-fallback successes gain the
+    # same restart-safe path back to the legacy V2 dashboard as direct reads.
+    if _native_cutover.cutover_enabled():
+        for prediction in stage_predictions:
+            try:
+                native_state = _native_cutover.commit_native_only(config, prediction)
+            except Exception:
+                native_state = None
+            if native_state == "COMMITTED":
+                try:
+                    _native_cutover.enqueue_committed_snapshot(config, prediction)
+                except Exception:
+                    pass
+
     # Stage 7: bounded, single-transaction recovery drain, placed after this
     # tick's own native per-fixture collection has already finished but
     # strictly BEFORE the unbounded legacy whole-batch commit immediately
