@@ -20,7 +20,7 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
 
-      - name: 只更新 Crown 收集器並即時補跑
+      - name: 只更新兩個 V2 時點收集器並即時補跑
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
@@ -32,9 +32,12 @@ jobs:
           export GIT_SSH_COMMAND="ssh -i /home/radar/.ssh/footbreak_github -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/home/radar/.ssh/known_hosts -o ConnectTimeout=10 -o Hostname=ssh.github.com -p 443 -o HostKeyAlias=github.com"
           git fetch --quiet origin main
           git show origin/main:crown/engine.py > /tmp/crown-engine.py
+          git show origin/main:system/run_predict.py > /tmp/footbreak-run-predict.py
           /opt/footbreak/.venv/bin/python3 -m py_compile /tmp/crown-engine.py
+          /opt/footbreak/.venv/bin/python3 -m py_compile /tmp/footbreak-run-predict.py
           install -m 0644 /tmp/crown-engine.py /opt/footbreak/crown/engine.py
-          rm -f /tmp/crown-engine.py
+          install -m 0644 /tmp/footbreak-run-predict.py /opt/footbreak/system/run_predict.py
+          rm -f /tmp/crown-engine.py /tmp/footbreak-run-predict.py
 
           install -d -m 0755 /etc/systemd/system/crown-tick.service.d
           cat > /etc/systemd/system/crown-tick.service.d/timed-stage-budget.conf <<'EOF'
@@ -42,14 +45,33 @@ jobs:
           Environment=CROWN_TICK_PASS_DEADLINE_SECONDS=50
           Environment=CROWN_TIMED_STAGE_DIRECT_MAX_SECONDS=20
           EOF
+          install -d -m 0755 /etc/systemd/system/footbreak-tick.service.d
+          cat > /etc/systemd/system/footbreak-tick.service.d/timed-stage-batch.conf <<'EOF'
+          [Service]
+          Environment=FOOTBREAK_URGENT_ANALYSIS_WORKERS=12
+          Environment=FOOTBREAK_URGENT_PERSIST_TIMEOUT_SECONDS=20
+          EOF
           systemctl daemon-reload
+          systemctl reset-failed footbreak-tick.service >/dev/null 2>&1 || true
           systemctl reset-failed crown-tick.service >/dev/null 2>&1 || true
+          timeout 90s systemctl start footbreak-tick.service || true
           timeout 150s systemctl start crown-tick.service || true
+          systemctl enable --now footbreak-tick.timer >/dev/null 2>&1
           systemctl enable --now crown-tick.timer >/dev/null 2>&1
+          timeout 90s systemctl start stage-engine-v2-fb-tick.service || true
+          timeout 90s systemctl start stage-engine-v2-tick.service || true
+          systemctl enable --now stage-engine-v2-fb-tick.timer >/dev/null 2>&1
+          systemctl enable --now stage-engine-v2-tick.timer >/dev/null 2>&1
+          systemctl show footbreak-tick.service --no-pager \
+            -p ActiveState -p SubState -p Result -p ExecMainStatus \
+            -p ExecMainStartTimestamp -p ExecMainExitTimestamp
           systemctl show crown-tick.service --no-pager \
             -p ActiveState -p SubState -p Result -p ExecMainStatus \
             -p ExecMainStartTimestamp -p ExecMainExitTimestamp
           grep -n 'CROWN_TIMED_STAGE_DIRECT_MAX_SECONDS' \
             /opt/footbreak/crown/engine.py
+          grep -n 'FOOTBREAK_URGENT_ANALYSIS_WORKERS' \
+            /opt/footbreak/system/run_predict.py
+          systemctl show footbreak-tick.service -p Environment
           systemctl show crown-tick.service -p Environment
           REMOTE

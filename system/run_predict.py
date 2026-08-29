@@ -601,7 +601,10 @@ def _due_worker(send, kind: str, payload) -> None:
             record_picks.LEDGER = os.path.join(HERE, "sim_ledger.json")
             value = record_picks.drain_post_commit_jobs()
         else:
-            _persist_urgent_result(payload)
+            if isinstance(payload, list):
+                _persist_urgent_results(payload)
+            else:
+                _persist_urgent_result(payload)
             value = True
         send.send(("ok", value))
     except BaseException as exc:
@@ -621,11 +624,17 @@ def _bounded_due_call(kind: str, payload, deadline: float):
     remaining = deadline - time.monotonic()
     if remaining <= 0 or os.name != "posix":
         return None
+    timeout_name = (
+        "FOOTBREAK_URGENT_PERSIST_TIMEOUT_SECONDS"
+        if kind == "persist" else "FOOTBREAK_URGENT_CALL_TIMEOUT_SECONDS"
+    )
+    timeout_default = 20.0 if kind == "persist" else 8.0
     try:
-        configured_cap = float(os.getenv("FOOTBREAK_URGENT_CALL_TIMEOUT_SECONDS", "8"))
+        configured_cap = float(os.getenv(timeout_name, str(timeout_default)))
     except ValueError:
-        configured_cap = 8.0
-    call_cap = min(8.0, max(0.05, configured_cap), remaining)
+        configured_cap = timeout_default
+    hard_cap = 25.0 if kind == "persist" else 8.0
+    call_cap = min(hard_cap, max(0.05, configured_cap), remaining)
     receiver, sender = multiprocessing.get_context("fork").Pipe(duplex=False)
     process = multiprocessing.get_context("fork").Process(target=_due_worker, args=(sender, kind, payload))
     process.start(); sender.close()
@@ -646,14 +655,101 @@ def _bounded_due_call(kind: str, payload, deadline: float):
             process.kill(); process.join(timeout=0.25)
 
 
-def _persist_urgent_result(result: dict) -> None:
-    """Commit one completed timed stage before looking at the next fixture."""
+def _run_due_analyses(tasks: list[tuple[str, tuple]], deadline: float) -> dict[str, dict]:
+    """Run a same-minute due batch concurrently while keeping commit time.
+
+    The previous sequential eight-second subprocess allowance meant a large
+    same-kickoff batch could analyse only one or two fixtures before the
+    40-second service deadline.  Each child remains killable and independently
+    bounded; only the scheduling changes from serial to a small I/O pool.
+    """
+    if not tasks or os.name != "posix":
+        return {}
+    try:
+        configured_workers = int(os.getenv("FOOTBREAK_URGENT_ANALYSIS_WORKERS", "12"))
+    except ValueError:
+        configured_workers = 12
+    worker_limit = min(12, max(1, configured_workers), len(tasks))
+    try:
+        configured_cap = float(os.getenv("FOOTBREAK_URGENT_CALL_TIMEOUT_SECONDS", "8"))
+    except ValueError:
+        configured_cap = 8.0
+    call_cap = min(8.0, max(0.05, configured_cap))
+    # record_picks.sync performs one atomic whole-ledger merge.  Reserve enough
+    # time for that single batch commit instead of spending the entire pass on
+    # optional sharp-reference reads.
+    stop_at = max(time.monotonic(), deadline - 16.0)
+    context = multiprocessing.get_context("fork")
+    queued = iter(tasks)
+    active = {}
+    completed: dict[str, dict] = {}
+    exhausted = False
+    while active or not exhausted:
+        while not exhausted and len(active) < worker_limit and time.monotonic() < stop_at:
+            try:
+                key, payload = next(queued)
+            except StopIteration:
+                exhausted = True
+                break
+            receiver, sender = context.Pipe(duplex=False)
+            process = context.Process(target=_due_worker, args=(sender, "analyse", payload))
+            process.start()
+            sender.close()
+            active[receiver] = (process, key, time.monotonic())
+        now = time.monotonic()
+        if now >= stop_at:
+            break
+        if not active:
+            continue
+        ready = wait_for_connections(
+            list(active), timeout=min(0.05, max(0.0, stop_at - now))
+        )
+        for receiver in ready:
+            process, key, _started = active.pop(receiver)
+            try:
+                status, value = receiver.recv()
+                if status == "ok" and isinstance(value, dict):
+                    completed[key] = value
+            except EOFError:
+                pass
+            finally:
+                receiver.close()
+                if process.is_alive():
+                    process.terminate()
+                process.join(timeout=0.25)
+                if process.is_alive():
+                    process.kill(); process.join(timeout=0.25)
+        now = time.monotonic()
+        for receiver, (process, _key, started) in list(active.items()):
+            if now - started < call_cap and process.is_alive():
+                continue
+            active.pop(receiver)
+            receiver.close()
+            if process.is_alive():
+                process.terminate()
+            process.join(timeout=0.25)
+            if process.is_alive():
+                process.kill(); process.join(timeout=0.25)
+    for receiver, (process, _key, _started) in active.items():
+        receiver.close()
+        if process.is_alive():
+            process.terminate()
+        process.join(timeout=0.25)
+        if process.is_alive():
+            process.kill(); process.join(timeout=0.25)
+    return completed
+
+
+def _persist_urgent_results(results: list[dict]) -> None:
+    """Commit one completed timed-stage batch with one atomic ledger merge."""
+    if not results:
+        return
     # Import lazily: run_predict also remains a standalone module in legacy tools.
     import record_picks
     fd, path = tempfile.mkstemp(prefix=".urgent-stage-", suffix=".json", dir=HERE)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump([result], handle, ensure_ascii=False)
+            json.dump(results, handle, ensure_ascii=False)
             handle.flush()
             os.fsync(handle.fileno())
         # This preserves the established atomic ledger/bet idempotency rules but
@@ -664,6 +760,11 @@ def _persist_urgent_result(result: dict) -> None:
             os.unlink(path)
         except FileNotFoundError:
             pass
+
+
+def _persist_urgent_result(result: dict) -> None:
+    """Compatibility wrapper for callers and focused tests."""
+    _persist_urgent_results([result])
 
 
 def _update_native_stage_ledger(mutator):
@@ -810,6 +911,12 @@ def _run_due_tick(match_ids, horizon_min, out, force, stage_filter):
             continue
         by_id.update({str(row.get("id")): row for row in rows if row.get("id") is not None})
     results = []
+    analysis_tasks = []
+    task_context = {}
+    hk_snaps = load_hk_snaps()
+    current_due = {
+        (entry[1], entry[3]) for entry in persisted_due_stages(horizon_min, strict=True)
+    }
     for kickoff, mid, watch, scheduled_stage in due:
         if time.monotonic() >= deadline:
             break
@@ -842,18 +949,22 @@ def _run_due_tick(match_ids, horizon_min, out, force, stage_filter):
         if abs((ko.astimezone(dt.timezone.utc) - kickoff.astimezone(dt.timezone.utc)).total_seconds()) > 60:
             _finish_due_attempts([attempt], "DATA_MISSING", dt.datetime.now(HKT), "provider_kickoff_identity_mismatch")
             continue
-        current_due = {
-            (entry[1], entry[3]) for entry in persisted_due_stages(horizon_min, strict=True)
-        }
         if (mid, scheduled_stage) not in current_due:
             if ko <= dt.datetime.now(HKT):
                 _expired_attempt(attempt, dt.datetime.now(HKT), "kickoff_elapsed_before_analysis")
             continue
         fixture_id = None if force else watch.get("fixture_id")
         fixture = _fixture_from_watch(watch, str(fixture_id)) if fixture_id else None
-        result = _bounded_due_call(
-            "analyse", (match, fixture, scheduled_stage, load_hk_snaps().get(mid)), deadline
-        )
+        task_key = f"{mid}|{scheduled_stage}"
+        analysis_tasks.append((
+            task_key, (match, fixture, scheduled_stage, hk_snaps.get(mid))
+        ))
+        task_context[task_key] = (ko, mid, scheduled_stage, attempt)
+
+    analysed = _run_due_analyses(analysis_tasks, deadline)
+    successful_attempts = []
+    for task_key, (ko, mid, scheduled_stage, attempt) in task_context.items():
+        result = analysed.get(task_key)
         if not isinstance(result, dict):
             _finish_due_attempts([attempt], "FAILED", dt.datetime.now(HKT), "analysis_timeout_or_error")
             print(f"{scheduled_stage} 分析失敗；已寫入 terminal evidence")
@@ -871,12 +982,19 @@ def _run_due_tick(match_ids, horizon_min, out, force, stage_filter):
         result["lead_view"] = pick
         result["no_bet_reason"] = reason if result["can_bet"] else (f"{scheduled_stage} 只作預測,落注統一喺 T-5" if pick else reason)
         result["_native_stage_attempt_id"] = attempt["attempt_id"]
-        # Atomic state/bet persistence is intentionally before the next fixture.
-        if _bounded_due_call("persist", result, deadline) is not True:
-            _finish_due_attempts([attempt], "FAILED", dt.datetime.now(HKT), "persistence_timeout_or_error")
-            continue
         results.append(result)
-        write_json_atomic(os.path.join(HERE, out), results)
+        successful_attempts.append(attempt)
+    if results:
+        # One whole-ledger merge for the same-minute batch.  This is the key
+        # protection against N repeated sync passes starving T-30/T-5.
+        if _bounded_due_call("persist", results, deadline) is not True:
+            _finish_due_attempts(
+                successful_attempts,
+                "FAILED", dt.datetime.now(HKT), "persistence_timeout_or_error",
+            )
+            results = []
+        else:
+            write_json_atomic(os.path.join(HERE, out), results)
     unfinished = [
         attempt for attempt in attempts.values()
         if isinstance(attempt, dict)
