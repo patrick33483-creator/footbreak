@@ -79,6 +79,8 @@ systemctl enable --now footbreak-direction-path-conditions.timer
 if ! systemctl start footbreak-direction-path-conditions.service; then
   systemctl status footbreak-direction-path-conditions.service --no-pager -l || true
   journalctl -u footbreak-direction-path-conditions.service -n 80 --no-pager || true
+  echo "-- condition worker log --"
+  tail -n 120 /var/log/footbreak/footbreak-direction-path-conditions.log || true
   exit 1
 fi
 systemctl list-timers stage-engine-v2-fb-tick.timer --no-pager | head -5
