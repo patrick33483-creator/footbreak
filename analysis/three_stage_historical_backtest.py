@@ -385,15 +385,19 @@ def radar_backtest(db: sqlite3.Connection) -> dict[str, Any]:
     for key, groups in candidates.items():
         selection_coverage["paired_stage_markets"] += 1
         best_score = max(group["main_score"] for group in groups)
-        if best_score <= 0:
-            diagnostics["no_main_paired_line"] += 1
+        if best_score > 0:
+            best = [group for group in groups if group["main_score"] == best_score]
+            if len(best) != 1:
+                diagnostics["ambiguous_main_paired_line"] += 1
+                continue
+            primary[key] = best[0]
+            selection_coverage["unique_main_stage_markets"] += 1
             continue
-        best = [group for group in groups if group["main_score"] == best_score]
-        if len(best) != 1:
-            diagnostics["ambiguous_main_paired_line"] += 1
+        if len(groups) == 1:
+            primary[key] = groups[0]
+            selection_coverage["single_paired_line_without_main"] += 1
             continue
-        primary[key] = best[0]
-        selection_coverage["unique_main_stage_markets"] += 1
+        diagnostics["no_main_multiple_paired_lines"] += 1
 
     observations: list[dict[str, Any]] = []
     for (match_id, provider, market, stage), group in primary.items():
