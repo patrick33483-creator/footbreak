@@ -215,6 +215,7 @@ jobs:
           PY
           python -m json.tool three-stage-input-audit.json >/dev/null
           sha256sum three-stage-input-audit.json
+          cat three-stage-input-audit.json
 
       - name: 上載審計結果
         uses: actions/upload-artifact@v4
