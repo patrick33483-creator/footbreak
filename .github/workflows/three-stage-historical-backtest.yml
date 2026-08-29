@@ -1,0 +1,57 @@
+name: 初盤 T-30 T-5 歷史回測（只讀）
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: three-stage-historical-backtest
+  cancel-in-progress: false
+
+jobs:
+  backtest:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: 取出回測程式
+        uses: actions/checkout@v4
+
+      - name: 驗證程式語法
+        run: python -m py_compile analysis/three_stage_historical_backtest.py
+
+      - name: 設定 SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: 在 production 歷史庫執行唯讀回測
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          umask 077
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            -o ServerAliveInterval=30 -o ServerAliveCountMax=10 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            'sudo /opt/footbreak/.venv/bin/python3 -' \
+            < analysis/three_stage_historical_backtest.py \
+            > three-stage-historical-backtest.json
+          python -m json.tool three-stage-historical-backtest.json >/dev/null
+          sha256sum three-stage-historical-backtest.json
+          echo THREE_STAGE_HISTORICAL_BACKTEST_JSON_BEGIN
+          cat three-stage-historical-backtest.json
+          echo THREE_STAGE_HISTORICAL_BACKTEST_JSON_END
+
+      - name: 上載回測結果
+        uses: actions/upload-artifact@v4
+        with:
+          name: three-stage-historical-backtest
+          path: three-stage-historical-backtest.json
+          retention-days: 7
+          if-no-files-found: error
