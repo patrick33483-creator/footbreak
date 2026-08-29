@@ -172,6 +172,13 @@ button:focus-visible, select:focus-visible, a:focus-visible {
   background: #343330;
 }
 .track i { display: block; height: 100%; background: var(--accent); }
+.version-live {
+  margin-top: 8px;
+  color: #76b7c0;
+  font-size: 12px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
 .metrics {
   display: grid;
   grid-template-columns: repeat(6, minmax(0, 1fr));
@@ -362,6 +369,14 @@ function renderCard(item, cohort, price) {
   const versions = (item.prospective || {}).versions || {};
   const progress = number(versions.progress);
   const required = number(versions.required) || 20;
+  const active = versions.active || {};
+  const hasActiveMetrics = Object.prototype.hasOwnProperty.call(active, "decided");
+  const activeDecided = number(active.decided);
+  const activeHitText = !hasActiveMetrics
+    ? "命中率資料更新中"
+    : activeDecided
+      ? `目前命中 ${number(active.hits)} / ${activeDecided} · ${pct(active.hit_rate)}`
+      : "目前尚未有有效勝負";
   const title = `${esc(item.provider).toUpperCase()} · ${esc(item.market)} · <span class="path">${esc(item.direction_path)}</span>`;
   return `<article class="condition card">
     <div class="condition-head">
@@ -372,6 +387,7 @@ function renderCard(item, cohort, price) {
     <div class="version">
       <div class="version-top"><span>新前瞻 V${number(versions.active_version) || 1}</span><b>${progress} / ${required}</b></div>
       <div class="track"><i style="width:${Math.min(100, progress / required * 100).toFixed(1)}%"></i></div>
+      <div class="version-live">${activeHitText}</div>
     </div>
     <div class="metrics">
       ${metric("入組場次", number(m.observations))}
