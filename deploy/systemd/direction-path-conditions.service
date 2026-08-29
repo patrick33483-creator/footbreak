@@ -1,0 +1,15 @@
+[Unit]
+Description=Three-stage direction path shadow condition ledger
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/footbreak
+Environment=PYTHONPATH=/opt/footbreak
+ExecStart=/opt/footbreak/.venv/bin/python3 -m analysis.direction_path_conditions
+User=root
+Group=root
+Nice=10
+
+[Install]
+WantedBy=multi-user.target

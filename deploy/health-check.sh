@@ -49,7 +49,8 @@ echo "=== production health $(TZ=Asia/Hong_Kong date '+%F %T %Z') ==="
 for unit in \
   footbreak-tick.timer footbreak-sweep.timer footbreak-settle.timer footbreak-backtest.timer \
   footbreak-result-reconcile.timer footbreak-dashboard-self-heal.timer \
-  footbreak-server-health-monitor.timer telegram-silence-monitor.timer; do
+  footbreak-server-health-monitor.timer telegram-silence-monitor.timer \
+  direction-path-conditions.timer; do
   systemctl is-enabled --quiet "$unit" || {
     state="$(systemctl is-enabled "$unit" 2>&1 || true)"
     echo "FAIL timer $unit enabled_state=$state" >&2
@@ -303,6 +304,21 @@ for name in ("/var/www/footbreak/challenger-status.json", "/var/www/crown/challe
     if policy.get("auto_apply") is not False:
         raise SystemExit(f"FAIL challenger artifact permits auto apply: {path}")
     print(f"OK isolated challenger status {path}")
+
+path = Path("/var/www/crown/direction-path-conditions.json")
+if not path.is_file():
+    raise SystemExit(f"FAIL direction-path condition artifact missing: {path}")
+payload = json.loads(path.read_text(encoding="utf-8"))
+if payload.get("report") != "direction_path_conditions":
+    raise SystemExit("FAIL direction-path condition artifact has invalid report type")
+if payload.get("mode") != "shadow_only_no_bets_no_notifications":
+    raise SystemExit("FAIL direction-path condition artifact is not isolated")
+summary = payload.get("summary") or {}
+if int(summary.get("historical") or 0) != 471:
+    raise SystemExit("FAIL direction-path historical seed is not 471 rows")
+if not isinstance(payload.get("conditions"), list) or not payload["conditions"]:
+    raise SystemExit("FAIL direction-path condition list is empty")
+print(f"OK direction-path conditions {path} rows={summary.get('unique_observations')}")
 PY
 
 services=(

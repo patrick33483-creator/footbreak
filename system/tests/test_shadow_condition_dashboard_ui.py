@@ -24,13 +24,17 @@ class ShadowConditionDashboardUiTests(unittest.TestCase):
             with self.subTest(dashboard=dashboard):
                 self.assertIn('data-view="condition"', index)
                 self.assertIn('id="viewCondition"', index)
-                self.assertIn("const CONDITION_FILE = 'shadow-condition-report.json';", app)
-                self.assertIn(f"const CONDITION_SYSTEM = '{system}';", app)
-                self.assertIn(f"const CONDITION_ID = '{own}';", app)
-                self.assertNotIn(other, app)
-                self.assertIn("只作報告 / 不自動套用", app)
-                self.assertIn("完全隔離", app)
-                self.assertIn("唔會改機率、推介、模擬倉、注碼、Telegram 或模型升級", app)
+                if dashboard == "crown/dashboard":
+                    self.assertIn("const CONDITION_FILE = 'direction-path-conditions.json';", app)
+                    self.assertIn("純觀察，不會自動投注", app)
+                    self.assertIn("Wilson 同賠率只用嚟評估", app)
+                else:
+                    self.assertIn("const CONDITION_FILE = 'shadow-condition-report.json';", app)
+                    self.assertIn(f"const CONDITION_SYSTEM = '{system}';", app)
+                    self.assertIn(f"const CONDITION_ID = '{own}';", app)
+                    self.assertNotIn(other, app)
+                    self.assertIn("只作報告 / 不自動套用", app)
+                    self.assertIn("完全隔離", app)
 
     def test_reports_are_cache_busted_and_refreshed_independently(self) -> None:
         for dashboard in ("hkjc-dashboard", "crown/dashboard"):
@@ -42,10 +46,15 @@ class ShadowConditionDashboardUiTests(unittest.TestCase):
                 )
                 self.assertIn("if (VIEW === 'condition' || CONDITION.state !== 'idle') void loadCondition({ quiet: silent });", app)
                 self.assertIn("if (CONDITION.state === 'idle') void loadCondition({});", app)
-                self.assertIn("metrics.roi_reason", app)
-                self.assertIn("metrics.clv_reason", app)
-                self.assertIn("progress.decided_unique_fixtures", app)
-                self.assertIn("進度只計已判定場", app)
+                if dashboard == "crown/dashboard":
+                    self.assertIn("Wilson 95% 下限", app)
+                    self.assertIn("versions.active_version", app)
+                    self.assertIn("T-5 ≥1.70", app)
+                else:
+                    self.assertIn("metrics.roi_reason", app)
+                    self.assertIn("metrics.clv_reason", app)
+                    self.assertIn("progress.decided_unique_fixtures", app)
+                    self.assertIn("進度只計已判定場", app)
 
     def test_regeneration_is_non_fatal_and_has_its_own_public_routes(self) -> None:
         root = ROOT

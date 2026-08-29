@@ -2948,19 +2948,17 @@ function healthBind() {
 }
 
 /* ══════════════════════ 挑戰模型 · 隔離影子研究 ══════════════════════ */
+/* ══════════════════════ 三階段方向路徑 · 隔離累積 ══════════════════════ */
 
-/* 純讀取 shadow-condition-report.json。此報告與既有挑戰模型、
- * 結算、注碼及通知完全分離；只呈現凍結後的前瞻條件診斷。 */
-const CONDITION_FILE = 'shadow-condition-report.json';
-const CONDITION_SYSTEM = 'crown';
-const CONDITION_ID = 'crown_hdc_three_stage_exact';
+/* 純讀取 direction-path-conditions.json。累積、結算與 Wilson 計算在
+ * 伺服器完成；此頁不會改預測、落注、注碼或 Telegram。 */
+const CONDITION_FILE = 'direction-path-conditions.json';
 const CONDITION_STALE_HOURS = 1;
 let CONDITION = { state: 'idle', payload: null, error: '' };
 function conditionObject(value) { return value && typeof value === 'object' && !Array.isArray(value); }
 function conditionValidate(payload) {
-  if (!conditionObject(payload) || payload.report !== 'shadow_conditions') return '報告格式不符';
-  if (payload.system !== CONDITION_SYSTEM || payload.condition_id !== CONDITION_ID) return '報告系統或條件不符';
-  if (!conditionObject(payload.condition) || !conditionObject(payload.condition.metrics)) return '報告缺少條件指標';
+  if (!conditionObject(payload) || payload.report !== 'direction_path_conditions') return '報告格式不符';
+  if (!Array.isArray(payload.conditions) || !conditionObject(payload.summary)) return '報告缺少條件統計';
   return '';
 }
 function conditionAge(value) {
@@ -2984,37 +2982,73 @@ async function loadCondition(options) {
     if (VIEW === 'condition') renderCondition();
   }
 }
-function conditionKpi(label, value, sub) {
-  return `<div class="condition-kpi"><span>${esc(label)}</span><b class="mono">${value}</b><small>${esc(sub || '')}</small></div>`;
+function pathMetric(metric) {
+  const m = metric || {}, interval = m.wilson_95 || {};
+  return `<div class="path-metric">
+    <div><span>場次</span><b class="mono">${numeric(m.observations) || 0}</b></div>
+    <div><span>命中</span><b class="mono">${numeric(m.hits) || 0} / ${numeric(m.decided) || 0}</b></div>
+    <div><span>命中率</span><b class="mono">${pc(m.hit_rate, 1)}</b></div>
+    <div class="path-wilson"><span>Wilson 95% 下限</span><b class="mono">${pc(interval.low, 1)}</b></div>
+    <div><span>ROI</span><b class="mono">${pc(m.roi, 2)}</b></div>
+    <div><span>Pending</span><b class="mono">${numeric(m.pending) || 0}</b></div>
+  </div>`;
+}
+function pathStatus(status) {
+  return {
+    candidate: ['候選', 'go'],
+    watch: ['觀察', 'wait'],
+    control: ['對照', 'hold'],
+    insufficient: ['樣本不足', 'hold'],
+  }[status] || ['觀察', 'hold'];
+}
+function pathCard(condition) {
+  const status = pathStatus(condition.status);
+  const hist = condition.historical || {}, pro = condition.prospective || {};
+  const versions = pro.versions || {}, progress = numeric(versions.progress) || 0;
+  const required = numeric(versions.required) || 20;
+  return `<article class="card path-card" data-testid="card-path-${esc(condition.id)}">
+    <header class="path-card-head">
+      <div><span class="path-id mono">${esc(condition.id)}</span><h2>${esc(condition.provider).toUpperCase()} · ${esc(condition.market)} · ${esc(condition.direction_path)}</h2></div>
+      <span class="chal-badge ${status[1]}">${status[0]}</span>
+    </header>
+    <p class="condition-copy">${esc(condition.note || '')}</p>
+    <div class="path-progress">
+      <div><span>新前瞻 V${numeric(versions.active_version) || 1}</span><b class="mono">${progress} / ${required}</b></div>
+      <div class="chal-bar"><i style="width:${Math.min(100, progress * 100 / required).toFixed(1)}%"></i></div>
+      <small>每 20 個有輸贏賽果完成一個版本；賠率不足仍會累積。</small>
+    </div>
+    <div class="path-sections">
+      <section><h3>歷史基線 · 全賠率</h3>${pathMetric(hist.all_odds)}</section>
+      <section><h3>歷史基線 · T-5 ≥1.70</h3>${pathMetric(hist.odds_gte_1_70)}</section>
+      <section><h3>新前瞻 · 全賠率</h3>${pathMetric(pro.all_odds)}</section>
+      <section><h3>新前瞻 · T-5 ≥1.70</h3>${pathMetric(pro.odds_gte_1_70)}</section>
+    </div>
+  </article>`;
 }
 function renderCondition() {
   const V = $('#viewCondition'); if (!V) return;
-  const head = `<div class="ledger-head"><div><h1>條件統計報告</h1><p class="dim">只作報告 / 不自動套用</p></div><button class="settle-btn" id="conditionReload" type="button">重新讀取</button></div>`;
+  const head = `<div class="ledger-head"><div><h1>三階段細分條件</h1><p class="dim">初盤方向 → T-30方向 → T-5方向</p></div><button class="settle-btn" id="conditionReload" type="button">重新讀取</button></div>`;
   if (CONDITION.state === 'idle' || CONDITION.state === 'loading') {
-    V.innerHTML = head + '<div class="card"><div class="empty2" data-testid="state-condition-loading">正在讀取條件統計報告…</div></div>';
+    V.innerHTML = head + '<div class="card"><div class="empty2" data-testid="state-condition-loading">正在讀取三階段條件…</div></div>';
   } else if (CONDITION.state === 'missing') {
-    V.innerHTML = head + '<div class="card"><div class="empty2" data-testid="state-condition-missing">報告尚未生成；不會回填凍結前歷史。</div></div>';
+    V.innerHTML = head + '<div class="card"><div class="empty2" data-testid="state-condition-missing">伺服器正在建立首份條件帳本。</div></div>';
   } else if (CONDITION.state === 'error') {
     V.innerHTML = head + `<div class="card"><div class="empty2 bad-txt" data-testid="state-condition-error">${esc(CONDITION.error)}</div></div>`;
   } else {
-    const payload = CONDITION.payload, report = payload.condition, metrics = report.metrics || {}, counts = metrics.counts || {}, progress = report.progress || {};
+    const payload = CONDITION.payload, summary = payload.summary || {};
     const age = conditionAge(payload.generated_at), stale = age != null && age > CONDITION_STALE_HOURS;
-    const qualified = numeric(progress.decided_unique_fixtures) || 0, required = numeric(progress.required_unique_decided_fixtures) || 100;
-    const pct = Math.min(100, qualified * 100 / required);
-    V.innerHTML = head + `<div class="shadow-note condition-note" data-testid="note-condition-isolation"><strong>只作報告 / 不自動套用</strong><span>完全隔離：唔會改機率、推介、模擬倉、注碼、Telegram 或模型升級。</span></div>
-      <section class="card condition-card" data-testid="card-shadow-condition-${CONDITION_SYSTEM}">
-        <h2 class="card-h">${esc(report.condition || '')} <span class="chal-badge ${report.status === 'human_review_ready' ? 'go' : 'wait'}" data-testid="status-shadow-condition">${report.status === 'human_review_ready' ? '可供人手覆核' : '收集中／樣本不足'}</span></h2>
-        <p class="condition-copy">${esc(report.qualification || '')}；每場只算一次，並且只取凍結截點後開賽的不可變賽前列。已合資格 ${numeric(progress.qualified_unique_fixtures) || 0} 場；進度只計已判定場。</p>
-        <div class="chal-progress"><div class="chal-progress-top"><span>前瞻獨立賽事進度</span><b class="mono">${qualified} / ${required}</b></div><div class="chal-bar"><i style="width:${pct.toFixed(1)}%"></i></div><div class="chal-progress-foot"><span>凍結截點 ${esc(hkStamp(report.freeze_cutoff))} HKT</span><span>${stale ? '報告過期' : '報告最新'}</span></div></div>
-        <div class="condition-grid">
-          ${conditionKpi('命中率', pc(metrics.hit_rate, 1), `命中 ${numeric(counts.hits) || 0} / 已判定 ${numeric(counts.decided) || 0}`)}
-          ${conditionKpi('ROI', pc(metrics.roi, 2), metrics.roi_reason || '使用實際選邊賽前賠率')}
-          ${conditionKpi('CLV', sg(metrics.clv, 3), metrics.clv_reason || '同市場／方向／盤口收盤價')}
-          ${conditionKpi('Brier', f3(metrics.brier), metrics.brier_reason || '賽前機率對不可變結算目標')}
-        </div>
-        <div class="condition-counts"><span>走水／退款 ${numeric(counts.pushes_refunds) || 0}</span><span>半贏 ${numeric(counts.half_won) || 0}</span><span>半輸 ${numeric(counts.half_lost) || 0}</span><span>賽果不可用 ${numeric(counts.outcome_unavailable) || 0}</span><span>選邊賠率缺失 ${numeric(counts.missing_selected_direction_odds) || 0}</span><span>同向收盤價缺失 ${numeric(counts.missing_same_direction_closing_quote) || 0}</span></div>
-        <p class="condition-copy"><b>指標定義：</b>命中率排除退款／走水及未有賽果；ROI 只在所有已判定場有實際所選方向的賽前賠率才顯示；CLV 只在每場保存同市場、同方向、同盤口收盤價才顯示；Brier 用保存的賽前機率及結算目標（半贏 .75、退款 .5、半輸 .25）。</p>
-      </section>`;
+    const featured = payload.conditions.filter((item) => item.status !== 'insufficient');
+    const remaining = payload.conditions.filter((item) => item.status === 'insufficient');
+    V.innerHTML = head + `<div class="shadow-note condition-note" data-testid="note-condition-isolation"><strong>純觀察，不會自動投注</strong><span>所有完整路徑都累積；Wilson 同賠率只用嚟評估，唔會阻止入組。資料 ${stale ? '超過 1 小時未更新' : '正常更新中'}。</span></div>
+      <section class="path-summary" aria-label="條件帳本摘要">
+        <div><span>歷史種子</span><b class="mono">${numeric(summary.historical) || 0}</b></div>
+        <div><span>新前瞻</span><b class="mono">${numeric(summary.prospective) || 0}</b></div>
+        <div><span>Pending</span><b class="mono">${numeric(summary.pending) || 0}</b></div>
+        <div><span>路徑總數</span><b class="mono">${numeric(summary.condition_count) || 0}</b></div>
+      </section>
+      <div class="path-list">${featured.map(pathCard).join('')}</div>
+      ${remaining.length ? `<details class="card path-more"><summary>其他樣本不足路徑 (${remaining.length})</summary><div class="path-list">${remaining.map(pathCard).join('')}</div></details>` : ''}
+      <section class="card path-definition"><h2 class="card-h">統計口徑</h2><p class="condition-copy">方向係每個時點 decimal odds 較低一方。完整路徑到 T-5 先成立，並用 T-5 方向、線位同賠率結算。命中包括贏及半贏；走盤唔計 decided；同一 provider、市場、fixture 只算一次。</p></section>`;
   }
   const reload = $('#conditionReload'); if (reload) reload.onclick = () => loadCondition({});
 }

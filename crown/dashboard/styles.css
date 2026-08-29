@@ -1995,3 +1995,59 @@ table.t.history-table td {
   .evidence-batch-row { grid-template-columns: 22px minmax(0, 1fr) auto; }
   .evidence-batch-market { grid-column: 2 / -1; }
 }
+.path-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin: 14px 0;
+}
+.path-summary > div {
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+}
+.path-summary span, .path-metric span { color: var(--muted); font-size: 12px; }
+.path-summary b { display: block; margin-top: 4px; font-size: 22px; }
+.path-list { display: grid; gap: 14px; }
+.path-card { padding: 18px; }
+.path-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+.path-card-head h2 { margin: 4px 0 0; font-size: 18px; }
+.path-id { color: var(--amber); font-size: 12px; }
+.path-progress { margin: 14px 0 16px; }
+.path-progress > div:first-child { display: flex; justify-content: space-between; margin-bottom: 7px; }
+.path-progress small { display: block; margin-top: 7px; color: var(--muted); }
+.path-sections {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+.path-sections > section {
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--panel) 86%, var(--bg));
+}
+.path-sections h3 { margin: 0 0 10px; color: var(--muted); font-size: 12px; font-weight: 600; }
+.path-metric {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+.path-metric div { min-width: 0; }
+.path-metric b { display: block; margin-top: 3px; font-size: 14px; }
+.path-metric .path-wilson b { color: var(--amber); }
+.path-more { margin-top: 14px; }
+.path-more > summary { cursor: pointer; min-height: 44px; padding: 12px 0; font-weight: 700; }
+.path-more > .path-list { margin-top: 12px; }
+.path-definition { margin-top: 14px; }
+@media (max-width: 760px) {
+  .path-summary, .path-sections { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .path-metric { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .path-card { padding: 14px; }
+}

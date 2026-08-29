@@ -174,7 +174,7 @@ systemctl enable --now \
   footbreak-tick.timer footbreak-sweep.timer footbreak-settle.timer \
   footbreak-result-reconcile.timer footbreak-dashboard-self-heal.timer \
   footbreak-server-health-monitor.timer telegram-silence-monitor.timer \
-  footbreak-daily-condition-report.timer
+  footbreak-daily-condition-report.timer direction-path-conditions.timer
 # An already-active timer keeps its previous next-elapse calculation after a
 # unit-file update on some systemd versions. Restart it explicitly so a
 # 30-minute installation becomes the new 15-minute schedule immediately.
@@ -371,6 +371,16 @@ if [ -s "$LEARNING_DB" ]; then
     --public-footbreak /var/www/footbreak/shadow-condition-report.json \
     --public-crown /var/www/crown/shadow-condition-report.json >/dev/null; then
     echo "條件影子報告生成失敗；網站及結算部署不受影響，下個 15 分鐘週期會重試" >&2
+  fi
+fi
+
+# Build the separate three-stage direction-path ledger from the immutable
+# historical seed plus the local Odds Radar SQLite database.  This never calls
+# an external API and never enters the betting or Telegram paths.
+install -d -o root -g root -m 0700 /var/lib/footbreak/direction-path-conditions
+if [ -s /opt/odds-radar/data/data.db ]; then
+  if ! PYTHONPATH="$APP_DIR" "$APP_DIR/.venv/bin/python3" -m analysis.direction_path_conditions >/dev/null; then
+    echo "三階段細分條件報告生成失敗；timer 會在 5 分鐘內重試" >&2
   fi
 fi
 

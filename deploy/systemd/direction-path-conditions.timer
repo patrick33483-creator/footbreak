@@ -1,0 +1,12 @@
+[Unit]
+Description=Refresh three-stage direction path conditions every five minutes
+
+[Timer]
+OnBootSec=2min
+OnCalendar=*:0/5
+Persistent=true
+RandomizedDelaySec=15
+Unit=direction-path-conditions.service
+
+[Install]
+WantedBy=timers.target

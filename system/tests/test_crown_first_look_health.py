@@ -97,7 +97,7 @@ class CrownFirstLookHealthTests(unittest.TestCase):
     def test_daily_future_round_update_is_separate_and_persistent(self) -> None:
         timer = ROUND_TIMER.read_text(encoding="utf-8")
         service = ROUND_SERVICE.read_text(encoding="utf-8")
-        self.assertIn("OnCalendar=*-*-* 11:00:00 Asia/Hong_Kong", timer)
+        self.assertIn("OnCalendar=*-*-* 11:15:00 Asia/Hong_Kong", timer)
         self.assertIn("Persistent=true", timer)
         self.assertIn("Unit=crown-round-update.service", timer)
         self.assertIn("crown-run.sh round-update", service)
