@@ -36,13 +36,14 @@ jobs:
           cd /opt/footbreak
           /opt/footbreak/.venv/bin/python3 - <<'PY'
           import json, pathlib, datetime as dt
-          from dateutil.parser import parse
           HKT = dt.timezone(dt.timedelta(hours=8))
           now = dt.datetime.now(HKT)
           data = json.loads(pathlib.Path("system/sim_ledger.json").read_text("utf-8"))
           for key, watch in (data.get("watch") or {}).items():
               try:
-                  ko = parse(watch.get("kickoff") or watch.get("kickoff_hkt"))
+                  ko = dt.datetime.fromisoformat(
+                      str(watch.get("kickoff") or watch.get("kickoff_hkt")).replace("Z", "+00:00")
+                  )
               except Exception:
                   continue
               mins = (ko - now).total_seconds() / 60
