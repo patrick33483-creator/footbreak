@@ -953,8 +953,14 @@ def _run_due_tick(match_ids, horizon_min, out, force, stage_filter):
             if ko <= dt.datetime.now(HKT):
                 _expired_attempt(attempt, dt.datetime.now(HKT), "kickoff_elapsed_before_analysis")
             continue
-        fixture_id = None if force else watch.get("fixture_id")
-        fixture = _fixture_from_watch(watch, str(fixture_id)) if fixture_id else None
+        # A timed HKJC stage must be created from the board observed at this
+        # deadline even when the optional sharp-reference API is slow.  The
+        # former path passed a PinnAPI fixture into every child, letting that
+        # optional socket consume the complete T-30/T-5 window.  The existing
+        # HKJC full-market model is already the fail-closed fallback inside
+        # analyse_match; use it directly here.  Opening/slow research sweeps
+        # still retain the original PinnAPI-enriched path.
+        fixture = None
         task_key = f"{mid}|{scheduled_stage}"
         analysis_tasks.append((
             task_key, (match, fixture, scheduled_stage, hk_snaps.get(mid))
