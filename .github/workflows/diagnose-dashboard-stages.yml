@@ -32,6 +32,39 @@ jobs:
           echo "=== 現時 server 時間 ==="
           date
           echo
+          echo "=== Footbreak 原生 ledger 未開賽場次 ==="
+          cd /opt/footbreak
+          /opt/footbreak/.venv/bin/python3 - <<'PY'
+          import json, pathlib, datetime as dt
+          from dateutil.parser import parse
+          HKT = dt.timezone(dt.timedelta(hours=8))
+          now = dt.datetime.now(HKT)
+          data = json.loads(pathlib.Path("system/sim_ledger.json").read_text("utf-8"))
+          for key, watch in (data.get("watch") or {}).items():
+              try:
+                  ko = parse(watch.get("kickoff") or watch.get("kickoff_hkt"))
+              except Exception:
+                  continue
+              mins = (ko - now).total_seconds() / 60
+              if not (-15 <= mins <= 90):
+                  continue
+              print(json.dumps({
+                  "match_id": watch.get("match_id") or key,
+                  "home": watch.get("home"), "away": watch.get("away"),
+                  "kickoff": ko.isoformat(), "minutes": round(mins, 1),
+                  "stages": [s.get("stage") for s in (watch.get("stages") or [])],
+                  "latest_attempts": {
+                      stage: {
+                          "status": rows[-1].get("status"),
+                          "reason": rows[-1].get("reason"),
+                          "attempted_at": rows[-1].get("attempted_at"),
+                      }
+                      for stage, rows in (watch.get("native_stage_attempts") or {}).items()
+                      if isinstance(rows, list) and rows
+                  },
+              }, ensure_ascii=False))
+          PY
+          echo
           echo "=== /var/www/footbreak/data.json 已開賽/T-5 window 場 ==="
           python3 - <<'PY'
           import json, pathlib, datetime as dt
