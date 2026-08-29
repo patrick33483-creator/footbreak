@@ -1,0 +1,149 @@
+name: 緊急恢復兩個 V2 T-30
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  recover:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: 設定 SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: 獨立補跑兩個上游及 V2
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o ServerAliveInterval=15 -o ServerAliveCountMax=8 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          set -uo pipefail
+
+          run_unit() {
+            unit="$1"
+            systemctl reset-failed "$unit" >/dev/null 2>&1 || true
+            if timeout 70s systemctl start "$unit"; then
+              printf '%s=success\n' "$unit"
+            else
+              rc=$?
+              printf '%s=failed_rc_%s\n' "$unit" "$rc"
+            fi
+            systemctl show "$unit" --no-pager \
+              -p ActiveState -p SubState -p Result -p ExecMainStatus \
+              -p ExecMainStartTimestamp -p ExecMainExitTimestamp || true
+          }
+
+          # Slow, non-deadline jobs must not hold the shared state locks while
+          # tonight's overdue T-30 queue is being recovered.
+          systemctl stop footbreak-sweep.service footbreak-settle.service \
+            crown-sweep.service crown-settle.service \
+            crown-round-update.service crown-reverse-t5-drain.service \
+            >/dev/null 2>&1 || true
+
+          # Never chain these with &&: one provider failure must not prevent
+          # the other system from receiving its own recovery pass.
+          run_unit footbreak-tick.service
+          run_unit crown-tick.service
+
+          systemctl start footbreak-dashboard-self-heal.service >/dev/null 2>&1 || true
+          sleep 3
+          run_unit stage-engine-v2-fb-tick.service
+          run_unit stage-engine-v2-tick.service
+
+          # Timers are the free, server-side continuing retry mechanism.
+          systemctl enable --now footbreak-tick.timer crown-tick.timer \
+            stage-engine-v2-fb-tick.timer stage-engine-v2-tick.timer \
+            >/dev/null 2>&1 || true
+
+          PYTHONPATH=/opt/footbreak /opt/footbreak/.venv/bin/python3 - <<'PY'
+          import json
+          from datetime import datetime, timedelta, timezone
+          from pathlib import Path
+
+          HKT = timezone(timedelta(hours=8))
+          now = datetime.now(HKT)
+
+          def parse(value):
+              try:
+                  dt = datetime.fromisoformat(str(value or "").replace("Z", "+00:00"))
+              except (TypeError, ValueError):
+                  return None
+              return dt.replace(tzinfo=HKT) if dt.tzinfo is None else dt.astimezone(HKT)
+
+          def load(path):
+              try:
+                  return json.loads(Path(path).read_text(encoding="utf-8"))
+              except Exception as exc:
+                  return {"_error": f"{type(exc).__name__}:{exc}"}
+
+          def summarize_ledger(path):
+              payload = load(path)
+              watches = payload.get("watch") if isinstance(payload, dict) else {}
+              watches = watches if isinstance(watches, dict) else {}
+              rows = []
+              for raw_id, watch in watches.items():
+                  if not isinstance(watch, dict):
+                      continue
+                  kickoff = parse(
+                      watch.get("kickoff_hkt") or watch.get("kickoff")
+                      or ((watch.get("native_stage_manifest") or {}).get("kickoff_at_hkt"))
+                  )
+                  if kickoff is None or not (now < kickoff <= now + timedelta(hours=2)):
+                      continue
+                  stages = sorted({
+                      str(row.get("stage")) for row in (watch.get("stages") or [])
+                      if isinstance(row, dict) and row.get("stage")
+                  })
+                  rows.append({
+                      "id": str(watch.get("match_id") or raw_id),
+                      "kickoff_hkt": kickoff.isoformat(),
+                      "home": watch.get("home"),
+                      "away": watch.get("away"),
+                      "stages": stages,
+                  })
+              rows.sort(key=lambda row: (row["kickoff_hkt"], row["id"]))
+              return {"count": len(rows), "fixtures": rows[:200]}
+
+          def summarize_dashboard(path):
+              payload = load(path)
+              return {
+                  "generated_at": payload.get("generated_at") if isinstance(payload, dict) else None,
+                  "mtime_hkt": datetime.fromtimestamp(
+                      Path(path).stat().st_mtime, HKT
+                  ).isoformat() if Path(path).exists() else None,
+              }
+
+          report = {
+              "checked_at_hkt": now.isoformat(),
+              "footbreak": {
+                  "ledger": summarize_ledger("/opt/footbreak/system/sim_ledger.json"),
+                  "source_dashboard": summarize_dashboard("/var/www/footbreak/data.json"),
+                  "v2_dashboard": summarize_dashboard("/var/www/stage_engine_v2_fb/data.json"),
+              },
+              "crown": {
+                  "ledger": summarize_ledger("/var/lib/footbreak/crown/ledger.json"),
+                  "source_dashboard": summarize_dashboard("/var/www/crown/data.json"),
+                  "v2_dashboard": summarize_dashboard("/var/www/stage_engine_v2/data.json"),
+              },
+          }
+          target = Path("/var/www/stage_engine_v2/t30-emergency-status.json")
+          temp = target.with_suffix(".tmp")
+          temp.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+          temp.replace(target)
+          print(json.dumps({
+              "checked_at_hkt": report["checked_at_hkt"],
+              "footbreak_next_2h": report["footbreak"]["ledger"]["count"],
+              "crown_next_2h": report["crown"]["ledger"]["count"],
+          }, ensure_ascii=False))
+          PY
+          REMOTE
