@@ -20,13 +20,13 @@ then
   # No wait here: once the marker is present, new slow jobs are conditioned
   # out and their existing work is asked to stop while the tick starts.
   #
-  # The hourly first-look reconciliation is intentionally *not* terminated
-  # here.  It has its own 30-second whole-pass native fixture budget and
-  # separate runner lock, so an invocation that began just before this marker
-  # can commit/record its bounded terminal outcome concurrently with the
-  # direct-ID deadline tick.  Killing it created an un-auditable SIGTERM
-  # failure at exactly :10 while the tick was still able to run.
-  /usr/bin/systemctl stop --no-block crown-round-update.service crown-sweep.service crown-settle.service crown-reverse-t5-drain.service
+  # Every non-deadline writer must yield while a native T-30/T-5 job is due.
+  # The first-look and early-admission reconcilers can be retried later; a
+  # true timed-stage quote cannot be reconstructed after kickoff.
+  /usr/bin/systemctl stop --no-block \
+    crown-round-update.service crown-sweep.service crown-settle.service \
+    crown-reverse-t5-drain.service crown-first-look-reconcile.service \
+    crown-early-admission-reconcile.service
   echo "Crown urgent timed stage due; blocking slow jobs preempted"
 else
   status=$?
