@@ -1,0 +1,45 @@
+name: 匯出三階段回測結果
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: 已完成的三階段回測 run ID
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  export:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: 取出 repository
+        uses: actions/checkout@v4
+
+      - name: 下載指定回測結果
+        uses: actions/download-artifact@v4
+        with:
+          name: three-stage-historical-backtest
+          path: downloaded
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ github.token }}
+
+      - name: 發佈至獨立結果分支
+        env:
+          RUN_ID: ${{ inputs.run_id }}
+        run: |
+          test -s downloaded/three-stage-historical-backtest.json
+          branch="backtest-result-$RUN_ID"
+          path="backtest-results/$RUN_ID.json"
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+          git switch -c "$branch"
+          mkdir -p backtest-results
+          cp downloaded/three-stage-historical-backtest.json "$path"
+          python -m json.tool "$path" >/dev/null
+          git add "$path"
+          git commit -m "Publish three-stage backtest result $RUN_ID"
+          git push --set-upstream origin "$branch"
