@@ -175,6 +175,26 @@ systemctl enable --now \
   footbreak-result-reconcile.timer footbreak-dashboard-self-heal.timer \
   footbreak-server-health-monitor.timer telegram-silence-monitor.timer \
   footbreak-daily-condition-report.timer direction-path-conditions.timer
+# The direction-path ledger is a local, read-only research worker.  It must
+# remain independent of the Crown prediction gate and survive a host that has
+# retained a disabled or masked unit state from an earlier setup/rollback.
+# Do not trust the bulk enable alone: recreate its timers.target link and prove
+# both durable enablement and runtime activation before continuing.
+systemctl unmask direction-path-conditions.timer 2>/dev/null || true
+systemctl reenable direction-path-conditions.timer
+systemctl restart direction-path-conditions.timer
+systemctl is-enabled --quiet direction-path-conditions.timer || {
+  systemctl show direction-path-conditions.timer \
+    -p LoadState -p UnitFileState -p ActiveState -p SubState -p Result
+  echo "ERROR: direction-path-conditions.timer was not durably enabled" >&2
+  exit 1
+}
+systemctl is-active --quiet direction-path-conditions.timer || {
+  systemctl show direction-path-conditions.timer \
+    -p LoadState -p UnitFileState -p ActiveState -p SubState -p Result
+  echo "ERROR: direction-path-conditions.timer did not become active" >&2
+  exit 1
+}
 # An already-active timer keeps its previous next-elapse calculation after a
 # unit-file update on some systemd versions. Restart it explicitly so a
 # 30-minute installation becomes the new 15-minute schedule immediately.
