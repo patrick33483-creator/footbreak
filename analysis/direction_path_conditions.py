@@ -326,10 +326,18 @@ def version_projection(rows: list[dict[str, Any]]) -> dict[str, Any]:
                 "wilson_95": batch_metrics["wilson_95"],
             }
         )
+    active_batch = decided[len(completed) * VERSION_SIZE :]
+    active_metrics = metrics(active_batch)
     return {
         "active_version": len(completed) + 1,
         "progress": len(decided) % VERSION_SIZE,
         "required": VERSION_SIZE,
+        "active": {
+            "hits": active_metrics["hits"],
+            "decided": active_metrics["decided"],
+            "hit_rate": active_metrics["hit_rate"],
+            "wilson_95": active_metrics["wilson_95"],
+        },
         "completed": completed,
     }
 

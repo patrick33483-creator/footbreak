@@ -27,8 +27,8 @@ class DirectionPathConditionsTest(unittest.TestCase):
                     "initial": {"side": "O", "line": 2.5, "odds": 1.6},
                     "T30": {"side": "O", "line": 2.5, "odds": 1.6},
                     "T5": {"side": "O", "line": 2.5, "odds": 1.60 if index == 0 else 1.80},
-                    "settlement": "win",
-                    "unit_return": 0.8,
+                    "settlement": "loss" if index == 20 else "win",
+                    "unit_return": -1.0 if index == 20 else 0.8,
                     "cohort": "prospective",
                 }
             )
@@ -38,6 +38,9 @@ class DirectionPathConditionsTest(unittest.TestCase):
         versions = condition["prospective"]["versions"]
         self.assertEqual(versions["active_version"], 2)
         self.assertEqual(versions["progress"], 1)
+        self.assertEqual(versions["active"]["hits"], 0)
+        self.assertEqual(versions["active"]["decided"], 1)
+        self.assertEqual(versions["active"]["hit_rate"], 0)
         self.assertGreater(condition["prospective"]["all_odds"]["wilson_95"]["low"], 0)
 
     def test_seed_and_live_rows_are_idempotent(self):
