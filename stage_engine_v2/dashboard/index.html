@@ -113,7 +113,7 @@ function render(d) {
   }
   const kpiHTML = [
     kpi("Upcoming 場數", fixtures.length, ""),
-    kpi("首預 fired", stageCounts["首預"], `推播 ${pubCounts["首預"]}`),
+    kpi("初盤 fired", stageCounts["首預"], `推播 ${pubCounts["首預"]}`),
     kpi("T-30 fired", stageCounts["T-30"], `推播 ${pubCounts["T-30"]}`),
     kpi("T-5 fired", stageCounts["T-5"], `推播 ${pubCounts["T-5"]}`),
     kpi("三 stage 齊備", fixtures.filter(f => Object.keys(f.stages || {}).length === 3).length, ""),
@@ -125,8 +125,10 @@ function render(d) {
     (a.kickoff_utc || "").localeCompare(b.kickoff_utc || ""));
   const rows = sorted.map(fx => {
     const stages = fx.stages || {};
-    const stageBadges = ["首預", "T-30", "T-5"].map(s =>
-      stages[s] ? `<span class="stage-tag stage-${s}">${s}</span>` : `<span class="pill">${s}</span>`
+    const stageBadges = ["首預", "T-30", "T-5"].map(s => {
+      const label = s === "首預" ? "初盤" : s;
+      return stages[s] ? `<span class="stage-tag stage-${s}">${label}</span>` : `<span class="pill">${label}</span>`;
+    }
     ).join("");
     // 最新有 fire 嘅 stage 揀嚟顯示 lead
     let lead = "—", pub = "";
