@@ -33,12 +33,16 @@ const DASHBOARD_FETCH_TIMEOUT_MS = Math.max(
   Math.min(15000, numeric(window.__CROWN_FETCH_TIMEOUT_MS__) || 15000),
 );
 
-const TAG = { 'T-5': 'tag-t5', 'T-30': 'tag-t30', '首預': 'tag-t60', '待入窗': 'tag-wait', '已開賽': 'tag-none' };
+const TAG = { 'T-5': 'tag-t5', 'T-30': 'tag-t30', '首預': 'tag-t60', '初盤': 'tag-t60', '舊首預': 'tag-wait', '待入窗': 'tag-wait', '已開賽': 'tag-none' };
 const STAGE_DESC = {
-  '首預': '每晚 23:59 掃全板 · 參考初盤同開盤結構',
+  '首預': '系統首次取得完整皇冠盤 · 只用初盤及當時已知球隊歷史',
   'T-30': '開賽前 30 分鐘 · 陣容、傷患出咗,賠率漸定',
   'T-5': '開賽前約 10 分鐘起 · 唯一落注時點',
 };
+function stageDisplay(row) {
+  if (!row || row.stage !== '首預') return (row && row.stage) || '—';
+  return row.prediction_model === 'crown-opening-fixed-v1' ? '初盤' : '舊首預';
+}
 const VD_CLS = { '落注': 'v-go', '傾向': 'v-lean', '偏向': 'v-soft', '已預測': 'v-lean', '觀望': 'v-wait', '無傾向': 'v-none' };
 const MKT = { HDC: '讓球', HIL: '入球大細', CHL: '角球大細', HAD: '主客和' };
 const marketLabel = (value) => {
@@ -553,7 +557,7 @@ function renderKpis() {
   const ledgerBets = (LED.bets || []).filter((b) => b.status !== 'VOIDED');
   const K = [
     ['追蹤賽事', LIST.length, ''],
-    ['已首預', LIST.filter((m) => has(m, '首預')).length, ''],
+    ['已初盤', LIST.filter((m) => has(m, '首預')).length, ''],
     ['已 T-30', LIST.filter((m) => has(m, 'T-30')).length, ''],
     ['已 T-5', nT5, ''],
     ['模擬注', ledgerBets.length, ledgerBets.length ? 'good' : ''],
@@ -971,9 +975,9 @@ function driftCard(m) {
   const n = flipCount(m);
 
   return `<div class="card drift">
-    <h2 class="card-h">三段變化 <span class="sub">首預 → T-30 → T-5 · 睇下我改咗啲乜</span></h2>
+    <h2 class="card-h">三段變化 <span class="sub">初盤 → T-30 → T-5 · 睇下模型點樣更新</span></h2>
     <div class="tbl-wrap"><table class="t drifty">
-      <tr><th>指標</th><th>首預</th><th class="dh">Δ</th><th>T-30</th><th class="dh">Δ</th><th>T-5</th></tr>
+      <tr><th>指標</th><th>初盤</th><th class="dh">Δ</th><th>T-30</th><th class="dh">Δ</th><th>T-5</th></tr>
       <tr class="crow"><td class="lbl">結論</td>${concl[0]}${cflip[0]}${concl[1]}${cflip[1]}${concl[2]}</tr>
       ${rows.map(([l, sh, g, f, j]) => `<tr${j ? ' class="krow"' : ''}>
         <td class="lbl"><span class="lg">${l}</span><span class="ls">${sh}</span></td>
@@ -1034,7 +1038,7 @@ function runsCard(m) {
     : `<div class="empty2">本場暫時未有任何預測記錄</div>`;
 
   return `<div class="card runs">
-    <h2 class="card-h">三次預測 <span class="sub">首預 → T-30 → T-5 · 只有 T-5 會落注</span></h2>
+    <h2 class="card-h">三次預測 <span class="sub">初盤 → T-30 → T-5 · 只有合資格時點會通知</span></h2>
     ${body}${pendHtml}</div>`;
 }
 
@@ -1087,7 +1091,7 @@ function runRow(x, isFinal, all) {
 
   return `<div class="run ${isFinal ? 'is-final' : ''}">
     <div class="run-l">
-      <span class="run-tag ${TAG[x.stage] || ''}">${x.stage}</span>
+      <span class="run-tag ${TAG[stageDisplay(x)] || ''}">${esc(stageDisplay(x))}</span>
       <span class="run-ts">${x.ts ? hkStamp(x.ts) : '—'}</span>
       <span class="run-min">${x.mins_to_ko != null ? '開賽前 ' + cdText(x.mins_to_ko) : ''}</span>
     </div>
@@ -1099,7 +1103,9 @@ function runRow(x, isFinal, all) {
       ${x.no_bet_reason ? `<div class="run-why">${esc(x.no_bet_reason)}</div>` : ''}
       ${delta}
       <div class="run-facts">${facts.map((t) => `<span>${t}</span>`).join('')}</div>
-      <div class="run-desc">${STAGE_DESC[x.stage] || ''}</div>
+      <div class="run-desc">${x.stage === '首預' && stageDisplay(x) === '舊首預'
+        ? '舊模型首預紀錄 · 並非固定初盤模型'
+        : (STAGE_DESC[x.stage] || '')}</div>
     </div>
   </div>`;
 }
@@ -2061,7 +2067,7 @@ function historyStageCompletenessCard(raw) {
       <span class="stage-completeness-health ${healthClass}">${healthText}</span>
     </div>
     <div class="stage-completeness-grid">${cards}</div>
-    <p class="stage-completeness-note">首預對已進入賽程嘅場次即時檢查；T-30 喺寫入窗口結束後、T-5 喺開賽後仍未記錄先列作逾期。DATA_MISSING 會當未完成並等待重試。</p>
+    <p class="stage-completeness-note">初盤對已進入賽程而且取得完整皇冠雙邊報價嘅場次即時建立；T-30 喺寫入窗口結束後、T-5 喺開賽後仍未記錄先列作逾期。DATA_MISSING 會當未完成並等待重試。</p>
   </section>`;
 }
 
@@ -2085,7 +2091,7 @@ function renderHistory() {
   ];
   const stageSummary = ['首預', 'T-30', 'T-5'].map((stage) => {
     const x = (s.by_stage || {})[stage] || {};
-    return `<span class="hist-stage"><b>${stage}</b> ${
+    return `<span class="hist-stage"><b>${stage === '首預' ? '初盤／舊首預' : stage}</b> ${
       x.accuracy == null ? '待累積' : `${pc(x.accuracy, 1)} (${x.hits}/${x.graded})`
     }</span>`;
   }).join('');
@@ -2104,7 +2110,12 @@ function renderHistory() {
     <td data-label="開賽" class="mono nowrap">${r.kickoff ? `${hkDay(r.kickoff)} ${hkClock(r.kickoff)}` : '—'}</td>
     <td data-label="賽事">${esc(r.home)} <span class="dim">v</span> ${esc(r.away)}
       <div class="cell-sub">${esc(r.league || '')}</div></td>
-    <td data-label="階段"><span class="fx-tag ${TAG[r.stage] || 'tag-wait'}">${esc(r.stage || '—')}</span>
+    <td data-label="階段"><span class="fx-tag ${TAG[stageDisplay(r)] || 'tag-wait'}">${esc(stageDisplay(r))}</span>
+      ${r.stage === '首預' && r.prediction_model === 'crown-opening-fixed-v1'
+        ? `<div class="cell-sub">${r.opening_model_status === 'market_plus_team_history'
+          ? '初盤 70%＋賽前歷史 30%'
+          : '初盤市場基準（球隊歷史樣本不足）'}</div>`
+        : ''}
       ${r.post_hoc_backfill ? `<div class="cell-sub recovery-audit-label">POST-HOC／BACKFILLED · ${((r.recovery || {}).recovery_kind === 'last_pre_t5_prediction_carry_forward') ? '最後 T-5 前預測承接（非真實 T-5）' : '已存 T-5 模型載荷回補（非原生 T-5）'} · 來源 ${esc((r.recovery || {}).source_stage || '已存階段')} · ${((r.recovery || {}).closing_odds_substitution) ? '含收市賠率替代 · ' : ''}不計主統計／不結算</div>` : ''}
       <div class="cell-sub mono">${r.predicted_at ? hkStamp(r.predicted_at) : '—'}</div></td>
     <td data-label="1X2 輔助"><b class="forecast-pick">${esc(r.forecast || '冇主客和預測')}</b>
@@ -2132,7 +2143,7 @@ function renderHistory() {
       ${historyRows(items) || `<tr class="history-empty-row"><td colspan="8" class="empty2">${empty}</td></tr>`}
     </table></div>`;
   const historyFilters = `<div class="history-stage-filters" role="group" aria-label="按預測階段篩選紀錄">
-    ${[['all', '全部'], ['首預', '首預'], ['T-30', 'T-30'], ['T-5', 'T-5'], ['T-5（事後回補）', '回補稽核']].map(([value, label]) =>
+    ${[['all', '全部'], ['首預', '初盤／舊首預'], ['T-30', 'T-30'], ['T-5', 'T-5'], ['T-5（事後回補）', '回補稽核']].map(([value, label]) =>
       `<button type="button" class="history-stage-filter ${HISTORY_STAGE === value ? 'is-on' : ''}"
         data-history-stage="${value}" aria-pressed="${HISTORY_STAGE === value}">${label}</button>`).join('')}
   </div>`;
@@ -2171,7 +2182,7 @@ function renderHistory() {
     <div class="history-stage-summary">${marketSummary}</div>
     ${historyStageMarketMatrix(s)}
     ${historyConsensusCards(s)}
-    <p class="mx-note">合併市場數字只計首預、T-30、T-5 原生獨立快照；事後回補只作稽核展示，絕不計入命中率、排名、學習、Telegram 或模擬注。下表按最新開賽時間優先排列。</p>
+    <p class="mx-note">新初盤使用首次完整皇冠盤及當時之前已核實嘅球隊賽果；舊首預會清楚分開標示。T-30、T-5 保留原有更新方法；事後回補只作稽核展示，絕不計入學習、Telegram 或模擬注。</p>
   </div>
   ${historyFilters}
   <div class="card"><h2 class="card-h">${HISTORY_STAGE === 'all' ? '全部紀錄' : `${HISTORY_STAGE} 紀錄`} <span class="sub">${rows.length} 筆 · 最新開賽時間優先</span></h2>

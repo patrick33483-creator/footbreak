@@ -39,6 +39,7 @@ from .matching import (
     bridge_titan_to_pinnapi,
     same_event_for_hkjc,
 )
+from .opening_model import apply_opening_model
 from .pinnapi import PinnapiClient
 from .period import in_current_period, in_future_round_update_window
 from .state import (
@@ -1489,6 +1490,11 @@ def _prediction(titan: dict[str, Any], bridge: BridgeMatch, h_match: dict[str, A
     corner_forecasts, corner_forecast_reasons = _hkjc_chl_forecasts(
         base["book_odds"]["hkjc_chl"]
     )
+    if stage == "首預":
+        # Opening predictions are Crown-native and fixed at the first complete
+        # quote.  HKJC corners are intentionally a later-information input.
+        corner_forecasts, corner_forecast_reasons = [], []
+        base["book_odds"]["hkjc_chl"] = []
     base["forecast_candidates"] = corner_forecasts
     if corner_forecast_reasons:
         base["corner_forecast_notes"] = corner_forecast_reasons
@@ -1538,6 +1544,15 @@ def _prediction(titan: dict[str, Any], bridge: BridgeMatch, h_match: dict[str, A
     base["book_odds"]["crown"] = crown
     base["source_snapshot_at"] = iso_hkt()
     if not crown:
+        if stage == "首預":
+            base.update({
+                "prediction_model": "crown-opening-fixed-v1",
+                "input_policy": "first_complete_crown_quote_plus_pre_cutoff_results",
+                "opening_model_status": "waiting_for_first_complete_crown_quote",
+                "late_inputs_used": [],
+                "no_bet_reason": "初盤尚未有完整皇冠雙邊報價，等待下一次重試。",
+            })
+            return base
         base.update(_fixture_baseline_prediction())
         base["status"] = "PREDICTION_READY"
         base["verdict"] = "已預測"
@@ -1589,6 +1604,44 @@ def _prediction(titan: dict[str, Any], bridge: BridgeMatch, h_match: dict[str, A
         if cached_t5_fallback:
             forecast["quote_status"] = "cached_t5_fallback"
             forecast["quote_fallback_source"] = _CACHED_T5_FALLBACK_SOURCE
+    if stage == "首預":
+        forecasts, opening_metadata = apply_opening_model(
+            fixture={
+                "id": event.id, "league": event.league,
+                "home": event.home, "away": event.away,
+            },
+            prices=crown,
+            forecasts=forecasts,
+            learning_db_path=os.environ.get("LEARNING_DB_PATH"),
+        )
+        base.update(opening_metadata)
+        base["crown_quote_source"] = "titan007-crown-id-3-opening-fixed"
+        base["crown_quote_status"] = "first_complete_immutable"
+        base["market_sources"]["HDC"] = "titan007-crown-id-3-opening-fixed"
+        base["market_sources"]["HIL"] = "titan007-crown-id-3-opening-fixed"
+        base["forecast_candidates"] = forecasts
+        if not forecasts:
+            base["status"] = "DATA_MISSING"
+            base["verdict"] = "等待完整初盤"
+            base["no_bet_reason"] = "皇冠初盤未形成完整雙邊市場，等待下一次重試。"
+            return base
+        base.update(_fixture_baseline_prediction(forecasts))
+        base["status"] = "PREDICTION_READY"
+        base["verdict"] = "初盤已預測"
+        base["conviction"] = max(
+            [float(row["conviction"]) for row in forecasts]
+            + [round(float(base["probability"]) * 100, 1)]
+        )
+        base["prediction_source"] = (
+            "crown_opening_market_plus_team_history"
+            if base.get("opening_model_status") == "market_plus_team_history"
+            else "crown_opening_market_history_insufficient"
+        )
+        base["edge_reference_status"] = "not_applicable_opening_model"
+        base["edge_reference_note"] = "初盤模型不讀取 Pinnacle、陣容、天氣或後段賠率。"
+        base["sharp_reference_available"] = False
+        base["no_bet_reason"] = None
+        return base
     all_forecasts = forecasts + corner_forecasts
     base["forecast_candidates"] = all_forecasts
     base["crown_quote_cached_forecast_only"] = used_cached_crown
