@@ -182,7 +182,14 @@ jobs:
           payload = json.loads(path.read_text(encoding="utf-8"))
           assert payload.get("report") == "direction_path_conditions"
           assert payload.get("mode") == "shadow_only_no_bets_no_notifications"
-          assert int((payload.get("summary") or {}).get("historical") or 0) == 471
+          assert int(payload.get("schema_version") or 0) >= 2
+          summary = payload.get("summary") or {}
+          assert int(summary.get("historical") or 0) > 0
+          assert "excluded_by_same_line_or_price_rule" in summary
+          definitions = payload.get("definitions") or {}
+          assert "三段主盤線位必須完全相同" in definitions.get("line_rule", "")
+          assert "嚴格 >1.70" in definitions.get("accumulation", "")
+          assert (payload.get("tracking") or {}).get("source") == "odds_radar_read_only"
           assert payload.get("conditions")
           print("direction-path JSON: OK")
           PY

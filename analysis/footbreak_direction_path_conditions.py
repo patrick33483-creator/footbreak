@@ -20,7 +20,7 @@ from typing import Any
 from analysis.direction_path_conditions import (
     ODDS_THRESHOLD,
     atomic_json,
-    build_report,
+    build_legacy_report,
     load_json,
     observation_key,
 )
@@ -208,7 +208,7 @@ def extract_footbreak(db: sqlite3.Connection) -> tuple[list[dict[str, Any]], dic
 
 
 def _build_report(observations: list[dict[str, Any]], diagnostics: dict[str, int]) -> dict[str, Any]:
-    report = build_report(observations)
+    report = build_legacy_report(observations)
     report["system"] = "footbreak"
     report["definitions"] = {
         "direction": "每個時點採用馬會模型當刻實際揀選方向",
