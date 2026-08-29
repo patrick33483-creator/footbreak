@@ -277,7 +277,15 @@ def _deadline_remaining(deadline: float) -> float:
 
 _MIN_DEADLINE_CALL_SECONDS = 0.25
 _TIMED_STAGE_COMMIT_RESERVE_SECONDS = 8.0
-_TIMED_STAGE_DIRECT_MAX_SECONDS = 8.0
+def _timed_stage_direct_max_seconds() -> float:
+    """Allow slow Crown ID=3 pages without consuming the final commit reserve."""
+    try:
+        configured = float(os.getenv("CROWN_TIMED_STAGE_DIRECT_MAX_SECONDS", "20"))
+    except ValueError:
+        configured = 20.0
+    return min(30.0, max(2.0, configured))
+
+
 _TIMED_STAGE_LOCK_WAIT_SECONDS = 2.0
 
 
@@ -563,7 +571,7 @@ def _collect_locked_direct_snapshots(
     remaining = _deadline_remaining(deadline)
     reserve = _timed_stage_commit_reserve(remaining)
     direct_window = min(
-        _TIMED_STAGE_DIRECT_MAX_SECONDS,
+        _timed_stage_direct_max_seconds(),
         max(0.0, remaining - reserve),
     )
     _timing.record(
@@ -602,7 +610,7 @@ def _collect_locked_direct_snapshots(
             child = context.Process(
                 target=_crown_snapshot_process,
                 args=(sender, config, match_id, min(
-                    _TIMED_STAGE_DIRECT_MAX_SECONDS,
+                    _timed_stage_direct_max_seconds(),
                     max(_MIN_DEADLINE_CALL_SECONDS, stop_at - time.monotonic()),
                 )),
             )
@@ -665,7 +673,7 @@ def _collect_same_id_bulk_fallback(
     remaining = _deadline_remaining(deadline)
     reserve = _timed_stage_commit_reserve(remaining)
     budget = min(
-        _TIMED_STAGE_DIRECT_MAX_SECONDS,
+        _timed_stage_direct_max_seconds(),
         max(0.0, remaining - reserve),
     )
     if budget < _MIN_DEADLINE_CALL_SECONDS:
