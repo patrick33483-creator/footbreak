@@ -120,6 +120,7 @@ jobs:
             --ledger /var/lib/footbreak/stage_engine_v2/ledger.json \
             --dashboard /var/www/stage_engine_v2/data.json \
             --sent-log /var/log/footbreak/stage-v2-sent.jsonl \
+            --native-queue-dir /var/lib/footbreak/crown/native_stage_projection_queue \
             --window-hours 48
           StandardOutput=append:/var/log/footbreak/stage-v2-tick.log
           StandardError=append:/var/log/footbreak/stage-v2-tick.log
