@@ -47,6 +47,9 @@ jobs:
           [Service]
           Environment=CROWN_TICK_PASS_DEADLINE_SECONDS=50
           Environment=CROWN_TIMED_STAGE_DIRECT_MAX_SECONDS=6
+          Environment=CROWN_NATIVE_STAGE_STORE_ENABLED=1
+          Environment=CROWN_NATIVE_STAGE_CUTOVER_ENABLED=1
+          Environment=CROWN_NATIVE_STAGE_DEFERRED_PROJECTION_ENABLED=1
           EOF
           install -d -m 0755 /etc/systemd/system/footbreak-tick.service.d
           cat > /etc/systemd/system/footbreak-tick.service.d/timed-stage-batch.conf <<'EOF'
