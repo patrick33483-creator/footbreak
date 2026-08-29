@@ -1,0 +1,434 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>皇冠系統V2 · 三階段細分</title>
+<style>
+:root {
+  --bg: #171614;
+  --surface: #1c1b19;
+  --surface-alt: #201f1d;
+  --border: #393836;
+  --text: #cdccca;
+  --muted: #8f8e89;
+  --faint: #64635f;
+  --accent: #4f98a3;
+  --accent-soft: #1f393d;
+  --warning: #d17a4f;
+  --success: #82b75f;
+  --danger: #d163a7;
+}
+* { box-sizing: border-box; }
+html { background: var(--bg); }
+body {
+  margin: 0;
+  padding: 24px;
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang HK", "Noto Sans CJK TC", sans-serif;
+}
+button, select { font: inherit; }
+a { color: inherit; }
+.skip {
+  position: absolute;
+  top: -60px;
+  left: 16px;
+  z-index: 10;
+  padding: 10px 14px;
+  background: var(--accent);
+  color: var(--bg);
+  border-radius: 6px;
+}
+.skip:focus { top: 12px; }
+.shell { width: min(1180px, 100%); margin: 0 auto; }
+.topline {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+}
+h1 { margin: 0; font-size: 24px; font-weight: 650; letter-spacing: -0.02em; }
+.sub { margin: 6px 0 0; color: var(--muted); }
+.badge, .status {
+  display: inline-flex;
+  align-items: center;
+  min-height: 25px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .04em;
+}
+.badge { background: var(--warning); color: #171614; }
+.nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 18px;
+  margin: 22px 0;
+  border-bottom: 1px solid var(--border);
+}
+.nav a {
+  min-height: 42px;
+  padding: 10px 0 8px;
+  color: var(--muted);
+  text-decoration: none;
+}
+.nav a:hover, .nav a:focus-visible { color: var(--text); }
+.nav a.active { color: var(--text); border-bottom: 2px solid var(--accent); }
+.notice {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 12px;
+  padding: 14px 16px;
+  border: 1px solid #58402f;
+  border-radius: 8px;
+  background: #241e19;
+}
+.notice strong { color: #e2a378; }
+.notice p { margin: 2px 0 0; color: var(--muted); }
+.summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin: 18px 0;
+}
+.kpi, .card {
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--surface);
+}
+.kpi { padding: 14px 16px; }
+.kpi span { color: var(--muted); font-size: 12px; }
+.kpi b {
+  display: block;
+  margin-top: 3px;
+  font-size: 25px;
+  font-variant-numeric: tabular-nums;
+}
+.controls {
+  display: flex;
+  align-items: end;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 14px;
+  margin-bottom: 16px;
+}
+.field { display: grid; gap: 5px; }
+.field label { color: var(--muted); font-size: 11px; }
+select, button {
+  min-height: 40px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+select {
+  min-width: 135px;
+  padding: 8px 34px 8px 10px;
+  background: var(--surface-alt);
+  color: var(--text);
+}
+button {
+  padding: 8px 14px;
+  background: var(--accent);
+  color: #101718;
+  cursor: pointer;
+  font-weight: 700;
+}
+button:hover { filter: brightness(1.08); }
+button:focus-visible, select:focus-visible, a:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+.count { margin-left: auto; align-self: center; color: var(--muted); }
+.list { display: grid; gap: 14px; }
+.condition { padding: 18px; }
+.condition-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 14px;
+}
+.eyebrow { color: var(--accent); font-size: 11px; font-weight: 700; letter-spacing: .06em; }
+.condition h2 { margin: 4px 0 0; font-size: 18px; }
+.path { color: #e1e0dc; font-variant-numeric: tabular-nums; }
+.status-candidate { color: var(--success); background: #24351f; }
+.status-watch { color: #e4a477; background: #3a291f; }
+.status-control { color: #b6b5b0; background: #2c2b28; }
+.status-insufficient { color: var(--muted); background: #292825; }
+.note { margin: 10px 0 14px; color: var(--muted); }
+.version {
+  margin: 0 0 14px;
+  padding: 11px 12px;
+  border-radius: 7px;
+  background: var(--surface-alt);
+}
+.version-top { display: flex; justify-content: space-between; gap: 12px; }
+.track {
+  height: 5px;
+  margin-top: 8px;
+  overflow: hidden;
+  border-radius: 99px;
+  background: #343330;
+}
+.track i { display: block; height: 100%; background: var(--accent); }
+.metrics {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 1px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--border);
+}
+.metric { min-width: 0; padding: 11px; background: var(--surface-alt); }
+.metric span { display: block; color: var(--muted); font-size: 11px; }
+.metric b {
+  display: block;
+  margin-top: 3px;
+  font-size: 15px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.metric.wilson b { color: #76b7c0; }
+.state {
+  padding: 38px 20px;
+  text-align: center;
+  color: var(--muted);
+}
+.state.error { color: #e08ab8; }
+.definitions { margin-top: 18px; padding: 16px 18px; }
+.definitions h2 { margin: 0 0 8px; font-size: 15px; }
+.definitions ul { margin: 0; padding-left: 20px; color: var(--muted); }
+.definitions li + li { margin-top: 5px; }
+footer { margin-top: 20px; color: var(--faint); font-size: 11px; text-align: center; }
+@media (max-width: 880px) {
+  .summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+@media (max-width: 560px) {
+  body { padding: 16px; }
+  .topline { display: block; }
+  .topline .badge { margin-top: 10px; }
+  .notice { grid-template-columns: 1fr; gap: 3px; }
+  .summary { gap: 8px; }
+  .kpi { padding: 12px; }
+  .controls { align-items: stretch; }
+  .field, .field select, button { width: 100%; }
+  .count { width: 100%; margin-left: 0; }
+  .condition { padding: 14px; }
+  .condition-head { display: block; }
+  .condition-head .status { margin-top: 9px; }
+  .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+</style>
+</head>
+<body>
+<a class="skip" href="#main">跳到主要內容</a>
+<div class="shell">
+  <header>
+    <div class="topline">
+      <div>
+        <h1>皇冠系統V2 · 三階段細分</h1>
+        <p class="sub">初盤方向 → T-30方向 → T-5方向</p>
+      </div>
+      <span class="badge">SHADOW · 純研究</span>
+    </div>
+    <nav class="nav" aria-label="V2 導航">
+      <a href="./">即時 dashboard</a>
+      <a href="./history.html">歷史紀錄</a>
+      <a href="./conditions.html" class="active" aria-current="page">三階段細分</a>
+    </nav>
+  </header>
+
+  <main id="main">
+    <section class="notice" aria-label="隔離模式說明">
+      <strong>只累積及統計</strong>
+      <p>完整三階段路徑就會入組。Wilson 下限及賠率門檻只作評估，唔會阻止場次累積，亦唔會自動投注或發 Telegram。</p>
+    </section>
+
+    <section class="summary" id="summary" aria-label="數據摘要">
+      <div class="kpi"><span>歷史場次</span><b>—</b></div>
+      <div class="kpi"><span>新前瞻</span><b>—</b></div>
+      <div class="kpi"><span>Pending</span><b>—</b></div>
+      <div class="kpi"><span>細分路徑</span><b>—</b></div>
+    </section>
+
+    <section class="controls card" aria-label="篩選條件">
+      <div class="field">
+        <label for="provider">賠率來源</label>
+        <select id="provider">
+          <option value="all">全部來源</option>
+          <option value="hkjc">HKJC 馬會</option>
+          <option value="pinnacle">Pinnacle 平博</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="market">市場</label>
+        <select id="market">
+          <option value="all">全部市場</option>
+          <option value="OU">入球大細</option>
+          <option value="AH">亞洲讓球</option>
+          <option value="COU">角球大細</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="status">狀態</label>
+        <select id="status">
+          <option value="featured">候選／觀察／對照</option>
+          <option value="all">包括樣本不足</option>
+          <option value="candidate">候選</option>
+          <option value="watch">觀察</option>
+          <option value="control">對照</option>
+          <option value="insufficient">樣本不足</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="cohort">統計數據</label>
+        <select id="cohort">
+          <option value="historical">歷史基線</option>
+          <option value="prospective">新前瞻</option>
+          <option value="combined">合併參考</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="price">賠率視圖</label>
+        <select id="price">
+          <option value="all_odds">全部賠率</option>
+          <option value="odds_gte_1_70">T-5 賠率 ≥1.70</option>
+        </select>
+      </div>
+      <button id="reload" type="button">重新載入</button>
+      <span class="count" id="count" aria-live="polite">載入中…</span>
+    </section>
+
+    <div id="list" class="list" aria-live="polite">
+      <div class="card state">正在讀取 V2 條件帳本…</div>
+    </div>
+
+    <section class="definitions card">
+      <h2>統計口徑</h2>
+      <ul>
+        <li>每個時點以同一盤口雙邊 decimal odds 較低的一方定義方向。</li>
+        <li>完整路徑到 T-5 才成立，按 T-5 方向、線位及實際賠率結算。</li>
+        <li>贏及半贏計命中；輸及半輸計不中；走盤不計入 decided。</li>
+        <li>每 20 個新前瞻 decided observations 完成一個證據版本。</li>
+      </ul>
+    </section>
+  </main>
+  <footer id="updated">V2 本機資料，唔使用 Perplexity 點數</footer>
+</div>
+
+<script>
+const state = { payload: null };
+const labels = {
+  candidate: "候選",
+  watch: "觀察",
+  control: "對照",
+  insufficient: "樣本不足"
+};
+
+function esc(value) {
+  return String(value ?? "").replace(/[&<>"']/g, c => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+  })[c]);
+}
+function number(value) {
+  return Number.isFinite(Number(value)) ? Number(value) : 0;
+}
+function pct(value, digits = 1) {
+  return value == null ? "—" : `${(Number(value) * 100).toFixed(digits)}%`;
+}
+function metric(label, value, cls = "") {
+  return `<div class="metric ${cls}"><span>${label}</span><b>${value}</b></div>`;
+}
+function validate(payload) {
+  if (!payload || payload.report !== "direction_path_conditions") return "報告格式不符";
+  if (payload.mode !== "shadow_only_no_bets_no_notifications") return "隔離模式設定不符";
+  if (!payload.summary || !Array.isArray(payload.conditions)) return "報告欠缺統計資料";
+  return "";
+}
+function renderSummary(summary) {
+  document.getElementById("summary").innerHTML = [
+    ["歷史場次", summary.historical],
+    ["新前瞻", summary.prospective],
+    ["Pending", summary.pending],
+    ["細分路徑", summary.condition_count]
+  ].map(([label, value]) => `<div class="kpi"><span>${label}</span><b>${number(value)}</b></div>`).join("");
+}
+function renderCard(item, cohort, price) {
+  const group = item[cohort] || {};
+  const m = group[price] || {};
+  const versions = (item.prospective || {}).versions || {};
+  const progress = number(versions.progress);
+  const required = number(versions.required) || 20;
+  const title = `${esc(item.provider).toUpperCase()} · ${esc(item.market)} · <span class="path">${esc(item.direction_path)}</span>`;
+  return `<article class="condition card">
+    <div class="condition-head">
+      <div><div class="eyebrow">${esc(item.id)}</div><h2>${title}</h2></div>
+      <span class="status status-${esc(item.status)}">${labels[item.status] || "觀察"}</span>
+    </div>
+    <p class="note">${esc(item.note || "")}</p>
+    <div class="version">
+      <div class="version-top"><span>新前瞻 V${number(versions.active_version) || 1}</span><b>${progress} / ${required}</b></div>
+      <div class="track"><i style="width:${Math.min(100, progress / required * 100).toFixed(1)}%"></i></div>
+    </div>
+    <div class="metrics">
+      ${metric("入組場次", number(m.observations))}
+      ${metric("命中", `${number(m.hits)} / ${number(m.decided)}`)}
+      ${metric("命中率", pct(m.hit_rate))}
+      ${metric("Wilson 95% 下限", pct((m.wilson_95 || {}).low), "wilson")}
+      ${metric("實際 ROI", pct(m.roi, 2))}
+      ${metric("Pending", number(m.pending))}
+    </div>
+  </article>`;
+}
+function render() {
+  const payload = state.payload;
+  if (!payload) return;
+  const provider = document.getElementById("provider").value;
+  const market = document.getElementById("market").value;
+  const status = document.getElementById("status").value;
+  const cohort = document.getElementById("cohort").value;
+  const price = document.getElementById("price").value;
+  const rows = payload.conditions.filter(item =>
+    (provider === "all" || item.provider === provider) &&
+    (market === "all" || item.market === market) &&
+    (status === "all" || (status === "featured" ? item.status !== "insufficient" : item.status === status))
+  );
+  document.getElementById("count").textContent = `顯示 ${rows.length} / ${payload.conditions.length} 個路徑`;
+  document.getElementById("list").innerHTML = rows.length
+    ? rows.map(item => renderCard(item, cohort, price)).join("")
+    : `<div class="card state">目前篩選組合冇符合路徑。</div>`;
+}
+async function load() {
+  const list = document.getElementById("list");
+  list.innerHTML = `<div class="card state">正在讀取 V2 條件帳本…</div>`;
+  document.getElementById("count").textContent = "載入中…";
+  try {
+    const response = await fetch(`./direction-path-conditions.json?ts=${Date.now()}`, { cache: "no-store" });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const payload = await response.json();
+    const error = validate(payload);
+    if (error) throw new Error(error);
+    state.payload = payload;
+    renderSummary(payload.summary);
+    render();
+    const stamp = payload.generated_at ? new Date(payload.generated_at).toLocaleString("zh-HK", {
+      timeZone: "Asia/Hong_Kong", hour12: false
+    }) : "—";
+    document.getElementById("updated").textContent = `V2 本機資料 · 更新 ${stamp} · 唔使用 Perplexity 點數`;
+  } catch (error) {
+    state.payload = null;
+    list.innerHTML = `<div class="card state error">載入失敗：${esc(error.message)}。伺服器會按排程自動重試。</div>`;
+    document.getElementById("count").textContent = "載入失敗";
+  }
+}
+for (const id of ["provider", "market", "status", "cohort", "price"]) {
+  document.getElementById(id).addEventListener("change", render);
+}
+document.getElementById("reload").addEventListener("click", load);
+load();
+</script>
+</body>
+</html>
