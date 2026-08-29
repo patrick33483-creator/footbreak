@@ -28,6 +28,28 @@ from .writer import DEFAULT_LEDGER_PATH, already_fired, load_ledger, record_stag
 DEFAULT_DASHBOARD_PATH = Path("/var/www/stage_engine_v2/data.json")
 
 
+def _native_payload_for(
+    fx: Any,
+    stage: str,
+    payloads: dict[tuple[str, str], dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Match only explicit IDs carried by the same Crown fixture card."""
+    identities = [fx.id]
+    raw = fx.raw if isinstance(fx.raw, dict) else {}
+    for key in (
+        "match_id", "id", "titan_match_id", "native_fixture_id",
+        "hkjc_match_id", "pinnapi_event_id",
+    ):
+        value = raw.get(key)
+        if value:
+            identities.append(str(value))
+    for match_id in dict.fromkeys(identities):
+        payload = payloads.get((match_id, stage))
+        if payload is not None:
+            return payload
+    return None
+
+
 def _parse_now(raw: str | None) -> datetime:
     if raw is None:
         return datetime.now(timezone.utc)
@@ -71,7 +93,7 @@ def _run_tick(
                 fx,
                 stage,
                 now_utc=now_utc,
-                native_payload=native_payloads.get((fx.id, stage)),
+                native_payload=_native_payload_for(fx, stage, native_payloads),
             )
             if pred_body is None:
                 skipped_no_prediction.append(f"{fx.id}:{stage}")

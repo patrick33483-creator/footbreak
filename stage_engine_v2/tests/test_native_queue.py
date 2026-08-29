@@ -2,6 +2,9 @@ import json
 from pathlib import Path
 
 from stage_engine_v2.native_queue import load_native_payloads
+from stage_engine_v2.cli import _native_payload_for
+from stage_engine_v2.fixtures import Fixture, HKT
+from datetime import datetime, timezone
 
 
 def _write(path: Path, value: dict) -> None:
@@ -55,3 +58,21 @@ def test_rejects_unavailable_mismatch_opening_and_corrupt_rows(tmp_path: Path):
     })
     (tmp_path / "corrupt.json").write_text("{", encoding="utf-8")
     assert load_native_payloads(tmp_path) == {}
+
+
+def test_explicit_titan_alias_matches_native_payload():
+    kickoff = datetime(2026, 8, 29, 20, 0, tzinfo=HKT)
+    fixture = Fixture(
+        id="native-F1",
+        league="L",
+        home="H",
+        away="A",
+        kickoff_utc=kickoff.astimezone(timezone.utc),
+        kickoff_hkt=kickoff,
+        source="unknown",
+        raw={"native_fixture_id": "native-F1", "match_id": "titan-99"},
+    )
+    payload = {"match_id": "titan-99", "stage": "T-30"}
+    assert _native_payload_for(
+        fixture, "T-30", {("titan-99", "T-30"): payload}
+    ) is payload
