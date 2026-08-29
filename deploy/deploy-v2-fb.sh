@@ -22,7 +22,8 @@ ls -R "$STAGE"
 
 echo "===== 2. 部署 Python 模組 ====="
 mkdir -p "$CODE_DST"
-cp "$CODE_SRC/__init__.py" "$CODE_SRC/__main__.py" "$CODE_SRC/predictor_fb.py" "$CODE_SRC/cli_fb.py" "$CODE_DST/"
+cp "$CODE_SRC/__init__.py" "$CODE_SRC/__main__.py" "$CODE_SRC/predictor_fb.py" \
+   "$CODE_SRC/fixtures_fb.py" "$CODE_SRC/cli_fb.py" "$CODE_DST/"
 mkdir -p "$ANALYSIS_DST"
 cp "$ANALYSIS_SRC/footbreak_direction_path_conditions.py" \
    "$ANALYSIS_SRC/direction_path_conditions.py" \
@@ -44,7 +45,9 @@ ls -l /var/www/footbreak/data.json
 
 echo "===== 5. Dry-run tick 驗證 code 正常 ====="
 cd /opt/footbreak
-DRY=$(PYTHONPATH=/opt/footbreak ./.venv/bin/python3 -m stage_engine_v2_fb dry-run --data /var/www/footbreak/data.json 2>&1)
+DRY=$(PYTHONPATH=/opt/footbreak ./.venv/bin/python3 -m stage_engine_v2_fb dry-run \
+  --data /var/www/footbreak/data.json \
+  --source-ledger /opt/footbreak/system/sim_ledger.json 2>&1)
 echo "$DRY" | python3 -c "import sys, json; d=json.loads(sys.stdin.read()); print(f'dry-run OK: fixtures={d[\"fixtures_upcoming\"]}, fired={d[\"fired_count\"]}, elapsed={d[\"elapsed_seconds\"]:.3f}s'); s=d.get('fired',[]); p=sum(1 for x in s if x.get('publish')); print(f'  publish approved: {p}, gate rejected: {len(s)-p}')" || { echo 'DRY-RUN FAILED:'; echo "$DRY" | head -20; exit 1; }
 mkdir -p /var/lib/footbreak/footbreak-direction-path-conditions
 echo "===== 5b. 直接生成三階段條件基線 ====="

@@ -22,6 +22,7 @@ jobs:
           scp stage_engine_v2_fb/__init__.py \
               stage_engine_v2_fb/__main__.py \
               stage_engine_v2_fb/predictor_fb.py \
+              stage_engine_v2_fb/fixtures_fb.py \
               stage_engine_v2_fb/cli_fb.py \
               stage_engine_v2_fb/index.html \
               stage_engine_v2_fb/conditions.html \

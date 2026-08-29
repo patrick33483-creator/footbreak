@@ -24,11 +24,12 @@ from typing import Any
 
 from stage_engine_v2.fixtures import refresh_fixtures, HKT
 from stage_engine_v2.publisher import decide_publish
-from stage_engine_v2.scheduler import due_stages
+from stage_engine_v2.scheduler import ALL_STAGES, due_stages
 from stage_engine_v2.telegram import send_stage
 from stage_engine_v2.writer import already_fired, load_ledger, record_stage, save_ledger
 
 from .predictor_fb import build_prediction_fb
+from .fixtures_fb import DEFAULT_SOURCE_LEDGER, load_ledger_fixtures
 
 
 DEFAULT_FB_DATA_PATH = Path("/var/www/footbreak/data.json")
@@ -59,19 +60,62 @@ def _run_tick(
     now_utc: datetime,
     window_hours: int,
     dry_run: bool,
+    source_ledger_path: Path = DEFAULT_SOURCE_LEDGER,
 ) -> dict[str, Any]:
     started_at = datetime.now(timezone.utc)
-    # Reuse crown fixtures loader —— schema 相同（都係 legacy data.json 有 matches list）
-    fixtures = refresh_fixtures(
-        crown_data_path=data_path,
+    # The public dashboard projection can be stale even while the durable
+    # Footbreak ledger continues collecting exact timed snapshots. Read the
+    # durable source first; retain public data.json only as a safe fallback.
+    fixtures = load_ledger_fixtures(
+        source_ledger_path,
         window_hours=window_hours,
+        history_hours=48,
         now_utc=now_utc,
     )
+    if not fixtures:
+        fixtures = refresh_fixtures(
+            crown_data_path=data_path,
+            window_hours=window_hours,
+            now_utc=now_utc,
+        )
     ledger = load_ledger(ledger_path)
     fired: list[dict[str, Any]] = []
     skipped_no_prediction: list[str] = []
     for fx in fixtures:
         done = already_fired(ledger, fx.id)
+        # Projection catch-up is safe for a persisted immutable stage. It does
+        # not collect or reconstruct old odds; it only copies an exact stage
+        # that the native ledger had already committed before kickoff.
+        available = {
+            str(row.get("stage"))
+            for row in (fx.raw.get("stages") or [])
+            if isinstance(row, dict) and row.get("stage")
+        }
+        for stage in ALL_STAGES:
+            if stage in done or stage not in available:
+                continue
+            pred_body = build_prediction_fb(fx, stage, now_utc=now_utc)
+            if pred_body is None:
+                skipped_no_prediction.append(f"{fx.id}:{stage}")
+                continue
+            pred_body["stage"] = stage
+            pred_body["projection_catchup"] = True
+            pred_body["publish_decision"] = False
+            pred_body["publish_reason"] = "persisted_native_stage_projection_catchup"
+            record_stage(ledger, fx, stage, pred_body)
+            done.add(stage)
+            fired.append({
+                "fixture_id": fx.id,
+                "stage": stage,
+                "publish": False,
+                "publish_reason": "persisted_native_stage_projection_catchup",
+                "notify": {
+                    "sent": False,
+                    "shadow": False,
+                    "skipped": True,
+                    "reason": "historical_projection_catchup",
+                },
+            })
         for stage in due_stages(fx, now_utc, done):
             pred_body = build_prediction_fb(fx, stage, now_utc=now_utc)
             if pred_body is None:
@@ -184,6 +228,11 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--now", default=None,
                         help="覆蓋現在時間（ISO 格式，缺 tz 當 HKT）")
         sp.add_argument("--window-hours", type=int, default=48)
+        sp.add_argument(
+            "--source-ledger",
+            default=str(DEFAULT_SOURCE_LEDGER),
+            help="Durable Footbreak source ledger",
+        )
     sp = sub.add_parser("dashboard")
     sp.add_argument("--ledger", default=str(DEFAULT_FB_LEDGER_PATH))
     sp.add_argument("--dashboard", default=str(DEFAULT_FB_DASHBOARD_PATH))
@@ -204,6 +253,7 @@ def main(argv: list[str] | None = None) -> int:
             now_utc=_parse_now(args.now),
             window_hours=args.window_hours,
             dry_run=(args.cmd == "dry-run"),
+            source_ledger_path=Path(args.source_ledger),
         )
         json.dump(result, sys.stdout, ensure_ascii=False, indent=2)
         sys.stdout.write("\n")

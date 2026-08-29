@@ -8,6 +8,7 @@ Environment=STAGE_V2_TELEGRAM_ENABLED=0
 Environment=PYTHONPATH=/opt/footbreak
 ExecStart=/opt/footbreak/.venv/bin/python3 -m stage_engine_v2_fb tick \
   --data /var/www/footbreak/data.json \
+  --source-ledger /opt/footbreak/system/sim_ledger.json \
   --ledger /var/lib/footbreak/stage_engine_v2_fb/ledger.json \
   --dashboard /var/www/stage_engine_v2_fb/data.json \
   --sent-log /var/log/footbreak/stage-v2-fb-sent.jsonl \
