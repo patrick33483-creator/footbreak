@@ -39,6 +39,7 @@ jobs:
           V2_PATH = Path("/var/lib/footbreak/stage_engine_v2/ledger.json")
           HISTORY_PATH = Path("/var/lib/footbreak/crown/prediction_history.json")
           STAGES = ("首預", "T-30", "T-5")
+          DISPLAY_STAGE = {"首預": "初盤預測", "T-30": "T-30", "T-5": "T-5"}
 
           def sha256(path):
               digest = hashlib.sha256()
@@ -188,7 +189,7 @@ jobs:
               if a == b == c:
                   return "全程同向"
               if a != b and b == c:
-                  return "首預後反向、維持至T-5"
+                  return "初盤預測後反向、維持至T-5"
               if a == b and b != c:
                   return "T-5臨場反向"
               if a == c and a != b:
@@ -359,12 +360,17 @@ jobs:
               "read_only_hash_unchanged": unchanged,
               "file_state_before": before,
               "file_state_after": after,
-              "coverage": dict(coverage),
+              "coverage": {
+                  DISPLAY_STAGE.get(key, key): value
+                  for key, value in coverage.items()
+              },
               "stage_market_counts": {
-                  stage: dict(counts) for stage, counts in stage_market_counts.items()
+                  DISPLAY_STAGE[stage]: dict(counts)
+                  for stage, counts in stage_market_counts.items()
               },
               "stage_direction_counts": {
-                  stage: dict(counts) for stage, counts in stage_direction_counts.items()
+                  DISPLAY_STAGE[stage]: dict(counts)
+                  for stage, counts in stage_direction_counts.items()
               },
               "top_market_paths": market_paths.most_common(15),
               "top_direction_paths_same_market": direction_paths.most_common(30),
@@ -374,6 +380,7 @@ jobs:
               "path_stats_n_ge_10": path_stats,
               "late_flip_head_to_head": dict(late_flip_head_to_head),
               "method_notes": [
+                  "The source JSON key 首預 is displayed and interpreted only as 初盤預測.",
                   "Direction means 主/客 for handicap and 大/細 for totals, parsed from V2 lead_label.",
                   "A market change is reported separately and is never counted as a direction flip.",
                   "Settlement uses the verified score joined by titan_match_id/match_id and the exact V2 displayed line and odds.",
@@ -382,6 +389,11 @@ jobs:
                   "This is a retrospective analysis of V2 captures, not an independent V2 model backtest.",
               ],
           }
+          for section_name in (
+              "category_stats", "market_category_stats_n_ge_10"
+          ):
+              for stats in report[section_name].values():
+                  stats["初盤預測"] = stats.pop("首預")
           print("CROWN_V2_DIRECTION_REPORT_BEGIN")
           print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
           print("CROWN_V2_DIRECTION_REPORT_END")
