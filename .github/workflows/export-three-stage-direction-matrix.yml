@@ -95,6 +95,72 @@ jobs:
                   },
               })
           report["audit_funnel"] = rows
+          def compact_example(row):
+              same_line = normalized_line(row) is not None
+              if qualifies(row, 1.70):
+                  reason = "有效：三段同線，三段方向賠率均嚴格 >1.70"
+              elif not same_line:
+                  reason = "無效：三段線位不一致"
+              else:
+                  failed = [
+                      stage
+                      for stage in ("initial", "T30", "T5")
+                      if float((row.get(stage) or {}).get("odds") or 0) <= 1.70
+                  ]
+                  reason = "無效：" + "、".join(failed) + " 方向賠率 ≤1.70"
+              return {
+                  "fixture_id": row.get("fixture_id"),
+                  "kickoff": row.get("kickoff"),
+                  "home_team": row.get("home_team"),
+                  "away_team": row.get("away_team"),
+                  "provider": row.get("provider"),
+                  "direction_path": row.get("direction_path"),
+                  "initial": row.get("initial"),
+                  "T30": row.get("T30"),
+                  "T5": row.get("T5"),
+                  "settlement": row.get("settlement"),
+                  "eligible": qualifies(row, 1.70),
+                  "reason": reason,
+              }
+
+          ah_rows = [
+              row
+              for row in state.get("observations", {}).values()
+              if row.get("market") == "AH"
+              and row.get("home_team")
+              and row.get("away_team")
+          ]
+          valid_rows = sorted(
+              [row for row in ah_rows if qualifies(row, 1.70)],
+              key=lambda row: int(row.get("kickoff") or 0),
+              reverse=True,
+          )
+          different_line_rows = sorted(
+              [
+                  row
+                  for row in ah_rows
+                  if normalized_line(row) is None
+              ],
+              key=lambda row: int(row.get("kickoff") or 0),
+              reverse=True,
+          )
+          low_price_rows = sorted(
+              [
+                  row
+                  for row in ah_rows
+                  if normalized_line(row) is not None
+                  and not qualifies(row, 1.70)
+              ],
+              key=lambda row: int(row.get("kickoff") or 0),
+              reverse=True,
+          )
+          report["audit_examples"] = {
+              "valid": [compact_example(row) for row in valid_rows[:3]],
+              "invalid": [
+                  *[compact_example(row) for row in different_line_rows[:2]],
+                  *[compact_example(row) for row in low_price_rows[:1]],
+              ],
+          }
           (root / "report.json").write_text(
               json.dumps(report, ensure_ascii=False, sort_keys=True) + "\n",
               encoding="utf-8",
