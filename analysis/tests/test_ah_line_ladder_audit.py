@@ -298,3 +298,7 @@ def test_data_availability_distinguishes_line_movement_and_missing_stages() -> N
 
     hkjc_avail = report["data_availability"]["hkjc"]
     assert hkjc_avail["raw_any_ah_quote_fixtures"] == 0
+
+    pattern = report["stage_pattern_breakdown"]["pinnacle"]["counts"]
+    assert pattern["齊三個時點"] == 2  # fixture-1 and fixture-2 (line moved but all 3 stages present)
+    assert pattern["缺:T5"] == 1  # fixture-3 is missing only T5

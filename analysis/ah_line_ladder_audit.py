@@ -299,6 +299,32 @@ def run(db: sqlite3.Connection, threshold: float) -> dict[str, Any]:
         for provider in ("hkjc", "pinnacle")
     }
 
+    stage_pattern_breakdown: dict[str, dict[str, dict[str, int]]] = {}
+    for provider in ("hkjc", "pinnacle"):
+        fixtures_with_quotes = any_ah_fixtures.get(provider, set())
+        pattern_counts: dict[str, int] = collections.Counter()
+        pattern_examples: dict[str, list[dict[str, Any]]] = collections.defaultdict(list)
+        for match_id in fixtures_with_quotes:
+            present = stage_presence.get((match_id, provider), set())
+            missing = [stage for stage in STAGES if stage not in present]
+            pattern = "齊三個時點" if not missing else "缺:" + "+".join(missing)
+            pattern_counts[pattern] += 1
+            if len(pattern_examples[pattern]) < 5 and match_id in metadata:
+                meta = metadata[match_id]
+                pattern_examples[pattern].append(
+                    {
+                        "fixture_id": match_id,
+                        "home_team": meta["home_team"],
+                        "away_team": meta["away_team"],
+                        "kickoff": meta["kickoff"],
+                        "stages_present": sorted(present),
+                    }
+                )
+        stage_pattern_breakdown[provider] = {
+            "counts": dict(pattern_counts),
+            "examples": {k: v for k, v in pattern_examples.items()},
+        }
+
     conditions = []
     grouped: dict[tuple[str, str, float], list[dict[str, Any]]] = collections.defaultdict(list)
     for row in eligible:
@@ -416,6 +442,7 @@ def run(db: sqlite3.Connection, threshold: float) -> dict[str, Any]:
         },
         "provider_summary": provider_summary,
         "data_availability": data_availability,
+        "stage_pattern_breakdown": stage_pattern_breakdown,
         "path_probability": path_probability,
         "line_path_probability": line_path_probability,
         "conditions": conditions,
