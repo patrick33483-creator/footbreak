@@ -275,6 +275,29 @@ def test_margin_and_odds_level_summary_report_per_provider_per_stage() -> None:
     assert odds_row["avg_selected_odds"] == 1.80
 
 
+def test_odds_drift_breakdown_handles_side_switch_paths() -> None:
+    db = make_db()
+    db.execute(
+        "INSERT INTO matches VALUES ('fixture-1', 2000, 'Home Team', 'Away Team')"
+    )
+    db.execute("INSERT INTO research_results VALUES ('fixture-1', 2, 1)")
+    # initial selects Under (cheaper), but T30/T5 flip to Over -> path U→O→O.
+    # T5 side is O, so the gap must compare O's price at initial (1.98, via
+    # other_odds) against O's price at T5 (1.80): gap = 0.18.
+    add_pair(db, stage="initial", line="2.5", over_odds=1.98, under_odds=1.90, captured_at=1000)
+    add_pair(db, stage="T30", line="2.5", over_odds=1.85, under_odds=1.95, captured_at=1100)
+    add_pair(db, stage="T5", line="2.5", over_odds=1.80, under_odds=2.00, captured_at=1200)
+
+    report = AUDIT.run(db, 1.70)
+    row = next(
+        r for r in report["odds_drift_breakdown"]
+        if r["provider"] == "pinnacle" and r["direction_path"] == "U→O→O"
+    )
+    assert row["avg_gap"] == 0.18
+    assert row["avg_initial_odds"] == 1.98
+    assert row["avg_t5_odds"] == 1.80
+
+
 def test_data_availability_distinguishes_line_movement_and_missing_stages() -> None:
     db = make_db()
     # fixture-1: same line at all 3 stages, above threshold -> counts everywhere.

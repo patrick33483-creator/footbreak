@@ -44,6 +44,11 @@ def bucket_drift(gap: float) -> str:
 BUCKET_ORDER = ["收縮>=0.20", "收縮0.10-0.20", "收縮0.05-0.10", "收縮<0.05", "持平或拉闊"]
 
 
+def side_odds(stage: dict[str, Any], side: str) -> float:
+    """Odds quoted for `side` at this stage, whether or not it was the selected side."""
+    return stage["odds"] if stage["side"] == side else stage["other_odds"]
+
+
 def line_number(value: Any) -> float | None:
     text = str(value or "").strip()
     if "/" in text:
@@ -391,13 +396,19 @@ def run(db: sqlite3.Connection, threshold: float) -> dict[str, Any]:
         for (provider, path), group in sorted(path_groups.items())
     ]
 
+    # Generalized to every direction_path (not just pure O→O→O / U→U→U): the gap always
+    # compares the *T5-side* price at initial vs at T5, using `other_odds` to look up that
+    # side's price at initial when the selected side switched along the way.
     drift_groups: dict[tuple[str, str, str], list[dict[str, Any]]] = collections.defaultdict(list)
     outcome_drift_groups: dict[tuple[str, str, str], list[float]] = collections.defaultdict(list)
     for row in eligible:
         path = row["direction_path"]
-        if path not in ("O→O→O", "U→U→U"):
+        t5_side = row["T5"]["side"]
+        if t5_side == "D":
+            # No well-defined single side to price at initial when the market
+            # closes level -- these are already covered by level_breakdown.
             continue
-        gap = round(row["initial"]["odds"] - row["T5"]["odds"], 4)
+        gap = round(side_odds(row["initial"], t5_side) - row["T5"]["odds"], 4)
         bucket = bucket_drift(gap)
         drift_groups[(row["provider"], path, bucket)].append(row)
         if row.get("actual_result") is not None:
@@ -408,8 +419,14 @@ def run(db: sqlite3.Connection, threshold: float) -> dict[str, Any]:
             "provider": provider,
             "direction_path": path,
             "bucket": bucket,
-            "avg_gap": round(sum(r["initial"]["odds"] - r["T5"]["odds"] for r in group) / len(group), 4),
-            "avg_initial_odds": round(sum(r["initial"]["odds"] for r in group) / len(group), 4),
+            "avg_gap": round(
+                sum(side_odds(r["initial"], r["T5"]["side"]) - r["T5"]["odds"] for r in group)
+                / len(group),
+                4,
+            ),
+            "avg_initial_odds": round(
+                sum(side_odds(r["initial"], r["T5"]["side"]) for r in group) / len(group), 4
+            ),
             "avg_t5_odds": round(sum(r["T5"]["odds"] for r in group) / len(group), 4),
             **outcome_probability(group),
         }
