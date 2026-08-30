@@ -91,6 +91,24 @@ def actual_cover_side(line: float, home_score: int, away_score: int) -> str:
     return "H" if total > 0 else "A"
 
 
+def outcome_probability(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """不看方向是否命中，只看實際賽果貼線情況：主開出/走盤/客開出。"""
+    settled = [row for row in rows if row.get("actual_result")]
+    counts = collections.Counter(row["actual_result"] for row in settled)
+    total = len(settled)
+    labels = ["主開出", "走盤", "客開出"]
+    return {
+        "observations": len(rows),
+        "unique_fixtures": len({row["fixture_id"] for row in rows}),
+        "settled": total,
+        "pending": len(rows) - total,
+        "counts": {label: counts.get(label, 0) for label in labels},
+        "probability": {
+            label: (counts.get(label, 0) / total if total else None) for label in labels
+        },
+    }
+
+
 def metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
     settled = [row for row in rows if row.get("settlement")]
     decided = [row for row in settled if row["settlement"] in DECIDED]
@@ -212,6 +230,17 @@ def run(db: sqlite3.Connection, threshold: float) -> dict[str, Any]:
             **{stage: stages[stage] for stage in STAGES},
         }
         has_score = meta["home_score"] is not None and meta["away_score"] is not None
+        if has_score:
+            cover_neutral = actual_cover_side(
+                line, int(meta["home_score"]), int(meta["away_score"])
+            )
+            observation["actual_result"] = {
+                "H": "主開出",
+                "A": "客開出",
+                "push": "走盤",
+            }[cover_neutral]
+        else:
+            observation["actual_result"] = None
         if stages["T5"]["side"] == "D":
             observation["settlement"] = None
             observation["unit_return"] = None
@@ -262,6 +291,18 @@ def run(db: sqlite3.Connection, threshold: float) -> dict[str, Any]:
         provider: metrics([row for row in eligible if row["provider"] == provider])
         for provider in ("hkjc", "pinnacle")
     }
+
+    path_groups: dict[tuple[str, str], list[dict[str, Any]]] = collections.defaultdict(list)
+    for row in eligible:
+        path_groups[(row["provider"], row["direction_path"])].append(row)
+    path_probability = [
+        {
+            "provider": provider,
+            "direction_path": path,
+            **outcome_probability(group),
+        }
+        for (provider, path), group in sorted(path_groups.items())
+    ]
 
     level_rows = [row for row in eligible if row["direction_path"].endswith("D")]
     level_groups: dict[tuple[str, str, float], collections.Counter] = collections.defaultdict(
@@ -315,6 +356,7 @@ def run(db: sqlite3.Connection, threshold: float) -> dict[str, Any]:
             "eligible_unique_fixtures": len({row["fixture_id"] for row in eligible}),
         },
         "provider_summary": provider_summary,
+        "path_probability": path_probability,
         "conditions": conditions,
         "examples": examples,
         "recent_complete_rows": recent_complete_rows,

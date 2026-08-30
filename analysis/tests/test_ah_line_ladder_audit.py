@@ -199,3 +199,28 @@ def test_actual_cover_side_helper() -> None:
     assert AUDIT.actual_cover_side(0.0, 1, 2) == "A"
     assert AUDIT.actual_cover_side(-0.75, 1, 1) == "A"
     assert AUDIT.actual_cover_side(-0.75, 2, 1) == "H"
+
+
+def test_path_probability_ignores_selected_direction_hit_or_miss() -> None:
+    db = make_db()
+    db.execute(
+        "INSERT INTO matches VALUES ('fixture-1', 2000, 'Home Team', 'Away Team')"
+    )
+    # Final score: home wins by 2 -> home covers a -0.75 line regardless of
+    # which side the T5 quote favoured.
+    db.execute("INSERT INTO research_results VALUES ('fixture-1', 2, 0)")
+    add_pair(db, stage="initial", line="-0.75", home_odds=1.84, away_odds=1.99, captured_at=1000)
+    add_pair(db, stage="T30", line="-0.75", home_odds=1.92, away_odds=1.99, captured_at=1100)
+    # T5 favours the away side, so direction_path is H→H→A, but the actual
+    # result still covers home.
+    add_pair(db, stage="T5", line="-0.75", home_odds=1.97, away_odds=1.93, captured_at=1200)
+
+    report = AUDIT.run(db, 1.70)
+    row = next(
+        r for r in report["path_probability"]
+        if r["provider"] == "pinnacle" and r["direction_path"] == "H→H→A"
+    )
+    assert row["settled"] == 1
+    assert row["counts"]["主開出"] == 1
+    assert row["probability"]["主開出"] == 1.0
+    assert row["probability"]["客開出"] == 0.0
