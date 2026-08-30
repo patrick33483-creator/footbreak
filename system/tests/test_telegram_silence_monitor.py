@@ -205,15 +205,19 @@ class TelegramSilenceMonitorTests(unittest.TestCase):
         self.assertTrue(retry["recovery_due"])
         self.assertTrue(retry["sent"])
 
-    def test_unit_contract_is_server_owned_and_five_minute(self) -> None:
+    def test_unit_contract_is_retained_but_deployment_disables_timer(self) -> None:
         root = SYSTEM.parent
         service = (root / "deploy/systemd/telegram-silence-monitor.service").read_text(encoding="utf-8")
         timer = (root / "deploy/systemd/telegram-silence-monitor.timer").read_text(encoding="utf-8")
         update = (root / "deploy/update.sh").read_text(encoding="utf-8")
+        setup = (root / "deploy/setup.sh").read_text(encoding="utf-8")
+        health = (root / "deploy/health-check.sh").read_text(encoding="utf-8")
         self.assertIn("TG_SILENCE_MONITOR_SECONDS=3600", service)
         self.assertIn("OnUnitActiveSec=5min", timer)
-        self.assertIn("telegram-silence-monitor.timer", update)
-        self.assertIn("enable --now telegram-silence-monitor.timer", update)
+        self.assertIn("disable --now telegram-silence-monitor.timer", update)
+        self.assertNotIn("enable --now telegram-silence-monitor.timer", update)
+        self.assertIn("disable --now telegram-silence-monitor.timer", setup)
+        self.assertIn("retired timer telegram-silence-monitor.timer", health)
         self.assertNotIn("pplx", service.lower() + timer.lower())
 
 
