@@ -343,6 +343,7 @@ jobs:
           path_stats = {}
           line_stats = {}
           same_direction_line_movement_stats = {}
+          same_direction_line_movement_detail_stats = {}
           for threshold in THRESHOLDS:
               key = "無門檻" if threshold == 0 else f">{threshold:.2f}"
               eligible = [
@@ -384,7 +385,6 @@ jobs:
                       group, f"line|{key}|{market}|{path}|{line}"
                   )
                   for (market, path, line), group in sorted(grouped.items())
-                  if len([row for row in group if row["grade"]]) >= 3
               }
               same_direction_line_movement_stats[key] = {
                   movement: summarize(
@@ -399,6 +399,19 @@ jobs:
                       "T-5與初盤同線",
                       "T-5比初盤更蝕底",
                   )
+              }
+              movement_grouped = defaultdict(list)
+              for row in eligible:
+                  if row["line_movement"] is not None:
+                      movement_grouped[
+                          (row["market"], row["direction_path"], row["line_movement"])
+                      ].append(row)
+              same_direction_line_movement_detail_stats[key] = {
+                  f"{market}|{path}|{movement}": summarize(
+                      group,
+                      f"movement-detail|{key}|{market}|{path}|{movement}",
+                  )
+                  for (market, path, movement), group in sorted(movement_grouped.items())
               }
 
           target = [
@@ -429,8 +442,9 @@ jobs:
               "threshold_stats": threshold_stats,
               "market_stats": market_stats,
               "path_stats": path_stats,
-              "line_stats_settled_n_ge_3": line_stats,
+              "line_stats_all_observed": line_stats,
               "same_direction_line_movement_stats": same_direction_line_movement_stats,
+              "same_direction_line_movement_detail_stats": same_direction_line_movement_detail_stats,
               "recent_results_gt_1_70": recent_results,
           }
           print("CROWN_V2_GRANULAR_REPORT_BEGIN")
