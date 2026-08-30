@@ -1,0 +1,384 @@
+name: Analyze Crown V2 granular direction conditions (read only)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: Backtest granular model-direction conditions
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'sudo python3 -' <<'PY'
+          import hashlib
+          import json
+          import math
+          import random
+          from collections import Counter, defaultdict
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          PATH = Path("/var/lib/footbreak/crown/prediction_history.json")
+          STAGES = ("首預", "T-30", "T-5")
+          DISPLAY = {"首預": "初盤預測", "T-30": "T-30", "T-5": "T-5"}
+          THRESHOLDS = (0.0, 1.70, 1.75, 1.80, 1.85)
+          DECIDED = {"全贏", "半贏", "半輸", "全輸"}
+          HITS = {"全贏", "半贏"}
+
+          def hash_state(path):
+              digest = hashlib.sha256()
+              with path.open("rb") as handle:
+                  for block in iter(lambda: handle.read(1024 * 1024), b""):
+                      digest.update(block)
+              stat = path.stat()
+              return {"sha256": digest.hexdigest(), "size": stat.st_size, "mtime_ns": stat.st_mtime_ns}
+
+          before = hash_state(PATH)
+          payload = json.loads(PATH.read_text(encoding="utf-8"))
+          rows = payload.get("rows") or []
+
+          def number(value):
+              try:
+                  parsed = float(value)
+                  return parsed if math.isfinite(parsed) else None
+              except (TypeError, ValueError):
+                  return None
+
+          def parse_time(value):
+              try:
+                  return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+              except (TypeError, ValueError):
+                  return None
+
+          def side_key(item):
+              code = str(item.get("code") or "").upper()
+              side = str(item.get("side") or "").upper()
+              if code == "HDC":
+                  return {"H": "主", "A": "客"}.get(side)
+              if code in {"HIL", "CHL"}:
+                  return {"H": "大", "O": "大", "L": "細", "U": "細"}.get(side)
+              return None
+
+          def market_name(item):
+              code = str(item.get("code") or "").upper()
+              return {"HDC": "讓球", "HIL": "入球大細", "CHL": "角球大細"}.get(code)
+
+          def pick_lead(row):
+              scored = []
+              for index, item in enumerate(row.get("market_predictions") or []):
+                  if not isinstance(item, dict):
+                      continue
+                  probability = number(item.get("probability", item.get("prob")))
+                  odds = number(item.get("odds", item.get("decimal_odds")))
+                  line = number(item.get("line", item.get("condition")))
+                  direction = side_key(item)
+                  market = market_name(item)
+                  if (
+                      probability is None or not (0 < probability <= 1)
+                      or odds is None or odds <= 1
+                      or line is None or direction is None or market is None
+                  ):
+                      continue
+                  scored.append((
+                      probability * odds - 1,
+                      -index,
+                      {
+                          "market": market,
+                          "code": str(item.get("code")).upper(),
+                          "direction": direction,
+                          "line": line,
+                          "odds": odds,
+                          "probability": probability,
+                          "label": item.get("label"),
+                      },
+                  ))
+              if not scored:
+                  return None
+              scored.sort(key=lambda value: (value[0], value[1]), reverse=True)
+              return scored[0][2]
+
+          def split_line(value):
+              if abs(value * 2 - round(value * 2)) < 1e-9:
+                  return [value]
+              return [value - 0.25, value + 0.25]
+
+          def half_outcome(diff):
+              return 1 if diff > 1e-9 else -1 if diff < -1e-9 else 0
+
+          def settle(lead, result):
+              code = lead["code"]
+              side = lead["direction"]
+              hs, aw = result["home_score"], result["away_score"]
+              outcomes = []
+              for line in split_line(lead["line"]):
+                  if code == "HDC":
+                      adjusted = hs + line - aw
+                      outcomes.append(half_outcome(adjusted if side == "主" else -adjusted))
+                  else:
+                      total = (
+                          result["corners_total"]
+                          if code == "CHL"
+                          else hs + aw
+                      )
+                      if total is None:
+                          return None
+                      outcomes.append(half_outcome(total - line if side == "大" else line - total))
+              if len(outcomes) == 1:
+                  return {1: "全贏", 0: "走盤", -1: "全輸"}[outcomes[0]]
+              total = sum(outcomes)
+              if outcomes[0] == outcomes[1] == 1:
+                  return "全贏"
+              if total == 1:
+                  return "半贏"
+              if total == 0:
+                  return "走盤"
+              if total == -1:
+                  return "半輸"
+              return "全輸"
+
+          def unit_return(grade, odds):
+              return {
+                  "全贏": odds - 1,
+                  "半贏": (odds - 1) / 2,
+                  "走盤": 0,
+                  "半輸": -0.5,
+                  "全輸": -1,
+              }[grade]
+
+          canonical = {}
+          diagnostics = Counter()
+          for row in rows:
+              if not isinstance(row, dict):
+                  continue
+              stage = str(row.get("stage") or "")
+              if stage not in STAGES or row.get("post_hoc_backfill"):
+                  continue
+              if row.get("exclude_from_primary_statistics") or row.get("exclude_from_settlement"):
+                  continue
+              if stage == "首預" and row.get("prediction_model") != "crown-opening-fixed-v1":
+                  diagnostics["non_v2_initial_model"] += 1
+                  continue
+              predicted = parse_time(row.get("predicted_at"))
+              kickoff = parse_time(row.get("kickoff"))
+              if predicted is None or kickoff is None or predicted >= kickoff:
+                  diagnostics["invalid_or_post_kickoff"] += 1
+                  continue
+              fixture_id = str(row.get("titan_match_id") or row.get("match_id") or "")
+              lead = pick_lead(row)
+              if not fixture_id or lead is None:
+                  diagnostics["missing_id_or_lead"] += 1
+                  continue
+              key = (fixture_id, stage)
+              candidate = {"row": row, "lead": lead, "predicted": predicted}
+              if key not in canonical or predicted > canonical[key]["predicted"]:
+                  canonical[key] = candidate
+
+          by_fixture = defaultdict(dict)
+          for (fixture_id, stage), item in canonical.items():
+              by_fixture[fixture_id][stage] = item
+
+          observations = []
+          funnel = Counter()
+          for fixture_id, stages in by_fixture.items():
+              funnel["fixtures_with_any_stage"] += 1
+              if not all(stage in stages for stage in STAGES):
+                  continue
+              funnel["complete_three_stage"] += 1
+              leads = [stages[stage]["lead"] for stage in STAGES]
+              markets = [lead["market"] for lead in leads]
+              if len(set(markets)) != 1:
+                  continue
+              funnel["same_market"] += 1
+              directions = [lead["direction"] for lead in leads]
+              if len(set(directions)) != 1:
+                  continue
+              funnel["same_direction"] += 1
+              lines = [lead["line"] for lead in leads]
+              if max(lines) - min(lines) > 1e-9:
+                  continue
+              funnel["same_line"] += 1
+
+              result_row = next(
+                  (
+                      stages[stage]["row"]
+                      for stage in reversed(STAGES)
+                      if stages[stage]["row"].get("result_status") == "已核對"
+                      and isinstance(stages[stage]["row"].get("result_detail"), dict)
+                  ),
+                  None,
+              )
+              result = None
+              if result_row is not None:
+                  detail = result_row["result_detail"]
+                  if detail.get("home_score") is not None and detail.get("away_score") is not None:
+                      result = {
+                          "home_score": float(detail["home_score"]),
+                          "away_score": float(detail["away_score"]),
+                          "corners_total": number(detail.get("corners_total")),
+                      }
+              grade = settle(leads[2], result) if result else None
+              observation = {
+                  "fixture_id": fixture_id,
+                  "kickoff": stages["T-5"]["row"].get("kickoff"),
+                  "home": stages["T-5"]["row"].get("home"),
+                  "away": stages["T-5"]["row"].get("away"),
+                  "market": markets[0],
+                  "direction": directions[0],
+                  "line": lines[0],
+                  "initial_odds": leads[0]["odds"],
+                  "T30_odds": leads[1]["odds"],
+                  "T5_odds": leads[2]["odds"],
+                  "min_odds": min(lead["odds"] for lead in leads),
+                  "grade": grade,
+                  "return": unit_return(grade, leads[2]["odds"]) if grade else None,
+                  "score": result_row.get("score") if result_row else None,
+              }
+              observations.append(observation)
+              if grade:
+                  funnel["same_line_settled"] += 1
+
+          def wilson(hits, n, z=1.959963984540054):
+              if not n:
+                  return [None, None]
+              p = hits / n
+              den = 1 + z*z/n
+              centre = (p + z*z/(2*n)) / den
+              margin = z * math.sqrt((p*(1-p) + z*z/(4*n))/n) / den
+              return [centre-margin, centre+margin]
+
+          def percentile(values, q):
+              ordered = sorted(values)
+              pos = (len(ordered)-1)*q
+              lo, hi = math.floor(pos), math.ceil(pos)
+              return ordered[lo] if lo == hi else ordered[lo]*(hi-pos)+ordered[hi]*(pos-lo)
+
+          def summarize(group, label):
+              settled = [row for row in group if row["grade"]]
+              grades = Counter(row["grade"] for row in settled)
+              decided = sum(grades[key] for key in DECIDED)
+              hits = sum(grades[key] for key in HITS)
+              returns = [row["return"] for row in settled]
+              rng = random.Random(label)
+              boot = []
+              if returns:
+                  for _ in range(3000):
+                      boot.append(sum(rng.choice(returns) for __ in returns) / len(returns))
+              interval = wilson(hits, decided)
+              return {
+                  "observations": len(group),
+                  "settled": len(settled),
+                  "full_win": grades["全贏"],
+                  "half_win": grades["半贏"],
+                  "push": grades["走盤"],
+                  "half_loss": grades["半輸"],
+                  "full_loss": grades["全輸"],
+                  "hits": hits,
+                  "decided": decided,
+                  "hit_rate_pct": round(hits/decided*100, 2) if decided else None,
+                  "hit_wilson_95_pct": [
+                      round(value*100, 2) if value is not None else None
+                      for value in interval
+                  ],
+                  "unit_pnl": round(sum(returns), 3),
+                  "roi_pct": round(sum(returns)/len(returns)*100, 2) if returns else None,
+                  "roi_bootstrap_95_pct": [
+                      round(percentile(boot, 0.025)*100, 2),
+                      round(percentile(boot, 0.975)*100, 2),
+                  ] if boot else [None, None],
+                  "mean_t5_odds": round(sum(row["T5_odds"] for row in settled)/len(settled), 3) if settled else None,
+              }
+
+          threshold_stats = {}
+          market_stats = {}
+          direction_stats = {}
+          line_stats = {}
+          for threshold in THRESHOLDS:
+              key = "無門檻" if threshold == 0 else f">{threshold:.2f}"
+              subset = [
+                  row for row in observations
+                  if threshold == 0 or row["min_odds"] > threshold
+              ]
+              threshold_stats[key] = summarize(subset, f"all|{key}")
+              market_stats[key] = {
+                  market: summarize(
+                      [row for row in subset if row["market"] == market],
+                      f"market|{key}|{market}",
+                  )
+                  for market in ("讓球", "入球大細", "角球大細")
+              }
+              direction_stats[key] = {
+                  f"{market}:{direction}": summarize(
+                      [
+                          row for row in subset
+                          if row["market"] == market and row["direction"] == direction
+                      ],
+                      f"direction|{key}|{market}|{direction}",
+                  )
+                  for market, directions in (
+                      ("讓球", ("主", "客")),
+                      ("入球大細", ("大", "細")),
+                      ("角球大細", ("大", "細")),
+                  )
+              }
+              grouped = defaultdict(list)
+              for row in subset:
+                  grouped[(row["market"], row["direction"], row["line"])].append(row)
+              line_stats[key] = {
+                  f"{market}|{direction}|{line:g}": summarize(
+                      group, f"line|{key}|{market}|{direction}|{line}"
+                  )
+                  for (market, direction, line), group in sorted(grouped.items())
+                  if len([row for row in group if row["grade"]]) >= 3
+              }
+
+          target = [row for row in observations if row["min_odds"] > 1.70]
+          recent_results = sorted(
+              [row for row in target if row["grade"]],
+              key=lambda row: str(row["kickoff"]),
+              reverse=True,
+          )[:50]
+
+          after = hash_state(PATH)
+          report = {
+              "observed_at_utc": datetime.now(timezone.utc).isoformat(),
+              "read_only_hash_unchanged": before == after,
+              "file_state_before": before,
+              "file_state_after": after,
+              "definition": {
+                  "direction": "皇冠模型每階段最高 EV lead 的主／客／大／細，不是報價方向",
+                  "initial": "只接受 crown-opening-fixed-v1 的初盤預測",
+                  "same_line": "三階段 lead 的標準化亞洲中位線完全相同",
+                  "odds_filter": "三階段所選 lead 的 decimal odds 均嚴格高於門檻",
+                  "decision": "完整條件在 T-5 才成立，以 T-5 lead、線位及賠率結算",
+              },
+              "diagnostics": dict(diagnostics),
+              "funnel": dict(funnel),
+              "threshold_stats": threshold_stats,
+              "market_stats": market_stats,
+              "direction_stats": direction_stats,
+              "line_stats_settled_n_ge_3": line_stats,
+              "recent_results_gt_1_70": recent_results,
+          }
+          print("CROWN_V2_GRANULAR_REPORT_BEGIN")
+          print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
+          print("CROWN_V2_GRANULAR_REPORT_END")
+          if before != after:
+              raise SystemExit("Read-only integrity check failed")
+          PY
