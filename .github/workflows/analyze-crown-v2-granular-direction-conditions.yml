@@ -361,27 +361,33 @@ jobs:
                   "corners_total": number(detail.get("corners_total")),
               }
 
+          all_stage_records = []
           complete_records = []
           for fixture_id, stages in by_fixture.items():
-              if not all(stage in stages for stage in STAGES):
-                  continue
               result = result_from_stages(stages)
-              leads = {stage: stages[stage]["lead"] for stage in STAGES}
-              kickoff = stages["T-5"]["row"].get("kickoff")
+              leads = {
+                  stage: stages[stage]["lead"]
+                  for stage in STAGES
+                  if stage in stages
+              }
+              anchor_stage = next(stage for stage in reversed(STAGES) if stage in stages)
+              kickoff = stages[anchor_stage]["row"].get("kickoff")
               record = {
                   "fixture_id": fixture_id,
                   "kickoff": kickoff,
                   "kickoff_dt": parse_time(kickoff),
-                  "home": stages["T-5"]["row"].get("home"),
-                  "away": stages["T-5"]["row"].get("away"),
+                  "home": stages[anchor_stage]["row"].get("home"),
+                  "away": stages[anchor_stage]["row"].get("away"),
                   "leads": leads,
                   "result": result,
                   "grades": {
                       stage: settle(leads[stage], result) if result else None
-                      for stage in STAGES
+                      for stage in leads
                   },
               }
-              complete_records.append(record)
+              all_stage_records.append(record)
+              if all(stage in stages for stage in STAGES):
+                  complete_records.append(record)
 
           def selected_line(lead):
               if lead["market"] == "讓球" and lead["direction"] == "客":
@@ -465,8 +471,9 @@ jobs:
                   for direction in market_directions[market]:
                       for threshold in odds_thresholds:
                           group = [
-                              record for record in complete_records
-                              if record["leads"][stage]["market"] == market
+                              record for record in all_stage_records
+                              if stage in record["leads"]
+                              and record["leads"][stage]["market"] == market
                               and record["leads"][stage]["direction"] == direction
                               and (threshold == 0 or record["leads"][stage]["odds"] > threshold)
                           ]
@@ -515,8 +522,10 @@ jobs:
                       for late_direction in market_directions[market]:
                           for threshold in odds_thresholds:
                               group = [
-                                  record for record in complete_records
-                                  if record["leads"][early_stage]["market"] == market
+                                  record for record in all_stage_records
+                                  if early_stage in record["leads"]
+                                  and late_stage in record["leads"]
+                                  and record["leads"][early_stage]["market"] == market
                                   and record["leads"][late_stage]["market"] == market
                                   and record["leads"][early_stage]["direction"] == early_direction
                                   and record["leads"][late_stage]["direction"] == late_direction
@@ -740,9 +749,10 @@ jobs:
               "same_direction_line_movement_stats": same_direction_line_movement_stats,
               "same_direction_line_movement_detail_stats": same_direction_line_movement_detail_stats,
               "condition_mining": {
-                  "scope": "所有初盤預測、T-30、T-5齊全的皇冠歷史賽事；單一及兩時點條件不要求三段同市場",
+                  "scope": "單一時點只要求該時點存在；兩時點只要求指定兩段存在；完整路徑才要求初盤預測、T-30、T-5齊全",
                   "settlement": "單一時點用該時點；兩時點用較後時點；三時點用T-5的方向、線位及賠率結算",
                   "minimum_sample": "總樣本至少20，時間前70%至少14，後30%至少6",
+                  "fixtures_with_any_stage": len(all_stage_records),
                   "complete_records": len(complete_records),
                   "candidate_count": len(candidates),
                   "eligible_candidate_count": len(eligible_candidates),
