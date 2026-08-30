@@ -287,6 +287,16 @@ def run(db: sqlite3.Connection, threshold: float) -> dict[str, Any]:
             }
         )
 
+    line_path_probability = [
+        {
+            "provider": provider,
+            "line": line,
+            "direction_path": path,
+            **outcome_probability(group),
+        }
+        for (provider, path, line), group in sorted(grouped.items())
+    ]
+
     provider_summary = {
         provider: metrics([row for row in eligible if row["provider"] == provider])
         for provider in ("hkjc", "pinnacle")
@@ -380,6 +390,7 @@ def run(db: sqlite3.Connection, threshold: float) -> dict[str, Any]:
         },
         "provider_summary": provider_summary,
         "path_probability": path_probability,
+        "line_path_probability": line_path_probability,
         "conditions": conditions,
         "examples": examples,
         "recent_complete_rows": recent_complete_rows,

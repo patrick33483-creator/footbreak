@@ -224,3 +224,22 @@ def test_path_probability_ignores_selected_direction_hit_or_miss() -> None:
     assert row["counts"]["主開出"] == 1
     assert row["probability"]["主開出"] == 1.0
     assert row["probability"]["客開出"] == 0.0
+
+
+def test_line_path_probability_slices_by_exact_line() -> None:
+    db = make_db()
+    db.execute(
+        "INSERT INTO matches VALUES ('fixture-1', 2000, 'Home Team', 'Away Team')"
+    )
+    db.execute("INSERT INTO research_results VALUES ('fixture-1', 2, 0)")
+    add_pair(db, stage="initial", line="-0.25", home_odds=1.84, away_odds=1.99, captured_at=1000)
+    add_pair(db, stage="T30", line="-0.25", home_odds=1.90, away_odds=1.99, captured_at=1100)
+    add_pair(db, stage="T5", line="-0.25", home_odds=1.90, away_odds=1.95, captured_at=1200)
+
+    report = AUDIT.run(db, 1.70)
+    row = next(
+        r for r in report["line_path_probability"]
+        if r["provider"] == "pinnacle" and r["line"] == -0.25 and r["direction_path"] == "H→H→H"
+    )
+    assert row["settled"] == 1
+    assert row["counts"]["主開出"] == 1
