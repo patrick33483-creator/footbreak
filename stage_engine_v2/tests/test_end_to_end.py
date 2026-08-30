@@ -211,3 +211,8 @@ def test_dashboard_written(tmp_path: Path):
     payload = json.loads(dashboard.read_text(encoding="utf-8"))
     assert payload["schema_version"] == "stage-engine-v2"
     assert payload["fixtures_count"] == 1
+    assert payload["segmented_conditions"]["public_tiers"] == ["S", "A"]
+    assert (
+        payload["segmented_conditions"]["direction_basis"]
+        == "model_prediction_not_quote_direction"
+    )

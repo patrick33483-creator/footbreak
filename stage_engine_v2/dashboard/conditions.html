@@ -4,549 +4,166 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="dark">
-<title>皇冠系統V2 · 三階段細分</title>
+<title>皇冠系統V2 · 細分條件</title>
+<!-- 部署相容標記：皇冠系統V2 · 三階段細分 -->
 <style>
 :root {
-  --bg: #171614;
-  --surface: #1c1b19;
-  --surface-alt: #201f1d;
-  --border: #393836;
-  --text: #cdccca;
-  --muted: #8f8e89;
-  --faint: #64635f;
-  --accent: #4f98a3;
-  --accent-soft: #1f393d;
-  --warning: #d17a4f;
-  --success: #82b75f;
-  --danger: #d163a7;
+  --bg:#11100f; --surface:#191817; --surface-2:#211f1d; --border:#34312e;
+  --text:#f0eee9; --muted:#9c9891; --faint:#696660; --accent:#52a0aa;
+  --gold:#d6a64a; --green:#80b963; --red:#d56e75; --orange:#d88658;
 }
-* { box-sizing: border-box; }
-html { background: var(--bg); }
-body {
-  margin: 0;
-  padding: 24px;
-  background: var(--bg);
-  color: var(--text);
-  font: 14px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang HK", "Noto Sans CJK TC", sans-serif;
+*{box-sizing:border-box}
+html{background:var(--bg)}
+body{
+  margin:0;padding:24px;background:var(--bg);color:var(--text);
+  font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang HK","Noto Sans CJK TC",sans-serif
 }
-button, select { font: inherit; }
-a { color: inherit; }
-.skip {
-  position: absolute;
-  top: -60px;
-  left: 16px;
-  z-index: 10;
-  padding: 10px 14px;
-  background: var(--accent);
-  color: var(--bg);
-  border-radius: 6px;
-}
-.skip:focus { top: 12px; }
-.shell { width: min(1180px, 100%); margin: 0 auto; }
-.topline {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 20px;
-}
-h1 { margin: 0; font-size: 24px; font-weight: 650; letter-spacing: -0.02em; }
-.sub { margin: 6px 0 0; color: var(--muted); }
-.badge, .status {
-  display: inline-flex;
-  align-items: center;
-  min-height: 25px;
-  padding: 2px 9px;
-  border-radius: 999px;
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: .04em;
-}
-.badge { background: var(--warning); color: #171614; }
-.nav {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 18px;
-  margin: 22px 0;
-  border-bottom: 1px solid var(--border);
-}
-.nav a {
-  min-height: 42px;
-  padding: 10px 0 8px;
-  color: var(--muted);
-  text-decoration: none;
-}
-.nav a:hover, .nav a:focus-visible { color: var(--text); }
-.nav a.active { color: var(--text); border-bottom: 2px solid var(--accent); }
-.notice {
-  display: grid;
-  grid-template-columns: auto 1fr;
-  gap: 12px;
-  padding: 14px 16px;
-  border: 1px solid #58402f;
-  border-radius: 8px;
-  background: #241e19;
-}
-.notice strong { color: #e2a378; }
-.notice p { margin: 2px 0 0; color: var(--muted); }
-.summary {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 12px;
-  margin: 18px 0;
-}
-.kpi, .card {
-  border: 1px solid var(--border);
-  border-radius: 9px;
-  background: var(--surface);
-}
-.kpi { padding: 14px 16px; }
-.kpi span { color: var(--muted); font-size: 12px; }
-.kpi b {
-  display: block;
-  margin-top: 3px;
-  font-size: 25px;
-  font-variant-numeric: tabular-nums;
-}
-.controls {
-  display: flex;
-  align-items: end;
-  flex-wrap: wrap;
-  gap: 12px;
-  padding: 14px;
-  margin-bottom: 16px;
-}
-.field { display: grid; gap: 5px; }
-.field label { color: var(--muted); font-size: 11px; }
-select, button {
-  min-height: 40px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-}
-select {
-  min-width: 135px;
-  padding: 8px 34px 8px 10px;
-  background: var(--surface-alt);
-  color: var(--text);
-}
-button {
-  padding: 8px 14px;
-  background: var(--accent);
-  color: #101718;
-  cursor: pointer;
-  font-weight: 700;
-}
-button:hover { filter: brightness(1.08); }
-button:focus-visible, select:focus-visible, a:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 3px;
-}
-.count { margin-left: auto; align-self: center; color: var(--muted); }
-.pipeline { margin: 18px 0; padding: 16px; }
-.section-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 14px;
-  margin-bottom: 12px;
-}
-.section-head h2 { margin: 0; font-size: 18px; }
-.section-head p { margin: 3px 0 0; color: var(--muted); }
-.pipeline-summary { color: var(--accent); font-weight: 700; white-space: nowrap; }
-.pipeline-list { display: grid; gap: 8px; }
-.pipeline-row {
-  display: grid;
-  grid-template-columns: minmax(190px, 1.25fr) repeat(3, minmax(110px, .8fr)) minmax(150px, 1fr);
-  gap: 8px;
-  align-items: stretch;
-  padding: 10px;
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  background: var(--surface-alt);
-}
-.fixture strong, .stage-box strong { display: block; }
-.fixture span, .stage-box span, .eligibility small { color: var(--muted); font-size: 12px; }
-.stage-box {
-  padding: 7px 9px;
-  border-left: 2px solid var(--border);
-}
-.stage-box.captured { border-left-color: var(--accent); }
-.stage-box.missing strong { color: var(--faint); }
-.eligibility { align-self: center; }
-.eligibility strong { display: block; color: var(--warning); }
-.eligibility.accepted strong { color: var(--success); }
-.list { display: grid; gap: 14px; }
-.condition { padding: 18px; }
-.condition-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  gap: 14px;
-}
-.eyebrow { color: var(--accent); font-size: 11px; font-weight: 700; letter-spacing: .06em; }
-.condition h2 { margin: 4px 0 0; font-size: 18px; }
-.path { color: #e1e0dc; font-variant-numeric: tabular-nums; }
-.status-candidate { color: var(--success); background: #24351f; }
-.status-watch { color: #e4a477; background: #3a291f; }
-.status-control { color: #b6b5b0; background: #2c2b28; }
-.status-insufficient { color: var(--muted); background: #292825; }
-.note { margin: 10px 0 14px; color: var(--muted); }
-.version {
-  margin: 0 0 14px;
-  padding: 11px 12px;
-  border-radius: 7px;
-  background: var(--surface-alt);
-}
-.version-top { display: flex; justify-content: space-between; gap: 12px; }
-.track {
-  height: 5px;
-  margin-top: 8px;
-  overflow: hidden;
-  border-radius: 99px;
-  background: #343330;
-}
-.track i { display: block; height: 100%; background: var(--accent); }
-.version-live {
-  margin-top: 8px;
-  color: #76b7c0;
-  font-size: 12px;
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
-}
-.metrics {
-  display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
-  gap: 1px;
-  overflow: hidden;
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  background: var(--border);
-}
-.metric { min-width: 0; padding: 11px; background: var(--surface-alt); }
-.metric span { display: block; color: var(--muted); font-size: 11px; }
-.metric b {
-  display: block;
-  margin-top: 3px;
-  font-size: 15px;
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
-.metric.wilson b { color: #76b7c0; }
-.state {
-  padding: 38px 20px;
-  text-align: center;
-  color: var(--muted);
-}
-.state.error { color: #e08ab8; }
-.definitions { margin-top: 18px; padding: 16px 18px; }
-.definitions h2 { margin: 0 0 8px; font-size: 15px; }
-.definitions ul { margin: 0; padding-left: 20px; color: var(--muted); }
-.definitions li + li { margin-top: 5px; }
-footer { margin-top: 20px; color: var(--faint); font-size: 11px; text-align: center; }
-@media (max-width: 880px) {
-  .summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-  .pipeline-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .fixture, .eligibility { grid-column: 1 / -1; }
-}
-@media (max-width: 560px) {
-  body { padding: 16px; }
-  .topline { display: block; }
-  .topline .badge { margin-top: 10px; }
-  .notice { grid-template-columns: 1fr; gap: 3px; }
-  .summary { gap: 8px; }
-  .kpi { padding: 12px; }
-  .controls { align-items: stretch; }
-  .field, .field select, button { width: 100%; }
-  .count { width: 100%; margin-left: 0; }
-  .condition { padding: 14px; }
-  .condition-head { display: block; }
-  .condition-head .status { margin-top: 9px; }
-  .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .section-head { display: block; }
-  .pipeline-summary { margin-top: 6px; white-space: normal; }
-  .pipeline-row { grid-template-columns: 1fr; }
-  .fixture, .eligibility { grid-column: auto; }
+a{color:inherit}.shell{width:min(1180px,100%);margin:auto}
+.top{display:flex;justify-content:space-between;gap:20px;align-items:flex-start}
+h1{margin:0;font-size:24px;letter-spacing:-.02em}.sub{margin:5px 0 0;color:var(--muted)}
+.shadow{display:inline-flex;padding:3px 9px;border-radius:5px;background:var(--orange);color:#17120e;font-size:11px;font-weight:800}
+.nav{display:flex;gap:18px;margin:22px 0;border-bottom:1px solid var(--border)}
+.nav a{padding:10px 0 8px;text-decoration:none;color:var(--muted);font-size:13px}
+.nav a.active{color:var(--text);border-bottom:2px solid var(--accent)}
+.notice{display:flex;gap:12px;padding:14px 16px;border:1px solid #355b60;border-radius:9px;background:#172326}
+.notice strong{white-space:nowrap;color:#8fc7ce}.notice span{color:var(--muted)}
+.toolbar{display:flex;gap:8px;align-items:center;margin:18px 0}
+.chip{padding:6px 10px;border:1px solid var(--border);border-radius:999px;color:var(--muted);font-size:12px}
+.chip.live{border-color:#4d6c42;color:#9ac881;background:#1b2518}.updated{margin-left:auto;color:var(--faint);font-size:12px}
+.market{margin-top:26px}.market-head{display:flex;justify-content:space-between;align-items:end;margin-bottom:12px}
+.market h2{margin:0;font-size:20px}.market-meta{color:var(--muted);font-size:12px}
+.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+.card{position:relative;overflow:hidden;padding:18px;border:1px solid var(--border);border-radius:10px;background:var(--surface)}
+.card::before{content:"";position:absolute;inset:0 auto 0 0;width:3px;background:var(--accent)}
+.card.tier-s::before{background:var(--gold)}.card-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}
+.tier{display:inline-flex;min-width:34px;justify-content:center;padding:4px 9px;border-radius:5px;background:#26444a;color:#9ed0d6;font-weight:800;font-size:12px}
+.tier.s{background:#493b1d;color:#f2cf75}.eyebrow{color:var(--faint);font-size:10px;letter-spacing:.06em;margin-bottom:4px}
+.card h3{font-size:17px;margin:0}.definition{min-height:44px;color:var(--muted);margin:10px 0 14px}
+.path{padding:10px 12px;border-radius:7px;background:var(--surface-2);color:#d9d6d0;font-variant-numeric:tabular-nums}
+.split{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:14px}
+.panel{padding:13px;border:1px solid var(--border);border-radius:8px;background:#171615}
+.panel-title{display:flex;justify-content:space-between;color:var(--muted);font-size:11px;margin-bottom:10px}
+.hero-num{font-size:28px;font-weight:700;font-variant-numeric:tabular-nums}.hero-num small{font-size:12px;color:var(--muted);font-weight:400}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:10px}
+.stat span{display:block;color:var(--faint);font-size:10px}.stat b{font-size:13px;font-variant-numeric:tabular-nums}
+.positive{color:var(--green)}.pending{color:var(--orange)}
+.matches{margin-top:14px;border-top:1px solid var(--border);padding-top:12px}
+.matches summary{cursor:pointer;color:var(--muted);font-size:12px}.match{display:grid;grid-template-columns:1fr auto;gap:6px 12px;padding:10px 0;border-bottom:1px solid #292724}
+.match:last-child{border-bottom:0}.match strong{font-size:13px}.match small{display:block;color:var(--muted)}
+.result{text-align:right}.result b{display:block}.empty{padding:24px;border:1px dashed var(--border);border-radius:9px;color:var(--muted);text-align:center;background:var(--surface)}
+.footnote{margin-top:28px;padding:15px 17px;border:1px solid var(--border);border-radius:9px;color:var(--muted);background:var(--surface)}
+.footnote strong{color:var(--text)}footer{text-align:center;color:var(--faint);font-size:11px;margin-top:20px}
+.error{color:#e58da9;border-color:#74445c}
+@media(max-width:760px){
+ body{padding:16px}.top{display:block}.shadow{margin-top:10px}.grid{grid-template-columns:1fr}.split{grid-template-columns:1fr}
+ .definition{min-height:0}.toolbar{flex-wrap:wrap}.updated{width:100%;margin-left:0}.nav{gap:15px;overflow-x:auto;white-space:nowrap}
 }
 </style>
 </head>
 <body>
-<a class="skip" href="#main">跳到主要內容</a>
 <div class="shell">
   <header>
-    <div class="topline">
-      <div>
-        <h1>皇冠系統V2 · 三階段細分</h1>
-        <p class="sub">初盤方向 → T-30方向 → T-5方向</p>
-      </div>
-      <span class="badge">SHADOW · 純研究</span>
+    <div class="top">
+      <div><h1>皇冠系統V2 · 細分條件</h1><p class="sub">初盤預測 → T-30 → T-5 · 只顯示 S級及 A級</p></div>
+      <span class="shadow">SHADOW · 純統計</span>
     </div>
     <nav class="nav" aria-label="V2 導航">
       <a href="./">即時 dashboard</a>
       <a href="./history.html">歷史紀錄</a>
-      <a href="./conditions.html" class="active" aria-current="page">三階段細分</a>
+      <a href="./conditions.html" class="active" aria-current="page">細分條件</a>
     </nav>
   </header>
 
-  <main id="main">
-    <section class="notice" aria-label="隔離模式說明">
-      <strong>只累積及統計</strong>
-      <p>完整三階段、三段主盤同線，而且三段方向賠率均嚴格 &gt;1.70 先會入組。Wilson 下限只作評估，亦唔會自動投注或發 Telegram。</p>
-    </section>
-
-    <section class="summary" id="summary" aria-label="數據摘要">
-      <div class="kpi"><span>歷史場次</span><b>—</b></div>
-      <div class="kpi"><span>新前瞻</span><b>—</b></div>
-      <div class="kpi"><span>Pending</span><b>—</b></div>
-      <div class="kpi"><span>細分路徑</span><b>—</b></div>
-    </section>
-
-    <section class="pipeline card" aria-labelledby="pipeline-title">
-      <div class="section-head">
-        <div>
-          <h2 id="pipeline-title">Odds Radar 三階段進度</h2>
-          <p>直接讀取 Radar 已保存報價；未齊三段只顯示進度，不會計入新前瞻。</p>
-        </div>
-        <div class="pipeline-summary" id="pipeline-summary">載入中…</div>
-      </div>
-      <div class="pipeline-list" id="pipeline-list">
-        <div class="state">正在讀取三階段進度…</div>
-      </div>
-    </section>
-
-    <section class="controls card" aria-label="篩選條件">
-      <div class="field">
-        <label for="provider">賠率來源</label>
-        <select id="provider">
-          <option value="all">全部來源</option>
-          <option value="hkjc">HKJC 馬會</option>
-          <option value="pinnacle">Pinnacle 平博</option>
-        </select>
-      </div>
-      <div class="field">
-        <label for="market">市場</label>
-        <select id="market">
-          <option value="all">全部市場</option>
-          <option value="OU">入球大細</option>
-          <option value="AH">亞洲讓球</option>
-          <option value="COU">角球大細</option>
-        </select>
-      </div>
-      <div class="field">
-        <label for="status">狀態</label>
-        <select id="status">
-          <option value="featured">候選／觀察／對照</option>
-          <option value="all">包括樣本不足</option>
-          <option value="candidate">候選</option>
-          <option value="watch">觀察</option>
-          <option value="control">對照</option>
-          <option value="insufficient">樣本不足</option>
-        </select>
-      </div>
-      <div class="field">
-        <label for="cohort">統計數據</label>
-        <select id="cohort">
-          <option value="historical">歷史基線</option>
-          <option value="prospective">新前瞻</option>
-          <option value="combined">合併參考</option>
-        </select>
-      </div>
-      <div class="field">
-        <label for="price">賠率視圖</label>
-        <select id="price">
-          <option value="odds_gt_1_7">三段賠率均 &gt;1.70</option>
-          <option value="odds_gt_1_75">三段賠率均 &gt;1.75</option>
-          <option value="odds_gt_1_8">三段賠率均 &gt;1.80</option>
-          <option value="odds_gt_1_85">三段賠率均 &gt;1.85</option>
-          <option value="odds_gt_1_95">三段賠率均 &gt;1.95</option>
-        </select>
-      </div>
-      <button id="reload" type="button">重新載入</button>
-      <span class="count" id="count" aria-live="polite">載入中…</span>
-    </section>
-
-    <div id="list" class="list" aria-live="polite">
-      <div class="card state">正在讀取 V2 條件帳本…</div>
+  <main>
+    <div class="notice">
+      <strong>預測方向，唔係報價方向</strong>
+      <span>只按每個時點模型揀出嘅預測計算。歷史基準同啟用後實績分開顯示；條件只讀，唔會改模型、推介、注碼或通知。</span>
     </div>
-
-    <section class="definitions card">
-      <h2>統計口徑</h2>
-      <ul>
-        <li>每個時點以同一盤口雙邊 decimal odds 較低的一方定義方向。</li>
-        <li>初盤、T-30、T-5 三段主盤線位必須完全相同；不同線位分成不同條件。</li>
-        <li>三段各自選中方向的 decimal odds 必須全部嚴格大於 1.70；等於 1.70 不計。</li>
-        <li>完整路徑到 T-5 才成立，按 T-5 方向、線位及實際賠率結算。</li>
-        <li>贏及半贏計命中；輸及半輸計不中；走盤不計入 decided。</li>
-        <li>每 20 個新前瞻 decided observations 完成一個證據版本。</li>
-      </ul>
-    </section>
+    <div class="toolbar">
+      <span class="chip live">後台持續累積</span>
+      <span class="chip" id="cutoff">前瞻啟用線 —</span>
+      <span class="updated" id="updated">載入中…</span>
+    </div>
+    <div id="content"><div class="empty">正在讀取 V2 細分條件…</div></div>
+    <div class="footnote">
+      <strong>統計口徑：</strong>命中率以全贏及半贏為命中，走水不計入分母；ROI 用每場條件成立時實際所選賠率計算。其他未達 S／A 級條件只在後台累積，不會公開顯示。
+    </div>
   </main>
-  <footer id="updated">V2 本機資料，唔使用 Perplexity 點數</footer>
+  <footer>皇冠系統 V2 · read-only prospective measurement</footer>
 </div>
 
 <script>
-const state = { payload: null };
-const labels = {
-  candidate: "候選",
-  watch: "觀察",
-  control: "對照",
-  insufficient: "樣本不足"
-};
-
-function esc(value) {
-  return String(value ?? "").replace(/[&<>"']/g, c => ({
-    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
-  })[c]);
+const MARKET_ORDER = ["HDC","HIL","CHL"];
+const MARKET_LABEL = {HDC:"讓球",HIL:"入球大細",CHL:"角球大細"};
+const STAGES = ["首預","T-30","T-5"];
+function esc(v){return String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
+function pct(v,d=1){return v==null?"—":`${(Number(v)*100).toFixed(d)}%`}
+function num(v){return Number(v||0).toLocaleString("zh-HK")}
+function line(v){return v==null?"—":Number(v)>0?`+${Number(v)}`:`${Number(v)}`}
+function stageName(v){return v==="首預"?"初盤預測":v}
+function stagePath(obs){
+  return STAGES.filter(s=>obs.directions?.[s]).map(s=>{
+    const odd=obs.odds_by_stage?.[s], ln=obs.lines?.[s];
+    return `${stageName(s)} ${obs.directions[s]} ${ln==null?"":line(ln)}${odd==null?"":` @ ${Number(odd).toFixed(2)}`}`;
+  }).join(" → ");
 }
-function number(value) {
-  return Number.isFinite(Number(value)) ? Number(value) : 0;
-}
-function pct(value, digits = 1) {
-  return value == null ? "—" : `${(Number(value) * 100).toFixed(digits)}%`;
-}
-function metric(label, value, cls = "") {
-  return `<div class="metric ${cls}"><span>${label}</span><b>${value}</b></div>`;
-}
-function validate(payload) {
-  if (!payload || payload.report !== "direction_path_conditions") return "報告格式不符";
-  if (payload.mode !== "shadow_only_no_bets_no_notifications") return "隔離模式設定不符";
-  if (!payload.summary || !Array.isArray(payload.conditions)) return "報告欠缺統計資料";
-  return "";
-}
-function renderSummary(summary) {
-  document.getElementById("summary").innerHTML = [
-    ["歷史場次", summary.historical],
-    ["新前瞻", summary.prospective],
-    ["Pending", summary.pending],
-    ["細分路徑", summary.condition_count]
-  ].map(([label, value]) => `<div class="kpi"><span>${label}</span><b>${number(value)}</b></div>`).join("");
-}
-function stageBox(name, stage) {
-  if (!stage) {
-    return `<div class="stage-box missing"><span>${name}</span><strong>等待報價</strong></div>`;
-  }
-  return `<div class="stage-box captured">
-    <span>${name}</span>
-    <strong>${esc(stage.side)} · ${esc(stage.line)}</strong>
-    <span>${Number(stage.odds).toFixed(2)} / 對邊 ${Number(stage.other_odds).toFixed(2)}</span>
+function metric(label,value,cls=""){return `<div class="stat"><span>${label}</span><b class="${cls}">${value}</b></div>`}
+function panel(title,m,history=false){
+  const sample=history?m.sample:m.settled;
+  const sub=history?`${num(m.sample)} 場固定基準`:`${num(m.settled)} 已結算 / ${num(m.pending)} 待賽果`;
+  return `<div class="panel">
+    <div class="panel-title"><span>${title}</span><span>${sub}</span></div>
+    <div class="hero-num ${m.hit_rate!=null?"positive":""}">${pct(m.hit_rate)} <small>命中率</small></div>
+    <div class="stats">
+      ${metric("樣本",num(sample))}
+      ${metric("ROI",pct(m.roi,2),m.roi>0?"positive":"")}
+      ${metric(history?"走水":"入組",num(history?m.push:m.qualified))}
+    </div>
   </div>`;
 }
-function renderTracking() {
-  const tracking = state.payload?.tracking || {};
-  const rows = Array.isArray(tracking.rows) ? tracking.rows : [];
-  const provider = document.getElementById("provider").value;
-  const market = document.getElementById("market").value;
-  const visible = rows.filter(item =>
-    (provider === "all" || item.provider === provider) &&
-    (market === "all" || item.market === market)
-  );
-  const eligible = visible.filter(item => item.eligible).length;
-  document.getElementById("pipeline-summary").textContent =
-    `${visible.length} 組監察 · ${eligible} 組可入條件`;
-  document.getElementById("pipeline-list").innerHTML = visible.length
-    ? visible.map(item => {
-        const kickoff = new Date(Number(item.kickoff)).toLocaleString("zh-HK", {
-          timeZone: "Asia/Hong_Kong", hour12: false, month: "2-digit", day: "2-digit",
-          hour: "2-digit", minute: "2-digit"
-        });
-        return `<article class="pipeline-row">
-          <div class="fixture">
-            <strong>${esc(item.home_team || item.fixture_id)} 對 ${esc(item.away_team || "")}</strong>
-            <span>${kickoff} · ${esc(item.provider).toUpperCase()} · ${esc(item.market)}</span>
-          </div>
-          ${stageBox("初盤", (item.stages || {}).initial)}
-          ${stageBox("T-30", (item.stages || {}).T30)}
-          ${stageBox("T-5", (item.stages || {}).T5)}
-          <div class="eligibility ${item.eligible ? "accepted" : ""}">
-            <strong>${item.eligible ? esc(item.condition_id) : esc(item.eligibility_reason)}</strong>
-            <small>${esc(item.direction_path)}</small>
-          </div>
-        </article>`;
-      }).join("")
-    : `<div class="state">目前篩選組合未有 Radar 三階段報價。</div>`;
+function matches(rows){
+  if(!rows?.length)return "";
+  return `<details class="matches"><summary>查看啟用後符合場次 (${rows.length})</summary>${rows.map(r=>`
+    <div class="match">
+      <div><strong>${esc(r.home)} 對 ${esc(r.away)}</strong><small>${esc(r.league)} · ${esc((r.kickoff||"").replace("T"," ").slice(0,16))}</small><small>${esc(stagePath(r))}</small></div>
+      <div class="result"><b class="${r.settlement?"positive":"pending"}">${esc(r.settlement_label)}</b><small>${esc(r.score||"未有賽果")}</small></div>
+    </div>`).join("")}</details>`;
 }
-function renderCard(item, cohort, price) {
-  const group = item[cohort] || {};
-  const m = group[price] || {};
-  const versions = (item.prospective || {}).versions || {};
-  const progress = number(versions.progress);
-  const required = number(versions.required) || 20;
-  const active = versions.active || {};
-  const hasActiveMetrics = Object.prototype.hasOwnProperty.call(active, "decided");
-  const activeDecided = number(active.decided);
-  const activeHitText = !hasActiveMetrics
-    ? "命中率資料更新中"
-    : activeDecided
-      ? `目前命中 ${number(active.hits)} / ${activeDecided} · ${pct(active.hit_rate)}`
-      : "目前尚未有有效勝負";
-  const title = `${esc(item.provider).toUpperCase()} · ${esc(item.market)} ${esc(item.line)} · <span class="path">${esc(item.direction_path)}</span>`;
-  return `<article class="condition card">
-    <div class="condition-head">
-      <div><div class="eyebrow">${esc(item.id)}</div><h2>${title}</h2></div>
-      <span class="status status-${esc(item.status)}">${labels[item.status] || "觀察"}</span>
-    </div>
-    <p class="note">${esc(item.note || "")}</p>
-    <div class="version">
-      <div class="version-top"><span>新前瞻 V${number(versions.active_version) || 1}</span><b>${progress} / ${required}</b></div>
-      <div class="track"><i style="width:${Math.min(100, progress / required * 100).toFixed(1)}%"></i></div>
-      <div class="version-live">${activeHitText}</div>
-    </div>
-    <div class="metrics">
-      ${metric("入組場次", number(m.observations))}
-      ${metric("命中", `${number(m.hits)} / ${number(m.decided)}`)}
-      ${metric("命中率", pct(m.hit_rate))}
-      ${metric("Wilson 95% 下限", pct((m.wilson_95 || {}).low), "wilson")}
-      ${metric("實際 ROI", pct(m.roi, 2))}
-      ${metric("Pending", number(m.pending))}
-    </div>
+function card(c){
+  const cls=c.tier==="S"?"tier-s":"";
+  return `<article class="card ${cls}">
+    <div class="card-head"><div><div class="eyebrow">${esc(c.id)}</div><h3>${esc(c.title)}</h3></div><span class="tier ${c.tier==="S"?"s":""}">${esc(c.tier)}級</span></div>
+    <p class="definition">${esc(c.definition)}</p>
+    <div class="path">${esc(c.path_label)}</div>
+    <div class="split">${panel("歷史回測基準",c.historical,true)}${panel("啟用後實績",c.prospective,false)}</div>
+    ${matches(c.observations)}
   </article>`;
 }
-function render() {
-  const payload = state.payload;
-  if (!payload) return;
-  const provider = document.getElementById("provider").value;
-  const market = document.getElementById("market").value;
-  const status = document.getElementById("status").value;
-  const cohort = document.getElementById("cohort").value;
-  const price = document.getElementById("price").value;
-  const rows = payload.conditions.filter(item =>
-    (provider === "all" || item.provider === provider) &&
-    (market === "all" || item.market === market) &&
-    (status === "all" || (status === "featured" ? item.status !== "insufficient" : item.status === status))
-  );
-  document.getElementById("count").textContent = `顯示 ${rows.length} / ${payload.conditions.length} 個路徑`;
-  document.getElementById("list").innerHTML = rows.length
-    ? rows.map(item => renderCard(item, cohort, price)).join("")
-    : `<div class="card state">目前篩選組合冇符合路徑。</div>`;
-  renderTracking();
+function render(sc){
+  if(!sc||sc.direction_basis!=="model_prediction_not_quote_direction")throw new Error("資料唔係預測方向口徑");
+  if(JSON.stringify(sc.public_tiers)!==JSON.stringify(["S","A"]))throw new Error("公開級別設定不符");
+  const conditions=sc.public_conditions||[];
+  document.getElementById("cutoff").textContent=`前瞻啟用線 ${new Date(sc.activation_cutoff).toLocaleString("zh-HK",{timeZone:"Asia/Hong_Kong",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",hour12:false})} HKT`;
+  document.getElementById("updated").textContent=`更新 ${new Date(sc.generated_at).toLocaleString("zh-HK",{timeZone:"Asia/Hong_Kong",hour12:false})}`;
+  document.getElementById("content").innerHTML=MARKET_ORDER.map(code=>{
+    const rows=conditions.filter(c=>c.market===code&&["S","A"].includes(c.tier));
+    return `<section class="market"><div class="market-head"><h2>${MARKET_LABEL[code]}</h2><span class="market-meta">${rows.length} 個公開 S/A 條件</span></div>
+      ${rows.length?`<div class="grid">${rows.map(card).join("")}</div>`:`<div class="empty">目前未有達到 S／A 級嘅條件；後台繼續累積。</div>`}
+    </section>`;
+  }).join("");
 }
-async function load() {
-  const list = document.getElementById("list");
-  list.innerHTML = `<div class="card state">正在讀取 V2 條件帳本…</div>`;
-  document.getElementById("count").textContent = "載入中…";
-  try {
-    const response = await fetch(`./direction-path-conditions.json?ts=${Date.now()}`, { cache: "no-store" });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const payload = await response.json();
-    const error = validate(payload);
-    if (error) throw new Error(error);
-    state.payload = payload;
-    renderSummary(payload.summary);
-    render();
-    const stamp = payload.generated_at ? new Date(payload.generated_at).toLocaleString("zh-HK", {
-      timeZone: "Asia/Hong_Kong", hour12: false
-    }) : "—";
-    document.getElementById("updated").textContent = `V2 本機資料 · 更新 ${stamp} · 唔使用 Perplexity 點數`;
-  } catch (error) {
-    state.payload = null;
-    list.innerHTML = `<div class="card state error">載入失敗：${esc(error.message)}。伺服器會按排程自動重試。</div>`;
-    document.getElementById("count").textContent = "載入失敗";
+async function load(){
+  try{
+    const response=await fetch(`./data.json?ts=${Date.now()}`,{cache:"no-store"});
+    if(!response.ok)throw new Error(`HTTP ${response.status}`);
+    const payload=await response.json();
+    render(payload.segmented_conditions);
+  }catch(error){
+    document.getElementById("content").innerHTML=`<div class="empty error">載入失敗：${esc(error.message)}。V2 排程會自動重試。</div>`;
+    document.getElementById("updated").textContent="載入失敗";
   }
 }
-for (const id of ["provider", "market", "status", "cohort", "price"]) {
-  document.getElementById(id).addEventListener("change", render);
-}
-document.getElementById("reload").addEventListener("click", load);
-load();
+load();setInterval(load,60000);
 </script>
 </body>
 </html>

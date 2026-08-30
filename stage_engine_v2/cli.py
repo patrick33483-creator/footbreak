@@ -22,6 +22,7 @@ from .native_queue import DEFAULT_NATIVE_QUEUE_DIR, load_native_payloads
 from .predictor import build_prediction
 from .publisher import decide_publish
 from .scheduler import due_stages
+from .segmented_conditions import build_segmented_conditions
 from .telegram import DEFAULT_SENT_LOG, send_stage
 from .writer import DEFAULT_LEDGER_PATH, already_fired, load_ledger, record_stage, save_ledger
 
@@ -123,7 +124,12 @@ def _run_tick(
 
     if not dry_run:
         save_ledger(ledger, ledger_path)
-        _write_dashboard(ledger, dashboard_path, now_utc=now_utc)
+        _write_dashboard(
+            ledger,
+            dashboard_path,
+            now_utc=now_utc,
+            history_rows=_load_history_rows(crown_data_path),
+        )
 
     finished_at = datetime.now(timezone.utc)
     return {
@@ -145,6 +151,7 @@ def _write_dashboard(
     dashboard_path: Path,
     *,
     now_utc: datetime,
+    history_rows: list[dict[str, Any]] | None = None,
 ) -> None:
     fixtures_out = []
     for slot in (ledger.get("fixtures") or {}).values():
@@ -155,7 +162,10 @@ def _write_dashboard(
             name: {
                 "predicted_at_utc": row.get("predicted_at_utc"),
                 "lead_market": row.get("lead_market"),
+                "lead_code": row.get("lead_code"),
                 "lead_label": row.get("lead_label"),
+                "lead_side": row.get("lead_side"),
+                "lead_line": row.get("lead_line"),
                 "lead_odds": row.get("lead_odds"),
                 "lead_prob": row.get("lead_prob"),
                 "lead_ev": row.get("lead_ev"),
@@ -194,11 +204,37 @@ def _write_dashboard(
         "generated_at_hkt": now_utc.astimezone(HKT).isoformat(),
         "fixtures_count": len(fixtures_out),
         "fixtures": fixtures_out,
+        "segmented_conditions": build_segmented_conditions(
+            ledger,
+            history_rows or [],
+            generated_at=now_utc.astimezone(HKT).isoformat(),
+        ),
     }
     dashboard_path.parent.mkdir(parents=True, exist_ok=True)
     tmp = dashboard_path.with_suffix(dashboard_path.suffix + ".tmp")
     tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     tmp.replace(dashboard_path)
+
+
+def _load_history_rows(crown_data_path: Path) -> list[dict[str, Any]]:
+    """Read Crown's public result-bearing history sidecar without mutating it."""
+    try:
+        payload = json.loads(crown_data_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    history = payload.get("prediction_history")
+    if isinstance(history, dict) and isinstance(history.get("rows"), list):
+        return [row for row in history["rows"] if isinstance(row, dict)]
+    relative = str(payload.get("history_data_url") or "").strip()
+    if not relative or "/" in relative or "\\" in relative:
+        return []
+    try:
+        sidecar = json.loads((crown_data_path.parent / relative).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    history = sidecar.get("prediction_history")
+    rows = history.get("rows") if isinstance(history, dict) else None
+    return [row for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
 
 
 def build_parser() -> argparse.ArgumentParser:

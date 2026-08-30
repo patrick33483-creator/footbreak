@@ -108,7 +108,10 @@ def test_timed_stage_prefers_exact_native_payload_over_legacy_projection():
     pred = build_prediction(_fx(raw), "T-30", native_payload=native)
     assert pred is not None
     assert pred["lead_market"] == "入球大細"
+    assert pred["lead_code"] == "HIL"
     assert pred["lead_label"] == "O 2.75"
+    assert pred["lead_side"] == "O"
+    assert pred["lead_line"] == 2.75
     assert pred["lead_odds"] == 1.95
     assert pred["lead_prob"] == 0.60
     assert pred["stage_payload_source"] == "crown_native_stage_queue"

@@ -132,12 +132,12 @@ footer a { color: var(--accent); text-decoration: none; }
 </head>
 <body>
 <h1>皇冠系統V2 · 歷史紀錄<span class="shadow-badge">SHADOW</span></h1>
-<div class="subtitle">按場次顯示 <b>初盤（或舊首預）/ T-30 / T-5</b> 三個時點嘅完整預測 snapshot。只有 <code>crown-opening-fixed-v1</code> 先標示為初盤。</div>
+<div class="subtitle">按場次顯示 <b>初盤預測 / T-30 / T-5</b> 三個時點嘅完整預測 snapshot。只有 <code>crown-opening-fixed-v1</code> 固定輸入模型先納入初盤預測。</div>
 
 <div class="nav">
   <a href="./">即時 dashboard</a>
   <a href="./history.html" class="active">歷史紀錄</a>
-  <a href="./conditions.html">三階段細分</a>
+  <a href="./conditions.html">細分條件</a>
 </div>
 
 <div class="filter-row">
@@ -200,7 +200,7 @@ function stageDelta(prev, curr, key) {
 
 function renderStage(stageName, rec, prevRec) {
   const stageLabel = stageName === '首預'
-    ? (rec?.prediction_model === 'crown-opening-fixed-v1' ? '初盤' : '舊首預')
+    ? (rec?.prediction_model === 'crown-opening-fixed-v1' ? '初盤預測' : '非固定初盤（不納入）')
     : stageName;
   if (!rec) {
     return `<div class="stage-cell missing">

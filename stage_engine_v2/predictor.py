@@ -131,7 +131,12 @@ def _pick_lead(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
     conviction = _as_float(best.get("conviction"))
     return {
         "lead_market": str(best.get("market") or best.get("market_label") or ""),
+        "lead_code": str(best.get("code") or best.get("market") or ""),
         "lead_label": str(best.get("label") or best.get("selection") or ""),
+        "lead_side": str(best.get("side") or ""),
+        "lead_line": _as_float(
+            best.get("line") if best.get("line") is not None else best.get("condition")
+        ),
         "lead_odds": odds,
         "lead_prob": prob,
         "lead_ev": ev,
