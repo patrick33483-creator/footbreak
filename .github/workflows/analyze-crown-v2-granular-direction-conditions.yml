@@ -172,9 +172,10 @@ jobs:
                   continue
               if row.get("exclude_from_primary_statistics") or row.get("exclude_from_settlement"):
                   continue
-              if stage == "首預" and row.get("prediction_model") != "crown-opening-fixed-v1":
-                  diagnostics["non_v2_initial_model"] += 1
-                  continue
+              if stage == "首預":
+                  diagnostics[
+                      f"initial_model:{row.get('prediction_model') or 'unknown'}"
+                  ] += 1
               predicted = parse_time(row.get("predicted_at"))
               kickoff = parse_time(row.get("kickoff"))
               if predicted is None or kickoff is None or predicted >= kickoff:
@@ -432,7 +433,7 @@ jobs:
               "file_state_after": after,
               "definition": {
                   "direction": "皇冠模型每階段最高 EV lead 的主／客／大／細，不是報價方向",
-                  "initial": "只接受 crown-opening-fixed-v1 的初盤預測",
+                  "initial": "完整皇冠歷史初盤預測；模型版本分布另列，沒有把舊模型偽裝成嚴格 V2",
                   "same_line": "三階段 lead 的標準化亞洲中位線完全相同",
                   "odds_filter": "三階段所選 lead 的 decimal odds 均嚴格高於門檻",
                   "decision": "完整條件在 T-5 才成立，以 T-5 lead、線位及賠率結算",
