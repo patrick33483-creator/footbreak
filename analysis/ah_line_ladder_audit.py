@@ -24,6 +24,56 @@ def number(value: Any) -> float | None:
     return parsed if math.isfinite(parsed) else None
 
 
+def bucket_drift(gap: float) -> str:
+    """Bucket the initial-to-T5 odds gap for the T5-selected side.
+
+    Positive gap means the odds shortened (T5 odds lower than initial) --
+    i.e. the market grew more confident in that side.
+    """
+    if gap >= 0.20:
+        return "收縮>=0.20"
+    if gap >= 0.10:
+        return "收縮0.10-0.20"
+    if gap >= 0.05:
+        return "收縮0.05-0.10"
+    if gap > 0:
+        return "收縮<0.05"
+    return "持平或拉闊"
+
+
+BUCKET_ORDER = ["收縮>=0.20", "收縮0.10-0.20", "收縮0.05-0.10", "收縮<0.05", "持平或拉闊"]
+
+SIGNAL_MIN_SAMPLE = 15
+SIGNAL_STRONG_EDGE_PP = 10.0
+SIGNAL_WATCH_EDGE_PP = 5.0
+SIGNAL_FADE_EDGE_PP = -10.0
+
+
+def classify_signal(edge_pp: float | None, observations: int) -> str:
+    """Turn (actual hit rate - T5 raw implied probability) into a plain-language signal.
+
+    `edge_pp` is already "actual hit rate minus T5 raw implied probability", in
+    percentage points. Positive means the closing price still underestimated the
+    backed side; negative means it overestimated it.
+    """
+    if edge_pp is None:
+        return "無法評估(未有隱含機率)"
+    if observations < SIGNAL_MIN_SAMPLE:
+        return "樣本不足,僅供參考"
+    if edge_pp >= SIGNAL_STRONG_EDGE_PP:
+        return "強烈訊號:跟隨該側"
+    if edge_pp >= SIGNAL_WATCH_EDGE_PP:
+        return "輕微訊號:可留意"
+    if edge_pp <= SIGNAL_FADE_EDGE_PP:
+        return "反向訊號:避免/反向"
+    return "訊號不明顯"
+
+
+def side_odds(stage: dict[str, Any], side: str) -> float:
+    """Odds quoted for `side` at this stage, whether or not it was the selected side."""
+    return stage["odds"] if stage["side"] == side else stage["other_odds"]
+
+
 def line_number(value: Any) -> float | None:
     text = str(value or "").strip()
     if "/" in text:
@@ -377,6 +427,91 @@ def run(db: sqlite3.Connection, threshold: float) -> dict[str, Any]:
         for (provider, path), group in sorted(path_groups.items())
     ]
 
+    # Odds-drift bucket per (provider, direction_path): the gap always compares the
+    # *T5-side* price at initial vs at T5 (via `other_odds` when the selected side
+    # switched along the way), covering every direction path -- not just pure H→H→H
+    # / A→A→A. Rows whose T5 side is D are skipped: there is no single side to price
+    # when the market closes level (those are covered by level_breakdown instead).
+    drift_groups: dict[tuple[str, str, str], list[dict[str, Any]]] = collections.defaultdict(list)
+    outcome_drift_groups: dict[tuple[str, str, str], list[float]] = collections.defaultdict(list)
+    for row in eligible:
+        path = row["direction_path"]
+        t5_side = row["T5"]["side"]
+        if t5_side == "D":
+            continue
+        gap = round(side_odds(row["initial"], t5_side) - row["T5"]["odds"], 4)
+        bucket = bucket_drift(gap)
+        drift_groups[(row["provider"], path, bucket)].append(row)
+        if row.get("actual_result") is not None:
+            outcome_drift_groups[(row["provider"], path, row["actual_result"])].append(gap)
+
+    odds_drift_breakdown = [
+        {
+            "provider": provider,
+            "direction_path": path,
+            "bucket": bucket,
+            "avg_gap": round(
+                sum(side_odds(r["initial"], r["T5"]["side"]) - r["T5"]["odds"] for r in group)
+                / len(group),
+                4,
+            ),
+            "avg_initial_odds": round(
+                sum(side_odds(r["initial"], r["T5"]["side"]) for r in group) / len(group), 4
+            ),
+            "avg_t5_odds": round(sum(r["T5"]["odds"] for r in group) / len(group), 4),
+            **outcome_probability(group),
+        }
+        for (provider, path, bucket), group in sorted(
+            drift_groups.items(),
+            key=lambda kv: (kv[0][0], kv[0][1], BUCKET_ORDER.index(kv[0][2])),
+        )
+    ]
+    drift_by_outcome = [
+        {
+            "provider": provider,
+            "direction_path": path,
+            "actual_result": outcome,
+            "observations": len(gaps),
+            "avg_gap": round(sum(gaps) / len(gaps), 4),
+            "min_gap": round(min(gaps), 4),
+            "max_gap": round(max(gaps), 4),
+        }
+        for (provider, path, outcome), gaps in sorted(outcome_drift_groups.items())
+    ]
+
+    # Composite signal: (provider, direction_path, drift bucket) -> a plain buy/avoid
+    # label, built purely from settled observations in that exact combination.
+    composite_signal_table = []
+    for (provider, path, bucket), group in sorted(
+        drift_groups.items(),
+        key=lambda kv: (kv[0][0], kv[0][1], BUCKET_ORDER.index(kv[0][2])),
+    ):
+        settled = [r for r in group if r.get("actual_result") is not None]
+        t5_side = group[0]["T5"]["side"]
+        backed_label = "主開出" if t5_side == "H" else "客開出"
+        stats = outcome_probability(group)
+        hit = stats["probability"].get(backed_label)
+        avg_t5_odds = round(sum(r["T5"]["odds"] for r in group) / len(group), 4)
+        implied = round(1 / avg_t5_odds, 4) if avg_t5_odds else None
+        edge_pp = (
+            round((hit - implied) * 100, 1) if hit is not None and implied is not None else None
+        )
+        composite_signal_table.append(
+            {
+                "provider": provider,
+                "direction_path": path,
+                "bucket": bucket,
+                "backed_side": backed_label,
+                "observations": len(group),
+                "settled": len(settled),
+                "avg_t5_odds": avg_t5_odds,
+                "hit_rate_pct": round(hit * 100, 1) if hit is not None else None,
+                "implied_prob_pct": round(implied * 100, 1) if implied is not None else None,
+                "edge_pp": edge_pp,
+                "signal": classify_signal(edge_pp, len(settled)),
+            }
+        )
+
     level_rows = [row for row in eligible if row["direction_path"].endswith("D")]
     level_groups: dict[tuple[str, str, float], collections.Counter] = collections.defaultdict(
         collections.Counter
@@ -462,6 +597,9 @@ def run(db: sqlite3.Connection, threshold: float) -> dict[str, Any]:
         "level_breakdown": level_breakdown,
         "level_summary": level_summary,
         "level_involved_detail": level_involved_detail,
+        "odds_drift_breakdown": odds_drift_breakdown,
+        "drift_by_outcome": drift_by_outcome,
+        "composite_signal_table": composite_signal_table,
     }
 
 

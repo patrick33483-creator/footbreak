@@ -302,3 +302,81 @@ def test_data_availability_distinguishes_line_movement_and_missing_stages() -> N
     pattern = report["stage_pattern_breakdown"]["pinnacle"]["counts"]
     assert pattern["齊三個時點"] == 2  # fixture-1 and fixture-2 (line moved but all 3 stages present)
     assert pattern["缺:T5"] == 1  # fixture-3 is missing only T5
+
+
+def test_classify_signal_thresholds() -> None:
+    classify_signal = AUDIT.classify_signal
+    assert classify_signal(12.0, 20) == "強烈訊號:跟隨該側"
+    assert classify_signal(7.0, 20) == "輕微訊號:可留意"
+    assert classify_signal(2.0, 20) == "訊號不明顯"
+    assert classify_signal(-15.0, 20) == "反向訊號:避免/反向"
+    assert classify_signal(20.0, 5) == "樣本不足,僅供參考"
+    assert classify_signal(None, 20) == "無法評估(未有隱含機率)"
+
+
+def test_odds_drift_breakdown_buckets_initial_to_t5_gap() -> None:
+    db = make_db()
+    db.execute(
+        "INSERT INTO matches VALUES ('fixture-1', 2000, 'Home Team', 'Away Team')"
+    )
+    db.execute("INSERT INTO research_results VALUES ('fixture-1', 2, 0)")
+    # Pure H→H→H path: home is cheaper (selected) at every stage, and its price
+    # shortens 1.95→1.80 (gap 0.15 -> bucket 0.10-0.20).
+    add_pair(db, stage="initial", line="0", home_odds=1.95, away_odds=2.05, captured_at=1000)
+    add_pair(db, stage="T30", line="0", home_odds=1.88, away_odds=1.98, captured_at=1100)
+    add_pair(db, stage="T5", line="0", home_odds=1.80, away_odds=1.90, captured_at=1200)
+
+    report = AUDIT.run(db, 1.70)
+    row = next(
+        r for r in report["odds_drift_breakdown"]
+        if r["provider"] == "pinnacle" and r["direction_path"] == "H→H→H"
+    )
+    assert row["bucket"] == "收縮0.10-0.20"
+    assert row["avg_gap"] == 0.15
+    assert row["avg_initial_odds"] == 1.95
+    assert row["avg_t5_odds"] == 1.80
+
+
+def test_odds_drift_breakdown_handles_side_switch_paths() -> None:
+    db = make_db()
+    db.execute(
+        "INSERT INTO matches VALUES ('fixture-1', 2000, 'Home Team', 'Away Team')"
+    )
+    db.execute("INSERT INTO research_results VALUES ('fixture-1', 0, 2)")
+    # initial selects Home (cheaper), T30/T5 flip to Away -> path H→A→A.
+    # T5 side is A, so the gap must compare A's price at initial (1.98, via
+    # other_odds) against A's price at T5 (1.80): gap = 0.18.
+    add_pair(db, stage="initial", line="0", home_odds=1.90, away_odds=1.98, captured_at=1000)
+    add_pair(db, stage="T30", line="0", home_odds=1.95, away_odds=1.85, captured_at=1100)
+    add_pair(db, stage="T5", line="0", home_odds=2.00, away_odds=1.80, captured_at=1200)
+
+    report = AUDIT.run(db, 1.70)
+    row = next(
+        r for r in report["odds_drift_breakdown"]
+        if r["provider"] == "pinnacle" and r["direction_path"] == "H→A→A"
+    )
+    assert row["avg_gap"] == 0.18
+    assert row["avg_initial_odds"] == 1.98
+    assert row["avg_t5_odds"] == 1.80
+
+
+def test_composite_signal_table_matches_drift_breakdown() -> None:
+    db = make_db()
+    db.execute(
+        "INSERT INTO matches VALUES ('fixture-1', 2000, 'Home Team', 'Away Team')"
+    )
+    db.execute("INSERT INTO research_results VALUES ('fixture-1', 0, 2)")
+    add_pair(db, stage="initial", line="0", home_odds=1.90, away_odds=1.98, captured_at=1000)
+    add_pair(db, stage="T30", line="0", home_odds=1.95, away_odds=1.85, captured_at=1100)
+    add_pair(db, stage="T5", line="0", home_odds=2.00, away_odds=1.80, captured_at=1200)
+
+    report = AUDIT.run(db, 1.70)
+    row = next(
+        r for r in report["composite_signal_table"]
+        if r["provider"] == "pinnacle" and r["direction_path"] == "H→A→A"
+    )
+    assert row["backed_side"] == "客開出"
+    assert row["avg_t5_odds"] == 1.80
+    assert row["observations"] == 1
+    # Below the minimum-sample threshold -> flagged as reference-only regardless of edge.
+    assert row["signal"] == "樣本不足,僅供參考"
