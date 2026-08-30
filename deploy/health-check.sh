@@ -49,7 +49,7 @@ echo "=== production health $(TZ=Asia/Hong_Kong date '+%F %T %Z') ==="
 for unit in \
   footbreak-tick.timer footbreak-sweep.timer footbreak-settle.timer footbreak-backtest.timer \
   footbreak-result-reconcile.timer footbreak-dashboard-self-heal.timer \
-  footbreak-server-health-monitor.timer telegram-silence-monitor.timer \
+  footbreak-server-health-monitor.timer \
   direction-path-conditions.timer; do
   systemctl is-enabled --quiet "$unit" || {
     state="$(systemctl is-enabled "$unit" 2>&1 || true)"
@@ -63,6 +63,15 @@ for unit in \
   }
   echo "OK timer $unit"
 done
+
+if systemctl is-enabled --quiet telegram-silence-monitor.timer ||
+   systemctl is-active --quiet telegram-silence-monitor.timer; then
+  systemctl show telegram-silence-monitor.timer \
+    -p LoadState -p ActiveState -p SubState -p UnitFileState -p Result
+  echo "FAIL retired timer telegram-silence-monitor.timer is enabled or active" >&2
+  exit 1
+fi
+echo "OK retired timer telegram-silence-monitor.timer is disabled"
 
 if crown_is_enabled; then
   for unit in crown-round-update.timer crown-first-look-reconcile.timer crown-early-admission-reconcile.timer crown-tick.timer crown-sweep.timer crown-settle.timer; do

@@ -173,7 +173,7 @@ fi
 systemctl enable --now \
   footbreak-tick.timer footbreak-sweep.timer footbreak-settle.timer \
   footbreak-result-reconcile.timer footbreak-dashboard-self-heal.timer \
-  footbreak-server-health-monitor.timer telegram-silence-monitor.timer \
+  footbreak-server-health-monitor.timer \
   footbreak-daily-condition-report.timer direction-path-conditions.timer
 # The direction-path ledger is a local, read-only research worker.  It must
 # remain independent of the Crown prediction gate and survive a host that has
@@ -235,26 +235,11 @@ systemctl is-active --quiet footbreak-server-health-monitor.timer || {
   echo "ERROR: footbreak-server-health-monitor.timer did not restart" >&2
   exit 1
 }
-# First installation must create the timers.target symlink explicitly.  A
-# daemon-reloaded but never-enabled timer can report loaded/active for the
-# current boot while remaining disabled across reboot, so do not rely on a
-# restart or the earlier grouped enable call.
-systemctl unmask telegram-silence-monitor.timer 2>/dev/null || true
-systemctl enable --now telegram-silence-monitor.timer
-systemctl restart telegram-silence-monitor.timer
-systemctl start telegram-silence-monitor.service
-systemctl is-enabled --quiet telegram-silence-monitor.timer || {
-  systemctl show telegram-silence-monitor.timer \
-    -p LoadState -p ActiveState -p SubState -p UnitFileState -p Result
-  echo "ERROR: telegram-silence-monitor.timer did not become enabled" >&2
-  exit 1
-}
-systemctl is-active --quiet telegram-silence-monitor.timer || {
-  systemctl show telegram-silence-monitor.timer \
-    -p LoadState -p ActiveState -p SubState -p Result
-  echo "ERROR: telegram-silence-monitor.timer did not restart" >&2
-  exit 1
-}
+# Routine one-hour Telegram silence summaries were retired by operator request.
+# Keep the unit files available for audit history, but stop and durably disable
+# both the timer and any in-flight one-shot service on every deployment.
+systemctl disable --now telegram-silence-monitor.timer 2>/dev/null || true
+systemctl stop telegram-silence-monitor.service 2>/dev/null || true
 # The report is generated entirely on this host from locked local snapshots.
 # Reenable creates the durable timers.target symlink on both fresh and upgraded
 # servers.  Persistent=true makes a missed 12:15 HKT fire once after boot.

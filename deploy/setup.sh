@@ -141,9 +141,11 @@ systemctl disable --now crown-round-update.timer crown-first-look-reconcile.time
   "$APP_DIR/.venv/bin/python3" -m crown.reverse_t5_bridge_health mark-disabled)
 # 回測預設停用，需先成功建立基線再啟用。
 systemctl disable --now footbreak-backtest.timer 2>/dev/null || true
-# This monitor is local/read-only: unlike prediction timers it makes no
-# provider request, so it is safe and useful before the first live validation.
-systemctl enable --now footbreak-server-health-monitor.timer telegram-silence-monitor.timer direction-path-conditions.timer
+# Keep the operational health monitor and research worker enabled. Routine
+# one-hour Telegram silence summaries are retired and must remain disabled.
+systemctl enable --now footbreak-server-health-monitor.timer direction-path-conditions.timer
+systemctl disable --now telegram-silence-monitor.timer 2>/dev/null || true
+systemctl stop telegram-silence-monitor.service 2>/dev/null || true
 
 install -m 0644 "$APP_DIR/deploy/nginx-footbreak.conf" /etc/nginx/sites-available/footbreak
 ln -sf /etc/nginx/sites-available/footbreak /etc/nginx/sites-enabled/footbreak
