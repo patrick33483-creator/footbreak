@@ -132,7 +132,10 @@ jobs:
           ]
           valid_rows = sorted(
               [row for row in ah_rows if qualifies(row, 1.70)],
-              key=lambda row: int(row.get("kickoff") or 0),
+              key=lambda row: (
+                  row.get("settlement") is not None,
+                  int(row.get("kickoff") or 0),
+              ),
               reverse=True,
           )
           different_line_rows = sorted(
@@ -141,7 +144,10 @@ jobs:
                   for row in ah_rows
                   if normalized_line(row) is None
               ],
-              key=lambda row: int(row.get("kickoff") or 0),
+              key=lambda row: (
+                  row.get("settlement") is not None,
+                  int(row.get("kickoff") or 0),
+              ),
               reverse=True,
           )
           low_price_rows = sorted(
@@ -151,7 +157,10 @@ jobs:
                   if normalized_line(row) is not None
                   and not qualifies(row, 1.70)
               ],
-              key=lambda row: int(row.get("kickoff") or 0),
+              key=lambda row: (
+                  row.get("settlement") is not None,
+                  int(row.get("kickoff") or 0),
+              ),
               reverse=True,
           )
           report["audit_examples"] = {
