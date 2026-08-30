@@ -335,6 +335,29 @@ def run(db: sqlite3.Connection, threshold: float) -> dict[str, Any]:
         key=lambda row: (row.get("settlement") is not None, row["kickoff"]),
         reverse=True,
     )[:10]
+    level_involved_rows = sorted(
+        (row for row in eligible if "D" in row["direction_path"]),
+        key=lambda row: (row["provider"], row["direction_path"], row["line"], row["kickoff"]),
+    )
+    level_involved_detail = [
+        {
+            "provider": row["provider"],
+            "direction_path": row["direction_path"],
+            "line": row["line"],
+            "fixture_id": row["fixture_id"],
+            "home_team": row["home_team"],
+            "away_team": row["away_team"],
+            "kickoff": row["kickoff"],
+            "initial_side": row["initial"]["side"],
+            "initial_odds": row["initial"]["odds"],
+            "t30_side": row["T30"]["side"],
+            "t30_odds": row["T30"]["odds"],
+            "t5_side": row["T5"]["side"],
+            "t5_odds": row["T5"]["odds"],
+            "actual_result": row.get("actual_result"),
+        }
+        for row in level_involved_rows
+    ]
     recent_complete_rows = sorted(
         complete,
         key=lambda row: row["kickoff"],
@@ -362,6 +385,7 @@ def run(db: sqlite3.Connection, threshold: float) -> dict[str, Any]:
         "recent_complete_rows": recent_complete_rows,
         "level_breakdown": level_breakdown,
         "level_summary": level_summary,
+        "level_involved_detail": level_involved_detail,
     }
 
 
