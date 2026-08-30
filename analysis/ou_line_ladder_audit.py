@@ -24,6 +24,26 @@ def number(value: Any) -> float | None:
     return parsed if math.isfinite(parsed) else None
 
 
+def bucket_drift(gap: float) -> str:
+    """Bucket the initial-to-T5 odds gap for the selected side.
+
+    Positive gap means the odds shortened (T5 odds lower than initial) --
+    i.e. the market grew more confident in that side.
+    """
+    if gap >= 0.20:
+        return "收縮>=0.20"
+    if gap >= 0.10:
+        return "收縮0.10-0.20"
+    if gap >= 0.05:
+        return "收縮0.05-0.10"
+    if gap > 0:
+        return "收縮<0.05"
+    return "持平或拉闊"
+
+
+BUCKET_ORDER = ["收縮>=0.20", "收縮0.10-0.20", "收縮0.05-0.10", "收縮<0.05", "持平或拉闊"]
+
+
 def line_number(value: Any) -> float | None:
     text = str(value or "").strip()
     if "/" in text:
@@ -371,6 +391,44 @@ def run(db: sqlite3.Connection, threshold: float) -> dict[str, Any]:
         for (provider, path), group in sorted(path_groups.items())
     ]
 
+    drift_groups: dict[tuple[str, str, str], list[dict[str, Any]]] = collections.defaultdict(list)
+    outcome_drift_groups: dict[tuple[str, str, str], list[float]] = collections.defaultdict(list)
+    for row in eligible:
+        path = row["direction_path"]
+        if path not in ("O→O→O", "U→U→U"):
+            continue
+        gap = round(row["initial"]["odds"] - row["T5"]["odds"], 4)
+        bucket = bucket_drift(gap)
+        drift_groups[(row["provider"], path, bucket)].append(row)
+        if row.get("actual_result") is not None:
+            outcome_drift_groups[(row["provider"], path, row["actual_result"])].append(gap)
+
+    odds_drift_breakdown = [
+        {
+            "provider": provider,
+            "direction_path": path,
+            "bucket": bucket,
+            "avg_gap": round(sum(r["initial"]["odds"] - r["T5"]["odds"] for r in group) / len(group), 4),
+            **outcome_probability(group),
+        }
+        for (provider, path, bucket), group in sorted(
+            drift_groups.items(),
+            key=lambda kv: (kv[0][0], kv[0][1], BUCKET_ORDER.index(kv[0][2])),
+        )
+    ]
+    drift_by_outcome = [
+        {
+            "provider": provider,
+            "direction_path": path,
+            "actual_result": outcome,
+            "observations": len(gaps),
+            "avg_gap": round(sum(gaps) / len(gaps), 4),
+            "min_gap": round(min(gaps), 4),
+            "max_gap": round(max(gaps), 4),
+        }
+        for (provider, path, outcome), gaps in sorted(outcome_drift_groups.items())
+    ]
+
     level_rows = [row for row in eligible if row["direction_path"].endswith("D")]
     level_groups: dict[tuple[str, str, float], collections.Counter] = collections.defaultdict(
         collections.Counter
@@ -456,6 +514,8 @@ def run(db: sqlite3.Connection, threshold: float) -> dict[str, Any]:
         "level_breakdown": level_breakdown,
         "level_summary": level_summary,
         "level_involved_detail": level_involved_detail,
+        "odds_drift_breakdown": odds_drift_breakdown,
+        "drift_by_outcome": drift_by_outcome,
     }
 
 

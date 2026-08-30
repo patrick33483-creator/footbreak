@@ -213,6 +213,40 @@ def test_line_path_probability_slices_by_exact_line() -> None:
     assert row["counts"]["大球開出"] == 1
 
 
+def test_odds_drift_breakdown_buckets_initial_to_t5_gap() -> None:
+    db = make_db()
+    db.execute(
+        "INSERT INTO matches VALUES ('fixture-1', 2000, 'Home Team', 'Away Team')"
+    )
+    # total_goals = 3 -> actual_cover_side(2.5, 3) == "O".
+    db.execute("INSERT INTO research_results VALUES ('fixture-1', 2, 1)")
+    # Over odds shorten from 1.95 (initial) to 1.80 (T5): gap = 0.15 -> "收縮0.10-0.20".
+    # Over stays cheaper than Under at every stage, so the path is O→O→O.
+    add_pair(db, stage="initial", line="2.5", over_odds=1.95, under_odds=2.05, captured_at=1000)
+    add_pair(db, stage="T30", line="2.5", over_odds=1.88, under_odds=1.95, captured_at=1100)
+    add_pair(db, stage="T5", line="2.5", over_odds=1.80, under_odds=2.00, captured_at=1200)
+
+    report = AUDIT.run(db, 1.70)
+    row = next(
+        r for r in report["odds_drift_breakdown"]
+        if r["provider"] == "pinnacle"
+        and r["direction_path"] == "O→O→O"
+        and r["bucket"] == "收縮0.10-0.20"
+    )
+    assert row["observations"] == 1
+    assert row["avg_gap"] == 0.15
+    assert row["counts"]["大球開出"] == 1
+
+    outcome_row = next(
+        r for r in report["drift_by_outcome"]
+        if r["provider"] == "pinnacle"
+        and r["direction_path"] == "O→O→O"
+        and r["actual_result"] == "大球開出"
+    )
+    assert outcome_row["observations"] == 1
+    assert outcome_row["avg_gap"] == 0.15
+
+
 def test_data_availability_distinguishes_line_movement_and_missing_stages() -> None:
     db = make_db()
     # fixture-1: same line at all 3 stages, above threshold -> counts everywhere.
