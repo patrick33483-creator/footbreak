@@ -429,6 +429,39 @@ def run(db: sqlite3.Connection, threshold: float) -> dict[str, Any]:
         for (provider, path, outcome), gaps in sorted(outcome_drift_groups.items())
     ]
 
+    margin_groups: dict[tuple[str, str], list[float]] = collections.defaultdict(list)
+    odds_level_groups: dict[tuple[str, str], list[float]] = collections.defaultdict(list)
+    for row in eligible:
+        for stage in STAGES:
+            odds = row[stage]["odds"]
+            other = row[stage]["other_odds"]
+            odds_level_groups[(row["provider"], stage)].append(odds)
+            if odds and other and odds > 1 and other > 1:
+                margin_groups[(row["provider"], stage)].append(1 / odds + 1 / other - 1)
+
+    margin_summary = [
+        {
+            "provider": provider,
+            "stage": stage,
+            "observations": len(margins),
+            "avg_margin_pct": round(sum(margins) / len(margins) * 100, 3),
+        }
+        for (provider, stage), margins in sorted(
+            margin_groups.items(), key=lambda kv: (kv[0][0], STAGES.index(kv[0][1]))
+        )
+    ]
+    odds_level_summary = [
+        {
+            "provider": provider,
+            "stage": stage,
+            "observations": len(vals),
+            "avg_selected_odds": round(sum(vals) / len(vals), 4),
+        }
+        for (provider, stage), vals in sorted(
+            odds_level_groups.items(), key=lambda kv: (kv[0][0], STAGES.index(kv[0][1]))
+        )
+    ]
+
     level_rows = [row for row in eligible if row["direction_path"].endswith("D")]
     level_groups: dict[tuple[str, str, float], collections.Counter] = collections.defaultdict(
         collections.Counter
@@ -516,6 +549,8 @@ def run(db: sqlite3.Connection, threshold: float) -> dict[str, Any]:
         "level_involved_detail": level_involved_detail,
         "odds_drift_breakdown": odds_drift_breakdown,
         "drift_by_outcome": drift_by_outcome,
+        "margin_summary": margin_summary,
+        "odds_level_summary": odds_level_summary,
     }
 
 

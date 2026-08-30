@@ -247,6 +247,32 @@ def test_odds_drift_breakdown_buckets_initial_to_t5_gap() -> None:
     assert outcome_row["avg_gap"] == 0.15
 
 
+def test_margin_and_odds_level_summary_report_per_provider_per_stage() -> None:
+    db = make_db()
+    db.execute(
+        "INSERT INTO matches VALUES ('fixture-1', 2000, 'Home Team', 'Away Team')"
+    )
+    db.execute("INSERT INTO research_results VALUES ('fixture-1', 2, 1)")
+    # over_odds=1.90, under_odds=1.95 -> margin = 1/1.90 + 1/1.95 - 1.
+    add_pair(db, stage="initial", line="2.5", over_odds=1.90, under_odds=1.95, captured_at=1000)
+    add_pair(db, stage="T30", line="2.5", over_odds=1.85, under_odds=1.95, captured_at=1100)
+    add_pair(db, stage="T5", line="2.5", over_odds=1.80, under_odds=2.00, captured_at=1200)
+
+    report = AUDIT.run(db, 1.70)
+    margin_row = next(
+        r for r in report["margin_summary"]
+        if r["provider"] == "pinnacle" and r["stage"] == "initial"
+    )
+    expected_margin_pct = round((1 / 1.90 + 1 / 1.95 - 1) * 100, 3)
+    assert margin_row["avg_margin_pct"] == expected_margin_pct
+
+    odds_row = next(
+        r for r in report["odds_level_summary"]
+        if r["provider"] == "pinnacle" and r["stage"] == "T5"
+    )
+    assert odds_row["avg_selected_odds"] == 1.80
+
+
 def test_data_availability_distinguishes_line_movement_and_missing_stages() -> None:
     db = make_db()
     # fixture-1: same line at all 3 stages, above threshold -> counts everywhere.
