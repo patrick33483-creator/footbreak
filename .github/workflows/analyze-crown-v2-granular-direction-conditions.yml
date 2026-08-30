@@ -211,9 +211,33 @@ jobs:
               if len(set(directions)) == 1:
                   funnel["all_three_same_direction"] += 1
               lines = [lead["line"] for lead in leads]
-              if max(lines) - min(lines) > 1e-9:
-                  continue
-              funnel["same_line"] += 1
+              same_line = max(lines) - min(lines) <= 1e-9
+              if same_line:
+                  funnel["same_line"] += 1
+
+              line_movement = None
+              selected_lines = None
+              if len(set(directions)) == 1:
+                  if markets[0] == "讓球":
+                      selected_lines = [
+                          line if directions[0] == "主" else -line
+                          for line in lines
+                      ]
+                      advantage = selected_lines[2] - selected_lines[0]
+                  elif markets[0] in {"入球大細", "角球大細"}:
+                      selected_lines = list(lines)
+                      advantage = (
+                          lines[0] - lines[2]
+                          if directions[0] == "大"
+                          else lines[2] - lines[0]
+                      )
+                  else:
+                      advantage = 0
+                  line_movement = (
+                      "T-5比初盤更著數" if advantage > 1e-9
+                      else "T-5與初盤同線" if abs(advantage) <= 1e-9
+                      else "T-5比初盤更蝕底"
+                  )
 
               result_row = next(
                   (
@@ -245,6 +269,10 @@ jobs:
                   "T30_direction": directions[1],
                   "T5_direction": directions[2],
                   "line": lines[0],
+                  "stage_lines": lines,
+                  "selected_stage_lines": selected_lines,
+                  "same_line": same_line,
+                  "line_movement": line_movement,
                   "initial_odds": leads[0]["odds"],
                   "T30_odds": leads[1]["odds"],
                   "T5_odds": leads[2]["odds"],
@@ -255,7 +283,9 @@ jobs:
               }
               observations.append(observation)
               if grade:
-                  funnel["same_line_settled"] += 1
+                  funnel["same_market_settled"] += 1
+                  if same_line:
+                      funnel["same_line_settled"] += 1
 
           def wilson(hits, n, z=1.959963984540054):
               if not n:
@@ -312,12 +342,14 @@ jobs:
           market_stats = {}
           path_stats = {}
           line_stats = {}
+          same_direction_line_movement_stats = {}
           for threshold in THRESHOLDS:
               key = "無門檻" if threshold == 0 else f">{threshold:.2f}"
-              subset = [
+              eligible = [
                   row for row in observations
                   if threshold == 0 or row["min_odds"] > threshold
               ]
+              subset = [row for row in eligible if row["same_line"]]
               threshold_stats[key] = summarize(subset, f"all|{key}")
               market_stats[key] = {
                   market: summarize(
@@ -354,8 +386,25 @@ jobs:
                   for (market, path, line), group in sorted(grouped.items())
                   if len([row for row in group if row["grade"]]) >= 3
               }
+              same_direction_line_movement_stats[key] = {
+                  movement: summarize(
+                      [
+                          row for row in eligible
+                          if row["line_movement"] == movement
+                      ],
+                      f"movement|{key}|{movement}",
+                  )
+                  for movement in (
+                      "T-5比初盤更著數",
+                      "T-5與初盤同線",
+                      "T-5比初盤更蝕底",
+                  )
+              }
 
-          target = [row for row in observations if row["min_odds"] > 1.70]
+          target = [
+              row for row in observations
+              if row["same_line"] and row["min_odds"] > 1.70
+          ]
           recent_results = sorted(
               [row for row in target if row["grade"]],
               key=lambda row: str(row["kickoff"]),
@@ -381,6 +430,7 @@ jobs:
               "market_stats": market_stats,
               "path_stats": path_stats,
               "line_stats_settled_n_ge_3": line_stats,
+              "same_direction_line_movement_stats": same_direction_line_movement_stats,
               "recent_results_gt_1_70": recent_results,
           }
           print("CROWN_V2_GRANULAR_REPORT_BEGIN")
