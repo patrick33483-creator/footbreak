@@ -73,6 +73,24 @@ def unit_return(status: str, odds: float) -> float:
     }[status]
 
 
+def actual_cover_side(line: float, home_score: int, away_score: int) -> str:
+    """Which side actually covers a fixed AH line, independent of any bet side.
+
+    Used only for stages settled as "D" (平 — home/away odds exactly equal),
+    where there is no selected side to grade a win/loss against.
+    """
+    outcomes = []
+    for half in split_line(line):
+        adjusted = home_score + half - away_score
+        outcomes.append(1 if adjusted > 1e-9 else -1 if adjusted < -1e-9 else 0)
+    total = sum(outcomes)
+    if len(outcomes) == 1:
+        return {1: "H", 0: "push", -1: "A"}[outcomes[0]]
+    if total == 0:
+        return "push"
+    return "H" if total > 0 else "A"
+
+
 def metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
     settled = [row for row in rows if row.get("settlement")]
     decided = [row for row in settled if row["settlement"] in DECIDED]
@@ -161,6 +179,12 @@ def run(db: sqlite3.Connection, threshold: float) -> dict[str, Any]:
         if "H" not in sides or "A" not in sides:
             continue
         if abs(sides["H"]["odds"] - sides["A"]["odds"]) < 1e-12:
+            stage_rows[(match_id, provider, line)][stage] = {
+                "side": "D",
+                "line": line,
+                "odds": sides["H"]["odds"],
+                "other_odds": sides["A"]["odds"],
+            }
             continue
         selected = "H" if sides["H"]["odds"] < sides["A"]["odds"] else "A"
         opposite = "A" if selected == "H" else "H"
@@ -187,18 +211,35 @@ def run(db: sqlite3.Connection, threshold: float) -> dict[str, Any]:
             "direction_path": "→".join(stages[stage]["side"] for stage in STAGES),
             **{stage: stages[stage] for stage in STAGES},
         }
-        if meta["home_score"] is not None and meta["away_score"] is not None:
-            status = settle_ah(
-                line,
-                stages["T5"]["side"],
-                int(meta["home_score"]),
-                int(meta["away_score"]),
-            )
-            observation["settlement"] = status
-            observation["unit_return"] = unit_return(status, stages["T5"]["odds"])
-        else:
+        has_score = meta["home_score"] is not None and meta["away_score"] is not None
+        if stages["T5"]["side"] == "D":
             observation["settlement"] = None
             observation["unit_return"] = None
+            if has_score:
+                cover = actual_cover_side(
+                    line, int(meta["home_score"]), int(meta["away_score"])
+                )
+                observation["t5_level_result"] = {
+                    "H": "主開出",
+                    "A": "客開出",
+                    "push": "走盤",
+                }[cover]
+            else:
+                observation["t5_level_result"] = None
+        else:
+            observation["t5_level_result"] = None
+            if has_score:
+                status = settle_ah(
+                    line,
+                    stages["T5"]["side"],
+                    int(meta["home_score"]),
+                    int(meta["away_score"]),
+                )
+                observation["settlement"] = status
+                observation["unit_return"] = unit_return(status, stages["T5"]["odds"])
+            else:
+                observation["settlement"] = None
+                observation["unit_return"] = None
         complete.append(observation)
         if all(stages[stage]["odds"] > threshold for stage in STAGES):
             eligible.append(observation)
@@ -221,6 +262,33 @@ def run(db: sqlite3.Connection, threshold: float) -> dict[str, Any]:
         provider: metrics([row for row in eligible if row["provider"] == provider])
         for provider in ("hkjc", "pinnacle")
     }
+
+    level_rows = [row for row in eligible if row["direction_path"].endswith("D")]
+    level_groups: dict[tuple[str, str, float], collections.Counter] = collections.defaultdict(
+        collections.Counter
+    )
+    for row in level_rows:
+        key = (row["provider"], row["direction_path"], row["line"])
+        label = row.get("t5_level_result") or "待賽果"
+        level_groups[key][label] += 1
+    level_breakdown = [
+        {
+            "provider": provider,
+            "direction_path": path,
+            "line": line,
+            "observations": sum(counts.values()),
+            "counts": dict(counts),
+        }
+        for (provider, path, line), counts in sorted(level_groups.items())
+    ]
+    level_summary = {
+        "total": len(level_rows),
+        "counts": dict(
+            collections.Counter(
+                row.get("t5_level_result") or "待賽果" for row in level_rows
+            )
+        ),
+    }
     examples = sorted(
         eligible,
         key=lambda row: (row.get("settlement") is not None, row["kickoff"]),
@@ -235,9 +303,10 @@ def run(db: sqlite3.Connection, threshold: float) -> dict[str, Any]:
         "report": "ah_line_ladder_audit",
         "definition": {
             "identity": "fixture + provider + exact AH line",
-            "path": "initial lower-odds side → T30 lower-odds side → T5 lower-odds side",
-            "price_rule": f"selected side odds at all three stages strictly >{threshold:.2f}",
+            "path": "initial side → T30 side → T5 side, each H/A/D (D = home odds == away odds exactly, 平)",
+            "price_rule": f"selected/shared-D odds at all three stages strictly >{threshold:.2f}",
             "main_line_rule": "no stage-level main-line collapse; every exact line is followed independently",
+            "level_rule": "when T5 side is D there is no bet side to grade; settlement is reported as 主開出/客開出/走盤 (actual cover side vs the fixed line) in level_breakdown, and excluded from hit-rate/ROI",
         },
         "summary": {
             "complete_line_paths": len(complete),
@@ -249,6 +318,8 @@ def run(db: sqlite3.Connection, threshold: float) -> dict[str, Any]:
         "conditions": conditions,
         "examples": examples,
         "recent_complete_rows": recent_complete_rows,
+        "level_breakdown": level_breakdown,
+        "level_summary": level_summary,
     }
 
 

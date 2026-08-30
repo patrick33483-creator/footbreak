@@ -133,3 +133,69 @@ def test_follows_exact_line_instead_of_collapsing_stage_ladder() -> None:
 def test_parses_split_handicap_as_midpoint() -> None:
     assert AUDIT.line_number("-0.5/-1") == -0.75
     assert AUDIT.line_number("0/0.5") == 0.25
+
+
+def test_equal_odds_stage_is_level_and_still_needs_threshold() -> None:
+    db = make_db()
+    db.execute(
+        "INSERT INTO matches VALUES ('fixture-2', 2000, 'Home Team', 'Away Team')"
+    )
+    db.execute("INSERT INTO research_results VALUES ('fixture-2', 1, 1)")
+
+    def add(match_id, stage, line, home_odds, away_odds, captured_at):
+        origin = "external_opening" if stage == "initial" else "live_observation"
+        db.executemany(
+            "INSERT INTO research_timeline_snapshots VALUES (?, ?, 'pinnacle', 'AH', ?, ?, ?, ?, ?)",
+            [
+                (match_id, stage, line, "H", home_odds, captured_at, origin),
+                (match_id, stage, line, "A", away_odds, captured_at, origin),
+            ],
+        )
+
+    # Level (平) at every stage: home odds == away odds == 0.0 handicap.
+    add("fixture-2", "initial", "0", 1.95, 1.95, 1000)
+    add("fixture-2", "T30", "0", 1.90, 1.90, 1100)
+    add("fixture-2", "T5", "0", 1.98, 1.98, 1200)
+
+    report = AUDIT.run(db, 1.70)
+    row = next(r for r in report["examples"] if r["fixture_id"] == "fixture-2")
+    assert row["direction_path"] == "D→D→D"
+    # 1-1 draw against a level (0.0) line is an exact push.
+    assert row["t5_level_result"] == "走盤"
+    assert row["settlement"] is None
+    assert row["unit_return"] is None
+
+
+def test_level_stage_below_threshold_is_excluded() -> None:
+    db = make_db()
+    db.execute(
+        "INSERT INTO matches VALUES ('fixture-3', 2000, 'Home Team', 'Away Team')"
+    )
+    db.execute("INSERT INTO research_results VALUES ('fixture-3', 2, 0)")
+
+    def add(match_id, stage, line, home_odds, away_odds, captured_at):
+        origin = "external_opening" if stage == "initial" else "live_observation"
+        db.executemany(
+            "INSERT INTO research_timeline_snapshots VALUES (?, ?, 'pinnacle', 'AH', ?, ?, ?, ?, ?)",
+            [
+                (match_id, stage, line, "H", home_odds, captured_at, origin),
+                (match_id, stage, line, "A", away_odds, captured_at, origin),
+            ],
+        )
+
+    add("fixture-3", "initial", "0", 1.60, 1.60, 1000)  # below threshold
+    add("fixture-3", "T30", "0", 1.90, 1.90, 1100)
+    add("fixture-3", "T5", "0", 1.98, 1.98, 1200)
+
+    report = AUDIT.run(db, 1.70)
+    assert not any(r["fixture_id"] == "fixture-3" for r in report["examples"])
+    assert report["summary"]["complete_line_paths"] == 1
+    assert report["summary"]["eligible_line_paths"] == 0
+
+
+def test_actual_cover_side_helper() -> None:
+    assert AUDIT.actual_cover_side(0.0, 1, 1) == "push"
+    assert AUDIT.actual_cover_side(0.0, 2, 1) == "H"
+    assert AUDIT.actual_cover_side(0.0, 1, 2) == "A"
+    assert AUDIT.actual_cover_side(-0.75, 1, 1) == "A"
+    assert AUDIT.actual_cover_side(-0.75, 2, 1) == "H"
