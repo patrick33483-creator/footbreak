@@ -1,0 +1,50 @@
+name: 大小球逐線三階段回測（只讀）
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 設定 SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: 上載只讀分析程式
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          scp analysis/ou_line_ladder_audit.py \
+            "$DEPLOY_USER@$DEPLOY_HOST:/tmp/ou_line_ladder_audit.py"
+
+      - name: 執行逐線回測
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes "$DEPLOY_USER@$DEPLOY_HOST" \
+            'sudo /opt/footbreak/.venv/bin/python3 /tmp/ou_line_ladder_audit.py' \
+            > ou-line-ladder-audit.json
+          python -m json.tool ou-line-ladder-audit.json >/dev/null
+          echo "OU_LINE_LADDER_JSON_BEGIN"
+          python -m json.tool ou-line-ladder-audit.json
+          echo "OU_LINE_LADDER_JSON_END"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ou-line-ladder-audit
+          path: ou-line-ladder-audit.json
+          retention-days: 3
