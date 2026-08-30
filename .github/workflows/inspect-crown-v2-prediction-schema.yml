@@ -1,0 +1,117 @@
+name: Inspect Crown V2 prediction schema (read only)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: Inspect prediction and result schemas
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'sudo python3 -' <<'PY'
+          import json
+          from pathlib import Path
+
+          candidates = [
+              Path("/var/lib/footbreak/stage_engine_v2/ledger.json"),
+              Path("/var/www/stage_engine_v2/data.json"),
+              Path("/var/lib/footbreak/crown/predictions.json"),
+              Path("/var/lib/footbreak/crown/ledger.json"),
+              Path("/var/www/crown/data.json"),
+          ]
+          for path in candidates:
+              print(f"\n=== FILE {path} ===")
+              if not path.exists():
+                  print("MISSING")
+                  continue
+              print(f"size={path.stat().st_size}")
+              try:
+                  data = json.loads(path.read_text(encoding="utf-8"))
+              except Exception as exc:
+                  print(f"READ_ERROR {type(exc).__name__}: {exc}")
+                  continue
+              print(f"type={type(data).__name__}")
+              if isinstance(data, dict):
+                  print("top_keys=", sorted(data.keys()))
+                  if path.name == "ledger.json" and "stage_engine_v2" in str(path):
+                      fixtures = data.get("fixtures") or {}
+                      print("fixture_count=", len(fixtures))
+                      stage_counts = {}
+                      for fx in fixtures.values():
+                          for stage in (fx.get("stages") or {}):
+                              stage_counts[stage] = stage_counts.get(stage, 0) + 1
+                      print("stage_counts=", stage_counts)
+                      shown = 0
+                      for fixture_id, fx in fixtures.items():
+                          stages = fx.get("stages") or {}
+                          if len(stages) < 2:
+                              continue
+                          print("V2_SAMPLE=", json.dumps({
+                              "fixture_id": fixture_id,
+                              "fixture_keys": sorted(fx.keys()),
+                              "league": fx.get("league"),
+                              "home": fx.get("home"),
+                              "away": fx.get("away"),
+                              "kickoff_hkt": fx.get("kickoff_hkt"),
+                              "stages": {
+                                  s: {
+                                      "keys": sorted(row.keys()),
+                                      "lead_market": row.get("lead_market"),
+                                      "lead_label": row.get("lead_label"),
+                                      "lead_prob": row.get("lead_prob"),
+                                      "lead_odds": row.get("lead_odds"),
+                                      "pick": row.get("pick"),
+                                      "forecast": row.get("forecast"),
+                                      "market_predictions": row.get("market_predictions"),
+                                  }
+                                  for s, row in stages.items()
+                                  if isinstance(row, dict)
+                              },
+                          }, ensure_ascii=False))
+                          shown += 1
+                          if shown >= 3:
+                              break
+                  elif path.name == "predictions.json":
+                      print("list_like_keys=", [
+                          (key, len(value))
+                          for key, value in data.items()
+                          if isinstance(value, (list, dict))
+                      ][:20])
+                  elif "/crown/" in str(path) and path.name == "ledger.json":
+                      for key, value in data.items():
+                          if isinstance(value, (list, dict)):
+                              print(f"section {key}: {type(value).__name__} len={len(value)}")
+              elif isinstance(data, list):
+                  print("length=", len(data))
+                  if data:
+                      print("first_keys=", sorted(data[0].keys()) if isinstance(data[0], dict) else "not_dict")
+                      print("first_sample=", json.dumps(data[0], ensure_ascii=False)[:4000])
+
+          print("\n=== RESULT-LIKE FILES ===")
+          roots = [Path("/var/lib/footbreak/crown"), Path("/var/www/crown")]
+          for root in roots:
+              if not root.is_dir():
+                  continue
+              for path in sorted(root.rglob("*.json")):
+                  name = path.name.lower()
+                  if any(token in name for token in ("result", "settle", "history", "prediction")):
+                      print(f"{path} size={path.stat().st_size}")
+          PY
