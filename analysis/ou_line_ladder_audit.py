@@ -409,6 +409,8 @@ def run(db: sqlite3.Connection, threshold: float) -> dict[str, Any]:
             "direction_path": path,
             "bucket": bucket,
             "avg_gap": round(sum(r["initial"]["odds"] - r["T5"]["odds"] for r in group) / len(group), 4),
+            "avg_initial_odds": round(sum(r["initial"]["odds"] for r in group) / len(group), 4),
+            "avg_t5_odds": round(sum(r["T5"]["odds"] for r in group) / len(group), 4),
             **outcome_probability(group),
         }
         for (provider, path, bucket), group in sorted(

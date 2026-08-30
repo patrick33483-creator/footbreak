@@ -235,6 +235,8 @@ def test_odds_drift_breakdown_buckets_initial_to_t5_gap() -> None:
     )
     assert row["observations"] == 1
     assert row["avg_gap"] == 0.15
+    assert row["avg_initial_odds"] == 1.95
+    assert row["avg_t5_odds"] == 1.80
     assert row["counts"]["大球開出"] == 1
 
     outcome_row = next(
