@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="styles.css?v=20260829-condition-simulation-dashboard-boot-recovery-direction-path-v1">
+<link rel="stylesheet" href="styles.css?v=20260831-segmented-conditions-v1">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%230d1117'/%3E%3Cpath d='M6 24V8l10 8 10-8v16' stroke='%23e8a33d' stroke-width='2.5' fill='none' stroke-linejoin='round'/%3E%3C/svg%3E">
 </head>
 <body>
@@ -28,7 +28,7 @@
     <button class="navbtn" data-view="ledger">獨立驗證倉</button>
     <button class="navbtn" data-view="chal">挑戰模型</button>
     <button class="navbtn" data-view="health">資料健康</button>
-    <button class="navbtn" data-view="condition">條件統計報告</button>
+    <button class="navbtn" data-view="segmented">細分條件</button>
   </nav>
   <div class="kpis" id="kpis"></div>
   <div class="stamp">
@@ -57,7 +57,7 @@
         <button class="chip" data-stage="pick">有結論</button>
         <button class="chip" data-stage="T-5">T-5</button>
         <button class="chip" data-stage="T-30">T-30</button>
-        <button class="chip" data-stage="首預">首預</button>
+        <button class="chip" data-stage="首預">初盤預測</button>
         <button class="chip" data-stage="待入窗">待入窗</button>
       </div>
       <div class="rail-count" id="railCount"></div>
@@ -79,6 +79,9 @@
 <!-- ═══ 資料健康(唯讀診斷) ═══ -->
 <main class="page" id="viewHealth" hidden></main>
 
+<!-- ═══ S/A 級細分條件(唯讀前瞻累積) ═══ -->
+<main class="page" id="viewSegmented" hidden></main>
+
 <!-- ═══ 條件統計報告(唯讀、完全隔離) ═══ -->
 <main class="page" id="viewCondition" hidden></main>
 
@@ -91,7 +94,7 @@
   </button>
 </div>
 
-<script src="app.js?v=20260829-condition-simulation-dashboard-boot-recovery-direction-path-v1"></script>
+<script src="app.js?v=20260831-segmented-conditions-v1"></script>
 <script data-pplx-inline-edit>
 (function () {
   if (window === window.top) return;

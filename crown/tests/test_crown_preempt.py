@@ -130,17 +130,22 @@ class CrownTickPreemptionTests(unittest.TestCase):
         }}}
         self.assertFalse(urgent_stage_due(ledger, now))
 
-    def test_urgent_tick_does_not_kill_bounded_first_look_reconciliation(self) -> None:
+    def test_urgent_tick_preempts_all_listed_non_deadline_writers(self) -> None:
         script = (
             Path(__file__).resolve().parents[2] / "deploy" / "crown-tick-preempt.sh"
         ).read_text(encoding="utf-8")
-        stop_line = next(
-            line for line in script.splitlines()
-            if "/usr/bin/systemctl stop --no-block" in line
-        )
-        self.assertNotIn("crown-first-look-reconcile.service", stop_line)
-        self.assertIn("crown-sweep.service", stop_line)
-        self.assertIn("crown-settle.service", stop_line)
+        stop_start = script.index("/usr/bin/systemctl stop --no-block")
+        stop_end = script.index("\n  echo ", stop_start)
+        stop_block = script[stop_start:stop_end]
+        for service in (
+            "crown-round-update.service",
+            "crown-sweep.service",
+            "crown-settle.service",
+            "crown-reverse-t5-drain.service",
+            "crown-first-look-reconcile.service",
+            "crown-early-admission-reconcile.service",
+        ):
+            self.assertIn(service, stop_block)
 
     def test_first_look_runner_uses_bounded_lightweight_dashboard_projection(self) -> None:
         runner = (

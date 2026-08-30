@@ -19,6 +19,7 @@ from .period import in_current_period
 from .prediction_history import normalize_history, project_watch_rows
 from .ledger import PREDICTION_ERA
 from .state import load_ledger, load_predictions, paths
+from .segmented_conditions import build_segmented_conditions
 from analysis.wilson_validation import (
     active_bets, project_dashboard_research_matches, project_frozen_ranking_evidence,
 )
@@ -783,6 +784,9 @@ def _build_payloads(config: Settings) -> tuple[dict[str, Any], dict[str, Any]]:
         history_watch_projection_rows,
     )
     history_data_url = _history_data_url(history_version)
+    segmented_conditions = build_segmented_conditions(
+        prediction_history["rows"], generated_at=generated_at,
+    )
     dashboard = {
         "schema_version": "crown-dashboard-v2", "generated_at": generated_at, "title": "足破 · 皇冠賽事預測終端",
         "summary": _summary(matches, active_condition_bets),
@@ -803,6 +807,7 @@ def _build_payloads(config: Settings) -> tuple[dict[str, Any], dict[str, Any]]:
         # deliberately absent; the History view asks for the sidecar on
         # demand, avoiding a download and browser walk of unbounded history.
         "prediction_history": {"stats": prediction_history["stats"]},
+        "segmented_conditions": segmented_conditions,
         "history_data_url": history_data_url,
         "history_data_version": history_version,
         "stage_completeness": stage_completeness(matches, ledger),

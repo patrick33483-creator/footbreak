@@ -8,6 +8,19 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class ConditionSimulationUiTests(unittest.TestCase):
+    def test_segmented_conditions_page_only_exposes_s_and_a_rules(self) -> None:
+        index = (ROOT / "crown" / "dashboard" / "index.html").read_text(encoding="utf-8")
+        app = (ROOT / "crown" / "dashboard" / "app.js").read_text(encoding="utf-8")
+        self.assertIn('data-view="segmented">細分條件', index)
+        self.assertIn('id="viewSegmented"', index)
+        self.assertNotIn('data-view="condition">條件統計報告', index)
+        self.assertIn("function renderSegmentedConditions", app)
+        self.assertIn("預測方向，唔係報價方向", app)
+        self.assertIn("['S', 'A'].includes", app)
+        self.assertIn("其他候選條件繼續喺後台累積", app)
+        self.assertIn('data-stage="首預">初盤預測', index)
+        self.assertNotIn(">首預</button>", index)
+
     def test_crown_navigation_has_active_wilson_and_read_only_retired_archive(self) -> None:
         index = (ROOT / "crown" / "dashboard" / "index.html").read_text(encoding="utf-8")
         app = (ROOT / "crown" / "dashboard" / "app.js").read_text(encoding="utf-8")

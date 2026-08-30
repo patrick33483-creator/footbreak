@@ -41,7 +41,7 @@ const STAGE_DESC = {
 };
 function stageDisplay(row) {
   if (!row || row.stage !== '首預') return (row && row.stage) || '—';
-  return row.prediction_model === 'crown-opening-fixed-v1' ? '初盤' : '舊首預';
+  return '初盤預測';
 }
 const VD_CLS = { '落注': 'v-go', '傾向': 'v-lean', '偏向': 'v-soft', '已預測': 'v-lean', '觀望': 'v-wait', '無傾向': 'v-none' };
 const MKT = { HDC: '讓球', HIL: '入球大細', CHL: '角球大細', HAD: '主客和' };
@@ -56,6 +56,7 @@ const marketLabel = (value) => {
 // Historic artifacts may predate the Chinese-label contract.  Convert those
 // stored labels at the display boundary without changing canonical codes.
 const publicText = (value) => String(value ?? '')
+  .replace(/舊首預|首預/g, '初盤預測')
   .replace(/\bHDC\b/g, '讓球')
   .replace(/\bHIL\b/g, '入球大細')
   .replace(/\bCHL\b/g, '角球大細')
@@ -102,6 +103,7 @@ const CROWN_PUBLIC_PREFIX = (
 ) ? '/crown' : '';
 const API_BASE = `${CROWN_PUBLIC_PREFIX}/api`;
 let DATA = null, LIST = [], LED = null, SEL = null, STAGE = 'all', Q = '', VIEW = 'pred';
+let SEGMENT_FILTER = 'all';
 let HISTORY_STAGE = 'all';
 const HISTORY_PAGE_SIZE = 50;
 let HISTORY_VISIBLE = HISTORY_PAGE_SIZE;
@@ -473,6 +475,7 @@ function render() {
   $('#viewLedger').hidden = VIEW !== 'ledger';
   $('#viewChal').hidden = VIEW !== 'chal';
   $('#viewHealth').hidden = VIEW !== 'health';
+  $('#viewSegmented').hidden = VIEW !== 'segmented';
   $('#viewCondition').hidden = VIEW !== 'condition';
   $('#viewHistory').hidden = VIEW !== 'history';
   $$('#nav .navbtn').forEach((b) => b.classList.toggle('is-on', b.dataset.view === VIEW));
@@ -494,6 +497,8 @@ function render() {
   } else if (VIEW === 'health') {
     renderHealth();
     if (HEALTH.state === 'idle') void loadHealth({});
+  } else if (VIEW === 'segmented') {
+    renderSegmentedConditions();
   } else if (VIEW === 'condition') {
     renderCondition();
     if (CONDITION.state === 'idle') void loadCondition({});
@@ -1103,9 +1108,7 @@ function runRow(x, isFinal, all) {
       ${x.no_bet_reason ? `<div class="run-why">${esc(x.no_bet_reason)}</div>` : ''}
       ${delta}
       <div class="run-facts">${facts.map((t) => `<span>${t}</span>`).join('')}</div>
-      <div class="run-desc">${x.stage === '首預' && stageDisplay(x) === '舊首預'
-        ? '舊模型首預紀錄 · 並非固定初盤模型'
-        : (STAGE_DESC[x.stage] || '')}</div>
+      <div class="run-desc">${STAGE_DESC[x.stage] || ''}</div>
     </div>
   </div>`;
 }
@@ -2091,7 +2094,7 @@ function renderHistory() {
   ];
   const stageSummary = ['首預', 'T-30', 'T-5'].map((stage) => {
     const x = (s.by_stage || {})[stage] || {};
-    return `<span class="hist-stage"><b>${stage === '首預' ? '初盤／舊首預' : stage}</b> ${
+    return `<span class="hist-stage"><b>${stage === '首預' ? '初盤預測' : stage}</b> ${
       x.accuracy == null ? '待累積' : `${pc(x.accuracy, 1)} (${x.hits}/${x.graded})`
     }</span>`;
   }).join('');
@@ -2143,7 +2146,7 @@ function renderHistory() {
       ${historyRows(items) || `<tr class="history-empty-row"><td colspan="8" class="empty2">${empty}</td></tr>`}
     </table></div>`;
   const historyFilters = `<div class="history-stage-filters" role="group" aria-label="按預測階段篩選紀錄">
-    ${[['all', '全部'], ['首預', '初盤／舊首預'], ['T-30', 'T-30'], ['T-5', 'T-5'], ['T-5（事後回補）', '回補稽核']].map(([value, label]) =>
+    ${[['all', '全部'], ['首預', '初盤預測'], ['T-30', 'T-30'], ['T-5', 'T-5'], ['T-5（事後回補）', '回補稽核']].map(([value, label]) =>
       `<button type="button" class="history-stage-filter ${HISTORY_STAGE === value ? 'is-on' : ''}"
         data-history-stage="${value}" aria-pressed="${HISTORY_STAGE === value}">${label}</button>`).join('')}
   </div>`;
@@ -2182,7 +2185,7 @@ function renderHistory() {
     <div class="history-stage-summary">${marketSummary}</div>
     ${historyStageMarketMatrix(s)}
     ${historyConsensusCards(s)}
-    <p class="mx-note">新初盤使用首次完整皇冠盤及當時之前已核實嘅球隊賽果；舊首預會清楚分開標示。T-30、T-5 保留原有更新方法；事後回補只作稽核展示，絕不計入學習、Telegram 或模擬注。</p>
+    <p class="mx-note">初盤預測使用首次完整皇冠盤及當時之前已核實嘅球隊賽果。T-30、T-5 保留原有更新方法；事後回補只作稽核展示，絕不計入學習、Telegram 或模擬注。</p>
   </div>
   ${historyFilters}
   <div class="card"><h2 class="card-h">${HISTORY_STAGE === 'all' ? '全部紀錄' : `${HISTORY_STAGE} 紀錄`} <span class="sub">${rows.length} 筆 · 最新開賽時間優先</span></h2>
@@ -2954,6 +2957,131 @@ function healthBind() {
         sample: 'all', unit: 'primary',
       };
       renderHealth();
+    };
+  });
+}
+
+/* ══════════════════════ S/A 級細分條件 · 唯讀前瞻累積 ══════════════════════ */
+function segmentedPercent(value, digits = 1) {
+  const number = numeric(value);
+  return number == null ? '—' : `${(number * 100).toFixed(digits)}%`;
+}
+function segmentedSignedPercent(value, digits = 2) {
+  const number = numeric(value);
+  return number == null ? '—' : `${number >= 0 ? '+' : ''}${(number * 100).toFixed(digits)}%`;
+}
+function segmentedCounts(metrics) {
+  const m = metrics || {};
+  return `全贏 ${numeric(m.full_win) || 0} · 半贏 ${numeric(m.half_win) || 0} · 走水 ${numeric(m.push) || 0} · 半輸 ${numeric(m.half_loss) || 0} · 全輸 ${numeric(m.full_loss) || 0}`;
+}
+function segmentedConditionCard(condition) {
+  const historical = condition.historical || {};
+  const forward = condition.prospective || {};
+  const tier = String(condition.tier || '');
+  return `<article class="seg-rule-card tier-${esc(tier.toLowerCase())}" data-testid="seg-condition-${esc(condition.id)}">
+    <div class="seg-rule-head">
+      <div><span class="seg-tier">${esc(tier)}級</span><span class="seg-market">${esc(marketLabel(condition.market))}</span></div>
+      <button class="seg-only" type="button" data-segment-only="${esc(condition.id)}">只顯示此條件</button>
+    </div>
+    <h2>${esc(publicText(condition.title || ''))}</h2>
+    <p class="seg-definition">${esc(publicText(condition.definition || ''))}</p>
+    <div class="seg-metrics">
+      <div><span>歷史樣本</span><b class="mono">${numeric(historical.sample) || 0}</b><small>固定回測基準</small></div>
+      <div><span>歷史命中率</span><b class="mono">${segmentedPercent(historical.hit_rate)}</b><small>${esc(segmentedCounts(historical))}</small></div>
+      <div><span>歷史 ROI</span><b class="mono">${segmentedSignedPercent(historical.roi)}</b><small>每注 1 單位</small></div>
+      <div><span>啟用後實績</span><b class="mono">${numeric(forward.settled) || 0} / ${numeric(forward.qualified) || 0}</b><small>已判定 / 符合</small></div>
+      <div><span>啟用後命中率</span><b class="mono">${segmentedPercent(forward.hit_rate)}</b><small>走水不入分母</small></div>
+      <div><span>啟用後 ROI</span><b class="mono">${segmentedSignedPercent(forward.roi)}</b><small>${numeric(forward.roi_priced) || 0} 場有賠率</small></div>
+    </div>
+    <details class="seg-history">
+      <summary>展開歷史基準（${numeric(historical.sample) || 0}）</summary>
+      <div><b>方向路徑：</b>${esc(publicText(condition.path_label || ''))}</div>
+      <div><b>結算分布：</b>${esc(segmentedCounts(historical))}</div>
+      <div><b>說明：</b>呢組係條件啟用前已固定嘅歷史回測，只用作基準；唔會混入啟用後實績。</div>
+    </details>
+  </article>`;
+}
+function segmentedDirectionPath(observation) {
+  const directions = observation.directions || {};
+  return [
+    ['首預', '初盤預測'], ['T-30', 'T-30'], ['T-5', 'T-5'],
+  ].map(([key, label]) => `${label} ${directions[key] || '—'}`).join(' → ');
+}
+function segmentedLinePath(observation) {
+  const lines = observation.lines || {};
+  const odds = observation.odds_by_stage || {};
+  const code = String(observation.market || '').toUpperCase();
+  return ['首預', 'T-30', 'T-5'].map((stage) => {
+    const line = numeric(lines[stage]);
+    const price = numeric(odds[stage]);
+    if (line == null) return '—';
+    return `${historyQuarterLine(line, code === 'HDC')}${price == null ? '' : ` @${price.toFixed(2)}`}`;
+  }).join(' → ');
+}
+function segmentedObservationCard(observation, conditionMap) {
+  const condition = conditionMap.get(observation.condition_id) || {};
+  const settled = observation.settlement_label && observation.settlement_label !== '待賽果';
+  const code = String(observation.market || '').toUpperCase();
+  const role = code === 'HDC'
+    ? (observation.selected_side === 'H' ? '主' : '客')
+    : (observation.selected_side === 'H' ? '大' : '細');
+  const line = numeric(observation.selected_line);
+  const odds = numeric(observation.odds);
+  const selection = `${role}${line == null ? '' : ` ${historyQuarterLine(line, code === 'HDC')}`}${odds == null ? '' : ` @${odds.toFixed(2)}`}`;
+  return `<article class="seg-match" data-testid="seg-match-${esc(observation.match_id)}">
+    <div class="seg-match-top">
+      <div class="seg-match-badges"><span class="seg-status ${settled ? 'is-settled' : ''}">${esc(observation.settlement_label || '待賽果')}</span><span class="seg-tier">${esc(observation.tier)}級</span><span class="seg-market">${esc(marketLabel(code))}</span></div>
+      <div class="seg-pick"><small>${esc(publicText(observation.decision_stage))} 判定</small><strong>${esc(selection)}</strong></div>
+    </div>
+    <h3>${esc(observation.home || '主隊')} <span>vs</span> ${esc(observation.away || '客隊')}</h3>
+    <p class="seg-fixture-meta">${esc(observation.league || '—')} · ${esc(hkDay(observation.kickoff))} ${esc(hkClock(observation.kickoff))}</p>
+    <div class="seg-match-grid">
+      <div><span>符合條件</span><b>${esc(condition.title || observation.condition_id)}</b></div>
+      <div><span>三階段預測方向</span><b>${esc(segmentedDirectionPath(observation))}</b></div>
+      <div><span>中位線及賠率</span><b class="mono">${esc(segmentedLinePath(observation))}</b></div>
+      <div><span>賽果</span><b>${esc(observation.score || (settled ? observation.settlement_label : '未有賽果'))}</b></div>
+    </div>
+  </article>`;
+}
+function renderSegmentedConditions() {
+  const V = $('#viewSegmented');
+  if (!V) return;
+  const payload = DATA && DATA.segmented_conditions;
+  if (!payload || !Array.isArray(payload.public_conditions)) {
+    V.innerHTML = `<div class="ledger-head"><div><h1>細分條件</h1><p class="dim">S級及 A級前瞻累積</p></div></div>
+      <div class="card"><div class="empty2">細分條件資料尚未生成，請等下一次資料更新。</div></div>`;
+    return;
+  }
+  const conditions = payload.public_conditions.filter((item) => ['S', 'A'].includes(String(item.tier || '')));
+  const conditionMap = new Map(conditions.map((item) => [item.id, item]));
+  const visible = SEGMENT_FILTER === 'all'
+    ? (payload.matching_observations || [])
+    : ((conditionMap.get(SEGMENT_FILTER) || {}).observations || []);
+  const groups = ['HDC', 'HIL', 'CHL'].map((market) => {
+    const cards = conditions.filter((item) => item.market === market);
+    return `<section class="seg-market-group">
+      <div class="seg-section-head"><h2>${esc(marketLabel(market))}</h2><span>${cards.length} 個公開 S/A 條件</span></div>
+      <div class="seg-rule-grid">${cards.length ? cards.map(segmentedConditionCard).join('') : '<div class="seg-empty">目前未有達到 S／A 級嘅條件；後台繼續累積。</div>'}</div>
+    </section>`;
+  }).join('');
+  V.innerHTML = `<div class="ledger-head seg-page-head">
+      <div><h1>細分條件</h1><p class="dim">初盤預測 → T-30 → T-5 · 只顯示 S級及 A級</p></div>
+      <div class="seg-cutoff">前瞻啟用線 <b class="mono">${esc(hkStamp(payload.activation_cutoff))} HKT</b></div>
+    </div>
+    <div class="shadow-note seg-note" data-testid="note-segmented-isolation"><strong>預測方向，唔係報價方向</strong><span>歷史基準同啟用後實績分開顯示；所有條件只讀統計，唔會改模型、推介、注碼或通知。其他候選條件繼續喺後台累積。</span></div>
+    <div class="seg-filter-row">
+      <button class="seg-filter ${SEGMENT_FILTER === 'all' ? 'is-on' : ''}" type="button" data-segment-only="all">全部 S/A 條件</button>
+      ${SEGMENT_FILTER !== 'all' ? `<span>目前只顯示：${esc((conditionMap.get(SEGMENT_FILTER) || {}).title || SEGMENT_FILTER)}</span>` : ''}
+    </div>
+    ${groups}
+    <section class="seg-matches-section">
+      <div class="seg-section-head"><h2>符合場次</h2><span>累積 ${visible.length} 場顯示紀錄</span></div>
+      <div class="seg-match-list">${visible.length ? visible.map((item) => segmentedObservationCard(item, conditionMap)).join('') : '<div class="seg-empty">啟用後暫時未有符合場次；系統會隨每次資料更新自動累積。</div>'}</div>
+    </section>`;
+  $$('[data-segment-only]', V).forEach((button) => {
+    button.onclick = () => {
+      SEGMENT_FILTER = button.dataset.segmentOnly || 'all';
+      renderSegmentedConditions();
     };
   });
 }
