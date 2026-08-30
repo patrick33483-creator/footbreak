@@ -1,0 +1,390 @@
+name: Analyze Crown V2 prediction directions (read only)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: Analyze three-stage model prediction directions
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'sudo python3 -' <<'PY'
+          import hashlib
+          import json
+          import math
+          import random
+          import re
+          from collections import Counter, defaultdict
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          V2_PATH = Path("/var/lib/footbreak/stage_engine_v2/ledger.json")
+          HISTORY_PATH = Path("/var/lib/footbreak/crown/prediction_history.json")
+          STAGES = ("首預", "T-30", "T-5")
+
+          def sha256(path):
+              digest = hashlib.sha256()
+              with path.open("rb") as handle:
+                  while True:
+                      block = handle.read(1024 * 1024)
+                      if not block:
+                          break
+                      digest.update(block)
+              return digest.hexdigest()
+
+          before = {
+              str(path): {
+                  "sha256": sha256(path),
+                  "size": path.stat().st_size,
+                  "mtime_ns": path.stat().st_mtime_ns,
+              }
+              for path in (V2_PATH, HISTORY_PATH)
+          }
+
+          v2 = json.loads(V2_PATH.read_text(encoding="utf-8"))
+          history = json.loads(HISTORY_PATH.read_text(encoding="utf-8"))
+          fixtures = v2.get("fixtures") or {}
+          history_rows = history.get("rows") or []
+
+          result_by_id = {}
+          for row in history_rows:
+              if not isinstance(row, dict):
+                  continue
+              match_id = str(row.get("titan_match_id") or row.get("match_id") or "")
+              detail = row.get("result_detail") or {}
+              if (
+                  not match_id
+                  or row.get("result_status") != "已核對"
+                  or detail.get("home_score") is None
+                  or detail.get("away_score") is None
+                  or row.get("exclude_from_settlement")
+                  or row.get("exclude_from_primary_statistics")
+                  or row.get("post_hoc_backfill")
+              ):
+                  continue
+              result_by_id.setdefault(match_id, {
+                  "home_score": float(detail["home_score"]),
+                  "away_score": float(detail["away_score"]),
+                  "corners_total": (
+                      float(detail["corners_total"])
+                      if detail.get("corners_total") is not None else None
+                  ),
+                  "result_source": row.get("result_source"),
+              })
+
+          def market_family(value):
+              text = str(value or "")
+              if "角球" in text:
+                  return "角球大細"
+              if "讓球" in text:
+                  return "讓球"
+              if "入球" in text or "大細" in text:
+                  return "入球大細"
+              return text or "未知"
+
+          def direction(label, market):
+              text = str(label or "")
+              family = market_family(market)
+              choices = ("主", "客") if family == "讓球" else ("大", "細")
+              hits = [(text.rfind(token), token) for token in choices if token in text]
+              return max(hits)[1] if hits else "未知"
+
+          def displayed_line(label, direction_token):
+              text = str(label or "").replace("＋", "+").replace("－", "-")
+              pos = text.rfind(direction_token)
+              tail = text[pos + len(direction_token):] if pos >= 0 else text
+              nums = re.findall(r"[+-]?(?:\d+(?:\.\d+)?|\.\d+)", tail)
+              if not nums:
+                  return None
+              values = [float(value) for value in nums[-2:]]
+              return sum(values) / len(values)
+
+          def half_lines(line):
+              doubled = line * 2
+              if abs(doubled - round(doubled)) > 1e-7:
+                  lower = math.floor(doubled) / 2
+                  upper = math.ceil(doubled) / 2
+                  return (lower, upper)
+              return (line, line)
+
+          def settle_component(edge, odds):
+              if edge > 1e-8:
+                  return odds - 1.0
+              if edge < -1e-8:
+                  return -1.0
+              return 0.0
+
+          def settle(stage_row, result):
+              market = market_family(stage_row.get("lead_market"))
+              label = stage_row.get("lead_label")
+              token = direction(label, market)
+              line = displayed_line(label, token)
+              try:
+                  odds = float(stage_row.get("lead_odds"))
+              except (TypeError, ValueError):
+                  return None
+              if line is None or odds <= 1:
+                  return None
+              profits = []
+              for component_line in half_lines(line):
+                  if market == "讓球" and token in ("主", "客"):
+                      margin = (
+                          result["home_score"] - result["away_score"]
+                          if token == "主"
+                          else result["away_score"] - result["home_score"]
+                      )
+                      edge = margin + component_line
+                  elif market == "入球大細" and token in ("大", "細"):
+                      total = result["home_score"] + result["away_score"]
+                      edge = total - component_line if token == "大" else component_line - total
+                  elif market == "角球大細" and token in ("大", "細"):
+                      if result["corners_total"] is None:
+                          return None
+                      total = result["corners_total"]
+                      edge = total - component_line if token == "大" else component_line - total
+                  else:
+                      return None
+                  profits.append(settle_component(edge, odds))
+              profit = sum(profits) / len(profits)
+              if profit >= odds - 1.0 - 1e-8:
+                  grade = "全贏"
+              elif profit > 1e-8:
+                  grade = "半贏"
+              elif profit <= -1.0 + 1e-8:
+                  grade = "全輸"
+              elif profit < -1e-8:
+                  grade = "半輸"
+              else:
+                  grade = "走盤"
+              return {
+                  "profit": profit,
+                  "grade": grade,
+                  "market": market,
+                  "direction": token,
+                  "line": line,
+                  "odds": odds,
+              }
+
+          def path_category(directions):
+              a, b, c = directions
+              if a == b == c:
+                  return "全程同向"
+              if a != b and b == c:
+                  return "首預後反向、維持至T-5"
+              if a == b and b != c:
+                  return "T-5臨場反向"
+              if a == c and a != b:
+                  return "T-30短暫反向、T-5回復"
+              return "其他方向路徑"
+
+          records = []
+          coverage = Counter()
+          market_paths = Counter()
+          direction_paths = Counter()
+          exact_label_paths = Counter()
+          stage_direction_counts = {stage: Counter() for stage in STAGES}
+          stage_market_counts = {stage: Counter() for stage in STAGES}
+
+          for fixture_id, fixture in fixtures.items():
+              stages = fixture.get("stages") or {}
+              coverage["fixtures"] += 1
+              for stage in STAGES:
+                  if isinstance(stages.get(stage), dict):
+                      coverage[stage] += 1
+              if not all(isinstance(stages.get(stage), dict) for stage in STAGES):
+                  continue
+              coverage["complete_three_stage"] += 1
+              stage_rows = [stages[stage] for stage in STAGES]
+              markets = tuple(market_family(row.get("lead_market")) for row in stage_rows)
+              directions = tuple(
+                  direction(row.get("lead_label"), market)
+                  for row, market in zip(stage_rows, markets)
+              )
+              labels = tuple(str(row.get("lead_label") or "") for row in stage_rows)
+              for stage, market, token in zip(STAGES, markets, directions):
+                  stage_market_counts[stage][market] += 1
+                  stage_direction_counts[stage][f"{market}:{token}"] += 1
+              market_paths[" → ".join(markets)] += 1
+              if len(set(markets)) != 1:
+                  coverage["market_switch"] += 1
+                  continue
+              coverage["same_market_three_stage"] += 1
+              category = path_category(directions)
+              direction_path = " → ".join(directions)
+              direction_paths[f"{markets[0]} | {direction_path}"] += 1
+              exact_label_paths[
+                  "完全相同" if labels[0] == labels[1] == labels[2] else "方向相同但線位/標籤有變"
+              ] += int(category == "全程同向")
+              record = {
+                  "fixture_id": str(fixture_id),
+                  "market": markets[0],
+                  "directions": directions,
+                  "direction_path": direction_path,
+                  "category": category,
+                  "stages": stage_rows,
+                  "result": result_by_id.get(str(fixture_id)),
+              }
+              if record["result"]:
+                  coverage["same_market_with_verified_result"] += 1
+                  record["settlements"] = {
+                      stage: settle(row, record["result"])
+                      for stage, row in zip(STAGES, stage_rows)
+                  }
+              records.append(record)
+
+          def percentile(values, fraction):
+              if not values:
+                  return None
+              ordered = sorted(values)
+              position = (len(ordered) - 1) * fraction
+              low = int(math.floor(position))
+              high = int(math.ceil(position))
+              if low == high:
+                  return ordered[low]
+              return ordered[low] * (high - position) + ordered[high] * (position - low)
+
+          def summarize(rows, stage):
+              profits = [
+                  row["settlements"][stage]["profit"]
+                  for row in rows
+                  if row.get("settlements") and row["settlements"].get(stage)
+              ]
+              grades = Counter(
+                  row["settlements"][stage]["grade"]
+                  for row in rows
+                  if row.get("settlements") and row["settlements"].get(stage)
+              )
+              if not profits:
+                  return {"n": 0}
+              roi = sum(profits) / len(profits)
+              rng = random.Random(f"{stage}|{len(profits)}|{sum(profits):.8f}")
+              boot = []
+              for _ in range(3000):
+                  boot.append(sum(rng.choice(profits) for __ in profits) / len(profits))
+              decided = [value for value in profits if abs(value) > 1e-8]
+              positive = sum(value > 0 for value in decided)
+              return {
+                  "n": len(profits),
+                  "roi_pct": round(roi * 100, 2),
+                  "roi_ci95_pct": [
+                      round(percentile(boot, 0.025) * 100, 2),
+                      round(percentile(boot, 0.975) * 100, 2),
+                  ],
+                  "positive_settlement_pct": (
+                      round(positive / len(decided) * 100, 2) if decided else None
+                  ),
+                  "decided_n": len(decided),
+                  "grades": dict(grades),
+              }
+
+          settled_records = [row for row in records if row.get("settlements")]
+          by_category = defaultdict(list)
+          by_market_category = defaultdict(list)
+          by_direction_path = defaultdict(list)
+          for row in settled_records:
+              by_category[row["category"]].append(row)
+              by_market_category[(row["market"], row["category"])].append(row)
+              by_direction_path[(row["market"], row["direction_path"])].append(row)
+
+          category_stats = {
+              category: {
+                  "fixtures": len(rows),
+                  **{stage: summarize(rows, stage) for stage in STAGES},
+              }
+              for category, rows in sorted(by_category.items())
+          }
+          market_category_stats = {
+              f"{market} | {category}": {
+                  "fixtures": len(rows),
+                  **{stage: summarize(rows, stage) for stage in STAGES},
+              }
+              for (market, category), rows in sorted(by_market_category.items())
+              if len(rows) >= 10
+          }
+          path_stats = {
+              f"{market} | {path}": {
+                  "fixtures": len(rows),
+                  "T-5": summarize(rows, "T-5"),
+              }
+              for (market, path), rows in sorted(
+                  by_direction_path.items(), key=lambda item: (-len(item[1]), item[0])
+              )
+              if len(rows) >= 10
+          }
+
+          late_flip_rows = by_category.get("T-5臨場反向", [])
+          late_flip_head_to_head = Counter()
+          for row in late_flip_rows:
+              t30 = row.get("settlements", {}).get("T-30")
+              t5 = row.get("settlements", {}).get("T-5")
+              if not t30 or not t5:
+                  continue
+              if t5["profit"] > t30["profit"] + 1e-8:
+                  late_flip_head_to_head["T-5反向較好"] += 1
+              elif t30["profit"] > t5["profit"] + 1e-8:
+                  late_flip_head_to_head["維持T-30較好"] += 1
+              else:
+                  late_flip_head_to_head["相同"] += 1
+
+          after = {
+              str(path): {
+                  "sha256": sha256(path),
+                  "size": path.stat().st_size,
+                  "mtime_ns": path.stat().st_mtime_ns,
+              }
+              for path in (V2_PATH, HISTORY_PATH)
+          }
+          unchanged = before == after
+
+          report = {
+              "observed_at_utc": datetime.now(timezone.utc).isoformat(),
+              "read_only_hash_unchanged": unchanged,
+              "file_state_before": before,
+              "file_state_after": after,
+              "coverage": dict(coverage),
+              "stage_market_counts": {
+                  stage: dict(counts) for stage, counts in stage_market_counts.items()
+              },
+              "stage_direction_counts": {
+                  stage: dict(counts) for stage, counts in stage_direction_counts.items()
+              },
+              "top_market_paths": market_paths.most_common(15),
+              "top_direction_paths_same_market": direction_paths.most_common(30),
+              "stable_direction_exactness": dict(exact_label_paths),
+              "category_stats": category_stats,
+              "market_category_stats_n_ge_10": market_category_stats,
+              "path_stats_n_ge_10": path_stats,
+              "late_flip_head_to_head": dict(late_flip_head_to_head),
+              "method_notes": [
+                  "Direction means 主/客 for handicap and 大/細 for totals, parsed from V2 lead_label.",
+                  "A market change is reported separately and is never counted as a direction flip.",
+                  "Settlement uses the verified score joined by titan_match_id/match_id and the exact V2 displayed line and odds.",
+                  "Quarter lines are split into adjacent half-lines; ROI is profit per one-unit stage lead.",
+                  "ROI confidence intervals are 3,000-sample nonparametric bootstrap intervals.",
+                  "This is a retrospective analysis of V2 captures, not an independent V2 model backtest.",
+              ],
+          }
+          print("CROWN_V2_DIRECTION_REPORT_BEGIN")
+          print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
+          print("CROWN_V2_DIRECTION_REPORT_END")
+          if not unchanged:
+              raise SystemExit("Read-only integrity check failed: source file changed during analysis")
+          PY
