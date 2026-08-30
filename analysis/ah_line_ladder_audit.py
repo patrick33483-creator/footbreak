@@ -8,6 +8,7 @@ import collections
 import json
 import math
 import sqlite3
+import time
 from typing import Any
 
 STAGES = ("initial", "T30", "T5")
@@ -299,18 +300,26 @@ def run(db: sqlite3.Connection, threshold: float) -> dict[str, Any]:
         for provider in ("hkjc", "pinnacle")
     }
 
+    now_ms = time.time() * 1000
     stage_pattern_breakdown: dict[str, dict[str, dict[str, int]]] = {}
     for provider in ("hkjc", "pinnacle"):
         fixtures_with_quotes = any_ah_fixtures.get(provider, set())
         pattern_counts: dict[str, int] = collections.Counter()
+        pattern_past_counts: dict[str, int] = collections.Counter()
+        pattern_future_counts: dict[str, int] = collections.Counter()
         pattern_examples: dict[str, list[dict[str, Any]]] = collections.defaultdict(list)
         for match_id in fixtures_with_quotes:
             present = stage_presence.get((match_id, provider), set())
             missing = [stage for stage in STAGES if stage not in present]
             pattern = "齊三個時點" if not missing else "缺:" + "+".join(missing)
             pattern_counts[pattern] += 1
-            if len(pattern_examples[pattern]) < 5 and match_id in metadata:
-                meta = metadata[match_id]
+            meta = metadata.get(match_id)
+            if meta is not None:
+                if meta["kickoff"] < now_ms:
+                    pattern_past_counts[pattern] += 1
+                else:
+                    pattern_future_counts[pattern] += 1
+            if len(pattern_examples[pattern]) < 5 and meta is not None:
                 pattern_examples[pattern].append(
                     {
                         "fixture_id": match_id,
@@ -322,6 +331,8 @@ def run(db: sqlite3.Connection, threshold: float) -> dict[str, Any]:
                 )
         stage_pattern_breakdown[provider] = {
             "counts": dict(pattern_counts),
+            "past_counts": dict(pattern_past_counts),
+            "future_counts": dict(pattern_future_counts),
             "examples": {k: v for k, v in pattern_examples.items()},
         }
 
