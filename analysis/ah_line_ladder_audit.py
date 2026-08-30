@@ -273,6 +273,32 @@ def run(db: sqlite3.Connection, threshold: float) -> dict[str, Any]:
         if all(stages[stage]["odds"] > threshold for stage in STAGES):
             eligible.append(observation)
 
+    stage_presence: dict[tuple[str, str], set[str]] = collections.defaultdict(set)
+    for (match_id, provider, _line), stages in stage_rows.items():
+        stage_presence[(match_id, provider)].update(stages.keys())
+    any_ah_fixtures: dict[str, set[str]] = collections.defaultdict(set)
+    for match_id, provider, _line, _stage in paired:
+        any_ah_fixtures[provider].add(match_id)
+    all_three_any_line_fixtures: dict[str, set[str]] = collections.defaultdict(set)
+    for (match_id, provider), stages_seen in stage_presence.items():
+        if set(STAGES).issubset(stages_seen):
+            all_three_any_line_fixtures[provider].add(match_id)
+    data_availability = {
+        provider: {
+            "raw_any_ah_quote_fixtures": len(any_ah_fixtures.get(provider, set())),
+            "all_three_stages_any_line_fixtures": len(
+                all_three_any_line_fixtures.get(provider, set())
+            ),
+            "same_line_all_three_stages_fixtures": len(
+                {row["fixture_id"] for row in complete if row["provider"] == provider}
+            ),
+            "eligible_after_threshold_fixtures": len(
+                {row["fixture_id"] for row in eligible if row["provider"] == provider}
+            ),
+        }
+        for provider in ("hkjc", "pinnacle")
+    }
+
     conditions = []
     grouped: dict[tuple[str, str, float], list[dict[str, Any]]] = collections.defaultdict(list)
     for row in eligible:
@@ -389,6 +415,7 @@ def run(db: sqlite3.Connection, threshold: float) -> dict[str, Any]:
             "eligible_unique_fixtures": len({row["fixture_id"] for row in eligible}),
         },
         "provider_summary": provider_summary,
+        "data_availability": data_availability,
         "path_probability": path_probability,
         "line_path_probability": line_path_probability,
         "conditions": conditions,

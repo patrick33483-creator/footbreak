@@ -243,3 +243,58 @@ def test_line_path_probability_slices_by_exact_line() -> None:
     )
     assert row["settled"] == 1
     assert row["counts"]["主開出"] == 1
+
+
+def test_data_availability_distinguishes_line_movement_and_missing_stages() -> None:
+    db = make_db()
+    # fixture-1: same line at all 3 stages, above threshold -> counts everywhere.
+    db.execute("INSERT INTO matches VALUES ('fixture-1', 2000, 'Home Team', 'Away Team')")
+    db.execute("INSERT INTO research_results VALUES ('fixture-1', 1, 0)")
+    add_pair(db, stage="initial", line="-0.25", home_odds=1.84, away_odds=1.99, captured_at=1000)
+    add_pair(db, stage="T30", line="-0.25", home_odds=1.90, away_odds=1.99, captured_at=1100)
+    add_pair(db, stage="T5", line="-0.25", home_odds=1.90, away_odds=1.95, captured_at=1200)
+
+    # fixture-2: pinnacle quotes at all 3 stages but the line MOVES
+    # (-0.5 -> -0.25 -> -0.25), so it has data at all 3 stages but not on
+    # one consistent line.
+    db.execute("INSERT INTO matches VALUES ('fixture-2', 2000, 'Home Two', 'Away Two')")
+    db.execute("INSERT INTO research_results VALUES ('fixture-2', 1, 1)")
+    db.executemany(
+        """
+        INSERT INTO research_timeline_snapshots
+        VALUES ('fixture-2', ?, 'pinnacle', 'AH', ?, ?, ?, ?, ?)
+        """,
+        [
+            ("initial", "-0.5", "H", 1.90, 1000, "external_opening"),
+            ("initial", "-0.5", "A", 1.95, 1000, "external_opening"),
+            ("T30", "-0.25", "H", 1.88, 1100, "live_observation"),
+            ("T30", "-0.25", "A", 1.97, 1100, "live_observation"),
+            ("T5", "-0.25", "H", 1.85, 1200, "live_observation"),
+            ("T5", "-0.25", "A", 1.99, 1200, "live_observation"),
+        ],
+    )
+
+    # fixture-3: pinnacle only has initial + T30 quotes (missing T5 entirely).
+    db.execute("INSERT INTO matches VALUES ('fixture-3', 2000, 'Home Three', 'Away Three')")
+    db.executemany(
+        """
+        INSERT INTO research_timeline_snapshots
+        VALUES ('fixture-3', ?, 'pinnacle', 'AH', ?, ?, ?, ?, ?)
+        """,
+        [
+            ("initial", "0", "H", 1.90, 1000, "external_opening"),
+            ("initial", "0", "A", 1.95, 1000, "external_opening"),
+            ("T30", "0", "H", 1.88, 1100, "live_observation"),
+            ("T30", "0", "A", 1.97, 1100, "live_observation"),
+        ],
+    )
+
+    report = AUDIT.run(db, 1.70)
+    avail = report["data_availability"]["pinnacle"]
+    assert avail["raw_any_ah_quote_fixtures"] == 3  # fixture-1, fixture-2, fixture-3
+    assert avail["all_three_stages_any_line_fixtures"] == 2  # fixture-1 and fixture-2
+    assert avail["same_line_all_three_stages_fixtures"] == 1  # fixture-1 only (fixture-2's line moved)
+    assert avail["eligible_after_threshold_fixtures"] == 1  # fixture-1 only
+
+    hkjc_avail = report["data_availability"]["hkjc"]
+    assert hkjc_avail["raw_any_ah_quote_fixtures"] == 0
