@@ -16,6 +16,15 @@ from pathlib import Path
 from typing import Any
 
 DEFAULT_SENT_LOG = Path("/var/lib/footbreak/stage_engine_v2/telegram_sent.jsonl")
+DEFAULT_CONDITION_SENT_LOG = Path("/var/lib/footbreak/stage_engine_v2/condition_telegram_sent.jsonl")
+
+# 皇冠V2 細分條件當中，決策時點為 T-5 嘅 3 個公開條件（第 4 個
+# A-HDC-OPEN-AWAY-MINUS-050 決策時點為首預，明確排除）。
+T5_CONDITION_ALERT_IDS = frozenset({
+    "S-HIL-T5-OVER-185",
+    "A-HIL-OPEN-T5-OVER-180",
+    "A-HDC-HHH-SAME-LINE",
+})
 
 TELEGRAM_API = "https://api.telegram.org"
 
@@ -155,4 +164,160 @@ def send_stage(
     }
 
 
-__all__ = ["send_stage", "format_message", "DEFAULT_SENT_LOG"]
+def _condition_identity_key(observation: dict[str, Any]) -> str:
+    match_id = str(observation.get("match_id") or "").strip()
+    if match_id:
+        return match_id
+    home = str(observation.get("home") or "").strip().casefold()
+    away = str(observation.get("away") or "").strip().casefold()
+    kickoff = str(observation.get("kickoff") or "").strip()
+    return f"{home}|{away}|{kickoff}"
+
+
+def format_condition_message(condition: dict[str, Any], observation: dict[str, Any]) -> str:
+    """格式化細分條件達標 Telegram 訊息。純文字，不用 markdown。"""
+    tier = condition.get("tier", "")
+    title = condition.get("title", "")
+    path_label = condition.get("path_label", "")
+    market = condition.get("market", "")
+    stage = observation.get("decision_stage", "")
+    league = observation.get("league", "")
+    home = observation.get("home", "")
+    away = observation.get("away", "")
+    kickoff = observation.get("kickoff", "")
+    directions = observation.get("directions") or {}
+    direction = directions.get(stage) or ""
+    line = observation.get("selected_line")
+    odds = observation.get("odds")
+    hist = condition.get("historical") or {}
+    sample = hist.get("sample")
+    hit_rate = hist.get("hit_rate")
+    roi = hist.get("roi")
+
+    lines = [
+        f"[皇冠V2 細分條件] {tier}級·{stage} 達標",
+        title,
+        league,
+        f"{home} vs {away}",
+        f"開賽 (HKT): {kickoff}",
+        f"路徑: {path_label}",
+    ]
+    direction_line = f"方向: {direction}" if direction else ""
+    if line is not None:
+        direction_line += f"（線位 {line}）" if direction_line else f"線位 {line}"
+    if direction_line:
+        lines.append(direction_line)
+    if odds is not None:
+        try:
+            lines.append(f"賠率: {float(odds):.2f}")
+        except (TypeError, ValueError):
+            pass
+    if sample is not None and hit_rate is not None:
+        roi_txt = f"，ROI {roi*100:+.1f}%" if roi is not None else ""
+        lines.append(f"歷史樣本 {sample} 場：命中率 {hit_rate*100:.1f}%{roi_txt}")
+    lines.append("（純統計追蹤，不代表投注建議）")
+    return "\n".join(line for line in lines if line)
+
+
+def send_condition_alert(
+    condition: dict[str, Any],
+    observation: dict[str, Any],
+    *,
+    sent_log_path: Path | str = DEFAULT_CONDITION_SENT_LOG,
+    enabled_env: str = "STAGE_V2_CONDITION_ALERT_ENABLED",
+    bot_token_env: str = "TELEGRAM_BOT_TOKEN",
+    chat_id_env: str = "TELEGRAM_CHAT_ID",
+) -> dict[str, Any]:
+    """發（或 shadow 記錄）一個細分條件達標通知。
+
+    Idempotency：JSONL append log，鍵為 "<condition_id>:<match 識別>"。
+    返回 {sent, shadow, skipped, reason, key}
+    """
+    condition_id = str(condition.get("id") or "")
+    key = f"{condition_id}:{_condition_identity_key(observation)}"
+    log_path = Path(sent_log_path)
+
+    sent_keys = _load_sent_keys(log_path)
+    if key in sent_keys:
+        return {"sent": False, "shadow": False, "skipped": True, "reason": "duplicate", "key": key}
+
+    text = format_condition_message(condition, observation)
+    enabled = _env_flag(enabled_env, default=False)
+    bot_token = os.getenv(bot_token_env, "").strip()
+    chat_id = os.getenv(chat_id_env, "").strip()
+    ts = datetime.now(timezone.utc).isoformat()
+
+    if not enabled or not bot_token or not chat_id:
+        _append_sent(log_path, {
+            "key": key,
+            "sent_at_utc": ts,
+            "mode": "shadow",
+            "text": text,
+        })
+        return {
+            "sent": False,
+            "shadow": True,
+            "skipped": False,
+            "reason": "shadow_mode" if not enabled else "missing_credentials",
+            "key": key,
+        }
+
+    ok = _post_telegram(bot_token, chat_id, text)
+    _append_sent(log_path, {
+        "key": key,
+        "sent_at_utc": ts,
+        "mode": "live" if ok else "live_failed",
+        "text": text,
+    })
+    return {
+        "sent": ok,
+        "shadow": False,
+        "skipped": False,
+        "reason": "ok" if ok else "telegram_error",
+        "key": key,
+    }
+
+
+def send_condition_alerts(
+    segmented_conditions: dict[str, Any],
+    *,
+    condition_ids: frozenset[str] = T5_CONDITION_ALERT_IDS,
+    sent_log_path: Path | str = DEFAULT_CONDITION_SENT_LOG,
+    enabled_env: str = "STAGE_V2_CONDITION_ALERT_ENABLED",
+    bot_token_env: str = "TELEGRAM_BOT_TOKEN",
+    chat_id_env: str = "TELEGRAM_CHAT_ID",
+) -> list[dict[str, Any]]:
+    """逐個遠過指定條件（預設 T-5 嘅 3 個公開條件）嘅 observations，
+    對每一場尚未發過嘅比賽發 Telegram 達標。
+    """
+    results: list[dict[str, Any]] = []
+    for condition in segmented_conditions.get("public_conditions") or []:
+        if not isinstance(condition, dict):
+            continue
+        if str(condition.get("id") or "") not in condition_ids:
+            continue
+        for observation in condition.get("observations") or []:
+            if not isinstance(observation, dict):
+                continue
+            result = send_condition_alert(
+                condition,
+                observation,
+                sent_log_path=sent_log_path,
+                enabled_env=enabled_env,
+                bot_token_env=bot_token_env,
+                chat_id_env=chat_id_env,
+            )
+            results.append(result)
+    return results
+
+
+__all__ = [
+    "send_stage",
+    "format_message",
+    "DEFAULT_SENT_LOG",
+    "send_condition_alert",
+    "send_condition_alerts",
+    "format_condition_message",
+    "DEFAULT_CONDITION_SENT_LOG",
+    "T5_CONDITION_ALERT_IDS",
+]

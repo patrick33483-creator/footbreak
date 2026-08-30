@@ -23,7 +23,7 @@ from .predictor import build_prediction
 from .publisher import decide_publish
 from .scheduler import due_stages
 from .segmented_conditions import build_segmented_conditions
-from .telegram import DEFAULT_SENT_LOG, send_stage
+from .telegram import DEFAULT_CONDITION_SENT_LOG, DEFAULT_SENT_LOG, send_condition_alerts, send_stage
 from .writer import DEFAULT_LEDGER_PATH, already_fired, load_ledger, record_stage, save_ledger
 
 DEFAULT_DASHBOARD_PATH = Path("/var/www/stage_engine_v2/data.json")
@@ -74,6 +74,7 @@ def _run_tick(
     window_hours: int,
     dry_run: bool,
     native_queue_dir: Path = DEFAULT_NATIVE_QUEUE_DIR,
+    condition_sent_log_path: Path = DEFAULT_CONDITION_SENT_LOG,
 ) -> dict[str, Any]:
     started_at = datetime.now(timezone.utc)
     fixtures = refresh_fixtures(
@@ -122,13 +123,15 @@ def _run_tick(
                 "notify": notify_result,
             })
 
+    condition_notify: list[dict[str, Any]] = []
     if not dry_run:
         save_ledger(ledger, ledger_path)
-        _write_dashboard(
+        condition_notify = _write_dashboard(
             ledger,
             dashboard_path,
             now_utc=now_utc,
             history_rows=_load_history_rows(crown_data_path),
+            condition_sent_log_path=condition_sent_log_path,
         )
 
     finished_at = datetime.now(timezone.utc)
@@ -143,6 +146,8 @@ def _run_tick(
         "fired_count": len(fired),
         "fired": fired,
         "skipped_no_prediction": skipped_no_prediction,
+        "condition_notify_count": len(condition_notify),
+        "condition_notify_sent": sum(1 for r in condition_notify if r.get("sent")),
     }
 
 
@@ -152,7 +157,8 @@ def _write_dashboard(
     *,
     now_utc: datetime,
     history_rows: list[dict[str, Any]] | None = None,
-) -> None:
+    condition_sent_log_path: Path = DEFAULT_CONDITION_SENT_LOG,
+) -> list[dict[str, Any]]:
     fixtures_out = []
     for slot in (ledger.get("fixtures") or {}).values():
         if not isinstance(slot, dict):
@@ -198,22 +204,24 @@ def _write_dashboard(
             "stages": stage_summary,
         })
     fixtures_out.sort(key=lambda r: str(r.get("kickoff_utc") or ""))
+    segmented_conditions = build_segmented_conditions(
+        ledger,
+        history_rows or [],
+        generated_at=now_utc.astimezone(HKT).isoformat(),
+    )
     payload = {
         "schema_version": "stage-engine-v2",
         "generated_at_utc": now_utc.isoformat(),
         "generated_at_hkt": now_utc.astimezone(HKT).isoformat(),
         "fixtures_count": len(fixtures_out),
         "fixtures": fixtures_out,
-        "segmented_conditions": build_segmented_conditions(
-            ledger,
-            history_rows or [],
-            generated_at=now_utc.astimezone(HKT).isoformat(),
-        ),
+        "segmented_conditions": segmented_conditions,
     }
     dashboard_path.parent.mkdir(parents=True, exist_ok=True)
     tmp = dashboard_path.with_suffix(dashboard_path.suffix + ".tmp")
     tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     tmp.replace(dashboard_path)
+    return send_condition_alerts(segmented_conditions, sent_log_path=condition_sent_log_path)
 
 
 def _load_history_rows(crown_data_path: Path) -> list[dict[str, Any]]:
@@ -247,6 +255,7 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--ledger", default=str(DEFAULT_LEDGER_PATH))
         sp.add_argument("--dashboard", default=str(DEFAULT_DASHBOARD_PATH))
         sp.add_argument("--sent-log", default=str(DEFAULT_SENT_LOG))
+        sp.add_argument("--condition-sent-log", default=str(DEFAULT_CONDITION_SENT_LOG))
         sp.add_argument("--now", default=None,
                         help="覆蓋現在時間（ISO 格式，缺 tz 當 HKT）")
         sp.add_argument("--window-hours", type=int, default=48)
@@ -274,6 +283,7 @@ def main(argv: list[str] | None = None) -> int:
             window_hours=args.window_hours,
             dry_run=(args.cmd == "dry-run"),
             native_queue_dir=Path(args.native_queue_dir),
+            condition_sent_log_path=Path(args.condition_sent_log),
         )
         json.dump(result, sys.stdout, ensure_ascii=False, indent=2)
         sys.stdout.write("\n")
