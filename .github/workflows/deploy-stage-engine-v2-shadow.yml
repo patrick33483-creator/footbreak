@@ -1,6 +1,10 @@
 name: 部署 stage-engine-v2 shadow 模式
 
 # Shadow 部署：v2 記錄所有 stage 但唔發 Telegram
+# 例外：3個T-5細分條件(S-HIL-T5-OVER-185 / A-HIL-OPEN-T5-OVER-180 /
+#       A-HDC-HHH-SAME-LINE)透過 STAGE_V2_CONDITION_ALERT_ENABLED=1
+#       實際發送Telegram(沿用/etc/footbreak.env已有嘅bot/channel,
+#       即V1皇冠通知同一個)。逐stage原始預測同第4個開賽前條件維持shadow。
 # 舊 crown-tick 唔動、舊 dashboard 唔動
 # 只裝: /opt/footbreak/stage_engine_v2/  +  /var/www/stage_engine_v2/dashboard/
 #       + systemd timer stage-engine-v2-tick.timer（30s cadence）
@@ -113,6 +117,10 @@ jobs:
           Type=oneshot
           # 對齊舊 crown-tick.service：不指定 User=（舊 pipeline 也係 root 跑）
           Environment=STAGE_V2_TELEGRAM_ENABLED=0
+          # 3個T-5細分條件通知獨立開關(唔影響上面逐stage原始預測嘅shadow設定)
+          # 沿用 /etc/footbreak.env 已有嘅 TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID (V1皇冠同一個bot/channel)
+          EnvironmentFile=-/etc/footbreak.env
+          Environment=STAGE_V2_CONDITION_ALERT_ENABLED=1
           Environment=PYTHONPATH=/opt/footbreak
           WorkingDirectory=/opt/footbreak
           ExecStart=/opt/footbreak/.venv/bin/python3 -m stage_engine_v2 tick \
@@ -120,6 +128,7 @@ jobs:
             --ledger /var/lib/footbreak/stage_engine_v2/ledger.json \
             --dashboard /var/www/stage_engine_v2/data.json \
             --sent-log /var/log/footbreak/stage-v2-sent.jsonl \
+            --condition-sent-log /var/lib/footbreak/stage_engine_v2/condition_telegram_sent.jsonl \
             --native-queue-dir /var/lib/footbreak/crown/native_stage_projection_queue \
             --window-hours 48
           StandardOutput=append:/var/log/footbreak/stage-v2-tick.log
