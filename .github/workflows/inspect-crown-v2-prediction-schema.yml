@@ -52,7 +52,68 @@ jobs:
               print(f"type={type(data).__name__}")
               if isinstance(data, dict):
                   print("top_keys=", sorted(data.keys()))
-                  if path.name == "ledger.json" and "stage_engine_v2" in str(path):
+                  if path.name == "prediction_history.json":
+                      rows = data.get("rows") or []
+                      print("history_rows=", len(rows))
+                      key_counts = {}
+                      result_keys = set()
+                      stage_counts = {}
+                      status_counts = {}
+                      for row in rows:
+                          if not isinstance(row, dict):
+                              continue
+                          for key in row:
+                              key_counts[key] = key_counts.get(key, 0) + 1
+                              if any(token in key.lower() for token in (
+                                  "score", "result", "outcome", "settle", "corner"
+                              )):
+                                  result_keys.add(key)
+                          stage = str(row.get("stage") or "")
+                          status = str(row.get("status") or "")
+                          stage_counts[stage] = stage_counts.get(stage, 0) + 1
+                          status_counts[status] = status_counts.get(status, 0) + 1
+                      print("history_all_keys=", sorted(key_counts))
+                      print("history_result_like_keys=", sorted(result_keys))
+                      print("history_stage_counts=", stage_counts)
+                      print("history_status_counts=", status_counts)
+                      for row in rows[:3]:
+                          print("HISTORY_FIRST_SAMPLE=", json.dumps(row, ensure_ascii=False)[:8000])
+                      shown = 0
+                      for row in rows:
+                          if not isinstance(row, dict):
+                              continue
+                          if any(
+                              row.get(key) is not None
+                              for key in (
+                                  "home_score", "away_score", "score", "result",
+                                  "outcome", "settlement", "corners_total"
+                              )
+                          ):
+                              print("HISTORY_RESULT_SAMPLE=", json.dumps(row, ensure_ascii=False)[:8000])
+                              shown += 1
+                              if shown >= 3:
+                                  break
+
+                      v2_path = Path("/var/lib/footbreak/stage_engine_v2/ledger.json")
+                      if v2_path.exists():
+                          v2 = json.loads(v2_path.read_text(encoding="utf-8"))
+                          v2_ids = {str(x) for x in (v2.get("fixtures") or {})}
+                          print("v2_id_count_for_join=", len(v2_ids))
+                          for key in (
+                              "fixture_id", "match_id", "titan_match_id",
+                              "native_fixture_id", "id"
+                          ):
+                              present = 0
+                              overlap = set()
+                              for row in rows:
+                                  if not isinstance(row, dict) or row.get(key) is None:
+                                      continue
+                                  present += 1
+                                  value = str(row.get(key))
+                                  if value in v2_ids:
+                                      overlap.add(value)
+                              print(f"JOIN_KEY {key}: present={present} unique_overlap={len(overlap)}")
+                  elif path.name == "ledger.json" and "stage_engine_v2" in str(path):
                       fixtures = data.get("fixtures") or {}
                       print("fixture_count=", len(fixtures))
                       stage_counts = {}
