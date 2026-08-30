@@ -339,6 +339,299 @@ jobs:
                   "mean_t5_odds": round(sum(row["T5_odds"] for row in settled)/len(settled), 3) if settled else None,
               }
 
+          def result_from_stages(stages):
+              result_row = next(
+                  (
+                      stages[stage]["row"]
+                      for stage in reversed(STAGES)
+                      if stage in stages
+                      and stages[stage]["row"].get("result_status") == "已核對"
+                      and isinstance(stages[stage]["row"].get("result_detail"), dict)
+                  ),
+                  None,
+              )
+              if result_row is None:
+                  return None
+              detail = result_row["result_detail"]
+              if detail.get("home_score") is None or detail.get("away_score") is None:
+                  return None
+              return {
+                  "home_score": float(detail["home_score"]),
+                  "away_score": float(detail["away_score"]),
+                  "corners_total": number(detail.get("corners_total")),
+              }
+
+          complete_records = []
+          for fixture_id, stages in by_fixture.items():
+              if not all(stage in stages for stage in STAGES):
+                  continue
+              result = result_from_stages(stages)
+              leads = {stage: stages[stage]["lead"] for stage in STAGES}
+              kickoff = stages["T-5"]["row"].get("kickoff")
+              record = {
+                  "fixture_id": fixture_id,
+                  "kickoff": kickoff,
+                  "kickoff_dt": parse_time(kickoff),
+                  "home": stages["T-5"]["row"].get("home"),
+                  "away": stages["T-5"]["row"].get("away"),
+                  "leads": leads,
+                  "result": result,
+                  "grades": {
+                      stage: settle(leads[stage], result) if result else None
+                      for stage in STAGES
+                  },
+              }
+              complete_records.append(record)
+
+          def selected_line(lead):
+              if lead["market"] == "讓球" and lead["direction"] == "客":
+                  return -lead["line"]
+              return lead["line"]
+
+          def line_relation(earlier, later):
+              if earlier["market"] != later["market"] or earlier["direction"] != later["direction"]:
+                  return None
+              early_line = selected_line(earlier)
+              late_line = selected_line(later)
+              if earlier["market"] == "讓球":
+                  advantage = late_line - early_line
+              elif earlier["direction"] == "大":
+                  advantage = early_line - late_line
+              else:
+                  advantage = late_line - early_line
+              if advantage > 1e-9:
+                  return "更著數"
+              if advantage < -1e-9:
+                  return "更蝕底"
+              return "同線"
+
+          def candidate_stats(records, decision_stage, label):
+              settled = [
+                  record for record in records
+                  if record["grades"].get(decision_stage) is not None
+              ]
+              settled.sort(
+                  key=lambda record: (
+                      record["kickoff_dt"] or datetime.min.replace(tzinfo=timezone.utc),
+                      record["fixture_id"],
+                  )
+              )
+              split = max(1, int(len(settled) * 0.70)) if settled else 0
+
+              def part(rows):
+                  grades = Counter(record["grades"][decision_stage] for record in rows)
+                  decided = sum(grades[key] for key in DECIDED)
+                  hits = sum(grades[key] for key in HITS)
+                  returns = [
+                      unit_return(
+                          record["grades"][decision_stage],
+                          record["leads"][decision_stage]["odds"],
+                      )
+                      for record in rows
+                  ]
+                  interval = wilson(hits, decided)
+                  return {
+                      "n": len(rows),
+                      "full_win": grades["全贏"],
+                      "half_win": grades["半贏"],
+                      "push": grades["走盤"],
+                      "half_loss": grades["半輸"],
+                      "full_loss": grades["全輸"],
+                      "hit_rate_pct": round(hits / decided * 100, 2) if decided else None,
+                      "wilson_low_pct": round(interval[0] * 100, 2) if interval[0] is not None else None,
+                      "roi_pct": round(sum(returns) / len(returns) * 100, 2) if returns else None,
+                  }
+
+              return {
+                  "label": label,
+                  "decision_stage": DISPLAY[decision_stage],
+                  "all": part(settled),
+                  "development_70pct": part(settled[:split]),
+                  "validation_30pct": part(settled[split:]),
+              }
+
+          candidates = []
+          odds_thresholds = (0.0, 1.70, 1.75, 1.80, 1.85)
+          markets = ("讓球", "入球大細", "角球大細")
+          market_directions = {
+              "讓球": ("主", "客"),
+              "入球大細": ("大", "細"),
+              "角球大細": ("大", "細"),
+          }
+
+          # 單一時點：初盤預測、T-30、T-5 可各自成為完整條件。
+          for stage in STAGES:
+              for market in markets:
+                  for direction in market_directions[market]:
+                      for threshold in odds_thresholds:
+                          group = [
+                              record for record in complete_records
+                              if record["leads"][stage]["market"] == market
+                              and record["leads"][stage]["direction"] == direction
+                              and (threshold == 0 or record["leads"][stage]["odds"] > threshold)
+                          ]
+                          odds_label = "無賠率門檻" if threshold == 0 else f"賠率>{threshold:.2f}"
+                          candidates.append({
+                              "market": market,
+                              "family": "單一時點",
+                              **candidate_stats(
+                                  group,
+                                  stage,
+                                  f"{DISPLAY[stage]}={direction}｜{odds_label}",
+                              ),
+                          })
+
+                          exact_lines = sorted({
+                              selected_line(record["leads"][stage])
+                              for record in group
+                          })
+                          for exact_line in exact_lines:
+                              line_group = [
+                                  record for record in group
+                                  if abs(selected_line(record["leads"][stage]) - exact_line) <= 1e-9
+                              ]
+                              candidates.append({
+                                  "market": market,
+                                  "family": "單一時點＋固定中位線",
+                                  **candidate_stats(
+                                      line_group,
+                                      stage,
+                                      (
+                                          f"{DISPLAY[stage]}={direction}｜"
+                                          f"中位線={exact_line:g}｜{odds_label}"
+                                      ),
+                                  ),
+                              })
+
+          # 任意兩時點：方向可相同或相反，按較後時點的選擇結算。
+          pair_specs = (
+              ("首預", "T-30"),
+              ("首預", "T-5"),
+              ("T-30", "T-5"),
+          )
+          for early_stage, late_stage in pair_specs:
+              for market in markets:
+                  for early_direction in market_directions[market]:
+                      for late_direction in market_directions[market]:
+                          for threshold in odds_thresholds:
+                              group = [
+                                  record for record in complete_records
+                                  if record["leads"][early_stage]["market"] == market
+                                  and record["leads"][late_stage]["market"] == market
+                                  and record["leads"][early_stage]["direction"] == early_direction
+                                  and record["leads"][late_stage]["direction"] == late_direction
+                                  and (
+                                      threshold == 0
+                                      or min(
+                                          record["leads"][early_stage]["odds"],
+                                          record["leads"][late_stage]["odds"],
+                                      ) > threshold
+                                  )
+                              ]
+                              odds_label = "無賠率門檻" if threshold == 0 else f"兩段賠率>{threshold:.2f}"
+                              pair_label = (
+                                  f"{DISPLAY[early_stage]}={early_direction}＋"
+                                  f"{DISPLAY[late_stage]}={late_direction}｜{odds_label}"
+                              )
+                              candidates.append({
+                                  "market": market,
+                                  "family": "兩時點方向",
+                                  **candidate_stats(group, late_stage, pair_label),
+                              })
+                              if early_direction == late_direction:
+                                  for relation in ("更著數", "同線", "更蝕底"):
+                                      relation_group = [
+                                          record for record in group
+                                          if line_relation(
+                                              record["leads"][early_stage],
+                                              record["leads"][late_stage],
+                                          ) == relation
+                                      ]
+                                      candidates.append({
+                                          "market": market,
+                                          "family": "兩時點方向＋線位變化",
+                                          **candidate_stats(
+                                              relation_group,
+                                              late_stage,
+                                              f"{pair_label}｜較前段{relation}",
+                                          ),
+                                      })
+
+          # 三時點：八種完整方向路徑，不要求三段方向一致。
+          for market in markets:
+              directions = market_directions[market]
+              paths = [
+                  (a, b, c)
+                  for a in directions
+                  for b in directions
+                  for c in directions
+              ]
+              for path in paths:
+                  for threshold in odds_thresholds:
+                      group = [
+                          record for record in complete_records
+                          if all(record["leads"][stage]["market"] == market for stage in STAGES)
+                          and tuple(record["leads"][stage]["direction"] for stage in STAGES) == path
+                          and (
+                              threshold == 0
+                              or min(record["leads"][stage]["odds"] for stage in STAGES) > threshold
+                          )
+                      ]
+                      odds_label = "無賠率門檻" if threshold == 0 else f"三段賠率>{threshold:.2f}"
+                      path_label = "→".join(path)
+                      candidates.append({
+                          "market": market,
+                          "family": "三時點完整路徑",
+                          **candidate_stats(
+                              group,
+                              "T-5",
+                              f"{path_label}｜{odds_label}",
+                          ),
+                      })
+                      same_line_group = [
+                          record for record in group
+                          if max(record["leads"][stage]["line"] for stage in STAGES)
+                          - min(record["leads"][stage]["line"] for stage in STAGES) <= 1e-9
+                      ]
+                      candidates.append({
+                          "market": market,
+                          "family": "三時點路徑＋同中位線",
+                          **candidate_stats(
+                              same_line_group,
+                              "T-5",
+                              f"{path_label}｜三段同中位線｜{odds_label}",
+                          ),
+                      })
+
+          eligible_candidates = [
+              candidate for candidate in candidates
+              if candidate["all"]["n"] >= 20
+              and candidate["development_70pct"]["n"] >= 14
+              and candidate["validation_30pct"]["n"] >= 6
+          ]
+          for candidate in eligible_candidates:
+              validation = candidate["validation_30pct"]
+              candidate["ranking_score"] = round(
+                  (validation["wilson_low_pct"] or 0)
+                  + min(max(validation["roi_pct"] or -100, -50), 50) * 0.10,
+                  3,
+              )
+          ranked_candidates = {
+              market: sorted(
+                  [
+                      candidate for candidate in eligible_candidates
+                      if candidate["market"] == market
+                  ],
+                  key=lambda candidate: (
+                      candidate["ranking_score"],
+                      candidate["validation_30pct"]["n"],
+                      candidate["all"]["n"],
+                  ),
+                  reverse=True,
+              )
+              for market in markets
+          }
+
           threshold_stats = {}
           market_stats = {}
           path_stats = {}
@@ -446,6 +739,15 @@ jobs:
               "line_stats_all_observed": line_stats,
               "same_direction_line_movement_stats": same_direction_line_movement_stats,
               "same_direction_line_movement_detail_stats": same_direction_line_movement_detail_stats,
+              "condition_mining": {
+                  "scope": "所有初盤預測、T-30、T-5齊全的皇冠歷史賽事；單一及兩時點條件不要求三段同市場",
+                  "settlement": "單一時點用該時點；兩時點用較後時點；三時點用T-5的方向、線位及賠率結算",
+                  "minimum_sample": "總樣本至少20，時間前70%至少14，後30%至少6",
+                  "complete_records": len(complete_records),
+                  "candidate_count": len(candidates),
+                  "eligible_candidate_count": len(eligible_candidates),
+                  "ranked_by_market": ranked_candidates,
+              },
               "recent_results_gt_1_70": recent_results,
           }
           print("CROWN_V2_GRANULAR_REPORT_BEGIN")
