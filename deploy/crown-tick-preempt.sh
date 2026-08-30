@@ -23,8 +23,7 @@ then
   # Every non-deadline writer must yield while a native T-30/T-5 job is due.
   # The first-look and early-admission reconcilers can be retried later; a
   # true timed-stage quote cannot be reconstructed after kickoff.
-  /usr/bin/systemctl stop --no-block \
-    crown-round-update.service crown-sweep.service crown-settle.service \
+  /usr/bin/systemctl stop --no-block crown-round-update.service crown-sweep.service crown-settle.service \
     crown-reverse-t5-drain.service crown-first-look-reconcile.service \
     crown-early-admission-reconcile.service
   echo "Crown urgent timed stage due; blocking slow jobs preempted"

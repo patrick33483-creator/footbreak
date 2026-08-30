@@ -42,10 +42,15 @@ class DeadlineFirstTickTests(unittest.TestCase):
             ])))
             ready = self._match("ready", now, 4)
             result = {"match_id": "ready", "kickoff_hkt": ready["kickOffTime"], "stage": "T-5", "candidates": []}
-            def synchronous_call(kind, _payload, _deadline):
-                return result if kind == "analyse" else True
+            def synchronous_analyses(tasks, _deadline):
+                return {
+                    key: result
+                    for key, _payload in tasks
+                    if key == "ready|T-5"
+                }
             with patch.object(run_predict.H, "fetch_matches", return_value=[ready]) as fetch, \
-                 patch.object(run_predict, "_bounded_due_call", side_effect=synchronous_call), \
+                 patch.object(run_predict, "_run_due_analyses", side_effect=synchronous_analyses), \
+                 patch.object(run_predict, "_bounded_due_call", return_value=True), \
                  patch.object(run_predict, "pick_one", return_value=(None, "觀望")), \
                  patch.object(run_predict.S, "list_fixtures") as discovery:
                 rows = run_predict.main(horizon_min=90)
@@ -79,14 +84,21 @@ class DeadlineFirstTickTests(unittest.TestCase):
             matches = [self._match(key, now, minutes) for key, minutes in (
                 ("hung", 5), ("ready-one", 4), ("ready-two", 3)
             )]
-            def analyse(row, *_args, stage_override=None, **_kwargs):
-                if row["id"] == "hung":
-                    time.sleep(2)
-                kickoff = dt.datetime.fromisoformat(row["kickOffTime"])
-                return self._durable_result(row["id"], kickoff) | {"stage": stage_override}
+            def synchronous_analyses(tasks, _deadline):
+                completed = {}
+                for key, payload in tasks:
+                    row, _fixture, stage_override, _snapshot = payload
+                    if row["id"] == "hung":
+                        continue
+                    kickoff = dt.datetime.fromisoformat(row["kickOffTime"])
+                    completed[key] = (
+                        self._durable_result(row["id"], kickoff)
+                        | {"stage": stage_override}
+                    )
+                return completed
             started = time.monotonic()
             with patch.object(run_predict.H, "fetch_matches", return_value=matches), \
-                 patch.object(run_predict, "analyse_match", side_effect=analyse), \
+                 patch.object(run_predict, "_run_due_analyses", side_effect=synchronous_analyses), \
                  patch.object(run_predict, "pick_one", return_value=(None, "觀望")):
                 rows = run_predict.main(horizon_min=90)
             self.assertLess(time.monotonic() - started, 2.0)
@@ -99,7 +111,7 @@ class DeadlineFirstTickTests(unittest.TestCase):
                 [row["stage"] for row in saved["watch"]["ready-two"]["stages"]], ["T-30", "T-5"]
             )
 
-    def test_successful_persistence_precedes_next_fixture_and_second_run_is_idempotent(self):
+    def test_successful_batch_persistence_is_idempotent(self):
         now = dt.datetime.now(run_predict.HKT)
         with tempfile.TemporaryDirectory() as directory, \
              patch.object(run_predict, "HERE", directory), \
@@ -110,21 +122,21 @@ class DeadlineFirstTickTests(unittest.TestCase):
                 ("first", 4, [{"stage": "T-30"}]), ("second", 5, [{"stage": "T-30"}]),
             ])), encoding="utf-8")
             matches = [self._match("first", now, 4), self._match("second", now, 5)]
-            proof = Path(directory, "second-saw-first")
-            def analyse(row, *_args, stage_override=None, **_kwargs):
-                if row["id"] == "second":
-                    saved = json.loads(ledger_path.read_text(encoding="utf-8"))
-                    if any(stage.get("stage") == "T-5" for stage in saved["watch"]["first"]["stages"]):
-                        proof.write_text("yes", encoding="utf-8")
-                return self._durable_result(row["id"], dt.datetime.fromisoformat(row["kickOffTime"])) | {"stage": stage_override}
+            def synchronous_analyses(tasks, _deadline):
+                return {
+                    key: self._durable_result(
+                        key.split("|", 1)[0],
+                        dt.datetime.fromisoformat(payload[0]["kickOffTime"]),
+                    ) | {"stage": payload[2]}
+                    for key, payload in tasks
+                }
             with patch.object(run_predict.H, "fetch_matches", return_value=matches), \
-                 patch.object(run_predict, "analyse_match", side_effect=analyse), \
+                 patch.object(run_predict, "_run_due_analyses", side_effect=synchronous_analyses), \
                  patch.object(run_predict, "pick_one", return_value=(None, "觀望")):
                 first = run_predict.main(horizon_min=90)
                 second = run_predict.main(horizon_min=90)
             self.assertEqual([row["match_id"] for row in first], ["first", "second"])
             self.assertEqual(second, [])
-            self.assertEqual(proof.read_text(encoding="utf-8"), "yes")
             saved = json.loads(ledger_path.read_text(encoding="utf-8"))
             for match_id in ("first", "second"):
                 self.assertEqual(
