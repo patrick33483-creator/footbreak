@@ -34,6 +34,7 @@ jobs:
               Path("/var/lib/footbreak/stage_engine_v2/ledger.json"),
               Path("/var/www/stage_engine_v2/data.json"),
               Path("/var/lib/footbreak/crown/predictions.json"),
+              Path("/var/lib/footbreak/crown/prediction_history.json"),
               Path("/var/lib/footbreak/crown/ledger.json"),
               Path("/var/www/crown/data.json"),
           ]
@@ -104,6 +105,41 @@ jobs:
                   if data:
                       print("first_keys=", sorted(data[0].keys()) if isinstance(data[0], dict) else "not_dict")
                       print("first_sample=", json.dumps(data[0], ensure_ascii=False)[:4000])
+                      if path.name == "prediction_history.json":
+                          result_keys = set()
+                          samples = []
+                          for row in data:
+                              if not isinstance(row, dict):
+                                  continue
+                              for key in row:
+                                  if any(token in key.lower() for token in (
+                                      "score", "result", "outcome", "settle", "corner"
+                                  )):
+                                      result_keys.add(key)
+                              if any(
+                                  row.get(key) is not None
+                                  for key in (
+                                      "home_score", "away_score", "result",
+                                      "outcome", "settlement", "corners_total"
+                                  )
+                              ):
+                                  samples.append(row)
+                                  if len(samples) >= 3:
+                                      break
+                          print("history_result_like_keys=", sorted(result_keys))
+                          for row in samples:
+                              print("HISTORY_RESULT_SAMPLE=", json.dumps({
+                                  key: row.get(key)
+                                  for key in (
+                                      "match_id", "titan_match_id", "stage",
+                                      "home", "away", "kickoff_hkt",
+                                      "lead_view", "forecast_candidates",
+                                      "home_score", "away_score", "score",
+                                      "result", "outcome", "settlement",
+                                      "corners_total", "status"
+                                  )
+                                  if key in row
+                              }, ensure_ascii=False)[:5000])
 
           print("\n=== RESULT-LIKE FILES ===")
           roots = [Path("/var/lib/footbreak/crown"), Path("/var/www/crown")]
