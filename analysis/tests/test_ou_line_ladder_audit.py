@@ -275,6 +275,38 @@ def test_margin_and_odds_level_summary_report_per_provider_per_stage() -> None:
     assert odds_row["avg_selected_odds"] == 1.80
 
 
+def test_classify_signal_thresholds() -> None:
+    classify_signal = AUDIT.classify_signal
+    assert classify_signal(12.0, 20) == "強烈訊號:跟隨該側"
+    assert classify_signal(7.0, 20) == "輕微訊號:可留意"
+    assert classify_signal(2.0, 20) == "訊號不明顯"
+    assert classify_signal(-15.0, 20) == "反向訊號:避免/反向"
+    assert classify_signal(20.0, 5) == "樣本不足,僅供參考"
+    assert classify_signal(None, 20) == "無法評估(未有隱含機率)"
+
+
+def test_composite_signal_table_matches_drift_breakdown() -> None:
+    db = make_db()
+    db.execute(
+        "INSERT INTO matches VALUES ('fixture-1', 2000, 'Home Team', 'Away Team')"
+    )
+    db.execute("INSERT INTO research_results VALUES ('fixture-1', 2, 1)")
+    add_pair(db, stage="initial", line="2.5", over_odds=1.98, under_odds=1.90, captured_at=1000)
+    add_pair(db, stage="T30", line="2.5", over_odds=1.85, under_odds=1.95, captured_at=1100)
+    add_pair(db, stage="T5", line="2.5", over_odds=1.80, under_odds=2.00, captured_at=1200)
+
+    report = AUDIT.run(db, 1.70)
+    row = next(
+        r for r in report["composite_signal_table"]
+        if r["provider"] == "pinnacle" and r["direction_path"] == "U→O→O"
+    )
+    assert row["backed_side"] == "大球開出"
+    assert row["avg_t5_odds"] == 1.80
+    assert row["observations"] == 1
+    # Below the minimum-sample threshold -> flagged as reference-only regardless of edge.
+    assert row["signal"] == "樣本不足,僅供參考"
+
+
 def test_odds_drift_breakdown_handles_side_switch_paths() -> None:
     db = make_db()
     db.execute(

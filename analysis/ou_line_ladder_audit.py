@@ -43,6 +43,31 @@ def bucket_drift(gap: float) -> str:
 
 BUCKET_ORDER = ["收縮>=0.20", "收縮0.10-0.20", "收縮0.05-0.10", "收縮<0.05", "持平或拉闊"]
 
+SIGNAL_MIN_SAMPLE = 15
+SIGNAL_STRONG_EDGE_PP = 10.0
+SIGNAL_WATCH_EDGE_PP = 5.0
+SIGNAL_FADE_EDGE_PP = -10.0
+
+
+def classify_signal(edge_pp: float | None, observations: int) -> str:
+    """Turn (actual hit rate - T5 raw implied probability) into a plain-language signal.
+
+    `edge_pp` is already "actual hit rate minus T5 raw implied probability", in
+    percentage points. Positive means the closing price still underestimated the
+    backed side; negative means it overestimated it.
+    """
+    if edge_pp is None:
+        return "無法評估(未有隱含機率)"
+    if observations < SIGNAL_MIN_SAMPLE:
+        return "樣本不足,僅供參考"
+    if edge_pp >= SIGNAL_STRONG_EDGE_PP:
+        return "強烈訊號:跟隨該側"
+    if edge_pp >= SIGNAL_WATCH_EDGE_PP:
+        return "輕微訊號:可留意"
+    if edge_pp <= SIGNAL_FADE_EDGE_PP:
+        return "反向訊號:避免/反向"
+    return "訊號不明顯"
+
 
 def side_odds(stage: dict[str, Any], side: str) -> float:
     """Odds quoted for `side` at this stage, whether or not it was the selected side."""
@@ -448,6 +473,42 @@ def run(db: sqlite3.Connection, threshold: float) -> dict[str, Any]:
         for (provider, path, outcome), gaps in sorted(outcome_drift_groups.items())
     ]
 
+    # Composite signal: (provider, direction_path, drift bucket) -> a plain buy/avoid
+    # label, built purely from settled observations in that exact combination. This is
+    # the lookup table meant for real-time use: when a live match's path + bucket match
+    # a row here with a strong/watch signal, it flags that the historical edge in this
+    # slice has run positive net of the bookmaker's own raw implied probability.
+    composite_signal_table = []
+    for (provider, path, bucket), group in sorted(
+        drift_groups.items(),
+        key=lambda kv: (kv[0][0], kv[0][1], BUCKET_ORDER.index(kv[0][2])),
+    ):
+        settled = [r for r in group if r.get("actual_result") is not None]
+        t5_side = group[0]["T5"]["side"]
+        backed_label = "大球開出" if t5_side == "O" else "小球開出"
+        stats = outcome_probability(group)
+        hit = stats["probability"].get(backed_label)
+        avg_t5_odds = round(sum(r["T5"]["odds"] for r in group) / len(group), 4)
+        implied = round(1 / avg_t5_odds, 4) if avg_t5_odds else None
+        edge_pp = (
+            round((hit - implied) * 100, 1) if hit is not None and implied is not None else None
+        )
+        composite_signal_table.append(
+            {
+                "provider": provider,
+                "direction_path": path,
+                "bucket": bucket,
+                "backed_side": backed_label,
+                "observations": len(group),
+                "settled": len(settled),
+                "avg_t5_odds": avg_t5_odds,
+                "hit_rate_pct": round(hit * 100, 1) if hit is not None else None,
+                "implied_prob_pct": round(implied * 100, 1) if implied is not None else None,
+                "edge_pp": edge_pp,
+                "signal": classify_signal(edge_pp, len(settled)),
+            }
+        )
+
     margin_groups: dict[tuple[str, str], list[float]] = collections.defaultdict(list)
     odds_level_groups: dict[tuple[str, str], list[float]] = collections.defaultdict(list)
     for row in eligible:
@@ -568,6 +629,7 @@ def run(db: sqlite3.Connection, threshold: float) -> dict[str, Any]:
         "level_involved_detail": level_involved_detail,
         "odds_drift_breakdown": odds_drift_breakdown,
         "drift_by_outcome": drift_by_outcome,
+        "composite_signal_table": composite_signal_table,
         "margin_summary": margin_summary,
         "odds_level_summary": odds_level_summary,
     }
