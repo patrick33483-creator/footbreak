@@ -81,20 +81,27 @@ def test_projects_prediction_direction_conditions_and_settles_results() -> None:
     conditions = {item["id"]: item for item in payload["public_conditions"]}
 
     assert payload["direction_basis"] == "model_prediction_not_quote_direction"
-    assert payload["public_tiers"] == ["S", "A"]
+    assert payload["public_tiers"] == ["觀察", "普通"]
     assert conditions["S-HIL-T5-OVER-185"]["prospective"]["qualified"] == 1
     assert conditions["S-HIL-T5-OVER-185"]["prospective"]["hit_rate"] == 1.0
     assert conditions["S-HIL-T5-OVER-185"]["prospective"]["roi"] == 0.9
+    assert conditions["WATCH-HIL-T5-OVER-180"]["prospective"]["qualified"] == 1
+    assert conditions["WATCH-HIL-T5-OVER-180"]["evidence_label"] == "大型樣本觀察"
     assert conditions["A-HIL-OPEN-T5-OVER-180"]["prospective"]["qualified"] == 1
     assert conditions["A-HDC-OPEN-AWAY-MINUS-050"]["prospective"]["full_loss"] == 1
     assert conditions["A-HDC-HHH-SAME-LINE"]["prospective"]["half_win"] == 1
     assert conditions["A-HDC-HHH-SAME-LINE"]["prospective"]["roi"] == 0.455
+    assert conditions["A-HDC-HHH-SAME-LINE"]["tier"] == "普通"
+    assert conditions["A-HDC-HHH-SAME-LINE"]["evidence_status"] == "downgraded"
 
 
 def test_strict_threshold_same_line_and_activation_cutoff() -> None:
     ledger = {"fixtures": {
         "exact": _slot("exact", {
             "T-5": _stage("HIL", "H", 2.5, 1.85, "O 2.5"),
+        }),
+        "exact-180": _slot("exact-180", {
+            "T-5": _stage("HIL", "H", 2.5, 1.80, "O 2.5"),
         }),
         "changed": _slot("changed", {
             "首預": _stage("HDC", "H", -0.25, 1.8, "主"),
@@ -124,6 +131,7 @@ def test_strict_threshold_same_line_and_activation_cutoff() -> None:
     payload = build_segmented_conditions(ledger)
     conditions = {item["id"]: item for item in payload["public_conditions"]}
     assert conditions["S-HIL-T5-OVER-185"]["prospective"]["qualified"] == 0
+    assert conditions["WATCH-HIL-T5-OVER-180"]["prospective"]["qualified"] == 1
     assert conditions["A-HDC-HHH-SAME-LINE"]["prospective"]["qualified"] == 0
 
 

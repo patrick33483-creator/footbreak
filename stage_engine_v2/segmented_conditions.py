@@ -1,4 +1,4 @@
-"""Read-only S/A segmented-condition projection for Crown Stage Engine V2.
+"""Read-only segmented-condition projection for Crown Stage Engine V2.
 
 This module evaluates the model's selected prediction direction at the
 opening, T-30 and T-5 decision points.  It does not infer direction from
@@ -16,7 +16,7 @@ from .fixtures import HKT, _parse_kickoff
 
 
 ACTIVATION_CUTOFF = "2026-08-31T00:00:00+08:00"
-PUBLIC_TIERS = ("S", "A")
+PUBLIC_TIERS = ("觀察", "普通")
 STAGES = ("首預", "T-30", "T-5")
 
 _MARKET_ALIASES = {
@@ -159,6 +159,13 @@ def _rule_s_t5_over(slot: dict[str, Any]) -> dict[str, Any] | None:
     return prediction
 
 
+def _rule_watch_t5_over_180(slot: dict[str, Any]) -> dict[str, Any] | None:
+    prediction = _prediction(slot, "T-5", "HIL")
+    if not prediction or prediction["side"] != "H" or (prediction["odds"] or 0) <= 1.80:
+        return None
+    return prediction
+
+
 def _rule_a_open_t5_over(slot: dict[str, Any]) -> dict[str, Any] | None:
     opening = _prediction(slot, "首預", "HIL")
     t5 = _prediction(slot, "T-5", "HIL")
@@ -196,33 +203,58 @@ RuleMatcher = Callable[[dict[str, Any]], dict[str, Any] | None]
 CONDITIONS: tuple[dict[str, Any], ...] = (
     {
         "id": "S-HIL-T5-OVER-185",
-        "tier": "S",
+        "tier": "觀察",
+        "evidence_status": "watch",
+        "evidence_label": "觀察中",
+        "evidence_note": "三個時段均為正；獨立樣本區間仍未收窄。",
         "market": "HIL",
         "title": "T-5 預測大；賠率 > 1.85",
         "definition": "只睇 T-5 入球大細預測方向；預測為大，而且所選方向賠率嚴格高於 1.85。",
         "path_label": "T-5：大",
         "historical": {
-            "sample": 94, "full_win": 52, "half_win": 6, "push": 7,
-            "half_loss": 2, "full_loss": 27, "hit_rate": 0.6667, "roi": 0.2284,
+            "sample": 96, "full_win": 53, "half_win": 6, "push": 7,
+            "half_loss": 2, "full_loss": 28, "hit_rate": 0.6629, "roi": 0.2224,
         },
         "matcher": _rule_s_t5_over,
     },
     {
+        "id": "WATCH-HIL-T5-OVER-180",
+        "tier": "觀察",
+        "evidence_status": "watch",
+        "evidence_label": "大型樣本觀察",
+        "evidence_note": "242 場三段均為正；暫未達嚴格獨立驗證。",
+        "market": "HIL",
+        "title": "T-5 預測大；賠率 > 1.80",
+        "definition": "只睇 T-5 入球大細預測方向；預測為大，而且所選方向賠率嚴格高於 1.80。",
+        "path_label": "T-5：大",
+        "historical": {
+            "sample": 242, "full_win": 119, "half_win": 12, "push": 15,
+            "half_loss": 7, "full_loss": 89, "hit_rate": 0.5771, "roi": 0.0636,
+        },
+        "matcher": _rule_watch_t5_over_180,
+    },
+    {
         "id": "A-HIL-OPEN-T5-OVER-180",
-        "tier": "A",
+        "tier": "觀察",
+        "evidence_status": "watch",
+        "evidence_label": "細樣本觀察",
+        "evidence_note": "方向一致，但獨立樣本仍然太少。",
         "market": "HIL",
         "title": "初盤預測大 → T-5 大；兩段賠率均 > 1.80",
         "definition": "初盤預測及 T-5 都預測入球大，而且兩段所選方向賠率都嚴格高於 1.80。",
         "path_label": "初盤預測：大 → T-5：大",
         "historical": {
-            "sample": 47, "full_win": 29, "half_win": 2, "push": 1,
-            "half_loss": 1, "full_loss": 14, "hit_rate": 0.6739, "roi": 0.2410,
+            "sample": 49, "full_win": 30, "half_win": 2, "push": 1,
+            "half_loss": 1, "full_loss": 15, "hit_rate": 0.6667, "roi": 0.2287,
         },
         "matcher": _rule_a_open_t5_over,
     },
     {
         "id": "A-HDC-OPEN-AWAY-MINUS-050",
-        "tier": "A",
+        "tier": "觀察",
+        "evidence_status": "watch",
+        "evidence_label": "細樣本觀察",
+        "evidence_note": "獨立 holdout 只有 5 場，暫時不能判定。",
         "market": "HDC",
         "title": "初盤預測客；被預測客隊中位線 -0.5",
         "definition": "只睇初盤讓球預測；方向為客，而且以被預測客隊角度計算的中位線為 -0.5，無賠率門檻。",
@@ -235,14 +267,17 @@ CONDITIONS: tuple[dict[str, Any], ...] = (
     },
     {
         "id": "A-HDC-HHH-SAME-LINE",
-        "tier": "A",
+        "tier": "普通",
+        "evidence_status": "downgraded",
+        "evidence_label": "已降級",
+        "evidence_note": "最新獨立段為 52.38%，ROI -0.89%；不再列作強條件。",
         "market": "HDC",
         "title": "初盤預測主 → T-30 主 → T-5 主；三段中位線相同",
         "definition": "三段讓球預測方向全部為主，而且以被預測一方角度計算的三段中位線完全相同，無賠率門檻。",
         "path_label": "初盤預測：主 → T-30：主 → T-5：主",
         "historical": {
-            "sample": 186, "full_win": 92, "half_win": 14, "push": 10,
-            "half_loss": 11, "full_loss": 59, "hit_rate": 0.6023, "roi": 0.1004,
+            "sample": 188, "full_win": 92, "half_win": 14, "push": 10,
+            "half_loss": 11, "full_loss": 61, "hit_rate": 0.5955, "roi": 0.0887,
         },
         "matcher": _rule_a_three_home_same_line,
     },
@@ -407,6 +442,8 @@ def build_segmented_conditions(
             observation = {
                 "condition_id": condition["id"],
                 "tier": condition["tier"],
+                "evidence_status": condition["evidence_status"],
+                "evidence_label": condition["evidence_label"],
                 "market": condition["market"],
                 "match_id": slot.get("id"),
                 "league": slot.get("league"),
@@ -445,7 +482,7 @@ def build_segmented_conditions(
         "matching_observations": matching_observations[:200],
         "background_accumulation": {
             "enabled": True,
-            "description": "其餘候選條件繼續在後台累積，未達 S／A 前不在此頁顯示。",
+            "description": "其餘候選條件繼續在後台累積，未達公開觀察門檻前不在此頁顯示。",
         },
     }
 
