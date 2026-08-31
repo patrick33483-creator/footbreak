@@ -81,6 +81,11 @@ button,a{font:inherit;color:inherit}button{cursor:pointer}a{text-decoration:none
 .btn{min-height:2.75rem;border:1px solid var(--border);border-radius:.375rem;padding:var(--s2) var(--s3);background:var(--surface);color:var(--muted);font-size:var(--text-xs);font-weight:500}
 .btn:hover{border-color:var(--accent);color:var(--accent);background:var(--accent-soft)}
 .btn.primary{color:var(--accent);border-color:color-mix(in srgb,var(--accent) 35%,var(--border))}
+.inline-matches{margin-top:var(--s4);padding-top:var(--s4);border-top:1px solid var(--border)}
+.inline-matches[hidden]{display:none}
+.inline-head{display:flex;align-items:center;justify-content:space-between;gap:var(--s3);margin-bottom:var(--s2)}
+.inline-head strong{font-size:var(--text-sm)}.inline-head span{color:var(--muted);font-size:var(--text-xs)}
+.inline-matches .match{background:var(--surface-2);box-shadow:none}
 .matches-section{margin-top:var(--s6);scroll-margin-top:var(--s4)}
 .section-head{display:flex;align-items:center;justify-content:space-between;gap:var(--s4);margin-bottom:var(--s3)}
 .section-head h2{font-size:var(--text-lg);letter-spacing:-.015em}.updated{font-size:var(--text-xs);color:var(--muted)}
@@ -161,7 +166,7 @@ button,a{font:inherit;color:inherit}button{cursor:pointer}a{text-decoration:none
     </section>
 
     <section class="matches-section" id="matches-section">
-      <div class="section-head"><h2>符合場次</h2><span class="updated" id="updated">載入中</span></div>
+      <div class="section-head"><h2 id="matches-title">現時運行符合場次</h2><span class="updated" id="updated">載入中</span></div>
       <div class="active-filter" id="active-filter">
         <span id="active-filter-text"></span>
         <button type="button" id="clear-filter" data-testid="button-clear-condition">清除篩選</button>
@@ -204,8 +209,25 @@ function visibleObservations(){
     return true;
   }).sort((a,b)=>String(b.kickoff||"").localeCompare(String(a.kickoff||"")));
 }
+function matchMarkup(r){
+  return `<article class="match" data-testid="match-${esc(r._condition)}-${esc(r.match_id)}">
+    <div class="match-main">
+      <div class="match-title">${esc(r.home)} 對 ${esc(r.away)}</div>
+      <div class="match-meta">${esc(r.league)} · ${fmtTime(r.kickoff)} · ${esc(r.tier)}級</div>
+      <div class="match-path">${esc(stagePath(r))}</div>
+    </div>
+    <div class="match-result">
+      <strong class="${r.settlement?"":"pending"}">${esc(r.settlement_label||"待賽果")}</strong>
+      <small>${esc(r.score||"未有賽果")}</small>
+    </div>
+  </article>`;
+}
 function ruleCard(c,index){
   const p=c.prospective||{},h=c.historical||{};
+  const observations=(c.observations||[])
+    .map(o=>({...o,_condition:c.id,_title:c.title}))
+    .sort((a,b)=>String(b.kickoff||"").localeCompare(String(a.kickoff||"")));
+  const inlineId=`inline-${c.id}`;
   return `<article class="rule ${index===0?"featured":""}" data-testid="card-condition-${esc(c.id)}">
     <div class="rule-head">
       <div><h2>${esc(c.title)}</h2><div class="rule-id">${esc(c.id)}</div></div>
@@ -217,7 +239,11 @@ function ruleCard(c,index){
     <div class="live-stats"><strong>累積 ${n(p.qualified)}</strong><span>· 已判定 ${n(p.settled)}</span><span>· 目前命中 <b class="rate">${pct(p.hit_rate)}</b></span></div>
     <div class="rule-actions">
       <button class="btn primary" type="button" data-only="${esc(c.id)}" data-testid="button-only-${esc(c.id)}">只顯示此條件</button>
-      <button class="btn" type="button" data-expand="${esc(c.id)}" data-testid="button-expand-${esc(c.id)}">展開符合場次 (${n(p.qualified)})</button>
+      <button class="btn" type="button" data-expand="${esc(c.id)}" data-testid="button-expand-${esc(c.id)}" aria-expanded="false" aria-controls="${esc(inlineId)}">展開符合場次 (${n(p.qualified)})</button>
+    </div>
+    <div class="inline-matches" id="${esc(inlineId)}" data-inline="${esc(c.id)}" hidden>
+      <div class="inline-head"><strong>此條件符合場次</strong><span>${n(observations.length)} 場</span></div>
+      <div class="match-list">${observations.length?observations.map(matchMarkup).join(""):`<div class="empty">此條件暫時未有累積場次。</div>`}</div>
     </div>
   </article>`;
 }
@@ -233,23 +259,17 @@ function emptyMessage(){
 }
 function renderMatches(){
   const rows=visibleObservations(),filter=document.getElementById("active-filter");
+  document.getElementById("matches-title").textContent={
+    live:"現時運行符合場次",
+    all:"全部累積符合場次",
+    settled:"已完場／待賽果"
+  }[state.mode];
   if(state.condition){
     const c=conditionMap()[state.condition];
     filter.classList.add("visible");
     document.getElementById("active-filter-text").textContent=`只顯示：${c?.title||state.condition}`;
   }else filter.classList.remove("visible");
-  document.getElementById("match-list").innerHTML=rows.length?rows.map(r=>`
-    <article class="match" data-testid="match-${esc(r._condition)}-${esc(r.match_id)}">
-      <div class="match-main">
-        <div class="match-title">${esc(r.home)} 對 ${esc(r.away)}</div>
-        <div class="match-meta">${esc(r.league)} · ${fmtTime(r.kickoff)} · ${esc(r.tier)}級</div>
-        <div class="match-path">${esc(stagePath(r))}</div>
-      </div>
-      <div class="match-result">
-        <strong class="${r.settlement?"":"pending"}">${esc(r.settlement_label||"待賽果")}</strong>
-        <small>${esc(r.score||"未有賽果")}</small>
-      </div>
-    </article>`).join(""):`<div class="empty">
+  document.getElementById("match-list").innerHTML=rows.length?rows.map(matchMarkup).join(""):`<div class="empty">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 12h16M12 4v16"/><circle cx="12" cy="12" r="9"/></svg>
       ${emptyMessage()}
     </div>`;
@@ -275,11 +295,15 @@ document.querySelectorAll("[data-market]").forEach(btn=>btn.addEventListener("cl
 document.getElementById("rules").addEventListener("click",event=>{
   const only=event.target.closest("[data-only]"),expand=event.target.closest("[data-expand]");
   if(!only&&!expand)return;
-  state.condition=(only||expand).dataset.only||(only||expand).dataset.expand;
   if(expand){
-    state.mode="all";
-    document.querySelectorAll("[data-mode]").forEach(x=>x.setAttribute("aria-selected",String(x.dataset.mode==="all")));
+    const card=expand.closest(".rule"),panel=card.querySelector("[data-inline]");
+    const opening=panel.hidden;
+    panel.hidden=!opening;
+    expand.setAttribute("aria-expanded",String(opening));
+    expand.textContent=`${opening?"收起":"展開"}符合場次 (${panel.querySelectorAll(".match").length})`;
+    return;
   }
+  state.condition=only.dataset.only;
   renderMatches();
   document.getElementById("matches-section").scrollIntoView({behavior:"smooth",block:"start"});
 });
