@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from crown.common import parse_time
-from crown.prediction_history import _grade_market, normalize_history
+from crown.prediction_history import _archive_watch_rows, _grade_market, normalize_history
 from crown.state import write_json_atomic
 
 
@@ -64,12 +64,19 @@ def _manifest(path: Path) -> dict[str, Any]:
 
 
 def apply_overlay(
-    history: dict[str, Any], manifest: dict[str, Any], *, apply: bool
+    history: dict[str, Any], manifest: dict[str, Any], *, apply: bool,
+    ledger: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     proposed = copy.deepcopy(history)
     rows = proposed.get("rows")
     if not isinstance(rows, list):
         raise ValueError("history rows missing")
+    rows_before_sync = len(rows)
+    if ledger is not None:
+        _archive_watch_rows(proposed, ledger)
+        normalize_history(proposed)
+        rows = proposed["rows"]
+    synced_rows = len(rows) - rows_before_sync
     changed_rows = 0
     already_rows = 0
     by_fixture: dict[str, int] = {}
@@ -141,6 +148,7 @@ def apply_overlay(
         "mode": "apply" if apply else "dry_run",
         "batch_id": batch_id,
         "fixtures": len(manifest["results"]),
+        "synced_rows": synced_rows,
         "changed_rows": changed_rows,
         "already_rows": already_rows,
         "fixture_row_counts": by_fixture,
@@ -154,12 +162,16 @@ def apply_overlay(
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--history", type=Path, required=True)
+    parser.add_argument("--ledger", type=Path)
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--apply", action="store_true")
     args = parser.parse_args()
     history = _read(args.history)
+    ledger = _read(args.ledger) if args.ledger else None
     manifest = _manifest(args.manifest)
-    proposed, report = apply_overlay(history, manifest, apply=args.apply)
+    proposed, report = apply_overlay(
+        history, manifest, apply=args.apply, ledger=ledger,
+    )
     if args.apply and report["before_hash"] != report["after_hash"]:
         write_json_atomic(args.history, proposed)
     print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))

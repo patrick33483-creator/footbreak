@@ -59,10 +59,11 @@ jobs:
           if [ -f /etc/footbreak-crown.env ]; then set -a; . /etc/footbreak-crown.env; set +a; fi
           state="${CROWN_STATE_DIR:-/var/lib/footbreak/crown}"
           history="$state/prediction_history.json"
+          ledger="$state/ledger.json"
           script="/tmp/apply_crown_operator_result_overlay.py"
           manifest="/tmp/crown_operator_result_overlay_20260831.json"
           test -s "$script"
-          test -s "$history" && test -s "$manifest"
+          test -s "$history" && test -s "$ledger" && test -s "$manifest"
           work="$(mktemp -d)"
           active_timers=""
           cleanup() {
@@ -89,16 +90,25 @@ jobs:
           install -m 0600 "$history" "$work/history.before"
           install -m 0600 "$history" "$work/history.dry-run"
           PYTHONPATH=/opt/footbreak "$python" "$script" \
-            --history "$work/history.dry-run" --manifest "$manifest" | tee "$work/dry-run.json"
+            --history "$work/history.dry-run" --ledger "$ledger" \
+            --manifest "$manifest" | tee "$work/dry-run.json"
           test "$("$python" -c 'import json,sys; print(json.load(open(sys.argv[1]))["fixtures"])' "$work/dry-run.json")" = 16
           PYTHONPATH=/opt/footbreak "$python" "$script" \
-            --history "$history" --manifest "$manifest" --apply | tee "$work/apply.json"
+            --history "$history" --ledger "$ledger" \
+            --manifest "$manifest" --apply | tee "$work/apply.json"
           stamp="$(TZ=Asia/Hong_Kong date +%Y%m%d-%H%M%S)"
           install -m 0600 "$work/history.before" "$history.before-operator-overlay-$stamp"
+          timeout 300s "$python" -m crown.dashboard_data \
+            --out /var/www/crown/data.json
+          chown root:www-data /var/www/crown/data.json /var/www/crown/history-*.json
+          chmod 0644 /var/www/crown/data.json /var/www/crown/history-*.json
+          PYTHONPATH=/opt/footbreak "$python" "$script" \
+            --history "$history" --ledger "$ledger" \
+            --manifest "$manifest" | tee "$work/verify.json"
+          test "$("$python" -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d["changed_rows"], d["already_rows"])' "$work/verify.json")" = "0 $("$python" -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d["changed_rows"] + d["already_rows"])' "$work/apply.json")"
           flock -u 8
-          systemctl start crown-round-update.service
           systemctl start crown-dashboard-api.service || true
-          cat "$work/apply.json"
+          "$python" -c 'import json,sys; print(json.dumps({"apply":json.load(open(sys.argv[1])), "verification":json.load(open(sys.argv[2]))}, ensure_ascii=False, indent=2, sort_keys=True))' "$work/apply.json" "$work/verify.json"
           REMOTE
 
       - name: Cleanup SSH key

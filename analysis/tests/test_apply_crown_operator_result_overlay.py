@@ -59,6 +59,25 @@ class OperatorOverlayTest(unittest.TestCase):
         self.assertEqual(report["changed_rows"], 0)
         self.assertEqual(report["already_rows"], 1)
 
+    def test_syncs_missing_history_row_from_ledger(self) -> None:
+        ledger = {"watch": {"1": {
+            "match_id": "1", "league": "L", "home": "H", "away": "A",
+            "kickoff": "2026-08-31T01:00:00+08:00",
+            "stages": [{
+                "stage": "T-5",
+                "market_predictions": [{
+                    "code": "HDC", "side": "H", "line": -0.5,
+                    "probability": 0.6,
+                }],
+            }],
+        }}}
+        proposed, report = apply_overlay(
+            {"rows": []}, manifest(), apply=False, ledger=ledger,
+        )
+        self.assertEqual(report["synced_rows"], 1)
+        self.assertEqual(report["changed_rows"], 1)
+        self.assertEqual(proposed["rows"][0]["score"], "2-1")
+
 
 if __name__ == "__main__":
     unittest.main()
