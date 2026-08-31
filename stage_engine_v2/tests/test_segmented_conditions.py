@@ -11,6 +11,7 @@ def _stage(code: str, side: str, line: float, odds: float, label: str) -> dict:
         "lead_line": line,
         "lead_label": label,
         "lead_odds": odds,
+        "predicted_at_utc": "2026-09-01T11:55:00+00:00",
     }
 
 
@@ -105,6 +106,19 @@ def test_strict_threshold_same_line_and_activation_cutoff() -> None:
             "kickoff_hkt": "2026-08-30T20:00:00+08:00",
             "kickoff_utc": "2026-08-30T12:00:00+00:00",
         },
+        "pre-activation-decision": _slot("pre-activation-decision", {
+            "T-5": {
+                **_stage("HIL", "H", 2.5, 2.0, "O 2.5"),
+                "predicted_at_utc": "2026-08-30T15:59:59+00:00",
+            },
+        }),
+        "missing-decision-time": _slot("missing-decision-time", {
+            "T-5": {
+                key: value
+                for key, value in _stage("HIL", "H", 2.5, 2.0, "O 2.5").items()
+                if key != "predicted_at_utc"
+            },
+        }),
     }}
 
     payload = build_segmented_conditions(ledger)
@@ -116,8 +130,14 @@ def test_strict_threshold_same_line_and_activation_cutoff() -> None:
 def test_old_labels_are_safely_parsed_without_rewriting_ledger() -> None:
     ledger = {"fixtures": {
         "legacy": _slot("legacy", {
-            "首預": {"lead_market": "OU", "lead_label": "over 2.5", "lead_odds": 1.81},
-            "T-5": {"lead_market": "入球大細", "lead_label": "O 3.0", "lead_odds": 1.90},
+            "首預": {
+                "lead_market": "OU", "lead_label": "over 2.5", "lead_odds": 1.81,
+                "predicted_at_utc": "2026-09-01T10:00:00+00:00",
+            },
+            "T-5": {
+                "lead_market": "入球大細", "lead_label": "O 3.0", "lead_odds": 1.90,
+                "predicted_at_utc": "2026-09-01T11:55:00+00:00",
+            },
         }),
     }}
     before = repr(ledger)
@@ -135,6 +155,7 @@ def test_old_chinese_handicap_label_uses_displayed_selected_line() -> None:
                 "lead_market": "讓球",
                 "lead_label": "皇冠讓球 客 -0.5",
                 "lead_odds": 1.9,
+                "predicted_at_utc": "2026-09-01T10:00:00+00:00",
             },
         }),
     }}
@@ -150,9 +171,18 @@ def test_old_chinese_handicap_label_uses_displayed_selected_line() -> None:
 def test_split_line_label_uses_midpoint_and_preserves_negative_sign() -> None:
     ledger = {"fixtures": {
         "split": _slot("split", {
-            "首預": {"lead_market": "讓球", "lead_label": "皇冠讓球 主 -0/0.5", "lead_odds": 1.9},
-            "T-30": {"lead_market": "讓球", "lead_label": "皇冠讓球 主 -0.25", "lead_odds": 1.9},
-            "T-5": {"lead_market": "讓球", "lead_label": "皇冠讓球 主 -0/0.5", "lead_odds": 1.9},
+            "首預": {
+                "lead_market": "讓球", "lead_label": "皇冠讓球 主 -0/0.5",
+                "lead_odds": 1.9, "predicted_at_utc": "2026-09-01T10:00:00+00:00",
+            },
+            "T-30": {
+                "lead_market": "讓球", "lead_label": "皇冠讓球 主 -0.25",
+                "lead_odds": 1.9, "predicted_at_utc": "2026-09-01T11:30:00+00:00",
+            },
+            "T-5": {
+                "lead_market": "讓球", "lead_label": "皇冠讓球 主 -0/0.5",
+                "lead_odds": 1.9, "predicted_at_utc": "2026-09-01T11:55:00+00:00",
+            },
         }),
     }}
     payload = build_segmented_conditions(ledger)

@@ -140,6 +140,7 @@ def _prediction(slot: dict[str, Any], stage: str, code: str) -> dict[str, Any] |
         "odds": odds,
         "label": row.get("lead_label") or row.get("label"),
         "stage": stage,
+        "predicted_at": row.get("predicted_at_utc") or row.get("predicted_at"),
     }
 
 
@@ -385,6 +386,12 @@ def build_segmented_conditions(
             if not prediction:
                 continue
             decision_stage = str(prediction["stage"])
+            decision_at = _parse_kickoff(prediction.get("predicted_at"))
+            # Prospective performance starts when the condition could actually
+            # have been acted on.  Kickoff alone is insufficient: fixtures at
+            # the boundary can contain a decision produced before activation.
+            if decision_at is None or decision_at < cutoff:
+                continue
             history = _matching_history(slot, decision_stage, history_index)
             grade = _matching_grade(history, prediction)
             directions, lines, odds_by_stage = {}, {}, {}
@@ -407,6 +414,7 @@ def build_segmented_conditions(
                 "away": slot.get("away"),
                 "kickoff": kickoff.astimezone(HKT).isoformat() if kickoff else slot.get("kickoff_hkt"),
                 "decision_stage": decision_stage,
+                "decision_at": decision_at.astimezone(HKT).isoformat(),
                 "selected_side": prediction["side"],
                 "selected_line": prediction.get("selected_line"),
                 "odds": prediction.get("odds"),
