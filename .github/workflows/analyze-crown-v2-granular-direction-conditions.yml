@@ -399,19 +399,32 @@ jobs:
           )
           global_discovery_end = int(len(settled_fixture_records) * 0.60)
           global_selection_end = int(len(settled_fixture_records) * 0.80)
+          discovery_cutoff = (
+              settled_fixture_records[global_discovery_end - 1]["kickoff_dt"]
+              if global_discovery_end else None
+          )
+          selection_cutoff = (
+              settled_fixture_records[global_selection_end - 1]["kickoff_dt"]
+              if global_selection_end else None
+          )
           discovery_fixture_ids = {
               record["fixture_id"]
-              for record in settled_fixture_records[:global_discovery_end]
+              for record in settled_fixture_records
+              if discovery_cutoff is not None
+              and record["kickoff_dt"] <= discovery_cutoff
           }
           selection_fixture_ids = {
               record["fixture_id"]
-              for record in settled_fixture_records[
-                  global_discovery_end:global_selection_end
-              ]
+              for record in settled_fixture_records
+              if discovery_cutoff is not None
+              and selection_cutoff is not None
+              and discovery_cutoff < record["kickoff_dt"] <= selection_cutoff
           }
           holdout_fixture_ids = {
               record["fixture_id"]
-              for record in settled_fixture_records[global_selection_end:]
+              for record in settled_fixture_records
+              if selection_cutoff is not None
+              and record["kickoff_dt"] > selection_cutoff
           }
 
           def selected_line(lead):
@@ -900,17 +913,17 @@ jobs:
                       "discovery_fixture_count": len(discovery_fixture_ids),
                       "selection_fixture_count": len(selection_fixture_ids),
                       "holdout_fixture_count": len(holdout_fixture_ids),
-                      "discovery_end_kickoff": (
-                          settled_fixture_records[global_discovery_end - 1]["kickoff"]
-                          if global_discovery_end else None
-                      ),
-                      "selection_end_kickoff": (
-                          settled_fixture_records[global_selection_end - 1]["kickoff"]
-                          if global_selection_end else None
-                      ),
+                      "discovery_end_kickoff": discovery_cutoff.isoformat()
+                      if discovery_cutoff else None,
+                      "selection_end_kickoff": selection_cutoff.isoformat()
+                      if selection_cutoff else None,
                       "holdout_start_kickoff": (
-                          settled_fixture_records[global_selection_end]["kickoff"]
-                          if global_selection_end < len(settled_fixture_records) else None
+                          min(
+                              record["kickoff_dt"]
+                              for record in settled_fixture_records
+                              if record["fixture_id"] in holdout_fixture_ids
+                          ).isoformat()
+                          if holdout_fixture_ids else None
                       ),
                   },
                   "fixtures_with_any_stage": len(all_stage_records),
