@@ -745,27 +745,51 @@ jobs:
               market: ranked_candidates[market][:5]
               for market in markets
           }
+          def reveal_holdout(candidate, audit_label):
+              decision_stage = candidate["_decision_stage_key"]
+              for period, rows in candidate["_period_rows"].items():
+                  candidate[period] = candidate_part(
+                      rows,
+                      decision_stage,
+                      bootstrap_label=(
+                          f"{audit_label}|{candidate['label']}|{period}|strict-holdout"
+                      ),
+                  )
+              holdout = candidate["holdout_20pct"]
+              holdout_interval = holdout.get("roi_bootstrap_95_pct", [None, None])
+              candidate["strict_holdout_pass"] = bool(
+                  holdout["n"] >= 20
+                  and (holdout["hit_rate_pct"] or 0) >= 55
+                  and (holdout["roi_pct"] or -100) > 0
+                  and holdout_interval[0] is not None
+                  and holdout_interval[0] > 0
+              )
+
           for market, finalists in locked_finalists.items():
               for locked_rank, candidate in enumerate(finalists, start=1):
-                  decision_stage = candidate["_decision_stage_key"]
                   candidate["locked_rank"] = locked_rank
-                  for period, rows in candidate["_period_rows"].items():
-                      candidate[period] = candidate_part(
-                          rows,
-                          decision_stage,
-                          bootstrap_label=(
-                              f"{market}|{candidate['label']}|{period}|strict-holdout"
-                          ),
-                      )
-                  holdout = candidate["holdout_20pct"]
-                  holdout_interval = holdout.get("roi_bootstrap_95_pct", [None, None])
-                  candidate["strict_holdout_pass"] = bool(
-                      holdout["n"] >= 20
-                      and (holdout["hit_rate_pct"] or 0) >= 55
-                      and (holdout["roi_pct"] or -100) > 0
-                      and holdout_interval[0] is not None
-                      and holdout_interval[0] > 0
-                  )
+                  reveal_holdout(candidate, f"finalist|{market}")
+
+          live_condition_labels = {
+              "S-HIL-T5-OVER-185": "T-5=大｜賠率>1.85",
+              "A-HIL-OPEN-T5-OVER-180": "初盤預測=大＋T-5=大｜兩段賠率>1.80",
+              "A-HDC-OPEN-AWAY-MINUS-050": "初盤預測=客｜中位線=-0.5｜無賠率門檻",
+              "A-HDC-HHH-SAME-LINE": "主→主→主｜三段同中位線｜無賠率門檻",
+          }
+          live_condition_candidates = {}
+          for condition_id, label in live_condition_labels.items():
+              candidate = next(
+                  (candidate for candidate in candidates if candidate["label"] == label),
+                  None,
+              )
+              if candidate is None:
+                  live_condition_candidates[condition_id] = {
+                      "label": label,
+                      "error": "candidate_not_found",
+                  }
+                  continue
+              reveal_holdout(candidate, f"live-condition|{condition_id}")
+              live_condition_candidates[condition_id] = candidate
 
           def public_candidate(candidate, include_holdout=False):
               result = {
@@ -792,6 +816,13 @@ jobs:
                   for candidate in locked_finalists[market]
               ]
               for market in markets
+          }
+          live_condition_candidates_public = {
+              condition_id: (
+                  public_candidate(candidate, include_holdout=True)
+                  if "_period_rows" in candidate else candidate
+              )
+              for condition_id, candidate in live_condition_candidates.items()
           }
 
           threshold_stats = {}
@@ -936,6 +967,7 @@ jobs:
                   },
                   "ranked_pre_holdout_top_25_by_market": ranked_candidates_public,
                   "locked_finalists_with_holdout": locked_finalists_public,
+                  "live_conditions_with_holdout": live_condition_candidates_public,
               },
               "recent_results_gt_1_70": recent_results,
           }
