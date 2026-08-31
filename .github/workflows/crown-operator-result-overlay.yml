@@ -1,0 +1,99 @@
+name: Crown operator result overlay
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "Required: APPLY_CROWN_OPERATOR_RESULT_OVERLAY_20260831"
+        required: true
+        type: string
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: Pull exact commit, dry-run and apply overlay
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          EXPECTED_COMMIT: ${{ github.sha }}
+          CONFIRMATION: ${{ inputs.confirmation }}
+        run: |
+          set -euo pipefail
+          test "$CONFIRMATION" = APPLY_CROWN_OPERATOR_RESULT_OVERLAY_20260831
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            -o ServerAliveInterval=20 -o ServerAliveCountMax=90 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "sudo env EXPECTED_COMMIT='$EXPECTED_COMMIT' bash -s" <<'REMOTE'
+          set -euo pipefail
+          cd /opt/footbreak
+          git fetch origin main
+          test -z "$(git status --porcelain)"
+          git checkout main
+          git merge --ff-only "$EXPECTED_COMMIT"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_COMMIT"
+          python=/opt/footbreak/.venv/bin/python3
+          [ -x "$python" ] || python=python3
+          if [ -f /etc/footbreak-crown.env ]; then set -a; . /etc/footbreak-crown.env; set +a; fi
+          state="${CROWN_STATE_DIR:-/var/lib/footbreak/crown}"
+          history="$state/prediction_history.json"
+          manifest="analysis/crown_operator_result_overlay_20260831.json"
+          test -s "$history" && test -s "$manifest"
+          work="$(mktemp -d)"
+          active_timers=""
+          cleanup() {
+            rc=$?
+            if [ "$rc" -ne 0 ] && [ -s "$work/history.before" ]; then
+              install -m 0600 "$work/history.before" "$history"
+            fi
+            for timer in $active_timers; do systemctl start "$timer" || true; done
+            rm -rf "$work"
+            exit "$rc"
+          }
+          trap cleanup EXIT
+          for timer in crown-round-update.timer crown-first-look-reconcile.timer \
+            crown-early-admission-reconcile.timer crown-sweep.timer \
+            crown-tick.timer crown-settle.timer crown-reverse-t5-drain.timer; do
+            if systemctl is-active --quiet "$timer"; then active_timers="$active_timers $timer"; fi
+            systemctl stop "$timer" || true
+          done
+          systemctl stop crown-round-update.service crown-first-look-reconcile.service \
+            crown-early-admission-reconcile.service crown-sweep.service \
+            crown-tick.service crown-settle.service crown-reverse-t5-drain.service || true
+          exec 8>"$state/.state.lock"
+          flock -w 180 8
+          install -m 0600 "$history" "$work/history.before"
+          install -m 0600 "$history" "$work/history.dry-run"
+          PYTHONPATH=/opt/footbreak "$python" analysis/apply_crown_operator_result_overlay.py \
+            --history "$work/history.dry-run" --manifest "$manifest" | tee "$work/dry-run.json"
+          test "$("$python" -c 'import json,sys; print(json.load(open(sys.argv[1]))["fixtures"])' "$work/dry-run.json")" = 16
+          PYTHONPATH=/opt/footbreak "$python" analysis/apply_crown_operator_result_overlay.py \
+            --history "$history" --manifest "$manifest" --apply | tee "$work/apply.json"
+          stamp="$(TZ=Asia/Hong_Kong date +%Y%m%d-%H%M%S)"
+          install -m 0600 "$work/history.before" "$history.before-operator-overlay-$stamp"
+          flock -u 8
+          systemctl start crown-round-update.service
+          systemctl start crown-dashboard-api.service || true
+          cat "$work/apply.json"
+          REMOTE
+
+      - name: Cleanup SSH key
+        if: always()
+        run: shred -u ~/.ssh/id_ed25519 2>/dev/null || rm -f ~/.ssh/id_ed25519

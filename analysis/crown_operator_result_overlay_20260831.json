@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "batch_id": "crown-operator-result-overlay-20260831-v1",
+  "score_scope": "90_minutes_including_stoppage_time_excluding_extra_time",
+  "verified_at": "2026-08-31T18:15:00+08:00",
+  "results": [
+    {"match_id":"50074073","league":"意甲","home":"卡利亚里","away":"国际米兰","kickoff":"2026-08-31T02:45:00+08:00","home_score":0,"away_score":1,"provider_event_id":"20260830D422D1FF","provider_home":"Cagliari Calcio","provider_away":"FC Internazionale Milano","provider_start":"2026-08-30T18:45:00Z","orientation":"direct"},
+    {"match_id":"3040723","league":"意乙","home":"比萨","away":"卡坦萨罗","kickoff":"2026-08-31T03:00:00+08:00","home_score":2,"away_score":1,"provider_event_id":"20260830125927EE","provider_home":"Pisa Sporting Club","provider_away":"US Catanzaro 1929","provider_start":"2026-08-30T19:00:00Z","orientation":"direct"},
+    {"match_id":"3050513","league":"意丙","home":"卡尔皮","away":"祖云达斯U23","kickoff":"2026-08-31T00:00:00+08:00","home_score":3,"away_score":3,"provider_event_id":"202608305026D35D","provider_home":"AC Carpi","provider_away":"Juventus Next Gen","provider_start":"2026-08-30T16:00:00Z","orientation":"direct"},
+    {"match_id":"50073805","league":"西乙","home":"科尔多瓦","away":"格拉纳达","kickoff":"2026-08-31T03:30:00+08:00","home_score":1,"away_score":3,"provider_event_id":"202608301F33C10D","provider_home":"Córdoba CF","provider_away":"Granada CF","provider_start":"2026-08-30T19:30:00Z","orientation":"direct"},
+    {"match_id":"3014867","league":"西协甲","home":"CF安提哥拉","away":"伊维萨","kickoff":"2026-08-31T01:15:00+08:00","home_score":3,"away_score":2,"provider_event_id":"202608301EF3B9CA","provider_home":"Antequera CF","provider_away":"UD Ibiza","provider_start":"2026-08-30T17:15:00Z","orientation":"direct"},
+    {"match_id":"3014868","league":"西协甲","home":"CE欧罗巴","away":"哈恩","kickoff":"2026-08-31T01:15:00+08:00","home_score":0,"away_score":3,"provider_event_id":"202608302E78C06F","provider_home":"CE Europa","provider_away":"Real Jaén CF","provider_start":"2026-08-30T17:15:00Z","orientation":"direct"},
+    {"match_id":"3014872","league":"西协甲","home":"塔拉戈纳","away":"萨拉戈萨","kickoff":"2026-08-31T03:30:00+08:00","home_score":2,"away_score":0,"provider_event_id":"20260830CA93898E","provider_home":"Club Gimnàstic de Tarragona","provider_away":"Real Zaragoza","provider_start":"2026-08-30T19:30:00Z","orientation":"direct"},
+    {"match_id":"3003555","league":"比甲","home":"韦斯特洛","away":"瓦勒海姆","kickoff":"2026-08-31T01:15:00+08:00","home_score":2,"away_score":2,"provider_event_id":"2026083092D19FDD","provider_home":"KVC Westerlo","provider_away":"SV Zulte Waregem","provider_start":"2026-08-30T17:15:00Z","orientation":"direct"},
+    {"match_id":"3026707","league":"土超","home":"伊斯坦布尔巴萨克塞尔","away":"卡斯帕萨","kickoff":"2026-08-31T02:30:00+08:00","home_score":1,"away_score":1,"provider_event_id":"202608308758A71C","provider_home":"Medipol İstanbul Başakşehir","provider_away":"Kasımpaşa","provider_start":"2026-08-30T18:30:00Z","orientation":"direct"},
+    {"match_id":"3021606","league":"马耳甲","home":"莫斯塔FC","away":"拜基卡拉","kickoff":"2026-08-31T00:30:00+08:00","home_score":1,"away_score":0,"provider_event_id":"20260830F15A0D7D","provider_home":"Birkirkara FC","provider_away":"Mosta FC","provider_start":"2026-08-30T16:30:00Z","orientation":"reversed"},
+    {"match_id":"2916643","league":"阿乙","home":"科多巴竞赛会","away":"科隆竞技","kickoff":"2026-08-31T04:00:00+08:00","home_score":1,"away_score":0,"provider_event_id":"20260815B9E8D53A","provider_home":"CA Racing de Córdoba","provider_away":"CA Colón","provider_start":"2026-08-30T20:00:00Z","orientation":"direct"},
+    {"match_id":"3067098","league":"巴拉甲秋","home":"波特诺山丘","away":"亚松森自由","kickoff":"2026-08-31T03:00:00+08:00","home_score":1,"away_score":1,"provider_event_id":"20260830140F1744","provider_home":"Club Cerro Porteño","provider_away":"Club Libertad","provider_start":"2026-08-30T19:00:00Z","orientation":"direct"},
+    {"match_id":"3031326","league":"尼拉甲春","home":"HYH 塞巴科","away":"埃斯特利","kickoff":"2026-08-31T05:00:00+08:00","home_score":0,"away_score":5,"provider_event_id":"20260830795F83E7","provider_home":"HYH Sebaco FC","provider_away":"Real Esteli FC","provider_start":"2026-08-30T21:00:00Z","orientation":"direct"},
+    {"match_id":"3041893","league":"萨尔超春","home":"亚古雷","away":"旧金山富尔特","kickoff":"2026-08-31T05:00:00+08:00","home_score":4,"away_score":1,"provider_event_id":"202608306307C840","provider_home":"CD Aguila","provider_away":"CD Fuerte San Francisco","provider_start":"2026-08-30T21:00:00Z","orientation":"direct"},
+    {"match_id":"3071864","league":"秘鲁乙","home":"本廷塔克纳","away":"山度士纳斯卡","kickoff":"2026-08-31T04:15:00+08:00","home_score":3,"away_score":1,"provider_event_id":"20260830B66609BB","provider_home":"Bentin Tacna Heroica","provider_away":"Santos FC de Nazca","provider_start":"2026-08-30T20:15:00Z","orientation":"direct"},
+    {"match_id":"3042546","league":"哥斯甲春","home":"肯塔吉内斯","away":"希雷迪亚诺","kickoff":"2026-08-31T01:00:00+08:00","home_score":1,"away_score":0,"provider_event_id":"2026083070E57E74","provider_home":"CS Cartagines","provider_away":"Herediano","provider_start":"2026-08-30T17:00:00Z","orientation":"direct"}
+  ],
+  "excluded": [
+    {"match_id":"3050891","reason":"provider_fixture_identity_conflict"},
+    {"match_id":"3061632","reason":"provider_fixture_not_found"},
+    {"match_id":"2999491","reason":"not_in_verified_completed_batch"}
+  ]
+}
