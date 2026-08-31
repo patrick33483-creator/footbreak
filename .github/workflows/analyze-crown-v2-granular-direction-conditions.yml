@@ -389,6 +389,31 @@ jobs:
               if all(stage in stages for stage in STAGES):
                   complete_records.append(record)
 
+          # 所有條件共用同一組全局時間分界，避免每個條件自行切割造成時段漂移。
+          settled_fixture_records = sorted(
+              [
+                  record for record in all_stage_records
+                  if record["result"] is not None and record["kickoff_dt"] is not None
+              ],
+              key=lambda record: (record["kickoff_dt"], record["fixture_id"]),
+          )
+          global_discovery_end = int(len(settled_fixture_records) * 0.60)
+          global_selection_end = int(len(settled_fixture_records) * 0.80)
+          discovery_fixture_ids = {
+              record["fixture_id"]
+              for record in settled_fixture_records[:global_discovery_end]
+          }
+          selection_fixture_ids = {
+              record["fixture_id"]
+              for record in settled_fixture_records[
+                  global_discovery_end:global_selection_end
+              ]
+          }
+          holdout_fixture_ids = {
+              record["fixture_id"]
+              for record in settled_fixture_records[global_selection_end:]
+          }
+
           def selected_line(lead):
               if lead["market"] == "讓球" and lead["direction"] == "客":
                   return -lead["line"]
@@ -411,49 +436,87 @@ jobs:
                   return "更蝕底"
               return "同線"
 
+          def candidate_part(rows, decision_stage, bootstrap_label=None, alpha=0.05):
+              grades = Counter(record["grades"][decision_stage] for record in rows)
+              decided = sum(grades[key] for key in DECIDED)
+              hits = sum(grades[key] for key in HITS)
+              returns = [
+                  unit_return(
+                      record["grades"][decision_stage],
+                      record["leads"][decision_stage]["odds"],
+                  )
+                  for record in rows
+              ]
+              interval = wilson(hits, decided)
+              result = {
+                  "n": len(rows),
+                  "full_win": grades["全贏"],
+                  "half_win": grades["半贏"],
+                  "push": grades["走盤"],
+                  "half_loss": grades["半輸"],
+                  "full_loss": grades["全輸"],
+                  "hit_rate_pct": round(hits / decided * 100, 2) if decided else None,
+                  "wilson_95_pct": [
+                      round(interval[0] * 100, 2),
+                      round(interval[1] * 100, 2),
+                  ] if interval[0] is not None else [None, None],
+                  "wilson_low_pct": round(interval[0] * 100, 2) if interval[0] is not None else None,
+                  "unit_pnl": round(sum(returns), 3),
+                  "roi_pct": round(sum(returns) / len(returns) * 100, 2) if returns else None,
+              }
+              if bootstrap_label is not None and returns:
+                  rng = random.Random(bootstrap_label)
+                  boot = [
+                      sum(rng.choice(returns) for _ in returns) / len(returns)
+                      for _ in range(5000)
+                  ]
+                  result["roi_bootstrap_95_pct"] = [
+                      round(percentile(boot, alpha / 2) * 100, 2),
+                      round(percentile(boot, 1 - alpha / 2) * 100, 2),
+                  ]
+              return result
+
           def candidate_stats(records, decision_stage, label):
               settled = [
                   record for record in records
                   if record["grades"].get(decision_stage) is not None
               ]
-              settled.sort(
-                  key=lambda record: (
-                      record["kickoff_dt"] or datetime.min.replace(tzinfo=timezone.utc),
-                      record["fixture_id"],
-                  )
-              )
-              split = max(1, int(len(settled) * 0.70)) if settled else 0
-
-              def part(rows):
-                  grades = Counter(record["grades"][decision_stage] for record in rows)
-                  decided = sum(grades[key] for key in DECIDED)
-                  hits = sum(grades[key] for key in HITS)
-                  returns = [
-                      unit_return(
-                          record["grades"][decision_stage],
-                          record["leads"][decision_stage]["odds"],
-                      )
-                      for record in rows
-                  ]
-                  interval = wilson(hits, decided)
-                  return {
-                      "n": len(rows),
-                      "full_win": grades["全贏"],
-                      "half_win": grades["半贏"],
-                      "push": grades["走盤"],
-                      "half_loss": grades["半輸"],
-                      "full_loss": grades["全輸"],
-                      "hit_rate_pct": round(hits / decided * 100, 2) if decided else None,
-                      "wilson_low_pct": round(interval[0] * 100, 2) if interval[0] is not None else None,
-                      "roi_pct": round(sum(returns) / len(returns) * 100, 2) if returns else None,
-                  }
-
+              discovery = [
+                  record for record in settled
+                  if record["fixture_id"] in discovery_fixture_ids
+              ]
+              selection = [
+                  record for record in settled
+                  if record["fixture_id"] in selection_fixture_ids
+              ]
+              holdout = [
+                  record for record in settled
+                  if record["fixture_id"] in holdout_fixture_ids
+              ]
+              pre_holdout_signature = hashlib.sha256(
+                  "|".join(sorted(
+                      str(record["fixture_id"]) for record in discovery + selection
+                  )).encode()
+              ).hexdigest()[:16]
               return {
                   "label": label,
                   "decision_stage": DISPLAY[decision_stage],
-                  "all": part(settled),
-                  "development_70pct": part(settled[:split]),
-                  "validation_30pct": part(settled[split:]),
+                  "sample_counts": {
+                      "all": len(settled),
+                      "discovery_60pct": len(discovery),
+                      "selection_20pct": len(selection),
+                      "holdout_20pct": len(holdout),
+                  },
+                  "discovery_60pct": candidate_part(discovery, decision_stage),
+                  "selection_20pct": candidate_part(selection, decision_stage),
+                  "pre_holdout_signature": pre_holdout_signature,
+                  "_decision_stage_key": decision_stage,
+                  "_period_rows": {
+                      "all": settled,
+                      "discovery_60pct": discovery,
+                      "selection_20pct": selection,
+                      "holdout_20pct": holdout,
+                  },
               }
 
           candidates = []
@@ -614,30 +677,107 @@ jobs:
 
           eligible_candidates = [
               candidate for candidate in candidates
-              if candidate["all"]["n"] >= 20
-              and candidate["development_70pct"]["n"] >= 14
-              and candidate["validation_30pct"]["n"] >= 6
+              if candidate["sample_counts"]["all"] >= 100
+              and candidate["sample_counts"]["discovery_60pct"] >= 60
+              and candidate["sample_counts"]["selection_20pct"] >= 20
+              and candidate["sample_counts"]["holdout_20pct"] >= 20
           ]
           for candidate in eligible_candidates:
-              validation = candidate["validation_30pct"]
+              discovery = candidate["discovery_60pct"]
+              selection = candidate["selection_20pct"]
               candidate["ranking_score"] = round(
-                  (validation["wilson_low_pct"] or 0)
-                  + min(max(validation["roi_pct"] or -100, -50), 50) * 0.10,
+                  min(
+                      discovery["wilson_low_pct"] or 0,
+                      selection["wilson_low_pct"] or 0,
+                  )
+                  + min(
+                      max(min(
+                          discovery["roi_pct"] or -100,
+                          selection["roi_pct"] or -100,
+                      ), -50),
+                      50,
+                  ) * 0.10,
                   3,
               )
-          ranked_candidates = {
-              market: sorted(
+
+          def deduplicated_ranked(market):
+              ranked = sorted(
                   [
                       candidate for candidate in eligible_candidates
                       if candidate["market"] == market
                   ],
                   key=lambda candidate: (
                       candidate["ranking_score"],
-                      candidate["validation_30pct"]["n"],
-                      candidate["all"]["n"],
+                      candidate["selection_20pct"]["n"],
+                      candidate["sample_counts"]["all"],
                   ),
                   reverse=True,
               )
+              seen = set()
+              unique = []
+              for candidate in ranked:
+                  signature = candidate["pre_holdout_signature"]
+                  if signature in seen:
+                      continue
+                  seen.add(signature)
+                  unique.append(candidate)
+              return unique
+
+          ranked_candidates = {
+              market: deduplicated_ranked(market)
+              for market in markets
+          }
+          # 每個市場只鎖定最多五個候選；排序完全不使用 holdout 成績。
+          locked_finalists = {
+              market: ranked_candidates[market][:5]
+              for market in markets
+          }
+          for market, finalists in locked_finalists.items():
+              for locked_rank, candidate in enumerate(finalists, start=1):
+                  decision_stage = candidate["_decision_stage_key"]
+                  candidate["locked_rank"] = locked_rank
+                  for period, rows in candidate["_period_rows"].items():
+                      candidate[period] = candidate_part(
+                          rows,
+                          decision_stage,
+                          bootstrap_label=(
+                              f"{market}|{candidate['label']}|{period}|strict-holdout"
+                          ),
+                      )
+                  holdout = candidate["holdout_20pct"]
+                  holdout_interval = holdout.get("roi_bootstrap_95_pct", [None, None])
+                  candidate["strict_holdout_pass"] = bool(
+                      holdout["n"] >= 20
+                      and (holdout["hit_rate_pct"] or 0) >= 55
+                      and (holdout["roi_pct"] or -100) > 0
+                      and holdout_interval[0] is not None
+                      and holdout_interval[0] > 0
+                  )
+
+          def public_candidate(candidate, include_holdout=False):
+              result = {
+                  key: value for key, value in candidate.items()
+                  if not key.startswith("_")
+                  and key not in ("all", "holdout_20pct")
+                  and (include_holdout or key != "strict_holdout_pass")
+              }
+              if include_holdout:
+                  result["all"] = candidate["all"]
+                  result["holdout_20pct"] = candidate["holdout_20pct"]
+              return result
+
+          ranked_candidates_public = {
+              market: [
+                  public_candidate(candidate)
+                  for candidate in ranked_candidates[market][:25]
+              ]
+              for market in markets
+          }
+          locked_finalists_public = {
+              market: [
+                  public_candidate(candidate, include_holdout=True)
+                  for candidate in locked_finalists[market]
+              ]
               for market in markets
           }
 
@@ -751,12 +891,38 @@ jobs:
               "condition_mining": {
                   "scope": "單一時點只要求該時點存在；兩時點只要求指定兩段存在；完整路徑才要求初盤預測、T-30、T-5齊全",
                   "settlement": "單一時點用該時點；兩時點用較後時點；三時點用T-5的方向、線位及賠率結算",
-                  "minimum_sample": "總樣本至少20，時間前70%至少14，後30%至少6",
+                  "split_method": "所有條件共用全局開賽時間60% discovery、20% selection、20% untouched holdout；排名只使用前80%",
+                  "minimum_sample": "總樣本至少100，discovery至少60，selection至少20，holdout至少20",
+                  "finalist_lock": "每市場按前80%成績去重後鎖定最多5個候選，之後才計算holdout成績",
+                  "strict_holdout_pass": "holdout至少20場、命中率至少55%、ROI為正，且5000次bootstrap ROI 95%區間下限大於0",
+                  "global_time_split": {
+                      "settled_fixture_count": len(settled_fixture_records),
+                      "discovery_fixture_count": len(discovery_fixture_ids),
+                      "selection_fixture_count": len(selection_fixture_ids),
+                      "holdout_fixture_count": len(holdout_fixture_ids),
+                      "discovery_end_kickoff": (
+                          settled_fixture_records[global_discovery_end - 1]["kickoff"]
+                          if global_discovery_end else None
+                      ),
+                      "selection_end_kickoff": (
+                          settled_fixture_records[global_selection_end - 1]["kickoff"]
+                          if global_selection_end else None
+                      ),
+                      "holdout_start_kickoff": (
+                          settled_fixture_records[global_selection_end]["kickoff"]
+                          if global_selection_end < len(settled_fixture_records) else None
+                      ),
+                  },
                   "fixtures_with_any_stage": len(all_stage_records),
                   "complete_records": len(complete_records),
                   "candidate_count": len(candidates),
                   "eligible_candidate_count": len(eligible_candidates),
-                  "ranked_by_market": ranked_candidates,
+                  "unique_eligible_candidate_count_by_market": {
+                      market: len(ranked_candidates[market])
+                      for market in markets
+                  },
+                  "ranked_pre_holdout_top_25_by_market": ranked_candidates_public,
+                  "locked_finalists_with_holdout": locked_finalists_public,
               },
               "recent_results_gt_1_70": recent_results,
           }
