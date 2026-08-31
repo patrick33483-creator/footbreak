@@ -66,6 +66,7 @@ def _manifest(path: Path) -> dict[str, Any]:
 def apply_overlay(
     history: dict[str, Any], manifest: dict[str, Any], *, apply: bool,
     ledger: dict[str, Any] | None = None,
+    source_history: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     proposed = copy.deepcopy(history)
     rows = proposed.get("rows")
@@ -77,6 +78,32 @@ def apply_overlay(
         normalize_history(proposed)
         rows = proposed["rows"]
     synced_rows = len(rows) - rows_before_sync
+    materialized_rows = 0
+    source_rows = (
+        ((source_history.get("prediction_history") or {}).get("rows") or [])
+        if isinstance(source_history, dict)
+        else []
+    )
+    target_ids = {str(item["match_id"]) for item in manifest["results"]}
+    existing = {
+        (str(row.get("match_id") or ""), str(row.get("stage") or ""))
+        for row in rows if isinstance(row, dict)
+    }
+    for source_row in source_rows:
+        if not isinstance(source_row, dict):
+            continue
+        match_id = str(source_row.get("match_id") or "")
+        identity = (match_id, str(source_row.get("stage") or ""))
+        if match_id not in target_ids or not all(identity) or identity in existing:
+            continue
+        copied = copy.deepcopy(source_row)
+        copied["operator_materialized_from_dashboard_history"] = True
+        rows.append(copied)
+        existing.add(identity)
+        materialized_rows += 1
+    if materialized_rows:
+        normalize_history(proposed)
+        rows = proposed["rows"]
     changed_rows = 0
     already_rows = 0
     by_fixture: dict[str, int] = {}
@@ -149,6 +176,7 @@ def apply_overlay(
         "batch_id": batch_id,
         "fixtures": len(manifest["results"]),
         "synced_rows": synced_rows,
+        "materialized_rows": materialized_rows,
         "changed_rows": changed_rows,
         "already_rows": already_rows,
         "fixture_row_counts": by_fixture,
@@ -163,14 +191,17 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--history", type=Path, required=True)
     parser.add_argument("--ledger", type=Path)
+    parser.add_argument("--source-history", type=Path)
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--apply", action="store_true")
     args = parser.parse_args()
     history = _read(args.history)
     ledger = _read(args.ledger) if args.ledger else None
+    source_history = _read(args.source_history) if args.source_history else None
     manifest = _manifest(args.manifest)
     proposed, report = apply_overlay(
         history, manifest, apply=args.apply, ledger=ledger,
+        source_history=source_history,
     )
     if args.apply and report["before_hash"] != report["after_hash"]:
         write_json_atomic(args.history, proposed)

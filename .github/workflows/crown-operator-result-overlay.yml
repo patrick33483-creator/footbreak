@@ -60,10 +60,22 @@ jobs:
           state="${CROWN_STATE_DIR:-/var/lib/footbreak/crown}"
           history="$state/prediction_history.json"
           ledger="$state/ledger.json"
+          history_sidecar="$("$python" - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path("/var/www/crown").resolve()
+          name = str(json.load(open(root / "data.json"))["history_data_url"])
+          path = (root / name).resolve()
+          if path.parent != root or not path.name.startswith("history-"):
+              raise SystemExit("unsafe history sidecar path")
+          print(path)
+          PY
+          )"
           script="/tmp/apply_crown_operator_result_overlay.py"
           manifest="/tmp/crown_operator_result_overlay_20260831.json"
           test -s "$script"
-          test -s "$history" && test -s "$ledger" && test -s "$manifest"
+          test -s "$history" && test -s "$ledger" && test -s "$history_sidecar"
+          test -s "$manifest"
           work="$(mktemp -d)"
           active_timers=""
           cleanup() {
@@ -91,10 +103,12 @@ jobs:
           install -m 0600 "$history" "$work/history.dry-run"
           PYTHONPATH=/opt/footbreak "$python" "$script" \
             --history "$work/history.dry-run" --ledger "$ledger" \
+            --source-history "$history_sidecar" \
             --manifest "$manifest" | tee "$work/dry-run.json"
           test "$("$python" -c 'import json,sys; print(json.load(open(sys.argv[1]))["fixtures"])' "$work/dry-run.json")" = 16
           PYTHONPATH=/opt/footbreak "$python" "$script" \
             --history "$history" --ledger "$ledger" \
+            --source-history "$history_sidecar" \
             --manifest "$manifest" --apply | tee "$work/apply.json"
           stamp="$(TZ=Asia/Hong_Kong date +%Y%m%d-%H%M%S)"
           install -m 0600 "$work/history.before" "$history.before-operator-overlay-$stamp"
@@ -104,6 +118,7 @@ jobs:
           chmod 0644 /var/www/crown/data.json /var/www/crown/history-*.json
           PYTHONPATH=/opt/footbreak "$python" "$script" \
             --history "$history" --ledger "$ledger" \
+            --source-history "$history_sidecar" \
             --manifest "$manifest" | tee "$work/verify.json"
           test "$("$python" -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d["changed_rows"], d["already_rows"])' "$work/verify.json")" = "0 $("$python" -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d["changed_rows"] + d["already_rows"])' "$work/apply.json")"
           flock -u 8

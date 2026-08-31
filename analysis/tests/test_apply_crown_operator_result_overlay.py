@@ -78,6 +78,20 @@ class OperatorOverlayTest(unittest.TestCase):
         self.assertEqual(report["changed_rows"], 1)
         self.assertEqual(proposed["rows"][0]["score"], "2-1")
 
+    def test_materializes_only_target_rows_from_dashboard_history(self) -> None:
+        target = history()["rows"][0]
+        unrelated = {**target, "match_id": "2", "home": "Other"}
+        source = {"prediction_history": {"rows": [target, unrelated]}}
+        proposed, report = apply_overlay(
+            {"rows": []}, manifest(), apply=False, source_history=source,
+        )
+        self.assertEqual(report["materialized_rows"], 1)
+        self.assertEqual(report["changed_rows"], 1)
+        self.assertEqual(len(proposed["rows"]), 1)
+        self.assertTrue(
+            proposed["rows"][0]["operator_materialized_from_dashboard_history"]
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
