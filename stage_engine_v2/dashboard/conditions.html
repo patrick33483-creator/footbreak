@@ -14,6 +14,7 @@
   --text:#20272c;--muted:#677179;--faint:#8c959c;--accent:#147da0;
   --accent-soft:#e6f2f6;--green:#287c5a;--green-soft:#eaf4ef;
   --gold:#a87616;--gold-soft:#faf1d9;--warning:#a65a2d;--danger:#a33b50;
+  --result-hit:#16885f;--result-loss:#c14f49;--result-refund:#a87616;
   --shadow:0 1px 2px rgb(23 39 49 / .05);
 }
 [data-theme="dark"]{
@@ -21,6 +22,7 @@
   --text:#edf1f3;--muted:#a3adb4;--faint:#7f8a91;--accent:#69b9d1;
   --accent-soft:#18313a;--green:#72bd99;--green-soft:#183128;
   --gold:#e0b95f;--gold-soft:#3c3118;--warning:#df9468;--danger:#df8295;
+  --result-hit:#72bd99;--result-loss:#ed7b75;--result-refund:#e0b95f;
   --shadow:0 1px 2px rgb(0 0 0 / .28);
 }
 :root{
@@ -96,8 +98,9 @@ button,a{font:inherit;color:inherit}button{cursor:pointer}a{text-decoration:none
 .match{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:var(--s3) var(--s4);display:grid;grid-template-columns:minmax(0,1fr) auto;gap:var(--s4);align-items:center}
 .match-main{min-width:0}.match-title{font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .match-meta,.match-path{font-size:var(--text-xs);color:var(--muted);margin-top:var(--s1)}
-.match-result{text-align:right;white-space:nowrap}.match-result strong{display:block;color:var(--green)}.match-result .pending{color:var(--warning)}
-.match-result small{color:var(--muted);font-size:var(--text-xs)}
+.match-result{text-align:right;white-space:nowrap}.match-result strong{display:block;font-size:var(--text-sm)}
+.match-result .hit{color:var(--result-hit)}.match-result .loss{color:var(--result-loss)}
+.match-result .refund{color:var(--result-refund)}.match-result .pending{color:var(--warning)}
 .empty{padding:var(--s10) var(--s5);border:1px dashed var(--border);border-radius:var(--radius);background:var(--surface);text-align:center;color:var(--muted)}
 .empty svg{width:1.5rem;height:1.5rem;margin:0 auto var(--s3);color:var(--faint)}
 .error{color:var(--danger);border-color:color-mix(in srgb,var(--danger) 45%,var(--border))}
@@ -197,6 +200,13 @@ function stagePath(row){
     return `${name} ${row.directions[s]}${line}${odd==null?"":` @ ${Number(odd).toFixed(2)}`}`;
   }).join(" → ");
 }
+function resultView(row){
+  const settlement=String(row.settlement||"");
+  if(["Won","Half Won"].includes(settlement))return {label:"中",className:"hit"};
+  if(["Lost","Half Lost"].includes(settlement))return {label:"失",className:"loss"};
+  if(settlement==="Refunded")return {label:"走",className:"refund"};
+  return {label:"待賽果",className:"pending"};
+}
 function allObservations(){
   return (state.payload?.public_conditions||[]).flatMap(c=>(c.observations||[]).map(o=>({...o,_condition:c.id,_title:c.title})));
 }
@@ -210,6 +220,7 @@ function visibleObservations(){
   }).sort((a,b)=>String(b.kickoff||"").localeCompare(String(a.kickoff||"")));
 }
 function matchMarkup(r){
+  const result=resultView(r),score=r.score?` · ${esc(String(r.score).replace(/-/g,"–"))}`:"";
   return `<article class="match" data-testid="match-${esc(r._condition)}-${esc(r.match_id)}">
     <div class="match-main">
       <div class="match-title">${esc(r.home)} 對 ${esc(r.away)}</div>
@@ -217,8 +228,7 @@ function matchMarkup(r){
       <div class="match-path">${esc(stagePath(r))}</div>
     </div>
     <div class="match-result">
-      <strong class="${r.settlement?"":"pending"}">${esc(r.settlement_label||"待賽果")}</strong>
-      <small>${esc(r.score||"未有賽果")}</small>
+      <strong class="${result.className}">${result.label}${score}</strong>
     </div>
   </article>`;
 }
