@@ -19,6 +19,8 @@ jobs:
   apply:
     runs-on: ubuntu-24.04
     steps:
+      - uses: actions/checkout@v4
+
       - name: Configure SSH
         env:
           DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
@@ -29,32 +31,37 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
 
-      - name: Pull exact commit, dry-run and apply overlay
+      - name: Stage exact overlay files
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
-          EXPECTED_COMMIT: ${{ github.sha }}
+        run: |
+          scp analysis/apply_crown_operator_result_overlay.py \
+            "$DEPLOY_USER@$DEPLOY_HOST:/tmp/apply_crown_operator_result_overlay.py"
+          scp analysis/crown_operator_result_overlay_20260831.json \
+            "$DEPLOY_USER@$DEPLOY_HOST:/tmp/crown_operator_result_overlay_20260831.json"
+
+      - name: Dry-run and apply exact staged overlay
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
           CONFIRMATION: ${{ inputs.confirmation }}
         run: |
           set -euo pipefail
           test "$CONFIRMATION" = APPLY_CROWN_OPERATOR_RESULT_OVERLAY_20260831
           ssh -o BatchMode=yes -o ConnectTimeout=20 \
             -o ServerAliveInterval=20 -o ServerAliveCountMax=90 \
-            "$DEPLOY_USER@$DEPLOY_HOST" \
-            "sudo env EXPECTED_COMMIT='$EXPECTED_COMMIT' bash -s" <<'REMOTE'
+            "$DEPLOY_USER@$DEPLOY_HOST" "sudo bash -s" <<'REMOTE'
           set -euo pipefail
           cd /opt/footbreak
-          git fetch origin main
-          test -z "$(git status --porcelain)"
-          git checkout main
-          git merge --ff-only "$EXPECTED_COMMIT"
-          test "$(git rev-parse HEAD)" = "$EXPECTED_COMMIT"
           python=/opt/footbreak/.venv/bin/python3
           [ -x "$python" ] || python=python3
           if [ -f /etc/footbreak-crown.env ]; then set -a; . /etc/footbreak-crown.env; set +a; fi
           state="${CROWN_STATE_DIR:-/var/lib/footbreak/crown}"
           history="$state/prediction_history.json"
-          manifest="analysis/crown_operator_result_overlay_20260831.json"
+          script="/tmp/apply_crown_operator_result_overlay.py"
+          manifest="/tmp/crown_operator_result_overlay_20260831.json"
+          test -s "$script"
           test -s "$history" && test -s "$manifest"
           work="$(mktemp -d)"
           active_timers=""
@@ -81,10 +88,10 @@ jobs:
           flock -w 180 8
           install -m 0600 "$history" "$work/history.before"
           install -m 0600 "$history" "$work/history.dry-run"
-          PYTHONPATH=/opt/footbreak "$python" analysis/apply_crown_operator_result_overlay.py \
+          PYTHONPATH=/opt/footbreak "$python" "$script" \
             --history "$work/history.dry-run" --manifest "$manifest" | tee "$work/dry-run.json"
           test "$("$python" -c 'import json,sys; print(json.load(open(sys.argv[1]))["fixtures"])' "$work/dry-run.json")" = 16
-          PYTHONPATH=/opt/footbreak "$python" analysis/apply_crown_operator_result_overlay.py \
+          PYTHONPATH=/opt/footbreak "$python" "$script" \
             --history "$history" --manifest "$manifest" --apply | tee "$work/apply.json"
           stamp="$(TZ=Asia/Hong_Kong date +%Y%m%d-%H%M%S)"
           install -m 0600 "$work/history.before" "$history.before-operator-overlay-$stamp"
