@@ -19,6 +19,11 @@ from typing import Any
 
 from .fixtures import DEFAULT_CROWN_DATA_PATH, refresh_fixtures, HKT
 from .native_queue import DEFAULT_NATIVE_QUEUE_DIR, load_native_payloads
+from .operator_results import (
+    DEFAULT_OPERATOR_RESULTS_PATH,
+    load_operator_history_rows,
+    merge_operator_history_rows,
+)
 from .predictor import build_prediction
 from .publisher import decide_publish
 from .scheduler import due_stages
@@ -75,6 +80,7 @@ def _run_tick(
     dry_run: bool,
     native_queue_dir: Path = DEFAULT_NATIVE_QUEUE_DIR,
     condition_sent_log_path: Path = DEFAULT_CONDITION_SENT_LOG,
+    operator_results_path: Path = DEFAULT_OPERATOR_RESULTS_PATH,
 ) -> dict[str, Any]:
     started_at = datetime.now(timezone.utc)
     fixtures = refresh_fixtures(
@@ -130,7 +136,11 @@ def _run_tick(
             ledger,
             dashboard_path,
             now_utc=now_utc,
-            history_rows=_load_history_rows(crown_data_path),
+            history_rows=_load_history_rows(
+                crown_data_path,
+                ledger=ledger,
+                operator_results_path=operator_results_path,
+            ),
             condition_sent_log_path=condition_sent_log_path,
         )
 
@@ -224,25 +234,38 @@ def _write_dashboard(
     return send_condition_alerts(segmented_conditions, sent_log_path=condition_sent_log_path)
 
 
-def _load_history_rows(crown_data_path: Path) -> list[dict[str, Any]]:
-    """Read Crown's public result-bearing history sidecar without mutating it."""
+def _load_history_rows(
+    crown_data_path: Path,
+    *,
+    ledger: dict[str, Any] | None = None,
+    operator_results_path: Path = DEFAULT_OPERATOR_RESULTS_PATH,
+) -> list[dict[str, Any]]:
+    """Read Crown history and merge a validated V2-only operator overlay."""
+    rows: list[dict[str, Any]] = []
     try:
         payload = json.loads(crown_data_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return []
+        payload = {}
     history = payload.get("prediction_history")
     if isinstance(history, dict) and isinstance(history.get("rows"), list):
-        return [row for row in history["rows"] if isinstance(row, dict)]
-    relative = str(payload.get("history_data_url") or "").strip()
-    if not relative or "/" in relative or "\\" in relative:
-        return []
-    try:
-        sidecar = json.loads((crown_data_path.parent / relative).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return []
-    history = sidecar.get("prediction_history")
-    rows = history.get("rows") if isinstance(history, dict) else None
-    return [row for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
+        rows = [row for row in history["rows"] if isinstance(row, dict)]
+    else:
+        relative = str(payload.get("history_data_url") or "").strip()
+        if relative and "/" not in relative and "\\" not in relative:
+            try:
+                sidecar = json.loads(
+                    (crown_data_path.parent / relative).read_text(encoding="utf-8")
+                )
+            except (OSError, json.JSONDecodeError):
+                sidecar = {}
+            history = sidecar.get("prediction_history")
+            sidecar_rows = history.get("rows") if isinstance(history, dict) else None
+            if isinstance(sidecar_rows, list):
+                rows = [row for row in sidecar_rows if isinstance(row, dict)]
+    if ledger is None:
+        return rows
+    operator_rows = load_operator_history_rows(operator_results_path, ledger)
+    return merge_operator_history_rows(rows, operator_rows)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -256,6 +279,11 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--dashboard", default=str(DEFAULT_DASHBOARD_PATH))
         sp.add_argument("--sent-log", default=str(DEFAULT_SENT_LOG))
         sp.add_argument("--condition-sent-log", default=str(DEFAULT_CONDITION_SENT_LOG))
+        sp.add_argument(
+            "--operator-results",
+            default=str(DEFAULT_OPERATOR_RESULTS_PATH),
+            help="V2-only, identity-locked operator result overlay",
+        )
         sp.add_argument("--now", default=None,
                         help="覆蓋現在時間（ISO 格式，缺 tz 當 HKT）")
         sp.add_argument("--window-hours", type=int, default=48)
@@ -284,6 +312,7 @@ def main(argv: list[str] | None = None) -> int:
             dry_run=(args.cmd == "dry-run"),
             native_queue_dir=Path(args.native_queue_dir),
             condition_sent_log_path=Path(args.condition_sent_log),
+            operator_results_path=Path(args.operator_results),
         )
         json.dump(result, sys.stdout, ensure_ascii=False, indent=2)
         sys.stdout.write("\n")
