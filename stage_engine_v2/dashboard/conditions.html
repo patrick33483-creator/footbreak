@@ -1,165 +1,304 @@
 <!DOCTYPE html>
-<html lang="zh-Hant">
+<html lang="zh-Hant" data-theme="light">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="color-scheme" content="dark">
-<title>皇冠系統V2 · 細分條件</title>
+<meta name="description" content="皇冠系統 V2 細分條件及符合場次持續累積。">
+<title>皇冠 V2 累積訊號</title>
 <!-- 部署相容標記：皇冠系統V2 · 三階段細分 -->
+<link rel="preconnect" href="https://api.fontshare.com">
+<link href="https://api.fontshare.com/v2/css?f[]=satoshi@400,500,600,700&display=swap" rel="stylesheet">
 <style>
-:root {
-  --bg:#11100f; --surface:#191817; --surface-2:#211f1d; --border:#34312e;
-  --text:#f0eee9; --muted:#9c9891; --faint:#696660; --accent:#52a0aa;
-  --gold:#d6a64a; --green:#80b963; --red:#d56e75; --orange:#d88658;
+:root,[data-theme="light"]{
+  --bg:#f6f7f8;--surface:#ffffff;--surface-2:#f3f5f6;--border:#d9dee2;
+  --text:#20272c;--muted:#677179;--faint:#8c959c;--accent:#147da0;
+  --accent-soft:#e6f2f6;--green:#287c5a;--green-soft:#eaf4ef;
+  --gold:#a87616;--gold-soft:#faf1d9;--warning:#a65a2d;--danger:#a33b50;
+  --shadow:0 1px 2px rgb(23 39 49 / .05);
 }
-*{box-sizing:border-box}
-html{background:var(--bg)}
-body{
-  margin:0;padding:24px;background:var(--bg);color:var(--text);
-  font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang HK","Noto Sans CJK TC",sans-serif
+[data-theme="dark"]{
+  --bg:#111416;--surface:#181c1f;--surface-2:#202529;--border:#343b40;
+  --text:#edf1f3;--muted:#a3adb4;--faint:#7f8a91;--accent:#69b9d1;
+  --accent-soft:#18313a;--green:#72bd99;--green-soft:#183128;
+  --gold:#e0b95f;--gold-soft:#3c3118;--warning:#df9468;--danger:#df8295;
+  --shadow:0 1px 2px rgb(0 0 0 / .28);
 }
-a{color:inherit}.shell{width:min(1180px,100%);margin:auto}
-.top{display:flex;justify-content:space-between;gap:20px;align-items:flex-start}
-h1{margin:0;font-size:24px;letter-spacing:-.02em}.sub{margin:5px 0 0;color:var(--muted)}
-.shadow{display:inline-flex;padding:3px 9px;border-radius:5px;background:var(--orange);color:#17120e;font-size:11px;font-weight:800}
-.nav{display:flex;gap:18px;margin:22px 0;border-bottom:1px solid var(--border)}
-.nav a{padding:10px 0 8px;text-decoration:none;color:var(--muted);font-size:13px}
-.nav a.active{color:var(--text);border-bottom:2px solid var(--accent)}
-.notice{display:flex;gap:12px;padding:14px 16px;border:1px solid #355b60;border-radius:9px;background:#172326}
-.notice strong{white-space:nowrap;color:#8fc7ce}.notice span{color:var(--muted)}
-.toolbar{display:flex;gap:8px;align-items:center;margin:18px 0}
-.chip{padding:6px 10px;border:1px solid var(--border);border-radius:999px;color:var(--muted);font-size:12px}
-.chip.live{border-color:#4d6c42;color:#9ac881;background:#1b2518}.updated{margin-left:auto;color:var(--faint);font-size:12px}
-.market{margin-top:26px}.market-head{display:flex;justify-content:space-between;align-items:end;margin-bottom:12px}
-.market h2{margin:0;font-size:20px}.market-meta{color:var(--muted);font-size:12px}
-.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
-.card{position:relative;overflow:hidden;padding:18px;border:1px solid var(--border);border-radius:10px;background:var(--surface)}
-.card::before{content:"";position:absolute;inset:0 auto 0 0;width:3px;background:var(--accent)}
-.card.tier-s::before{background:var(--gold)}.card-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}
-.tier{display:inline-flex;min-width:34px;justify-content:center;padding:4px 9px;border-radius:5px;background:#26444a;color:#9ed0d6;font-weight:800;font-size:12px}
-.tier.s{background:#493b1d;color:#f2cf75}.eyebrow{color:var(--faint);font-size:10px;letter-spacing:.06em;margin-bottom:4px}
-.card h3{font-size:17px;margin:0}.definition{min-height:44px;color:var(--muted);margin:10px 0 14px}
-.path{padding:10px 12px;border-radius:7px;background:var(--surface-2);color:#d9d6d0;font-variant-numeric:tabular-nums}
-.split{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:14px}
-.panel{padding:13px;border:1px solid var(--border);border-radius:8px;background:#171615}
-.panel-title{display:flex;justify-content:space-between;color:var(--muted);font-size:11px;margin-bottom:10px}
-.hero-num{font-size:28px;font-weight:700;font-variant-numeric:tabular-nums}.hero-num small{font-size:12px;color:var(--muted);font-weight:400}
-.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:10px}
-.stat span{display:block;color:var(--faint);font-size:10px}.stat b{font-size:13px;font-variant-numeric:tabular-nums}
-.positive{color:var(--green)}.pending{color:var(--orange)}
-.matches{margin-top:14px;border-top:1px solid var(--border);padding-top:12px}
-.matches summary{cursor:pointer;color:var(--muted);font-size:12px}.match{display:grid;grid-template-columns:1fr auto;gap:6px 12px;padding:10px 0;border-bottom:1px solid #292724}
-.match:last-child{border-bottom:0}.match strong{font-size:13px}.match small{display:block;color:var(--muted)}
-.result{text-align:right}.result b{display:block}.empty{padding:24px;border:1px dashed var(--border);border-radius:9px;color:var(--muted);text-align:center;background:var(--surface)}
-.footnote{margin-top:28px;padding:15px 17px;border:1px solid var(--border);border-radius:9px;color:var(--muted);background:var(--surface)}
-.footnote strong{color:var(--text)}footer{text-align:center;color:var(--faint);font-size:11px;margin-top:20px}
-.error{color:#e58da9;border-color:#74445c}
-@media(max-width:760px){
- body{padding:16px}.top{display:block}.shadow{margin-top:10px}.grid{grid-template-columns:1fr}.split{grid-template-columns:1fr}
- .definition{min-height:0}.toolbar{flex-wrap:wrap}.updated{width:100%;margin-left:0}.nav{gap:15px;overflow-x:auto;white-space:nowrap}
+:root{
+  --font-body:"Satoshi","PingFang HK","Noto Sans CJK TC",sans-serif;
+  --text-xs:clamp(.75rem,.72rem + .12vw,.8125rem);
+  --text-sm:clamp(.875rem,.84rem + .14vw,.9375rem);
+  --text-base:clamp(1rem,.97rem + .12vw,1.0625rem);
+  --text-lg:clamp(1.125rem,1.05rem + .28vw,1.25rem);
+  --text-xl:clamp(1.375rem,1.2rem + .55vw,1.625rem);
+  --s1:.25rem;--s2:.5rem;--s3:.75rem;--s4:1rem;--s5:1.25rem;
+  --s6:1.5rem;--s8:2rem;--s10:2.5rem;--radius:.5rem;
+  --transition:180ms cubic-bezier(.16,1,.3,1);
 }
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html{-webkit-text-size-adjust:none;text-size-adjust:none;scroll-behavior:smooth;background:var(--bg)}
+body{min-height:100dvh;background:var(--bg);color:var(--text);font:var(--text-sm)/1.5 var(--font-body);-webkit-font-smoothing:antialiased}
+button,a{font:inherit;color:inherit}button{cursor:pointer}a{text-decoration:none}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:.25rem}
+.skip-link{position:fixed;z-index:10;top:var(--s2);left:var(--s2);padding:var(--s2) var(--s3);background:var(--text);color:var(--bg);border-radius:.375rem;transform:translateY(-160%);transition:transform var(--transition)}
+.skip-link:focus{transform:translateY(0)}
+.shell{min-height:100dvh}.topbar{background:var(--surface);border-bottom:1px solid var(--border)}
+.topbar-main{min-height:4rem;padding:var(--s3) clamp(var(--s4),3vw,var(--s8));display:flex;align-items:center;justify-content:space-between;gap:var(--s5)}
+.brand{display:flex;align-items:center;gap:var(--s3);min-width:0}
+.mark{width:2rem;height:2rem;flex:none;color:var(--accent)}
+.brand h1{font-size:var(--text-base);line-height:1.15;font-weight:700;letter-spacing:-.015em}
+.brand p{font-size:var(--text-xs);color:var(--muted);margin-top:var(--s1)}
+.actions{display:flex;align-items:center;gap:var(--s2)}
+.icon-btn,.nav-link{min-width:2.75rem;min-height:2.75rem;padding:0 var(--s3);border:1px solid transparent;background:transparent;color:var(--muted);display:inline-flex;align-items:center;justify-content:center;gap:var(--s2);border-radius:.375rem}
+.icon-btn:hover,.nav-link:hover{background:var(--surface-2);color:var(--text)}
+.icon-btn svg,.nav-link svg{width:1rem;height:1rem}
+.mobile-label{display:none}
+.kpis{display:grid;grid-template-columns:repeat(3,1fr);border-top:1px solid var(--border)}
+.kpi{padding:var(--s3) clamp(var(--s4),3vw,var(--s8));border-right:1px solid var(--border)}
+.kpi:last-child{border-right:0}.kpi span{display:block;color:var(--muted);font-size:var(--text-xs)}
+.kpi strong{display:block;margin-top:var(--s1);font-size:var(--text-xl);line-height:1;font-variant-numeric:tabular-nums;color:var(--accent)}
+.kpi.settled strong{color:var(--green)}
+.tabs{display:flex;gap:var(--s1);padding:var(--s3) clamp(var(--s4),3vw,var(--s8));background:var(--surface);border-bottom:1px solid var(--border);overflow-x:auto}
+.tab{min-height:2.75rem;white-space:nowrap;border:0;border-radius:.375rem;padding:var(--s2) var(--s3);background:transparent;color:var(--muted);font-weight:500}
+.tab[aria-selected="true"]{background:var(--surface-2);color:var(--text)}
+.main{width:min(100%,75rem);margin:0 auto;padding:var(--s5) clamp(var(--s4),3vw,var(--s8)) var(--s10)}
+.statusline{display:flex;align-items:center;justify-content:space-between;gap:var(--s4);margin-bottom:var(--s4);color:var(--muted);font-size:var(--text-xs)}
+.statusline strong{color:var(--text);font-size:var(--text-sm)}
+.live-dot{display:inline-block;width:.5rem;height:.5rem;margin-right:var(--s2);border-radius:50%;background:var(--accent);box-shadow:0 0 0 .25rem var(--accent-soft)}
+.rules{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--s3)}
+.rule{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow);padding:var(--s4);min-width:0}
+.rule.featured{grid-column:1/-1}.rule-head{display:flex;justify-content:space-between;gap:var(--s4);align-items:flex-start}
+.rule h2{font-size:var(--text-base);line-height:1.3;font-weight:700;letter-spacing:-.01em}
+.rule-id{margin-top:var(--s1);font-size:var(--text-xs);color:var(--faint)}
+.badge{flex:none;padding:var(--s1) var(--s2);border-radius:.25rem;background:var(--green-soft);color:var(--green);font-size:var(--text-xs);font-weight:700}
+.badge.s{background:var(--gold-soft);color:var(--gold)}
+.definition{color:var(--muted);font-size:var(--text-xs);margin-top:var(--s3)}
+.path{font-weight:600;margin-top:var(--s3)}
+.history-note{color:var(--muted);font-size:var(--text-xs);margin-top:var(--s2)}
+.live-stats{margin-top:var(--s3);padding-top:var(--s3);border-top:1px solid var(--border);display:flex;align-items:baseline;gap:var(--s2);flex-wrap:wrap;font-variant-numeric:tabular-nums}
+.live-stats strong{font-size:var(--text-sm)}.live-stats span{color:var(--muted)}
+.live-stats .rate{color:var(--green);font-weight:700}
+.rule-actions{display:flex;gap:var(--s2);margin-top:var(--s3);flex-wrap:wrap}
+.btn{min-height:2.75rem;border:1px solid var(--border);border-radius:.375rem;padding:var(--s2) var(--s3);background:var(--surface);color:var(--muted);font-size:var(--text-xs);font-weight:500}
+.btn:hover{border-color:var(--accent);color:var(--accent);background:var(--accent-soft)}
+.btn.primary{color:var(--accent);border-color:color-mix(in srgb,var(--accent) 35%,var(--border))}
+.matches-section{margin-top:var(--s6);scroll-margin-top:var(--s4)}
+.section-head{display:flex;align-items:center;justify-content:space-between;gap:var(--s4);margin-bottom:var(--s3)}
+.section-head h2{font-size:var(--text-lg);letter-spacing:-.015em}.updated{font-size:var(--text-xs);color:var(--muted)}
+.active-filter{display:none;margin-bottom:var(--s3);padding:var(--s2) var(--s3);border:1px solid var(--border);border-radius:.375rem;background:var(--surface);color:var(--muted)}
+.active-filter.visible{display:flex;align-items:center;justify-content:space-between;gap:var(--s3)}
+.active-filter button{min-height:2.75rem;border:0;background:none;color:var(--accent);font-weight:600}
+.match-list{display:grid;gap:var(--s2)}
+.match{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:var(--s3) var(--s4);display:grid;grid-template-columns:minmax(0,1fr) auto;gap:var(--s4);align-items:center}
+.match-main{min-width:0}.match-title{font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.match-meta,.match-path{font-size:var(--text-xs);color:var(--muted);margin-top:var(--s1)}
+.match-result{text-align:right;white-space:nowrap}.match-result strong{display:block;color:var(--green)}.match-result .pending{color:var(--warning)}
+.match-result small{color:var(--muted);font-size:var(--text-xs)}
+.empty{padding:var(--s10) var(--s5);border:1px dashed var(--border);border-radius:var(--radius);background:var(--surface);text-align:center;color:var(--muted)}
+.empty svg{width:1.5rem;height:1.5rem;margin:0 auto var(--s3);color:var(--faint)}
+.error{color:var(--danger);border-color:color-mix(in srgb,var(--danger) 45%,var(--border))}
+.foot{margin-top:var(--s6);padding-top:var(--s4);border-top:1px solid var(--border);color:var(--muted);font-size:var(--text-xs)}
+@media(max-width:720px){
+  .topbar-main{align-items:flex-start}.nav-link span{display:none}.mobile-label{display:inline}
+  .kpi{padding:var(--s3)}.kpi strong{font-size:var(--text-lg)}
+  .rules{grid-template-columns:1fr}.rule.featured{grid-column:auto}
+  .match{grid-template-columns:1fr}.match-result{text-align:left;display:flex;gap:var(--s2);align-items:center}
+  .brand p{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:14rem}
+}
+@media(max-width:430px){
+  .topbar-main{padding-inline:var(--s3)}.main{padding-inline:var(--s3)}
+  .actions .nav-link{display:none}.kpi span{font-size:.75rem}
+}
+@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;transition:none!important}}
 </style>
 </head>
 <body>
+<a class="skip-link" href="#main-content">跳到主要內容</a>
 <div class="shell">
-  <header>
-    <div class="top">
-      <div><h1>皇冠系統V2 · 細分條件</h1><p class="sub">初盤預測 → T-30 → T-5 · 只顯示 S級及 A級</p></div>
-      <span class="shadow">SHADOW · 純統計</span>
+  <header class="topbar">
+    <div class="topbar-main">
+      <a class="brand" href="./conditions.html" aria-label="皇冠 V2 累積訊號">
+        <svg class="mark" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+          <circle cx="16" cy="16" r="13" stroke="currentColor" stroke-width="1.5"/>
+          <path d="M8 19.5 11 11l5 5 5-5 3 8.5H8Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>
+          <path d="M10 22h12" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+        </svg>
+        <div><h1>皇冠 V2 累積訊號</h1><p>初盤預測 · T-30 · T-5 條件持續累積</p></div>
+      </a>
+      <div class="actions">
+        <a class="nav-link" href="./" data-testid="link-dashboard">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 5h7v6H4zM13 5h7v10h-7zM4 13h7v6H4zM13 17h7v2h-7z"/></svg><span>即時</span>
+        </a>
+        <a class="nav-link" href="./history.html" data-testid="link-history">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 5h16M4 12h16M4 19h16"/></svg><span>研究數據</span>
+        </a>
+        <button class="icon-btn" type="button" data-theme-toggle data-testid="button-theme" aria-label="切換深色模式">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z"/></svg>
+        </button>
+      </div>
     </div>
-    <nav class="nav" aria-label="V2 導航">
-      <a href="./">即時 dashboard</a>
-      <a href="./history.html">歷史紀錄</a>
-      <a href="./conditions.html" class="active" aria-current="page">細分條件</a>
+    <div class="kpis" aria-label="訊號總覽">
+      <div class="kpi"><span>目前可留意</span><strong id="kpi-live" data-testid="kpi-live">—</strong></div>
+      <div class="kpi"><span>累積訊號</span><strong id="kpi-total" data-testid="kpi-total">—</strong></div>
+      <div class="kpi settled"><span>已有賽果</span><strong id="kpi-settled" data-testid="kpi-settled">—</strong></div>
+    </div>
+    <nav class="tabs" aria-label="場次狀態">
+      <button class="tab" type="button" data-mode="live" aria-selected="true" data-testid="tab-live">未開賽／進行中</button>
+      <button class="tab" type="button" data-mode="all" aria-selected="false" data-testid="tab-all">全部累積</button>
+      <button class="tab" type="button" data-mode="settled" aria-selected="false" data-testid="tab-settled">已完場／待賽果</button>
+      <button class="tab" type="button" data-market="all" aria-selected="true" data-testid="tab-market-all">全部條件</button>
+      <button class="tab" type="button" data-market="HDC" aria-selected="false" data-testid="tab-market-hdc">讓球</button>
+      <button class="tab" type="button" data-market="HIL" aria-selected="false" data-testid="tab-market-hil">入球大細</button>
     </nav>
   </header>
 
-  <main>
-    <div class="notice">
-      <strong>預測方向，唔係報價方向</strong>
-      <span>只按每個時點模型揀出嘅預測計算。歷史基準同啟用後實績分開顯示；條件只讀，唔會改模型、推介、注碼或通知。</span>
+  <main class="main" id="main-content">
+    <div class="statusline">
+      <strong><span class="live-dot"></span>監察條件</strong>
+      <span id="condition-count">載入中</span>
     </div>
-    <div class="toolbar">
-      <span class="chip live">後台持續累積</span>
-      <span class="chip" id="cutoff">前瞻啟用線 —</span>
-      <span class="updated" id="updated">載入中…</span>
-    </div>
-    <div id="content"><div class="empty">正在讀取 V2 細分條件…</div></div>
-    <div class="footnote">
-      <strong>統計口徑：</strong>命中率以全贏及半贏為命中，走水不計入分母；ROI 用每場條件成立時實際所選賠率計算。其他未達 S／A 級條件只在後台累積，不會公開顯示。
-    </div>
+    <section class="rules" id="rules" aria-label="累積條件">
+      <div class="empty">正在讀取條件…</div>
+    </section>
+
+    <section class="matches-section" id="matches-section">
+      <div class="section-head"><h2>符合場次</h2><span class="updated" id="updated">載入中</span></div>
+      <div class="active-filter" id="active-filter">
+        <span id="active-filter-text"></span>
+        <button type="button" id="clear-filter" data-testid="button-clear-condition">清除篩選</button>
+      </div>
+      <div class="match-list" id="match-list"><div class="empty">正在讀取場次…</div></div>
+    </section>
+
+    <p class="foot">命中率以全贏及半贏為命中，走水不計入分母。歷史回測只作條件參考；累積訊號、已判定及符合場次會隨 V2 資料持續更新。</p>
   </main>
-  <footer>皇冠系統 V2 · read-only prospective measurement</footer>
 </div>
 
 <script>
-const MARKET_ORDER = ["HDC","HIL","CHL"];
-const MARKET_LABEL = {HDC:"讓球",HIL:"入球大細",CHL:"角球大細"};
-const STAGES = ["首預","T-30","T-5"];
-function esc(v){return String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
-function pct(v,d=1){return v==null?"—":`${(Number(v)*100).toFixed(d)}%`}
-function num(v){return Number(v||0).toLocaleString("zh-HK")}
-function line(v){return v==null?"—":Number(v)>0?`+${Number(v)}`:`${Number(v)}`}
-function stageName(v){return v==="首預"?"初盤預測":v}
-function stagePath(obs){
-  return STAGES.filter(s=>obs.directions?.[s]).map(s=>{
-    const odd=obs.odds_by_stage?.[s], ln=obs.lines?.[s];
-    return `${stageName(s)} ${obs.directions[s]} ${ln==null?"":line(ln)}${odd==null?"":` @ ${Number(odd).toFixed(2)}`}`;
+const state={payload:null,mode:"live",market:"all",condition:null};
+const esc=v=>String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const pct=(v,d=1)=>v==null?"待累積":`${(Number(v)*100).toFixed(d)}%`;
+const n=v=>Number(v||0).toLocaleString("zh-HK");
+const fmtTime=v=>v?new Date(v).toLocaleString("zh-HK",{timeZone:"Asia/Hong_Kong",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",hour12:false}):"—";
+const conditionMap=()=>Object.fromEntries((state.payload?.public_conditions||[]).map(c=>[c.id,c]));
+function statusOf(row){
+  if(row.settlement)return "settled";
+  const kick=new Date(row.kickoff).getTime();
+  return Number.isFinite(kick)&&kick>Date.now()-3*60*60*1000?"live":"awaiting";
+}
+function stagePath(row){
+  return ["首預","T-30","T-5"].filter(s=>row.directions?.[s]).map(s=>{
+    const name=s==="首預"?"初盤":s,ln=row.lines?.[s],odd=row.odds_by_stage?.[s];
+    const line=ln==null?"":` ${Number(ln)>0?"+":""}${Number(ln)}`;
+    return `${name} ${row.directions[s]}${line}${odd==null?"":` @ ${Number(odd).toFixed(2)}`}`;
   }).join(" → ");
 }
-function metric(label,value,cls=""){return `<div class="stat"><span>${label}</span><b class="${cls}">${value}</b></div>`}
-function panel(title,m,history=false){
-  const sample=history?m.sample:m.settled;
-  const sub=history?`${num(m.sample)} 場固定基準`:`${num(m.settled)} 已結算 / ${num(m.pending)} 待賽果`;
-  return `<div class="panel">
-    <div class="panel-title"><span>${title}</span><span>${sub}</span></div>
-    <div class="hero-num ${m.hit_rate!=null?"positive":""}">${pct(m.hit_rate)} <small>命中率</small></div>
-    <div class="stats">
-      ${metric("樣本",num(sample))}
-      ${metric("ROI",pct(m.roi,2),m.roi>0?"positive":"")}
-      ${metric(history?"走水":"入組",num(history?m.push:m.qualified))}
+function allObservations(){
+  return (state.payload?.public_conditions||[]).flatMap(c=>(c.observations||[]).map(o=>({...o,_condition:c.id,_title:c.title})));
+}
+function visibleObservations(){
+  return allObservations().filter(o=>{
+    if(state.market!=="all"&&o.market!==state.market)return false;
+    if(state.condition&&o._condition!==state.condition)return false;
+    if(state.mode==="live")return statusOf(o)==="live";
+    if(state.mode==="settled")return statusOf(o)!=="live";
+    return true;
+  }).sort((a,b)=>String(b.kickoff||"").localeCompare(String(a.kickoff||"")));
+}
+function ruleCard(c,index){
+  const p=c.prospective||{},h=c.historical||{};
+  return `<article class="rule ${index===0?"featured":""}" data-testid="card-condition-${esc(c.id)}">
+    <div class="rule-head">
+      <div><h2>${esc(c.title)}</h2><div class="rule-id">${esc(c.id)}</div></div>
+      <span class="badge ${c.tier==="S"?"s":""}">${esc(c.tier)}級</span>
     </div>
-  </div>`;
-}
-function matches(rows){
-  if(!rows?.length)return "";
-  return `<details class="matches"><summary>查看啟用後符合場次 (${rows.length})</summary>${rows.map(r=>`
-    <div class="match">
-      <div><strong>${esc(r.home)} 對 ${esc(r.away)}</strong><small>${esc(r.league)} · ${esc((r.kickoff||"").replace("T"," ").slice(0,16))}</small><small>${esc(stagePath(r))}</small></div>
-      <div class="result"><b class="${r.settlement?"positive":"pending"}">${esc(r.settlement_label)}</b><small>${esc(r.score||"未有賽果")}</small></div>
-    </div>`).join("")}</details>`;
-}
-function card(c){
-  const cls=c.tier==="S"?"tier-s":"";
-  return `<article class="card ${cls}">
-    <div class="card-head"><div><div class="eyebrow">${esc(c.id)}</div><h3>${esc(c.title)}</h3></div><span class="tier ${c.tier==="S"?"s":""}">${esc(c.tier)}級</span></div>
     <p class="definition">${esc(c.definition)}</p>
-    <div class="path">${esc(c.path_label)}</div>
-    <div class="split">${panel("歷史回測基準",c.historical,true)}${panel("啟用後實績",c.prospective,false)}</div>
-    ${matches(c.observations)}
+    <p class="path">${esc(c.path_label)}</p>
+    <p class="history-note">歷史參考：${n(h.sample)} 場 · 命中 ${pct(h.hit_rate)} · ROI ${pct(h.roi,2)}</p>
+    <div class="live-stats"><strong>累積 ${n(p.qualified)}</strong><span>· 已判定 ${n(p.settled)}</span><span>· 目前命中 <b class="rate">${pct(p.hit_rate)}</b></span></div>
+    <div class="rule-actions">
+      <button class="btn primary" type="button" data-only="${esc(c.id)}" data-testid="button-only-${esc(c.id)}">只顯示此條件</button>
+      <button class="btn" type="button" data-expand="${esc(c.id)}" data-testid="button-expand-${esc(c.id)}">展開符合場次 (${n(p.qualified)})</button>
+    </div>
   </article>`;
 }
-function render(sc){
-  if(!sc||sc.direction_basis!=="model_prediction_not_quote_direction")throw new Error("資料唔係預測方向口徑");
-  if(JSON.stringify(sc.public_tiers)!==JSON.stringify(["S","A"]))throw new Error("公開級別設定不符");
-  const conditions=sc.public_conditions||[];
-  document.getElementById("cutoff").textContent=`前瞻啟用線 ${new Date(sc.activation_cutoff).toLocaleString("zh-HK",{timeZone:"Asia/Hong_Kong",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",hour12:false})} HKT`;
-  document.getElementById("updated").textContent=`更新 ${new Date(sc.generated_at).toLocaleString("zh-HK",{timeZone:"Asia/Hong_Kong",hour12:false})}`;
-  document.getElementById("content").innerHTML=MARKET_ORDER.map(code=>{
-    const rows=conditions.filter(c=>c.market===code&&["S","A"].includes(c.tier));
-    return `<section class="market"><div class="market-head"><h2>${MARKET_LABEL[code]}</h2><span class="market-meta">${rows.length} 個公開 S/A 條件</span></div>
-      ${rows.length?`<div class="grid">${rows.map(card).join("")}</div>`:`<div class="empty">目前未有達到 S／A 級嘅條件；後台繼續累積。</div>`}
-    </section>`;
-  }).join("");
+function renderRules(){
+  const rows=(state.payload?.public_conditions||[]).filter(c=>state.market==="all"||c.market===state.market);
+  document.getElementById("condition-count").textContent=`${rows.length} 個公開 S/A 條件`;
+  document.getElementById("rules").innerHTML=rows.length?rows.map(ruleCard).join(""):`<div class="empty">此分類暫時未有公開條件。</div>`;
 }
+function emptyMessage(){
+  if(state.mode==="live")return "暫時未有未開賽或進行中的符合場次";
+  if(state.condition)return "這個條件目前未有符合場次";
+  return "目前未有符合場次";
+}
+function renderMatches(){
+  const rows=visibleObservations(),filter=document.getElementById("active-filter");
+  if(state.condition){
+    const c=conditionMap()[state.condition];
+    filter.classList.add("visible");
+    document.getElementById("active-filter-text").textContent=`只顯示：${c?.title||state.condition}`;
+  }else filter.classList.remove("visible");
+  document.getElementById("match-list").innerHTML=rows.length?rows.map(r=>`
+    <article class="match" data-testid="match-${esc(r._condition)}-${esc(r.match_id)}">
+      <div class="match-main">
+        <div class="match-title">${esc(r.home)} 對 ${esc(r.away)}</div>
+        <div class="match-meta">${esc(r.league)} · ${fmtTime(r.kickoff)} · ${esc(r.tier)}級</div>
+        <div class="match-path">${esc(stagePath(r))}</div>
+      </div>
+      <div class="match-result">
+        <strong class="${r.settlement?"":"pending"}">${esc(r.settlement_label||"待賽果")}</strong>
+        <small>${esc(r.score||"未有賽果")}</small>
+      </div>
+    </article>`).join(""):`<div class="empty">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 12h16M12 4v16"/><circle cx="12" cy="12" r="9"/></svg>
+      ${emptyMessage()}
+    </div>`;
+}
+function render(){
+  const observations=allObservations();
+  document.getElementById("kpi-live").textContent=n(observations.filter(o=>statusOf(o)==="live").length);
+  document.getElementById("kpi-total").textContent=n(observations.length);
+  document.getElementById("kpi-settled").textContent=n(observations.filter(o=>o.settlement).length);
+  document.getElementById("updated").textContent=`更新於 ${fmtTime(state.payload.generated_at)}`;
+  renderRules();renderMatches();
+}
+document.querySelectorAll("[data-mode]").forEach(btn=>btn.addEventListener("click",()=>{
+  state.mode=btn.dataset.mode;
+  document.querySelectorAll("[data-mode]").forEach(x=>x.setAttribute("aria-selected",String(x===btn)));
+  renderMatches();
+}));
+document.querySelectorAll("[data-market]").forEach(btn=>btn.addEventListener("click",()=>{
+  state.market=btn.dataset.market;state.condition=null;
+  document.querySelectorAll("[data-market]").forEach(x=>x.setAttribute("aria-selected",String(x===btn)));
+  render();
+}));
+document.getElementById("rules").addEventListener("click",event=>{
+  const only=event.target.closest("[data-only]"),expand=event.target.closest("[data-expand]");
+  if(!only&&!expand)return;
+  state.condition=(only||expand).dataset.only||(only||expand).dataset.expand;
+  if(expand){
+    state.mode="all";
+    document.querySelectorAll("[data-mode]").forEach(x=>x.setAttribute("aria-selected",String(x.dataset.mode==="all")));
+  }
+  renderMatches();
+  document.getElementById("matches-section").scrollIntoView({behavior:"smooth",block:"start"});
+});
+document.getElementById("clear-filter").addEventListener("click",()=>{state.condition=null;renderMatches()});
+let theme="light";
+document.querySelector("[data-theme-toggle]").addEventListener("click",event=>{
+  theme=theme==="light"?"dark":"light";document.documentElement.dataset.theme=theme;
+  event.currentTarget.setAttribute("aria-label",theme==="light"?"切換深色模式":"切換淺色模式");
+});
 async function load(){
   try{
     const response=await fetch(`./data.json?ts=${Date.now()}`,{cache:"no-store"});
     if(!response.ok)throw new Error(`HTTP ${response.status}`);
-    const payload=await response.json();
-    render(payload.segmented_conditions);
+    const payload=await response.json(),sc=payload.segmented_conditions;
+    if(!sc||sc.direction_basis!=="model_prediction_not_quote_direction")throw new Error("資料口徑不符");
+    state.payload=sc;render();
   }catch(error){
-    document.getElementById("content").innerHTML=`<div class="empty error">載入失敗：${esc(error.message)}。V2 排程會自動重試。</div>`;
+    document.getElementById("rules").innerHTML=`<div class="empty error">載入失敗：${esc(error.message)}。系統會自動重試。</div>`;
+    document.getElementById("match-list").innerHTML="";
     document.getElementById("updated").textContent="載入失敗";
   }
 }
