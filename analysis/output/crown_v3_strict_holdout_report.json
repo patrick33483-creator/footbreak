@@ -1,0 +1,689 @@
+{
+  "comparisons": {
+    "unfiltered_hdc_t5": {
+      "discovery": {
+        "brier_excluding_push": 0.2488637212244776,
+        "calibration_gap_abs_excluding_push": 0.001998626865671649,
+        "coverage": 0.8697758933979406,
+        "decided_n_excluding_push": 1340,
+        "fixture_cluster_bootstrap_roi_95": [
+          -0.08831485027855153,
+          -0.004582172701949855
+        ],
+        "grade_counts": {
+          "full_loss": 549,
+          "full_win": 589,
+          "half_loss": 87,
+          "half_win": 115,
+          "push": 96
+        },
+        "hit_rate_excluding_push": 0.5253731343283582,
+        "hits": 704,
+        "log_loss_excluding_push": 0.6908774590980169,
+        "mean_probability_excluding_push": 0.5233745074626865,
+        "n": 1436,
+        "roi": -0.04635445682451252,
+        "unique_fixtures": 1436,
+        "unit_pnl": -66.56499999999998,
+        "wilson_hit_rate_95": [
+          0.49860217100892357,
+          0.5519990361153709
+        ]
+      },
+      "holdout": {
+        "brier_excluding_push": 0.24931158758049385,
+        "calibration_gap_abs_excluding_push": 0.02173212345679021,
+        "coverage": 0.781021897810219,
+        "decided_n_excluding_push": 405,
+        "fixture_cluster_bootstrap_roi_95": [
+          -0.17766588785046727,
+          -0.015545268691588832
+        ],
+        "grade_counts": {
+          "full_loss": 181,
+          "full_win": 166,
+          "half_loss": 21,
+          "half_win": 37,
+          "push": 23
+        },
+        "hit_rate_excluding_push": 0.5012345679012346,
+        "hits": 203,
+        "log_loss_excluding_push": 0.6917676082032649,
+        "mean_probability_excluding_push": 0.5229666913580248,
+        "n": 428,
+        "roi": -0.09639018691588784,
+        "unique_fixtures": 428,
+        "unit_pnl": -41.254999999999995,
+        "wilson_hit_rate_95": [
+          0.4527567289822837,
+          0.5496892069139546
+        ]
+      },
+      "selection": {
+        "brier_excluding_push": 0.2508870151006601,
+        "calibration_gap_abs_excluding_push": 0.04659587458745873,
+        "coverage": 0.5786618444846293,
+        "decided_n_excluding_push": 303,
+        "fixture_cluster_bootstrap_roi_95": [
+          -0.221716015625,
+          -0.038902734375000046
+        ],
+        "grade_counts": {
+          "full_loss": 141,
+          "full_win": 115,
+          "half_loss": 18,
+          "half_win": 29,
+          "push": 17
+        },
+        "hit_rate_excluding_push": 0.4752475247524752,
+        "hits": 144,
+        "log_loss_excluding_push": 0.6949161874961053,
+        "mean_probability_excluding_push": 0.521843399339934,
+        "n": 320,
+        "roi": -0.13265625,
+        "unique_fixtures": 320,
+        "unit_pnl": -42.45,
+        "wilson_hit_rate_95": [
+          0.4196801720247113,
+          0.531434647799016
+        ]
+      }
+    },
+    "unfiltered_hil_t5": {
+      "discovery": {
+        "brier_excluding_push": 0.24881656186303386,
+        "calibration_gap_abs_excluding_push": 0.011324374079528687,
+        "coverage": 0.8746214415505754,
+        "decided_n_excluding_push": 1358,
+        "fixture_cluster_bootstrap_roi_95": [
+          -0.07754510041551246,
+          0.009222645429362812
+        ],
+        "grade_counts": {
+          "full_loss": 573,
+          "full_win": 633,
+          "half_loss": 64,
+          "half_win": 88,
+          "push": 86
+        },
+        "hit_rate_excluding_push": 0.5309278350515464,
+        "hits": 721,
+        "log_loss_excluding_push": 0.6907762835430606,
+        "mean_probability_excluding_push": 0.5196034609720177,
+        "n": 1444,
+        "roi": -0.034110110803324094,
+        "unique_fixtures": 1444,
+        "unit_pnl": -49.25499999999999,
+        "wilson_hit_rate_95": [
+          0.504335781226162,
+          0.5573454074731019
+        ]
+      },
+      "holdout": {
+        "brier_excluding_push": 0.2487829811334066,
+        "calibration_gap_abs_excluding_push": 0.010457076923076958,
+        "coverage": 0.8941605839416058,
+        "decided_n_excluding_push": 455,
+        "fixture_cluster_bootstrap_roi_95": [
+          -0.11180255102040815,
+          0.03292066326530609
+        ],
+        "grade_counts": {
+          "full_loss": 195,
+          "full_win": 210,
+          "half_loss": 18,
+          "half_win": 32,
+          "push": 35
+        },
+        "hit_rate_excluding_push": 0.5318681318681319,
+        "hits": 242,
+        "log_loss_excluding_push": 0.6907097362369792,
+        "mean_probability_excluding_push": 0.5214110549450549,
+        "n": 490,
+        "roi": -0.039448979591836734,
+        "unique_fixtures": 490,
+        "unit_pnl": -19.33,
+        "wilson_hit_rate_95": [
+          0.4859440247065317,
+          0.577258633733565
+        ]
+      },
+      "selection": {
+        "brier_excluding_push": 0.24801545526507043,
+        "calibration_gap_abs_excluding_push": 0.012323239436619726,
+        "coverage": 0.6781193490054249,
+        "decided_n_excluding_push": 355,
+        "fixture_cluster_bootstrap_roi_95": [
+          -0.12091299999999999,
+          0.054908999999999965
+        ],
+        "grade_counts": {
+          "full_loss": 156,
+          "full_win": 171,
+          "half_loss": 10,
+          "half_win": 18,
+          "push": 20
+        },
+        "hit_rate_excluding_push": 0.532394366197183,
+        "hits": 189,
+        "log_loss_excluding_push": 0.6891710994477009,
+        "mean_probability_excluding_push": 0.5200711267605633,
+        "n": 375,
+        "roi": -0.03358666666666666,
+        "unique_fixtures": 375,
+        "unit_pnl": -12.594999999999999,
+        "wilson_hit_rate_95": [
+          0.4804222091651546,
+          0.58367294883467
+        ]
+      }
+    },
+    "v2_baseline_t5_cross_market_max_ev_always": {
+      "discovery": {
+        "brier_excluding_push": 0.2491605235344371,
+        "calibration_gap_abs_excluding_push": 0.003425879323031622,
+        "coverage": 0.8746214415505754,
+        "decided_n_excluding_push": 1359,
+        "fixture_cluster_bootstrap_roi_95": [
+          -0.08381275969529085,
+          -3.35006925207803e-05
+        ],
+        "grade_counts": {
+          "full_loss": 573,
+          "full_win": 610,
+          "half_loss": 78,
+          "half_win": 98,
+          "push": 85
+        },
+        "hit_rate_excluding_push": 0.5209713024282561,
+        "hits": 708,
+        "log_loss_excluding_push": 0.6914665111930752,
+        "mean_probability_excluding_push": 0.5175454231052244,
+        "n": 1444,
+        "roi": -0.04220221606648198,
+        "unique_fixtures": 1444,
+        "unit_pnl": -60.93999999999998,
+        "wilson_hit_rate_95": [
+          0.4943897080805044,
+          0.5474346726140216
+        ]
+      },
+      "holdout": {
+        "brier_excluding_push": 0.24878581438343816,
+        "calibration_gap_abs_excluding_push": 0.005346771488469626,
+        "coverage": 0.9215328467153284,
+        "decided_n_excluding_push": 477,
+        "fixture_cluster_bootstrap_roi_95": [
+          -0.13580346534653465,
+          0.010158910891089109
+        ],
+        "grade_counts": {
+          "full_loss": 206,
+          "full_win": 207,
+          "half_loss": 26,
+          "half_win": 38,
+          "push": 28
+        },
+        "hit_rate_excluding_push": 0.5136268343815513,
+        "hits": 245,
+        "log_loss_excluding_push": 0.6907111351564773,
+        "mean_probability_excluding_push": 0.518973605870021,
+        "n": 505,
+        "roi": -0.0629108910891089,
+        "unique_fixtures": 505,
+        "unit_pnl": -31.769999999999996,
+        "wilson_hit_rate_95": [
+          0.46884373838890386,
+          0.5581921998845628
+        ]
+      },
+      "selection": {
+        "brier_excluding_push": 0.2494020722810056,
+        "calibration_gap_abs_excluding_push": 0.005679944134078241,
+        "coverage": 0.6889692585895117,
+        "decided_n_excluding_push": 358,
+        "fixture_cluster_bootstrap_roi_95": [
+          -0.14958858267716532,
+          0.020475721784776857
+        ],
+        "grade_counts": {
+          "full_loss": 158,
+          "full_win": 153,
+          "half_loss": 17,
+          "half_win": 30,
+          "push": 23
+        },
+        "hit_rate_excluding_push": 0.5111731843575419,
+        "hits": 183,
+        "log_loss_excluding_push": 0.6919524765678718,
+        "mean_probability_excluding_push": 0.5168531284916201,
+        "n": 381,
+        "roi": -0.06359580052493438,
+        "unique_fixtures": 381,
+        "unit_pnl": -24.229999999999997,
+        "wilson_hit_rate_95": [
+          0.4595493006181826,
+          0.562559829789575
+        ]
+      }
+    },
+    "v3_hdc": {
+      "discovery": {
+        "brier_excluding_push": 0.25038635057684727,
+        "calibration_gap_abs_excluding_push": 0.036918374384236397,
+        "coverage": 0.13022410660205935,
+        "decided_n_excluding_push": 203,
+        "fixture_cluster_bootstrap_roi_95": [
+          -0.2011406976744186,
+          0.034585465116278975
+        ],
+        "grade_counts": {
+          "full_loss": 90,
+          "full_win": 82,
+          "half_loss": 18,
+          "half_win": 13,
+          "push": 12
+        },
+        "hit_rate_excluding_push": 0.46798029556650245,
+        "hits": 95,
+        "log_loss_excluding_push": 0.6939200312958662,
+        "mean_probability_excluding_push": 0.5048986699507388,
+        "n": 215,
+        "roi": -0.08334883720930235,
+        "unique_fixtures": 215,
+        "unit_pnl": -17.920000000000005,
+        "wilson_hit_rate_95": [
+          0.4005726744809426,
+          0.5365772563205541
+        ]
+      },
+      "holdout": {
+        "brier_excluding_push": 0.24983041322500002,
+        "calibration_gap_abs_excluding_push": 0.022255499999999928,
+        "coverage": 0.11496350364963503,
+        "decided_n_excluding_push": 60,
+        "fixture_cluster_bootstrap_roi_95": [
+          -0.2903253968253969,
+          0.15857142857142853
+        ],
+        "grade_counts": {
+          "full_loss": 29,
+          "full_win": 27,
+          "half_loss": 2,
+          "half_win": 2,
+          "push": 3
+        },
+        "hit_rate_excluding_push": 0.48333333333333334,
+        "hits": 29,
+        "log_loss_excluding_push": 0.6928079914442351,
+        "mean_probability_excluding_push": 0.5055888333333333,
+        "n": 63,
+        "roi": -0.07015873015873018,
+        "unique_fixtures": 63,
+        "unit_pnl": -4.420000000000002,
+        "wilson_hit_rate_95": [
+          0.36175049539732784,
+          0.6069218996740751
+        ]
+      },
+      "selection": {
+        "brier_excluding_push": 0.25035216081911765,
+        "calibration_gap_abs_excluding_push": 0.023425441176470607,
+        "coverage": 0.12839059674502712,
+        "decided_n_excluding_push": 68,
+        "fixture_cluster_bootstrap_roi_95": [
+          -0.21619718309859157,
+          0.18465845070422518
+        ],
+        "grade_counts": {
+          "full_loss": 31,
+          "full_win": 30,
+          "half_loss": 1,
+          "half_win": 6,
+          "push": 3
+        },
+        "hit_rate_excluding_push": 0.5294117647058824,
+        "hits": 36,
+        "log_loss_excluding_push": 0.6938516794092839,
+        "mean_probability_excluding_push": 0.5059863235294118,
+        "n": 71,
+        "roi": -0.018521126760563417,
+        "unique_fixtures": 71,
+        "unit_pnl": -1.3150000000000026,
+        "wilson_hit_rate_95": [
+          0.4124092208872794,
+          0.6432689357880106
+        ]
+      }
+    },
+    "v3_hil": {
+      "discovery": {
+        "brier_excluding_push": 0.24313000460862066,
+        "calibration_gap_abs_excluding_push": 0.02699362068965505,
+        "coverage": 0.03755299818291944,
+        "decided_n_excluding_push": 58,
+        "fixture_cluster_bootstrap_roi_95": [
+          -0.17290725806451615,
+          0.19750806451612887
+        ],
+        "grade_counts": {
+          "full_loss": 18,
+          "full_win": 32,
+          "half_loss": 6,
+          "half_win": 2,
+          "push": 4
+        },
+        "hit_rate_excluding_push": 0.5862068965517241,
+        "hits": 34,
+        "log_loss_excluding_push": 0.6793436051699129,
+        "mean_probability_excluding_push": 0.559213275862069,
+        "n": 62,
+        "roi": 0.013709677419354822,
+        "unique_fixtures": 62,
+        "unit_pnl": 0.849999999999999,
+        "wilson_hit_rate_95": [
+          0.4579840817085566,
+          0.703719736259167
+        ]
+      },
+      "holdout": {
+        "brier_excluding_push": 0.2441721625909091,
+        "calibration_gap_abs_excluding_push": 0.029335454545454498,
+        "coverage": 0.041970802919708027,
+        "decided_n_excluding_push": 22,
+        "fixture_cluster_bootstrap_roi_95": [
+          -0.3648097826086957,
+          0.25936413043478235
+        ],
+        "grade_counts": {
+          "full_loss": 9,
+          "full_win": 11,
+          "half_loss": 0,
+          "half_win": 2,
+          "push": 1
+        },
+        "hit_rate_excluding_push": 0.5909090909090909,
+        "hits": 13,
+        "log_loss_excluding_push": 0.6815055158670638,
+        "mean_probability_excluding_push": 0.5615736363636364,
+        "n": 23,
+        "roi": -0.04673913043478264,
+        "unique_fixtures": 23,
+        "unit_pnl": -1.0750000000000006,
+        "wilson_hit_rate_95": [
+          0.38734818476315136,
+          0.7674418380352813
+        ]
+      },
+      "selection": {
+        "brier_excluding_push": 0.24169453546923075,
+        "calibration_gap_abs_excluding_push": 0.051037692307692284,
+        "coverage": 0.027124773960216998,
+        "decided_n_excluding_push": 13,
+        "fixture_cluster_bootstrap_roi_95": [
+          -0.38,
+          0.3626833333333331
+        ],
+        "grade_counts": {
+          "full_loss": 5,
+          "full_win": 8,
+          "half_loss": 0,
+          "half_win": 0,
+          "push": 2
+        },
+        "hit_rate_excluding_push": 0.6153846153846154,
+        "hits": 8,
+        "log_loss_excluding_push": 0.6765299414508532,
+        "mean_probability_excluding_push": 0.5643469230769231,
+        "n": 15,
+        "roi": 0.010666666666666647,
+        "unique_fixtures": 15,
+        "unit_pnl": 0.1599999999999997,
+        "wilson_hit_rate_95": [
+          0.35522891512665694,
+          0.8229029220223743
+        ]
+      }
+    },
+    "v3_portfolio": {
+      "discovery": {
+        "brier_excluding_push": 0.24877382925057467,
+        "calibration_gap_abs_excluding_push": 0.022715708812260538,
+        "coverage": 0.1665657177468201,
+        "decided_n_excluding_push": 261,
+        "fixture_cluster_bootstrap_roi_95": [
+          -0.16072427797833938,
+          0.03801839615264291
+        ],
+        "grade_counts": {
+          "full_loss": 108,
+          "full_win": 114,
+          "half_loss": 24,
+          "half_win": 15,
+          "push": 16
+        },
+        "hit_rate_excluding_push": 0.4942528735632184,
+        "hits": 129,
+        "log_loss_excluding_push": 0.6906808254900989,
+        "mean_probability_excluding_push": 0.5169685823754789,
+        "n": 277,
+        "roi": -0.06162454873646212,
+        "unique_fixtures": 275,
+        "unit_pnl": -17.070000000000007,
+        "wilson_hit_rate_95": [
+          0.43412232338476764,
+          0.5545501449917523
+        ]
+      },
+      "holdout": {
+        "brier_excluding_push": 0.24831234598170734,
+        "calibration_gap_abs_excluding_push": 0.008414024390243968,
+        "coverage": 0.1551094890510949,
+        "decided_n_excluding_push": 82,
+        "fixture_cluster_bootstrap_roi_95": [
+          -0.2477653556771546,
+          0.12523823529411754
+        ],
+        "grade_counts": {
+          "full_loss": 38,
+          "full_win": 38,
+          "half_loss": 2,
+          "half_win": 4,
+          "push": 4
+        },
+        "hit_rate_excluding_push": 0.5121951219512195,
+        "hits": 42,
+        "log_loss_excluding_push": 0.6897756199479208,
+        "mean_probability_excluding_push": 0.5206091463414635,
+        "n": 86,
+        "roi": -0.06389534883720933,
+        "unique_fixtures": 85,
+        "unit_pnl": -5.495000000000003,
+        "wilson_hit_rate_95": [
+          0.4059077238820504,
+          0.6173910413938009
+        ]
+      },
+      "selection": {
+        "brier_excluding_push": 0.24896266539259257,
+        "calibration_gap_abs_excluding_push": 0.027857037037037014,
+        "coverage": 0.15551537070524413,
+        "decided_n_excluding_push": 81,
+        "fixture_cluster_bootstrap_roi_95": [
+          -0.20122383720930237,
+          0.1732529069767433
+        ],
+        "grade_counts": {
+          "full_loss": 36,
+          "full_win": 38,
+          "half_loss": 1,
+          "half_win": 6,
+          "push": 5
+        },
+        "hit_rate_excluding_push": 0.5432098765432098,
+        "hits": 44,
+        "log_loss_excluding_push": 0.6910716473912641,
+        "mean_probability_excluding_push": 0.5153528395061728,
+        "n": 86,
+        "roi": -0.01343023255813957,
+        "unique_fixtures": 86,
+        "unit_pnl": -1.155000000000003,
+        "wilson_hit_rate_95": [
+          0.43524015896677065,
+          0.6472666731563539
+        ]
+      }
+    }
+  },
+  "diagnostics": {
+    "canonical_fixture_stage_snapshots": 12763,
+    "fixtures_without_verified_result": 2249,
+    "no_hdc_or_hil_lead": 492,
+    "settled_canonical_fixtures": 2752,
+    "unsupported_stage": 287
+  },
+  "locked_rules_selected_without_holdout": {
+    "HDC": {
+      "consistency": "any",
+      "ev_min": -1.0,
+      "market": "HDC",
+      "odds_min": 1.9,
+      "prob_min": 0.5,
+      "rule_id": "HDC|p>=0.5000|ev>=-1.0000|odds>=1.9000|any"
+    },
+    "HIL": {
+      "consistency": "t30_same_market_direction",
+      "ev_min": -1.0,
+      "market": "HIL",
+      "odds_min": 1.0,
+      "prob_min": 0.55,
+      "rule_id": "HIL|p>=0.5500|ev>=-1.0000|odds>=1.0000|t30_same_market_direction"
+    }
+  },
+  "parameter_search": {
+    "HDC": {
+      "candidate_count": 1176,
+      "eligible_count": 55,
+      "locked_discovery_n": 215,
+      "locked_rule_id": "HDC|p>=0.5000|ev>=-1.0000|odds>=1.9000|any",
+      "locked_selection_metrics_used_for_ranking": {
+        "brier_excluding_push": 0.25035216081911765,
+        "calibration_gap_abs_excluding_push": 0.023425441176470607,
+        "coverage": 0.12839059674502712,
+        "decided_n_excluding_push": 68,
+        "fixture_cluster_bootstrap_roi_95": [
+          null,
+          null
+        ],
+        "grade_counts": {
+          "full_loss": 31,
+          "full_win": 30,
+          "half_loss": 1,
+          "half_win": 6,
+          "push": 3
+        },
+        "hit_rate_excluding_push": 0.5294117647058824,
+        "hits": 36,
+        "log_loss_excluding_push": 0.6938516794092839,
+        "mean_probability_excluding_push": 0.5059863235294118,
+        "n": 71,
+        "roi": -0.018521126760563417,
+        "unique_fixtures": 71,
+        "unit_pnl": -1.3150000000000026,
+        "wilson_hit_rate_95": [
+          0.4124092208872794,
+          0.6432689357880106
+        ]
+      },
+      "minimum_discovery_n": 30,
+      "minimum_selection_n": 10,
+      "ranking": "selection-only ROI, Wilson lower bound, inverse calibration gap, n; deterministic rule id tie-break"
+    },
+    "HIL": {
+      "candidate_count": 1176,
+      "eligible_count": 53,
+      "locked_discovery_n": 62,
+      "locked_rule_id": "HIL|p>=0.5500|ev>=-1.0000|odds>=1.0000|t30_same_market_direction",
+      "locked_selection_metrics_used_for_ranking": {
+        "brier_excluding_push": 0.24169453546923075,
+        "calibration_gap_abs_excluding_push": 0.051037692307692284,
+        "coverage": 0.027124773960216998,
+        "decided_n_excluding_push": 13,
+        "fixture_cluster_bootstrap_roi_95": [
+          null,
+          null
+        ],
+        "grade_counts": {
+          "full_loss": 5,
+          "full_win": 8,
+          "half_loss": 0,
+          "half_win": 0,
+          "push": 2
+        },
+        "hit_rate_excluding_push": 0.6153846153846154,
+        "hits": 8,
+        "log_loss_excluding_push": 0.6765299414508532,
+        "mean_probability_excluding_push": 0.5643469230769231,
+        "n": 15,
+        "roi": 0.010666666666666647,
+        "unique_fixtures": 15,
+        "unit_pnl": 0.1599999999999997,
+        "wilson_hit_rate_95": [
+          0.35522891512665694,
+          0.8229029220223743
+        ]
+      },
+      "minimum_discovery_n": 30,
+      "minimum_selection_n": 10,
+      "ranking": "selection-only ROI, Wilson lower bound, inverse calibration gap, n; deterministic rule id tie-break"
+    }
+  },
+  "primary_comparison_split": "holdout",
+  "reproducibility": {
+    "bootstrap_samples": 5000,
+    "bootstrap_seed_scheme": "Random(crown-v3|strategy|split), fixture-cluster resampling",
+    "deterministic_ties": true,
+    "input_file_state": {
+      "mtime_ns": 1788178893838404001,
+      "sha256": "e543b07979fdb3b9584737c475269a83aed848b2e38d5295c0d7c8e231450f3b",
+      "size": 59261410
+    },
+    "read_only_input_hash_unchanged": true,
+    "report_has_no_wall_clock_field": true
+  },
+  "schema_version": "crown-v3-strict-backtest-v1",
+  "scope": {
+    "calibration_definition": "pushes excluded; half-win is a hit and half-loss is a miss, matching hit-rate denominator",
+    "decision_stage": "T-5",
+    "kind": "decision/calibration V3",
+    "not_upstream_retraining": true,
+    "roi_definition": "one-unit decimal-odds return; half win/loss and push settled exactly",
+    "upstream_model_weights": "persisted production probabilities only; no refit or change to upstream 70/30 weights",
+    "v2_baseline_definition": "always select maximum EV across the independent HDC/HIL T-5 leads"
+  },
+  "split": {
+    "cohort_count": 719,
+    "counts": {
+      "discovery": 1651,
+      "holdout": 548,
+      "selection": 553
+    },
+    "kickoff_ranges": {
+      "discovery": [
+        "2026-08-11T17:00:00+00:00",
+        "2026-08-20T01:30:00+00:00"
+      ],
+      "holdout": [
+        "2026-08-24T15:30:00+00:00",
+        "2026-08-31T10:10:00+00:00"
+      ],
+      "selection": [
+        "2026-08-20T02:00:00+00:00",
+        "2026-08-24T15:00:00+00:00"
+      ]
+    },
+    "method": "chronological kickoff cohorts nearest to 60/20/20; equal kickoff is indivisible",
+    "no_equal_kickoff_crosses_split": true,
+    "total_fixtures": 2752
+  }
+}
