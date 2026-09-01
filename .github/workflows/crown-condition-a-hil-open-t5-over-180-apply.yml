@@ -1,0 +1,124 @@
+name: Crown condition A-HIL-OPEN-T5-OVER-180 pending result apply
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "Required: APPLY_CROWN_A_HIL_OPEN_T5_OVER_180_PENDING_RESULTS"
+        required: true
+        type: string
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: Apply verified condition results and rebuild dashboard
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          EXPECTED_COMMIT: ${{ github.sha }}
+          CONFIRMATION: ${{ inputs.confirmation }}
+        run: |
+          set -euo pipefail
+          test "$CONFIRMATION" = APPLY_CROWN_A_HIL_OPEN_T5_OVER_180_PENDING_RESULTS
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            -o ServerAliveInterval=20 -o ServerAliveCountMax=90 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "sudo env EXPECTED_COMMIT='$EXPECTED_COMMIT' bash -s" <<'REMOTE'
+          set -euo pipefail
+          cd /opt/footbreak
+          test "$(git rev-parse HEAD)" = "$EXPECTED_COMMIT"
+          python=/opt/footbreak/.venv/bin/python3
+          [ -x "$python" ] || python=python3
+          if [ -f /etc/footbreak.env ]; then set -a; . /etc/footbreak.env; set +a; fi
+          if [ -f /etc/footbreak-crown.env ]; then set -a; . /etc/footbreak-crown.env; set +a; fi
+          state="${CROWN_STATE_DIR:-/var/lib/footbreak/crown}"
+          history="$state/prediction_history.json"
+          test -s "$history"
+          backup_dir="$state/backups/apply-a-hil-open-t5-over-180"
+          install -d -m 0700 "$backup_dir"
+          exec 8>"$state/.state.lock"
+          flock -w 180 8
+          active_timers=""
+          restart_timers() {
+            for timer in $active_timers; do systemctl start "$timer" || true; done
+          }
+          trap restart_timers EXIT
+          for timer in crown-round-update.timer crown-first-look-reconcile.timer \
+            crown-early-admission-reconcile.timer crown-sweep.timer \
+            crown-tick.timer crown-settle.timer crown-reverse-t5-drain.timer; do
+            if systemctl is-active --quiet "$timer"; then
+              active_timers="$active_timers $timer"
+            fi
+            systemctl stop "$timer" || true
+          done
+          systemctl stop crown-round-update.service crown-first-look-reconcile.service \
+            crown-early-admission-reconcile.service crown-sweep.service \
+            crown-tick.service crown-settle.service crown-reverse-t5-drain.service || true
+
+          manifest_dir=/opt/footbreak/analysis/manifests/apply_verified_condition_a_hil_open_t5_over_180
+          test -s "$manifest_dir/verified_25.json"
+          test -s "$manifest_dir/verified_final_2.json"
+
+          # Batch 1: 25 fixtures verified 2026-09-01 17:39 HKT.
+          PYTHONPATH=/opt/footbreak "$python" \
+            analysis/apply_verified_result_backfill.py \
+            --history "$history" \
+            --verified-results "$manifest_dir/verified_25.json" \
+            --batch-id gemini-condition-a-hil-open-t5-over-180-2026-09-01-v1 \
+            --verified-at 2026-09-01T17:39:00+08:00 \
+            --backup-dir "$backup_dir" \
+            --report-out "$backup_dir/apply_25_report.json"
+
+          # Batch 2: final 2 fixtures verified 2026-09-01 17:44 HKT.
+          PYTHONPATH=/opt/footbreak "$python" \
+            analysis/apply_verified_result_backfill.py \
+            --history "$history" \
+            --verified-results "$manifest_dir/verified_final_2.json" \
+            --batch-id gemini-condition-a-hil-open-t5-over-180-final-2-2026-09-01-v1 \
+            --verified-at 2026-09-01T17:44:00+08:00 \
+            --backup-dir "$backup_dir" \
+            --report-out "$backup_dir/apply_final_2_report.json"
+
+          # Prove condition A-HIL-OPEN-T5-OVER-180 is now 0-pending.
+          PYTHONPATH=/opt/footbreak "$python" - <<'PY'
+          import json
+          from pathlib import Path
+          from crown.segmented_conditions import build_segmented_conditions
+          history = json.loads(Path("/var/lib/footbreak/crown/prediction_history.json").read_text(encoding="utf-8"))
+          public = build_segmented_conditions(history["rows"])["public_conditions"]
+          target = next(c for c in public if c["id"] == "A-HIL-OPEN-T5-OVER-180")
+          pending = [o for o in target["observations"] if not o.get("score")]
+          assert not pending, f"still pending: {[o['match_id'] for o in pending]}"
+          print("condition_pending", 0)
+          PY
+
+          # Rebuild public dashboard payload from the updated history.
+          PYTHONPATH=/opt/footbreak "$python" -m crown.dashboard_data
+
+          flock -u 8
+          REMOTE
+
+      - name: Post-apply health check
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh "$DEPLOY_USER@$DEPLOY_HOST" 'sudo /opt/footbreak/deploy/health-check.sh' || true
