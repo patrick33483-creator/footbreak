@@ -198,6 +198,23 @@ def _rule_a_three_home_same_line(slot: dict[str, Any]) -> dict[str, Any] | None:
     return typed[-1]
 
 
+def _rule_s_open_over_line_3(slot: dict[str, Any]) -> dict[str, Any] | None:
+    """Opening HIL: predicted 大 with median line exactly 3 and odds strictly > 1.80.
+
+    Backfilled sample (val-30% segment) recorded 16/16 wins at Wilson-low 74.12%
+    and ROI +60% for this filter. Full-pool Wilson-low was 57.17% across 53 obs.
+    """
+    prediction = _prediction(slot, "首預", "HIL")
+    if not prediction or prediction["side"] != "H":
+        return None
+    line = prediction.get("selected_line")
+    if line is None or abs(float(line) - 3.0) > 1e-9:
+        return None
+    if (prediction["odds"] or 0) <= 1.80:
+        return None
+    return prediction
+
+
 RuleMatcher = Callable[[dict[str, Any]], dict[str, Any] | None]
 
 CONDITIONS: tuple[dict[str, Any], ...] = (
@@ -267,10 +284,10 @@ CONDITIONS: tuple[dict[str, Any], ...] = (
     },
     {
         "id": "A-HDC-HHH-SAME-LINE",
-        "tier": "普通",
+        "tier": "背景",
         "evidence_status": "downgraded",
         "evidence_label": "已降級",
-        "evidence_note": "最新獨立段為 52.38%，ROI -0.89%；不再列作強條件。",
+        "evidence_note": "backfill 2,206 場後獨立 val-30% 段命中 51.1%，ROI -5.7%；降至背景累積。",
         "market": "HDC",
         "title": "初盤預測主 → T-30 主 → T-5 主；三段中位線相同",
         "definition": "三段讓球預測方向全部為主，而且以被預測一方角度計算的三段中位線完全相同，無賠率門檻。",
@@ -280,6 +297,22 @@ CONDITIONS: tuple[dict[str, Any], ...] = (
             "half_loss": 11, "full_loss": 61, "hit_rate": 0.5955, "roi": 0.0887,
         },
         "matcher": _rule_a_three_home_same_line,
+    },
+    {
+        "id": "S-HIL-OPEN-OVER-3-180",
+        "tier": "觀察",
+        "evidence_status": "watch",
+        "evidence_label": "觀察中",
+        "evidence_note": "backfill 後 val-30% 段 16/16 命中，Wilson-low 74.1%，ROI +60%；全池 53 場 Wilson-low 57.2%，ROI +26.0%。",
+        "market": "HIL",
+        "title": "初盤預測大；中位線 3；所選方向賠率 > 1.80",
+        "definition": "只看初盤入球大細預測；預測為大，以預測一方角度計算的中位線四捨五入前嚺於 3.00，而且所選方向賠率嚺高於 1.80。",
+        "path_label": "初盤預測：大",
+        "historical": {
+            "sample": 53, "full_win": 38, "half_win": 3, "push": 4,
+            "half_loss": 2, "full_loss": 6, "hit_rate": 0.7250, "roi": 0.2604,
+        },
+        "matcher": _rule_s_open_over_line_3,
     },
 )
 
@@ -416,6 +449,7 @@ def build_segmented_conditions(
     for condition in CONDITIONS:
         observations = []
         matcher: RuleMatcher = condition["matcher"]
+        is_public = condition["tier"] in PUBLIC_TIERS
         for slot in slots:
             prediction = matcher(slot)
             if not prediction:
@@ -466,6 +500,10 @@ def build_segmented_conditions(
             observations.append(observation)
             matching_observations.append(observation)
         observations.sort(key=lambda item: str(item.get("kickoff") or ""), reverse=True)
+        if not is_public:
+            # Background-only conditions keep populating matching_observations
+            # so evaluation continues, but never appear in the public list.
+            continue
         output = {key: value for key, value in condition.items() if key != "matcher"}
         output["prospective"] = _prospective_metrics(observations)
         output["observations"] = observations[:100]
