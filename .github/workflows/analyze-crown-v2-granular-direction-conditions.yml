@@ -1,4 +1,4 @@
-name: Analyze Crown V3.1 recalibration (read only)
+name: Analyze Crown V3 strict holdout (read only)
 
 on:
   workflow_dispatch:
@@ -26,7 +26,7 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
 
-      - name: Stream V3.1 recalibration to production (read only)
+      - name: Stream strict V3 backtest to production (read only)
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
@@ -35,10 +35,10 @@ jobs:
             echo "Refusing non-audit ref: ${GITHUB_REF_NAME}" >&2
             exit 1
           }
-          cat analysis/crown_v3_1_recalibrate.py | \
+          cat analysis/crown_v3_backtest.py | \
             ssh -o BatchMode=yes -o ConnectTimeout=20 \
               "$DEPLOY_USER@$DEPLOY_HOST" \
-              'sudo python3 - --input /var/lib/footbreak/crown/prediction_history.json --output /tmp/crown-v3-1-report.json'
+              'sudo python3 - --input /var/lib/footbreak/crown/prediction_history.json --output /tmp/crown-v3-report.json'
 
       - name: Fetch JSON report
         env:
@@ -47,27 +47,27 @@ jobs:
         run: |
           ssh -o BatchMode=yes -o ConnectTimeout=20 \
             "$DEPLOY_USER@$DEPLOY_HOST" \
-            'sudo cat /tmp/crown-v3-1-report.json' > crown-v3-1-report.json
-          python3 -m json.tool crown-v3-1-report.json >/dev/null
+            'sudo cat /tmp/crown-v3-report.json' > crown-v3-report.json
+          python3 -m json.tool crown-v3-report.json >/dev/null
 
-      - name: Upload Crown V3.1 report
+      - name: Upload Crown V3 report
         uses: actions/upload-artifact@v4
         with:
-          name: crown-v3-1-recalibrate-report
-          path: crown-v3-1-report.json
+          name: crown-v3-strict-holdout-report
+          path: crown-v3-report.json
           if-no-files-found: error
           retention-days: 30
 
       - name: Save report on audit branch
         run: |
           install -d analysis/output
-          cp crown-v3-1-report.json analysis/output/crown_v3_1_report.json
+          cp crown-v3-report.json analysis/output/crown_v3_strict_holdout_report.json
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add analysis/output/crown_v3_1_report.json
+          git add analysis/output/crown_v3_strict_holdout_report.json
           if git diff --cached --quiet; then
             echo "Report unchanged"
           else
-            git commit -m "Save Crown V3.1 recalibration report"
+            git commit -m "Save Crown V3 strict holdout report"
             git push origin HEAD:audit/crown-strict-holdout-100
           fi
