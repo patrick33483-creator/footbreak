@@ -66,17 +66,30 @@ def _hkt_delta():
     return timedelta(hours=HKT_OFFSET_HOURS)
 
 
-def has_usable_result(item):
-    hit = item.get("hit")
-    if hit is True or hit is False or hit is None and "hit" in item and item.get("push") is True:
-        # explicit True/False, or explicit push (hit=None, push=True)
-        return True
-    settled = item.get("settled")
-    if settled is True:
-        return True
-    grade = item.get("grade")
-    if grade in {"WIN", "LOSS", "HALF_WIN", "HALF_LOSS", "PUSH", "REFUND", "VOID"}:
-        return True
+def has_usable_result(row):
+    """Match V3.1 script semantics: row.result_status in verified set AND
+    row.result_detail has usable home/away scores."""
+    if row.get("result_status") not in {"已核對", "已核實"}:
+        return False
+    detail = row.get("result_detail")
+    if isinstance(detail, dict):
+        home = detail.get("home_score")
+        away = detail.get("away_score")
+        try:
+            if home is not None and away is not None:
+                float(home); float(away)
+                return True
+        except (TypeError, ValueError):
+            pass
+    score = str(row.get("score") or "")
+    if score:
+        pieces = score.replace("：", "-").replace(":", "-").split("-")
+        if len(pieces) == 2:
+            try:
+                float(pieces[0]); float(pieces[1])
+                return True
+            except (TypeError, ValueError):
+                pass
     return False
 
 
@@ -97,31 +110,29 @@ def canonical_market_rows(rows):
             continue
         if predicted_at >= kickoff:
             continue  # not pre-kickoff
-        # try both settled and unsettled shapes
+        row_settled = has_usable_result(row)
         predictions = row.get("market_predictions") or []
-        grades = row.get("market_grades") or []
         seen = set()
-        for source, is_grade in ((predictions, False), (grades, True)):
-            for item in source or []:
-                if not isinstance(item, dict):
-                    continue
-                market = str(item.get("code") or "").upper()
-                if market not in MARKETS:
-                    continue
-                sig = (market, item.get("side"), item.get("line") or item.get("condition"), item.get("odds"))
-                if sig in seen:
-                    continue
-                seen.add(sig)
-                candidates[(fixture, market, stage)].append({
-                    "row": row,
-                    "item": item,
-                    "kickoff": kickoff,
-                    "predicted_at": predicted_at,
-                    "is_grade": is_grade,
-                })
+        for item in predictions:
+            if not isinstance(item, dict):
+                continue
+            market = str(item.get("code") or "").upper()
+            if market not in MARKETS:
+                continue
+            sig = (market, item.get("side"), item.get("line") or item.get("condition"), item.get("odds"))
+            if sig in seen:
+                continue
+            seen.add(sig)
+            candidates[(fixture, market, stage)].append({
+                "row": row,
+                "item": item,
+                "kickoff": kickoff,
+                "predicted_at": predicted_at,
+                "row_settled": row_settled,
+            })
     newest = {}
     for key, values in candidates.items():
-        best = max(values, key=lambda v: (v["predicted_at"], v["is_grade"]))
+        best = max(values, key=lambda v: v["predicted_at"])
         newest[key] = best
     return newest
 
@@ -155,17 +166,23 @@ def main(argv=None):
     settled_fixtures = set()
     pending_records = []
 
+    fixture_settled = defaultdict(bool)
+    for (fixture, market, stage), entry in canonical.items():
+        # a fixture is "settled" if any of its snapshots has verified result
+        if entry["row_settled"]:
+            fixture_settled[fixture] = True
+
     for (fixture, market, stage), entry in canonical.items():
         row = entry["row"]
         item = entry["item"]
         kickoff = entry["kickoff"]
-        settled = has_usable_result(item)
+        settled = fixture_settled[fixture]
 
         info = fixtures[fixture]
         info["kickoff"] = kickoff if info["kickoff"] is None or kickoff < info["kickoff"] else info["kickoff"]
-        info["home"] = info["home"] or row.get("home_team") or row.get("home") or (row.get("teams") or {}).get("home")
-        info["away"] = info["away"] or row.get("away_team") or row.get("away") or (row.get("teams") or {}).get("away")
-        info["league"] = info["league"] or row.get("league") or row.get("competition") or row.get("tournament")
+        info["home"] = info["home"] or row.get("home") or row.get("home_team") or (row.get("teams") or {}).get("home")
+        info["away"] = info["away"] or row.get("away") or row.get("away_team") or (row.get("teams") or {}).get("away")
+        info["league"] = info["league"] or row.get("league") or row.get("league_name") or row.get("competition")
 
         info["markets"].setdefault(market, {"stages": {}, "any_settled": False})
         info["markets"][market]["stages"][stage] = {
@@ -174,7 +191,6 @@ def main(argv=None):
             "side": item.get("side"),
             "odds": item.get("odds"),
             "settled": settled,
-            "grade": item.get("grade"),
         }
         if settled:
             info["markets"][market]["any_settled"] = True
@@ -191,10 +207,10 @@ def main(argv=None):
         hours_since_kickoff = (now - kickoff).total_seconds() / 3600.0
         if hours_since_kickoff < 3.0:
             continue  # still in play or too early
-        unsettled_markets = [
-            m for m, data in info["markets"].items()
-            if any(not stage_info["settled"] for stage_info in data["stages"].values())
-        ]
+        # fixture-level: 淨計 fixture 冇任何 verified result
+        if fixture in settled_fixtures:
+            continue
+        unsettled_markets = sorted(info["markets"].keys())
         if not unsettled_markets:
             continue
         pending_records.append({
