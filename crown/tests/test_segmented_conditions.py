@@ -103,6 +103,15 @@ class SegmentedConditionTests(unittest.TestCase):
         self.assertEqual(
             conditions["A-HDC-OPEN-AWAY-MINUS-050"]["prospective"]["full_loss"], 1,
         )
+        self.assertEqual(
+            conditions["A-HDC-OPEN-AWAY-MINUS-050"]["historical"]["sample"], 39,
+        )
+        self.assertEqual(
+            conditions["A-HDC-OPEN-AWAY-MINUS-050"]["excluded_odds"], [1.85],
+        )
+        self.assertEqual(
+            conditions["A-HDC-OPEN-AWAY-MINUS-050"]["combined"]["qualified"], 40,
+        )
         self.assertTrue(payload["background_accumulation"]["enabled"])
         self.assertEqual(payload["public_tiers"], ["S", "A"])
 
@@ -111,6 +120,8 @@ class SegmentedConditionTests(unittest.TestCase):
             _row("exact-odds", "T-5", _prediction("HIL", "H", 2.5, 1.85)),
             _row("excluded-line-200", "T-5", _prediction("HIL", "H", 2.0, 1.90)),
             _row("excluded-line-225", "T-5", _prediction("HIL", "H", 2.25, 1.90)),
+            _row("excluded-away-odds-185", "首預", _prediction("HDC", "A", 0.5, 1.85)),
+            _row("included-away-odds-184", "首預", _prediction("HDC", "A", 0.5, 1.84)),
             _row("changed", "首預", _prediction("HDC", "H", -0.25, 1.8)),
             _row("changed", "T-30", _prediction("HDC", "H", -0.5, 1.8)),
             _row("changed", "T-5", _prediction("HDC", "H", -0.25, 1.8)),
@@ -127,6 +138,9 @@ class SegmentedConditionTests(unittest.TestCase):
         )
         self.assertEqual(
             conditions["S-HIL-T5-OVER-185"]["excluded_lines"], [2.0, 2.25],
+        )
+        self.assertEqual(
+            conditions["A-HDC-OPEN-AWAY-MINUS-050"]["prospective"]["qualified"], 1,
         )
         # A-HDC-HHH-SAME-LINE is no longer public (tier B)
         # Line 3.25 or exact 1.80 odds must not match S-HIL-OPEN-OVER-3-180

@@ -132,6 +132,9 @@ def _rule_a_open_away_minus_half(stages: dict[str, dict[str, Any]]) -> dict[str,
     line = _selected_line(prediction)
     if line is None or abs(line - (-0.5)) > 1e-9:
         return None
+    odds = _odds(prediction)
+    if odds is None or abs(odds - 1.85) < 1e-9:
+        return None
     return {"decision_stage": "首預", "prediction": prediction}
 
 
@@ -187,12 +190,19 @@ CONDITIONS: tuple[dict[str, Any], ...] = (
         "id": "A-HDC-OPEN-AWAY-MINUS-050",
         "tier": "A",
         "market": "HDC",
-        "title": "初盤預測客；被預測客隊中位線 -0.5",
-        "definition": "只睇初盤讓球預測；方向為客，而且以被預測客隊角度計算的中位線為 -0.5，無賠率門檻。",
-        "path_label": "初盤預測：客",
-        "historical": {
+        "title": "初盤預測客；被預測客隊中位線 -0.5；剔除賠率 1.85",
+        "definition": "只睇初盤讓球預測；方向為客，而且以被預測客隊角度計算的中位線為 -0.5；精確賠率 1.85 不計入。",
+        "path_label": "初盤預測：客｜中位線=-0.5｜賠率≠1.85",
+        "excluded_odds": [1.85],
+        "historical_original": {
             "sample": 45, "full_win": 31, "half_win": 0, "push": 0,
-            "half_loss": 0, "full_loss": 14, "hit_rate": 0.6889, "roi": 0.2696,
+            "half_loss": 0, "full_loss": 14, "hit_rate": 0.6889,
+            "pnl": 12.13, "roi": 0.2696,
+        },
+        "historical": {
+            "sample": 39, "full_win": 30, "half_win": 0, "push": 0,
+            "half_loss": 0, "full_loss": 9, "hit_rate": 0.769231,
+            "pnl": 16.28, "roi": 0.417436,
         },
         "matcher": _rule_a_open_away_minus_half,
     },
