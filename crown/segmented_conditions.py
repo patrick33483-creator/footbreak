@@ -175,7 +175,7 @@ CONDITIONS: tuple[dict[str, Any], ...] = (
     },
     {
         "id": "A-HDC-HHH-SAME-LINE",
-        "tier": "A",
+        "tier": "B",
         "market": "HDC",
         "title": "初盤預測主 → T-30 主 → T-5 主；三段中位線相同",
         "definition": "三段讓球預測方向全部為主，而且以被預測一方角度計算的三段中位線完全相同，無賠率門檻。",

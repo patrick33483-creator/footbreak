@@ -76,8 +76,11 @@ class SegmentedConditionTests(unittest.TestCase):
             "S-HIL-T5-OVER-185",
             "A-HIL-OPEN-T5-OVER-180",
             "A-HDC-OPEN-AWAY-MINUS-050",
-            "A-HDC-HHH-SAME-LINE",
         })
+        # A-HDC-HHH-SAME-LINE tier lowered from A to B (backfilled sample val-30% ROI -5.7%);
+        # continues to accumulate in background pool but is no longer public.
+        all_ids = {item["condition_id"] for item in payload["matching_observations"]}
+        self.assertIn("A-HDC-HHH-SAME-LINE", all_ids)
         self.assertEqual(
             conditions["S-HIL-T5-OVER-185"]["prospective"]["qualified"], 1,
         )
@@ -89,12 +92,6 @@ class SegmentedConditionTests(unittest.TestCase):
         )
         self.assertEqual(
             conditions["A-HDC-OPEN-AWAY-MINUS-050"]["prospective"]["full_loss"], 1,
-        )
-        self.assertEqual(
-            conditions["A-HDC-HHH-SAME-LINE"]["prospective"]["half_win"], 1,
-        )
-        self.assertEqual(
-            conditions["A-HDC-HHH-SAME-LINE"]["prospective"]["roi"], 0.455,
         )
         self.assertTrue(payload["background_accumulation"]["enabled"])
         self.assertEqual(payload["public_tiers"], ["S", "A"])
@@ -113,9 +110,7 @@ class SegmentedConditionTests(unittest.TestCase):
         self.assertEqual(
             conditions["S-HIL-T5-OVER-185"]["prospective"]["qualified"], 0,
         )
-        self.assertEqual(
-            conditions["A-HDC-HHH-SAME-LINE"]["prospective"]["qualified"], 0,
-        )
+        # A-HDC-HHH-SAME-LINE is no longer public (tier B)
 
 
 if __name__ == "__main__":
