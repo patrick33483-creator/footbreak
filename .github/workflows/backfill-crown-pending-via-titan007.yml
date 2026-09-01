@@ -1,0 +1,105 @@
+name: Backfill Crown pending via titan007
+
+# Nightly audit run at 03:00 HKT (19:00 UTC prev day) discovers pending Crown
+# fixtures within the last 7 days and probes titan007 for verified scores.
+# Audit mode is safe — reads production ledger, writes only a JSON artifact.
+# Apply mode is intentionally NOT wired until a follow-up PR adds settlement
+# integration; see analysis/backfill_titan007_scores.py.
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: audit is read-only; apply is currently blocked pending settlement wiring
+        required: true
+        default: audit
+        type: choice
+        options: [audit, apply]
+      lookback_days:
+        description: how many past days of pending to scan
+        required: false
+        default: "7"
+  schedule:
+    # 03:00 HKT nightly = 19:00 UTC previous day
+    - cron: "0 19 * * *"
+
+concurrency:
+  group: crown-titan007-backfill
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: Probe titan007 for pending Crown scores
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          MODE: ${{ inputs.mode || 'audit' }}
+          LOOKBACK_DAYS: ${{ inputs.lookback_days || '7' }}
+        run: |
+          set -euo pipefail
+          target="$DEPLOY_USER@$DEPLOY_HOST"
+          remote_work="$(
+            ssh -o BatchMode=yes -o ConnectTimeout=20 "$target" \
+              'umask 077; mktemp -d /tmp/crown-titan007-backfill.XXXXXX'
+          )"
+          cleanup_remote() {
+            ssh -o BatchMode=yes -o ConnectTimeout=20 "$target" \
+              "rm -rf -- $(printf '%q' "$remote_work")" >/dev/null 2>&1 || true
+          }
+          trap cleanup_remote EXIT
+
+          scp -q -o BatchMode=yes -o ConnectTimeout=20 \
+            analysis/backfill_titan007_scores.py \
+            "$target:$remote_work/"
+
+          script_sha="$(
+            sha256sum analysis/backfill_titan007_scores.py |
+              awk '{print $1}'
+          )"
+
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=8 \
+            "$target" \
+            "env MODE='$MODE' LOOKBACK_DAYS='$LOOKBACK_DAYS' \
+              REMOTE_WORK='$remote_work' SCRIPT_SHA='$script_sha' bash -s" \
+            <<'REMOTE' | tee crown-titan007-backfill.json
+          set -euo pipefail
+          cd "$REMOTE_WORK"
+          actual="$(sha256sum backfill_titan007_scores.py | awk '{print $1}')"
+          if [ "$actual" != "$SCRIPT_SHA" ]; then
+            echo "ERROR: script sha mismatch (expected $SCRIPT_SHA, got $actual)" >&2
+            exit 1
+          fi
+          python3 backfill_titan007_scores.py \
+            --history /opt/footbreak/prediction_history.json \
+            --mode "$MODE" \
+            --lookback-days "$LOOKBACK_DAYS" \
+            --out "$REMOTE_WORK/report.json"
+          cat "$REMOTE_WORK/report.json"
+          REMOTE
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: crown-titan007-backfill-${{ github.run_id }}
+          path: crown-titan007-backfill.json
+          retention-days: 30
