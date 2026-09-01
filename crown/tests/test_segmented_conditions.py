@@ -92,6 +92,15 @@ class SegmentedConditionTests(unittest.TestCase):
             conditions["S-HIL-T5-OVER-185"]["prospective"]["roi"], 0.9,
         )
         self.assertEqual(
+            conditions["S-HIL-T5-OVER-185"]["historical"]["sample"], 77,
+        )
+        self.assertEqual(
+            conditions["S-HIL-T5-OVER-185"]["combined"]["qualified"], 78,
+        )
+        self.assertAlmostEqual(
+            conditions["S-HIL-T5-OVER-185"]["combined"]["roi"], 0.306538,
+        )
+        self.assertEqual(
             conditions["A-HDC-OPEN-AWAY-MINUS-050"]["prospective"]["full_loss"], 1,
         )
         self.assertTrue(payload["background_accumulation"]["enabled"])
@@ -100,6 +109,8 @@ class SegmentedConditionTests(unittest.TestCase):
     def test_thresholds_are_strict_and_line_change_does_not_match(self) -> None:
         rows = [
             _row("exact-odds", "T-5", _prediction("HIL", "H", 2.5, 1.85)),
+            _row("excluded-line-200", "T-5", _prediction("HIL", "H", 2.0, 1.90)),
+            _row("excluded-line-225", "T-5", _prediction("HIL", "H", 2.25, 1.90)),
             _row("changed", "首預", _prediction("HDC", "H", -0.25, 1.8)),
             _row("changed", "T-30", _prediction("HDC", "H", -0.5, 1.8)),
             _row("changed", "T-5", _prediction("HDC", "H", -0.25, 1.8)),
@@ -113,6 +124,9 @@ class SegmentedConditionTests(unittest.TestCase):
 
         self.assertEqual(
             conditions["S-HIL-T5-OVER-185"]["prospective"]["qualified"], 0,
+        )
+        self.assertEqual(
+            conditions["S-HIL-T5-OVER-185"]["excluded_lines"], [2.0, 2.25],
         )
         # A-HDC-HHH-SAME-LINE is no longer public (tier B)
         # Line 3.25 or exact 1.80 odds must not match S-HIL-OPEN-OVER-3-180
