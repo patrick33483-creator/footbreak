@@ -1,0 +1,114 @@
+name: Crown all overdue pending result apply
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "Required: APPLY_CROWN_ALL_OVERDUE_PENDING_RESULTS"
+        required: true
+        type: string
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: Apply 18 completed overdue results and rebuild dashboard
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          EXPECTED_COMMIT: ${{ github.sha }}
+          CONFIRMATION: ${{ inputs.confirmation }}
+        run: |
+          set -euo pipefail
+          test "$CONFIRMATION" = APPLY_CROWN_ALL_OVERDUE_PENDING_RESULTS
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            -o ServerAliveInterval=20 -o ServerAliveCountMax=90 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "sudo env EXPECTED_COMMIT='$EXPECTED_COMMIT' bash -s" <<'REMOTE'
+          set -euo pipefail
+          cd /opt/footbreak
+          test "$(git rev-parse HEAD)" = "$EXPECTED_COMMIT"
+          python=/opt/footbreak/.venv/bin/python3
+          [ -x "$python" ] || python=python3
+          if [ -f /etc/footbreak.env ]; then set -a; . /etc/footbreak.env; set +a; fi
+          if [ -f /etc/footbreak-crown.env ]; then set -a; . /etc/footbreak-crown.env; set +a; fi
+          state="${CROWN_STATE_DIR:-/var/lib/footbreak/crown}"
+          history="$state/prediction_history.json"
+          manifest=/opt/footbreak/analysis/manifests/apply_verified_all_conditions_overdue/verified_completed_18.json
+          test -s "$history" && test -s "$manifest"
+          backup_dir="$state/backups/apply-all-overdue-pending-results"
+          install -d -m 0700 "$backup_dir"
+
+          exec 8>"$state/.state.lock"
+          flock -w 180 8
+          active_timers=""
+          restart_timers() {
+            for timer in $active_timers; do systemctl start "$timer" || true; done
+          }
+          trap restart_timers EXIT
+          for timer in crown-round-update.timer crown-first-look-reconcile.timer \
+            crown-early-admission-reconcile.timer crown-sweep.timer \
+            crown-tick.timer crown-settle.timer crown-reverse-t5-drain.timer; do
+            if systemctl is-active --quiet "$timer"; then
+              active_timers="$active_timers $timer"
+            fi
+            systemctl stop "$timer" || true
+          done
+          systemctl stop crown-round-update.service crown-first-look-reconcile.service \
+            crown-early-admission-reconcile.service crown-sweep.service \
+            crown-tick.service crown-settle.service crown-reverse-t5-drain.service || true
+
+          PYTHONPATH=/opt/footbreak "$python" \
+            analysis/apply_verified_result_backfill.py \
+            --history "$history" \
+            --verified-results "$manifest" \
+            --batch-id gemini-all-conditions-overdue-2026-09-01-v1 \
+            --verified-at 2026-09-01T18:42:00+08:00 \
+            --backup-dir "$backup_dir" \
+            --report-out "$backup_dir/apply_18_report.json" \
+            --allow-empty
+
+          CROWN_HISTORY="$history" CROWN_MANIFEST="$manifest" \
+            PYTHONPATH=/opt/footbreak "$python" - <<'PY'
+          import json, os
+          from pathlib import Path
+          from crown.segmented_conditions import build_segmented_conditions
+          history = json.loads(Path(os.environ["CROWN_HISTORY"]).read_text(encoding="utf-8"))
+          manifest = json.loads(Path(os.environ["CROWN_MANIFEST"]).read_text(encoding="utf-8"))
+          completed_ids = set(manifest["backfill_mapping"])
+          public = build_segmented_conditions(history["rows"])["public_conditions"]
+          observations = [o for c in public for o in c["observations"]]
+          bad = sorted({
+              str(o["match_id"]) for o in observations
+              if str(o["match_id"]) in completed_ids
+              and (o.get("settlement_label") == "待賽果" or not o.get("score"))
+          })
+          assert not bad, f"verified completed fixtures still pending: {bad}"
+          pending = {
+              str(o["match_id"]) for o in observations
+              if o.get("settlement_label") == "待賽果" or not o.get("score")
+          }
+          print("verified_completed_still_pending", 0)
+          print("remaining_unique_pending", len(pending))
+          PY
+
+          PYTHONPATH=/opt/footbreak "$python" -m crown.dashboard_data
+          flock -u 8
+          REMOTE
