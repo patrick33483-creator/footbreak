@@ -1,0 +1,100 @@
+name: Export Crown prediction_history (read only)
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: export-crown-prediction-history
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repo (for keyscan only)
+        uses: actions/checkout@v4
+
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: Compute sha256 before copy (integrity anchor)
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            'sudo sha256sum /var/lib/footbreak/crown/prediction_history.json /var/lib/footbreak/crown/ledger.json 2>/dev/null || true' \
+            > sha256_before.txt
+          cat sha256_before.txt
+
+      - name: Copy prediction_history + ledger (read only)
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            'sudo cat /var/lib/footbreak/crown/prediction_history.json' \
+            > prediction_history.json
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            'sudo cat /var/lib/footbreak/crown/ledger.json 2>/dev/null || echo "{}"' \
+            > ledger.json
+
+      - name: Compute sha256 after copy (verify no change)
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            'sudo sha256sum /var/lib/footbreak/crown/prediction_history.json /var/lib/footbreak/crown/ledger.json 2>/dev/null || true' \
+            > sha256_after.txt
+          diff -u sha256_before.txt sha256_after.txt
+
+      - name: Print summary
+        run: |
+          set -euo pipefail
+          ls -la prediction_history.json ledger.json
+          echo "---"
+          python3 -c "
+          import json
+          with open('prediction_history.json') as f:
+              h = json.load(f)
+          print(f'prediction_history: type={type(h).__name__}')
+          if isinstance(h, dict):
+              print(f'  top keys: {list(h.keys())[:10]}')
+              for k, v in h.items():
+                  if isinstance(v, list): print(f'  {k}: list len={len(v)}')
+                  elif isinstance(v, dict): print(f'  {k}: dict keys={len(v)}')
+          elif isinstance(h, list):
+              print(f'  list len={len(h)}')
+          "
+          sha256sum prediction_history.json ledger.json
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: crown-prediction-history-export-${{ github.run_id }}
+          path: |
+            prediction_history.json
+            ledger.json
+            sha256_before.txt
+            sha256_after.txt
+          if-no-files-found: error
+          retention-days: 7
