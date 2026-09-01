@@ -1,4 +1,4 @@
-name: Audit Crown pending results (read only)
+name: Analyze Crown V3 strict holdout (read only)
 
 on:
   workflow_dispatch:
@@ -7,7 +7,7 @@ permissions:
   contents: write
 
 jobs:
-  audit:
+  analyze:
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout dispatched audit branch
@@ -26,7 +26,7 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
 
-      - name: Stream pending audit to production (read only)
+      - name: Stream strict V3 backtest to production (read only)
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
@@ -35,45 +35,39 @@ jobs:
             echo "Refusing non-audit ref: ${GITHUB_REF_NAME}" >&2
             exit 1
           }
-          cat analysis/crown_pending_results_audit.py | \
+          cat analysis/crown_v3_backtest.py | \
             ssh -o BatchMode=yes -o ConnectTimeout=20 \
               "$DEPLOY_USER@$DEPLOY_HOST" \
-              'sudo python3 - --input /var/lib/footbreak/crown/prediction_history.json --report /tmp/crown-pending-results.json --csv /tmp/crown-pending-results.csv'
+              'sudo python3 - --input /var/lib/footbreak/crown/prediction_history.json --output /tmp/crown-v3-report.json'
 
-      - name: Fetch report and CSV
+      - name: Fetch JSON report
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
         run: |
           ssh -o BatchMode=yes -o ConnectTimeout=20 \
             "$DEPLOY_USER@$DEPLOY_HOST" \
-            'sudo cat /tmp/crown-pending-results.json' > crown-pending-results.json
-          ssh -o BatchMode=yes -o ConnectTimeout=20 \
-            "$DEPLOY_USER@$DEPLOY_HOST" \
-            'sudo cat /tmp/crown-pending-results.csv' > crown-pending-results.csv
-          python3 -m json.tool crown-pending-results.json >/dev/null
+            'sudo cat /tmp/crown-v3-report.json' > crown-v3-report.json
+          python3 -m json.tool crown-v3-report.json >/dev/null
 
-      - name: Upload pending-audit artifact
+      - name: Upload Crown V3 report
         uses: actions/upload-artifact@v4
         with:
-          name: crown-pending-results-audit
-          path: |
-            crown-pending-results.json
-            crown-pending-results.csv
+          name: crown-v3-strict-holdout-report
+          path: crown-v3-report.json
           if-no-files-found: error
           retention-days: 30
 
-      - name: Save reports on audit branch
+      - name: Save report on audit branch
         run: |
           install -d analysis/output
-          cp crown-pending-results.json analysis/output/crown_pending_results.json
-          cp crown-pending-results.csv analysis/output/crown_pending_results.csv
+          cp crown-v3-report.json analysis/output/crown_v3_strict_holdout_report.json
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add analysis/output/crown_pending_results.json analysis/output/crown_pending_results.csv
+          git add analysis/output/crown_v3_strict_holdout_report.json
           if git diff --cached --quiet; then
-            echo "Reports unchanged"
+            echo "Report unchanged"
           else
-            git commit -m "Save Crown pending-results audit"
+            git commit -m "Save Crown V3 strict holdout report"
             git push origin HEAD:audit/crown-strict-holdout-100
           fi
