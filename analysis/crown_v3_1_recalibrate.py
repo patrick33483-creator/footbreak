@@ -3,9 +3,15 @@
 
 Read-only research script.  It streams to production, reads the persisted Crown
 prediction history, rebuilds fixture-stage canonical snapshots exactly like the
-V3 audit (analysis/crown_v3_backtest.py), engineers features, retrains a
-scikit-learn GradientBoostingClassifier on the discovery split, learns Isotonic
-and Platt calibrators on the selection split, and scores an untouched holdout.
+V3 audit (analysis/crown_v3_backtest.py), engineers primary-side oriented
+features, retrains a scikit-learn GradientBoostingClassifier on the discovery
+split, learns Isotonic and Platt calibrators on the selection split, and scores
+an untouched holdout.
+
+The target is a FIXED primary side per market (HDC home, HIL over), so the model
+chooses direction on its own: it predicts p(primary side wins), backs the primary
+side when p >= 0.5 and the opposite side otherwise.  The persisted V2 maximum-EV
+lead is only a comparison baseline, never the label.
 
 Nothing is written anywhere except the JSON report path given on the command
 line.  The upstream V2 runtime (crown/opening_model.py) is never imported,
@@ -39,6 +45,8 @@ BUCKET_EDGES = (
     ("ge_0.65", 0.65, math.inf),
 )
 DECISION_THRESHOLD = 0.55
+PRIMARY_DIRECTION = {"HDC": "home", "HIL": "over"}
+OPPOSITE_DIRECTION = {"HDC": "away", "HIL": "under"}
 SEED = 42
 RECENT_WINDOW = 10
 HKT = timezone(timedelta(hours=8))
@@ -355,6 +363,21 @@ def fit_platt(raw: Sequence[float], labels: Sequence[float]):
     return PurePlatt().fit([row[0] for row in features], labels)
 
 
+def platt_slope(model: Any) -> float | None:
+    """Slope of the fitted Platt mapping in raw-logit space (must be positive)."""
+    if SKLEARN_VERSION:
+        try:
+            coefficient = float(model.coef_[0][0])
+        except Exception:
+            return None
+        classes = list(getattr(model, "classes_", []))
+        # scikit-learn models the last class; flip when that is the negative label.
+        if classes and classes[-1] in (0, 0.0):
+            coefficient = -coefficient
+        return coefficient
+    return float(model.a)
+
+
 def apply_platt(model: Any, raw: Sequence[float]) -> list[float]:
     if not raw:
         return []
@@ -617,47 +640,56 @@ def unit_return(grade: str, odds: float) -> float:
 
 
 # --------------------------------------------------------------------------- #
-# Feature engineering
+# Feature engineering: fixed primary side, side-oriented features
 # --------------------------------------------------------------------------- #
 BASE_FEATURES = (
-    "v2_probability",
-    "market_implied_probability",
-    "v2_minus_market_probability",
-    "pick_odds",
-    "opposite_side_odds",
-    "pick_is_big_odds_side",
-    "line_pick_perspective",
-    "pick_is_primary_side",
-    "line_move_open_to_t30",
-    "line_move_t30_to_t5",
-    "odds_move_open_to_t30",
-    "odds_move_t30_to_t5",
+    "primary_probability",
+    "opposite_probability",
+    "probability_gap_primary_minus_opposite",
+    "primary_odds",
+    "opposite_odds",
+    "odds_gap_primary_minus_opposite",
+    "implied_primary_probability_devig",
+    "primary_probability_minus_implied",
+    "primary_probability_is_derived",
+    "primary_line",
+    "opposite_line",
+    "primary_line_move_open_to_t30",
+    "primary_line_move_t30_to_t5",
+    "primary_odds_move_open_to_t30",
+    "primary_odds_move_t30_to_t5",
+    "opposite_odds_move_t30_to_t5",
     "hkjc_line_gap",
     "hkjc_odds_gap",
     "league_target_encoding",
     "kickoff_is_weekend",
     "kickoff_hour_bucket_hkt",
-    "team_market_recent_hit_rate",
+    "primary_side_recent_hit_rate",
     "home_recent_win_rate",
     "away_recent_win_rate",
     "recent_strength_diff",
-    "pick_recent_strength_edge",
 )
 NULLABLE_FEATURES = (
-    "market_implied_probability",
-    "opposite_side_odds",
-    "pick_is_big_odds_side",
-    "line_move_open_to_t30",
-    "line_move_t30_to_t5",
-    "odds_move_open_to_t30",
-    "odds_move_t30_to_t5",
+    "primary_probability",
+    "opposite_probability",
+    "probability_gap_primary_minus_opposite",
+    "primary_odds",
+    "opposite_odds",
+    "odds_gap_primary_minus_opposite",
+    "implied_primary_probability_devig",
+    "primary_probability_minus_implied",
+    "opposite_line",
+    "primary_line_move_open_to_t30",
+    "primary_line_move_t30_to_t5",
+    "primary_odds_move_open_to_t30",
+    "primary_odds_move_t30_to_t5",
+    "opposite_odds_move_t30_to_t5",
     "hkjc_line_gap",
     "hkjc_odds_gap",
-    "team_market_recent_hit_rate",
+    "primary_side_recent_hit_rate",
     "home_recent_win_rate",
     "away_recent_win_rate",
     "recent_strength_diff",
-    "pick_recent_strength_edge",
 )
 FEATURE_NAMES = tuple(list(BASE_FEATURES) + [f"{name}__missing" for name in NULLABLE_FEATURES])
 
@@ -678,16 +710,8 @@ def _hkjc_value(row: dict[str, Any], keys: Sequence[str]) -> float | None:
     return None
 
 
-def _opposite(stage: dict[str, Any] | None, market: str, direction: str) -> dict[str, Any] | None:
-    if stage is None:
-        return None
-    others = [item for item in stage["candidates"].get(market, []) if item["direction"] != direction]
-    if not others:
-        return None
-    return max(others, key=lambda x: (x["ev"], -x["source_index"]))
-
-
-def _same_direction(stage: dict[str, Any] | None, market: str, direction: str) -> dict[str, Any] | None:
+def side_candidate(stage: dict[str, Any] | None, market: str, direction: str) -> dict[str, Any] | None:
+    """Deterministic best candidate for one explicit market direction."""
     if stage is None:
         return None
     matches = [item for item in stage["candidates"].get(market, []) if item["direction"] == direction]
@@ -715,100 +739,148 @@ def _match_outcome_points(result: dict[str, float]) -> tuple[float, float]:
 
 
 def _mean(values: Iterable[float]) -> float | None:
-    values = list(values)
+    values = [value for value in values if value is not None]
     return sum(values) / len(values) if values else None
 
 
 def build_records(fixtures: Sequence[dict[str, Any]], market: str) -> list[dict[str, Any]]:
-    """One record per fixture for the given market, chronologically ordered.
+    """One record per fixture with a FIXED primary side as the target.
 
-    Rolling team/market history uses strictly earlier kickoffs only, so no
-    future information can reach a record.
+    The target is the primary side of the market itself (HDC home, HIL over), never
+    the V2 maximum-EV lead, so the retrained model chooses direction independently.
+    Rolling team history uses strictly earlier kickoffs only.
     """
+    primary = PRIMARY_DIRECTION[market]
+    opposite = OPPOSITE_DIRECTION[market]
     team_form: dict[str, deque[float]] = defaultdict(lambda: deque(maxlen=RECENT_WINDOW))
-    team_market: dict[str, deque[float]] = defaultdict(lambda: deque(maxlen=RECENT_WINDOW))
+    team_primary: dict[str, deque[float]] = defaultdict(lambda: deque(maxlen=RECENT_WINDOW))
     records: list[dict[str, Any]] = []
     for fixture in sorted(fixtures, key=lambda x: (x["kickoff"], x["fixture_id"])):
         stages = fixture["stages"]
         t5 = stages.get("T-5")
-        pick = t5["leads"].get(market) if t5 else None
+        primary_pick = side_candidate(t5, market, primary)
+        opposite_pick = side_candidate(t5, market, opposite)
         home = str(fixture.get("home") or "?")
         away = str(fixture.get("away") or "?")
         home_rate = _mean(team_form[home]) if team_form[home] else None
         away_rate = _mean(team_form[away]) if team_form[away] else None
-        history_terms = list(team_market[home]) + list(team_market[away])
-        market_rate = _mean(history_terms) if history_terms else None
-        if pick is not None:
-            grade = settle(pick, fixture["result"])
-            row = t5["row"]
-            opposite = _opposite(t5, market, pick["direction"])
-            open_stage = _same_direction(stages.get("首預"), market, pick["direction"])
-            t30_stage = _same_direction(stages.get("T-30"), market, pick["direction"])
+        history_terms = list(team_primary[home]) + list(team_primary[away])
+        primary_history = _mean(history_terms) if history_terms else None
+        label: float | None = None
+        primary_grade: str | None = None
+        if primary_pick is not None or opposite_pick is not None:
+            # The persisted line is home/over perspective for both sides, so the
+            # primary-side label is derivable from whichever side is present.
+            line_source = primary_pick if primary_pick is not None else opposite_pick
+            line = float(line_source["line"])
+            primary_grade = settle({"market": market, "direction": primary, "line": line}, fixture["result"])
+            opposite_line = float(opposite_pick["line"]) if opposite_pick is not None else line
+            opposite_grade = settle({"market": market, "direction": opposite, "line": opposite_line}, fixture["result"])
+            label = LABELS.get(primary_grade)
+            primary_probability = primary_pick["probability"] if primary_pick is not None else None
+            opposite_probability = opposite_pick["probability"] if opposite_pick is not None else None
+            derived = 0.0
+            if primary_probability is None and opposite_probability is not None and 0 < opposite_probability < 1:
+                # Two-way Asian market: the complementary side is a safe derivation.
+                primary_probability = 1.0 - opposite_probability
+                derived = 1.0
+            primary_odds = primary_pick["odds"] if primary_pick is not None else None
+            opposite_odds = opposite_pick["odds"] if opposite_pick is not None else None
             implied = None
-            if opposite is not None:
-                raw_pick = 1.0 / pick["odds"]
-                raw_other = 1.0 / opposite["odds"]
-                total = raw_pick + raw_other
-                implied = raw_pick / total if total > 0 else None
+            if primary_odds and opposite_odds:
+                raw_primary = 1.0 / primary_odds
+                raw_opposite = 1.0 / opposite_odds
+                total = raw_primary + raw_opposite
+                implied = raw_primary / total if total > 0 else None
+            open_primary = side_candidate(stages.get("首預"), market, primary)
+            t30_primary = side_candidate(stages.get("T-30"), market, primary)
+            t30_opposite = side_candidate(stages.get("T-30"), market, opposite)
             kickoff_hkt = fixture["kickoff"].astimezone(HKT)
+            row = t5["row"]
             hkjc_line = _hkjc_value(row, ("hkjc_line", "hkjc_condition", "hkjc_signal_line"))
             hkjc_odds = _hkjc_value(row, ("hkjc_odds", "hkjc_signal_odds", "hkjc_execution_odds"))
             strength_diff = None if home_rate is None or away_rate is None else home_rate - away_rate
-            if strength_diff is None:
-                pick_edge = None
-            elif market == "HDC":
-                pick_edge = strength_diff if pick["direction"] == "home" else -strength_diff
-            else:
-                pick_edge = abs(strength_diff)
             values = {
-                "v2_probability": pick["probability"],
-                "market_implied_probability": implied,
-                "v2_minus_market_probability": None if implied is None else pick["probability"] - implied,
-                "pick_odds": pick["odds"],
-                "opposite_side_odds": None if opposite is None else opposite["odds"],
-                "pick_is_big_odds_side": None if opposite is None else (1.0 if pick["odds"] > opposite["odds"] else 0.0),
-                "line_pick_perspective": pick["line"] if (market == "HIL" or pick["direction"] == "home") else -pick["line"],
-                "pick_is_primary_side": 1.0 if pick["direction"] in {"home", "over"} else 0.0,
-                "line_move_open_to_t30": None if (open_stage is None or t30_stage is None) else t30_stage["line"] - open_stage["line"],
-                "line_move_t30_to_t5": None if t30_stage is None else pick["line"] - t30_stage["line"],
-                "odds_move_open_to_t30": None if (open_stage is None or t30_stage is None) else t30_stage["odds"] - open_stage["odds"],
-                "odds_move_t30_to_t5": None if t30_stage is None else pick["odds"] - t30_stage["odds"],
-                "hkjc_line_gap": None if hkjc_line is None else pick["line"] - hkjc_line,
-                "hkjc_odds_gap": None if hkjc_odds is None else pick["odds"] - hkjc_odds,
-                "league_target_encoding": None,  # filled in after discovery statistics
+                "primary_probability": primary_probability,
+                "opposite_probability": opposite_probability,
+                "probability_gap_primary_minus_opposite": (
+                    None if primary_probability is None or opposite_probability is None
+                    else primary_probability - opposite_probability),
+                "primary_odds": primary_odds,
+                "opposite_odds": opposite_odds,
+                "odds_gap_primary_minus_opposite": (
+                    None if primary_odds is None or opposite_odds is None else primary_odds - opposite_odds),
+                "implied_primary_probability_devig": implied,
+                "primary_probability_minus_implied": (
+                    None if implied is None or primary_probability is None else primary_probability - implied),
+                "primary_probability_is_derived": derived,
+                "primary_line": line,
+                "opposite_line": None if opposite_pick is None else opposite_line,
+                "primary_line_move_open_to_t30": (
+                    None if open_primary is None or t30_primary is None else t30_primary["line"] - open_primary["line"]),
+                "primary_line_move_t30_to_t5": (
+                    None if t30_primary is None else line - t30_primary["line"]),
+                "primary_odds_move_open_to_t30": (
+                    None if open_primary is None or t30_primary is None else t30_primary["odds"] - open_primary["odds"]),
+                "primary_odds_move_t30_to_t5": (
+                    None if t30_primary is None or primary_odds is None else primary_odds - t30_primary["odds"]),
+                "opposite_odds_move_t30_to_t5": (
+                    None if t30_opposite is None or opposite_odds is None else opposite_odds - t30_opposite["odds"]),
+                "hkjc_line_gap": None if hkjc_line is None else line - hkjc_line,
+                "hkjc_odds_gap": None if hkjc_odds is None or primary_odds is None else primary_odds - hkjc_odds,
+                "league_target_encoding": None,  # filled from discovery statistics later
                 "kickoff_is_weekend": 1.0 if kickoff_hkt.weekday() >= 5 else 0.0,
                 "kickoff_hour_bucket_hkt": _hour_bucket(kickoff_hkt.hour),
-                "team_market_recent_hit_rate": market_rate,
+                "primary_side_recent_hit_rate": primary_history,
                 "home_recent_win_rate": home_rate,
                 "away_recent_win_rate": away_rate,
                 "recent_strength_diff": strength_diff,
-                "pick_recent_strength_edge": pick_edge,
             }
+            v2_lead = t5["leads"].get(market)
+            v2_lead_grade = None
+            if v2_lead is not None:
+                v2_lead_grade = settle(v2_lead, fixture["result"])
             records.append({
                 "fixture_id": fixture["fixture_id"],
                 "kickoff": fixture["kickoff"],
                 "market": market,
                 "league": str(fixture.get("league") or "unknown"),
-                "pick": pick,
-                "grade": grade,
-                "label": LABELS.get(grade),
-                "is_push": grade == "push",
-                "return": unit_return(grade, pick["odds"]),
-                "v2_probability": pick["probability"],
+                "primary_direction": primary,
+                "opposite_direction": opposite,
+                "primary_line": line,
+                "opposite_line": opposite_line,
+                "primary_grade": primary_grade,
+                "opposite_grade": opposite_grade,
+                "label": label,
+                "is_push": primary_grade == "push",
+                "primary_odds": primary_odds,
+                "opposite_odds": opposite_odds,
+                "primary_return": None if primary_odds is None else unit_return(primary_grade, primary_odds),
+                "opposite_return": None if opposite_odds is None else unit_return(opposite_grade, opposite_odds),
+                "sides_available": [
+                    name for name, value in (("primary", primary_pick), ("opposite", opposite_pick)) if value is not None
+                ],
+                "v2_primary_side_probability": primary_probability,
+                "v2_primary_probability_is_derived": bool(derived),
+                "v2_lead_direction": None if v2_lead is None else v2_lead["direction"],
+                "v2_lead_probability": None if v2_lead is None else v2_lead["probability"],
+                "v2_lead_odds": None if v2_lead is None else v2_lead["odds"],
+                "v2_lead_grade": v2_lead_grade,
+                "v2_lead_return": None if v2_lead is None else unit_return(v2_lead_grade, v2_lead["odds"]),
                 "raw_values": values,
             })
-        # Update rolling history only after the fixture has been emitted.
+        # Rolling history is updated only after the fixture has been emitted.
         home_points, away_points = _match_outcome_points(fixture["result"])
         team_form[home].append(home_points)
         team_form[away].append(away_points)
-        if pick is not None and LABELS.get(grade) is not None:
-            team_market[home].append(LABELS[grade])
-            team_market[away].append(LABELS[grade])
+        if label is not None:
+            team_primary[home].append(label)
+            team_primary[away].append(label)
     return records
 
 
 def league_encoding(discovery: Sequence[dict[str, Any]], smoothing: float = 20.0) -> tuple[dict[str, float], float]:
-    trained = [row for row in discovery if not row["is_push"]]
+    trained = [row for row in discovery if not row["is_push"] and row["label"] is not None]
     prior = _mean(row["label"] for row in trained) or 0.5
     groups: dict[str, list[float]] = defaultdict(list)
     for row in trained:
@@ -848,7 +920,7 @@ def feature_medians(records: Sequence[dict[str, Any]], encoding: dict[str, float
 
 
 # --------------------------------------------------------------------------- #
-# Metrics
+# Decision layer and metrics
 # --------------------------------------------------------------------------- #
 def wilson(hits: int, n: int, z: float = 1.959963984540054) -> list[float | None]:
     if not n:
@@ -858,6 +930,47 @@ def wilson(hits: int, n: int, z: float = 1.959963984540054) -> list[float | None
     center = (p + z * z / (2 * n)) / denominator
     margin = z * math.sqrt((p * (1 - p) + z * z / (4 * n)) / n) / denominator
     return [center - margin, center + margin]
+
+
+def decide(record: dict[str, Any], primary_probability: float) -> dict[str, Any]:
+    """Independent direction choice: primary when p >= 0.5, otherwise opposite."""
+    if primary_probability + EPS >= 0.5:
+        direction = record["primary_direction"]
+        confidence = primary_probability
+        grade = record["primary_grade"]
+        odds = record["primary_odds"]
+        payoff = record["primary_return"]
+    else:
+        direction = record["opposite_direction"]
+        confidence = 1.0 - primary_probability
+        grade = record["opposite_grade"]
+        odds = record["opposite_odds"]
+        payoff = record["opposite_return"]
+    return {
+        "direction": direction,
+        "confidence": confidence,
+        "grade": grade,
+        "odds": odds,
+        "return": payoff,
+        "label": LABELS.get(grade),
+        "is_push": grade == "push",
+        "flips_v2_lead": (record["v2_lead_direction"] is not None and direction != record["v2_lead_direction"]),
+    }
+
+
+def v2_lead_decision(record: dict[str, Any]) -> dict[str, Any]:
+    """The persisted production decision: the V2 maximum-EV lead direction."""
+    grade = record["v2_lead_grade"]
+    return {
+        "direction": record["v2_lead_direction"],
+        "confidence": record["v2_lead_probability"],
+        "grade": grade,
+        "odds": record["v2_lead_odds"],
+        "return": record["v2_lead_return"],
+        "label": LABELS.get(grade) if grade else None,
+        "is_push": grade == "push",
+        "flips_v2_lead": False,
+    }
 
 
 def _buckets(rows: Sequence[tuple[float, float]]) -> dict[str, Any]:
@@ -873,26 +986,37 @@ def _buckets(rows: Sequence[tuple[float, float]]) -> dict[str, Any]:
     return output
 
 
-def metric_block(records: Sequence[dict[str, Any]], probabilities: Sequence[float]) -> dict[str, Any]:
-    paired = list(zip(records, [min(max(float(p), CLAMP), 1.0 - CLAMP) for p in probabilities]))
-    decided = [(record, p) for record, p in paired if not record["is_push"]]
+def metric_block(records: Sequence[dict[str, Any]], probabilities: Sequence[float],
+                 decision_rule: Any = None) -> dict[str, Any]:
+    """Calibration metrics on the primary-side label plus independent decision metrics."""
+    rule = decision_rule or decide
+    paired = [(record, min(max(float(p), CLAMP), 1.0 - CLAMP)) for record, p in zip(records, probabilities)]
+    decided = [(record, p) for record, p in paired if not record["is_push"] and record["label"] is not None]
     rows = [(p, record["label"]) for record, p in decided]
     mean_probability = _mean(p for p, _ in rows)
     hit_rate = _mean(y for _, y in rows)
     brier = _mean((p - y) ** 2 for p, y in rows)
     log_loss = _mean(-(y * math.log(p) + (1 - y) * math.log(1 - p)) for p, y in rows)
-    integer_hits = sum(1 for record, _ in decided if record["grade"] in HITS)
-    bets = [(record, p) for record, p in paired if p + EPS >= DECISION_THRESHOLD]
-    bet_decided = [(record, p) for record, p in bets if not record["is_push"]]
-    bet_hits = sum(1 for record, _ in bet_decided if record["grade"] in HITS)
-    returns = [record["return"] for record, _ in bets]
+    primary_hits = sum(1 for record, _ in decided if record["primary_grade"] in HITS)
+
+    decisions = [(record, rule(record, p)) for record, p in paired]
+    priced = [(record, choice) for record, choice in decisions if choice["return"] is not None]
+    settled = [(record, choice) for record, choice in decisions if not choice["is_push"] and choice["label"] is not None]
+    direction_counts = Counter(choice["direction"] for _, choice in decisions if choice["direction"])
+    flips = [choice["flips_v2_lead"] for record, choice in decisions if record["v2_lead_direction"]]
+    bets = [(record, choice) for record, choice in priced if choice["confidence"] is not None
+            and choice["confidence"] + EPS >= DECISION_THRESHOLD]
+    bet_settled = [(record, choice) for record, choice in bets if not choice["is_push"] and choice["label"] is not None]
+    bet_hits = sum(1 for _, choice in bet_settled if choice["grade"] in HITS)
+    returns = [choice["return"] for _, choice in bets]
+    settled_hits = sum(1 for _, choice in settled if choice["grade"] in HITS)
     return {
         "n": len(decided),
         "n_including_push": len(paired),
         "push_n": len(paired) - len(decided),
         "mean_probability": mean_probability,
         "hit_rate_excluding_push": hit_rate,
-        "integer_hits_excluding_push": integer_hits,
+        "primary_side_integer_hits_excluding_push": primary_hits,
         "brier": brier,
         "log_loss": log_loss,
         "calibration_gap": None if mean_probability is None or hit_rate is None else abs(mean_probability - hit_rate),
@@ -906,18 +1030,37 @@ def metric_block(records: Sequence[dict[str, Any]], probabilities: Sequence[floa
             }
             for name, payload in _buckets(rows).items()
         ],
+        "decision": {
+            "rule": "choose primary side when p(primary) >= 0.5, otherwise the opposite side; confidence = max(p, 1 - p)",
+            "n_decisions": len(decisions),
+            "n_priced_decisions": len(priced),
+            "n_settled_excluding_push": len(settled),
+            "direction_counts": dict(sorted(direction_counts.items())),
+            "decision_accuracy_excluding_push": _mean(choice["label"] for _, choice in settled),
+            "decision_integer_hit_rate_excluding_push": (settled_hits / len(settled)) if settled else None,
+            "decision_wilson_95": wilson(settled_hits, len(settled)),
+            "mean_confidence": _mean(choice["confidence"] for _, choice in decisions),
+            "direction_flip_rate_vs_v2_lead": _mean(1.0 if value else 0.0 for value in flips),
+            "n_compared_with_v2_lead": len(flips),
+        },
         "roi_at_0.55_threshold": {
             "threshold": DECISION_THRESHOLD,
+            "basis": "direction chosen by this model/probability, priced at the matching T-5 side odds",
             "n_bets_including_push": len(bets),
-            "n_bets_excluding_push": len(bet_decided),
+            "n_bets_excluding_push": len(bet_settled),
             "unit_pnl": sum(returns) if returns else 0.0,
             "roi": (sum(returns) / len(returns)) if returns else None,
-            "hit_rate_excluding_push": _mean(record["label"] for record, _ in bet_decided),
+            "hit_rate_excluding_push": _mean(choice["label"] for _, choice in bet_settled),
             "integer_hits": bet_hits,
-            "wilson_hit_rate_95": wilson(bet_hits, len(bet_decided)),
+            "wilson_hit_rate_95": wilson(bet_hits, len(bet_settled)),
+            "direction_counts": dict(sorted(Counter(choice["direction"] for _, choice in bets).items())),
+            "flip_rate_vs_v2_lead": _mean(1.0 if choice["flips_v2_lead"] else 0.0
+                                          for record, choice in bets if record["v2_lead_direction"]),
         },
-        "wilson": wilson(integer_hits, len(decided)),
-        "grade_counts": {grade: sum(1 for record, _ in paired if record["grade"] == grade) for grade in GRADES},
+        "wilson": wilson(primary_hits, len(decided)),
+        "primary_side_grade_counts": {
+            grade: sum(1 for record, _ in paired if record["primary_grade"] == grade) for grade in GRADES
+        },
     }
 
 
@@ -927,7 +1070,7 @@ def metric_block(records: Sequence[dict[str, Any]], probabilities: Sequence[floa
 def _train_arrays(records: Sequence[dict[str, Any]], matrix: Sequence[Sequence[float]]):
     X, y, w = [], [], []
     for record, row in zip(records, matrix):
-        if record["is_push"]:
+        if record["is_push"] or record["label"] is None:
             continue
         label = record["label"]
         for target, weight in ((1.0, label), (0.0, 1.0 - label)):
@@ -936,6 +1079,13 @@ def _train_arrays(records: Sequence[dict[str, Any]], matrix: Sequence[Sequence[f
                 y.append(target)
                 w.append(weight)
     return X, y, w
+
+
+MONOTONICITY_GRID = tuple(round(0.02 + 0.04 * index, 4) for index in range(25))
+
+
+def _monotonicity(mapped: Sequence[float]) -> bool:
+    return all(mapped[index] <= mapped[index + 1] + 1e-12 for index in range(len(mapped) - 1))
 
 
 def model_report(records_by_part: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
@@ -951,32 +1101,47 @@ def model_report(records_by_part: dict[str, list[dict[str, Any]]]) -> dict[str, 
     raw = {part: classifier_probabilities(model, matrices[part]) for part in records_by_part}
 
     selection = records_by_part["selection"]
-    selection_decided = [(record, p) for record, p in zip(selection, raw["selection"]) if not record["is_push"]]
-    calibration: dict[str, Any] = {}
+    selection_decided = [(record, p) for record, p in zip(selection, raw["selection"])
+                         if not record["is_push"] and record["label"] is not None]
+    isotonic_blocks: dict[str, Any] = {}
+    platt_blocks: dict[str, Any] = {}
+    guard: dict[str, Any] = {}
     if selection_decided:
         cal_raw = [p for _, p in selection_decided]
         cal_labels = [record["label"] for record, _ in selection_decided]
         isotonic = fit_isotonic(cal_raw, cal_labels)
         platt = fit_platt(cal_raw, cal_labels)
-        for part in ("selection", "holdout"):
-            calibration.setdefault("isotonic", {})[part] = metric_block(
-                records_by_part[part], apply_isotonic(isotonic, raw[part]))
-            calibration.setdefault("platt", {})[part] = metric_block(
-                records_by_part[part], apply_platt(platt, raw[part]))
-        calibration["calibrator_parameters"] = {
-            "isotonic_fit_n": len(cal_raw),
-            "platt_fit_n": len(cal_raw),
-            "fit_split": "selection",
-            "holdout_never_used_for_fitting": True,
+        isotonic_grid = apply_isotonic(isotonic, MONOTONICITY_GRID)
+        platt_grid = apply_platt(platt, MONOTONICITY_GRID)
+        slope = platt_slope(platt)
+        platt_increasing = slope is not None and slope > 0 and _monotonicity(platt_grid)
+        guard = {
+            "requirement": "a calibrator must be non-decreasing in the raw probability, otherwise it would invert the direction decision",
+            "isotonic_is_non_decreasing": _monotonicity(isotonic_grid),
+            "platt_slope": slope,
+            "platt_is_increasing": platt_increasing,
+            "platt_rejected_and_scored_as_raw": not platt_increasing,
+            "grid": list(MONOTONICITY_GRID),
+            "isotonic_grid_mapped": isotonic_grid,
+            "platt_grid_mapped": platt_grid,
         }
+        for part in ("selection", "holdout"):
+            isotonic_blocks[part] = metric_block(records_by_part[part], apply_isotonic(isotonic, raw[part]))
+            platt_probabilities = apply_platt(platt, raw[part]) if platt_increasing else list(raw[part])
+            platt_blocks[part] = metric_block(records_by_part[part], platt_probabilities)
+        guard["isotonic_fit_n"] = len(cal_raw)
+        guard["platt_fit_n"] = len(cal_raw)
+        guard["fit_split"] = "selection"
+        guard["holdout_never_used_for_fitting"] = True
     importances = dict(zip(FEATURE_NAMES, classifier_importances(model)))
     return {
         "raw": {part: metric_block(records_by_part[part], raw[part]) for part in records_by_part},
-        "isotonic": calibration.get("isotonic", {}),
-        "platt": calibration.get("platt", {}),
-        "calibration_meta": calibration.get("calibrator_parameters", {}),
+        "isotonic": isotonic_blocks,
+        "platt": platt_blocks,
+        "calibration_meta": guard,
         "training": {
-            "discovery_rows_excluding_push": sum(1 for record in discovery if not record["is_push"]),
+            "discovery_rows_excluding_push": sum(1 for record in discovery
+                                                 if not record["is_push"] and record["label"] is not None),
             "expanded_training_rows": len(X),
             "half_win_half_loss_weighting": "label 0.5 expanded into weighted 1/0 rows",
         },
@@ -992,6 +1157,7 @@ def build_report(payload: dict[str, Any], input_state: dict[str, Any]) -> dict[s
     models: dict[str, Any] = {}
     baselines: dict[str, Any] = {}
     counts: dict[str, Any] = {}
+    coverage: dict[str, Any] = {}
     importance: dict[str, Any] = {}
     for market in MARKETS:
         key = market.lower()
@@ -999,40 +1165,83 @@ def build_report(payload: dict[str, Any], input_state: dict[str, Any]) -> dict[s
         # partitioned, so a record only ever sees strictly earlier kickoffs.
         every = build_records(fixtures, market)
         membership = {row["fixture_id"]: part for part, values in parts.items() for row in values}
-        records_by_part = {part: [] for part in parts}
+        records_by_part: dict[str, list[dict[str, Any]]] = {part: [] for part in parts}
         for record in every:
             records_by_part[membership[record["fixture_id"]]].append(record)
         counts[key] = {part: len(rows) for part, rows in records_by_part.items()}
+        coverage[key] = {
+            "both_sides_present": sum(1 for row in every if len(row["sides_available"]) == 2),
+            "primary_side_only": sum(1 for row in every if row["sides_available"] == ["primary"]),
+            "opposite_side_only_probability_derived": sum(1 for row in every if row["sides_available"] == ["opposite"]),
+            "primary_line_disagrees_with_opposite_line": sum(
+                1 for row in every if row["opposite_line"] is not None
+                and abs(row["opposite_line"] - row["primary_line"]) > EPS),
+        }
         report = model_report(records_by_part)
         importance[key] = report.pop("feature_importance", {})
         models[key] = report
         baselines[key] = {
-            part: metric_block(rows, [record["v2_probability"] for record in rows])
+            part: metric_block(rows, [
+                record["v2_primary_side_probability"] if record["v2_primary_side_probability"] is not None else 0.5
+                for record in rows
+            ])
+            for part, rows in records_by_part.items()
+        }
+        baselines[key]["production_lead_decision"] = {
+            part: metric_block(
+                rows,
+                [record["v2_primary_side_probability"] if record["v2_primary_side_probability"] is not None else 0.5
+                 for record in rows],
+                decision_rule=lambda record, probability: v2_lead_decision(record),
+            )
             for part, rows in records_by_part.items()
         }
     return {
         "schema_version": SCHEMA_VERSION,
         "scope": {
-            "kind": "V3.1 genuine retraining with probability calibration",
+            "kind": "V3.1 genuine retraining with independent direction choice and probability calibration",
             "retrains_model": True,
             "production_untouched": True,
             "decision_stage": "T-5",
             "target_definition": (
-                "per fixture and market, the T-5 maximum-EV Crown lead (the 'big' side the model backs); "
-                "label 1 for a full win, 0.5 for a half win, 0 for a half or full loss, pushes excluded"
+                "one row per fixture and market with a FIXED primary side: HDC home side, HIL over side. "
+                "Label 1 for a full win, 0.5 for a half win, 0 for a half or full loss on that primary side; "
+                "pushes are excluded from calibration metrics and from training. "
+                "Both T-5 sides are read from the candidate list; the V2 maximum-EV lead is never the target."
             ),
-            "v2_baseline_definition": "persisted production V2 probability (70% market + 30% team history) on the same rows",
+            "direction_decision": (
+                "the model outputs p(primary side wins); it picks the primary side when p >= 0.5 and the opposite "
+                "side otherwise, with confidence max(p, 1 - p) priced at that side's T-5 odds and settled with "
+                "exact Asian handicap/total rules"
+            ),
+            "v2_baseline_definition": (
+                "persisted production V2 probability of the same primary side (complement of the opposite side when "
+                "only that side was published), scored against the same primary-side label; the production "
+                "maximum-EV lead decision is reported separately under v2_baseline.<market>.production_lead_decision"
+            ),
             "calibration_fit_split": "selection only",
+            "calibration_monotonicity_guard": (
+                "a calibrator that is not non-decreasing would invert the direction decision, so isotonic "
+                "monotonicity is verified on a grid and a Platt fit with non-positive slope is rejected and scored raw"
+            ),
             "holdout_usage": "final scoring only; never used for training, calibration or feature statistics",
-            "roi_definition": "one unit per bet at decimal odds when probability >= 0.55; Asian half win/loss and push settled exactly",
+            "roi_definition": (
+                "one unit per bet when the chosen-direction confidence >= 0.55, priced at the chosen side's T-5 "
+                "decimal odds; Asian half win/loss and push settled exactly"
+            ),
             "median_impute_source": "discovery split medians plus explicit missingness flags",
         },
         "split": split_metadata,
-        "diagnostics": {**diagnostics, "records_per_market_and_split": counts},
+        "diagnostics": {
+            **diagnostics,
+            "records_per_market_and_split": counts,
+            "side_coverage_per_market": coverage,
+        },
         "features": {
             "used": list(FEATURE_NAMES),
             "base": list(BASE_FEATURES),
             "nullable_with_missingness_flag": list(NULLABLE_FEATURES),
+            "orientation": "all price/line features are primary-side oriented or side-neutral; no feature encodes the V2 chosen direction",
             "importance": importance,
         },
         "reproducibility": {
@@ -1069,6 +1278,9 @@ def _summary(report: dict[str, Any]) -> str:
                 lines.append(
                     f"{market}/{variant}: holdout n={block['n']} brier={_fmt(block['brier'])} "
                     f"logloss={_fmt(block['log_loss'])} gap={_fmt(block['calibration_gap'])} "
+                    f"dec_hit={_fmt(block['decision']['decision_integer_hit_rate_excluding_push'])} "
+                    f"flip={_fmt(block['decision']['direction_flip_rate_vs_v2_lead'])} "
+                    f"bets={block['roi_at_0.55_threshold']['n_bets_including_push']} "
                     f"roi55={_fmt(block['roi_at_0.55_threshold']['roi'])}"
                 )
         baseline = (report["v2_baseline"].get(market) or {}).get("holdout")
@@ -1076,7 +1288,21 @@ def _summary(report: dict[str, Any]) -> str:
             lines.append(
                 f"{market}/v2_baseline: holdout n={baseline['n']} brier={_fmt(baseline['brier'])} "
                 f"logloss={_fmt(baseline['log_loss'])} gap={_fmt(baseline['calibration_gap'])} "
+                f"bets={baseline['roi_at_0.55_threshold']['n_bets_including_push']} "
                 f"roi55={_fmt(baseline['roi_at_0.55_threshold']['roi'])}"
+            )
+        production = ((report["v2_baseline"].get(market) or {}).get("production_lead_decision") or {}).get("holdout")
+        if production:
+            lines.append(
+                f"{market}/v2_production_lead: holdout bets={production['roi_at_0.55_threshold']['n_bets_including_push']} "
+                f"roi55={_fmt(production['roi_at_0.55_threshold']['roi'])} "
+                f"dec_hit={_fmt(production['decision']['decision_integer_hit_rate_excluding_push'])}"
+            )
+        guard = (report["models"].get(market) or {}).get("calibration_meta") or {}
+        if guard:
+            lines.append(
+                f"{market}/calibration_guard: isotonic_increasing={guard.get('isotonic_is_non_decreasing')} "
+                f"platt_slope={_fmt(guard.get('platt_slope'))} platt_rejected={guard.get('platt_rejected_and_scored_as_raw')}"
             )
     return "\n".join(lines)
 
