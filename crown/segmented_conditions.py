@@ -109,6 +109,19 @@ def _rule_a_open_t5_over(stages: dict[str, dict[str, Any]]) -> dict[str, Any] | 
     return {"decision_stage": "T-5", "prediction": t5}
 
 
+def _rule_s_open_over_line_3(stages: dict[str, dict[str, Any]]) -> dict[str, Any] | None:
+    prediction = _prediction(stages.get("首預") or {}, "HIL")
+    if not prediction or str(prediction.get("side") or "").upper() != "H":
+        return None
+    line = _selected_line(prediction)
+    if line is None or abs(line - 3.0) > 1e-9:
+        return None
+    odds = _odds(prediction)
+    if not odds or odds <= 1.80:
+        return None
+    return {"decision_stage": "首預", "prediction": prediction}
+
+
 def _rule_a_open_away_minus_half(stages: dict[str, dict[str, Any]]) -> dict[str, Any] | None:
     prediction = _prediction(stages.get("首預") or {}, "HDC")
     if not prediction or str(prediction.get("side") or "").upper() != "A":
@@ -172,6 +185,19 @@ CONDITIONS: tuple[dict[str, Any], ...] = (
             "half_loss": 0, "full_loss": 14, "hit_rate": 0.6889, "roi": 0.2696,
         },
         "matcher": _rule_a_open_away_minus_half,
+    },
+    {
+        "id": "S-HIL-OPEN-OVER-3-180",
+        "tier": "S",
+        "market": "HIL",
+        "title": "初盤預測大；中位線 3；賠率 > 1.80",
+        "definition": "只睇初盤入球大細預測；方向為大，中位線精確等於 3，而且所選方向賠率高於 1.80。",
+        "path_label": "初盤預測：大｜中位線=3",
+        "historical": {
+            "sample": 53, "full_win": 39, "half_win": 0, "push": 3,
+            "half_loss": 0, "full_loss": 11, "hit_rate": 0.7800, "roi": 0.2600,
+        },
+        "matcher": _rule_s_open_over_line_3,
     },
     {
         "id": "A-HDC-HHH-SAME-LINE",
