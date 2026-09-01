@@ -89,10 +89,18 @@ def test_projects_prediction_direction_conditions_and_settles_results() -> None:
     assert conditions["WATCH-HIL-T5-OVER-180"]["evidence_label"] == "大型樣本觀察"
     assert conditions["A-HIL-OPEN-T5-OVER-180"]["prospective"]["qualified"] == 1
     assert conditions["A-HDC-OPEN-AWAY-MINUS-050"]["prospective"]["full_loss"] == 1
-    assert conditions["A-HDC-HHH-SAME-LINE"]["prospective"]["half_win"] == 1
-    assert conditions["A-HDC-HHH-SAME-LINE"]["prospective"]["roi"] == 0.455
-    assert conditions["A-HDC-HHH-SAME-LINE"]["tier"] == "普通"
-    assert conditions["A-HDC-HHH-SAME-LINE"]["evidence_status"] == "downgraded"
+    # A-HDC-HHH-SAME-LINE was downgraded to background tier and no longer
+    # appears in the public list; it still evaluates in matching_observations
+    # for continued measurement.
+    assert "A-HDC-HHH-SAME-LINE" not in conditions
+    hhh_obs = [
+        row for row in payload["matching_observations"]
+        if row["condition_id"] == "A-HDC-HHH-SAME-LINE"
+    ]
+    assert len(hhh_obs) == 1
+    assert hhh_obs[0]["settlement"] == "Half Won"
+    assert hhh_obs[0]["tier"] == "背景"
+    assert hhh_obs[0]["evidence_status"] == "downgraded"
 
 
 def test_strict_threshold_same_line_and_activation_cutoff() -> None:
@@ -132,7 +140,9 @@ def test_strict_threshold_same_line_and_activation_cutoff() -> None:
     conditions = {item["id"]: item for item in payload["public_conditions"]}
     assert conditions["S-HIL-T5-OVER-185"]["prospective"]["qualified"] == 0
     assert conditions["WATCH-HIL-T5-OVER-180"]["prospective"]["qualified"] == 1
-    assert conditions["A-HDC-HHH-SAME-LINE"]["prospective"]["qualified"] == 0
+    # A-HDC-HHH-SAME-LINE was downgraded to background tier; verify it no
+    # longer surfaces in the public list even when a fixture would match.
+    assert "A-HDC-HHH-SAME-LINE" not in conditions
 
 
 def test_old_labels_are_safely_parsed_without_rewriting_ledger() -> None:
@@ -194,9 +204,46 @@ def test_split_line_label_uses_midpoint_and_preserves_negative_sign() -> None:
         }),
     }}
     payload = build_segmented_conditions(ledger)
-    condition = next(
-        row for row in payload["public_conditions"]
-        if row["id"] == "A-HDC-HHH-SAME-LINE"
+    # A-HDC-HHH-SAME-LINE is now background-only: still evaluates the split
+    # HDC labels, but only surfaces in matching_observations rather than the
+    # public list.
+    matches = [
+        row for row in payload["matching_observations"]
+        if row["condition_id"] == "A-HDC-HHH-SAME-LINE"
+    ]
+    assert len(matches) == 1
+    assert matches[0]["selected_line"] == -0.25
+    assert not any(
+        row["id"] == "A-HDC-HHH-SAME-LINE"
+        for row in payload["public_conditions"]
     )
-    assert condition["prospective"]["qualified"] == 1
-    assert condition["observations"][0]["selected_line"] == -0.25
+
+
+def test_s_hil_open_over_3_180_matches_only_within_thresholds() -> None:
+    ledger = {"fixtures": {
+        "match": _slot("match", {
+            "首預": _stage("HIL", "H", 3.0, 1.85, "O 3.0"),
+            "T-5": _stage("HIL", "H", 3.0, 1.85, "O 3.0"),
+        }),
+        "under-line": _slot("under-line", {
+            "首預": _stage("HIL", "H", 2.75, 1.85, "O 2.75"),
+        }),
+        "under-odds": _slot("under-odds", {
+            "首預": _stage("HIL", "H", 3.0, 1.80, "O 3.0"),
+        }),
+        "wrong-side": _slot("wrong-side", {
+            "首預": _stage("HIL", "A", 3.0, 1.85, "U 3.0"),
+        }),
+    }}
+    payload = build_segmented_conditions(ledger)
+    conditions = {row["id"]: row for row in payload["public_conditions"]}
+    assert "S-HIL-OPEN-OVER-3-180" in conditions
+    prospective = conditions["S-HIL-OPEN-OVER-3-180"]["prospective"]
+    assert prospective["qualified"] == 1
+    assert conditions["S-HIL-OPEN-OVER-3-180"]["tier"] == "觀察"
+    assert conditions["S-HIL-OPEN-OVER-3-180"]["evidence_status"] == "watch"
+    obs = conditions["S-HIL-OPEN-OVER-3-180"]["observations"]
+    assert len(obs) == 1
+    assert obs[0]["match_id"] == "match"
+    assert obs[0]["selected_line"] == 3.0
+    assert obs[0]["odds"] == 1.85
