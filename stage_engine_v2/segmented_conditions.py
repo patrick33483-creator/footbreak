@@ -156,6 +156,9 @@ def _rule_s_t5_over(slot: dict[str, Any]) -> dict[str, Any] | None:
     prediction = _prediction(slot, "T-5", "HIL")
     if not prediction or prediction["side"] != "H" or (prediction["odds"] or 0) <= 1.85:
         return None
+    line = prediction.get("selected_line")
+    if line is None or any(abs(float(line) - excluded) < 1e-9 for excluded in (2.0, 2.25)):
+        return None
     return prediction
 
 
@@ -226,14 +229,19 @@ CONDITIONS: tuple[dict[str, Any], ...] = (
         "tier": "觀察",
         "evidence_status": "watch",
         "evidence_label": "觀察中",
-        "evidence_note": "三個時段均為正；獨立樣本區間仍未收窄。",
+        "evidence_note": "剔除中位線 2.00／2.25 後，歷史數據明顯改善；最新累積實戰剩低 9 場，2.75 線三連敗仍拖低表現。",
         "market": "HIL",
-        "title": "T-5 預測大；賠率 > 1.85",
-        "definition": "只睇 T-5 入球大細預測方向；預測為大，而且所選方向賠率嚴格高於 1.85。",
-        "path_label": "T-5：大",
-        "historical": {
+        "title": "T-5 預測大；賠率 > 1.85；剔除中位線 2.00／2.25",
+        "definition": "只睇 T-5 入球大細預測方向；預測為大，而且所選方向賠率嚴格高於 1.85；中位線 2.00 及 2.25 不計入。",
+        "path_label": "T-5：大｜中位線≠2.00／2.25",
+        "excluded_lines": [2.0, 2.25],
+        "historical_original": {
             "sample": 96, "full_win": 53, "half_win": 6, "push": 7,
             "half_loss": 2, "full_loss": 28, "hit_rate": 0.6629, "roi": 0.2224,
+        },
+        "historical": {
+            "sample": 77, "full_win": 45, "half_win": 6, "push": 6,
+            "half_loss": 0, "full_loss": 20, "hit_rate": 0.71831, "roi": 0.298831,
         },
         "matcher": _rule_s_t5_over,
     },

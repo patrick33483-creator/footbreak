@@ -29,8 +29,8 @@ def _ledger() -> dict:
         "kickoff_utc": "2026-08-30T17:00:00+00:00",
         "kickoff_hkt": "2026-08-31T01:00:00+08:00",
         "stages": {
-            "首預": _stage("HIL", "H", 2.25, 1.81),
-            "T-5": _stage("HIL", "H", 2.25, 1.90),
+            "首預": _stage("HIL", "H", 3.25, 1.81),
+            "T-5": _stage("HIL", "H", 3.25, 1.90),
         },
     }}}
 
@@ -47,7 +47,7 @@ def _overlay() -> dict:
             "home": "主隊",
             "away": "客隊",
             "kickoff": "2026-08-31T01:00:00+08:00",
-            "home_score": 1,
+            "home_score": 2,
             "away_score": 1,
             "provider_event_id": "provider-123",
             "provider_home": "Home",
@@ -90,7 +90,7 @@ def test_operator_overlay_survives_repeated_dashboard_builds(tmp_path) -> None:
         assert condition["prospective"]["pending"] == 0
         assert condition["prospective"]["half_loss"] == 1
         assert condition["observations"][0]["result_status"] == "已核實"
-        assert condition["observations"][0]["score"] == "1-1"
+        assert condition["observations"][0]["score"] == "2-1"
 
 
 def test_operator_overlay_rejects_identity_mismatch(tmp_path) -> None:

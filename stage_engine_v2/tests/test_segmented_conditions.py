@@ -85,6 +85,8 @@ def test_projects_prediction_direction_conditions_and_settles_results() -> None:
     assert conditions["S-HIL-T5-OVER-185"]["prospective"]["qualified"] == 1
     assert conditions["S-HIL-T5-OVER-185"]["prospective"]["hit_rate"] == 1.0
     assert conditions["S-HIL-T5-OVER-185"]["prospective"]["roi"] == 0.9
+    assert conditions["S-HIL-T5-OVER-185"]["historical"]["sample"] == 77
+    assert conditions["S-HIL-T5-OVER-185"]["excluded_lines"] == [2.0, 2.25]
     assert conditions["WATCH-HIL-T5-OVER-180"]["prospective"]["qualified"] == 1
     assert conditions["WATCH-HIL-T5-OVER-180"]["evidence_label"] == "大型樣本觀察"
     assert conditions["WATCH-HIL-T5-OVER-180"]["historical"]["sample"] == 219
@@ -148,6 +150,28 @@ def test_strict_threshold_same_line_and_activation_cutoff() -> None:
     # A-HDC-HHH-SAME-LINE was downgraded to background tier; verify it no
     # longer surfaces in the public list even when a fixture would match.
     assert "A-HDC-HHH-SAME-LINE" not in conditions
+
+
+def test_s_hil_t5_over_185_excludes_lines_200_and_225() -> None:
+    ledger = {"fixtures": {
+        "excluded-200": _slot("excluded-200", {
+            "T-5": _stage("HIL", "H", 2.0, 1.90, "O 2.0"),
+        }),
+        "excluded-225": _slot("excluded-225", {
+            "T-5": _stage("HIL", "H", 2.25, 1.90, "O 2.25"),
+        }),
+        "included-250": _slot("included-250", {
+            "T-5": _stage("HIL", "H", 2.5, 1.90, "O 2.5"),
+        }),
+    }}
+
+    payload = build_segmented_conditions(ledger)
+    condition = next(
+        row for row in payload["public_conditions"]
+        if row["id"] == "S-HIL-T5-OVER-185"
+    )
+    assert condition["prospective"]["qualified"] == 1
+    assert [row["match_id"] for row in condition["observations"]] == ["included-250"]
 
 
 def test_old_labels_are_safely_parsed_without_rewriting_ledger() -> None:
