@@ -1,230 +1,370 @@
 {
   "diagnostics": {
-    "canonical_fixture_stage_snapshots": 12779,
-    "fixtures_without_verified_result": 2246,
+    "canonical_fixture_stage_snapshots": 13069,
+    "fixtures_without_verified_result": 2230,
     "no_hdc_or_hil_lead": 492,
     "records_per_market_and_split": {
       "hdc": {
-        "discovery": 1438,
-        "holdout": 430,
-        "selection": 318
+        "discovery": 1451,
+        "holdout": 425,
+        "selection": 323
       },
       "hil": {
-        "discovery": 1446,
-        "holdout": 493,
-        "selection": 373
+        "discovery": 1459,
+        "holdout": 494,
+        "selection": 380
       }
     },
-    "settled_canonical_fixtures": 2755,
+    "settled_canonical_fixtures": 2776,
+    "side_coverage_per_market": {
+      "hdc": {
+        "both_sides_present": 0,
+        "opposite_side_only_probability_derived": 1087,
+        "primary_line_disagrees_with_opposite_line": 0,
+        "primary_side_only": 1112
+      },
+      "hil": {
+        "both_sides_present": 0,
+        "opposite_side_only_probability_derived": 1074,
+        "primary_line_disagrees_with_opposite_line": 0,
+        "primary_side_only": 1259
+      }
+    },
     "unsupported_stage": 287
   },
   "features": {
     "base": [
-      "v2_probability",
-      "market_implied_probability",
-      "v2_minus_market_probability",
-      "pick_odds",
-      "opposite_side_odds",
-      "pick_is_big_odds_side",
-      "line_pick_perspective",
-      "pick_is_primary_side",
-      "line_move_open_to_t30",
-      "line_move_t30_to_t5",
-      "odds_move_open_to_t30",
-      "odds_move_t30_to_t5",
+      "primary_probability",
+      "opposite_probability",
+      "probability_gap_primary_minus_opposite",
+      "primary_odds",
+      "opposite_odds",
+      "odds_gap_primary_minus_opposite",
+      "implied_primary_probability_devig",
+      "primary_probability_minus_implied",
+      "primary_probability_is_derived",
+      "primary_line",
+      "opposite_line",
+      "primary_line_move_open_to_t30",
+      "primary_line_move_t30_to_t5",
+      "primary_odds_move_open_to_t30",
+      "primary_odds_move_t30_to_t5",
+      "opposite_odds_move_t30_to_t5",
       "hkjc_line_gap",
       "hkjc_odds_gap",
       "league_target_encoding",
       "kickoff_is_weekend",
       "kickoff_hour_bucket_hkt",
-      "team_market_recent_hit_rate",
+      "primary_side_recent_hit_rate",
       "home_recent_win_rate",
       "away_recent_win_rate",
-      "recent_strength_diff",
-      "pick_recent_strength_edge"
+      "recent_strength_diff"
     ],
     "importance": {
       "hdc": {
-        "away_recent_win_rate": 0.0016513835571702754,
-        "away_recent_win_rate__missing": 0.007673334391209963,
+        "away_recent_win_rate": 0.009091719414768152,
+        "away_recent_win_rate__missing": 0.0024233577384461706,
         "hkjc_line_gap": 0.0,
         "hkjc_line_gap__missing": 0.0,
         "hkjc_odds_gap": 0.0,
         "hkjc_odds_gap__missing": 0.0,
-        "home_recent_win_rate": 0.01658659513753693,
-        "home_recent_win_rate__missing": 0.005224598527577236,
-        "kickoff_hour_bucket_hkt": 0.015189831175671584,
-        "kickoff_is_weekend": 0.011636997189907789,
-        "league_target_encoding": 0.6382263648864193,
-        "line_move_open_to_t30": 0.02635250077034981,
-        "line_move_open_to_t30__missing": 0.005693758822875208,
-        "line_move_t30_to_t5": 0.0007706818820041669,
-        "line_move_t30_to_t5__missing": 0.012933317616916509,
-        "line_pick_perspective": 0.022107654852775376,
-        "market_implied_probability": 0.0,
-        "market_implied_probability__missing": 0.0,
-        "odds_move_open_to_t30": 0.030894589947753206,
-        "odds_move_open_to_t30__missing": 0.0,
-        "odds_move_t30_to_t5": 0.0585976592783973,
-        "odds_move_t30_to_t5__missing": 0.0,
-        "opposite_side_odds": 0.0,
-        "opposite_side_odds__missing": 0.0,
-        "pick_is_big_odds_side": 0.0,
-        "pick_is_big_odds_side__missing": 0.0,
-        "pick_is_primary_side": 0.02145238436337167,
-        "pick_odds": 0.05670068180553696,
-        "pick_recent_strength_edge": 0.010594931379562269,
-        "pick_recent_strength_edge__missing": 0.0,
-        "recent_strength_diff": 0.009355596925853206,
-        "recent_strength_diff__missing": 0.0021313470076106066,
-        "team_market_recent_hit_rate": 0.0008636806374754608,
-        "team_market_recent_hit_rate__missing": 0.0012664668966883505,
-        "v2_minus_market_probability": 0.0,
-        "v2_probability": 0.044095642947336845
+        "home_recent_win_rate": 0.007486878857836083,
+        "home_recent_win_rate__missing": 0.006738966832790519,
+        "implied_primary_probability_devig": 0.0,
+        "implied_primary_probability_devig__missing": 0.0,
+        "kickoff_hour_bucket_hkt": 0.02728703169571977,
+        "kickoff_is_weekend": 0.006551753664970716,
+        "league_target_encoding": 0.6196284326117129,
+        "odds_gap_primary_minus_opposite": 0.0,
+        "odds_gap_primary_minus_opposite__missing": 0.0,
+        "opposite_line": 0.031164824969979237,
+        "opposite_line__missing": 0.0,
+        "opposite_odds": 0.028494639626228932,
+        "opposite_odds__missing": 0.0,
+        "opposite_odds_move_t30_to_t5": 0.005891011901500693,
+        "opposite_odds_move_t30_to_t5__missing": 0.008279841043288966,
+        "opposite_probability": 0.05124052013579203,
+        "opposite_probability__missing": 0.0,
+        "primary_line": 0.007508601984374167,
+        "primary_line_move_open_to_t30": 0.005050054982571285,
+        "primary_line_move_open_to_t30__missing": 0.0019925401568403256,
+        "primary_line_move_t30_to_t5": 0.0007918820918054269,
+        "primary_line_move_t30_to_t5__missing": 0.0018805528603496754,
+        "primary_odds": 0.037816915520509954,
+        "primary_odds__missing": 0.0,
+        "primary_odds_move_open_to_t30": 0.011832253083250258,
+        "primary_odds_move_open_to_t30__missing": 0.0,
+        "primary_odds_move_t30_to_t5": 0.019515871426641126,
+        "primary_odds_move_t30_to_t5__missing": 0.004494015684388471,
+        "primary_probability": 0.04597396004977561,
+        "primary_probability__missing": 0.0,
+        "primary_probability_is_derived": 0.0,
+        "primary_probability_minus_implied": 0.0,
+        "primary_probability_minus_implied__missing": 0.0,
+        "primary_side_recent_hit_rate": 0.0110174354204855,
+        "primary_side_recent_hit_rate__missing": 0.0,
+        "probability_gap_primary_minus_opposite": 0.03529745644196151,
+        "probability_gap_primary_minus_opposite__missing": 0.0,
+        "recent_strength_diff": 0.008249166539962154,
+        "recent_strength_diff__missing": 0.004300315264050409
       },
       "hil": {
-        "away_recent_win_rate": 0.014572408384799306,
-        "away_recent_win_rate__missing": 0.009722160748794364,
+        "away_recent_win_rate": 0.010118740453743044,
+        "away_recent_win_rate__missing": 0.0,
         "hkjc_line_gap": 0.0,
         "hkjc_line_gap__missing": 0.0,
         "hkjc_odds_gap": 0.0,
         "hkjc_odds_gap__missing": 0.0,
-        "home_recent_win_rate": 0.007619955655411111,
-        "home_recent_win_rate__missing": 0.0,
-        "kickoff_hour_bucket_hkt": 0.037642340736005725,
-        "kickoff_is_weekend": 0.009108409517158824,
-        "league_target_encoding": 0.5336121248032152,
-        "line_move_open_to_t30": 0.004615302403791181,
-        "line_move_open_to_t30__missing": 0.014191573172377013,
-        "line_move_t30_to_t5": 0.0,
-        "line_move_t30_to_t5__missing": 0.011568065906351066,
-        "line_pick_perspective": 0.05088522140351295,
-        "market_implied_probability": 0.0,
-        "market_implied_probability__missing": 0.0,
-        "odds_move_open_to_t30": 0.055350004173900236,
-        "odds_move_open_to_t30__missing": 0.0,
-        "odds_move_t30_to_t5": 0.049790705057480907,
-        "odds_move_t30_to_t5__missing": 0.0,
-        "opposite_side_odds": 0.0,
-        "opposite_side_odds__missing": 0.0,
-        "pick_is_big_odds_side": 0.0,
-        "pick_is_big_odds_side__missing": 0.0,
-        "pick_is_primary_side": 0.030809658253071845,
-        "pick_odds": 0.0709692450959998,
-        "pick_recent_strength_edge": 0.01476834450827161,
-        "pick_recent_strength_edge__missing": 0.0,
-        "recent_strength_diff": 0.0017972630486664644,
-        "recent_strength_diff__missing": 0.002165162351457257,
-        "team_market_recent_hit_rate": 0.016270316526482118,
-        "team_market_recent_hit_rate__missing": 0.0006023022992519055,
-        "v2_minus_market_probability": 0.0,
-        "v2_probability": 0.06393943595400114
+        "home_recent_win_rate": 0.0028863591066093618,
+        "home_recent_win_rate__missing": 0.010146309518949846,
+        "implied_primary_probability_devig": 0.0,
+        "implied_primary_probability_devig__missing": 0.0,
+        "kickoff_hour_bucket_hkt": 0.030604801323390704,
+        "kickoff_is_weekend": 0.011966674720947089,
+        "league_target_encoding": 0.5509710460212623,
+        "odds_gap_primary_minus_opposite": 0.0,
+        "odds_gap_primary_minus_opposite__missing": 0.0,
+        "opposite_line": 0.013730608167865888,
+        "opposite_line__missing": 0.0,
+        "opposite_odds": 0.028511949690695818,
+        "opposite_odds__missing": 0.0,
+        "opposite_odds_move_t30_to_t5": 0.029311319345025583,
+        "opposite_odds_move_t30_to_t5__missing": 0.0056438097078653415,
+        "opposite_probability": 0.01970846183098572,
+        "opposite_probability__missing": 0.0,
+        "primary_line": 0.05077725979562073,
+        "primary_line_move_open_to_t30": 0.0,
+        "primary_line_move_open_to_t30__missing": 0.002263481844507585,
+        "primary_line_move_t30_to_t5": 0.0,
+        "primary_line_move_t30_to_t5__missing": 0.008602116053111938,
+        "primary_odds": 0.03066906153512469,
+        "primary_odds__missing": 0.0,
+        "primary_odds_move_open_to_t30": 0.03479548388413018,
+        "primary_odds_move_open_to_t30__missing": 0.0,
+        "primary_odds_move_t30_to_t5": 0.018895478890361913,
+        "primary_odds_move_t30_to_t5__missing": 0.00018606321259517558,
+        "primary_probability": 0.07718129520642837,
+        "primary_probability__missing": 0.0,
+        "primary_probability_is_derived": 0.0,
+        "primary_probability_minus_implied": 0.0,
+        "primary_probability_minus_implied__missing": 0.0,
+        "primary_side_recent_hit_rate": 0.03222258242048149,
+        "primary_side_recent_hit_rate__missing": 0.0006333870676600255,
+        "probability_gap_primary_minus_opposite": 0.01813981318484866,
+        "probability_gap_primary_minus_opposite__missing": 0.0,
+        "recent_strength_diff": 0.004345120098312136,
+        "recent_strength_diff__missing": 0.007688776919476411
       }
     },
     "nullable_with_missingness_flag": [
-      "market_implied_probability",
-      "opposite_side_odds",
-      "pick_is_big_odds_side",
-      "line_move_open_to_t30",
-      "line_move_t30_to_t5",
-      "odds_move_open_to_t30",
-      "odds_move_t30_to_t5",
+      "primary_probability",
+      "opposite_probability",
+      "probability_gap_primary_minus_opposite",
+      "primary_odds",
+      "opposite_odds",
+      "odds_gap_primary_minus_opposite",
+      "implied_primary_probability_devig",
+      "primary_probability_minus_implied",
+      "opposite_line",
+      "primary_line_move_open_to_t30",
+      "primary_line_move_t30_to_t5",
+      "primary_odds_move_open_to_t30",
+      "primary_odds_move_t30_to_t5",
+      "opposite_odds_move_t30_to_t5",
       "hkjc_line_gap",
       "hkjc_odds_gap",
-      "team_market_recent_hit_rate",
+      "primary_side_recent_hit_rate",
       "home_recent_win_rate",
       "away_recent_win_rate",
-      "recent_strength_diff",
-      "pick_recent_strength_edge"
+      "recent_strength_diff"
     ],
+    "orientation": "all price/line features are primary-side oriented or side-neutral; no feature encodes the V2 chosen direction",
     "used": [
-      "v2_probability",
-      "market_implied_probability",
-      "v2_minus_market_probability",
-      "pick_odds",
-      "opposite_side_odds",
-      "pick_is_big_odds_side",
-      "line_pick_perspective",
-      "pick_is_primary_side",
-      "line_move_open_to_t30",
-      "line_move_t30_to_t5",
-      "odds_move_open_to_t30",
-      "odds_move_t30_to_t5",
+      "primary_probability",
+      "opposite_probability",
+      "probability_gap_primary_minus_opposite",
+      "primary_odds",
+      "opposite_odds",
+      "odds_gap_primary_minus_opposite",
+      "implied_primary_probability_devig",
+      "primary_probability_minus_implied",
+      "primary_probability_is_derived",
+      "primary_line",
+      "opposite_line",
+      "primary_line_move_open_to_t30",
+      "primary_line_move_t30_to_t5",
+      "primary_odds_move_open_to_t30",
+      "primary_odds_move_t30_to_t5",
+      "opposite_odds_move_t30_to_t5",
       "hkjc_line_gap",
       "hkjc_odds_gap",
       "league_target_encoding",
       "kickoff_is_weekend",
       "kickoff_hour_bucket_hkt",
-      "team_market_recent_hit_rate",
+      "primary_side_recent_hit_rate",
       "home_recent_win_rate",
       "away_recent_win_rate",
       "recent_strength_diff",
-      "pick_recent_strength_edge",
-      "market_implied_probability__missing",
-      "opposite_side_odds__missing",
-      "pick_is_big_odds_side__missing",
-      "line_move_open_to_t30__missing",
-      "line_move_t30_to_t5__missing",
-      "odds_move_open_to_t30__missing",
-      "odds_move_t30_to_t5__missing",
+      "primary_probability__missing",
+      "opposite_probability__missing",
+      "probability_gap_primary_minus_opposite__missing",
+      "primary_odds__missing",
+      "opposite_odds__missing",
+      "odds_gap_primary_minus_opposite__missing",
+      "implied_primary_probability_devig__missing",
+      "primary_probability_minus_implied__missing",
+      "opposite_line__missing",
+      "primary_line_move_open_to_t30__missing",
+      "primary_line_move_t30_to_t5__missing",
+      "primary_odds_move_open_to_t30__missing",
+      "primary_odds_move_t30_to_t5__missing",
+      "opposite_odds_move_t30_to_t5__missing",
       "hkjc_line_gap__missing",
       "hkjc_odds_gap__missing",
-      "team_market_recent_hit_rate__missing",
+      "primary_side_recent_hit_rate__missing",
       "home_recent_win_rate__missing",
       "away_recent_win_rate__missing",
-      "recent_strength_diff__missing",
-      "pick_recent_strength_edge__missing"
+      "recent_strength_diff__missing"
     ]
   },
   "models": {
     "hdc": {
       "calibration_meta": {
         "fit_split": "selection",
+        "grid": [
+          0.02,
+          0.06,
+          0.1,
+          0.14,
+          0.18,
+          0.22,
+          0.26,
+          0.3,
+          0.34,
+          0.38,
+          0.42,
+          0.46,
+          0.5,
+          0.54,
+          0.58,
+          0.62,
+          0.66,
+          0.7,
+          0.74,
+          0.78,
+          0.82,
+          0.86,
+          0.9,
+          0.94,
+          0.98
+        ],
         "holdout_never_used_for_fitting": true,
-        "isotonic_fit_n": 301,
-        "platt_fit_n": 301
+        "isotonic_fit_n": 306,
+        "isotonic_grid_mapped": [
+          0.25,
+          0.25,
+          0.25,
+          0.37863015280287277,
+          0.4666666666666667,
+          0.4666666666666667,
+          0.4666666666666667,
+          0.4666666666666667,
+          0.47599999999999987,
+          0.47599999999999987,
+          0.47599999999999987,
+          0.47599999999999987,
+          0.47599999999999987,
+          0.5,
+          0.5,
+          0.5,
+          0.5241935483870968,
+          0.5241935483870968,
+          0.5241935483870968,
+          0.5241935483870968,
+          0.5241935483870968,
+          0.8,
+          0.8,
+          0.8,
+          0.8
+        ],
+        "isotonic_is_non_decreasing": true,
+        "platt_fit_n": 306,
+        "platt_grid_mapped": [
+          0.5332277137037256,
+          0.5217322993307955,
+          0.5161351101538161,
+          0.5122760583148511,
+          0.5092545110167244,
+          0.5067202326935227,
+          0.5044988937798531,
+          0.502490002304374,
+          0.5006293460054979,
+          0.49887239883196843,
+          0.4971859707765234,
+          0.49554353141774415,
+          0.49392230025202083,
+          0.49230119689165264,
+          0.49065914761701024,
+          0.4889733929595262,
+          0.48721744132497824,
+          0.48535816633408424,
+          0.48335114375404636,
+          0.48113232762287533,
+          0.4786015124637107,
+          0.4755849086947612,
+          0.47173345833595703,
+          0.46614985968905204,
+          0.45469187083974316
+        ],
+        "platt_is_increasing": false,
+        "platt_rejected_and_scored_as_raw": true,
+        "platt_slope": -0.040448689408731774,
+        "requirement": "a calibrator must be non-decreasing in the raw probability, otherwise it would invert the direction decision"
       },
       "feature_medians_from_discovery": {
         "away_recent_win_rate": 0.5,
         "hkjc_line_gap": 0.0,
         "hkjc_odds_gap": 0.0,
         "home_recent_win_rate": 0.5,
+        "implied_primary_probability_devig": 0.0,
         "kickoff_hour_bucket_hkt": 1.0,
         "kickoff_is_weekend": 0.0,
-        "league_target_encoding": 0.4840807478661428,
-        "line_move_open_to_t30": 0.0,
-        "line_move_t30_to_t5": 0.0,
-        "line_pick_perspective": 0.0,
-        "market_implied_probability": 0.0,
-        "odds_move_open_to_t30": 0.0,
-        "odds_move_t30_to_t5": 0.0,
-        "opposite_side_odds": 0.0,
-        "pick_is_big_odds_side": 0.0,
-        "pick_is_primary_side": 1.0,
-        "pick_odds": 1.83,
-        "pick_recent_strength_edge": 0.0,
-        "recent_strength_diff": 0.0,
-        "team_market_recent_hit_rate": 0.5,
-        "v2_minus_market_probability": 0.0,
-        "v2_probability": 0.52094
+        "league_target_encoding": 0.45252162903566157,
+        "odds_gap_primary_minus_opposite": 0.0,
+        "opposite_line": -0.25,
+        "opposite_odds": 1.82,
+        "opposite_odds_move_t30_to_t5": 0.0,
+        "opposite_probability": 0.522525,
+        "primary_line": -0.25,
+        "primary_line_move_open_to_t30": 0.0,
+        "primary_line_move_t30_to_t5": 0.0,
+        "primary_odds": 1.83,
+        "primary_odds_move_open_to_t30": 0.0,
+        "primary_odds_move_t30_to_t5": 0.0,
+        "primary_probability": 0.5,
+        "primary_probability_is_derived": 0.0,
+        "primary_probability_minus_implied": 0.0,
+        "primary_side_recent_hit_rate": 0.5,
+        "probability_gap_primary_minus_opposite": -0.045050000000000034,
+        "recent_strength_diff": 0.0
       },
       "isotonic": {
         "holdout": {
-          "brier": 0.22601622303446298,
+          "brier": 0.2332064249830961,
           "buckets": {
             "0.40_0.50": {
-              "hit_rate_excluding_push": 0.4582309582309582,
-              "mean_probability": 0.43131362409574076,
-              "n": 407,
+              "hit_rate_excluding_push": 0.4627659574468085,
+              "mean_probability": 0.4738764627521088,
+              "n": 188,
               "range": [
                 0.4,
                 0.5
               ]
             },
             "0.50_0.55": {
-              "hit_rate_excluding_push": null,
-              "mean_probability": null,
-              "n": 0,
+              "hit_rate_excluding_push": 0.5123152709359606,
+              "mean_probability": 0.5090067944191864,
+              "n": 203,
               "range": [
                 0.5,
                 0.55
@@ -240,66 +380,85 @@
               ]
             },
             "0.60_0.65": {
-              "hit_rate_excluding_push": null,
-              "mean_probability": null,
-              "n": 0,
+              "hit_rate_excluding_push": 1.0,
+              "mean_probability": 0.627964707167323,
+              "n": 1,
               "range": [
                 0.6,
                 0.65
               ]
             },
             "ge_0.65": {
-              "hit_rate_excluding_push": null,
-              "mean_probability": null,
-              "n": 0,
+              "hit_rate_excluding_push": 0.5,
+              "mean_probability": 0.7840408753053767,
+              "n": 7,
               "range": [
                 0.65,
                 null
               ]
             },
             "lt_0.40": {
-              "hit_rate_excluding_push": null,
-              "mean_probability": null,
-              "n": 0,
+              "hit_rate_excluding_push": 0.8333333333333334,
+              "mean_probability": 0.25,
+              "n": 3,
               "range": [
                 null,
                 0.4
               ]
             }
           },
-          "calibration_gap": 0.026917334135217463,
-          "grade_counts": {
-            "full_loss": 181,
-            "full_win": 168,
-            "half_loss": 21,
-            "half_win": 37,
+          "calibration_gap": 0.003192549997005578,
+          "decision": {
+            "decision_accuracy_excluding_push": 0.48880597014925375,
+            "decision_integer_hit_rate_excluding_push": 0.527363184079602,
+            "decision_wilson_95": [
+              0.47853120132408317,
+              0.5756771589157215
+            ],
+            "direction_counts": {
+              "away": 209,
+              "home": 216
+            },
+            "direction_flip_rate_vs_v2_lead": 0.47058823529411764,
+            "mean_confidence": 0.5260001949387404,
+            "n_compared_with_v2_lead": 425,
+            "n_decisions": 425,
+            "n_priced_decisions": 225,
+            "n_settled_excluding_push": 402,
+            "rule": "choose primary side when p(primary) >= 0.5, otherwise the opposite side; confidence = max(p, 1 - p)"
+          },
+          "hit_rate_excluding_push": 0.4925373134328358,
+          "log_loss": 0.6977212058110783,
+          "mean_probability": 0.4957298634298414,
+          "n": 402,
+          "n_including_push": 425,
+          "primary_side_grade_counts": {
+            "full_loss": 159,
+            "full_win": 183,
+            "half_loss": 30,
+            "half_win": 30,
             "push": 23
           },
-          "hit_rate_excluding_push": 0.4582309582309582,
-          "integer_hits_excluding_push": 205,
-          "log_loss": 0.6906632860756611,
-          "mean_probability": 0.43131362409574076,
-          "n": 407,
-          "n_including_push": 430,
+          "primary_side_integer_hits_excluding_push": 213,
           "push_n": 23,
           "reliability_diagram": [
             {
               "bin": "lt_0.40",
-              "mean_probability": null,
-              "n": 0,
-              "observed_hit_rate": null
+              "mean_probability": 0.25,
+              "n": 3,
+              "observed_hit_rate": 0.8333333333333334
             },
             {
               "bin": "0.40_0.50",
-              "mean_probability": 0.43131362409574076,
-              "n": 407,
-              "observed_hit_rate": 0.4582309582309582
+              "mean_probability": 0.4738764627521088,
+              "n": 188,
+              "observed_hit_rate": 0.4627659574468085
             },
             {
               "bin": "0.50_0.55",
-              "mean_probability": null,
-              "n": 0,
-              "observed_hit_rate": null
+              "mean_probability": 0.5090067944191864,
+              "n": 203,
+              "observed_hit_rate": 0.5123152709359606
             },
             {
               "bin": "0.55_0.60",
@@ -309,51 +468,56 @@
             },
             {
               "bin": "0.60_0.65",
-              "mean_probability": null,
-              "n": 0,
-              "observed_hit_rate": null
+              "mean_probability": 0.627964707167323,
+              "n": 1,
+              "observed_hit_rate": 1.0
             },
             {
               "bin": "ge_0.65",
-              "mean_probability": null,
-              "n": 0,
-              "observed_hit_rate": null
+              "mean_probability": 0.7840408753053767,
+              "n": 7,
+              "observed_hit_rate": 0.5
             }
           ],
           "roi_at_0.55_threshold": {
-            "hit_rate_excluding_push": null,
-            "integer_hits": 0,
-            "n_bets_excluding_push": 0,
-            "n_bets_including_push": 0,
-            "roi": null,
+            "basis": "direction chosen by this model/probability, priced at the matching T-5 side odds",
+            "direction_counts": {
+              "home": 7
+            },
+            "flip_rate_vs_v2_lead": 0.0,
+            "hit_rate_excluding_push": 0.5,
+            "integer_hits": 3,
+            "n_bets_excluding_push": 5,
+            "n_bets_including_push": 7,
+            "roi": 0.07000000000000002,
             "threshold": 0.55,
-            "unit_pnl": 0.0,
+            "unit_pnl": 0.4900000000000001,
             "wilson_hit_rate_95": [
-              null,
-              null
+              0.2307242812760128,
+              0.882379225767352
             ]
           },
           "wilson": [
-            0.4553040717536122,
-            0.5519980150625806
+            0.48100895564544044,
+            0.5781274373434373
           ]
         },
         "selection": {
-          "brier": 0.21926803891370056,
+          "brier": 0.22764175275845105,
           "buckets": {
             "0.40_0.50": {
-              "hit_rate_excluding_push": 0.42833333333333334,
-              "mean_probability": 0.42833333333333334,
-              "n": 300,
+              "hit_rate_excluding_push": 0.47419354838709676,
+              "mean_probability": 0.4741935483870967,
+              "n": 155,
               "range": [
                 0.4,
                 0.5
               ]
             },
             "0.50_0.55": {
-              "hit_rate_excluding_push": null,
-              "mean_probability": null,
-              "n": 0,
+              "hit_rate_excluding_push": 0.5105633802816901,
+              "mean_probability": 0.5105633802816901,
+              "n": 142,
               "range": [
                 0.5,
                 0.55
@@ -378,57 +542,76 @@
               ]
             },
             "ge_0.65": {
-              "hit_rate_excluding_push": null,
-              "mean_probability": null,
-              "n": 0,
+              "hit_rate_excluding_push": 0.8,
+              "mean_probability": 0.8,
+              "n": 5,
               "range": [
                 0.65,
                 null
               ]
             },
             "lt_0.40": {
-              "hit_rate_excluding_push": 0.0,
-              "mean_probability": 1e-06,
-              "n": 1,
+              "hit_rate_excluding_push": 0.25,
+              "mean_probability": 0.25,
+              "n": 4,
               "range": [
                 null,
                 0.4
               ]
             }
           },
-          "calibration_gap": 3.322259134463934e-09,
-          "grade_counts": {
-            "full_loss": 140,
-            "full_win": 114,
-            "half_loss": 18,
-            "half_win": 29,
+          "calibration_gap": 1.1102230246251565e-16,
+          "decision": {
+            "decision_accuracy_excluding_push": 0.48366013071895425,
+            "decision_integer_hit_rate_excluding_push": 0.5228758169934641,
+            "decision_wilson_95": [
+              0.466976299723806,
+              0.5782080989466825
+            ],
+            "direction_counts": {
+              "away": 166,
+              "home": 157
+            },
+            "direction_flip_rate_vs_v2_lead": 0.46439628482972134,
+            "mean_confidence": 0.5261914002792913,
+            "n_compared_with_v2_lead": 323,
+            "n_decisions": 323,
+            "n_priced_decisions": 173,
+            "n_settled_excluding_push": 306,
+            "rule": "choose primary side when p(primary) >= 0.5, otherwise the opposite side; confidence = max(p, 1 - p)"
+          },
+          "hit_rate_excluding_push": 0.4934640522875817,
+          "log_loss": 0.6873617151765721,
+          "mean_probability": 0.4934640522875816,
+          "n": 306,
+          "n_including_push": 323,
+          "primary_side_grade_counts": {
+            "full_loss": 118,
+            "full_win": 139,
+            "half_loss": 25,
+            "half_win": 24,
             "push": 17
           },
-          "hit_rate_excluding_push": 0.4269102990033223,
-          "integer_hits_excluding_push": 143,
-          "log_loss": 0.6791575579291745,
-          "mean_probability": 0.4269103023255814,
-          "n": 301,
-          "n_including_push": 318,
+          "primary_side_integer_hits_excluding_push": 163,
           "push_n": 17,
           "reliability_diagram": [
             {
               "bin": "lt_0.40",
-              "mean_probability": 1e-06,
-              "n": 1,
-              "observed_hit_rate": 0.0
+              "mean_probability": 0.25,
+              "n": 4,
+              "observed_hit_rate": 0.25
             },
             {
               "bin": "0.40_0.50",
-              "mean_probability": 0.42833333333333334,
-              "n": 300,
-              "observed_hit_rate": 0.42833333333333334
+              "mean_probability": 0.4741935483870967,
+              "n": 155,
+              "observed_hit_rate": 0.47419354838709676
             },
             {
               "bin": "0.50_0.55",
-              "mean_probability": null,
-              "n": 0,
-              "observed_hit_rate": null
+              "mean_probability": 0.5105633802816901,
+              "n": 142,
+              "observed_hit_rate": 0.5105633802816901
             },
             {
               "bin": "0.55_0.60",
@@ -444,734 +627,954 @@
             },
             {
               "bin": "ge_0.65",
-              "mean_probability": null,
-              "n": 0,
-              "observed_hit_rate": null
+              "mean_probability": 0.8,
+              "n": 5,
+              "observed_hit_rate": 0.8
             }
           ],
           "roi_at_0.55_threshold": {
-            "hit_rate_excluding_push": null,
-            "integer_hits": 0,
-            "n_bets_excluding_push": 0,
-            "n_bets_including_push": 0,
-            "roi": null,
+            "basis": "direction chosen by this model/probability, priced at the matching T-5 side odds",
+            "direction_counts": {
+              "away": 2,
+              "home": 3
+            },
+            "flip_rate_vs_v2_lead": 0.0,
+            "hit_rate_excluding_push": 0.5,
+            "integer_hits": 2,
+            "n_bets_excluding_push": 4,
+            "n_bets_including_push": 5,
+            "roi": -0.06999999999999998,
             "threshold": 0.55,
-            "unit_pnl": 0.0,
+            "unit_pnl": -0.34999999999999987,
             "wilson_hit_rate_95": [
-              null,
-              null
+              0.15003898915214947,
+              0.8499610108478506
             ]
           },
           "wilson": [
-            0.41933771063389974,
-            0.5314563839160056
+            0.4767186598086509,
+            0.5878304811491898
           ]
         }
       },
-      "league_target_encoding_prior": 0.48248882265275705,
+      "league_target_encoding_prior": 0.4501477104874446,
       "platt": {
         "holdout": {
-          "brier": 0.22915563448024093,
+          "brier": 0.2534194709592896,
           "buckets": {
             "0.40_0.50": {
-              "hit_rate_excluding_push": 0.4421052631578947,
-              "mean_probability": 0.4363782979328655,
-              "n": 285,
+              "hit_rate_excluding_push": 0.48936170212765956,
+              "mean_probability": 0.45798504069402746,
+              "n": 94,
               "range": [
                 0.4,
                 0.5
               ]
             },
             "0.50_0.55": {
-              "hit_rate_excluding_push": 0.5625,
-              "mean_probability": 0.5151989459222182,
-              "n": 8,
+              "hit_rate_excluding_push": 0.5119047619047619,
+              "mean_probability": 0.5199339038864714,
+              "n": 42,
               "range": [
                 0.5,
                 0.55
               ]
             },
             "0.55_0.60": {
-              "hit_rate_excluding_push": null,
-              "mean_probability": null,
-              "n": 0,
+              "hit_rate_excluding_push": 0.49166666666666664,
+              "mean_probability": 0.5729167653146893,
+              "n": 60,
               "range": [
                 0.55,
                 0.6
               ]
             },
             "0.60_0.65": {
-              "hit_rate_excluding_push": null,
-              "mean_probability": null,
-              "n": 0,
+              "hit_rate_excluding_push": 0.48333333333333334,
+              "mean_probability": 0.623377170525362,
+              "n": 30,
               "range": [
                 0.6,
                 0.65
               ]
             },
             "ge_0.65": {
-              "hit_rate_excluding_push": null,
-              "mean_probability": null,
-              "n": 0,
+              "hit_rate_excluding_push": 0.5227272727272727,
+              "mean_probability": 0.7369465423774302,
+              "n": 88,
               "range": [
                 0.65,
                 null
               ]
             },
             "lt_0.40": {
-              "hit_rate_excluding_push": 0.49122807017543857,
-              "mean_probability": 0.37578633653493254,
-              "n": 114,
+              "hit_rate_excluding_push": 0.4602272727272727,
+              "mean_probability": 0.29617805822771853,
+              "n": 88,
               "range": [
                 null,
                 0.4
               ]
             }
           },
-          "calibration_gap": 0.03727506426725624,
-          "grade_counts": {
-            "full_loss": 181,
-            "full_win": 168,
-            "half_loss": 21,
-            "half_win": 37,
+          "calibration_gap": 0.02706244695613358,
+          "decision": {
+            "decision_accuracy_excluding_push": 0.48383084577114427,
+            "decision_integer_hit_rate_excluding_push": 0.5248756218905473,
+            "decision_wilson_95": [
+              0.4760546449993225,
+              0.5732256824914089
+            ],
+            "direction_counts": {
+              "away": 198,
+              "home": 227
+            },
+            "direction_flip_rate_vs_v2_lead": 0.4588235294117647,
+            "mean_confidence": 0.6297065914116051,
+            "n_compared_with_v2_lead": 425,
+            "n_decisions": 425,
+            "n_priced_decisions": 230,
+            "n_settled_excluding_push": 402,
+            "rule": "choose primary side when p(primary) >= 0.5, otherwise the opposite side; confidence = max(p, 1 - p)"
+          },
+          "hit_rate_excluding_push": 0.4925373134328358,
+          "log_loss": 0.7493400721527947,
+          "mean_probability": 0.5195997603889694,
+          "n": 402,
+          "n_including_push": 425,
+          "primary_side_grade_counts": {
+            "full_loss": 159,
+            "full_win": 183,
+            "half_loss": 30,
+            "half_win": 30,
             "push": 23
           },
-          "hit_rate_excluding_push": 0.4582309582309582,
-          "integer_hits_excluding_push": 205,
-          "log_loss": 0.6972650377729446,
-          "mean_probability": 0.420955893963702,
-          "n": 407,
-          "n_including_push": 430,
+          "primary_side_integer_hits_excluding_push": 213,
           "push_n": 23,
           "reliability_diagram": [
             {
               "bin": "lt_0.40",
-              "mean_probability": 0.37578633653493254,
-              "n": 114,
-              "observed_hit_rate": 0.49122807017543857
+              "mean_probability": 0.29617805822771853,
+              "n": 88,
+              "observed_hit_rate": 0.4602272727272727
             },
             {
               "bin": "0.40_0.50",
-              "mean_probability": 0.4363782979328655,
-              "n": 285,
-              "observed_hit_rate": 0.4421052631578947
+              "mean_probability": 0.45798504069402746,
+              "n": 94,
+              "observed_hit_rate": 0.48936170212765956
             },
             {
               "bin": "0.50_0.55",
-              "mean_probability": 0.5151989459222182,
-              "n": 8,
-              "observed_hit_rate": 0.5625
+              "mean_probability": 0.5199339038864714,
+              "n": 42,
+              "observed_hit_rate": 0.5119047619047619
             },
             {
               "bin": "0.55_0.60",
-              "mean_probability": null,
-              "n": 0,
-              "observed_hit_rate": null
+              "mean_probability": 0.5729167653146893,
+              "n": 60,
+              "observed_hit_rate": 0.49166666666666664
             },
             {
               "bin": "0.60_0.65",
-              "mean_probability": null,
-              "n": 0,
-              "observed_hit_rate": null
+              "mean_probability": 0.623377170525362,
+              "n": 30,
+              "observed_hit_rate": 0.48333333333333334
             },
             {
               "bin": "ge_0.65",
-              "mean_probability": null,
-              "n": 0,
-              "observed_hit_rate": null
+              "mean_probability": 0.7369465423774302,
+              "n": 88,
+              "observed_hit_rate": 0.5227272727272727
             }
           ],
           "roi_at_0.55_threshold": {
-            "hit_rate_excluding_push": null,
-            "integer_hits": 0,
-            "n_bets_excluding_push": 0,
-            "n_bets_including_push": 0,
-            "roi": null,
+            "basis": "direction chosen by this model/probability, priced at the matching T-5 side odds",
+            "direction_counts": {
+              "away": 82,
+              "home": 92
+            },
+            "flip_rate_vs_v2_lead": 0.0,
+            "hit_rate_excluding_push": 0.5060975609756098,
+            "integer_hits": 90,
+            "n_bets_excluding_push": 164,
+            "n_bets_including_push": 174,
+            "roi": -0.011063218390804591,
             "threshold": 0.55,
-            "unit_pnl": 0.0,
+            "unit_pnl": -1.924999999999999,
             "wilson_hit_rate_95": [
-              null,
-              null
+              0.472373648109953,
+              0.6229544079759566
             ]
           },
           "wilson": [
-            0.4553040717536122,
-            0.5519980150625806
+            0.48100895564544044,
+            0.5781274373434373
           ]
         },
         "selection": {
-          "brier": 0.21914193210402005,
+          "brier": 0.26233591348066626,
           "buckets": {
             "0.40_0.50": {
-              "hit_rate_excluding_push": 0.40271493212669685,
-              "mean_probability": 0.43610223477175053,
-              "n": 221,
+              "hit_rate_excluding_push": 0.4276315789473684,
+              "mean_probability": 0.45719655080226407,
+              "n": 76,
               "range": [
                 0.4,
                 0.5
               ]
             },
             "0.50_0.55": {
-              "hit_rate_excluding_push": 0.6818181818181818,
-              "mean_probability": 0.5208441247815442,
-              "n": 11,
+              "hit_rate_excluding_push": 0.5172413793103449,
+              "mean_probability": 0.5236547915736336,
+              "n": 29,
               "range": [
                 0.5,
                 0.55
               ]
             },
             "0.55_0.60": {
-              "hit_rate_excluding_push": 0.0,
-              "mean_probability": 0.5555296313807623,
-              "n": 1,
+              "hit_rate_excluding_push": 0.7368421052631579,
+              "mean_probability": 0.5769456194273602,
+              "n": 19,
               "range": [
                 0.55,
                 0.6
               ]
             },
             "0.60_0.65": {
-              "hit_rate_excluding_push": null,
-              "mean_probability": null,
-              "n": 0,
+              "hit_rate_excluding_push": 0.3484848484848485,
+              "mean_probability": 0.6223566373182164,
+              "n": 33,
               "range": [
                 0.6,
                 0.65
               ]
             },
             "ge_0.65": {
-              "hit_rate_excluding_push": null,
-              "mean_probability": null,
-              "n": 0,
+              "hit_rate_excluding_push": 0.5138888888888888,
+              "mean_probability": 0.7319808503266976,
+              "n": 72,
               "range": [
                 0.65,
                 null
               ]
             },
             "lt_0.40": {
-              "hit_rate_excluding_push": 0.47058823529411764,
-              "mean_probability": 0.3799498692862556,
-              "n": 68,
+              "hit_rate_excluding_push": 0.5324675324675324,
+              "mean_probability": 0.2909437143538488,
+              "n": 77,
               "range": [
                 null,
                 0.4
               ]
             }
           },
-          "calibration_gap": 0.0,
-          "grade_counts": {
-            "full_loss": 140,
-            "full_win": 114,
-            "half_loss": 18,
-            "half_win": 29,
+          "calibration_gap": 0.01809787531371576,
+          "decision": {
+            "decision_accuracy_excluding_push": 0.477124183006536,
+            "decision_integer_hit_rate_excluding_push": 0.5163398692810458,
+            "decision_wilson_95": [
+              0.460493177916267,
+              0.5717813925626535
+            ],
+            "direction_counts": {
+              "away": 160,
+              "home": 163
+            },
+            "direction_flip_rate_vs_v2_lead": 0.4458204334365325,
+            "mean_confidence": 0.6392372893263862,
+            "n_compared_with_v2_lead": 323,
+            "n_decisions": 323,
+            "n_priced_decisions": 179,
+            "n_settled_excluding_push": 306,
+            "rule": "choose primary side when p(primary) >= 0.5, otherwise the opposite side; confidence = max(p, 1 - p)"
+          },
+          "hit_rate_excluding_push": 0.4934640522875817,
+          "log_loss": 0.7700567675262093,
+          "mean_probability": 0.5115619276012975,
+          "n": 306,
+          "n_including_push": 323,
+          "primary_side_grade_counts": {
+            "full_loss": 118,
+            "full_win": 139,
+            "half_loss": 25,
+            "half_win": 24,
             "push": 17
           },
-          "hit_rate_excluding_push": 0.4269102990033223,
-          "integer_hits_excluding_push": 143,
-          "log_loss": 0.6794580033749377,
-          "mean_probability": 0.4269102990033223,
-          "n": 301,
-          "n_including_push": 318,
+          "primary_side_integer_hits_excluding_push": 163,
           "push_n": 17,
           "reliability_diagram": [
             {
               "bin": "lt_0.40",
-              "mean_probability": 0.3799498692862556,
-              "n": 68,
-              "observed_hit_rate": 0.47058823529411764
+              "mean_probability": 0.2909437143538488,
+              "n": 77,
+              "observed_hit_rate": 0.5324675324675324
             },
             {
               "bin": "0.40_0.50",
-              "mean_probability": 0.43610223477175053,
-              "n": 221,
-              "observed_hit_rate": 0.40271493212669685
+              "mean_probability": 0.45719655080226407,
+              "n": 76,
+              "observed_hit_rate": 0.4276315789473684
             },
             {
               "bin": "0.50_0.55",
-              "mean_probability": 0.5208441247815442,
-              "n": 11,
-              "observed_hit_rate": 0.6818181818181818
+              "mean_probability": 0.5236547915736336,
+              "n": 29,
+              "observed_hit_rate": 0.5172413793103449
             },
             {
               "bin": "0.55_0.60",
-              "mean_probability": 0.5555296313807623,
-              "n": 1,
-              "observed_hit_rate": 0.0
+              "mean_probability": 0.5769456194273602,
+              "n": 19,
+              "observed_hit_rate": 0.7368421052631579
             },
             {
               "bin": "0.60_0.65",
-              "mean_probability": null,
-              "n": 0,
-              "observed_hit_rate": null
+              "mean_probability": 0.6223566373182164,
+              "n": 33,
+              "observed_hit_rate": 0.3484848484848485
             },
             {
               "bin": "ge_0.65",
-              "mean_probability": null,
-              "n": 0,
-              "observed_hit_rate": null
+              "mean_probability": 0.7319808503266976,
+              "n": 72,
+              "observed_hit_rate": 0.5138888888888888
             }
           ],
           "roi_at_0.55_threshold": {
-            "hit_rate_excluding_push": 0.0,
-            "integer_hits": 0,
-            "n_bets_excluding_push": 1,
-            "n_bets_including_push": 1,
-            "roi": -1.0,
+            "basis": "direction chosen by this model/probability, priced at the matching T-5 side odds",
+            "direction_counts": {
+              "away": 64,
+              "home": 75
+            },
+            "flip_rate_vs_v2_lead": 0.0,
+            "hit_rate_excluding_push": 0.4330708661417323,
+            "integer_hits": 61,
+            "n_bets_excluding_push": 127,
+            "n_bets_including_push": 139,
+            "roi": -0.1262589928057554,
             "threshold": 0.55,
-            "unit_pnl": -1.0,
+            "unit_pnl": -17.55,
             "wilson_hit_rate_95": [
-              0.0,
-              0.7934506856227626
+              0.3952840957619168,
+              0.5665017170449244
             ]
           },
           "wilson": [
-            0.41933771063389974,
-            0.5314563839160056
+            0.4767186598086509,
+            0.5878304811491898
           ]
         }
       },
       "raw": {
         "discovery": {
-          "brier": 0.1702423678186227,
+          "brier": 0.1692724787045215,
           "buckets": {
             "0.40_0.50": {
-              "hit_rate_excluding_push": 0.4577114427860697,
-              "mean_probability": 0.44928329595603894,
-              "n": 201,
+              "hit_rate_excluding_push": 0.4153846153846154,
+              "mean_probability": 0.4541559835225931,
+              "n": 195,
               "range": [
                 0.4,
                 0.5
               ]
             },
             "0.50_0.55": {
-              "hit_rate_excluding_push": 0.44387755102040816,
-              "mean_probability": 0.5254476046484798,
-              "n": 98,
+              "hit_rate_excluding_push": 0.5333333333333333,
+              "mean_probability": 0.524794983330475,
+              "n": 90,
               "range": [
                 0.5,
                 0.55
               ]
             },
             "0.55_0.60": {
-              "hit_rate_excluding_push": 0.657608695652174,
-              "mean_probability": 0.5730986790501158,
-              "n": 92,
+              "hit_rate_excluding_push": 0.5611510791366906,
+              "mean_probability": 0.5739065309647824,
+              "n": 139,
               "range": [
                 0.55,
                 0.6
               ]
             },
             "0.60_0.65": {
-              "hit_rate_excluding_push": 0.6651376146788991,
-              "mean_probability": 0.6271381693435651,
-              "n": 109,
+              "hit_rate_excluding_push": 0.7578947368421053,
+              "mean_probability": 0.6237270957036793,
+              "n": 95,
               "range": [
                 0.6,
                 0.65
               ]
             },
             "ge_0.65": {
-              "hit_rate_excluding_push": 0.7835820895522388,
-              "mean_probability": 0.7368590418982973,
-              "n": 335,
+              "hit_rate_excluding_push": 0.7924528301886793,
+              "mean_probability": 0.7340333450998974,
+              "n": 265,
               "range": [
                 0.65,
                 null
               ]
             },
             "lt_0.40": {
-              "hit_rate_excluding_push": 0.22978303747534518,
-              "mean_probability": 0.27205975468856936,
-              "n": 507,
+              "hit_rate_excluding_push": 0.21140350877192982,
+              "mean_probability": 0.24623577193613033,
+              "n": 570,
               "range": [
                 null,
                 0.4
               ]
             }
           },
-          "calibration_gap": 0.0001229667189332484,
-          "grade_counts": {
-            "full_loss": 550,
-            "full_win": 590,
-            "half_loss": 87,
-            "half_win": 115,
-            "push": 96
+          "calibration_gap": 0.00014200416371479285,
+          "decision": {
+            "decision_accuracy_excluding_push": 0.6617429837518464,
+            "decision_integer_hit_rate_excluding_push": 0.7082717872968981,
+            "decision_wilson_95": [
+              0.6834978130896662,
+              0.7318673212831218
+            ],
+            "direction_counts": {
+              "away": 820,
+              "home": 631
+            },
+            "direction_flip_rate_vs_v2_lead": 0.45761543762922124,
+            "mean_confidence": 0.6769742145100381,
+            "n_compared_with_v2_lead": 1451,
+            "n_decisions": 1451,
+            "n_priced_decisions": 787,
+            "n_settled_excluding_push": 1354,
+            "rule": "choose primary side when p(primary) >= 0.5, otherwise the opposite side; confidence = max(p, 1 - p)"
           },
-          "hit_rate_excluding_push": 0.48248882265275705,
-          "integer_hits_excluding_push": 705,
-          "log_loss": 0.5639452670252033,
-          "mean_probability": 0.4826117893716903,
-          "n": 1342,
-          "n_including_push": 1438,
-          "push_n": 96,
+          "hit_rate_excluding_push": 0.4501477104874446,
+          "log_loss": 0.550464017201256,
+          "mean_probability": 0.4502897146511594,
+          "n": 1354,
+          "n_including_push": 1451,
+          "primary_side_grade_counts": {
+            "full_loss": 585,
+            "full_win": 565,
+            "half_loss": 115,
+            "half_win": 89,
+            "push": 97
+          },
+          "primary_side_integer_hits_excluding_push": 654,
+          "push_n": 97,
           "reliability_diagram": [
             {
               "bin": "lt_0.40",
-              "mean_probability": 0.27205975468856936,
-              "n": 507,
-              "observed_hit_rate": 0.22978303747534518
+              "mean_probability": 0.24623577193613033,
+              "n": 570,
+              "observed_hit_rate": 0.21140350877192982
             },
             {
               "bin": "0.40_0.50",
-              "mean_probability": 0.44928329595603894,
-              "n": 201,
-              "observed_hit_rate": 0.4577114427860697
+              "mean_probability": 0.4541559835225931,
+              "n": 195,
+              "observed_hit_rate": 0.4153846153846154
             },
             {
               "bin": "0.50_0.55",
-              "mean_probability": 0.5254476046484798,
-              "n": 98,
-              "observed_hit_rate": 0.44387755102040816
+              "mean_probability": 0.524794983330475,
+              "n": 90,
+              "observed_hit_rate": 0.5333333333333333
             },
             {
               "bin": "0.55_0.60",
-              "mean_probability": 0.5730986790501158,
-              "n": 92,
-              "observed_hit_rate": 0.657608695652174
+              "mean_probability": 0.5739065309647824,
+              "n": 139,
+              "observed_hit_rate": 0.5611510791366906
             },
             {
               "bin": "0.60_0.65",
-              "mean_probability": 0.6271381693435651,
-              "n": 109,
-              "observed_hit_rate": 0.6651376146788991
+              "mean_probability": 0.6237270957036793,
+              "n": 95,
+              "observed_hit_rate": 0.7578947368421053
             },
             {
               "bin": "ge_0.65",
-              "mean_probability": 0.7368590418982973,
-              "n": 335,
-              "observed_hit_rate": 0.7835820895522388
+              "mean_probability": 0.7340333450998974,
+              "n": 265,
+              "observed_hit_rate": 0.7924528301886793
             }
           ],
           "roi_at_0.55_threshold": {
-            "hit_rate_excluding_push": 0.7378731343283582,
-            "integer_hits": 415,
-            "n_bets_excluding_push": 536,
-            "n_bets_including_push": 566,
-            "roi": 0.3615724381625442,
+            "basis": "direction chosen by this model/probability, priced at the matching T-5 side odds",
+            "direction_counts": {
+              "away": 387,
+              "home": 299
+            },
+            "flip_rate_vs_v2_lead": 0.0,
+            "hit_rate_excluding_push": 0.6899529042386185,
+            "integer_hits": 473,
+            "n_bets_excluding_push": 637,
+            "n_bets_including_push": 686,
+            "roi": 0.30339650145772595,
             "threshold": 0.55,
-            "unit_pnl": 204.65,
+            "unit_pnl": 208.13,
             "wilson_hit_rate_95": [
-              0.736981343131758,
-              0.8076229943014119
+              0.7072059451676974,
+              0.7749725964151709
             ]
           },
           "wilson": [
-            0.4985843157804086,
-            0.5519416949575764
+            0.4564820533968104,
+            0.5096406484096644
           ]
         },
         "holdout": {
-          "brier": 0.2564771745943808,
+          "brier": 0.2534194709592896,
           "buckets": {
             "0.40_0.50": {
-              "hit_rate_excluding_push": 0.44375,
-              "mean_probability": 0.4509551982803788,
-              "n": 80,
+              "hit_rate_excluding_push": 0.48936170212765956,
+              "mean_probability": 0.45798504069402746,
+              "n": 94,
               "range": [
                 0.4,
                 0.5
               ]
             },
             "0.50_0.55": {
-              "hit_rate_excluding_push": 0.45535714285714285,
-              "mean_probability": 0.5215239077131819,
-              "n": 56,
+              "hit_rate_excluding_push": 0.5119047619047619,
+              "mean_probability": 0.5199339038864714,
+              "n": 42,
               "range": [
                 0.5,
                 0.55
               ]
             },
             "0.55_0.60": {
-              "hit_rate_excluding_push": 0.4375,
-              "mean_probability": 0.5714581386626559,
-              "n": 40,
+              "hit_rate_excluding_push": 0.49166666666666664,
+              "mean_probability": 0.5729167653146893,
+              "n": 60,
               "range": [
                 0.55,
                 0.6
               ]
             },
             "0.60_0.65": {
-              "hit_rate_excluding_push": 0.36486486486486486,
-              "mean_probability": 0.6244993838361014,
-              "n": 37,
+              "hit_rate_excluding_push": 0.48333333333333334,
+              "mean_probability": 0.623377170525362,
+              "n": 30,
               "range": [
                 0.6,
                 0.65
               ]
             },
             "ge_0.65": {
-              "hit_rate_excluding_push": 0.5049019607843137,
-              "mean_probability": 0.7482624622983772,
-              "n": 102,
+              "hit_rate_excluding_push": 0.5227272727272727,
+              "mean_probability": 0.7369465423774302,
+              "n": 88,
               "range": [
                 0.65,
                 null
               ]
             },
             "lt_0.40": {
-              "hit_rate_excluding_push": 0.4673913043478261,
-              "mean_probability": 0.2953205453409418,
-              "n": 92,
+              "hit_rate_excluding_push": 0.4602272727272727,
+              "mean_probability": 0.29617805822771853,
+              "n": 88,
               "range": [
                 null,
                 0.4
               ]
             }
           },
-          "calibration_gap": 0.06938284709732584,
-          "grade_counts": {
-            "full_loss": 181,
-            "full_win": 168,
-            "half_loss": 21,
-            "half_win": 37,
+          "calibration_gap": 0.02706244695613358,
+          "decision": {
+            "decision_accuracy_excluding_push": 0.48383084577114427,
+            "decision_integer_hit_rate_excluding_push": 0.5248756218905473,
+            "decision_wilson_95": [
+              0.4760546449993225,
+              0.5732256824914089
+            ],
+            "direction_counts": {
+              "away": 198,
+              "home": 227
+            },
+            "direction_flip_rate_vs_v2_lead": 0.4588235294117647,
+            "mean_confidence": 0.6297065914116051,
+            "n_compared_with_v2_lead": 425,
+            "n_decisions": 425,
+            "n_priced_decisions": 230,
+            "n_settled_excluding_push": 402,
+            "rule": "choose primary side when p(primary) >= 0.5, otherwise the opposite side; confidence = max(p, 1 - p)"
+          },
+          "hit_rate_excluding_push": 0.4925373134328358,
+          "log_loss": 0.7493400721527947,
+          "mean_probability": 0.5195997603889694,
+          "n": 402,
+          "n_including_push": 425,
+          "primary_side_grade_counts": {
+            "full_loss": 159,
+            "full_win": 183,
+            "half_loss": 30,
+            "half_win": 30,
             "push": 23
           },
-          "hit_rate_excluding_push": 0.4582309582309582,
-          "integer_hits_excluding_push": 205,
-          "log_loss": 0.7637896173060208,
-          "mean_probability": 0.5276138053282841,
-          "n": 407,
-          "n_including_push": 430,
+          "primary_side_integer_hits_excluding_push": 213,
           "push_n": 23,
           "reliability_diagram": [
             {
               "bin": "lt_0.40",
-              "mean_probability": 0.2953205453409418,
-              "n": 92,
-              "observed_hit_rate": 0.4673913043478261
+              "mean_probability": 0.29617805822771853,
+              "n": 88,
+              "observed_hit_rate": 0.4602272727272727
             },
             {
               "bin": "0.40_0.50",
-              "mean_probability": 0.4509551982803788,
-              "n": 80,
-              "observed_hit_rate": 0.44375
+              "mean_probability": 0.45798504069402746,
+              "n": 94,
+              "observed_hit_rate": 0.48936170212765956
             },
             {
               "bin": "0.50_0.55",
-              "mean_probability": 0.5215239077131819,
-              "n": 56,
-              "observed_hit_rate": 0.45535714285714285
+              "mean_probability": 0.5199339038864714,
+              "n": 42,
+              "observed_hit_rate": 0.5119047619047619
             },
             {
               "bin": "0.55_0.60",
-              "mean_probability": 0.5714581386626559,
-              "n": 40,
-              "observed_hit_rate": 0.4375
+              "mean_probability": 0.5729167653146893,
+              "n": 60,
+              "observed_hit_rate": 0.49166666666666664
             },
             {
               "bin": "0.60_0.65",
-              "mean_probability": 0.6244993838361014,
-              "n": 37,
-              "observed_hit_rate": 0.36486486486486486
+              "mean_probability": 0.623377170525362,
+              "n": 30,
+              "observed_hit_rate": 0.48333333333333334
             },
             {
               "bin": "ge_0.65",
-              "mean_probability": 0.7482624622983772,
-              "n": 102,
-              "observed_hit_rate": 0.5049019607843137
+              "mean_probability": 0.7369465423774302,
+              "n": 88,
+              "observed_hit_rate": 0.5227272727272727
             }
           ],
           "roi_at_0.55_threshold": {
-            "hit_rate_excluding_push": 0.46089385474860334,
-            "integer_hits": 93,
-            "n_bets_excluding_push": 179,
-            "n_bets_including_push": 186,
-            "roi": -0.08637096774193548,
+            "basis": "direction chosen by this model/probability, priced at the matching T-5 side odds",
+            "direction_counts": {
+              "away": 82,
+              "home": 92
+            },
+            "flip_rate_vs_v2_lead": 0.0,
+            "hit_rate_excluding_push": 0.5060975609756098,
+            "integer_hits": 90,
+            "n_bets_excluding_push": 164,
+            "n_bets_including_push": 174,
+            "roi": -0.011063218390804591,
             "threshold": 0.55,
-            "unit_pnl": -16.064999999999998,
+            "unit_pnl": -1.924999999999999,
             "wilson_hit_rate_95": [
-              0.44672278578328783,
-              0.5915617479605859
+              0.472373648109953,
+              0.6229544079759566
             ]
           },
           "wilson": [
-            0.4553040717536122,
-            0.5519980150625806
+            0.48100895564544044,
+            0.5781274373434373
           ]
         },
         "selection": {
-          "brier": 0.26659006609990665,
+          "brier": 0.26233591348066626,
           "buckets": {
             "0.40_0.50": {
-              "hit_rate_excluding_push": 0.3939393939393939,
-              "mean_probability": 0.4502954573311831,
-              "n": 66,
+              "hit_rate_excluding_push": 0.4276315789473684,
+              "mean_probability": 0.45719655080226407,
+              "n": 76,
               "range": [
                 0.4,
                 0.5
               ]
             },
             "0.50_0.55": {
-              "hit_rate_excluding_push": 0.4142857142857143,
-              "mean_probability": 0.5269451858600723,
-              "n": 35,
+              "hit_rate_excluding_push": 0.5172413793103449,
+              "mean_probability": 0.5236547915736336,
+              "n": 29,
               "range": [
                 0.5,
                 0.55
               ]
             },
             "0.55_0.60": {
-              "hit_rate_excluding_push": 0.38235294117647056,
-              "mean_probability": 0.5717871677828852,
-              "n": 34,
+              "hit_rate_excluding_push": 0.7368421052631579,
+              "mean_probability": 0.5769456194273602,
+              "n": 19,
               "range": [
                 0.55,
                 0.6
               ]
             },
             "0.60_0.65": {
-              "hit_rate_excluding_push": 0.36666666666666664,
-              "mean_probability": 0.6248296377480392,
-              "n": 30,
+              "hit_rate_excluding_push": 0.3484848484848485,
+              "mean_probability": 0.6223566373182164,
+              "n": 33,
               "range": [
                 0.6,
                 0.65
               ]
             },
             "ge_0.65": {
-              "hit_rate_excluding_push": 0.45,
-              "mean_probability": 0.7306003343759784,
-              "n": 60,
+              "hit_rate_excluding_push": 0.5138888888888888,
+              "mean_probability": 0.7319808503266976,
+              "n": 72,
               "range": [
                 0.65,
                 null
               ]
             },
             "lt_0.40": {
-              "hit_rate_excluding_push": 0.4868421052631579,
-              "mean_probability": 0.2767473411179853,
-              "n": 76,
+              "hit_rate_excluding_push": 0.5324675324675324,
+              "mean_probability": 0.2909437143538488,
+              "n": 77,
               "range": [
                 null,
                 0.4
               ]
             }
           },
-          "calibration_gap": 0.07547193526094836,
-          "grade_counts": {
-            "full_loss": 140,
-            "full_win": 114,
-            "half_loss": 18,
-            "half_win": 29,
+          "calibration_gap": 0.01809787531371576,
+          "decision": {
+            "decision_accuracy_excluding_push": 0.477124183006536,
+            "decision_integer_hit_rate_excluding_push": 0.5163398692810458,
+            "decision_wilson_95": [
+              0.460493177916267,
+              0.5717813925626535
+            ],
+            "direction_counts": {
+              "away": 160,
+              "home": 163
+            },
+            "direction_flip_rate_vs_v2_lead": 0.4458204334365325,
+            "mean_confidence": 0.6392372893263862,
+            "n_compared_with_v2_lead": 323,
+            "n_decisions": 323,
+            "n_priced_decisions": 179,
+            "n_settled_excluding_push": 306,
+            "rule": "choose primary side when p(primary) >= 0.5, otherwise the opposite side; confidence = max(p, 1 - p)"
+          },
+          "hit_rate_excluding_push": 0.4934640522875817,
+          "log_loss": 0.7700567675262093,
+          "mean_probability": 0.5115619276012975,
+          "n": 306,
+          "n_including_push": 323,
+          "primary_side_grade_counts": {
+            "full_loss": 118,
+            "full_win": 139,
+            "half_loss": 25,
+            "half_win": 24,
             "push": 17
           },
-          "hit_rate_excluding_push": 0.4269102990033223,
-          "integer_hits_excluding_push": 143,
-          "log_loss": 0.7956290163281056,
-          "mean_probability": 0.5023822342642706,
-          "n": 301,
-          "n_including_push": 318,
+          "primary_side_integer_hits_excluding_push": 163,
           "push_n": 17,
           "reliability_diagram": [
             {
               "bin": "lt_0.40",
-              "mean_probability": 0.2767473411179853,
-              "n": 76,
-              "observed_hit_rate": 0.4868421052631579
+              "mean_probability": 0.2909437143538488,
+              "n": 77,
+              "observed_hit_rate": 0.5324675324675324
             },
             {
               "bin": "0.40_0.50",
-              "mean_probability": 0.4502954573311831,
-              "n": 66,
-              "observed_hit_rate": 0.3939393939393939
+              "mean_probability": 0.45719655080226407,
+              "n": 76,
+              "observed_hit_rate": 0.4276315789473684
             },
             {
               "bin": "0.50_0.55",
-              "mean_probability": 0.5269451858600723,
-              "n": 35,
-              "observed_hit_rate": 0.4142857142857143
+              "mean_probability": 0.5236547915736336,
+              "n": 29,
+              "observed_hit_rate": 0.5172413793103449
             },
             {
               "bin": "0.55_0.60",
-              "mean_probability": 0.5717871677828852,
-              "n": 34,
-              "observed_hit_rate": 0.38235294117647056
+              "mean_probability": 0.5769456194273602,
+              "n": 19,
+              "observed_hit_rate": 0.7368421052631579
             },
             {
               "bin": "0.60_0.65",
-              "mean_probability": 0.6248296377480392,
-              "n": 30,
-              "observed_hit_rate": 0.36666666666666664
+              "mean_probability": 0.6223566373182164,
+              "n": 33,
+              "observed_hit_rate": 0.3484848484848485
             },
             {
               "bin": "ge_0.65",
-              "mean_probability": 0.7306003343759784,
-              "n": 60,
-              "observed_hit_rate": 0.45
+              "mean_probability": 0.7319808503266976,
+              "n": 72,
+              "observed_hit_rate": 0.5138888888888888
             }
           ],
           "roi_at_0.55_threshold": {
-            "hit_rate_excluding_push": 0.4112903225806452,
-            "integer_hits": 57,
-            "n_bets_excluding_push": 124,
-            "n_bets_including_push": 132,
-            "roi": -0.14583333333333334,
+            "basis": "direction chosen by this model/probability, priced at the matching T-5 side odds",
+            "direction_counts": {
+              "away": 64,
+              "home": 75
+            },
+            "flip_rate_vs_v2_lead": 0.0,
+            "hit_rate_excluding_push": 0.4330708661417323,
+            "integer_hits": 61,
+            "n_bets_excluding_push": 127,
+            "n_bets_including_push": 139,
+            "roi": -0.1262589928057554,
             "threshold": 0.55,
-            "unit_pnl": -19.25,
+            "unit_pnl": -17.55,
             "wilson_hit_rate_95": [
-              0.3744901824152907,
-              0.5472879317250866
+              0.3952840957619168,
+              0.5665017170449244
             ]
           },
           "wilson": [
-            0.41933771063389974,
-            0.5314563839160056
+            0.4767186598086509,
+            0.5878304811491898
           ]
         }
       },
       "training": {
-        "discovery_rows_excluding_push": 1342,
-        "expanded_training_rows": 1457,
+        "discovery_rows_excluding_push": 1354,
+        "expanded_training_rows": 1443,
         "half_win_half_loss_weighting": "label 0.5 expanded into weighted 1/0 rows"
       }
     },
     "hil": {
       "calibration_meta": {
         "fit_split": "selection",
+        "grid": [
+          0.02,
+          0.06,
+          0.1,
+          0.14,
+          0.18,
+          0.22,
+          0.26,
+          0.3,
+          0.34,
+          0.38,
+          0.42,
+          0.46,
+          0.5,
+          0.54,
+          0.58,
+          0.62,
+          0.66,
+          0.7,
+          0.74,
+          0.78,
+          0.82,
+          0.86,
+          0.9,
+          0.94,
+          0.98
+        ],
         "holdout_never_used_for_fitting": true,
-        "isotonic_fit_n": 353,
-        "platt_fit_n": 353
+        "isotonic_fit_n": 357,
+        "isotonic_grid_mapped": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.07995361554869303,
+          0.21895208320868986,
+          0.3620689655172414,
+          0.3620689655172414,
+          0.4166666666666667,
+          0.4166666666666667,
+          0.4166666666666667,
+          0.46009389671361517,
+          0.46009389671361517,
+          0.46009389671361517,
+          0.46009389671361517,
+          0.46009389671361517,
+          0.46009389671361517,
+          0.46009389671361517,
+          0.46009389671361517,
+          0.625,
+          0.625,
+          0.625,
+          0.625,
+          0.625,
+          0.625
+        ],
+        "isotonic_is_non_decreasing": true,
+        "platt_fit_n": 357,
+        "platt_grid_mapped": [
+          0.3159674865982779,
+          0.3518249642753087,
+          0.3699112780743471,
+          0.38259282102047504,
+          0.39263249238112746,
+          0.40112228543595835,
+          0.40861206223725705,
+          0.4154218290042765,
+          0.42175786235549906,
+          0.4277644567709497,
+          0.4335501727678609,
+          0.43920266532118046,
+          0.44479801331745905,
+          0.4504073930948059,
+          0.456102699685341,
+          0.46196227762741965,
+          0.4680779581737959,
+          0.47456513125500194,
+          0.48157898784108216,
+          0.48934353243870843,
+          0.498209156263874,
+          0.5087826027111216,
+          0.522278745547115,
+          0.5418030792464837,
+          0.5815020998870571
+        ],
+        "platt_is_increasing": true,
+        "platt_rejected_and_scored_as_raw": false,
+        "platt_slope": 0.1414901973122003,
+        "requirement": "a calibrator must be non-decreasing in the raw probability, otherwise it would invert the direction decision"
       },
       "feature_medians_from_discovery": {
         "away_recent_win_rate": 0.5,
         "hkjc_line_gap": 0.0,
         "hkjc_odds_gap": 0.0,
         "home_recent_win_rate": 0.5,
+        "implied_primary_probability_devig": 0.0,
         "kickoff_hour_bucket_hkt": 1.0,
         "kickoff_is_weekend": 0.0,
-        "league_target_encoding": 0.49954044117647056,
-        "line_move_open_to_t30": 0.0,
-        "line_move_t30_to_t5": 0.0,
-        "line_pick_perspective": 2.75,
-        "market_implied_probability": 0.0,
-        "odds_move_open_to_t30": 0.0,
-        "odds_move_t30_to_t5": 0.0,
-        "opposite_side_odds": 0.0,
-        "pick_is_big_odds_side": 0.0,
-        "pick_is_primary_side": 1.0,
-        "pick_odds": 1.83,
-        "pick_recent_strength_edge": 0.5,
-        "recent_strength_diff": 0.0,
-        "team_market_recent_hit_rate": 0.5,
-        "v2_minus_market_probability": 0.0,
-        "v2_probability": 0.5168
+        "league_target_encoding": 0.47822286962855065,
+        "odds_gap_primary_minus_opposite": 0.0,
+        "opposite_line": 2.75,
+        "opposite_odds": 1.83,
+        "opposite_odds_move_t30_to_t5": 0.0,
+        "opposite_probability": 0.51842,
+        "primary_line": 2.75,
+        "primary_line_move_open_to_t30": 0.0,
+        "primary_line_move_t30_to_t5": 0.0,
+        "primary_odds": 1.84,
+        "primary_odds_move_open_to_t30": 0.0,
+        "primary_odds_move_t30_to_t5": 0.0,
+        "primary_probability": 0.5,
+        "primary_probability_is_derived": 0.0,
+        "primary_probability_minus_implied": 0.0,
+        "primary_side_recent_hit_rate": 0.5,
+        "probability_gap_primary_minus_opposite": -0.036839999999999984,
+        "recent_strength_diff": 0.0
       },
       "isotonic": {
         "holdout": {
-          "brier": 0.24628455730976467,
+          "brier": 0.2551365112584346,
           "buckets": {
             "0.40_0.50": {
-              "hit_rate_excluding_push": 0.75,
-              "mean_probability": 0.46757137255311776,
-              "n": 2,
+              "hit_rate_excluding_push": 0.5257142857142857,
+              "mean_probability": 0.4486578451463388,
+              "n": 350,
               "range": [
                 0.4,
                 0.5
               ]
             },
             "0.50_0.55": {
-              "hit_rate_excluding_push": 0.4911242603550296,
-              "mean_probability": 0.5130983690144613,
-              "n": 338,
+              "hit_rate_excluding_push": null,
+              "mean_probability": null,
+              "n": 0,
               "range": [
                 0.5,
                 0.55
@@ -1187,66 +1590,85 @@
               ]
             },
             "0.60_0.65": {
-              "hit_rate_excluding_push": 0.3333333333333333,
-              "mean_probability": 0.615972533597129,
-              "n": 3,
+              "hit_rate_excluding_push": 0.43,
+              "mean_probability": 0.625,
+              "n": 50,
               "range": [
                 0.6,
                 0.65
               ]
             },
             "ge_0.65": {
-              "hit_rate_excluding_push": 0.5714285714285714,
-              "mean_probability": 0.6666666666666666,
-              "n": 21,
+              "hit_rate_excluding_push": null,
+              "mean_probability": null,
+              "n": 0,
               "range": [
                 0.65,
                 null
               ]
             },
             "lt_0.40": {
-              "hit_rate_excluding_push": 0.5053191489361702,
-              "mean_probability": 0.34238977811495713,
-              "n": 94,
+              "hit_rate_excluding_push": 0.5901639344262295,
+              "mean_probability": 0.29874210380703947,
+              "n": 61,
               "range": [
                 null,
                 0.4
               ]
             }
           },
-          "calibration_gap": 0.012238104332769673,
-          "grade_counts": {
-            "full_loss": 196,
-            "full_win": 212,
-            "half_loss": 18,
-            "half_win": 32,
-            "push": 35
+          "calibration_gap": 0.07591428604458145,
+          "decision": {
+            "decision_accuracy_excluding_push": 0.41106290672451196,
+            "decision_integer_hit_rate_excluding_push": 0.43817787418655096,
+            "decision_wilson_95": [
+              0.3935813352020092,
+              0.4837962116617981
+            ],
+            "direction_counts": {
+              "over": 53,
+              "under": 441
+            },
+            "direction_flip_rate_vs_v2_lead": 0.5263157894736842,
+            "mean_confidence": 0.5780387220857331,
+            "n_compared_with_v2_lead": 494,
+            "n_decisions": 494,
+            "n_priced_decisions": 234,
+            "n_settled_excluding_push": 461,
+            "rule": "choose primary side when p(primary) >= 0.5, otherwise the opposite side; confidence = max(p, 1 - p)"
           },
-          "hit_rate_excluding_push": 0.4978165938864629,
-          "integer_hits_excluding_push": 244,
-          "log_loss": 0.8655769794759072,
-          "mean_probability": 0.4855784895536932,
-          "n": 458,
-          "n_including_push": 493,
-          "push_n": 35,
+          "hit_rate_excluding_push": 0.5238611713665944,
+          "log_loss": 0.7585924821492596,
+          "mean_probability": 0.44794688532201293,
+          "n": 461,
+          "n_including_push": 494,
+          "primary_side_grade_counts": {
+            "full_loss": 182,
+            "full_win": 230,
+            "half_loss": 26,
+            "half_win": 23,
+            "push": 33
+          },
+          "primary_side_integer_hits_excluding_push": 253,
+          "push_n": 33,
           "reliability_diagram": [
             {
               "bin": "lt_0.40",
-              "mean_probability": 0.34238977811495713,
-              "n": 94,
-              "observed_hit_rate": 0.5053191489361702
+              "mean_probability": 0.29874210380703947,
+              "n": 61,
+              "observed_hit_rate": 0.5901639344262295
             },
             {
               "bin": "0.40_0.50",
-              "mean_probability": 0.46757137255311776,
-              "n": 2,
-              "observed_hit_rate": 0.75
+              "mean_probability": 0.4486578451463388,
+              "n": 350,
+              "observed_hit_rate": 0.5257142857142857
             },
             {
               "bin": "0.50_0.55",
-              "mean_probability": 0.5130983690144613,
-              "n": 338,
-              "observed_hit_rate": 0.4911242603550296
+              "mean_probability": null,
+              "n": 0,
+              "observed_hit_rate": null
             },
             {
               "bin": "0.55_0.60",
@@ -1256,51 +1678,57 @@
             },
             {
               "bin": "0.60_0.65",
-              "mean_probability": 0.615972533597129,
-              "n": 3,
-              "observed_hit_rate": 0.3333333333333333
+              "mean_probability": 0.625,
+              "n": 50,
+              "observed_hit_rate": 0.43
             },
             {
               "bin": "ge_0.65",
-              "mean_probability": 0.6666666666666666,
-              "n": 21,
-              "observed_hit_rate": 0.5714285714285714
+              "mean_probability": null,
+              "n": 0,
+              "observed_hit_rate": null
             }
           ],
           "roi_at_0.55_threshold": {
-            "hit_rate_excluding_push": 0.5416666666666666,
-            "integer_hits": 14,
-            "n_bets_excluding_push": 24,
-            "n_bets_including_push": 26,
-            "roi": 0.06769230769230769,
+            "basis": "direction chosen by this model/probability, priced at the matching T-5 side odds",
+            "direction_counts": {
+              "over": 30,
+              "under": 104
+            },
+            "flip_rate_vs_v2_lead": 0.0,
+            "hit_rate_excluding_push": 0.4015748031496063,
+            "integer_hits": 58,
+            "n_bets_excluding_push": 127,
+            "n_bets_including_push": 134,
+            "roi": -0.19496268656716417,
             "threshold": 0.55,
-            "unit_pnl": 1.7599999999999998,
+            "unit_pnl": -26.125,
             "wilson_hit_rate_95": [
-              0.3883466586522876,
-              0.7553239739018824
+              0.3726036076470353,
+              0.5433251805280153
             ]
           },
           "wilson": [
-            0.48697508000089273,
-            0.5779822758774744
+            0.5031655444600849,
+            0.5936416553842778
           ]
         },
         "selection": {
-          "brier": 0.23252996862199715,
+          "brier": 0.23062227144877764,
           "buckets": {
             "0.40_0.50": {
-              "hit_rate_excluding_push": null,
-              "mean_probability": null,
-              "n": 0,
+              "hit_rate_excluding_push": 0.4493006993006993,
+              "mean_probability": 0.4493006993006994,
+              "n": 286,
               "range": [
                 0.4,
                 0.5
               ]
             },
             "0.50_0.55": {
-              "hit_rate_excluding_push": 0.5130597014925373,
-              "mean_probability": 0.5130597014925373,
-              "n": 268,
+              "hit_rate_excluding_push": null,
+              "mean_probability": null,
+              "n": 0,
               "range": [
                 0.5,
                 0.55
@@ -1316,66 +1744,85 @@
               ]
             },
             "0.60_0.65": {
-              "hit_rate_excluding_push": 0.6,
-              "mean_probability": 0.6,
-              "n": 5,
+              "hit_rate_excluding_push": 0.625,
+              "mean_probability": 0.625,
+              "n": 32,
               "range": [
                 0.6,
                 0.65
               ]
             },
             "ge_0.65": {
-              "hit_rate_excluding_push": 0.6666666666666666,
-              "mean_probability": 0.6666666666666666,
-              "n": 24,
+              "hit_rate_excluding_push": null,
+              "mean_probability": null,
+              "n": 0,
               "range": [
                 0.65,
                 null
               ]
             },
             "lt_0.40": {
-              "hit_rate_excluding_push": 0.38392857142857145,
-              "mean_probability": 0.38392858928571433,
-              "n": 56,
+              "hit_rate_excluding_push": 0.32051282051282054,
+              "mean_probability": 0.3205128717948718,
+              "n": 39,
               "range": [
                 null,
                 0.4
               ]
             }
           },
-          "calibration_gap": 2.8328611678674065e-09,
-          "grade_counts": {
-            "full_loss": 156,
-            "full_win": 169,
-            "half_loss": 10,
-            "half_win": 18,
-            "push": 20
+          "calibration_gap": 5.602240948920922e-09,
+          "decision": {
+            "decision_accuracy_excluding_push": 0.5322128851540616,
+            "decision_integer_hit_rate_excluding_push": 0.5490196078431373,
+            "decision_wilson_95": [
+              0.49715430079016265,
+              0.5998412055310549
+            ],
+            "direction_counts": {
+              "over": 33,
+              "under": 347
+            },
+            "direction_flip_rate_vs_v2_lead": 0.4789473684210526,
+            "mean_confidence": 0.5721950225738265,
+            "n_compared_with_v2_lead": 380,
+            "n_decisions": 380,
+            "n_priced_decisions": 198,
+            "n_settled_excluding_push": 357,
+            "rule": "choose primary side when p(primary) >= 0.5, otherwise the opposite side; confidence = max(p, 1 - p)"
           },
-          "hit_rate_excluding_push": 0.5042492917847026,
-          "integer_hits_excluding_push": 187,
-          "log_loss": 0.6830505108722553,
-          "mean_probability": 0.5042492946175637,
-          "n": 353,
-          "n_including_push": 373,
-          "push_n": 20,
+          "hit_rate_excluding_push": 0.45098039215686275,
+          "log_loss": 0.675446035403907,
+          "mean_probability": 0.4509803977591037,
+          "n": 357,
+          "n_including_push": 380,
+          "primary_side_grade_counts": {
+            "full_loss": 174,
+            "full_win": 153,
+            "half_loss": 14,
+            "half_win": 16,
+            "push": 23
+          },
+          "primary_side_integer_hits_excluding_push": 169,
+          "push_n": 23,
           "reliability_diagram": [
             {
               "bin": "lt_0.40",
-              "mean_probability": 0.38392858928571433,
-              "n": 56,
-              "observed_hit_rate": 0.38392857142857145
+              "mean_probability": 0.3205128717948718,
+              "n": 39,
+              "observed_hit_rate": 0.32051282051282054
             },
             {
               "bin": "0.40_0.50",
-              "mean_probability": null,
-              "n": 0,
-              "observed_hit_rate": null
+              "mean_probability": 0.4493006993006994,
+              "n": 286,
+              "observed_hit_rate": 0.4493006993006993
             },
             {
               "bin": "0.50_0.55",
-              "mean_probability": 0.5130597014925373,
-              "n": 268,
-              "observed_hit_rate": 0.5130597014925373
+              "mean_probability": null,
+              "n": 0,
+              "observed_hit_rate": null
             },
             {
               "bin": "0.55_0.60",
@@ -1385,54 +1832,60 @@
             },
             {
               "bin": "0.60_0.65",
-              "mean_probability": 0.6,
-              "n": 5,
-              "observed_hit_rate": 0.6
+              "mean_probability": 0.625,
+              "n": 32,
+              "observed_hit_rate": 0.625
             },
             {
               "bin": "ge_0.65",
-              "mean_probability": 0.6666666666666666,
-              "n": 24,
-              "observed_hit_rate": 0.6666666666666666
+              "mean_probability": null,
+              "n": 0,
+              "observed_hit_rate": null
             }
           ],
           "roi_at_0.55_threshold": {
-            "hit_rate_excluding_push": 0.6551724137931034,
-            "integer_hits": 19,
-            "n_bets_excluding_push": 29,
-            "n_bets_including_push": 32,
-            "roi": 0.221875,
+            "basis": "direction chosen by this model/probability, priced at the matching T-5 side odds",
+            "direction_counts": {
+              "over": 24,
+              "under": 79
+            },
+            "flip_rate_vs_v2_lead": 0.0,
+            "hit_rate_excluding_push": 0.5789473684210527,
+            "integer_hits": 57,
+            "n_bets_excluding_push": 95,
+            "n_bets_including_push": 103,
+            "roi": 0.09601941747572816,
             "threshold": 0.55,
-            "unit_pnl": 7.1,
+            "unit_pnl": 9.89,
             "wilson_hit_rate_95": [
-              0.47345104090476137,
-              0.80059281473325
+              0.4994560285527347,
+              0.6927710007393706
             ]
           },
           "wilson": [
-            0.4776380551892585,
-            0.5812116089428234
+            0.422155655568196,
+            0.525189641000286
           ]
         }
       },
-      "league_target_encoding_prior": 0.49926470588235294,
+      "league_target_encoding_prior": 0.4868900218499636,
       "platt": {
         "holdout": {
-          "brier": 0.2330099433311237,
+          "brier": 0.2441343780881527,
           "buckets": {
             "0.40_0.50": {
-              "hit_rate_excluding_push": 0.489010989010989,
-              "mean_probability": 0.4836869743563142,
-              "n": 182,
+              "hit_rate_excluding_push": 0.5328638497652582,
+              "mean_probability": 0.44788958085103125,
+              "n": 426,
               "range": [
                 0.4,
                 0.5
               ]
             },
             "0.50_0.55": {
-              "hit_rate_excluding_push": 0.5036231884057971,
-              "mean_probability": 0.5147057333927822,
-              "n": 276,
+              "hit_rate_excluding_push": 0.4,
+              "mean_probability": 0.5142761328405075,
+              "n": 25,
               "range": [
                 0.5,
                 0.55
@@ -1466,48 +1919,67 @@
               ]
             },
             "lt_0.40": {
-              "hit_rate_excluding_push": null,
-              "mean_probability": null,
-              "n": 0,
+              "hit_rate_excluding_push": 0.45,
+              "mean_probability": 0.3899555287698375,
+              "n": 10,
               "range": [
                 null,
                 0.4
               ]
             }
           },
-          "calibration_gap": 0.0045629077494697134,
-          "grade_counts": {
-            "full_loss": 196,
-            "full_win": 212,
-            "half_loss": 18,
-            "half_win": 32,
-            "push": 35
+          "calibration_gap": 0.0736281560710404,
+          "decision": {
+            "decision_accuracy_excluding_push": 0.4121475054229935,
+            "decision_integer_hit_rate_excluding_push": 0.4403470715835141,
+            "decision_wilson_95": [
+              0.395708674242097,
+              0.48597141483701534
+            ],
+            "direction_counts": {
+              "over": 28,
+              "under": 466
+            },
+            "direction_flip_rate_vs_v2_lead": 0.5242914979757085,
+            "mean_confidence": 0.5509759449600885,
+            "n_compared_with_v2_lead": 494,
+            "n_decisions": 494,
+            "n_priced_decisions": 235,
+            "n_settled_excluding_push": 461,
+            "rule": "choose primary side when p(primary) >= 0.5, otherwise the opposite side; confidence = max(p, 1 - p)"
           },
-          "hit_rate_excluding_push": 0.4978165938864629,
-          "integer_hits_excluding_push": 244,
-          "log_loss": 0.6941054386625137,
-          "mean_probability": 0.5023795016359326,
-          "n": 458,
-          "n_including_push": 493,
-          "push_n": 35,
+          "hit_rate_excluding_push": 0.5238611713665944,
+          "log_loss": 0.7064780040375019,
+          "mean_probability": 0.450233015295554,
+          "n": 461,
+          "n_including_push": 494,
+          "primary_side_grade_counts": {
+            "full_loss": 182,
+            "full_win": 230,
+            "half_loss": 26,
+            "half_win": 23,
+            "push": 33
+          },
+          "primary_side_integer_hits_excluding_push": 253,
+          "push_n": 33,
           "reliability_diagram": [
             {
               "bin": "lt_0.40",
-              "mean_probability": null,
-              "n": 0,
-              "observed_hit_rate": null
+              "mean_probability": 0.3899555287698375,
+              "n": 10,
+              "observed_hit_rate": 0.45
             },
             {
               "bin": "0.40_0.50",
-              "mean_probability": 0.4836869743563142,
-              "n": 182,
-              "observed_hit_rate": 0.489010989010989
+              "mean_probability": 0.44788958085103125,
+              "n": 426,
+              "observed_hit_rate": 0.5328638497652582
             },
             {
               "bin": "0.50_0.55",
-              "mean_probability": 0.5147057333927822,
-              "n": 276,
-              "observed_hit_rate": 0.5036231884057971
+              "mean_probability": 0.5142761328405075,
+              "n": 25,
+              "observed_hit_rate": 0.4
             },
             {
               "bin": "0.55_0.60",
@@ -1529,39 +2001,44 @@
             }
           ],
           "roi_at_0.55_threshold": {
-            "hit_rate_excluding_push": null,
-            "integer_hits": 0,
-            "n_bets_excluding_push": 0,
-            "n_bets_including_push": 0,
-            "roi": null,
+            "basis": "direction chosen by this model/probability, priced at the matching T-5 side odds",
+            "direction_counts": {
+              "under": 150
+            },
+            "flip_rate_vs_v2_lead": 0.0,
+            "hit_rate_excluding_push": 0.4090909090909091,
+            "integer_hits": 66,
+            "n_bets_excluding_push": 143,
+            "n_bets_including_push": 150,
+            "roi": -0.16660000000000003,
             "threshold": 0.55,
-            "unit_pnl": 0.0,
+            "unit_pnl": -24.990000000000002,
             "wilson_hit_rate_95": [
-              null,
-              null
+              0.3819068047183386,
+              0.5431824712372215
             ]
           },
           "wilson": [
-            0.48697508000089273,
-            0.5779822758774744
+            0.5031655444600849,
+            0.5936416553842778
           ]
         },
         "selection": {
-          "brier": 0.23692850623254672,
+          "brier": 0.23577354432361977,
           "buckets": {
             "0.40_0.50": {
-              "hit_rate_excluding_push": 0.49280575539568344,
-              "mean_probability": 0.48714824015423985,
-              "n": 139,
+              "hit_rate_excluding_push": 0.45481049562682213,
+              "mean_probability": 0.4502037665921233,
+              "n": 343,
               "range": [
                 0.4,
                 0.5
               ]
             },
             "0.50_0.55": {
-              "hit_rate_excluding_push": 0.5116822429906542,
-              "mean_probability": 0.5153569841988817,
-              "n": 214,
+              "hit_rate_excluding_push": 0.4444444444444444,
+              "mean_probability": 0.5127122376032033,
+              "n": 9,
               "range": [
                 0.5,
                 0.55
@@ -1595,9 +2072,9 @@
               ]
             },
             "lt_0.40": {
-              "hit_rate_excluding_push": null,
-              "mean_probability": null,
-              "n": 0,
+              "hit_rate_excluding_push": 0.2,
+              "mean_probability": 0.39313958409457805,
+              "n": 5,
               "range": [
                 null,
                 0.4
@@ -1605,38 +2082,57 @@
             }
           },
           "calibration_gap": 0.0,
-          "grade_counts": {
-            "full_loss": 156,
-            "full_win": 169,
-            "half_loss": 10,
-            "half_win": 18,
-            "push": 20
+          "decision": {
+            "decision_accuracy_excluding_push": 0.5042016806722689,
+            "decision_integer_hit_rate_excluding_push": 0.5238095238095238,
+            "decision_wilson_95": [
+              0.4720246235039268,
+              0.5750874795663788
+            ],
+            "direction_counts": {
+              "over": 9,
+              "under": 371
+            },
+            "direction_flip_rate_vs_v2_lead": 0.5105263157894737,
+            "mean_confidence": 0.550000323330131,
+            "n_compared_with_v2_lead": 380,
+            "n_decisions": 380,
+            "n_priced_decisions": 186,
+            "n_settled_excluding_push": 357,
+            "rule": "choose primary side when p(primary) >= 0.5, otherwise the opposite side; confidence = max(p, 1 - p)"
           },
-          "hit_rate_excluding_push": 0.5042492917847026,
-          "integer_hits_excluding_push": 187,
-          "log_loss": 0.692500059557162,
-          "mean_probability": 0.5042492917847026,
-          "n": 353,
-          "n_including_push": 373,
-          "push_n": 20,
+          "hit_rate_excluding_push": 0.45098039215686275,
+          "log_loss": 0.6870634970143898,
+          "mean_probability": 0.45098039215686275,
+          "n": 357,
+          "n_including_push": 380,
+          "primary_side_grade_counts": {
+            "full_loss": 174,
+            "full_win": 153,
+            "half_loss": 14,
+            "half_win": 16,
+            "push": 23
+          },
+          "primary_side_integer_hits_excluding_push": 169,
+          "push_n": 23,
           "reliability_diagram": [
             {
               "bin": "lt_0.40",
-              "mean_probability": null,
-              "n": 0,
-              "observed_hit_rate": null
+              "mean_probability": 0.39313958409457805,
+              "n": 5,
+              "observed_hit_rate": 0.2
             },
             {
               "bin": "0.40_0.50",
-              "mean_probability": 0.48714824015423985,
-              "n": 139,
-              "observed_hit_rate": 0.49280575539568344
+              "mean_probability": 0.4502037665921233,
+              "n": 343,
+              "observed_hit_rate": 0.45481049562682213
             },
             {
               "bin": "0.50_0.55",
-              "mean_probability": 0.5153569841988817,
-              "n": 214,
-              "observed_hit_rate": 0.5116822429906542
+              "mean_probability": 0.5127122376032033,
+              "n": 9,
+              "observed_hit_rate": 0.4444444444444444
             },
             {
               "bin": "0.55_0.60",
@@ -1658,307 +2154,362 @@
             }
           ],
           "roi_at_0.55_threshold": {
-            "hit_rate_excluding_push": null,
-            "integer_hits": 0,
-            "n_bets_excluding_push": 0,
-            "n_bets_including_push": 0,
-            "roi": null,
+            "basis": "direction chosen by this model/probability, priced at the matching T-5 side odds",
+            "direction_counts": {
+              "under": 113
+            },
+            "flip_rate_vs_v2_lead": 0.0,
+            "hit_rate_excluding_push": 0.5096153846153846,
+            "integer_hits": 56,
+            "n_bets_excluding_push": 104,
+            "n_bets_including_push": 113,
+            "roi": -0.024247787610619465,
             "threshold": 0.55,
-            "unit_pnl": 0.0,
+            "unit_pnl": -2.7399999999999993,
             "wilson_hit_rate_95": [
-              null,
-              null
+              0.44299302025822307,
+              0.6311899524823574
             ]
           },
           "wilson": [
-            0.4776380551892585,
-            0.5812116089428234
+            0.422155655568196,
+            0.525189641000286
           ]
         }
       },
       "raw": {
         "discovery": {
-          "brier": 0.17170358056318477,
+          "brier": 0.17736975315774633,
           "buckets": {
             "0.40_0.50": {
-              "hit_rate_excluding_push": 0.40825688073394495,
-              "mean_probability": 0.4520599951477747,
-              "n": 218,
+              "hit_rate_excluding_push": 0.5207253886010362,
+              "mean_probability": 0.4512235703817761,
+              "n": 193,
               "range": [
                 0.4,
                 0.5
               ]
             },
             "0.50_0.55": {
-              "hit_rate_excluding_push": 0.515748031496063,
-              "mean_probability": 0.5249030229619949,
-              "n": 127,
+              "hit_rate_excluding_push": 0.5042735042735043,
+              "mean_probability": 0.5237621469201793,
+              "n": 117,
               "range": [
                 0.5,
                 0.55
               ]
             },
             "0.55_0.60": {
-              "hit_rate_excluding_push": 0.5985401459854015,
-              "mean_probability": 0.5728326083987106,
-              "n": 137,
+              "hit_rate_excluding_push": 0.5581395348837209,
+              "mean_probability": 0.5760140054435049,
+              "n": 86,
               "range": [
                 0.55,
                 0.6
               ]
             },
             "0.60_0.65": {
-              "hit_rate_excluding_push": 0.6891891891891891,
-              "mean_probability": 0.6263825066793797,
-              "n": 111,
+              "hit_rate_excluding_push": 0.7267441860465116,
+              "mean_probability": 0.6273250319477657,
+              "n": 86,
               "range": [
                 0.6,
                 0.65
               ]
             },
             "ge_0.65": {
-              "hit_rate_excluding_push": 0.8208092485549133,
-              "mean_probability": 0.7416999202871623,
-              "n": 346,
+              "hit_rate_excluding_push": 0.808955223880597,
+              "mean_probability": 0.7596341463323916,
+              "n": 335,
               "range": [
                 0.65,
                 null
               ]
             },
             "lt_0.40": {
-              "hit_rate_excluding_push": 0.19477434679334918,
-              "mean_probability": 0.2595559805550221,
-              "n": 421,
+              "hit_rate_excluding_push": 0.22931654676258992,
+              "mean_probability": 0.29197120381959174,
+              "n": 556,
               "range": [
                 null,
                 0.4
               ]
             }
           },
-          "calibration_gap": 8.788873782727968e-05,
-          "grade_counts": {
-            "full_loss": 573,
-            "full_win": 635,
-            "half_loss": 64,
-            "half_win": 88,
+          "calibration_gap": 0.00012156287985232161,
+          "decision": {
+            "decision_accuracy_excluding_push": 0.6638747268754552,
+            "decision_integer_hit_rate_excluding_push": 0.697742170429716,
+            "decision_wilson_95": [
+              0.6729268901901236,
+              0.721454028920996
+            ],
+            "direction_counts": {
+              "over": 655,
+              "under": 804
+            },
+            "direction_flip_rate_vs_v2_lead": 0.44962302947224125,
+            "mean_confidence": 0.6679269300183945,
+            "n_compared_with_v2_lead": 1459,
+            "n_decisions": 1459,
+            "n_priced_decisions": 803,
+            "n_settled_excluding_push": 1373,
+            "rule": "choose primary side when p(primary) >= 0.5, otherwise the opposite side; confidence = max(p, 1 - p)"
+          },
+          "hit_rate_excluding_push": 0.4868900218499636,
+          "log_loss": 0.5618575708582481,
+          "mean_probability": 0.4870115847298159,
+          "n": 1373,
+          "n_including_push": 1459,
+          "primary_side_grade_counts": {
+            "full_loss": 586,
+            "full_win": 634,
+            "half_loss": 84,
+            "half_win": 69,
             "push": 86
           },
-          "hit_rate_excluding_push": 0.49926470588235294,
-          "integer_hits_excluding_push": 723,
-          "log_loss": 0.5570317877301464,
-          "mean_probability": 0.4993525946201802,
-          "n": 1360,
-          "n_including_push": 1446,
+          "primary_side_integer_hits_excluding_push": 703,
           "push_n": 86,
           "reliability_diagram": [
             {
               "bin": "lt_0.40",
-              "mean_probability": 0.2595559805550221,
-              "n": 421,
-              "observed_hit_rate": 0.19477434679334918
+              "mean_probability": 0.29197120381959174,
+              "n": 556,
+              "observed_hit_rate": 0.22931654676258992
             },
             {
               "bin": "0.40_0.50",
-              "mean_probability": 0.4520599951477747,
-              "n": 218,
-              "observed_hit_rate": 0.40825688073394495
+              "mean_probability": 0.4512235703817761,
+              "n": 193,
+              "observed_hit_rate": 0.5207253886010362
             },
             {
               "bin": "0.50_0.55",
-              "mean_probability": 0.5249030229619949,
-              "n": 127,
-              "observed_hit_rate": 0.515748031496063
+              "mean_probability": 0.5237621469201793,
+              "n": 117,
+              "observed_hit_rate": 0.5042735042735043
             },
             {
               "bin": "0.55_0.60",
-              "mean_probability": 0.5728326083987106,
-              "n": 137,
-              "observed_hit_rate": 0.5985401459854015
+              "mean_probability": 0.5760140054435049,
+              "n": 86,
+              "observed_hit_rate": 0.5581395348837209
             },
             {
               "bin": "0.60_0.65",
-              "mean_probability": 0.6263825066793797,
-              "n": 111,
-              "observed_hit_rate": 0.6891891891891891
+              "mean_probability": 0.6273250319477657,
+              "n": 86,
+              "observed_hit_rate": 0.7267441860465116
             },
             {
               "bin": "ge_0.65",
-              "mean_probability": 0.7416999202871623,
-              "n": 346,
-              "observed_hit_rate": 0.8208092485549133
+              "mean_probability": 0.7596341463323916,
+              "n": 335,
+              "observed_hit_rate": 0.808955223880597
             }
           ],
           "roi_at_0.55_threshold": {
-            "hit_rate_excluding_push": 0.7449494949494949,
-            "integer_hits": 461,
-            "n_bets_excluding_push": 594,
-            "n_bets_including_push": 635,
-            "roi": 0.3660157480314961,
+            "basis": "direction chosen by this model/probability, priced at the matching T-5 side odds",
+            "direction_counts": {
+              "over": 309,
+              "under": 358
+            },
+            "flip_rate_vs_v2_lead": 0.0,
+            "hit_rate_excluding_push": 0.7206349206349206,
+            "integer_hits": 476,
+            "n_bets_excluding_push": 630,
+            "n_bets_including_push": 667,
+            "roi": 0.3416116941529236,
             "threshold": 0.55,
-            "unit_pnl": 232.42000000000002,
+            "unit_pnl": 227.85500000000002,
             "wilson_hit_rate_95": [
-              0.7408578934803457,
-              0.8077825448174848
+              0.7205143624504082,
+              0.787499109245027
             ]
           },
           "wilson": [
-            0.5050455072840725,
-            0.5580116753846254
+            0.48558108890602114,
+            0.538386812255428
           ]
         },
         "holdout": {
-          "brier": 0.26223852139595283,
+          "brier": 0.27277204823268203,
           "buckets": {
             "0.40_0.50": {
-              "hit_rate_excluding_push": 0.45789473684210524,
-              "mean_probability": 0.4558393788818657,
-              "n": 95,
+              "hit_rate_excluding_push": 0.5,
+              "mean_probability": 0.44662220195751146,
+              "n": 96,
               "range": [
                 0.4,
                 0.5
               ]
             },
             "0.50_0.55": {
-              "hit_rate_excluding_push": 0.5,
-              "mean_probability": 0.5244570223613295,
-              "n": 53,
+              "hit_rate_excluding_push": 0.4296875,
+              "mean_probability": 0.5220973305577208,
+              "n": 64,
               "range": [
                 0.5,
                 0.55
               ]
             },
             "0.55_0.60": {
-              "hit_rate_excluding_push": 0.5957446808510638,
-              "mean_probability": 0.5758532094120915,
-              "n": 47,
+              "hit_rate_excluding_push": 0.6477272727272727,
+              "mean_probability": 0.5717804855386697,
+              "n": 44,
               "range": [
                 0.55,
                 0.6
               ]
             },
             "0.60_0.65": {
-              "hit_rate_excluding_push": 0.4444444444444444,
-              "mean_probability": 0.6229883810920456,
-              "n": 36,
+              "hit_rate_excluding_push": 0.5441176470588235,
+              "mean_probability": 0.6256266628424852,
+              "n": 34,
               "range": [
                 0.6,
                 0.65
               ]
             },
             "ge_0.65": {
-              "hit_rate_excluding_push": 0.51875,
-              "mean_probability": 0.7170496895622788,
-              "n": 80,
+              "hit_rate_excluding_push": 0.4957627118644068,
+              "mean_probability": 0.7602616329569,
+              "n": 118,
               "range": [
                 0.65,
                 null
               ]
             },
             "lt_0.40": {
-              "hit_rate_excluding_push": 0.4931972789115646,
-              "mean_probability": 0.27182815600757665,
-              "n": 147,
+              "hit_rate_excluding_push": 0.5761904761904761,
+              "mean_probability": 0.3061349970205111,
+              "n": 105,
               "range": [
                 null,
                 0.4
               ]
             }
           },
-          "calibration_gap": 0.02201668157487835,
-          "grade_counts": {
-            "full_loss": 196,
-            "full_win": 212,
-            "half_loss": 18,
-            "half_win": 32,
-            "push": 35
+          "calibration_gap": 0.006669535401364501,
+          "decision": {
+            "decision_accuracy_excluding_push": 0.4566160520607375,
+            "decision_integer_hit_rate_excluding_push": 0.49023861171366595,
+            "decision_wilson_95": [
+              0.44487454527316767,
+              0.5357640147579598
+            ],
+            "direction_counts": {
+              "over": 281,
+              "under": 213
+            },
+            "direction_flip_rate_vs_v2_lead": 0.3684210526315789,
+            "mean_confidence": 0.6417538238931064,
+            "n_compared_with_v2_lead": 494,
+            "n_decisions": 494,
+            "n_priced_decisions": 312,
+            "n_settled_excluding_push": 461,
+            "rule": "choose primary side when p(primary) >= 0.5, otherwise the opposite side; confidence = max(p, 1 - p)"
           },
-          "hit_rate_excluding_push": 0.4978165938864629,
-          "integer_hits_excluding_push": 244,
-          "log_loss": 0.7693303596059653,
-          "mean_probability": 0.4757999123115845,
-          "n": 458,
-          "n_including_push": 493,
-          "push_n": 35,
+          "hit_rate_excluding_push": 0.5238611713665944,
+          "log_loss": 0.7796824577416843,
+          "mean_probability": 0.5305307067679589,
+          "n": 461,
+          "n_including_push": 494,
+          "primary_side_grade_counts": {
+            "full_loss": 182,
+            "full_win": 230,
+            "half_loss": 26,
+            "half_win": 23,
+            "push": 33
+          },
+          "primary_side_integer_hits_excluding_push": 253,
+          "push_n": 33,
           "reliability_diagram": [
             {
               "bin": "lt_0.40",
-              "mean_probability": 0.27182815600757665,
-              "n": 147,
-              "observed_hit_rate": 0.4931972789115646
+              "mean_probability": 0.3061349970205111,
+              "n": 105,
+              "observed_hit_rate": 0.5761904761904761
             },
             {
               "bin": "0.40_0.50",
-              "mean_probability": 0.4558393788818657,
-              "n": 95,
-              "observed_hit_rate": 0.45789473684210524
-            },
-            {
-              "bin": "0.50_0.55",
-              "mean_probability": 0.5244570223613295,
-              "n": 53,
+              "mean_probability": 0.44662220195751146,
+              "n": 96,
               "observed_hit_rate": 0.5
             },
             {
+              "bin": "0.50_0.55",
+              "mean_probability": 0.5220973305577208,
+              "n": 64,
+              "observed_hit_rate": 0.4296875
+            },
+            {
               "bin": "0.55_0.60",
-              "mean_probability": 0.5758532094120915,
-              "n": 47,
-              "observed_hit_rate": 0.5957446808510638
+              "mean_probability": 0.5717804855386697,
+              "n": 44,
+              "observed_hit_rate": 0.6477272727272727
             },
             {
               "bin": "0.60_0.65",
-              "mean_probability": 0.6229883810920456,
-              "n": 36,
-              "observed_hit_rate": 0.4444444444444444
+              "mean_probability": 0.6256266628424852,
+              "n": 34,
+              "observed_hit_rate": 0.5441176470588235
             },
             {
               "bin": "ge_0.65",
-              "mean_probability": 0.7170496895622788,
-              "n": 80,
-              "observed_hit_rate": 0.51875
+              "mean_probability": 0.7602616329569,
+              "n": 118,
+              "observed_hit_rate": 0.4957627118644068
             }
           ],
           "roi_at_0.55_threshold": {
-            "hit_rate_excluding_push": 0.5245398773006135,
-            "integer_hits": 91,
-            "n_bets_excluding_push": 163,
-            "n_bets_including_push": 178,
-            "roi": 0.006151685393258431,
+            "basis": "direction chosen by this model/probability, priced at the matching T-5 side odds",
+            "direction_counts": {
+              "over": 141,
+              "under": 105
+            },
+            "flip_rate_vs_v2_lead": 0.0,
+            "hit_rate_excluding_push": 0.486784140969163,
+            "integer_hits": 120,
+            "n_bets_excluding_push": 227,
+            "n_bets_including_push": 246,
+            "roi": -0.05619918699186992,
             "threshold": 0.55,
-            "unit_pnl": 1.0950000000000006,
+            "unit_pnl": -13.825,
             "wilson_hit_rate_95": [
-              0.4815762215387007,
-              0.63230434588321
+              0.4637617291840117,
+              0.5925539779962039
             ]
           },
           "wilson": [
-            0.48697508000089273,
-            0.5779822758774744
+            0.5031655444600849,
+            0.5936416553842778
           ]
         },
         "selection": {
-          "brier": 0.25827583514152175,
+          "brier": 0.26181986472720803,
           "buckets": {
             "0.40_0.50": {
-              "hit_rate_excluding_push": 0.618421052631579,
-              "mean_probability": 0.44881729906197754,
-              "n": 76,
+              "hit_rate_excluding_push": 0.4435483870967742,
+              "mean_probability": 0.45015522693245674,
+              "n": 62,
               "range": [
                 0.4,
                 0.5
               ]
             },
             "0.50_0.55": {
-              "hit_rate_excluding_push": 0.3695652173913043,
-              "mean_probability": 0.5243607282994427,
-              "n": 46,
+              "hit_rate_excluding_push": 0.5833333333333334,
+              "mean_probability": 0.527491235132731,
+              "n": 54,
               "range": [
                 0.5,
                 0.55
               ]
             },
             "0.55_0.60": {
-              "hit_rate_excluding_push": 0.55,
-              "mean_probability": 0.5709217054294318,
+              "hit_rate_excluding_push": 0.5,
+              "mean_probability": 0.5814713613944897,
               "n": 30,
               "range": [
                 0.55,
@@ -1966,108 +2517,133 @@
               ]
             },
             "0.60_0.65": {
-              "hit_rate_excluding_push": 0.5,
-              "mean_probability": 0.6241145286347966,
-              "n": 31,
+              "hit_rate_excluding_push": 0.375,
+              "mean_probability": 0.6275271744260519,
+              "n": 36,
               "range": [
                 0.6,
                 0.65
               ]
             },
             "ge_0.65": {
-              "hit_rate_excluding_push": 0.5307692307692308,
-              "mean_probability": 0.7273961661600624,
-              "n": 65,
+              "hit_rate_excluding_push": 0.44086021505376344,
+              "mean_probability": 0.7422752089279956,
+              "n": 93,
               "range": [
                 0.65,
                 null
               ]
             },
             "lt_0.40": {
-              "hit_rate_excluding_push": 0.4523809523809524,
-              "mean_probability": 0.29638891604964984,
-              "n": 105,
+              "hit_rate_excluding_push": 0.39634146341463417,
+              "mean_probability": 0.32348438577102345,
+              "n": 82,
               "range": [
                 null,
                 0.4
               ]
             }
           },
-          "calibration_gap": 0.013859782530698084,
-          "grade_counts": {
-            "full_loss": 156,
-            "full_win": 169,
-            "half_loss": 10,
-            "half_win": 18,
-            "push": 20
+          "calibration_gap": 0.08679715392627413,
+          "decision": {
+            "decision_accuracy_excluding_push": 0.5,
+            "decision_integer_hit_rate_excluding_push": 0.5294117647058824,
+            "decision_wilson_95": [
+              0.47759770316484373,
+              0.5805996006278868
+            ],
+            "direction_counts": {
+              "over": 222,
+              "under": 158
+            },
+            "direction_flip_rate_vs_v2_lead": 0.3868421052631579,
+            "mean_confidence": 0.6364673041905017,
+            "n_compared_with_v2_lead": 380,
+            "n_decisions": 380,
+            "n_priced_decisions": 233,
+            "n_settled_excluding_push": 357,
+            "rule": "choose primary side when p(primary) >= 0.5, otherwise the opposite side; confidence = max(p, 1 - p)"
           },
-          "hit_rate_excluding_push": 0.5042492917847026,
-          "integer_hits_excluding_push": 187,
-          "log_loss": 0.743113193008013,
-          "mean_probability": 0.4903895092540045,
-          "n": 353,
-          "n_including_push": 373,
-          "push_n": 20,
+          "hit_rate_excluding_push": 0.45098039215686275,
+          "log_loss": 0.7476616059144631,
+          "mean_probability": 0.5377775460831369,
+          "n": 357,
+          "n_including_push": 380,
+          "primary_side_grade_counts": {
+            "full_loss": 174,
+            "full_win": 153,
+            "half_loss": 14,
+            "half_win": 16,
+            "push": 23
+          },
+          "primary_side_integer_hits_excluding_push": 169,
+          "push_n": 23,
           "reliability_diagram": [
             {
               "bin": "lt_0.40",
-              "mean_probability": 0.29638891604964984,
-              "n": 105,
-              "observed_hit_rate": 0.4523809523809524
+              "mean_probability": 0.32348438577102345,
+              "n": 82,
+              "observed_hit_rate": 0.39634146341463417
             },
             {
               "bin": "0.40_0.50",
-              "mean_probability": 0.44881729906197754,
-              "n": 76,
-              "observed_hit_rate": 0.618421052631579
+              "mean_probability": 0.45015522693245674,
+              "n": 62,
+              "observed_hit_rate": 0.4435483870967742
             },
             {
               "bin": "0.50_0.55",
-              "mean_probability": 0.5243607282994427,
-              "n": 46,
-              "observed_hit_rate": 0.3695652173913043
+              "mean_probability": 0.527491235132731,
+              "n": 54,
+              "observed_hit_rate": 0.5833333333333334
             },
             {
               "bin": "0.55_0.60",
-              "mean_probability": 0.5709217054294318,
+              "mean_probability": 0.5814713613944897,
               "n": 30,
-              "observed_hit_rate": 0.55
-            },
-            {
-              "bin": "0.60_0.65",
-              "mean_probability": 0.6241145286347966,
-              "n": 31,
               "observed_hit_rate": 0.5
             },
             {
+              "bin": "0.60_0.65",
+              "mean_probability": 0.6275271744260519,
+              "n": 36,
+              "observed_hit_rate": 0.375
+            },
+            {
               "bin": "ge_0.65",
-              "mean_probability": 0.7273961661600624,
-              "n": 65,
-              "observed_hit_rate": 0.5307692307692308
+              "mean_probability": 0.7422752089279956,
+              "n": 93,
+              "observed_hit_rate": 0.44086021505376344
             }
           ],
           "roi_at_0.55_threshold": {
-            "hit_rate_excluding_push": 0.5277777777777778,
-            "integer_hits": 69,
-            "n_bets_excluding_push": 126,
-            "n_bets_including_push": 134,
-            "roi": 0.003992537313432839,
+            "basis": "direction chosen by this model/probability, priced at the matching T-5 side odds",
+            "direction_counts": {
+              "over": 102,
+              "under": 80
+            },
+            "flip_rate_vs_v2_lead": 0.0,
+            "hit_rate_excluding_push": 0.5207100591715976,
+            "integer_hits": 92,
+            "n_bets_excluding_push": 169,
+            "n_bets_including_push": 182,
+            "roi": -0.009258241758241754,
             "threshold": 0.55,
-            "unit_pnl": 0.5350000000000004,
+            "unit_pnl": -1.6849999999999992,
             "wilson_hit_rate_95": [
-              0.46058696847698255,
-              0.6318334349056653
+              0.4691391934393178,
+              0.6176455403991128
             ]
           },
           "wilson": [
-            0.4776380551892585,
-            0.5812116089428234
+            0.422155655568196,
+            0.525189641000286
           ]
         }
       },
       "training": {
-        "discovery_rows_excluding_push": 1360,
-        "expanded_training_rows": 1448,
+        "discovery_rows_excluding_push": 1373,
+        "expanded_training_rows": 1442,
         "half_win_half_loss_weighting": "label 0.5 expanded into weighted 1/0 rows"
       }
     }
@@ -2075,12 +2651,12 @@
   "reproducibility": {
     "deterministic_ties": true,
     "input_file_state": {
-      "mtime_ns": 1788182677190445833,
-      "sha256": "e492f29a266e7d12e42058f850b29232d252cfdc6fdf0a2e4dd58024a6960768",
-      "size": 59332935
+      "mtime_ns": 1788223924164508515,
+      "sha256": "7f3ad5f3a6ff988d1098ac754c274582d6cb6f4b0216651c91a88e7844626dcb",
+      "size": 60528120
     },
-    "input_sha256_after": "e492f29a266e7d12e42058f850b29232d252cfdc6fdf0a2e4dd58024a6960768",
-    "input_sha256_before": "e492f29a266e7d12e42058f850b29232d252cfdc6fdf0a2e4dd58024a6960768",
+    "input_sha256_after": "7f3ad5f3a6ff988d1098ac754c274582d6cb6f4b0216651c91a88e7844626dcb",
+    "input_sha256_before": "7f3ad5f3a6ff988d1098ac754c274582d6cb6f4b0216651c91a88e7844626dcb",
     "model_backend": "pure_python_fallback",
     "read_only_input_hash_unchanged": true,
     "report_has_no_wall_clock_field": true,
@@ -2090,68 +2666,70 @@
   "schema_version": "crown-v3-1-recalibrate-v1",
   "scope": {
     "calibration_fit_split": "selection only",
+    "calibration_monotonicity_guard": "a calibrator that is not non-decreasing would invert the direction decision, so isotonic monotonicity is verified on a grid and a Platt fit with non-positive slope is rejected and scored raw",
     "decision_stage": "T-5",
+    "direction_decision": "the model outputs p(primary side wins); it picks the primary side when p >= 0.5 and the opposite side otherwise, with confidence max(p, 1 - p) priced at that side's T-5 odds and settled with exact Asian handicap/total rules",
     "holdout_usage": "final scoring only; never used for training, calibration or feature statistics",
-    "kind": "V3.1 genuine retraining with probability calibration",
+    "kind": "V3.1 genuine retraining with independent direction choice and probability calibration",
     "median_impute_source": "discovery split medians plus explicit missingness flags",
     "production_untouched": true,
     "retrains_model": true,
-    "roi_definition": "one unit per bet at decimal odds when probability >= 0.55; Asian half win/loss and push settled exactly",
-    "target_definition": "per fixture and market, the T-5 maximum-EV Crown lead (the 'big' side the model backs); label 1 for a full win, 0.5 for a half win, 0 for a half or full loss, pushes excluded",
-    "v2_baseline_definition": "persisted production V2 probability (70% market + 30% team history) on the same rows"
+    "roi_definition": "one unit per bet when the chosen-direction confidence >= 0.55, priced at the chosen side's T-5 decimal odds; Asian half win/loss and push settled exactly",
+    "target_definition": "one row per fixture and market with a FIXED primary side: HDC home side, HIL over side. Label 1 for a full win, 0.5 for a half win, 0 for a half or full loss on that primary side; pushes are excluded from calibration metrics and from training. Both T-5 sides are read from the candidate list; the V2 maximum-EV lead is never the target.",
+    "v2_baseline_definition": "persisted production V2 probability of the same primary side (complement of the opposite side when only that side was published), scored against the same primary-side label; the production maximum-EV lead decision is reported separately under v2_baseline.<market>.production_lead_decision"
   },
   "split": {
-    "cohort_count": 720,
+    "cohort_count": 732,
     "counts": {
-      "discovery": 1653,
-      "holdout": 551,
-      "selection": 551
+      "discovery": 1666,
+      "holdout": 552,
+      "selection": 558
     },
     "kickoff_ranges": {
       "discovery": [
         "2026-08-11T17:00:00+00:00",
-        "2026-08-20T02:00:00+00:00"
+        "2026-08-20T12:30:00+00:00"
       ],
       "holdout": [
-        "2026-08-24T15:30:00+00:00",
-        "2026-08-31T10:10:00+00:00"
+        "2026-08-24T16:30:00+00:00",
+        "2026-08-31T20:00:00+00:00"
       ],
       "selection": [
-        "2026-08-20T02:30:00+00:00",
-        "2026-08-24T15:00:00+00:00"
+        "2026-08-20T14:00:00+00:00",
+        "2026-08-24T16:00:00+00:00"
       ]
     },
     "method": "chronological kickoff cohorts nearest to 60/20/20; equal kickoff is indivisible",
     "no_equal_kickoff_crosses_split": true,
-    "total_fixtures": 2755
+    "total_fixtures": 2776
   },
   "v2_baseline": {
     "hdc": {
       "discovery": {
-        "brier": 0.229732093876155,
+        "brier": 0.2324845057227474,
         "buckets": {
           "0.40_0.50": {
-            "hit_rate_excluding_push": null,
-            "mean_probability": null,
-            "n": 0,
+            "hit_rate_excluding_push": 0.4280359820089955,
+            "mean_probability": 0.47540368815592204,
+            "n": 667,
             "range": [
               0.4,
               0.5
             ]
           },
           "0.50_0.55": {
-            "hit_rate_excluding_push": 0.48291293734743695,
-            "mean_probability": 0.5197165174938975,
-            "n": 1229,
+            "hit_rate_excluding_push": 0.47385103011093505,
+            "mean_probability": 0.5184588272583202,
+            "n": 631,
             "range": [
               0.5,
               0.55
             ]
           },
           "0.55_0.60": {
-            "hit_rate_excluding_push": 0.4778761061946903,
-            "mean_probability": 0.563281238938053,
-            "n": 113,
+            "hit_rate_excluding_push": 0.44642857142857145,
+            "mean_probability": 0.5631207142857143,
+            "n": 56,
             "range": [
               0.55,
               0.6
@@ -2185,21 +2763,40 @@
             ]
           }
         },
-        "calibration_gap": 0.0408959612518629,
-        "grade_counts": {
-          "full_loss": 550,
-          "full_win": 590,
-          "half_loss": 87,
-          "half_win": 115,
-          "push": 96
+        "calibration_gap": 0.04894870014771047,
+        "decision": {
+          "decision_accuracy_excluding_push": 0.4793205317577548,
+          "decision_integer_hit_rate_excluding_push": 0.5221565731166913,
+          "decision_wilson_95": [
+            0.4955253341849851,
+            0.5486624460674391
+          ],
+          "direction_counts": {
+            "away": 722,
+            "home": 729
+          },
+          "direction_flip_rate_vs_v2_lead": 0.0013783597518952446,
+          "mean_confidence": 0.5236408752584425,
+          "n_compared_with_v2_lead": 1451,
+          "n_decisions": 1451,
+          "n_priced_decisions": 1449,
+          "n_settled_excluding_push": 1354,
+          "rule": "choose primary side when p(primary) >= 0.5, otherwise the opposite side; confidence = max(p, 1 - p)"
         },
-        "hit_rate_excluding_push": 0.48248882265275705,
-        "integer_hits_excluding_push": 705,
-        "log_loss": 0.6954714921615881,
-        "mean_probability": 0.52338478390462,
-        "n": 1342,
-        "n_including_push": 1438,
-        "push_n": 96,
+        "hit_rate_excluding_push": 0.4501477104874446,
+        "log_loss": 0.6909828312860516,
+        "mean_probability": 0.4990964106351551,
+        "n": 1354,
+        "n_including_push": 1451,
+        "primary_side_grade_counts": {
+          "full_loss": 585,
+          "full_win": 565,
+          "half_loss": 115,
+          "half_win": 89,
+          "push": 97
+        },
+        "primary_side_integer_hits_excluding_push": 654,
+        "push_n": 97,
         "reliability_diagram": [
           {
             "bin": "lt_0.40",
@@ -2209,21 +2806,21 @@
           },
           {
             "bin": "0.40_0.50",
-            "mean_probability": null,
-            "n": 0,
-            "observed_hit_rate": null
+            "mean_probability": 0.47540368815592204,
+            "n": 667,
+            "observed_hit_rate": 0.4280359820089955
           },
           {
             "bin": "0.50_0.55",
-            "mean_probability": 0.5197165174938975,
-            "n": 1229,
-            "observed_hit_rate": 0.48291293734743695
+            "mean_probability": 0.5184588272583202,
+            "n": 631,
+            "observed_hit_rate": 0.47385103011093505
           },
           {
             "bin": "0.55_0.60",
-            "mean_probability": 0.563281238938053,
-            "n": 113,
-            "observed_hit_rate": 0.4778761061946903
+            "mean_probability": 0.5631207142857143,
+            "n": 56,
+            "observed_hit_rate": 0.44642857142857145
           },
           {
             "bin": "0.60_0.65",
@@ -2239,6 +2836,12 @@
           }
         ],
         "roi_at_0.55_threshold": {
+          "basis": "direction chosen by this model/probability, priced at the matching T-5 side odds",
+          "direction_counts": {
+            "away": 63,
+            "home": 64
+          },
+          "flip_rate_vs_v2_lead": 0.0,
           "hit_rate_excluding_push": 0.4778761061946903,
           "integer_hits": 59,
           "n_bets_excluding_push": 113,
@@ -2252,35 +2855,35 @@
           ]
         },
         "wilson": [
-          0.4985843157804086,
-          0.5519416949575764
+          0.4564820533968104,
+          0.5096406484096644
         ]
       },
       "holdout": {
-        "brier": 0.22887609404078624,
+        "brier": 0.23031873108258705,
         "buckets": {
           "0.40_0.50": {
-            "hit_rate_excluding_push": null,
-            "mean_probability": null,
-            "n": 0,
+            "hit_rate_excluding_push": 0.4896907216494845,
+            "mean_probability": 0.4759856185567011,
+            "n": 194,
             "range": [
               0.4,
               0.5
             ]
           },
           "0.50_0.55": {
-            "hit_rate_excluding_push": 0.44778067885117495,
-            "mean_probability": 0.5206003916449086,
-            "n": 383,
+            "hit_rate_excluding_push": 0.4797979797979798,
+            "mean_probability": 0.5201040404040403,
+            "n": 198,
             "range": [
               0.5,
               0.55
             ]
           },
           "0.55_0.60": {
-            "hit_rate_excluding_push": 0.625,
-            "mean_probability": 0.5633679166666666,
-            "n": 24,
+            "hit_rate_excluding_push": 0.8,
+            "mean_probability": 0.559917,
+            "n": 10,
             "range": [
               0.55,
               0.6
@@ -2314,20 +2917,39 @@
             ]
           }
         },
-        "calibration_gap": 0.06489135135135132,
-        "grade_counts": {
-          "full_loss": 181,
-          "full_win": 168,
-          "half_loss": 21,
-          "half_win": 37,
+        "calibration_gap": 0.0072661194029850495,
+        "decision": {
+          "decision_accuracy_excluding_push": 0.4639303482587065,
+          "decision_integer_hit_rate_excluding_push": 0.5099502487562189,
+          "decision_wilson_95": [
+            0.46122041928352114,
+            0.5584917117127713
+          ],
+          "direction_counts": {
+            "away": 205,
+            "home": 220
+          },
+          "direction_flip_rate_vs_v2_lead": 0.0,
+          "mean_confidence": 0.523072305882353,
+          "n_compared_with_v2_lead": 425,
+          "n_decisions": 425,
+          "n_priced_decisions": 425,
+          "n_settled_excluding_push": 402,
+          "rule": "choose primary side when p(primary) >= 0.5, otherwise the opposite side; confidence = max(p, 1 - p)"
+        },
+        "hit_rate_excluding_push": 0.4925373134328358,
+        "log_loss": 0.6910865719772786,
+        "mean_probability": 0.49980343283582085,
+        "n": 402,
+        "n_including_push": 425,
+        "primary_side_grade_counts": {
+          "full_loss": 159,
+          "full_win": 183,
+          "half_loss": 30,
+          "half_win": 30,
           "push": 23
         },
-        "hit_rate_excluding_push": 0.4582309582309582,
-        "integer_hits_excluding_push": 205,
-        "log_loss": 0.6963576756899447,
-        "mean_probability": 0.5231223095823095,
-        "n": 407,
-        "n_including_push": 430,
+        "primary_side_integer_hits_excluding_push": 213,
         "push_n": 23,
         "reliability_diagram": [
           {
@@ -2338,21 +2960,21 @@
           },
           {
             "bin": "0.40_0.50",
-            "mean_probability": null,
-            "n": 0,
-            "observed_hit_rate": null
+            "mean_probability": 0.4759856185567011,
+            "n": 194,
+            "observed_hit_rate": 0.4896907216494845
           },
           {
             "bin": "0.50_0.55",
-            "mean_probability": 0.5206003916449086,
-            "n": 383,
-            "observed_hit_rate": 0.44778067885117495
+            "mean_probability": 0.5201040404040403,
+            "n": 198,
+            "observed_hit_rate": 0.4797979797979798
           },
           {
             "bin": "0.55_0.60",
-            "mean_probability": 0.5633679166666666,
-            "n": 24,
-            "observed_hit_rate": 0.625
+            "mean_probability": 0.559917,
+            "n": 10,
+            "observed_hit_rate": 0.8
           },
           {
             "bin": "0.60_0.65",
@@ -2368,48 +2990,518 @@
           }
         ],
         "roi_at_0.55_threshold": {
-          "hit_rate_excluding_push": 0.625,
+          "basis": "direction chosen by this model/probability, priced at the matching T-5 side odds",
+          "direction_counts": {
+            "away": 15,
+            "home": 13
+          },
+          "flip_rate_vs_v2_lead": 0.0,
+          "hit_rate_excluding_push": 0.6521739130434783,
           "integer_hits": 16,
-          "n_bets_excluding_push": 24,
-          "n_bets_including_push": 29,
-          "roi": 0.08758620689655171,
+          "n_bets_excluding_push": 23,
+          "n_bets_including_push": 28,
+          "roi": 0.12642857142857142,
           "threshold": 0.55,
-          "unit_pnl": 2.5399999999999996,
+          "unit_pnl": 3.5399999999999996,
           "wilson_hit_rate_95": [
-            0.4670631683813174,
-            0.8202780967270225
+            0.49134243731240795,
+            0.8439597554678597
           ]
         },
         "wilson": [
-          0.4553040717536122,
-          0.5519980150625806
+          0.48100895564544044,
+          0.5781274373434373
         ]
       },
+      "production_lead_decision": {
+        "discovery": {
+          "brier": 0.2324845057227474,
+          "buckets": {
+            "0.40_0.50": {
+              "hit_rate_excluding_push": 0.4280359820089955,
+              "mean_probability": 0.47540368815592204,
+              "n": 667,
+              "range": [
+                0.4,
+                0.5
+              ]
+            },
+            "0.50_0.55": {
+              "hit_rate_excluding_push": 0.47385103011093505,
+              "mean_probability": 0.5184588272583202,
+              "n": 631,
+              "range": [
+                0.5,
+                0.55
+              ]
+            },
+            "0.55_0.60": {
+              "hit_rate_excluding_push": 0.44642857142857145,
+              "mean_probability": 0.5631207142857143,
+              "n": 56,
+              "range": [
+                0.55,
+                0.6
+              ]
+            },
+            "0.60_0.65": {
+              "hit_rate_excluding_push": null,
+              "mean_probability": null,
+              "n": 0,
+              "range": [
+                0.6,
+                0.65
+              ]
+            },
+            "ge_0.65": {
+              "hit_rate_excluding_push": null,
+              "mean_probability": null,
+              "n": 0,
+              "range": [
+                0.65,
+                null
+              ]
+            },
+            "lt_0.40": {
+              "hit_rate_excluding_push": null,
+              "mean_probability": null,
+              "n": 0,
+              "range": [
+                null,
+                0.4
+              ]
+            }
+          },
+          "calibration_gap": 0.04894870014771047,
+          "decision": {
+            "decision_accuracy_excluding_push": 0.4807976366322009,
+            "decision_integer_hit_rate_excluding_push": 0.5236336779911374,
+            "decision_wilson_95": [
+              0.49700185133457964,
+              0.550131780934673
+            ],
+            "direction_counts": {
+              "away": 724,
+              "home": 727
+            },
+            "direction_flip_rate_vs_v2_lead": 0.0,
+            "mean_confidence": 0.5236408752584425,
+            "n_compared_with_v2_lead": 1451,
+            "n_decisions": 1451,
+            "n_priced_decisions": 1451,
+            "n_settled_excluding_push": 1354,
+            "rule": "choose primary side when p(primary) >= 0.5, otherwise the opposite side; confidence = max(p, 1 - p)"
+          },
+          "hit_rate_excluding_push": 0.4501477104874446,
+          "log_loss": 0.6909828312860516,
+          "mean_probability": 0.4990964106351551,
+          "n": 1354,
+          "n_including_push": 1451,
+          "primary_side_grade_counts": {
+            "full_loss": 585,
+            "full_win": 565,
+            "half_loss": 115,
+            "half_win": 89,
+            "push": 97
+          },
+          "primary_side_integer_hits_excluding_push": 654,
+          "push_n": 97,
+          "reliability_diagram": [
+            {
+              "bin": "lt_0.40",
+              "mean_probability": null,
+              "n": 0,
+              "observed_hit_rate": null
+            },
+            {
+              "bin": "0.40_0.50",
+              "mean_probability": 0.47540368815592204,
+              "n": 667,
+              "observed_hit_rate": 0.4280359820089955
+            },
+            {
+              "bin": "0.50_0.55",
+              "mean_probability": 0.5184588272583202,
+              "n": 631,
+              "observed_hit_rate": 0.47385103011093505
+            },
+            {
+              "bin": "0.55_0.60",
+              "mean_probability": 0.5631207142857143,
+              "n": 56,
+              "observed_hit_rate": 0.44642857142857145
+            },
+            {
+              "bin": "0.60_0.65",
+              "mean_probability": null,
+              "n": 0,
+              "observed_hit_rate": null
+            },
+            {
+              "bin": "ge_0.65",
+              "mean_probability": null,
+              "n": 0,
+              "observed_hit_rate": null
+            }
+          ],
+          "roi_at_0.55_threshold": {
+            "basis": "direction chosen by this model/probability, priced at the matching T-5 side odds",
+            "direction_counts": {
+              "away": 63,
+              "home": 64
+            },
+            "flip_rate_vs_v2_lead": 0.0,
+            "hit_rate_excluding_push": 0.4778761061946903,
+            "integer_hits": 59,
+            "n_bets_excluding_push": 113,
+            "n_bets_including_push": 127,
+            "roi": -0.0962992125984252,
+            "threshold": 0.55,
+            "unit_pnl": -12.23,
+            "wilson_hit_rate_95": [
+              0.4308215752756851,
+              0.6119714542744942
+            ]
+          },
+          "wilson": [
+            0.4564820533968104,
+            0.5096406484096644
+          ]
+        },
+        "holdout": {
+          "brier": 0.23031873108258705,
+          "buckets": {
+            "0.40_0.50": {
+              "hit_rate_excluding_push": 0.4896907216494845,
+              "mean_probability": 0.4759856185567011,
+              "n": 194,
+              "range": [
+                0.4,
+                0.5
+              ]
+            },
+            "0.50_0.55": {
+              "hit_rate_excluding_push": 0.4797979797979798,
+              "mean_probability": 0.5201040404040403,
+              "n": 198,
+              "range": [
+                0.5,
+                0.55
+              ]
+            },
+            "0.55_0.60": {
+              "hit_rate_excluding_push": 0.8,
+              "mean_probability": 0.559917,
+              "n": 10,
+              "range": [
+                0.55,
+                0.6
+              ]
+            },
+            "0.60_0.65": {
+              "hit_rate_excluding_push": null,
+              "mean_probability": null,
+              "n": 0,
+              "range": [
+                0.6,
+                0.65
+              ]
+            },
+            "ge_0.65": {
+              "hit_rate_excluding_push": null,
+              "mean_probability": null,
+              "n": 0,
+              "range": [
+                0.65,
+                null
+              ]
+            },
+            "lt_0.40": {
+              "hit_rate_excluding_push": null,
+              "mean_probability": null,
+              "n": 0,
+              "range": [
+                null,
+                0.4
+              ]
+            }
+          },
+          "calibration_gap": 0.0072661194029850495,
+          "decision": {
+            "decision_accuracy_excluding_push": 0.4639303482587065,
+            "decision_integer_hit_rate_excluding_push": 0.5099502487562189,
+            "decision_wilson_95": [
+              0.46122041928352114,
+              0.5584917117127713
+            ],
+            "direction_counts": {
+              "away": 205,
+              "home": 220
+            },
+            "direction_flip_rate_vs_v2_lead": 0.0,
+            "mean_confidence": 0.523072305882353,
+            "n_compared_with_v2_lead": 425,
+            "n_decisions": 425,
+            "n_priced_decisions": 425,
+            "n_settled_excluding_push": 402,
+            "rule": "choose primary side when p(primary) >= 0.5, otherwise the opposite side; confidence = max(p, 1 - p)"
+          },
+          "hit_rate_excluding_push": 0.4925373134328358,
+          "log_loss": 0.6910865719772786,
+          "mean_probability": 0.49980343283582085,
+          "n": 402,
+          "n_including_push": 425,
+          "primary_side_grade_counts": {
+            "full_loss": 159,
+            "full_win": 183,
+            "half_loss": 30,
+            "half_win": 30,
+            "push": 23
+          },
+          "primary_side_integer_hits_excluding_push": 213,
+          "push_n": 23,
+          "reliability_diagram": [
+            {
+              "bin": "lt_0.40",
+              "mean_probability": null,
+              "n": 0,
+              "observed_hit_rate": null
+            },
+            {
+              "bin": "0.40_0.50",
+              "mean_probability": 0.4759856185567011,
+              "n": 194,
+              "observed_hit_rate": 0.4896907216494845
+            },
+            {
+              "bin": "0.50_0.55",
+              "mean_probability": 0.5201040404040403,
+              "n": 198,
+              "observed_hit_rate": 0.4797979797979798
+            },
+            {
+              "bin": "0.55_0.60",
+              "mean_probability": 0.559917,
+              "n": 10,
+              "observed_hit_rate": 0.8
+            },
+            {
+              "bin": "0.60_0.65",
+              "mean_probability": null,
+              "n": 0,
+              "observed_hit_rate": null
+            },
+            {
+              "bin": "ge_0.65",
+              "mean_probability": null,
+              "n": 0,
+              "observed_hit_rate": null
+            }
+          ],
+          "roi_at_0.55_threshold": {
+            "basis": "direction chosen by this model/probability, priced at the matching T-5 side odds",
+            "direction_counts": {
+              "away": 15,
+              "home": 13
+            },
+            "flip_rate_vs_v2_lead": 0.0,
+            "hit_rate_excluding_push": 0.6521739130434783,
+            "integer_hits": 16,
+            "n_bets_excluding_push": 23,
+            "n_bets_including_push": 28,
+            "roi": 0.12642857142857142,
+            "threshold": 0.55,
+            "unit_pnl": 3.5399999999999996,
+            "wilson_hit_rate_95": [
+              0.49134243731240795,
+              0.8439597554678597
+            ]
+          },
+          "wilson": [
+            0.48100895564544044,
+            0.5781274373434373
+          ]
+        },
+        "selection": {
+          "brier": 0.23189545625620914,
+          "buckets": {
+            "0.40_0.50": {
+              "hit_rate_excluding_push": 0.53,
+              "mean_probability": 0.4769672,
+              "n": 150,
+              "range": [
+                0.4,
+                0.5
+              ]
+            },
+            "0.50_0.55": {
+              "hit_rate_excluding_push": 0.4471830985915493,
+              "mean_probability": 0.5169098591549296,
+              "n": 142,
+              "range": [
+                0.5,
+                0.55
+              ]
+            },
+            "0.55_0.60": {
+              "hit_rate_excluding_push": 0.5384615384615384,
+              "mean_probability": 0.5606123076923077,
+              "n": 13,
+              "range": [
+                0.55,
+                0.6
+              ]
+            },
+            "0.60_0.65": {
+              "hit_rate_excluding_push": 1.0,
+              "mean_probability": 0.6,
+              "n": 1,
+              "range": [
+                0.6,
+                0.65
+              ]
+            },
+            "ge_0.65": {
+              "hit_rate_excluding_push": null,
+              "mean_probability": null,
+              "n": 0,
+              "range": [
+                0.65,
+                null
+              ]
+            },
+            "lt_0.40": {
+              "hit_rate_excluding_push": null,
+              "mean_probability": null,
+              "n": 0,
+              "range": [
+                null,
+                0.4
+              ]
+            }
+          },
+          "calibration_gap": 0.005994248366013033,
+          "decision": {
+            "decision_accuracy_excluding_push": 0.42320261437908496,
+            "decision_integer_hit_rate_excluding_push": 0.4738562091503268,
+            "decision_wilson_95": [
+              0.418582081092652,
+              0.5297786061410753
+            ],
+            "direction_counts": {
+              "away": 158,
+              "home": 165
+            },
+            "direction_flip_rate_vs_v2_lead": 0.0,
+            "mean_confidence": 0.5218039009287926,
+            "n_compared_with_v2_lead": 323,
+            "n_decisions": 323,
+            "n_priced_decisions": 323,
+            "n_settled_excluding_push": 306,
+            "rule": "choose primary side when p(primary) >= 0.5, otherwise the opposite side; confidence = max(p, 1 - p)"
+          },
+          "hit_rate_excluding_push": 0.4934640522875817,
+          "log_loss": 0.6961538006266126,
+          "mean_probability": 0.49945830065359476,
+          "n": 306,
+          "n_including_push": 323,
+          "primary_side_grade_counts": {
+            "full_loss": 118,
+            "full_win": 139,
+            "half_loss": 25,
+            "half_win": 24,
+            "push": 17
+          },
+          "primary_side_integer_hits_excluding_push": 163,
+          "push_n": 17,
+          "reliability_diagram": [
+            {
+              "bin": "lt_0.40",
+              "mean_probability": null,
+              "n": 0,
+              "observed_hit_rate": null
+            },
+            {
+              "bin": "0.40_0.50",
+              "mean_probability": 0.4769672,
+              "n": 150,
+              "observed_hit_rate": 0.53
+            },
+            {
+              "bin": "0.50_0.55",
+              "mean_probability": 0.5169098591549296,
+              "n": 142,
+              "observed_hit_rate": 0.4471830985915493
+            },
+            {
+              "bin": "0.55_0.60",
+              "mean_probability": 0.5606123076923077,
+              "n": 13,
+              "observed_hit_rate": 0.5384615384615384
+            },
+            {
+              "bin": "0.60_0.65",
+              "mean_probability": 0.6,
+              "n": 1,
+              "observed_hit_rate": 1.0
+            },
+            {
+              "bin": "ge_0.65",
+              "mean_probability": null,
+              "n": 0,
+              "observed_hit_rate": null
+            }
+          ],
+          "roi_at_0.55_threshold": {
+            "basis": "direction chosen by this model/probability, priced at the matching T-5 side odds",
+            "direction_counts": {
+              "away": 11,
+              "home": 14
+            },
+            "flip_rate_vs_v2_lead": 0.0,
+            "hit_rate_excluding_push": 0.48,
+            "integer_hits": 13,
+            "n_bets_excluding_push": 25,
+            "n_bets_including_push": 25,
+            "roi": -0.16200000000000003,
+            "threshold": 0.55,
+            "unit_pnl": -4.050000000000001,
+            "wilson_hit_rate_95": [
+              0.3349851695035678,
+              0.6996871404588704
+            ]
+          },
+          "wilson": [
+            0.4767186598086509,
+            0.5878304811491898
+          ]
+        }
+      },
       "selection": {
-        "brier": 0.22943166788870434,
+        "brier": 0.23189545625620914,
         "buckets": {
           "0.40_0.50": {
-            "hit_rate_excluding_push": null,
-            "mean_probability": null,
-            "n": 0,
+            "hit_rate_excluding_push": 0.53,
+            "mean_probability": 0.4769672,
+            "n": 150,
             "range": [
               0.4,
               0.5
             ]
           },
           "0.50_0.55": {
-            "hit_rate_excluding_push": 0.42057761732851984,
-            "mean_probability": 0.518257906137184,
-            "n": 277,
+            "hit_rate_excluding_push": 0.4471830985915493,
+            "mean_probability": 0.5169098591549296,
+            "n": 142,
             "range": [
               0.5,
               0.55
             ]
           },
           "0.55_0.60": {
-            "hit_rate_excluding_push": 0.4782608695652174,
-            "mean_probability": 0.5608943478260869,
-            "n": 23,
+            "hit_rate_excluding_push": 0.5384615384615384,
+            "mean_probability": 0.5606123076923077,
+            "n": 13,
             "range": [
               0.55,
               0.6
@@ -2443,20 +3535,39 @@
             ]
           }
         },
-        "calibration_gap": 0.09487710963455148,
-        "grade_counts": {
-          "full_loss": 140,
-          "full_win": 114,
-          "half_loss": 18,
-          "half_win": 29,
+        "calibration_gap": 0.005994248366013033,
+        "decision": {
+          "decision_accuracy_excluding_push": 0.42320261437908496,
+          "decision_integer_hit_rate_excluding_push": 0.4738562091503268,
+          "decision_wilson_95": [
+            0.418582081092652,
+            0.5297786061410753
+          ],
+          "direction_counts": {
+            "away": 158,
+            "home": 165
+          },
+          "direction_flip_rate_vs_v2_lead": 0.0,
+          "mean_confidence": 0.5218039009287926,
+          "n_compared_with_v2_lead": 323,
+          "n_decisions": 323,
+          "n_priced_decisions": 323,
+          "n_settled_excluding_push": 306,
+          "rule": "choose primary side when p(primary) >= 0.5, otherwise the opposite side; confidence = max(p, 1 - p)"
+        },
+        "hit_rate_excluding_push": 0.4934640522875817,
+        "log_loss": 0.6961538006266126,
+        "mean_probability": 0.49945830065359476,
+        "n": 306,
+        "n_including_push": 323,
+        "primary_side_grade_counts": {
+          "full_loss": 118,
+          "full_win": 139,
+          "half_loss": 25,
+          "half_win": 24,
           "push": 17
         },
-        "hit_rate_excluding_push": 0.4269102990033223,
-        "integer_hits_excluding_push": 143,
-        "log_loss": 0.7001908646561326,
-        "mean_probability": 0.5217874086378738,
-        "n": 301,
-        "n_including_push": 318,
+        "primary_side_integer_hits_excluding_push": 163,
         "push_n": 17,
         "reliability_diagram": [
           {
@@ -2467,21 +3578,21 @@
           },
           {
             "bin": "0.40_0.50",
-            "mean_probability": null,
-            "n": 0,
-            "observed_hit_rate": null
+            "mean_probability": 0.4769672,
+            "n": 150,
+            "observed_hit_rate": 0.53
           },
           {
             "bin": "0.50_0.55",
-            "mean_probability": 0.518257906137184,
-            "n": 277,
-            "observed_hit_rate": 0.42057761732851984
+            "mean_probability": 0.5169098591549296,
+            "n": 142,
+            "observed_hit_rate": 0.4471830985915493
           },
           {
             "bin": "0.55_0.60",
-            "mean_probability": 0.5608943478260869,
-            "n": 23,
-            "observed_hit_rate": 0.4782608695652174
+            "mean_probability": 0.5606123076923077,
+            "n": 13,
+            "observed_hit_rate": 0.5384615384615384
           },
           {
             "bin": "0.60_0.65",
@@ -2497,50 +3608,56 @@
           }
         ],
         "roi_at_0.55_threshold": {
-          "hit_rate_excluding_push": 0.5,
+          "basis": "direction chosen by this model/probability, priced at the matching T-5 side odds",
+          "direction_counts": {
+            "away": 11,
+            "home": 14
+          },
+          "flip_rate_vs_v2_lead": 0.0,
+          "hit_rate_excluding_push": 0.48,
           "integer_hits": 13,
-          "n_bets_excluding_push": 24,
-          "n_bets_including_push": 24,
-          "roi": -0.12708333333333335,
+          "n_bets_excluding_push": 25,
+          "n_bets_including_push": 25,
+          "roi": -0.16200000000000003,
           "threshold": 0.55,
-          "unit_pnl": -3.0500000000000007,
+          "unit_pnl": -4.050000000000001,
           "wilson_hit_rate_95": [
-            0.3507486535891948,
-            0.72108666268789
+            0.3349851695035678,
+            0.6996871404588704
           ]
         },
         "wilson": [
-          0.41933771063389974,
-          0.5314563839160056
+          0.4767186598086509,
+          0.5878304811491898
         ]
       }
     },
     "hil": {
       "discovery": {
-        "brier": 0.2339218380897059,
+        "brier": 0.23634397247618355,
         "buckets": {
           "0.40_0.50": {
-            "hit_rate_excluding_push": null,
-            "mean_probability": null,
-            "n": 0,
+            "hit_rate_excluding_push": 0.4562798092209857,
+            "mean_probability": 0.47948960254372014,
+            "n": 629,
             "range": [
               0.4,
               0.5
             ]
           },
           "0.50_0.55": {
-            "hit_rate_excluding_push": 0.4965277777777778,
-            "mean_probability": 0.5176195447530864,
-            "n": 1296,
+            "hit_rate_excluding_push": 0.5155586987270155,
+            "mean_probability": 0.5168202404526167,
+            "n": 707,
             "range": [
               0.5,
               0.55
             ]
           },
           "0.55_0.60": {
-            "hit_rate_excluding_push": 0.5546875,
-            "mean_probability": 0.55970703125,
-            "n": 64,
+            "hit_rate_excluding_push": 0.4594594594594595,
+            "mean_probability": 0.5594964864864865,
+            "n": 37,
             "range": [
               0.55,
               0.6
@@ -2574,20 +3691,39 @@
             ]
           }
         },
-        "calibration_gap": 0.02033542647058817,
-        "grade_counts": {
-          "full_loss": 573,
-          "full_win": 635,
-          "half_loss": 64,
-          "half_win": 88,
+        "calibration_gap": 0.013978324836125211,
+        "decision": {
+          "decision_accuracy_excluding_push": 0.49927166788055355,
+          "decision_integer_hit_rate_excluding_push": 0.5316824471959214,
+          "decision_wilson_95": [
+            0.5052365072224854,
+            0.5579515958395174
+          ],
+          "direction_counts": {
+            "over": 797,
+            "under": 662
+          },
+          "direction_flip_rate_vs_v2_lead": 0.0013708019191226869,
+          "mean_confidence": 0.5197853529814942,
+          "n_compared_with_v2_lead": 1459,
+          "n_decisions": 1459,
+          "n_priced_decisions": 1457,
+          "n_settled_excluding_push": 1373,
+          "rule": "choose primary side when p(primary) >= 0.5, otherwise the opposite side; confidence = max(p, 1 - p)"
+        },
+        "hit_rate_excluding_push": 0.4868900218499636,
+        "log_loss": 0.6909586152421637,
+        "mean_probability": 0.5008683466860888,
+        "n": 1373,
+        "n_including_push": 1459,
+        "primary_side_grade_counts": {
+          "full_loss": 586,
+          "full_win": 634,
+          "half_loss": 84,
+          "half_win": 69,
           "push": 86
         },
-        "hit_rate_excluding_push": 0.49926470588235294,
-        "integer_hits_excluding_push": 723,
-        "log_loss": 0.6933436294773329,
-        "mean_probability": 0.5196001323529411,
-        "n": 1360,
-        "n_including_push": 1446,
+        "primary_side_integer_hits_excluding_push": 703,
         "push_n": 86,
         "reliability_diagram": [
           {
@@ -2598,21 +3734,21 @@
           },
           {
             "bin": "0.40_0.50",
-            "mean_probability": null,
-            "n": 0,
-            "observed_hit_rate": null
+            "mean_probability": 0.47948960254372014,
+            "n": 629,
+            "observed_hit_rate": 0.4562798092209857
           },
           {
             "bin": "0.50_0.55",
-            "mean_probability": 0.5176195447530864,
-            "n": 1296,
-            "observed_hit_rate": 0.4965277777777778
+            "mean_probability": 0.5168202404526167,
+            "n": 707,
+            "observed_hit_rate": 0.5155586987270155
           },
           {
             "bin": "0.55_0.60",
-            "mean_probability": 0.55970703125,
-            "n": 64,
-            "observed_hit_rate": 0.5546875
+            "mean_probability": 0.5594964864864865,
+            "n": 37,
+            "observed_hit_rate": 0.4594594594594595
           },
           {
             "bin": "0.60_0.65",
@@ -2628,6 +3764,12 @@
           }
         ],
         "roi_at_0.55_threshold": {
+          "basis": "direction chosen by this model/probability, priced at the matching T-5 side odds",
+          "direction_counts": {
+            "over": 40,
+            "under": 28
+          },
+          "flip_rate_vs_v2_lead": 0.0,
           "hit_rate_excluding_push": 0.5546875,
           "integer_hits": 37,
           "n_bets_excluding_push": 64,
@@ -2641,35 +3783,35 @@
           ]
         },
         "wilson": [
-          0.5050455072840725,
-          0.5580116753846254
+          0.48558108890602114,
+          0.538386812255428
         ]
       },
       "holdout": {
-        "brier": 0.23303984247685589,
+        "brier": 0.23669671035032538,
         "buckets": {
           "0.40_0.50": {
-            "hit_rate_excluding_push": null,
-            "mean_probability": null,
-            "n": 0,
+            "hit_rate_excluding_push": 0.4976851851851852,
+            "mean_probability": 0.4780641203703703,
+            "n": 216,
             "range": [
               0.4,
               0.5
             ]
           },
           "0.50_0.55": {
-            "hit_rate_excluding_push": 0.4942263279445728,
-            "mean_probability": 0.5193704618937645,
-            "n": 433,
+            "hit_rate_excluding_push": 0.5416666666666666,
+            "mean_probability": 0.518701052631579,
+            "n": 228,
             "range": [
               0.5,
               0.55
             ]
           },
           "0.55_0.60": {
-            "hit_rate_excluding_push": 0.56,
-            "mean_probability": 0.5624324,
-            "n": 25,
+            "hit_rate_excluding_push": 0.6176470588235294,
+            "mean_probability": 0.5637811764705882,
+            "n": 17,
             "range": [
               0.55,
               0.6
@@ -2703,21 +3845,40 @@
             ]
           }
         },
-        "calibration_gap": 0.02390441048034936,
-        "grade_counts": {
-          "full_loss": 196,
-          "full_win": 212,
-          "half_loss": 18,
-          "half_win": 32,
-          "push": 35
+        "calibration_gap": 0.022538026030368807,
+        "decision": {
+          "decision_accuracy_excluding_push": 0.4913232104121475,
+          "decision_integer_hit_rate_excluding_push": 0.5227765726681128,
+          "decision_wilson_95": [
+            0.47718181485282823,
+            0.5679948784078745
+          ],
+          "direction_counts": {
+            "over": 267,
+            "under": 227
+          },
+          "direction_flip_rate_vs_v2_lead": 0.0,
+          "mean_confidence": 0.5220003846153847,
+          "n_compared_with_v2_lead": 494,
+          "n_decisions": 494,
+          "n_priced_decisions": 494,
+          "n_settled_excluding_push": 461,
+          "rule": "choose primary side when p(primary) >= 0.5, otherwise the opposite side; confidence = max(p, 1 - p)"
         },
-        "hit_rate_excluding_push": 0.4978165938864629,
-        "integer_hits_excluding_push": 244,
-        "log_loss": 0.6941631141255216,
-        "mean_probability": 0.5217210043668122,
-        "n": 458,
-        "n_including_push": 493,
-        "push_n": 35,
+        "hit_rate_excluding_push": 0.5238611713665944,
+        "log_loss": 0.6914838929494347,
+        "mean_probability": 0.5013231453362256,
+        "n": 461,
+        "n_including_push": 494,
+        "primary_side_grade_counts": {
+          "full_loss": 182,
+          "full_win": 230,
+          "half_loss": 26,
+          "half_win": 23,
+          "push": 33
+        },
+        "primary_side_integer_hits_excluding_push": 253,
+        "push_n": 33,
         "reliability_diagram": [
           {
             "bin": "lt_0.40",
@@ -2727,21 +3888,21 @@
           },
           {
             "bin": "0.40_0.50",
-            "mean_probability": null,
-            "n": 0,
-            "observed_hit_rate": null
+            "mean_probability": 0.4780641203703703,
+            "n": 216,
+            "observed_hit_rate": 0.4976851851851852
           },
           {
             "bin": "0.50_0.55",
-            "mean_probability": 0.5193704618937645,
-            "n": 433,
-            "observed_hit_rate": 0.4942263279445728
+            "mean_probability": 0.518701052631579,
+            "n": 228,
+            "observed_hit_rate": 0.5416666666666666
           },
           {
             "bin": "0.55_0.60",
-            "mean_probability": 0.5624324,
-            "n": 25,
-            "observed_hit_rate": 0.56
+            "mean_probability": 0.5637811764705882,
+            "n": 17,
+            "observed_hit_rate": 0.6176470588235294
           },
           {
             "bin": "0.60_0.65",
@@ -2757,47 +3918,517 @@
           }
         ],
         "roi_at_0.55_threshold": {
-          "hit_rate_excluding_push": 0.56,
-          "integer_hits": 15,
-          "n_bets_excluding_push": 25,
-          "n_bets_including_push": 26,
-          "roi": -0.033653846153846166,
+          "basis": "direction chosen by this model/probability, priced at the matching T-5 side odds",
+          "direction_counts": {
+            "over": 18,
+            "under": 7
+          },
+          "flip_rate_vs_v2_lead": 0.0,
+          "hit_rate_excluding_push": 0.5625,
+          "integer_hits": 14,
+          "n_bets_excluding_push": 24,
+          "n_bets_including_push": 25,
+          "roi": -0.049000000000000016,
           "threshold": 0.55,
-          "unit_pnl": -0.8750000000000003,
+          "unit_pnl": -1.2250000000000003,
           "wilson_hit_rate_95": [
-            0.40739457358966996,
-            0.7659669762225203
+            0.3883466586522876,
+            0.7553239739018824
           ]
         },
         "wilson": [
-          0.48697508000089273,
-          0.5779822758774744
+          0.5031655444600849,
+          0.5936416553842778
         ]
       },
+      "production_lead_decision": {
+        "discovery": {
+          "brier": 0.23634397247618355,
+          "buckets": {
+            "0.40_0.50": {
+              "hit_rate_excluding_push": 0.4562798092209857,
+              "mean_probability": 0.47948960254372014,
+              "n": 629,
+              "range": [
+                0.4,
+                0.5
+              ]
+            },
+            "0.50_0.55": {
+              "hit_rate_excluding_push": 0.5155586987270155,
+              "mean_probability": 0.5168202404526167,
+              "n": 707,
+              "range": [
+                0.5,
+                0.55
+              ]
+            },
+            "0.55_0.60": {
+              "hit_rate_excluding_push": 0.4594594594594595,
+              "mean_probability": 0.5594964864864865,
+              "n": 37,
+              "range": [
+                0.55,
+                0.6
+              ]
+            },
+            "0.60_0.65": {
+              "hit_rate_excluding_push": null,
+              "mean_probability": null,
+              "n": 0,
+              "range": [
+                0.6,
+                0.65
+              ]
+            },
+            "ge_0.65": {
+              "hit_rate_excluding_push": null,
+              "mean_probability": null,
+              "n": 0,
+              "range": [
+                0.65,
+                null
+              ]
+            },
+            "lt_0.40": {
+              "hit_rate_excluding_push": null,
+              "mean_probability": null,
+              "n": 0,
+              "range": [
+                null,
+                0.4
+              ]
+            }
+          },
+          "calibration_gap": 0.013978324836125211,
+          "decision": {
+            "decision_accuracy_excluding_push": 0.49927166788055355,
+            "decision_integer_hit_rate_excluding_push": 0.5316824471959214,
+            "decision_wilson_95": [
+              0.5052365072224854,
+              0.5579515958395174
+            ],
+            "direction_counts": {
+              "over": 795,
+              "under": 664
+            },
+            "direction_flip_rate_vs_v2_lead": 0.0,
+            "mean_confidence": 0.5197853529814942,
+            "n_compared_with_v2_lead": 1459,
+            "n_decisions": 1459,
+            "n_priced_decisions": 1459,
+            "n_settled_excluding_push": 1373,
+            "rule": "choose primary side when p(primary) >= 0.5, otherwise the opposite side; confidence = max(p, 1 - p)"
+          },
+          "hit_rate_excluding_push": 0.4868900218499636,
+          "log_loss": 0.6909586152421637,
+          "mean_probability": 0.5008683466860888,
+          "n": 1373,
+          "n_including_push": 1459,
+          "primary_side_grade_counts": {
+            "full_loss": 586,
+            "full_win": 634,
+            "half_loss": 84,
+            "half_win": 69,
+            "push": 86
+          },
+          "primary_side_integer_hits_excluding_push": 703,
+          "push_n": 86,
+          "reliability_diagram": [
+            {
+              "bin": "lt_0.40",
+              "mean_probability": null,
+              "n": 0,
+              "observed_hit_rate": null
+            },
+            {
+              "bin": "0.40_0.50",
+              "mean_probability": 0.47948960254372014,
+              "n": 629,
+              "observed_hit_rate": 0.4562798092209857
+            },
+            {
+              "bin": "0.50_0.55",
+              "mean_probability": 0.5168202404526167,
+              "n": 707,
+              "observed_hit_rate": 0.5155586987270155
+            },
+            {
+              "bin": "0.55_0.60",
+              "mean_probability": 0.5594964864864865,
+              "n": 37,
+              "observed_hit_rate": 0.4594594594594595
+            },
+            {
+              "bin": "0.60_0.65",
+              "mean_probability": null,
+              "n": 0,
+              "observed_hit_rate": null
+            },
+            {
+              "bin": "ge_0.65",
+              "mean_probability": null,
+              "n": 0,
+              "observed_hit_rate": null
+            }
+          ],
+          "roi_at_0.55_threshold": {
+            "basis": "direction chosen by this model/probability, priced at the matching T-5 side odds",
+            "direction_counts": {
+              "over": 40,
+              "under": 28
+            },
+            "flip_rate_vs_v2_lead": 0.0,
+            "hit_rate_excluding_push": 0.5546875,
+            "integer_hits": 37,
+            "n_bets_excluding_push": 64,
+            "n_bets_including_push": 68,
+            "roi": -0.007573529411764721,
+            "threshold": 0.55,
+            "unit_pnl": -0.515000000000001,
+            "wilson_hit_rate_95": [
+              0.456100315400829,
+              0.6913021752565451
+            ]
+          },
+          "wilson": [
+            0.48558108890602114,
+            0.538386812255428
+          ]
+        },
+        "holdout": {
+          "brier": 0.23669671035032538,
+          "buckets": {
+            "0.40_0.50": {
+              "hit_rate_excluding_push": 0.4976851851851852,
+              "mean_probability": 0.4780641203703703,
+              "n": 216,
+              "range": [
+                0.4,
+                0.5
+              ]
+            },
+            "0.50_0.55": {
+              "hit_rate_excluding_push": 0.5416666666666666,
+              "mean_probability": 0.518701052631579,
+              "n": 228,
+              "range": [
+                0.5,
+                0.55
+              ]
+            },
+            "0.55_0.60": {
+              "hit_rate_excluding_push": 0.6176470588235294,
+              "mean_probability": 0.5637811764705882,
+              "n": 17,
+              "range": [
+                0.55,
+                0.6
+              ]
+            },
+            "0.60_0.65": {
+              "hit_rate_excluding_push": null,
+              "mean_probability": null,
+              "n": 0,
+              "range": [
+                0.6,
+                0.65
+              ]
+            },
+            "ge_0.65": {
+              "hit_rate_excluding_push": null,
+              "mean_probability": null,
+              "n": 0,
+              "range": [
+                0.65,
+                null
+              ]
+            },
+            "lt_0.40": {
+              "hit_rate_excluding_push": null,
+              "mean_probability": null,
+              "n": 0,
+              "range": [
+                null,
+                0.4
+              ]
+            }
+          },
+          "calibration_gap": 0.022538026030368807,
+          "decision": {
+            "decision_accuracy_excluding_push": 0.4913232104121475,
+            "decision_integer_hit_rate_excluding_push": 0.5227765726681128,
+            "decision_wilson_95": [
+              0.47718181485282823,
+              0.5679948784078745
+            ],
+            "direction_counts": {
+              "over": 267,
+              "under": 227
+            },
+            "direction_flip_rate_vs_v2_lead": 0.0,
+            "mean_confidence": 0.5220003846153847,
+            "n_compared_with_v2_lead": 494,
+            "n_decisions": 494,
+            "n_priced_decisions": 494,
+            "n_settled_excluding_push": 461,
+            "rule": "choose primary side when p(primary) >= 0.5, otherwise the opposite side; confidence = max(p, 1 - p)"
+          },
+          "hit_rate_excluding_push": 0.5238611713665944,
+          "log_loss": 0.6914838929494347,
+          "mean_probability": 0.5013231453362256,
+          "n": 461,
+          "n_including_push": 494,
+          "primary_side_grade_counts": {
+            "full_loss": 182,
+            "full_win": 230,
+            "half_loss": 26,
+            "half_win": 23,
+            "push": 33
+          },
+          "primary_side_integer_hits_excluding_push": 253,
+          "push_n": 33,
+          "reliability_diagram": [
+            {
+              "bin": "lt_0.40",
+              "mean_probability": null,
+              "n": 0,
+              "observed_hit_rate": null
+            },
+            {
+              "bin": "0.40_0.50",
+              "mean_probability": 0.4780641203703703,
+              "n": 216,
+              "observed_hit_rate": 0.4976851851851852
+            },
+            {
+              "bin": "0.50_0.55",
+              "mean_probability": 0.518701052631579,
+              "n": 228,
+              "observed_hit_rate": 0.5416666666666666
+            },
+            {
+              "bin": "0.55_0.60",
+              "mean_probability": 0.5637811764705882,
+              "n": 17,
+              "observed_hit_rate": 0.6176470588235294
+            },
+            {
+              "bin": "0.60_0.65",
+              "mean_probability": null,
+              "n": 0,
+              "observed_hit_rate": null
+            },
+            {
+              "bin": "ge_0.65",
+              "mean_probability": null,
+              "n": 0,
+              "observed_hit_rate": null
+            }
+          ],
+          "roi_at_0.55_threshold": {
+            "basis": "direction chosen by this model/probability, priced at the matching T-5 side odds",
+            "direction_counts": {
+              "over": 18,
+              "under": 7
+            },
+            "flip_rate_vs_v2_lead": 0.0,
+            "hit_rate_excluding_push": 0.5625,
+            "integer_hits": 14,
+            "n_bets_excluding_push": 24,
+            "n_bets_including_push": 25,
+            "roi": -0.049000000000000016,
+            "threshold": 0.55,
+            "unit_pnl": -1.2250000000000003,
+            "wilson_hit_rate_95": [
+              0.3883466586522876,
+              0.7553239739018824
+            ]
+          },
+          "wilson": [
+            0.5031655444600849,
+            0.5936416553842778
+          ]
+        },
+        "selection": {
+          "brier": 0.23732015823837535,
+          "buckets": {
+            "0.40_0.50": {
+              "hit_rate_excluding_push": 0.42105263157894735,
+              "mean_probability": 0.4806207017543859,
+              "n": 171,
+              "range": [
+                0.4,
+                0.5
+              ]
+            },
+            "0.50_0.55": {
+              "hit_rate_excluding_push": 0.47109826589595377,
+              "mean_probability": 0.5166753757225433,
+              "n": 173,
+              "range": [
+                0.5,
+                0.55
+              ]
+            },
+            "0.55_0.60": {
+              "hit_rate_excluding_push": 0.5769230769230769,
+              "mean_probability": 0.5638838461538461,
+              "n": 13,
+              "range": [
+                0.55,
+                0.6
+              ]
+            },
+            "0.60_0.65": {
+              "hit_rate_excluding_push": null,
+              "mean_probability": null,
+              "n": 0,
+              "range": [
+                0.6,
+                0.65
+              ]
+            },
+            "ge_0.65": {
+              "hit_rate_excluding_push": null,
+              "mean_probability": null,
+              "n": 0,
+              "range": [
+                0.65,
+                null
+              ]
+            },
+            "lt_0.40": {
+              "hit_rate_excluding_push": null,
+              "mean_probability": null,
+              "n": 0,
+              "range": [
+                null,
+                0.4
+              ]
+            }
+          },
+          "calibration_gap": 0.05014417366946772,
+          "decision": {
+            "decision_accuracy_excluding_push": 0.5098039215686274,
+            "decision_integer_hit_rate_excluding_push": 0.5378151260504201,
+            "decision_wilson_95": [
+              0.48596940348210593,
+              0.5888557013942618
+            ],
+            "direction_counts": {
+              "over": 197,
+              "under": 183
+            },
+            "direction_flip_rate_vs_v2_lead": 0.0,
+            "mean_confidence": 0.5197192631578947,
+            "n_compared_with_v2_lead": 380,
+            "n_decisions": 380,
+            "n_priced_decisions": 380,
+            "n_settled_excluding_push": 357,
+            "rule": "choose primary side when p(primary) >= 0.5, otherwise the opposite side; confidence = max(p, 1 - p)"
+          },
+          "hit_rate_excluding_push": 0.45098039215686275,
+          "log_loss": 0.690190856751362,
+          "mean_probability": 0.5011245658263305,
+          "n": 357,
+          "n_including_push": 380,
+          "primary_side_grade_counts": {
+            "full_loss": 174,
+            "full_win": 153,
+            "half_loss": 14,
+            "half_win": 16,
+            "push": 23
+          },
+          "primary_side_integer_hits_excluding_push": 169,
+          "push_n": 23,
+          "reliability_diagram": [
+            {
+              "bin": "lt_0.40",
+              "mean_probability": null,
+              "n": 0,
+              "observed_hit_rate": null
+            },
+            {
+              "bin": "0.40_0.50",
+              "mean_probability": 0.4806207017543859,
+              "n": 171,
+              "observed_hit_rate": 0.42105263157894735
+            },
+            {
+              "bin": "0.50_0.55",
+              "mean_probability": 0.5166753757225433,
+              "n": 173,
+              "observed_hit_rate": 0.47109826589595377
+            },
+            {
+              "bin": "0.55_0.60",
+              "mean_probability": 0.5638838461538461,
+              "n": 13,
+              "observed_hit_rate": 0.5769230769230769
+            },
+            {
+              "bin": "0.60_0.65",
+              "mean_probability": null,
+              "n": 0,
+              "observed_hit_rate": null
+            },
+            {
+              "bin": "ge_0.65",
+              "mean_probability": null,
+              "n": 0,
+              "observed_hit_rate": null
+            }
+          ],
+          "roi_at_0.55_threshold": {
+            "basis": "direction chosen by this model/probability, priced at the matching T-5 side odds",
+            "direction_counts": {
+              "over": 15,
+              "under": 1
+            },
+            "flip_rate_vs_v2_lead": 0.0,
+            "hit_rate_excluding_push": 0.6071428571428571,
+            "integer_hits": 9,
+            "n_bets_excluding_push": 14,
+            "n_bets_including_push": 16,
+            "roi": 0.03187499999999998,
+            "threshold": 0.55,
+            "unit_pnl": 0.5099999999999997,
+            "wilson_hit_rate_95": [
+              0.38764423103907397,
+              0.8365526824644587
+            ]
+          },
+          "wilson": [
+            0.422155655568196,
+            0.525189641000286
+          ]
+        }
+      },
       "selection": {
-        "brier": 0.2366406454025496,
+        "brier": 0.23732015823837535,
         "buckets": {
           "0.40_0.50": {
-            "hit_rate_excluding_push": null,
-            "mean_probability": null,
-            "n": 0,
+            "hit_rate_excluding_push": 0.42105263157894735,
+            "mean_probability": 0.4806207017543859,
+            "n": 171,
             "range": [
               0.4,
               0.5
             ]
           },
           "0.50_0.55": {
-            "hit_rate_excluding_push": 0.5,
-            "mean_probability": 0.518394294117647,
-            "n": 340,
+            "hit_rate_excluding_push": 0.47109826589595377,
+            "mean_probability": 0.5166753757225433,
+            "n": 173,
             "range": [
               0.5,
               0.55
             ]
           },
           "0.55_0.60": {
-            "hit_rate_excluding_push": 0.6153846153846154,
-            "mean_probability": 0.5643469230769231,
+            "hit_rate_excluding_push": 0.5769230769230769,
+            "mean_probability": 0.5638838461538461,
             "n": 13,
             "range": [
               0.55,
@@ -2832,21 +4463,40 @@
             ]
           }
         },
-        "calibration_gap": 0.01583730878186973,
-        "grade_counts": {
-          "full_loss": 156,
-          "full_win": 169,
-          "half_loss": 10,
-          "half_win": 18,
-          "push": 20
+        "calibration_gap": 0.05014417366946772,
+        "decision": {
+          "decision_accuracy_excluding_push": 0.5098039215686274,
+          "decision_integer_hit_rate_excluding_push": 0.5378151260504201,
+          "decision_wilson_95": [
+            0.48596940348210593,
+            0.5888557013942618
+          ],
+          "direction_counts": {
+            "over": 197,
+            "under": 183
+          },
+          "direction_flip_rate_vs_v2_lead": 0.0,
+          "mean_confidence": 0.5197192631578947,
+          "n_compared_with_v2_lead": 380,
+          "n_decisions": 380,
+          "n_priced_decisions": 380,
+          "n_settled_excluding_push": 357,
+          "rule": "choose primary side when p(primary) >= 0.5, otherwise the opposite side; confidence = max(p, 1 - p)"
         },
-        "hit_rate_excluding_push": 0.5042492917847026,
-        "integer_hits_excluding_push": 187,
-        "log_loss": 0.6919212559885176,
-        "mean_probability": 0.5200866005665723,
-        "n": 353,
-        "n_including_push": 373,
-        "push_n": 20,
+        "hit_rate_excluding_push": 0.45098039215686275,
+        "log_loss": 0.690190856751362,
+        "mean_probability": 0.5011245658263305,
+        "n": 357,
+        "n_including_push": 380,
+        "primary_side_grade_counts": {
+          "full_loss": 174,
+          "full_win": 153,
+          "half_loss": 14,
+          "half_win": 16,
+          "push": 23
+        },
+        "primary_side_integer_hits_excluding_push": 169,
+        "push_n": 23,
         "reliability_diagram": [
           {
             "bin": "lt_0.40",
@@ -2856,21 +4506,21 @@
           },
           {
             "bin": "0.40_0.50",
-            "mean_probability": null,
-            "n": 0,
-            "observed_hit_rate": null
+            "mean_probability": 0.4806207017543859,
+            "n": 171,
+            "observed_hit_rate": 0.42105263157894735
           },
           {
             "bin": "0.50_0.55",
-            "mean_probability": 0.518394294117647,
-            "n": 340,
-            "observed_hit_rate": 0.5
+            "mean_probability": 0.5166753757225433,
+            "n": 173,
+            "observed_hit_rate": 0.47109826589595377
           },
           {
             "bin": "0.55_0.60",
-            "mean_probability": 0.5643469230769231,
+            "mean_probability": 0.5638838461538461,
             "n": 13,
-            "observed_hit_rate": 0.6153846153846154
+            "observed_hit_rate": 0.5769230769230769
           },
           {
             "bin": "0.60_0.65",
@@ -2886,21 +4536,27 @@
           }
         ],
         "roi_at_0.55_threshold": {
-          "hit_rate_excluding_push": 0.6153846153846154,
-          "integer_hits": 8,
-          "n_bets_excluding_push": 13,
-          "n_bets_including_push": 15,
-          "roi": 0.010666666666666647,
+          "basis": "direction chosen by this model/probability, priced at the matching T-5 side odds",
+          "direction_counts": {
+            "over": 15,
+            "under": 1
+          },
+          "flip_rate_vs_v2_lead": 0.0,
+          "hit_rate_excluding_push": 0.6071428571428571,
+          "integer_hits": 9,
+          "n_bets_excluding_push": 14,
+          "n_bets_including_push": 16,
+          "roi": 0.03187499999999998,
           "threshold": 0.55,
-          "unit_pnl": 0.1599999999999997,
+          "unit_pnl": 0.5099999999999997,
           "wilson_hit_rate_95": [
-            0.35522891512665694,
-            0.8229029220223743
+            0.38764423103907397,
+            0.8365526824644587
           ]
         },
         "wilson": [
-          0.4776380551892585,
-          0.5812116089428234
+          0.422155655568196,
+          0.525189641000286
         ]
       }
     }
