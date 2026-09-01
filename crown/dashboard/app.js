@@ -2977,6 +2977,8 @@ function segmentedCounts(metrics) {
 function segmentedConditionCard(condition) {
   const historical = condition.historical || {};
   const forward = condition.prospective || {};
+  const combined = condition.combined || null;
+  const original = condition.historical_original || null;
   const tier = String(condition.tier || '');
   return `<article class="seg-rule-card tier-${esc(tier.toLowerCase())}" data-testid="seg-condition-${esc(condition.id)}">
     <div class="seg-rule-head">
@@ -2992,11 +2994,15 @@ function segmentedConditionCard(condition) {
       <div><span>啟用後實績</span><b class="mono">${numeric(forward.settled) || 0} / ${numeric(forward.qualified) || 0}</b><small>已判定 / 符合</small></div>
       <div><span>啟用後命中率</span><b class="mono">${segmentedPercent(forward.hit_rate)}</b><small>走水不入分母</small></div>
       <div><span>啟用後 ROI</span><b class="mono">${segmentedSignedPercent(forward.roi)}</b><small>${numeric(forward.roi_priced) || 0} 場有賠率</small></div>
+      ${combined ? `<div><span>剔除後合計</span><b class="mono">${numeric(combined.qualified) || 0}</b><small>歷史 + 啟用後符合</small></div>
+      <div><span>合計命中率</span><b class="mono">${segmentedPercent(combined.hit_rate, 2)}</b><small>${esc(segmentedCounts(combined))}</small></div>
+      <div><span>合計 ROI</span><b class="mono">${segmentedSignedPercent(combined.roi)}</b><small>盈虧 ${numeric(combined.pnl) == null ? '—' : `${combined.pnl >= 0 ? '+' : ''}${Number(combined.pnl).toFixed(3)}`} 注</small></div>` : ''}
     </div>
     <details class="seg-history">
       <summary>展開歷史基準（${numeric(historical.sample) || 0}）</summary>
       <div><b>方向路徑：</b>${esc(publicText(condition.path_label || ''))}</div>
       <div><b>結算分布：</b>${esc(segmentedCounts(historical))}</div>
+      ${original ? `<div><b>剔除前基準：</b>${numeric(original.sample) || 0} 場 · 命中率 ${segmentedPercent(original.hit_rate, 2)} · ROI ${segmentedSignedPercent(original.roi)}</div>` : ''}
       <div><b>說明：</b>呢組係條件啟用前已固定嘅歷史回測，只用作基準；唔會混入啟用後實績。</div>
     </details>
   </article>`;

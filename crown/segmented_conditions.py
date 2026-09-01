@@ -93,6 +93,9 @@ def _rule_s_t5_over(stages: dict[str, dict[str, Any]]) -> dict[str, Any] | None:
     prediction = _prediction(row or {}, "HIL")
     if not prediction or str(prediction.get("side") or "").upper() != "H":
         return None
+    line = _selected_line(prediction)
+    if line is None or any(abs(line - excluded) < 1e-9 for excluded in (2.0, 2.25)):
+        return None
     odds = _odds(prediction)
     return {"decision_stage": "T-5", "prediction": prediction} if odds and odds > 1.85 else None
 
@@ -151,12 +154,19 @@ CONDITIONS: tuple[dict[str, Any], ...] = (
         "id": "S-HIL-T5-OVER-185",
         "tier": "S",
         "market": "HIL",
-        "title": "T-5 預測大；賠率 > 1.85",
-        "definition": "只睇 T-5 入球大細預測方向；預測為大，而且所選方向賠率高於 1.85。",
-        "path_label": "T-5：大",
+        "title": "T-5 預測大；賠率 > 1.85；剔除中位線 2.00／2.25",
+        "definition": "只睇 T-5 入球大細預測方向；預測為大，而且所選方向賠率高於 1.85；中位線 2.00 及 2.25 不計入。",
+        "path_label": "T-5：大｜中位線≠2.00／2.25",
+        "excluded_lines": [2.0, 2.25],
+        "historical_original": {
+            "sample": 96, "full_win": 53, "half_win": 6, "push": 7,
+            "half_loss": 2, "full_loss": 28, "hit_rate": 0.6629,
+            "pnl": 21.35, "roi": 0.2224,
+        },
         "historical": {
-            "sample": 94, "full_win": 52, "half_win": 6, "push": 7,
-            "half_loss": 2, "full_loss": 27, "hit_rate": 0.6667, "roi": 0.2284,
+            "sample": 77, "full_win": 45, "half_win": 6, "push": 6,
+            "half_loss": 0, "full_loss": 20, "hit_rate": 0.71831,
+            "pnl": 23.01, "roi": 0.298831,
         },
         "matcher": _rule_s_t5_over,
     },
@@ -248,8 +258,37 @@ def _prospective_metrics(observations: list[dict[str, Any]]) -> dict[str, Any]:
         "half_loss": settlements["Half Lost"],
         "full_loss": settlements["Lost"],
         "hit_rate": round(hits / hit_denominator, 6) if hit_denominator else None,
+        "pnl": round(profit, 6),
         "roi": round(profit / priced, 6) if priced else None,
         "roi_priced": priced,
+    }
+
+
+def _combined_metrics(
+    historical: dict[str, Any],
+    prospective: dict[str, Any],
+) -> dict[str, Any] | None:
+    if historical.get("pnl") is None:
+        return None
+    counts = {
+        key: int(historical.get(key) or 0) + int(prospective.get(key) or 0)
+        for key in ("full_win", "half_win", "push", "half_loss", "full_loss")
+    }
+    qualified = int(historical.get("sample") or 0) + int(prospective.get("qualified") or 0)
+    settled = int(historical.get("sample") or 0) + int(prospective.get("settled") or 0)
+    hit_denominator = settled - counts["push"]
+    hits = counts["full_win"] + counts["half_win"]
+    pnl = float(historical.get("pnl") or 0) + float(prospective.get("pnl") or 0)
+    roi_priced = int(historical.get("sample") or 0) + int(prospective.get("roi_priced") or 0)
+    return {
+        "qualified": qualified,
+        "settled": settled,
+        "pending": int(prospective.get("pending") or 0),
+        **counts,
+        "hit_rate": round(hits / hit_denominator, 6) if hit_denominator else None,
+        "pnl": round(pnl, 6),
+        "roi": round(pnl / roi_priced, 6) if roi_priced else None,
+        "roi_priced": roi_priced,
     }
 
 
@@ -334,6 +373,9 @@ def build_segmented_conditions(
         observations.sort(key=lambda item: str(item.get("kickoff") or ""), reverse=True)
         output = {key: value for key, value in condition.items() if key != "matcher"}
         output["prospective"] = _prospective_metrics(observations)
+        combined = _combined_metrics(output["historical"], output["prospective"])
+        if combined is not None:
+            output["combined"] = combined
         output["observations"] = observations[:100]
         if output["tier"] in PUBLIC_TIERS:
             public.append(output)
