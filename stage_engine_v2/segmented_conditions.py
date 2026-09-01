@@ -163,6 +163,9 @@ def _rule_watch_t5_over_180(slot: dict[str, Any]) -> dict[str, Any] | None:
     prediction = _prediction(slot, "T-5", "HIL")
     if not prediction or prediction["side"] != "H" or (prediction["odds"] or 0) <= 1.80:
         return None
+    line = prediction.get("selected_line")
+    if line is None or abs(float(line) - 3.5) < 1e-9:
+        return None
     return prediction
 
 
@@ -239,14 +242,19 @@ CONDITIONS: tuple[dict[str, Any], ...] = (
         "tier": "觀察",
         "evidence_status": "watch",
         "evidence_label": "大型樣本觀察",
-        "evidence_note": "242 場三段均為正；暫未達嚴格獨立驗證。",
+        "evidence_note": "剔除中位線 3.50 後，219 場歷史命中 60.29%、ROI 10.74%；暫未達嚴格獨立驗證。",
         "market": "HIL",
-        "title": "T-5 預測大；賠率 > 1.80",
-        "definition": "只睇 T-5 入球大細預測方向；預測為大，而且所選方向賠率嚴格高於 1.80。",
-        "path_label": "T-5：大",
-        "historical": {
+        "title": "T-5 預測大；賠率 > 1.80；剔除中位線 3.50",
+        "definition": "只睇 T-5 入球大細預測方向；預測為大，而且所選方向賠率嚴格高於 1.80；中位線 3.50 不計入。",
+        "path_label": "T-5：大｜中位線≠3.50",
+        "excluded_lines": [3.5],
+        "historical_original": {
             "sample": 242, "full_win": 119, "half_win": 12, "push": 15,
             "half_loss": 7, "full_loss": 89, "hit_rate": 0.5771, "roi": 0.0636,
+        },
+        "historical": {
+            "sample": 219, "full_win": 111, "half_win": 12, "push": 15,
+            "half_loss": 7, "full_loss": 74, "hit_rate": 0.6029, "roi": 0.1074,
         },
         "matcher": _rule_watch_t5_over_180,
     },

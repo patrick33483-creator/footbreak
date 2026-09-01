@@ -87,6 +87,8 @@ def test_projects_prediction_direction_conditions_and_settles_results() -> None:
     assert conditions["S-HIL-T5-OVER-185"]["prospective"]["roi"] == 0.9
     assert conditions["WATCH-HIL-T5-OVER-180"]["prospective"]["qualified"] == 1
     assert conditions["WATCH-HIL-T5-OVER-180"]["evidence_label"] == "大型樣本觀察"
+    assert conditions["WATCH-HIL-T5-OVER-180"]["historical"]["sample"] == 219
+    assert conditions["WATCH-HIL-T5-OVER-180"]["excluded_lines"] == [3.5]
     assert conditions["A-HIL-OPEN-T5-OVER-180"]["prospective"]["qualified"] == 1
     assert conditions["A-HDC-OPEN-AWAY-MINUS-050"]["prospective"]["full_loss"] == 1
     # A-HDC-HHH-SAME-LINE was downgraded to background tier and no longer
@@ -110,6 +112,9 @@ def test_strict_threshold_same_line_and_activation_cutoff() -> None:
         }),
         "exact-180": _slot("exact-180", {
             "T-5": _stage("HIL", "H", 2.5, 1.80, "O 2.5"),
+        }),
+        "excluded-watch-line": _slot("excluded-watch-line", {
+            "T-5": _stage("HIL", "H", 3.5, 1.82, "O 3.5"),
         }),
         "changed": _slot("changed", {
             "首預": _stage("HDC", "H", -0.25, 1.8, "主"),
