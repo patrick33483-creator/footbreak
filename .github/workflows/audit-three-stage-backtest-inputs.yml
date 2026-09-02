@@ -256,20 +256,20 @@ jobs:
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
         run: |
           set -euo pipefail
-          WORK="/tmp/radar-reverse-${GITHUB_RUN_ID}"
+          WORK_REL="radar-reverse-${GITHUB_RUN_ID}"
           tar -czf reverse-bundle.tgz -C analysis \
             audit_radar_new_high_hit.py audit_radar_reverse_signals.py
           ssh -o BatchMode=yes -o ConnectTimeout=20 \
             "$DEPLOY_USER@$DEPLOY_HOST" \
-            "sudo -n install -m 700 -d $WORK" </dev/null
+            "install -m 700 -d ~/$WORK_REL" </dev/null
           scp -o BatchMode=yes reverse-bundle.tgz \
-            "$DEPLOY_USER@$DEPLOY_HOST:$WORK/reverse-bundle.tgz"
+            "$DEPLOY_USER@$DEPLOY_HOST:$WORK_REL/reverse-bundle.tgz"
           ssh -o BatchMode=yes -o ConnectTimeout=20 \
             "$DEPLOY_USER@$DEPLOY_HOST" \
-            "sudo -n tar -xzf $WORK/reverse-bundle.tgz -C $WORK && \
-             sudo -n env PYTHONPATH=$WORK /opt/footbreak/.venv/bin/python3 \
-               $WORK/audit_radar_reverse_signals.py && \
-             sudo -n rm -rf $WORK" \
+            "cd ~/$WORK_REL && tar -xzf reverse-bundle.tgz && \
+             sudo -n env PYTHONPATH=\$PWD /opt/footbreak/.venv/bin/python3 \
+               audit_radar_reverse_signals.py && \
+             cd ~ && rm -rf ~/$WORK_REL" \
             </dev/null > radar-reverse-signals-audit.json
           python -m json.tool radar-reverse-signals-audit.json >/dev/null
           cat radar-reverse-signals-audit.json
