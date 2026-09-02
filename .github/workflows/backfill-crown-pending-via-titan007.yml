@@ -89,7 +89,7 @@ jobs:
             exit 1
           fi
           python3 backfill_titan007_scores.py \
-            --history /opt/footbreak/prediction_history.json \
+            --history /var/lib/footbreak/crown/prediction_history.json \
             --mode "$MODE" \
             --lookback-days "$LOOKBACK_DAYS" \
             --out "$REMOTE_WORK/report.json"
