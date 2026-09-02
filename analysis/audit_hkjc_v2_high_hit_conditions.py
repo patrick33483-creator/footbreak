@@ -4,8 +4,10 @@
 from __future__ import annotations
 
 import collections
+import hashlib
 import json
 import math
+import random
 import sqlite3
 from typing import Any, Callable
 
@@ -28,7 +30,19 @@ def wilson_low(hits: int, decided: int, z: float = 1.959963984540054) -> float |
     return (centre - margin) / den
 
 
-def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
+def percentile(values: list[float], q: float) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    position = (len(ordered) - 1) * q
+    lower = math.floor(position)
+    upper = math.ceil(position)
+    if lower == upper:
+        return ordered[lower]
+    return ordered[lower] * (upper - position) + ordered[upper] * (position - lower)
+
+
+def summarize(rows: list[dict[str, Any]], label: str) -> dict[str, Any]:
     decided_rows = [
         row for row in rows
         if row.get("settlement") in {"win", "half_win", "half_loss", "loss"}
@@ -36,6 +50,12 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
     hits = sum(row["settlement"] in {"win", "half_win"} for row in decided_rows)
     returns = [float(row["unit_return"]) for row in rows if row.get("unit_return") is not None]
     odds = [float(row["T5"]["odds"]) for row in rows if row.get("T5", {}).get("odds")]
+    bootstrap: list[float] = []
+    if returns:
+        seed = int(hashlib.sha256(label.encode("utf-8")).hexdigest()[:8], 16)
+        rng = random.Random(seed)
+        for _ in range(5000):
+            bootstrap.append(sum(returns[rng.randrange(len(returns))] for __ in returns) / len(returns))
     decided = len(decided_rows)
     return {
         "bets": len(returns),
@@ -44,6 +64,10 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "hit_rate": hits / decided if decided else None,
         "wilson_95_low": wilson_low(hits, decided),
         "roi": sum(returns) / len(returns) if returns else None,
+        "roi_bootstrap_95": [
+            percentile(bootstrap, 0.025),
+            percentile(bootstrap, 0.975),
+        ],
         "unit_profit": sum(returns),
         "average_odds": sum(odds) / len(odds) if odds else None,
     }
@@ -186,9 +210,9 @@ def main() -> None:
         discovery_rows = [row for row in discovery if predicate(row)]
         holdout_rows = [row for row in holdout if predicate(row)]
         metrics = {
-            "all": summarize(all_rows),
-            "discovery": summarize(discovery_rows),
-            "holdout": summarize(holdout_rows),
+            "all": summarize(all_rows, f"{label}:all"),
+            "discovery": summarize(discovery_rows, f"{label}:discovery"),
+            "holdout": summarize(holdout_rows, f"{label}:holdout"),
         }
         if (
             metrics["all"]["decided"] < MIN_ALL
@@ -222,7 +246,10 @@ def main() -> None:
         reverse=True,
     )
     by_market = {
-        market: summarize([row for row in settled if row["market"] == market])
+        market: summarize(
+            [row for row in settled if row["market"] == market],
+            f"baseline:{market}",
+        )
         for market in ("HDC", "HIL", "CHL")
     }
     result = {
