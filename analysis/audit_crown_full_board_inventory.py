@@ -10,12 +10,10 @@ from typing import Any, Iterable
 
 
 ROOTS = [
-    Path("/var/lib/footbreak/crown/source_snapshots"),
-    Path("/var/lib/footbreak/crown/ledger.json"),
-    Path("/var/lib/footbreak/crown/prediction_history.json"),
+    Path("/var/lib/footbreak/crown"),
 ]
 MAX_FILES = 10000
-MAX_BYTES = 64 * 1024 * 1024
+MAX_BYTES = 256 * 1024 * 1024
 
 
 def walk(value: Any, depth: int = 0) -> Iterable[dict[str, Any]]:
@@ -83,12 +81,15 @@ def main() -> None:
     board_fields: collections.Counter[str] = collections.Counter()
     board_file_names: collections.Counter[str] = collections.Counter()
     sample_node_keys: dict[str, list[str]] = {}
+    file_inventory: list[dict[str, Any]] = []
+    interesting_samples: list[dict[str, Any]] = []
 
     for path in files:
         counters["candidate_files"] += 1
         try:
             size = path.stat().st_size
             counters["candidate_bytes"] += size
+            file_inventory.append({"name": path.name, "bytes": size})
             if size > MAX_BYTES:
                 counters["oversize_files"] += 1
                 continue
@@ -113,6 +114,22 @@ def main() -> None:
             if hil_lines:
                 file_has_board = True
                 sample_node_keys.setdefault(field, sorted(str(key) for key in node)[:30])
+            keys = set(node)
+            if (
+                len(interesting_samples) < 30
+                and keys & {"odds", "markets", "market_lines", "raw_odds", "current_odds"}
+                and keys & {"match_id", "fixture_id", "titan_match_id", "stage", "code", "market"}
+            ):
+                interesting_samples.append({
+                    "file": path.name,
+                    "keys": sorted(str(key) for key in keys)[:50],
+                    "stage": node.get("stage"),
+                    "market": node.get("market") or node.get("code"),
+                    "line": node.get("line") or node.get("condition"),
+                    "side": node.get("side"),
+                    "odds_type": type(node.get("odds")).__name__,
+                    "markets_type": type(node.get("markets")).__name__,
+                })
         if file_has_board:
             counters["files_with_hil_board"] += 1
             board_file_names[path.name] += 1
@@ -128,6 +145,8 @@ def main() -> None:
         "top_fields": dict(field_counts.most_common(80)),
         "board_file_names": dict(board_file_names.most_common(30)),
         "sample_node_keys_by_board_field": sample_node_keys,
+        "file_inventory": sorted(file_inventory, key=lambda row: (-row["bytes"], row["name"]))[:100],
+        "interesting_samples": interesting_samples,
     }, ensure_ascii=False, indent=2))
 
 
