@@ -1,0 +1,483 @@
+{
+  "condition_count": 5,
+  "conditions": [
+    {
+      "condition_id": "S-HIL-T5-OVER-185",
+      "duplicate_fixture_groups": [],
+      "observation_rows": 15,
+      "reported_hit_rate": 0.384615,
+      "reported_qualified": 15,
+      "reported_roi": -0.255,
+      "reported_settled": 14,
+      "unique_fixtures": 15
+    },
+    {
+      "condition_id": "WATCH-HIL-T5-OVER-180",
+      "duplicate_fixture_groups": [],
+      "observation_rows": 62,
+      "reported_hit_rate": 0.576923,
+      "reported_qualified": 62,
+      "reported_roi": 0.079483,
+      "reported_settled": 58,
+      "unique_fixtures": 62
+    },
+    {
+      "condition_id": "A-HIL-OPEN-T5-OVER-180",
+      "duplicate_fixture_groups": [],
+      "observation_rows": 16,
+      "reported_hit_rate": 0.4375,
+      "reported_qualified": 16,
+      "reported_roi": -0.185,
+      "reported_settled": 16,
+      "unique_fixtures": 16
+    },
+    {
+      "condition_id": "A-HDC-OPEN-AWAY-MINUS-050",
+      "duplicate_fixture_groups": [],
+      "observation_rows": 6,
+      "reported_hit_rate": 0.666667,
+      "reported_qualified": 6,
+      "reported_roi": 0.213333,
+      "reported_settled": 6,
+      "unique_fixtures": 6
+    },
+    {
+      "condition_id": "S-HIL-OPEN-OVER-3-180",
+      "duplicate_fixture_groups": [],
+      "observation_rows": 1,
+      "reported_hit_rate": null,
+      "reported_qualified": 1,
+      "reported_roi": null,
+      "reported_settled": 0,
+      "unique_fixtures": 1
+    }
+  ],
+  "cross_condition_overlap_count": 31,
+  "cross_condition_overlaps": [
+    {
+      "condition_ids": [
+        "S-HIL-T5-OVER-185",
+        "WATCH-HIL-T5-OVER-180"
+      ],
+      "fixture": "昌宁女足|报恩尚武女足|2026-09-02T10:00:00+00:00"
+    },
+    {
+      "condition_ids": [
+        "S-HIL-T5-OVER-185",
+        "WATCH-HIL-T5-OVER-180"
+      ],
+      "fixture": "彭拿费尔u23|雷克斯欧斯u23|2026-09-01T19:00:00+00:00"
+    },
+    {
+      "condition_ids": [
+        "S-HIL-T5-OVER-185",
+        "WATCH-HIL-T5-OVER-180"
+      ],
+      "fixture": "拉维纳|福尔利|2026-09-01T19:00:00+00:00"
+    },
+    {
+      "condition_ids": [
+        "S-HIL-T5-OVER-185",
+        "WATCH-HIL-T5-OVER-180"
+      ],
+      "fixture": "瓦迪格拉|奥林比亚艾卡纳|2026-09-01T17:00:00+00:00"
+    },
+    {
+      "condition_ids": [
+        "S-HIL-T5-OVER-185",
+        "WATCH-HIL-T5-OVER-180"
+      ],
+      "fixture": "阿克伦陶里亚蒂|莫斯科火车头|2026-09-01T13:15:00+00:00"
+    },
+    {
+      "condition_ids": [
+        "S-HIL-T5-OVER-185",
+        "WATCH-HIL-T5-OVER-180"
+      ],
+      "fixture": "汶莱dpmm|丁加奴|2026-09-01T12:15:00+00:00"
+    },
+    {
+      "condition_ids": [
+        "S-HIL-T5-OVER-185",
+        "WATCH-HIL-T5-OVER-180"
+      ],
+      "fixture": "皇家托马亚波|石油独立|2026-09-01T00:00:00+00:00"
+    },
+    {
+      "condition_ids": [
+        "S-HIL-T5-OVER-185",
+        "WATCH-HIL-T5-OVER-180"
+      ],
+      "fixture": "恩卡纳西翁|阿塞瓦尔|2026-08-31T21:30:00+00:00"
+    },
+    {
+      "condition_ids": [
+        "S-HIL-T5-OVER-185",
+        "WATCH-HIL-T5-OVER-180"
+      ],
+      "fixture": "亚特兰大|博洛尼亚|2026-08-31T18:45:00+00:00"
+    },
+    {
+      "condition_ids": [
+        "A-HIL-OPEN-T5-OVER-180",
+        "S-HIL-T5-OVER-185",
+        "WATCH-HIL-T5-OVER-180"
+      ],
+      "fixture": "塔吉克斯坦u20|巴林u20|2026-08-31T17:30:00+00:00"
+    },
+    {
+      "condition_ids": [
+        "S-HIL-T5-OVER-185",
+        "WATCH-HIL-T5-OVER-180"
+      ],
+      "fixture": "莱切|罗马|2026-08-31T16:30:00+00:00"
+    },
+    {
+      "condition_ids": [
+        "S-HIL-T5-OVER-185",
+        "WATCH-HIL-T5-OVER-180"
+      ],
+      "fixture": "叶利迈塞米|阿拉木图凯拉特|2026-08-31T14:00:00+00:00"
+    },
+    {
+      "condition_ids": [
+        "S-HIL-T5-OVER-185",
+        "WATCH-HIL-T5-OVER-180"
+      ],
+      "fixture": "西雅图统治女足|休斯顿达斯女足|2026-08-30T23:00:00+00:00"
+    },
+    {
+      "condition_ids": [
+        "S-HIL-T5-OVER-185",
+        "WATCH-HIL-T5-OVER-180"
+      ],
+      "fixture": "格雷米奥|沙佩科恩斯|2026-08-30T21:30:00+00:00"
+    },
+    {
+      "condition_ids": [
+        "S-HIL-T5-OVER-185",
+        "WATCH-HIL-T5-OVER-180"
+      ],
+      "fixture": "卡利亚里|国际米兰|2026-08-30T18:45:00+00:00"
+    },
+    {
+      "condition_ids": [
+        "A-HIL-OPEN-T5-OVER-180",
+        "WATCH-HIL-T5-OVER-180"
+      ],
+      "fixture": "欧鲁巴赫|阿尔兹拉费|2026-09-01T16:20:00+00:00"
+    },
+    {
+      "condition_ids": [
+        "A-HIL-OPEN-T5-OVER-180",
+        "WATCH-HIL-T5-OVER-180"
+      ],
+      "fixture": "帕拉克|吉隆坡|2026-09-01T13:00:00+00:00"
+    },
+    {
+      "condition_ids": [
+        "A-HIL-OPEN-T5-OVER-180",
+        "WATCH-HIL-T5-OVER-180"
+      ],
+      "fixture": "特雷维索|莱科|2026-08-31T19:00:00+00:00"
+    },
+    {
+      "condition_ids": [
+        "A-HDC-OPEN-AWAY-MINUS-050",
+        "WATCH-HIL-T5-OVER-180"
+      ],
+      "fixture": "第戎|圣埃蒂安|2026-08-31T18:45:00+00:00"
+    },
+    {
+      "condition_ids": [
+        "A-HIL-OPEN-T5-OVER-180",
+        "WATCH-HIL-T5-OVER-180"
+      ],
+      "fixture": "第比利斯迪纳摩|哥里迪拉|2026-08-31T17:00:00+00:00"
+    },
+    {
+      "condition_ids": [
+        "A-HIL-OPEN-T5-OVER-180",
+        "WATCH-HIL-T5-OVER-180"
+      ],
+      "fixture": "切奥尔雷|巴克利城|2026-08-31T14:00:00+00:00"
+    },
+    {
+      "condition_ids": [
+        "A-HIL-OPEN-T5-OVER-180",
+        "WATCH-HIL-T5-OVER-180"
+      ],
+      "fixture": "马科斯菲尔德|禾布本尼镇|2026-08-31T14:00:00+00:00"
+    },
+    {
+      "condition_ids": [
+        "A-HIL-OPEN-T5-OVER-180",
+        "WATCH-HIL-T5-OVER-180"
+      ],
+      "fixture": "布伦特里|法保罗夫|2026-08-31T14:00:00+00:00"
+    },
+    {
+      "condition_ids": [
+        "A-HDC-OPEN-AWAY-MINUS-050",
+        "WATCH-HIL-T5-OVER-180"
+      ],
+      "fixture": "富莫咸普顿|梅德斯托联|2026-08-31T14:00:00+00:00"
+    },
+    {
+      "condition_ids": [
+        "A-HIL-OPEN-T5-OVER-180",
+        "WATCH-HIL-T5-OVER-180"
+      ],
+      "fixture": "麦德黑联|托顿|2026-08-31T14:00:00+00:00"
+    },
+    {
+      "condition_ids": [
+        "A-HIL-OPEN-T5-OVER-180",
+        "WATCH-HIL-T5-OVER-180"
+      ],
+      "fixture": "门多萨独立|竞技俱乐部|2026-08-31T00:30:00+00:00"
+    },
+    {
+      "condition_ids": [
+        "A-HIL-OPEN-T5-OVER-180",
+        "WATCH-HIL-T5-OVER-180"
+      ],
+      "fixture": "奥罗拉|马拉卡特高|2026-08-30T23:00:00+00:00"
+    },
+    {
+      "condition_ids": [
+        "A-HIL-OPEN-T5-OVER-180",
+        "WATCH-HIL-T5-OVER-180"
+      ],
+      "fixture": "本廷塔克纳|山度士纳斯卡|2026-08-30T20:15:00+00:00"
+    },
+    {
+      "condition_ids": [
+        "A-HIL-OPEN-T5-OVER-180",
+        "WATCH-HIL-T5-OVER-180"
+      ],
+      "fixture": "科多巴竞赛会|科隆竞技|2026-08-30T20:00:00+00:00"
+    },
+    {
+      "condition_ids": [
+        "A-HIL-OPEN-T5-OVER-180",
+        "WATCH-HIL-T5-OVER-180"
+      ],
+      "fixture": "学术db|阿拉维预备|2026-08-30T19:00:00+00:00"
+    },
+    {
+      "condition_ids": [
+        "A-HIL-OPEN-T5-OVER-180",
+        "WATCH-HIL-T5-OVER-180"
+      ],
+      "fixture": "莫斯塔fc|拜基卡拉|2026-08-30T16:30:00+00:00"
+    }
+  ],
+  "due_pending_count": 1,
+  "due_pending_fixtures": [
+    {
+      "away": "丁加奴",
+      "conditions": [
+        "S-HIL-T5-OVER-185",
+        "WATCH-HIL-T5-OVER-180"
+      ],
+      "home": "汶莱DPMM",
+      "kickoff": "2026-09-01T20:15:00+08:00",
+      "league": "马足总",
+      "match_id": "3073570",
+      "result_status": "待賽果"
+    }
+  ],
+  "duplicate_groups_within_condition": 0,
+  "generated_at": null,
+  "read_only": true,
+  "target_ledger_fixtures": [
+    {
+      "away": "报恩尚武女足",
+      "home": "昌宁女足",
+      "id": "2960369",
+      "kickoff_hkt": "2026-09-02T18:00:00+08:00",
+      "kickoff_utc": "2026-09-02T10:00:00+00:00",
+      "league": "韩女联",
+      "ledger_key": "2960369",
+      "stages": [
+        "T-30",
+        "T-5",
+        "首預"
+      ]
+    },
+    {
+      "away": "鹿岛鹿角",
+      "home": "水户蜀葵",
+      "id": "3000437",
+      "kickoff_hkt": "2026-09-02T18:00:00+08:00",
+      "kickoff_utc": "2026-09-02T10:00:00+00:00",
+      "league": "日职联",
+      "ledger_key": "3000437",
+      "stages": [
+        "T-30",
+        "首預"
+      ]
+    },
+    {
+      "away": "今治",
+      "home": "金泽",
+      "id": "3008745",
+      "kickoff_hkt": "2026-09-02T18:00:00+08:00",
+      "kickoff_utc": "2026-09-02T10:00:00+00:00",
+      "league": "日联杯",
+      "ledger_key": "3008745",
+      "stages": [
+        "T-30",
+        "T-5",
+        "首預"
+      ]
+    },
+    {
+      "away": "甲府风林",
+      "home": "大阪俱乐部(中)",
+      "id": "3008749",
+      "kickoff_hkt": "2026-09-02T18:00:00+08:00",
+      "kickoff_utc": "2026-09-02T10:00:00+00:00",
+      "league": "日联杯",
+      "ledger_key": "3008749",
+      "stages": [
+        "T-30",
+        "T-5",
+        "首預"
+      ]
+    },
+    {
+      "away": "卡尔斯多夫",
+      "home": "拉夫尼茨",
+      "id": "3022525",
+      "kickoff_hkt": "2026-09-02T01:00:00+08:00",
+      "kickoff_utc": "2026-09-01T17:00:00+00:00",
+      "league": "奥丙南",
+      "ledger_key": "3022525",
+      "stages": [
+        "T-30",
+        "T-5",
+        "首預"
+      ]
+    },
+    {
+      "away": "槟城",
+      "home": "马六甲FC",
+      "id": "3073574",
+      "kickoff_hkt": "2026-09-02T20:00:00+08:00",
+      "kickoff_utc": "2026-09-02T12:00:00+00:00",
+      "league": "马足总",
+      "ledger_key": "3073574",
+      "stages": [
+        "T-30",
+        "T-5",
+        "首預"
+      ]
+    },
+    {
+      "away": "塞瓦特U19",
+      "home": "瓦拉日丁U19",
+      "id": "3081358",
+      "kickoff_hkt": "2026-09-02T18:00:00+08:00",
+      "kickoff_utc": "2026-09-02T10:00:00+00:00",
+      "league": "克亚U19",
+      "ledger_key": "3081358",
+      "stages": [
+        "T-30",
+        "T-5",
+        "首預"
+      ]
+    }
+  ],
+  "target_observations": [
+    {
+      "away": "报恩尚武女足",
+      "condition_id": "S-HIL-T5-OVER-185",
+      "home": "昌宁女足",
+      "kickoff": "2026-09-02T18:00:00+08:00",
+      "line": null,
+      "match_id": "2960369",
+      "odds": 1.88,
+      "result_status": "已核實",
+      "settlement": "Lost"
+    },
+    {
+      "away": "槟城",
+      "condition_id": "WATCH-HIL-T5-OVER-180",
+      "home": "马六甲FC",
+      "kickoff": "2026-09-02T20:00:00+08:00",
+      "line": null,
+      "match_id": "3073574",
+      "odds": 1.83,
+      "result_status": "待賽果",
+      "settlement": null
+    },
+    {
+      "away": "报恩尚武女足",
+      "condition_id": "WATCH-HIL-T5-OVER-180",
+      "home": "昌宁女足",
+      "kickoff": "2026-09-02T18:00:00+08:00",
+      "line": null,
+      "match_id": "2960369",
+      "odds": 1.88,
+      "result_status": "已核實",
+      "settlement": "Lost"
+    },
+    {
+      "away": "今治",
+      "condition_id": "WATCH-HIL-T5-OVER-180",
+      "home": "金泽",
+      "kickoff": "2026-09-02T18:00:00+08:00",
+      "line": null,
+      "match_id": "3008745",
+      "odds": 1.82,
+      "result_status": "已核實",
+      "settlement": "Won"
+    },
+    {
+      "away": "甲府风林",
+      "condition_id": "WATCH-HIL-T5-OVER-180",
+      "home": "大阪俱乐部(中)",
+      "kickoff": "2026-09-02T18:00:00+08:00",
+      "line": null,
+      "match_id": "3008749",
+      "odds": 1.82,
+      "result_status": "已核實",
+      "settlement": "Won"
+    },
+    {
+      "away": "塞瓦特U19",
+      "condition_id": "WATCH-HIL-T5-OVER-180",
+      "home": "瓦拉日丁U19",
+      "kickoff": "2026-09-02T18:00:00+08:00",
+      "line": null,
+      "match_id": "3081358",
+      "odds": 1.82,
+      "result_status": "已核實",
+      "settlement": "Won"
+    },
+    {
+      "away": "卡尔斯多夫",
+      "condition_id": "A-HIL-OPEN-T5-OVER-180",
+      "home": "拉夫尼茨",
+      "kickoff": "2026-09-02T01:00:00+08:00",
+      "line": null,
+      "match_id": "3022525",
+      "odds": 1.85,
+      "result_status": "已核實",
+      "settlement": "Won"
+    },
+    {
+      "away": "鹿岛鹿角",
+      "condition_id": "A-HDC-OPEN-AWAY-MINUS-050",
+      "home": "水户蜀葵",
+      "kickoff": "2026-09-02T18:00:00+08:00",
+      "line": null,
+      "match_id": "3000437",
+      "odds": 1.87,
+      "result_status": "已核實",
+      "settlement": "Lost"
+    }
+  ]
+}
