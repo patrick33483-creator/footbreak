@@ -231,16 +231,20 @@ jobs:
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
         run: |
           set -euo pipefail
+          REMOTE_TMP="/tmp/footbreak-full-board-audit-${GITHUB_RUN_ID}"
           tar -czf - analysis/__init__.py \
             analysis/audit_footbreak_direction_crown_price.py \
             analysis/audit_footbreak_crown_full_board.py \
             | ssh -o BatchMode=yes -o ConnectTimeout=20 \
               "$DEPLOY_USER@$DEPLOY_HOST" \
-              'rm -rf /tmp/footbreak-full-board-audit && mkdir -p /tmp/footbreak-full-board-audit && tar -xzf - -C /tmp/footbreak-full-board-audit'
+              "mkdir -p '$REMOTE_TMP' && tar -xzf - -C '$REMOTE_TMP'"
           ssh -o BatchMode=yes -o ConnectTimeout=20 \
             "$DEPLOY_USER@$DEPLOY_HOST" \
-            'cd /opt/footbreak && sudo env PYTHONPATH=/tmp/footbreak-full-board-audit:/opt/footbreak /opt/footbreak/.venv/bin/python3 /tmp/footbreak-full-board-audit/analysis/audit_footbreak_crown_full_board.py' \
+            "cd /opt/footbreak && sudo env PYTHONPATH='$REMOTE_TMP':/opt/footbreak /opt/footbreak/.venv/bin/python3 '$REMOTE_TMP'/analysis/audit_footbreak_crown_full_board.py" \
             > footbreak-crown-full-board-scan.json
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "sudo rm -rf '$REMOTE_TMP'"
           python -m json.tool footbreak-crown-full-board-scan.json >/dev/null
 
       - name: Upload full-board scan
