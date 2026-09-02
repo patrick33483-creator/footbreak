@@ -283,3 +283,39 @@ jobs:
           path: radar-reverse-signals-audit.json
           retention-days: 7
           if-no-files-found: error
+
+      - name: 掃描 Radar 反向候選（小型樣本 50 場以上）
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          WORK_REL="radar-reverse-wide-${GITHUB_RUN_ID}"
+          tar -czf reverse-wide-bundle.tgz -C analysis \
+            audit_radar_new_high_hit.py \
+            audit_radar_reverse_signals.py \
+            audit_radar_reverse_signals_wide.py
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "install -m 700 -d ~/$WORK_REL" </dev/null
+          scp -o BatchMode=yes reverse-wide-bundle.tgz \
+            "$DEPLOY_USER@$DEPLOY_HOST:$WORK_REL/reverse-wide-bundle.tgz"
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "cd ~/$WORK_REL && tar -xzf reverse-wide-bundle.tgz && \
+             sudo -n env PYTHONPATH=\$PWD /opt/footbreak/.venv/bin/python3 \
+               audit_radar_reverse_signals_wide.py" \
+            </dev/null > radar-reverse-signals-wide-audit.json
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "sudo -n rm -rf ~/$WORK_REL" </dev/null
+          python -m json.tool radar-reverse-signals-wide-audit.json >/dev/null
+          cat radar-reverse-signals-wide-audit.json
+
+      - name: 上載 Radar 反向候選審計（小型樣本）
+        uses: actions/upload-artifact@v4
+        with:
+          name: radar-reverse-signals-wide-audit
+          path: radar-reverse-signals-wide-audit.json
+          retention-days: 7
+          if-no-files-found: error
