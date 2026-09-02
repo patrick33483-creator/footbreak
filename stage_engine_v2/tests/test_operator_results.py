@@ -5,7 +5,10 @@ import json
 import pytest
 
 from stage_engine_v2.cli import _load_history_rows, _write_dashboard
-from stage_engine_v2.operator_results import load_operator_history_rows
+from stage_engine_v2.operator_results import (
+    load_operator_history_rows,
+    project_verified_crown_scores,
+)
 
 
 def _stage(code: str, side: str, line: float, odds: float) -> dict:
@@ -120,3 +123,49 @@ def test_operator_overlay_rejects_verified_score_conflict(tmp_path) -> None:
             ledger=_ledger(),
             operator_results_path=operator_path,
         )
+
+
+def test_verified_crown_score_grades_v2_stage_even_when_legacy_stage_is_missing(
+    tmp_path,
+) -> None:
+    crown_data = tmp_path / "crown.json"
+    crown_data.write_text(json.dumps({"prediction_history": {"rows": [{
+        "match_id": "123",
+        "stage": "T-30",
+        "league": "測試聯賽",
+        "home": "主隊",
+        "away": "客隊",
+        "kickoff": "2026-08-31T01:00:00+08:00",
+        "result_status": "已核對",
+        "score": "2-1",
+        "market_grades": [],
+    }]}}), encoding="utf-8")
+
+    history = _load_history_rows(
+        crown_data,
+        ledger=_ledger(),
+        operator_results_path=tmp_path / "missing-operator.json",
+    )
+    projected_t5 = [
+        row for row in history
+        if row.get("match_id") == "123"
+        and row.get("stage") == "T-5"
+        and row.get("result_source") == "crown_verified_history_bridge"
+    ]
+    assert len(projected_t5) == 1
+    assert projected_t5[0]["score"] == "2-1"
+    assert projected_t5[0]["market_grades"][0]["settlement"] == "Half Lost"
+
+
+def test_verified_crown_score_rejects_fixture_identity_mismatch() -> None:
+    rows = [{
+        "match_id": "123",
+        "stage": "T-30",
+        "home": "錯誤主隊",
+        "away": "客隊",
+        "kickoff": "2026-08-31T01:00:00+08:00",
+        "result_status": "已核對",
+        "score": "2-1",
+    }]
+    with pytest.raises(ValueError, match="home mismatch"):
+        project_verified_crown_scores(rows, _ledger())

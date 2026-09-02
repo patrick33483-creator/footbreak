@@ -23,6 +23,7 @@ from .operator_results import (
     DEFAULT_OPERATOR_RESULTS_PATH,
     load_operator_history_rows,
     merge_operator_history_rows,
+    project_verified_crown_scores,
 )
 from .predictor import build_prediction
 from .publisher import decide_publish
@@ -264,6 +265,7 @@ def _load_history_rows(
                 rows = [row for row in sidecar_rows if isinstance(row, dict)]
     if ledger is None:
         return rows
+    rows = [*rows, *project_verified_crown_scores(rows, ledger)]
     operator_rows = load_operator_history_rows(operator_results_path, ledger)
     return merge_operator_history_rows(rows, operator_rows)
 

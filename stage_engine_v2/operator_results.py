@@ -6,6 +6,7 @@ results, mutates the prediction ledger, or changes the automatic result path.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +20,8 @@ DEFAULT_OPERATOR_RESULTS_PATH = Path(
     "/var/lib/footbreak/stage_engine_v2/operator_results.json"
 )
 SCORE_SCOPE = "90_minutes_including_stoppage_time_excluding_extra_time"
+_VERIFIED_RESULT_STATUSES = {"已核對", "已核實"}
+_SCORE_PATTERN = re.compile(r"^\s*(\d+)\s*-\s*(\d+)\s*$")
 
 
 def _required_text(row: dict[str, Any], key: str, match_id: str) -> str:
@@ -173,6 +176,88 @@ def load_operator_history_rows(
     return output
 
 
+def project_verified_crown_scores(
+    history_rows: list[dict[str, Any]],
+    ledger: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Project match-level verified Crown scores onto every V2 stage.
+
+    Crown's durable history can have a verified score for only some stages, or
+    for a different market line from V2.  A full-time score belongs to the
+    fixture, so after exact fixture-ID and identity checks it is safe to grade
+    each V2 stage with that same score.
+    """
+    fixtures = ledger.get("fixtures")
+    if not isinstance(fixtures, dict):
+        raise ValueError("Stage Engine V2 ledger fixtures missing")
+
+    verified: dict[str, dict[str, Any]] = {}
+    for row in history_rows:
+        if not isinstance(row, dict) or row.get("result_status") not in _VERIFIED_RESULT_STATUSES:
+            continue
+        match_id = str(row.get("match_id") or "").strip()
+        score_match = _SCORE_PATTERN.match(str(row.get("score") or ""))
+        if not match_id or score_match is None:
+            continue
+        score = (int(score_match.group(1)), int(score_match.group(2)))
+        existing = verified.get(match_id)
+        if existing is not None and existing["score"] != score:
+            raise ValueError(f"verified Crown score conflict: {match_id}")
+        verified[match_id] = {"score": score, "rows": [row]}
+        if existing is not None:
+            existing["rows"].append(row)
+            verified[match_id] = existing
+
+    output: list[dict[str, Any]] = []
+    for match_id, evidence in verified.items():
+        slot = fixtures.get(match_id)
+        if not isinstance(slot, dict):
+            continue
+        for row in evidence["rows"]:
+            for key in ("league", "home", "away"):
+                source_value = str(row.get(key) or "").strip()
+                target_value = str(slot.get(key) or "").strip()
+                if source_value and target_value and source_value != target_value:
+                    raise ValueError(f"verified Crown result {key} mismatch: {match_id}")
+            source_kickoff = _parse_kickoff(row.get("kickoff"))
+            slot_kickoff = _parse_kickoff(slot.get("kickoff_utc") or slot.get("kickoff_hkt"))
+            if source_kickoff is not None and slot_kickoff is not None and source_kickoff != slot_kickoff:
+                raise ValueError(f"verified Crown result kickoff mismatch: {match_id}")
+
+        home_score, away_score = evidence["score"]
+        kickoff = _parse_kickoff(slot.get("kickoff_utc") or slot.get("kickoff_hkt"))
+        if kickoff is None:
+            raise ValueError(f"verified Crown result kickoff missing: {match_id}")
+        for stage in STAGES:
+            stage_row = (slot.get("stages") or {}).get(stage)
+            if not isinstance(stage_row, dict):
+                continue
+            grades = []
+            for code in ("HDC", "HIL"):
+                prediction = _prediction(slot, stage, code)
+                if prediction is not None:
+                    grades.append(_grade(prediction, home_score, away_score))
+            output.append({
+                "match_id": match_id,
+                "stage": stage,
+                "league": slot.get("league"),
+                "home": slot.get("home"),
+                "away": slot.get("away"),
+                "kickoff": kickoff.isoformat(),
+                "predicted_at": stage_row.get("predicted_at_utc"),
+                "score": f"{home_score}-{away_score}",
+                "result_status": "已核對",
+                "result_source": "crown_verified_history_bridge",
+                "result_detail": {
+                    "home_score": home_score,
+                    "away_score": away_score,
+                    "score_scope": SCORE_SCOPE,
+                },
+                "market_grades": grades,
+            })
+    return output
+
+
 def merge_operator_history_rows(
     history_rows: list[dict[str, Any]],
     operator_rows: list[dict[str, Any]],
@@ -199,4 +284,5 @@ __all__ = [
     "DEFAULT_OPERATOR_RESULTS_PATH",
     "load_operator_history_rows",
     "merge_operator_history_rows",
+    "project_verified_crown_scores",
 ]
