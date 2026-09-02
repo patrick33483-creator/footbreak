@@ -11,6 +11,7 @@ on:
         options:
           - tick
           - sweep
+          - settle
 
 jobs:
   verify:
@@ -45,12 +46,24 @@ jobs:
           echo "=== Crown service state before check ==="
           systemctl show crown-tick.service \
             -p ActiveState -p SubState -p ExecMainStartTimestamp -p ExecMainPID
-          echo "=== Crown verification: pause tick timer and wait for scan lock ==="
+          echo "=== Crown verification: pause timers and wait for mode lock ==="
           systemctl stop crown-tick.timer
-          trap 'systemctl start crown-tick.timer' EXIT
+          if [ "$CROWN_MODE" = "settle" ]; then
+            systemctl stop crown-settle.timer
+          fi
+          restore_timers() {
+            systemctl start crown-tick.timer
+            if [ "$CROWN_MODE" = "settle" ]; then
+              systemctl start crown-settle.timer
+            fi
+          }
+          trap restore_timers EXIT
           systemctl stop crown-tick.service || true
-          while ! flock -n /var/lock/footbreak-crown.lock -c true; do
-            echo "$(date '+%F %T') waiting for Crown scan lock"
+          if [ "$CROWN_MODE" = "settle" ]; then
+            systemctl stop crown-settle.service || true
+          fi
+          while ! flock -n "/var/lock/footbreak-crown-${CROWN_MODE}.lock" -c true; do
+            echo "$(date '+%F %T') waiting for Crown ${CROWN_MODE} lock"
             sleep 15
           done
           echo "=== Crown production ${CROWN_MODE} ==="
@@ -65,7 +78,7 @@ jobs:
           else
             /opt/footbreak/deploy/crown-run.sh "$CROWN_MODE"
           fi
-          systemctl start crown-tick.timer
+          restore_timers
           trap - EXIT
           echo "=== Crown live HKJC mapping diagnostic ==="
           /opt/footbreak/.venv/bin/python3 - <<'PY'
@@ -192,7 +205,9 @@ jobs:
           systemctl is-enabled crown-tick.timer
           systemctl is-active crown-sweep.timer
           systemctl is-enabled crown-sweep.timer
-          systemctl list-timers crown-tick.timer crown-sweep.timer --no-pager
+          systemctl is-active crown-settle.timer
+          systemctl is-enabled crown-settle.timer
+          systemctl list-timers crown-tick.timer crown-sweep.timer crown-settle.timer --no-pager
           REMOTE
 
       - name: 保存皇冠驗證日誌
