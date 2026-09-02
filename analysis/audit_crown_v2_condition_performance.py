@@ -20,8 +20,8 @@ def canonical_key(row: dict[str, Any]) -> tuple[str, str, str]:
         return " ".join(str(value or "").strip().casefold().split())
 
     return (
-        normalise(row.get("home_team")),
-        normalise(row.get("away_team")),
+        normalise(row.get("home") or row.get("home_team")),
+        normalise(row.get("away") or row.get("away_team")),
         normalise(row.get("kickoff_hkt") or row.get("kickoff")),
     )
 
@@ -151,10 +151,10 @@ def audit_condition(condition: dict[str, Any]) -> dict[str, Any]:
 
     return {
         "condition_id": condition.get("id"),
-        "name": condition.get("name"),
+        "name": condition.get("title") or condition.get("name"),
         "tier": condition.get("tier"),
         "evidence_status": condition.get("evidence_status"),
-        "rule": condition.get("rule"),
+        "rule": condition.get("definition") or condition.get("rule"),
         "observation_rows": len(rows),
         "summary_qualified": expected_rows,
         "row_count_matches_summary": row_count_matches_summary,
@@ -173,10 +173,15 @@ def main() -> None:
     args = parser.parse_args()
 
     payload = json.loads(args.data_json.read_text(encoding="utf-8"))
-    conditions = payload.get("public_conditions") or []
+    segmented = payload.get("segmented_conditions") or {}
+    conditions = segmented.get("public_conditions") or payload.get("public_conditions") or []
     report = {
         "generated_at": datetime.now().astimezone().isoformat(),
-        "source_updated_at": payload.get("updated_at"),
+        "source_updated_at": (
+            segmented.get("generated_at")
+            or payload.get("generated_at_hkt")
+            or payload.get("updated_at")
+        ),
         "condition_count": len(conditions),
         "conditions": [audit_condition(condition) for condition in conditions],
     }
