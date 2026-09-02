@@ -1,0 +1,101 @@
+name: 皇冠獨立正式結算
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+jobs:
+  settle-crown:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: 設定 SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: 執行皇冠結算及核對
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o ServerAliveInterval=20 -o ServerAliveCountMax=60 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          set -euo pipefail
+          timer=crown-settle.timer
+          service=crown-settle.service
+          restart_timer() { systemctl start "$timer" || true; }
+          trap restart_timer EXIT
+
+          systemctl stop "$timer"
+          systemctl stop "$service" || true
+          for _ in $(seq 1 24); do
+            flock -n /var/lock/footbreak-crown-settle.lock true && break
+            sleep 5
+          done
+          flock -n /var/lock/footbreak-crown-settle.lock true
+
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          from datetime import datetime, timedelta, timezone
+
+          p = json.loads(Path("/var/www/stage_engine_v2/data.json").read_text())
+          cutoff = datetime.now(timezone.utc) - timedelta(hours=3)
+          rows = {}
+          for condition in (p.get("segmented_conditions") or {}).get("public_conditions") or []:
+              for row in condition.get("observations") or []:
+                  try:
+                      kickoff = datetime.fromisoformat(str(row.get("kickoff"))).astimezone(timezone.utc)
+                  except (TypeError, ValueError):
+                      continue
+                  if kickoff <= cutoff and not row.get("settlement"):
+                      rows[str(row.get("match_id"))] = row
+          print(json.dumps({"due_pending_before": len(rows)}, ensure_ascii=False))
+          PY
+
+          systemctl reset-failed "$service" || true
+          systemctl start "$service"
+          systemctl show "$service" --no-pager \
+            -p ActiveState -p SubState -p Result -p ExecMainStatus
+          systemctl is-failed --quiet "$service" && exit 1 || true
+          systemctl start stage-engine-v2-tick.service
+          sleep 10
+
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          from datetime import datetime, timedelta, timezone
+
+          p = json.loads(Path("/var/www/stage_engine_v2/data.json").read_text())
+          cutoff = datetime.now(timezone.utc) - timedelta(hours=3)
+          rows = {}
+          for condition in (p.get("segmented_conditions") or {}).get("public_conditions") or []:
+              for row in condition.get("observations") or []:
+                  try:
+                      kickoff = datetime.fromisoformat(str(row.get("kickoff"))).astimezone(timezone.utc)
+                  except (TypeError, ValueError):
+                      continue
+                  if kickoff <= cutoff and not row.get("settlement"):
+                      rows[str(row.get("match_id"))] = {
+                          key: row.get(key) for key in
+                          ("match_id", "league", "home", "away", "kickoff", "result_status")
+                      }
+          print(json.dumps({
+              "due_pending_after": len(rows),
+              "fixtures": list(rows.values()),
+              "dashboard_generated_at": p.get("generated_at"),
+          }, ensure_ascii=False, indent=2))
+          PY
+
+          systemctl start "$timer"
+          systemctl is-active --quiet "$timer"
+          trap - EXIT
+          REMOTE
