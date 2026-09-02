@@ -1,0 +1,46 @@
+name: Audit Crown full-board history
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout analysis code
+        uses: actions/checkout@v4
+
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: Inventory Crown full-board evidence
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            'cd /opt/footbreak && sudo /opt/footbreak/.venv/bin/python3 -' \
+            < analysis/audit_crown_full_board_inventory.py \
+            > crown-full-board-inventory.json
+          python -m json.tool crown-full-board-inventory.json >/dev/null
+
+      - name: Upload inventory
+        uses: actions/upload-artifact@v4
+        with:
+          name: crown-full-board-inventory
+          path: crown-full-board-inventory.json
+          retention-days: 7
+          if-no-files-found: error

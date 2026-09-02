@@ -83,6 +83,7 @@ def main() -> None:
     sample_node_keys: dict[str, list[str]] = {}
     file_inventory: list[dict[str, Any]] = []
     interesting_samples: list[dict[str, Any]] = []
+    snapshot_schema_samples: list[dict[str, Any]] = []
 
     for path in files:
         counters["candidate_files"] += 1
@@ -99,6 +100,39 @@ def main() -> None:
             continue
         counters["readable_files"] += 1
         top_level_shapes[type(data).__name__] += 1
+        if (
+            "__T-5" in path.name
+            and len(snapshot_schema_samples) < 8
+            and isinstance(data, dict)
+        ):
+            relevant_nodes = []
+            for node in walk(data):
+                keys = set(node)
+                if keys & {"HIL", "odds", "markets", "market_predictions"}:
+                    relevant_nodes.append({
+                        "keys": sorted(str(key) for key in keys)[:60],
+                        "values": {
+                            key: node.get(key)
+                            for key in (
+                                "match_id", "fixture_id", "titan_match_id", "stage",
+                                "saved_at", "observed_at", "ts", "source_snapshot_at",
+                                "market", "code", "line", "condition", "side", "odds",
+                            )
+                            if key in node and isinstance(node.get(key), (str, int, float, bool, type(None)))
+                        },
+                        "complex_types": {
+                            key: type(node.get(key)).__name__
+                            for key in ("HIL", "odds", "markets", "market_predictions")
+                            if key in node and isinstance(node.get(key), (dict, list))
+                        },
+                    })
+                if len(relevant_nodes) >= 20:
+                    break
+            snapshot_schema_samples.append({
+                "file": path.name,
+                "top_keys": sorted(str(key) for key in data)[:80],
+                "relevant_nodes": relevant_nodes,
+            })
         file_has_board = False
         for node in walk(data):
             counters["dict_nodes"] += 1
@@ -147,6 +181,7 @@ def main() -> None:
         "sample_node_keys_by_board_field": sample_node_keys,
         "file_inventory": sorted(file_inventory, key=lambda row: (-row["bytes"], row["name"]))[:100],
         "interesting_samples": interesting_samples,
+        "snapshot_schema_samples": snapshot_schema_samples,
     }, ensure_ascii=False, indent=2))
 
 
