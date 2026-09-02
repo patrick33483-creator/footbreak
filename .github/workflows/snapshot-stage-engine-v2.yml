@@ -54,6 +54,7 @@ jobs:
             /opt/footbreak/.venv/bin/python3 - <<'PY'
           import json
           from collections import Counter
+          from datetime import datetime, timedelta, timezone
           d = json.load(open('/var/www/stage_engine_v2/data.json'))
           print(f"generated_at_hkt = {d.get('generated_at_hkt')}")
           print(f"fixtures_count = {d.get('fixtures_count')}")
@@ -72,6 +73,43 @@ jobs:
           # 三 stage 齊備場數
           full = sum(1 for fx in d.get('fixtures') or [] if len(fx.get('stages') or {}) == 3)
           print(f"三 stage 齊備 fixture 數 = {full}")
+          print("")
+          print("===== V2 細分條件 pending 對帳 =====")
+          conditions = ((d.get("segmented_conditions") or {}).get("public_conditions") or [])
+          pending_unique = {}
+          now = datetime.now(timezone.utc)
+          for condition in conditions:
+              observations = condition.get("observations") or []
+              pending = [row for row in observations if not row.get("settlement")]
+              overdue = []
+              for row in pending:
+                  raw = row.get("kickoff")
+                  try:
+                      kickoff = datetime.fromisoformat(str(raw))
+                  except (TypeError, ValueError):
+                      kickoff = None
+                  if kickoff is not None and kickoff.astimezone(timezone.utc) <= now - timedelta(hours=3):
+                      overdue.append(row)
+                  pending_unique[str(row.get("match_id"))] = row
+              print({
+                  "condition_id": condition.get("id"),
+                  "qualified": len(observations),
+                  "settled": len(observations) - len(pending),
+                  "pending": len(pending),
+                  "overdue_pending": len(overdue),
+              })
+          print("unique_pending", len(pending_unique))
+          for match_id, row in sorted(
+              pending_unique.items(), key=lambda item: str(item[1].get("kickoff") or "")
+          ):
+              print({
+                  "match_id": match_id,
+                  "kickoff": row.get("kickoff"),
+                  "league": row.get("league"),
+                  "home": row.get("home"),
+                  "away": row.get("away"),
+                  "result_status": row.get("result_status"),
+              })
           PY
           else
             echo "(dashboard payload 未存在——timer 未跑過？)"
