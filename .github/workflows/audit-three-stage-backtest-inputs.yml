@@ -249,3 +249,35 @@ jobs:
           path: radar-new-high-hit-audit.json
           retention-days: 7
           if-no-files-found: error
+
+      - name: 掃描 Radar 反向指標（只讀）
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          WORK="/tmp/radar-reverse-${GITHUB_RUN_ID}"
+          tar -czf reverse-bundle.tgz -C analysis \
+            audit_radar_new_high_hit.py audit_radar_reverse_signals.py
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "sudo -n install -m 700 -d $WORK" </dev/null
+          scp -o BatchMode=yes reverse-bundle.tgz \
+            "$DEPLOY_USER@$DEPLOY_HOST:$WORK/reverse-bundle.tgz"
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "sudo -n tar -xzf $WORK/reverse-bundle.tgz -C $WORK && \
+             sudo -n env PYTHONPATH=$WORK /opt/footbreak/.venv/bin/python3 \
+               $WORK/audit_radar_reverse_signals.py && \
+             sudo -n rm -rf $WORK" \
+            </dev/null > radar-reverse-signals-audit.json
+          python -m json.tool radar-reverse-signals-audit.json >/dev/null
+          cat radar-reverse-signals-audit.json
+
+      - name: 上載 Radar 反向指標審計
+        uses: actions/upload-artifact@v4
+        with:
+          name: radar-reverse-signals-audit
+          path: radar-reverse-signals-audit.json
+          retention-days: 7
+          if-no-files-found: error
