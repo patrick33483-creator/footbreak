@@ -1,0 +1,52 @@
+name: Audit Crown V2 Condition Performance
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure production SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.DO_SSH_PRIVATE_KEY }}
+          DO_HOST: ${{ secrets.DO_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H "$DO_HOST" >> ~/.ssh/known_hosts
+
+      - name: Run independent read-only audit
+        env:
+          DO_HOST: ${{ secrets.DO_HOST }}
+          DO_USER: ${{ secrets.DO_USER }}
+        run: |
+          scp analysis/audit_crown_v2_condition_performance.py \
+            "$DO_USER@$DO_HOST:/tmp/audit_crown_v2_condition_performance.py"
+          ssh "$DO_USER@$DO_HOST" \
+            "python3 /tmp/audit_crown_v2_condition_performance.py /var/www/stage_engine_v2/data.json" \
+            > crown-v2-condition-performance-audit.json
+          python3 -m json.tool crown-v2-condition-performance-audit.json >/dev/null
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: crown-v2-condition-performance-audit
+          path: crown-v2-condition-performance-audit.json
+
+      - name: Publish latest audit snapshot
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+          git checkout --orphan crown-v2-condition-audit-state
+          git rm -rf .
+          git add -f crown-v2-condition-performance-audit.json
+          git commit -m "Update Crown V2 condition performance audit"
+          git push --force origin crown-v2-condition-audit-state
