@@ -14,6 +14,9 @@ jobs:
   audit:
     runs-on: ubuntu-24.04
     steps:
+      - name: Checkout analysis code
+        uses: actions/checkout@v4
+
       - name: 設定 SSH
         env:
           DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
@@ -223,4 +226,26 @@ jobs:
           name: three-stage-input-audit
           path: three-stage-input-audit.json
           retention-days: 3
+          if-no-files-found: error
+
+      - name: 掃描 Radar 新高命中條件（只讀）
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            'sudo /opt/footbreak/.venv/bin/python3 -' \
+            < analysis/audit_radar_new_high_hit.py \
+            > radar-new-high-hit-audit.json
+          python -m json.tool radar-new-high-hit-audit.json >/dev/null
+          cat radar-new-high-hit-audit.json
+
+      - name: 上載 Radar 新條件審計
+        uses: actions/upload-artifact@v4
+        with:
+          name: radar-new-high-hit-audit
+          path: radar-new-high-hit-audit.json
+          retention-days: 7
           if-no-files-found: error
