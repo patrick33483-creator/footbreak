@@ -228,10 +228,17 @@ def main() -> None:
             and metrics["discovery"]["roi"] > 0
             and metrics["holdout"]["roi"] > 0
         )
+        value_candidate = (
+            metrics["all"]["average_odds"] >= 1.70
+            and metrics["all"]["roi"] > 0
+            and metrics["discovery"]["roi"] > 0
+            and metrics["holdout"]["roi"] > 0
+        )
         evaluated.append({
             "label": label,
             "definition": definition,
             "robust_high_hit": robust,
+            "value_candidate": value_candidate,
             **metrics,
         })
 
@@ -252,6 +259,15 @@ def main() -> None:
         )
         for market in ("HDC", "HIL", "CHL")
     }
+    value_ranked = sorted(
+        [row for row in evaluated if row["value_candidate"]],
+        key=lambda row: (
+            min(row["discovery"]["roi"], row["holdout"]["roi"]),
+            row["all"]["roi"],
+            row["all"]["decided"],
+        ),
+        reverse=True,
+    )
     result = {
         "method": {
             "source": DEFAULT_DB,
@@ -288,6 +304,12 @@ def main() -> None:
         "eligible_candidate_count": len(evaluated),
         "robust_high_hit_count": sum(row["robust_high_hit"] for row in evaluated),
         "robust_high_hit": [row for row in ranked if row["robust_high_hit"]],
+        "value_candidate_rule": (
+            "average T5 odds>=1.70; ROI positive in all/discovery/holdout; "
+            "same minimum sample rules"
+        ),
+        "value_candidate_count": len(value_ranked),
+        "value_candidates": value_ranked,
         "top_25_eligible": ranked[:25],
     }
     print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
