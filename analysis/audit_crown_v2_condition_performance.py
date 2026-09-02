@@ -26,6 +26,15 @@ def canonical_key(row: dict[str, Any]) -> tuple[str, str, str]:
     )
 
 
+def wager_key(row: dict[str, Any]) -> tuple[Any, ...]:
+    return canonical_key(row) + (
+        str(row.get("market") or "").strip().upper(),
+        str(row.get("selected_side") or "").strip().upper(),
+        row.get("selected_line"),
+        row.get("odds"),
+    )
+
+
 def profit(row: dict[str, Any]) -> float | None:
     settlement = row.get("settlement")
     try:
@@ -161,6 +170,13 @@ def audit_condition(condition: dict[str, Any]) -> dict[str, Any]:
         "duplicate_rows": sum(len(group) - 1 for group in grouped.values() if len(group) > 1),
         "duplicate_groups": duplicate_groups,
         "current_deduped": current,
+        "reported_prospective": prospective,
+        "reported_metrics_match": {
+            "settled": prospective.get("settled") == current["settled"],
+            "pending": prospective.get("pending") == current["pending"],
+            "hit_rate": prospective.get("hit_rate") == current["hit_rate"],
+            "roi": prospective.get("roi") == current["roi"],
+        },
         "recent_settled_windows": recent,
         "historical": historical,
     }
@@ -175,6 +191,42 @@ def main() -> None:
     payload = json.loads(args.data_json.read_text(encoding="utf-8"))
     segmented = payload.get("segmented_conditions") or {}
     conditions = segmented.get("public_conditions") or payload.get("public_conditions") or []
+    audited_conditions = [audit_condition(condition) for condition in conditions]
+    all_rows = []
+    wager_conditions: dict[tuple[Any, ...], set[str]] = defaultdict(set)
+    fixture_conditions: dict[tuple[str, str, str], set[str]] = defaultdict(set)
+    unique_wagers: dict[tuple[Any, ...], dict[str, Any]] = {}
+    for condition in conditions:
+        condition_id = str(condition.get("id") or "")
+        for row in condition.get("observations") or []:
+            if not isinstance(row, dict):
+                continue
+            enriched = dict(row)
+            enriched.setdefault("market", condition.get("market"))
+            all_rows.append(enriched)
+            key = wager_key(enriched)
+            wager_conditions[key].add(condition_id)
+            fixture_conditions[canonical_key(enriched)].add(condition_id)
+            unique_wagers[key] = enriched
+
+    overlapping_wagers = [
+        {
+            "fixture": list(key[:3]),
+            "market": key[3],
+            "selected_side": key[4],
+            "selected_line": key[5],
+            "odds": key[6],
+            "condition_ids": sorted(condition_ids),
+        }
+        for key, condition_ids in wager_conditions.items()
+        if len(condition_ids) > 1
+    ]
+    overlapping_fixtures = [
+        {"fixture": list(key), "condition_ids": sorted(condition_ids)}
+        for key, condition_ids in fixture_conditions.items()
+        if len(condition_ids) > 1
+    ]
+
     report = {
         "generated_at": datetime.now().astimezone().isoformat(),
         "source_updated_at": (
@@ -183,7 +235,17 @@ def main() -> None:
             or payload.get("updated_at")
         ),
         "condition_count": len(conditions),
-        "conditions": [audit_condition(condition) for condition in conditions],
+        "conditions": audited_conditions,
+        "portfolio": {
+            "condition_observation_rows": len(all_rows),
+            "unique_wagers": len(unique_wagers),
+            "duplicate_cross_condition_wager_rows": len(all_rows) - len(unique_wagers),
+            "overlapping_wager_count": len(overlapping_wagers),
+            "overlapping_fixture_count": len(overlapping_fixtures),
+            "deduped_metrics": metrics(list(unique_wagers.values())),
+            "overlapping_wagers": overlapping_wagers,
+            "overlapping_fixtures": overlapping_fixtures,
+        },
     }
     rendered = json.dumps(report, ensure_ascii=False, indent=2)
     if args.output:
