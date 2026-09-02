@@ -268,6 +268,16 @@ def main() -> None:
         ),
         reverse=True,
     )
+    near_value_ranked = sorted(
+        evaluated,
+        key=lambda row: (
+            min(row["discovery"]["roi"], row["holdout"]["roi"]),
+            row["all"]["roi"],
+            row["all"]["average_odds"],
+            row["all"]["decided"],
+        ),
+        reverse=True,
+    )
     result = {
         "method": {
             "source": DEFAULT_DB,
@@ -310,6 +320,7 @@ def main() -> None:
         ),
         "value_candidate_count": len(value_ranked),
         "value_candidates": value_ranked,
+        "top_25_by_value_stability": near_value_ranked[:25],
         "top_25_eligible": ranked[:25],
     }
     print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
