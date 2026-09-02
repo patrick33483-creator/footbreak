@@ -157,6 +157,54 @@ def test_verified_crown_score_grades_v2_stage_even_when_legacy_stage_is_missing(
     assert projected_t5[0]["market_grades"][0]["settlement"] == "Half Lost"
 
 
+def test_verified_score_bridge_outranks_legacy_stage_with_different_line(
+    tmp_path,
+) -> None:
+    crown_data = tmp_path / "crown.json"
+    crown_data.write_text(json.dumps({"prediction_history": {"rows": [{
+        "match_id": "123",
+        "stage": "T-5",
+        "league": "測試聯賽",
+        "home": "主隊",
+        "away": "客隊",
+        "kickoff": "2026-08-31T01:00:00+08:00",
+        "predicted_at": "2026-08-30T16:59:00+00:00",
+        "result_status": "已核對",
+        "score": "2-1",
+        "market_grades": [{
+            "code": "HIL",
+            "side": "L",
+            "line": 2.5,
+            "grade_status": "GRADED",
+            "settlement": "Lost",
+        }],
+    }]}}), encoding="utf-8")
+    dashboard = tmp_path / "dashboard.json"
+    ledger = _ledger()
+    history = _load_history_rows(
+        crown_data,
+        ledger=ledger,
+        operator_results_path=tmp_path / "missing-operator.json",
+    )
+    _write_dashboard(
+        ledger,
+        dashboard,
+        now_utc=__import__("datetime").datetime.fromisoformat(
+            "2026-08-31T18:30:00+00:00"
+        ),
+        history_rows=history,
+        condition_sent_log_path=tmp_path / "condition-sent.jsonl",
+    )
+    condition = next(
+        row for row in json.loads(dashboard.read_text(encoding="utf-8"))[
+            "segmented_conditions"
+        ]["public_conditions"]
+        if row["id"] == "S-HIL-T5-OVER-185"
+    )
+    assert condition["prospective"]["settled"] == 1
+    assert condition["prospective"]["half_loss"] == 1
+
+
 def test_verified_crown_score_rejects_fixture_identity_mismatch() -> None:
     rows = [{
         "match_id": "123",

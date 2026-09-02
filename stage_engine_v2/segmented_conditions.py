@@ -375,7 +375,21 @@ def _matching_history(
             candidates.append(row)
     verified = [row for row in candidates if row.get("result_status") in {"已核對", "已核實"}]
     pool = verified or candidates
-    return max(pool, key=lambda row: str(row.get("predicted_at") or ""), default=None)
+    # A verified fixture score projected onto the exact V2 stage must win over
+    # a legacy Crown row whose market/line can differ from V2.  Operator rows
+    # remain the highest-priority identity-locked source.
+    source_priority = {
+        "opticodds_operator_verified_overlay": 2,
+        "crown_verified_history_bridge": 1,
+    }
+    return max(
+        pool,
+        key=lambda row: (
+            source_priority.get(str(row.get("result_source") or ""), 0),
+            str(row.get("predicted_at") or ""),
+        ),
+        default=None,
+    )
 
 
 def _matching_grade(history: dict[str, Any] | None, prediction: dict[str, Any]) -> dict[str, Any] | None:
