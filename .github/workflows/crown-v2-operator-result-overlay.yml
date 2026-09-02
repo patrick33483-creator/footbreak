@@ -125,19 +125,41 @@ jobs:
 
           ledger = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
           rows = load_operator_history_rows(Path(sys.argv[2]), ledger)
-          assert len({row["match_id"] for row in rows}) == 22
+          assert len({row["match_id"] for row in rows}) == 40
           payload = build_segmented_conditions(ledger, rows)
           expected = {
               "3022525": "Won", "3000437": "Lost", "2960369": "Lost",
               "3008745": "Won", "3008749": "Won", "3081358": "Won",
+          }
+          expected_scores = {
+              "3057155": "5-0", "3004483": "2-1", "3061632": "0-1",
+              "2999460": "1-2", "3028286": "2-1", "3044637": "2-1",
+              "3045076": "5-0", "2924114": "2-1", "3073572": "0-1",
+              "3013048": "0-0", "3061596": "3-1", "3074079": "2-2",
+              "3081369": "3-2", "3069665": "0-0", "3056263": "1-2",
+              "3048471": "1-1", "3059438": "0-0", "3061598": "3-2",
           }
           actual = {
               str(row["match_id"]): row["settlement"]
               for row in payload["matching_observations"]
               if str(row.get("match_id")) in expected
           }
+          actual_scores = {
+              str(row["match_id"]): row.get("score")
+              for row in payload["matching_observations"]
+              if str(row.get("match_id")) in expected_scores
+          }
+          new_settlements = {
+              str(row["match_id"]): row.get("settlement")
+              for row in payload["matching_observations"]
+              if str(row.get("match_id")) in expected_scores
+          }
           assert actual == expected, (actual, expected)
-          print(json.dumps({"dry_run": "ok", "fixtures": 22, "settlements": actual},
+          assert actual_scores == expected_scores, (actual_scores, expected_scores)
+          assert all(new_settlements.values()), new_settlements
+          print(json.dumps({"dry_run": "ok", "fixtures": 40,
+                            "settlements": actual,
+                            "new_scores": actual_scores},
                            ensure_ascii=False, sort_keys=True))
           PY
 
@@ -163,6 +185,14 @@ jobs:
               "3022525": "Won", "3000437": "Lost", "2960369": "Lost",
               "3008745": "Won", "3008749": "Won", "3081358": "Won",
           }
+          expected_scores = {
+              "3057155": "5-0", "3004483": "2-1", "3061632": "0-1",
+              "2999460": "1-2", "3028286": "2-1", "3044637": "2-1",
+              "3045076": "5-0", "2924114": "2-1", "3073572": "0-1",
+              "3013048": "0-0", "3061596": "3-1", "3074079": "2-2",
+              "3081369": "3-2", "3069665": "0-0", "3056263": "1-2",
+              "3048471": "1-1", "3059438": "0-0", "3061598": "3-2",
+          }
           observations = payload["segmented_conditions"]["matching_observations"]
           actual = {
               str(row["match_id"]): row.get("settlement")
@@ -172,8 +202,18 @@ jobs:
               str(row["match_id"]): row.get("score")
               for row in observations if str(row.get("match_id")) in expected
           }
+          new_scores = {
+              str(row["match_id"]): row.get("score")
+              for row in observations if str(row.get("match_id")) in expected_scores
+          }
+          new_settlements = {
+              str(row["match_id"]): row.get("settlement")
+              for row in observations if str(row.get("match_id")) in expected_scores
+          }
           assert actual == expected, (actual, expected)
           assert all(scores.values()), scores
+          assert new_scores == expected_scores, (new_scores, expected_scores)
+          assert all(new_settlements.values()), new_settlements
           audit = {
               "schema_version": 1,
               "applied_at_utc": datetime.now(timezone.utc).isoformat(),
@@ -181,10 +221,12 @@ jobs:
               "manifest_sha256": hashlib.sha256(
                   manifest_path.read_bytes()
               ).hexdigest(),
-              "fixtures": 22,
+              "fixtures": 40,
               "excluded": manifest["excluded"],
               "settlements": actual,
               "scores": scores,
+              "new_settlements": new_settlements,
+              "new_scores": new_scores,
               "dashboard_generated_at_utc": payload["generated_at_utc"],
               "backup_root": str(backup_root),
           }
@@ -208,16 +250,37 @@ jobs:
               "3022525": "Won", "3000437": "Lost", "2960369": "Lost",
               "3008745": "Won", "3008749": "Won", "3081358": "Won",
           }
+          expected_scores = {
+              "3057155": "5-0", "3004483": "2-1", "3061632": "0-1",
+              "2999460": "1-2", "3028286": "2-1", "3044637": "2-1",
+              "3045076": "5-0", "2924114": "2-1", "3073572": "0-1",
+              "3013048": "0-0", "3061596": "3-1", "3074079": "2-2",
+              "3081369": "3-2", "3069665": "0-0", "3056263": "1-2",
+              "3048471": "1-1", "3059438": "0-0", "3061598": "3-2",
+          }
           payload = json.load(open(sys.argv[1], encoding="utf-8"))
+          observations = payload["segmented_conditions"]["matching_observations"]
           actual = {
               str(row["match_id"]): row.get("settlement")
-              for row in payload["segmented_conditions"]["matching_observations"]
+              for row in observations
               if str(row.get("match_id")) in expected
           }
+          new_scores = {
+              str(row["match_id"]): row.get("score")
+              for row in observations if str(row.get("match_id")) in expected_scores
+          }
+          new_settlements = {
+              str(row["match_id"]): row.get("settlement")
+              for row in observations if str(row.get("match_id")) in expected_scores
+          }
           assert actual == expected, (actual, expected)
+          assert new_scores == expected_scores, (new_scores, expected_scores)
+          assert all(new_settlements.values()), new_settlements
           print(json.dumps({
               "persistence_check": "ok",
-              "fixtures": len(actual),
+              "fixtures": 40,
+              "new_scores": new_scores,
+              "new_settlements": new_settlements,
               "generated_at_utc": payload["generated_at_utc"],
           }, ensure_ascii=False))
           PY
