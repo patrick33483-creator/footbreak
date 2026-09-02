@@ -181,3 +181,24 @@ jobs:
           path: hkjc-v2-high-hit-audit.json
           retention-days: 7
           if-no-files-found: error
+
+      - name: Run Footbreak direction with higher Crown price backtest
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            'cd /opt/footbreak && sudo /opt/footbreak/.venv/bin/python3 -' \
+            < analysis/audit_footbreak_direction_crown_price.py \
+            > footbreak-direction-crown-price.json
+          python -m json.tool footbreak-direction-crown-price.json >/dev/null
+
+      - name: Upload cross-price backtest
+        uses: actions/upload-artifact@v4
+        with:
+          name: footbreak-direction-crown-price
+          path: footbreak-direction-crown-price.json
+          retention-days: 7
+          if-no-files-found: error
