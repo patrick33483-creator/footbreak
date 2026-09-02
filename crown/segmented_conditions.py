@@ -88,6 +88,50 @@ def _same_line(values: list[float | None]) -> bool:
     )
 
 
+def _identity_text(value: Any) -> str:
+    return " ".join(str(value or "").split()).casefold()
+
+
+def _fixture_identity(
+    match_id: str,
+    stages: dict[str, dict[str, Any]],
+) -> tuple[str, ...]:
+    """Identify one real fixture even when stage ingestion minted alias IDs."""
+    for stage in _STAGE_ORDER:
+        row = stages.get(stage)
+        if not isinstance(row, dict):
+            continue
+        kickoff = parse_time(row.get("kickoff") or row.get("kickoff_hkt"))
+        home = _identity_text(row.get("home"))
+        away = _identity_text(row.get("away"))
+        if kickoff is not None and home and away:
+            # Providers occasionally differ by seconds while referring to the
+            # same scheduled fixture. Stage scheduling itself is minute based.
+            kickoff_minute = str(int(kickoff.timestamp() // 60))
+            return ("fixture", kickoff_minute, home, away)
+    for field in ("hkjc_match_id", "pinnapi_event_id", "titan_match_id"):
+        for row in stages.values():
+            value = _identity_text(row.get(field)) if isinstance(row, dict) else ""
+            if value:
+                return (field, value)
+    return ("match_id", match_id)
+
+
+def _stage_preference(row: dict[str, Any]) -> tuple[int, int, str]:
+    grades = row.get("market_grades")
+    has_grade = int(
+        any(
+            isinstance(item, dict) and item.get("grade_status") == "GRADED"
+            for item in (grades if isinstance(grades, list) else [])
+        )
+    )
+    has_result = int(
+        bool(row.get("score"))
+        or str(row.get("result_status") or "") not in {"", "待賽果", "Pending"}
+    )
+    return has_grade, has_result, str(row.get("predicted_at") or "")
+
+
 def _rule_s_t5_over(stages: dict[str, dict[str, Any]]) -> dict[str, Any] | None:
     row = stages.get("T-5")
     prediction = _prediction(row or {}, "HIL")
@@ -311,7 +355,7 @@ def build_segmented_conditions(
     cutoff = parse_time(activation_cutoff)
     if cutoff is None:
         raise ValueError("invalid segmented condition activation cutoff")
-    grouped: dict[str, dict[str, dict[str, Any]]] = {}
+    grouped_by_match_id: dict[str, dict[str, dict[str, Any]]] = {}
     for row in rows:
         if not isinstance(row, dict):
             continue
@@ -322,10 +366,44 @@ def build_segmented_conditions(
         kickoff = parse_time(row.get("kickoff") or row.get("kickoff_hkt"))
         if not match_id or stage not in _STAGE_ORDER or kickoff is None or kickoff < cutoff:
             continue
-        stages = grouped.setdefault(match_id, {})
+        stages = grouped_by_match_id.setdefault(match_id, {})
         prior = stages.get(stage)
-        if prior is None or str(row.get("predicted_at") or "") > str(prior.get("predicted_at") or ""):
+        if prior is None or _stage_preference(row) > _stage_preference(prior):
             stages[stage] = row
+
+    fixture_groups: dict[tuple[str, ...], dict[str, Any]] = {}
+    for match_id, stages in grouped_by_match_id.items():
+        fixture_key = _fixture_identity(match_id, stages)
+        fixture = fixture_groups.setdefault(
+            fixture_key,
+            {"match_ids": [], "stages": {}},
+        )
+        fixture["match_ids"].append(match_id)
+        for stage, row in stages.items():
+            prior = fixture["stages"].get(stage)
+            if prior is None or _stage_preference(row) > _stage_preference(prior):
+                fixture["stages"][stage] = row
+
+    grouped: dict[str, dict[str, Any]] = {}
+    aliases_by_match_id: dict[str, list[str]] = {}
+    for fixture in fixture_groups.values():
+        match_ids = fixture["match_ids"]
+        representative = max(
+            match_ids,
+            key=lambda value: (
+                len(grouped_by_match_id[value]),
+                max(
+                    (
+                        str(row.get("predicted_at") or "")
+                        for row in grouped_by_match_id[value].values()
+                    ),
+                    default="",
+                ),
+                value,
+            ),
+        )
+        grouped[representative] = fixture["stages"]
+        aliases_by_match_id[representative] = sorted(match_ids)
 
     public = []
     all_observations = []
@@ -362,6 +440,7 @@ def build_segmented_conditions(
                 "tier": condition["tier"],
                 "market": condition["market"],
                 "match_id": match_id,
+                "source_match_ids": aliases_by_match_id[match_id],
                 "league": decision_row.get("league"),
                 "home": decision_row.get("home"),
                 "away": decision_row.get("away"),
@@ -402,5 +481,11 @@ def build_segmented_conditions(
         "background_accumulation": {
             "enabled": True,
             "description": "其餘候選條件繼續由既有後台細分礦掘器累積，未達 S／A 前不在此頁顯示。",
+        },
+        "fixture_deduplication": {
+            "method": "kickoff_minute_home_away_then_provider_id",
+            "source_match_ids": len(grouped_by_match_id),
+            "unique_fixtures": len(grouped),
+            "collapsed_aliases": len(grouped_by_match_id) - len(grouped),
         },
     }

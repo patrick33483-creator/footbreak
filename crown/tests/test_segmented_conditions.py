@@ -22,6 +22,9 @@ def _row(
     *,
     kickoff: str = "2026-09-01T20:00:00+08:00",
     settlement: str | None = None,
+    home: str | None = None,
+    away: str | None = None,
+    predicted_at: str = "2026-08-31T12:00:00+08:00",
 ) -> dict:
     grades = []
     if settlement:
@@ -34,10 +37,10 @@ def _row(
         "match_id": match_id,
         "stage": stage,
         "kickoff": kickoff,
-        "predicted_at": "2026-08-31T12:00:00+08:00",
+        "predicted_at": predicted_at,
         "league": "測試聯賽",
-        "home": f"{match_id} 主隊",
-        "away": f"{match_id} 客隊",
+        "home": home or f"{match_id} 主隊",
+        "away": away or f"{match_id} 客隊",
         "market_predictions": [prediction],
         "market_grades": grades,
         "result_status": "已核對" if settlement else "待賽果",
@@ -170,6 +173,50 @@ class SegmentedConditionTests(unittest.TestCase):
         self.assertEqual(cond["prospective"]["qualified"], 1)
         self.assertEqual(cond["prospective"]["full_win"], 1)
         self.assertEqual(cond["prospective"]["hit_rate"], 1.0)
+
+    def test_alias_match_ids_for_one_fixture_count_only_once(self) -> None:
+        opening = _prediction("HDC", "A", 0.5, 1.87)
+        t30 = _prediction("HDC", "A", 0.75, 1.94)
+        t5 = _prediction("HDC", "A", 0.75, 1.90)
+        fixture = {
+            "home": "水戶蜀葵",
+            "away": "鹿島鹿角",
+            "kickoff": "2026-09-02T18:00:20+08:00",
+        }
+        rows = [
+            _row("alias-t30", "首預", opening, settlement="Won", **fixture),
+            _row("alias-t30", "T-30", t30, **fixture),
+            _row(
+                "alias-t5",
+                "首預",
+                opening,
+                predicted_at="2026-09-02T10:01:00+08:00",
+                **fixture,
+            ),
+            _row("alias-t5", "T-30", t30, **fixture),
+            _row("alias-t5", "T-5", t5, **fixture),
+        ]
+
+        payload = build_segmented_conditions(rows)
+        conditions = {item["id"]: item for item in payload["public_conditions"]}
+        condition = conditions["A-HDC-OPEN-AWAY-MINUS-050"]
+
+        self.assertEqual(condition["prospective"]["qualified"], 1)
+        self.assertEqual(condition["prospective"]["settled"], 1)
+        self.assertEqual(condition["prospective"]["full_win"], 1)
+        self.assertEqual(condition["prospective"]["hit_rate"], 1.0)
+        self.assertAlmostEqual(condition["prospective"]["roi"], 0.87)
+        self.assertEqual(len(condition["observations"]), 1)
+        self.assertEqual(condition["observations"][0]["match_id"], "alias-t5")
+        self.assertEqual(
+            condition["observations"][0]["source_match_ids"],
+            ["alias-t30", "alias-t5"],
+        )
+        self.assertEqual(
+            condition["observations"][0]["directions"],
+            {"首預": "客", "T-30": "客", "T-5": "客"},
+        )
+        self.assertEqual(payload["fixture_deduplication"]["collapsed_aliases"], 1)
 
 
 if __name__ == "__main__":
