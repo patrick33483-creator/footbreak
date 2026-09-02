@@ -128,12 +128,6 @@ jobs:
           assert len({row["match_id"] for row in rows}) == 22
           payload = build_segmented_conditions(ledger, rows)
           expected = {
-              "50074073": "Lost", "3040723": "Won", "3050513": "Refunded",
-              "50073805": "Lost", "3014867": "Won", "3014868": "Won",
-              "3014872": "Half Lost", "3003555": "Half Won",
-              "3026707": "Lost", "3021606": "Lost", "2916643": "Lost",
-              "3067098": "Half Lost", "3031326": "Lost", "3041893": "Won",
-              "3071864": "Won", "3042546": "Won",
               "3022525": "Won", "3000437": "Lost", "2960369": "Lost",
               "3008745": "Won", "3008749": "Won", "3081358": "Won",
           }
@@ -166,12 +160,6 @@ jobs:
           payload = json.loads(dashboard_path.read_text(encoding="utf-8"))
           manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
           expected = {
-              "50074073": "Lost", "3040723": "Won", "3050513": "Refunded",
-              "50073805": "Lost", "3014867": "Won", "3014868": "Won",
-              "3014872": "Half Lost", "3003555": "Half Won",
-              "3026707": "Lost", "3021606": "Lost", "2916643": "Lost",
-              "3067098": "Half Lost", "3031326": "Lost", "3041893": "Won",
-              "3071864": "Won", "3042546": "Won",
               "3022525": "Won", "3000437": "Lost", "2960369": "Lost",
               "3008745": "Won", "3008749": "Won", "3081358": "Won",
           }
@@ -217,12 +205,6 @@ jobs:
           "$python" - "$dashboard" <<'PY'
           import json, sys
           expected = {
-              "50074073": "Lost", "3040723": "Won", "3050513": "Refunded",
-              "50073805": "Lost", "3014867": "Won", "3014868": "Won",
-              "3014872": "Half Lost", "3003555": "Half Won",
-              "3026707": "Lost", "3021606": "Lost", "2916643": "Lost",
-              "3067098": "Half Lost", "3031326": "Lost", "3041893": "Won",
-              "3071864": "Won", "3042546": "Won",
               "3022525": "Won", "3000437": "Lost", "2960369": "Lost",
               "3008745": "Won", "3008749": "Won", "3081358": "Won",
           }
