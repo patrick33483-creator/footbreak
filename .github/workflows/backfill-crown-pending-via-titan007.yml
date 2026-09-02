@@ -78,7 +78,7 @@ jobs:
           ssh -o BatchMode=yes -o ConnectTimeout=20 \
             -o ServerAliveInterval=15 -o ServerAliveCountMax=8 \
             "$target" \
-            "env MODE='$MODE' LOOKBACK_DAYS='$LOOKBACK_DAYS' \
+            "sudo env MODE='$MODE' LOOKBACK_DAYS='$LOOKBACK_DAYS' \
               REMOTE_WORK='$remote_work' SCRIPT_SHA='$script_sha' bash -s" \
             <<'REMOTE' | tee crown-titan007-backfill.json
           set -euo pipefail
