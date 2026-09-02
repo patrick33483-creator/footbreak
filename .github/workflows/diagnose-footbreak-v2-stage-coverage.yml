@@ -202,3 +202,25 @@ jobs:
           path: footbreak-direction-crown-price.json
           retention-days: 7
           if-no-files-found: error
+
+      - name: Inventory Crown full-board evidence
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            'cd /opt/footbreak && sudo /opt/footbreak/.venv/bin/python3 -' \
+            < analysis/audit_crown_full_board_inventory.py \
+            > crown-full-board-inventory.json
+          python -m json.tool crown-full-board-inventory.json >/dev/null
+          cat crown-full-board-inventory.json
+
+      - name: Upload Crown full-board inventory
+        uses: actions/upload-artifact@v4
+        with:
+          name: crown-full-board-inventory
+          path: crown-full-board-inventory.json
+          retention-days: 7
+          if-no-files-found: error
