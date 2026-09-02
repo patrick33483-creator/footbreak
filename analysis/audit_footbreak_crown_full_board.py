@@ -22,6 +22,12 @@ from analysis.audit_footbreak_direction_crown_price import (
     parse_time,
     return_from_settlement,
 )
+from analysis.odds_recovery import (
+    PrivateResponseCache,
+    ProviderFetcher,
+    canonical_line,
+    titan_candidate,
+)
 from crown.matching import Event, canonical_league_key, canonical_team_key, match_event
 
 
@@ -59,8 +65,7 @@ def load_crown_meta() -> dict[str, dict[str, Any]]:
     return output
 
 
-def full_boards() -> tuple[list[dict[str, Any]], collections.Counter[str]]:
-    meta = load_crown_meta()
+def full_boards(meta: dict[str, dict[str, Any]]) -> tuple[list[dict[str, Any]], collections.Counter[str]]:
     diagnostics: collections.Counter[str] = collections.Counter()
     canonical: dict[str, dict[str, Any]] = {}
     for path in CROWN_STATE.rglob("*__T-5.json"):
@@ -162,6 +167,108 @@ def resolve_board(foot: dict[str, Any], boards: list[dict[str, Any]]) -> tuple[d
     return found.event.extra, "strict_teams_kickoff"
 
 
+def resolve_meta(foot: dict[str, Any], meta: dict[str, dict[str, Any]]) -> tuple[dict[str, Any] | None, str]:
+    rows = [{"fixture": fixture, **value} for fixture, value in meta.items() if value.get("kickoff")]
+    exact = [row for row in rows if foot["ids"] & row["ids"]]
+    if len(exact) == 1:
+        return exact[0], "verified_id"
+    if len(exact) > 1:
+        return None, "ambiguous_id"
+    target = Event(
+        id=foot["identity"],
+        league=str(foot.get("league") or ""),
+        home=str(foot.get("home_raw") or ""),
+        away=str(foot.get("away_raw") or ""),
+        kickoff=foot["kickoff"],
+    )
+    candidates = [
+        Event(
+            id=row["fixture"], league=str(row.get("league") or ""),
+            home=str(row.get("home") or ""), away=str(row.get("away") or ""),
+            kickoff=row["kickoff"], extra=row,
+        )
+        for row in rows
+    ]
+    found = match_event(
+        target, candidates, team_key=canonical_team_key, league_key=canonical_league_key,
+        allow_reversed=True, require_qualifiers=True,
+    )
+    if found.event is None:
+        return None, found.reason or "unmatched"
+    return found.event.extra, "strict_teams_kickoff"
+
+
+def provider_quotes(
+    requests: list[tuple[int, dict[str, Any], dict[str, Any], str]],
+) -> tuple[dict[int, dict[str, Any]], dict[str, Any]]:
+    """Recover exact T-5 Crown quotes from Titan company-3 movement history."""
+    fetcher = ProviderFetcher(
+        PrivateResponseCache(Path("/tmp/footbreak-crown-full-board-cache")),
+        rate_per_second=2.0,
+        retries=2,
+        timeout_seconds=25.0,
+        workers=4,
+        max_pages=1200,
+    )
+    plans = []
+    for index, foot, meta, method in requests:
+        titan = str(meta["fixture"])
+        url = (
+            "https://vip.titan007.com/changeDetail/overunder.aspx"
+            f"?id={titan}&companyID=3&l=0"
+        )
+        target = {
+            "system": "crown",
+            "fixture_identity": f"persisted:{titan}",
+            "market_code": "HIL",
+            "line": canonical_line(foot["line"]),
+            "side": "H" if foot["side"] == "O" else "L",
+            "stage": "T-5",
+            "predicted_at": foot["observed"] or foot["kickoff"] - dt.timedelta(minutes=5),
+            "row": {
+                "kickoff": foot["kickoff"].isoformat(),
+                "titan_match_id": titan,
+                "match_id": titan,
+            },
+        }
+        plans.append((index, foot, meta, method, url, target))
+    pages = fetcher.get_many(plan[4] for plan in plans)
+    output = {}
+    reasons: collections.Counter[str] = collections.Counter()
+    for index, foot, meta, method, url, target in plans:
+        source, cached, error = pages[url]
+        if error or source is None:
+            reasons[error or "empty_response"] += 1
+            continue
+        quote, reason = titan_candidate(
+            target, source, url,
+            exact_window_seconds=90,
+            freshness_seconds={"T-5": 20 * 60, "T-30": 60 * 60},
+        )
+        if quote is None:
+            reasons[reason or "no_candidate"] += 1
+            continue
+        output[index] = {
+            "fixture": meta["fixture"],
+            "odds": float(quote["odds"]),
+            "observed": quote["observed_at"],
+            "method": f"titan_history_{method}",
+            "cached": cached,
+            "quality": quote.get("evidence_quality"),
+            "age_seconds": quote.get("selection_age_seconds"),
+        }
+    return output, {
+        "requested_targets": len(plans),
+        "unique_pages": len({plan[4] for plan in plans}),
+        "recovered_targets": len(output),
+        "failure_reasons": dict(reasons),
+        "pages_fetched": fetcher.pages_fetched,
+        "cache_hits": fetcher.cache_hits,
+        "http_failures": fetcher.http_failures,
+        "timeout_failures": fetcher.timeout_failures,
+    }
+
+
 def percentile(values: list[float], q: float) -> float | None:
     if not values:
         return None
@@ -253,13 +360,35 @@ def grouped(rows: list[dict[str, Any]], fields: tuple[str, ...], cutoff: dt.date
 
 def main() -> None:
     foot_rows, foot_diag = extract(FOOTBREAK_HISTORY, "footbreak")
-    boards, board_diag = full_boards()
+    meta = load_crown_meta()
+    boards, board_diag = full_boards(meta)
+    local_matches: dict[int, tuple[dict[str, Any], str]] = {}
+    provider_requests = []
+    pre_match_misses: collections.Counter[str] = collections.Counter()
+    for index, foot in enumerate(foot_rows):
+        board, method = resolve_board(foot, boards)
+        if board is not None:
+            local_matches[index] = (board, method)
+            continue
+        event, event_method = resolve_meta(foot, meta)
+        if event is None:
+            pre_match_misses[event_method] += 1
+            continue
+        provider_requests.append((index, foot, event, event_method))
+    recovered_quotes, provider_diag = provider_quotes(provider_requests)
+
     resolved = []
     misses: collections.Counter[str] = collections.Counter()
     join_methods: collections.Counter[str] = collections.Counter()
-    for foot in sorted(foot_rows, key=lambda row: (row["kickoff"], row["identity"], row["line"], row["side"])):
-        board, method = resolve_board(foot, boards)
-        if board is None:
+    ordered_foot = sorted(enumerate(foot_rows), key=lambda item: (
+        item[1]["kickoff"], item[1]["identity"], item[1]["line"], item[1]["side"]
+    ))
+    for index, foot in ordered_foot:
+        board_method = local_matches.get(index)
+        recovered = recovered_quotes.get(index)
+        if board_method is None and recovered is None:
+            _meta, meta_reason = resolve_meta(foot, meta)
+            method = meta_reason if _meta is None else "historical_quote_unavailable"
             misses[method] += 1
             resolved.append({
                 "identity": foot["identity"], "kickoff": foot["kickoff"].isoformat(),
@@ -269,24 +398,38 @@ def main() -> None:
                 "match_status": method,
             })
             continue
+        if board_method is not None:
+            board, method = board_method
+            quote = board["lines"][foot["line"]][foot["side"]]
+            crown_fixture = board["fixture"]
+            crown_odds = quote["odds"]
+            observed = quote["observed"]
+            price_source = "persisted_full_board"
+        else:
+            assert recovered is not None
+            method = recovered["method"]
+            crown_fixture = recovered["fixture"]
+            crown_odds = recovered["odds"]
+            observed = recovered["observed"]
+            price_source = "titan_company_3_history"
         join_methods[method] += 1
-        quote = board["lines"][foot["line"]][foot["side"]]
-        crown_return = return_from_settlement(foot["settlement"], quote["odds"])
+        crown_return = return_from_settlement(foot["settlement"], crown_odds)
         foot_return = return_from_settlement(foot["settlement"], foot["odds"])
         row = {
-            "identity": foot["identity"], "crown_fixture": board["fixture"],
+            "identity": foot["identity"], "crown_fixture": crown_fixture,
             "kickoff": foot["kickoff"], "kickoff_iso": foot["kickoff"].isoformat(),
             "league": foot.get("league") or board.get("league") or "未分類",
             "home": foot.get("home_raw"), "away": foot.get("away_raw"),
             "line": foot["line"], "line_band": line_band(foot["line"]),
             "side": foot["side"], "settlement": foot["settlement"],
-            "footbreak_odds": foot["odds"], "crown_odds": quote["odds"],
-            "uplift": quote["odds"] - foot["odds"],
-            "uplift_band": uplift_band(quote["odds"] - foot["odds"]),
-            "crown_odds_band": odds_band(quote["odds"]),
+            "footbreak_odds": foot["odds"], "crown_odds": crown_odds,
+            "uplift": crown_odds - foot["odds"],
+            "uplift_band": uplift_band(crown_odds - foot["odds"]),
+            "crown_odds_band": odds_band(crown_odds),
             "crown_return": crown_return, "footbreak_return": foot_return,
             "match_status": method,
-            "quote_observed": quote["observed"].isoformat() if quote["observed"] else None,
+            "quote_observed": observed.isoformat() if observed else None,
+            "price_source": price_source,
         }
         resolved.append(row)
 
@@ -345,6 +488,8 @@ def main() -> None:
             "cutoff_utc": cutoff.isoformat() if cutoff else None,
             "footbreak_diagnostics": foot_diag,
             "crown_snapshot_diagnostics": dict(board_diag),
+            "historical_provider_diagnostics": provider_diag,
+            "pre_provider_identity_misses": dict(pre_match_misses),
         },
         "scans": scans,
         "stable_positive_candidates": candidates,
