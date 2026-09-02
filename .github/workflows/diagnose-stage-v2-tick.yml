@@ -77,6 +77,9 @@ jobs:
           dashboard = json.loads(
               Path("/var/www/stage_engine_v2/data.json").read_text(encoding="utf-8")
           )
+          ledger = json.loads(
+              Path("/var/lib/footbreak/stage_engine_v2/ledger.json").read_text(encoding="utf-8")
+          )
           segmented = dashboard.get("segmented_conditions") or {}
           conditions = segmented.get("public_conditions") or []
 
@@ -162,6 +165,23 @@ jobs:
               "cross_condition_overlap_count": len(cross_condition),
               "cross_condition_overlaps": cross_condition,
               "target_observations": targets,
+              "target_ledger_fixtures": [
+                  {
+                      "ledger_key": key,
+                      "id": slot.get("id"),
+                      "league": slot.get("league"),
+                      "home": slot.get("home"),
+                      "away": slot.get("away"),
+                      "kickoff_utc": slot.get("kickoff_utc"),
+                      "kickoff_hkt": slot.get("kickoff_hkt"),
+                      "stages": sorted((slot.get("stages") or {}).keys()),
+                  }
+                  for key, slot in (ledger.get("fixtures") or {}).items()
+                  if str(key) in {
+                      "3022525", "3000437", "2960369", "3008745",
+                      "3008749", "3081358", "3073574",
+                  }
+              ],
           }
           print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
           PY
