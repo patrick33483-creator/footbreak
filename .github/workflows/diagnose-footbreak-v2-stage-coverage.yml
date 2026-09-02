@@ -10,6 +10,9 @@ jobs:
   diagnose:
     runs-on: ubuntu-24.04
     steps:
+      - name: Checkout analysis code
+        uses: actions/checkout@v4
+
       - name: Configure SSH
         env:
           DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
@@ -154,3 +157,27 @@ jobs:
               "units": units,
           }, ensure_ascii=False, indent=2, default=dict))
           PY
+
+      - name: Run read-only HKJC V2 high-hit condition audit
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            'cd /opt/footbreak && sudo /opt/footbreak/.venv/bin/python3 -' \
+            < analysis/audit_hkjc_v2_high_hit_conditions.py \
+            > hkjc-v2-high-hit-audit.json
+          python -m json.tool hkjc-v2-high-hit-audit.json >/dev/null
+          echo HKJC_V2_HIGH_HIT_AUDIT_JSON_BEGIN
+          cat hkjc-v2-high-hit-audit.json
+          echo HKJC_V2_HIGH_HIT_AUDIT_JSON_END
+
+      - name: Upload HKJC V2 audit
+        uses: actions/upload-artifact@v4
+        with:
+          name: hkjc-v2-high-hit-audit
+          path: hkjc-v2-high-hit-audit.json
+          retention-days: 7
+          if-no-files-found: error
