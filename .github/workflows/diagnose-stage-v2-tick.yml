@@ -160,6 +160,9 @@ jobs:
           }
           print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
           PY
+          echo "===== STAGE_V2_DEDUPE_AUDIT_BEGIN ====="
+          cat stage-v2-dedupe-audit.json
+          echo "===== STAGE_V2_DEDUPE_AUDIT_END ====="
 
       - name: 保存唯讀稽核結果
         uses: actions/upload-artifact@v4
