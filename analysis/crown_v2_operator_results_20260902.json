@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "batch_id": "crown-v2-pending-verification-20260902-v1",
+  "score_scope": "90_minutes_including_stoppage_time_excluding_extra_time",
+  "verified_at": "2026-09-02T14:10:00+08:00",
+  "results": [
+    {"match_id":"3057155","league":"西女超","home":"巴塞罗那女足","away":"格拉纳迪拉特内里费苏女足","kickoff":"2026-08-30T17:00:00+00:00","home_score":5,"away_score":0,"provider_event_id":"20260830243A64E6","provider_home":"FC Barcelona Women","provider_away":"Tenerife Women","provider_start":"2026-08-30T17:00:00Z","orientation":"direct"},
+    {"match_id":"3004483","league":"黑山甲","home":"德锡","away":"耶泽洛","kickoff":"2026-08-30T18:00:00+00:00","home_score":2,"away_score":1,"provider_event_id":"20260830EB791C38","provider_home":"FK Decic Tuzi","provider_away":"FK Jezero","provider_start":"2026-08-30T18:00:00Z","orientation":"direct"},
+    {"match_id":"3061632","league":"玻利杯","home":"学术DB","away":"阿拉维预备","kickoff":"2026-08-30T19:00:00+00:00","home_score":0,"away_score":1,"provider_event_id":"footlive-2026-08-30-academia-always-ready","provider_home":"Academia del Balompie Boliviano","provider_away":"Always Ready","provider_start":"2026-08-30T19:00:00Z","orientation":"direct"},
+    {"match_id":"2999460","league":"亚洲杯U20","home":"伊拉克U20","away":"土库曼U20","kickoff":"2026-08-31T08:30:00+00:00","home_score":1,"away_score":2,"provider_event_id":"afc-u20-qualifiers-group-f-iraq-turkmenistan","provider_home":"Iraq U20","provider_away":"Turkmenistan U20","provider_start":"2026-08-31T08:30:00Z","orientation":"direct"},
+    {"match_id":"3028286","league":"英议北","home":"哈伯勒镇","away":"海运联","kickoff":"2026-08-31T14:00:00+00:00","home_score":2,"away_score":1,"provider_event_id":"20260831BB703E43","provider_home":"Harborough Town","provider_away":"Marine AFC","provider_start":"2026-08-31T14:00:00Z","orientation":"direct"},
+    {"match_id":"3044637","league":"英北超","home":"海德联","away":"伯利","kickoff":"2026-08-31T14:00:00+00:00","home_score":2,"away_score":1,"provider_event_id":"sky-573378","provider_home":"Hyde United","provider_away":"Bury FC","provider_start":"2026-08-31T14:00:00Z","orientation":"direct"},
+    {"match_id":"3045076","league":"英南超中","home":"基特宁","away":"斯坦福队","kickoff":"2026-08-31T14:00:00+00:00","home_score":5,"away_score":0,"provider_event_id":"20260831F6DC1E60","provider_home":"Kettering Town","provider_away":"Stamford AFC","provider_start":"2026-08-31T14:00:00Z","orientation":"direct"},
+    {"match_id":"2924114","league":"格鲁甲","home":"第比利斯迪纳摩","away":"哥里迪拉","kickoff":"2026-08-31T17:00:00+00:00","home_score":2,"away_score":1,"provider_event_id":"202608299A9F6EEB","provider_home":"Dinamo Tbilisi","provider_away":"Dila Gori","provider_start":"2026-08-31T17:00:00Z","orientation":"direct"},
+    {"match_id":"3073572","league":"马足总","home":"帕拉克","away":"吉隆坡","kickoff":"2026-09-01T13:00:00+00:00","home_score":0,"away_score":1,"provider_event_id":"hmetro-1405247","provider_home":"Perak FA","provider_away":"Kuala Lumpur City FC","provider_start":"2026-09-01T13:00:00Z","orientation":"direct"},
+    {"match_id":"3013048","league":"俄杯","home":"阿克伦陶里亚蒂","away":"莫斯科火车头","kickoff":"2026-09-01T13:15:00+00:00","home_score":0,"away_score":0,"provider_event_id":"20260901DCDB3AFC","provider_home":"Akron Togliatti","provider_away":"Lokomotiv Moscow","provider_start":"2026-09-01T13:15:00Z","orientation":"direct"},
+    {"match_id":"3061596","league":"波兰杯","home":"新塔尔格","away":"波贡马佐维克","kickoff":"2026-09-01T13:30:00+00:00","home_score":3,"away_score":1,"provider_event_id":"2026090157DA8C88","provider_home":"Podhale Nowy Targ","provider_away":"Pogon Grodzisk Mazowiecki","provider_start":"2026-09-01T13:30:00Z","orientation":"direct"},
+    {"match_id":"3074079","league":"希腊杯","home":"维洛斯NFC","away":"卡拉玛达","kickoff":"2026-09-01T15:00:00+00:00","home_score":2,"away_score":2,"provider_event_id":"sofascore-volos-kalamata-20260901","provider_home":"NPS Volos","provider_away":"PS Kalamata","provider_start":"2026-09-01T15:00:00Z","orientation":"direct"},
+    {"match_id":"3081369","league":"阿后备","home":"伊希库斯尼斯塔史后备队","away":"拉科利内尔斯后备队","kickoff":"2026-09-01T15:00:00+00:00","home_score":3,"away_score":2,"provider_event_id":"20260901790E19AC","provider_home":"Excursionistas Reserves","provider_away":"Deportivo Liniers Reserves","provider_start":"2026-09-01T15:00:00Z","orientation":"direct"},
+    {"match_id":"3069665","league":"伊朗超","home":"加兹温","away":"大不里士拖拉机","kickoff":"2026-09-01T15:45:00+00:00","home_score":0,"away_score":0,"provider_event_id":"2026090191B2D282","provider_home":"Shams Azar Qazvin","provider_away":"Tractor SC","provider_start":"2026-09-01T15:45:00Z","orientation":"direct"},
+    {"match_id":"3056263","league":"葡U23","home":"埃什特雷拉U23","away":"葡萄牙体育U23","kickoff":"2026-09-01T16:00:00+00:00","home_score":1,"away_score":2,"provider_event_id":"202609019D829988","provider_home":"Estrela Amadora U23","provider_away":"Sporting CP U23","provider_start":"2026-09-01T16:00:00Z","orientation":"direct"},
+    {"match_id":"3048471","league":"沙地甲","home":"欧鲁巴赫","away":"阿尔兹拉费","kickoff":"2026-09-01T16:20:00+00:00","home_score":1,"away_score":1,"provider_event_id":"20260901231A80B0","provider_home":"Al Orubah FC","provider_away":"Al Zulfi SC","provider_start":"2026-09-01T16:20:00Z","orientation":"direct"},
+    {"match_id":"3059438","league":"埃及超","home":"瓦迪格拉","away":"奥林比亚艾卡纳","kickoff":"2026-09-01T17:00:00+00:00","home_score":0,"away_score":0,"provider_event_id":"202609015B68FFE8","provider_home":"Wadi Degla","provider_away":"Olympic El Qanah","provider_start":"2026-09-01T17:00:00Z","orientation":"direct"},
+    {"match_id":"3061598","league":"波兰杯","home":"KS波罗尼亚","away":"桑德克亚","kickoff":"2026-09-01T17:00:00+00:00","home_score":3,"away_score":2,"provider_event_id":"sportowefakty-181329","provider_home":"Polonia Sroda Wielkopolska","provider_away":"Sandecja Nowy Sacz","provider_start":"2026-09-01T17:00:00Z","orientation":"direct"}
+  ],
+  "excluded": [
+    {"match_id":"3073570","reason":"postponed_haze_new_date_tba"},
+    {"match_id":"3022525","reason":"conflicting_result_and_fixture_date_sources"},
+    {"match_id":"3000437","reason":"not_started_at_verification_cutoff"}
+  ]
+}
