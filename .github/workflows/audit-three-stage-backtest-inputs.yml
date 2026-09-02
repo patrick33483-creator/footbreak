@@ -268,9 +268,11 @@ jobs:
             "$DEPLOY_USER@$DEPLOY_HOST" \
             "cd ~/$WORK_REL && tar -xzf reverse-bundle.tgz && \
              sudo -n env PYTHONPATH=\$PWD /opt/footbreak/.venv/bin/python3 \
-               audit_radar_reverse_signals.py && \
-             cd ~ && rm -rf ~/$WORK_REL" \
+               audit_radar_reverse_signals.py" \
             </dev/null > radar-reverse-signals-audit.json
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "sudo -n rm -rf ~/$WORK_REL" </dev/null
           python -m json.tool radar-reverse-signals-audit.json >/dev/null
           cat radar-reverse-signals-audit.json
 
