@@ -3,10 +3,15 @@ name: 診斷 stage-v2 tick 失敗
 on:
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   diagnose:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v5
+
       - name: 設定 SSH
         env:
           DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
@@ -170,3 +175,14 @@ jobs:
           name: stage-v2-dedupe-audit
           path: stage-v2-dedupe-audit.json
           retention-days: 1
+
+      - name: 暫存精簡稽核供核對
+        run: |
+          cp stage-v2-dedupe-audit.json /tmp/stage-v2-dedupe-audit.json
+          git checkout --orphan stage-v2-dedupe-audit-state
+          git rm -rf .
+          cp /tmp/stage-v2-dedupe-audit.json .
+          git add stage-v2-dedupe-audit.json
+          git -c user.name=github-actions -c user.email=actions@github.com \
+            commit -m "Temporary Stage V2 dedupe audit"
+          git push --force origin HEAD:stage-v2-dedupe-audit-state
