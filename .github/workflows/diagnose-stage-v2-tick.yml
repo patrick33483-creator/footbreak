@@ -56,3 +56,114 @@ jobs:
           echo ""
           id footbreak 2>&1 || echo "(footbreak user 唔存在?)"
           REMOTE
+
+      - name: 唯讀稽核條件重複場次及賽果狀態
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh "$DEPLOY_USER@$DEPLOY_HOST" \
+            'sudo /opt/footbreak/.venv/bin/python3 -' > stage-v2-dedupe-audit.json <<'PY'
+          import json
+          from collections import defaultdict
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          dashboard = json.loads(
+              Path("/var/www/stage_engine_v2/data.json").read_text(encoding="utf-8")
+          )
+          segmented = dashboard.get("segmented_conditions") or {}
+          conditions = segmented.get("public_conditions") or []
+
+          def canonical(row):
+              home = " ".join(str(row.get("home") or "").split()).casefold()
+              away = " ".join(str(row.get("away") or "").split()).casefold()
+              raw = row.get("kickoff") or row.get("kickoff_hkt") or row.get("kickoff_utc")
+              try:
+                  kickoff = datetime.fromisoformat(str(raw)).astimezone(timezone.utc).isoformat()
+              except (TypeError, ValueError):
+                  kickoff = str(raw or "")
+              return f"{home}|{away}|{kickoff}"
+
+          condition_audits = []
+          fixture_conditions = defaultdict(set)
+          target_names = {
+              ("拉夫尼茨", "卡尔斯多夫"),
+              ("水户蜀葵", "鹿岛鹿角"),
+              ("卢宾扎格勒比", "涅波沃米采"),
+              ("马六甲fc", "槟城"),
+              ("昌宁女足", "报恩尚武女足"),
+              ("金泽", "今治"),
+              ("大阪俱乐部(中)", "甲府风林"),
+              ("瓦拉日丁u19", "塞瓦特u19"),
+          }
+          targets = []
+
+          for condition in conditions:
+              cid = str(condition.get("id") or "")
+              observations = [
+                  row for row in (condition.get("observations") or [])
+                  if isinstance(row, dict)
+              ]
+              grouped = defaultdict(list)
+              for row in observations:
+                  key = canonical(row)
+                  grouped[key].append(str(row.get("match_id") or row.get("id") or ""))
+                  fixture_conditions[key].add(cid)
+                  pair = (
+                      str(row.get("home") or "").strip().casefold(),
+                      str(row.get("away") or "").strip().casefold(),
+                  )
+                  if pair in target_names:
+                      targets.append({
+                          "condition_id": cid,
+                          "match_id": row.get("match_id") or row.get("id"),
+                          "home": row.get("home"),
+                          "away": row.get("away"),
+                          "kickoff": row.get("kickoff"),
+                          "settlement": row.get("settlement"),
+                          "result_status": row.get("result_status"),
+                          "odds": row.get("odds"),
+                          "line": row.get("line"),
+                      })
+              duplicate_groups = [
+                  {"fixture": key, "record_ids": ids}
+                  for key, ids in grouped.items() if len(ids) > 1
+              ]
+              prospective = condition.get("prospective") or {}
+              condition_audits.append({
+                  "condition_id": cid,
+                  "observation_rows": len(observations),
+                  "unique_fixtures": len(grouped),
+                  "duplicate_fixture_groups": duplicate_groups,
+                  "reported_qualified": prospective.get("qualified"),
+                  "reported_settled": prospective.get("settled"),
+                  "reported_hit_rate": prospective.get("hit_rate"),
+                  "reported_roi": prospective.get("roi"),
+              })
+
+          cross_condition = [
+              {"fixture": key, "condition_ids": sorted(ids)}
+              for key, ids in fixture_conditions.items() if len(ids) > 1
+          ]
+          report = {
+              "generated_at": dashboard.get("generated_at"),
+              "read_only": True,
+              "condition_count": len(conditions),
+              "conditions": condition_audits,
+              "duplicate_groups_within_condition": sum(
+                  len(row["duplicate_fixture_groups"]) for row in condition_audits
+              ),
+              "cross_condition_overlap_count": len(cross_condition),
+              "cross_condition_overlaps": cross_condition,
+              "target_observations": targets,
+          }
+          print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
+          PY
+
+      - name: 保存唯讀稽核結果
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage-v2-dedupe-audit
+          path: stage-v2-dedupe-audit.json
+          retention-days: 1
