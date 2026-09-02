@@ -224,3 +224,24 @@ jobs:
           path: crown-full-board-inventory.json
           retention-days: 7
           if-no-files-found: error
+
+      - name: Scan all Footbreak directions against Crown full boards
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            'cd /opt/footbreak && sudo /opt/footbreak/.venv/bin/python3 -' \
+            < analysis/audit_footbreak_crown_full_board.py \
+            > footbreak-crown-full-board-scan.json
+          python -m json.tool footbreak-crown-full-board-scan.json >/dev/null
+
+      - name: Upload full-board scan
+        uses: actions/upload-artifact@v4
+        with:
+          name: footbreak-crown-full-board-scan
+          path: footbreak-crown-full-board-scan.json
+          retention-days: 7
+          if-no-files-found: error
