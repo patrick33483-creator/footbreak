@@ -71,7 +71,7 @@ jobs:
             'sudo /opt/footbreak/.venv/bin/python3 -' > stage-v2-dedupe-audit.json <<'PY'
           import json
           from collections import defaultdict
-          from datetime import datetime, timezone
+          from datetime import datetime, timedelta, timezone
           from pathlib import Path
 
           dashboard = json.loads(
@@ -95,6 +95,8 @@ jobs:
 
           condition_audits = []
           fixture_conditions = defaultdict(set)
+          due_pending = {}
+          due_cutoff = datetime.now(timezone.utc) - timedelta(hours=3)
           target_names = {
               ("拉夫尼茨", "卡尔斯多夫"),
               ("水户蜀葵", "鹿岛鹿角"),
@@ -118,6 +120,29 @@ jobs:
                   key = canonical(row)
                   grouped[key].append(str(row.get("match_id") or row.get("id") or ""))
                   fixture_conditions[key].add(cid)
+                  kickoff = None
+                  try:
+                      kickoff = datetime.fromisoformat(
+                          str(row.get("kickoff") or "")
+                      ).astimezone(timezone.utc)
+                  except (TypeError, ValueError):
+                      pass
+                  if (
+                      kickoff is not None
+                      and kickoff <= due_cutoff
+                      and not row.get("settlement")
+                  ):
+                      pending = due_pending.setdefault(key, {
+                          "match_id": row.get("match_id") or row.get("id"),
+                          "league": row.get("league"),
+                          "home": row.get("home"),
+                          "away": row.get("away"),
+                          "kickoff": row.get("kickoff"),
+                          "result_status": row.get("result_status"),
+                          "conditions": [],
+                      })
+                      if cid not in pending["conditions"]:
+                          pending["conditions"].append(cid)
                   pair = (
                       str(row.get("home") or "").strip().casefold(),
                       str(row.get("away") or "").strip().casefold(),
@@ -164,6 +189,11 @@ jobs:
               ),
               "cross_condition_overlap_count": len(cross_condition),
               "cross_condition_overlaps": cross_condition,
+              "due_pending_count": len(due_pending),
+              "due_pending_fixtures": sorted(
+                  due_pending.values(),
+                  key=lambda item: str(item.get("kickoff") or ""),
+              ),
               "target_observations": targets,
               "target_ledger_fixtures": [
                   {
