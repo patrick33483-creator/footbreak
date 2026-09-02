@@ -1,8 +1,7 @@
 name: 抓取 stage-engine-v2 shadow 快照
 
-# 用嚟驗證 v2 shadow deploy 有冇入緑：
-# 拉 /var/lib/footbreak/stage_engine_v2/ledger.json 同 /var/www/stage_engine_v2/data.json
-# 生成 fixture / stage coverage 摘要
+# Audit-branch variant: independently recompute Crown V2 public-condition
+# performance from the production dashboard payload. Read-only on production.
 
 on:
   workflow_dispatch:
@@ -11,6 +10,8 @@ jobs:
   snapshot:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+
       - name: 設定 SSH
         env:
           DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
@@ -21,72 +22,21 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
 
-      - name: 抓 v2 ledger + dashboard 摘要
+      - name: 獨立重算 Crown V2 條件表現
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
         run: |
-          ssh "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE' > /tmp/output.txt
-          set -e
-          echo "===== SERVER TIME ====="
-          date -u +%FT%TZ
-          TZ=Asia/Hong_Kong date +%FT%T%z
-
-          echo ""
-          echo "===== systemd timer status ====="
-          systemctl status stage-engine-v2-tick.timer --no-pager 2>/dev/null | head -10 || echo "(timer 未裝)"
-          echo ""
-          echo "===== timer 最近觸發 ====="
-          systemctl list-timers stage-engine-v2-tick.timer --no-pager 2>/dev/null || echo "(list-timers 失敗)"
-
-          echo ""
-          echo "===== tick log tail (最近 40 行) ====="
-          tail -n 40 /var/log/footbreak/stage-v2-tick.log 2>/dev/null || echo "(log 未存在)"
-
-          echo ""
-          echo "===== ledger file 狀態 ====="
-          stat -c 'size=%s mtime=%y path=%n' /var/lib/footbreak/stage_engine_v2/ledger.json 2>/dev/null || echo "(ledger 未存在)"
-          stat -c 'size=%s mtime=%y path=%n' /var/www/stage_engine_v2/data.json 2>/dev/null || echo "(dashboard data.json 未存在)"
-
-          echo ""
-          echo "===== dashboard data.json 摘要 ====="
-          if [ -f /var/www/stage_engine_v2/data.json ]; then
-            /opt/footbreak/.venv/bin/python3 - <<'PY'
-          import json
-          from collections import Counter
-          d = json.load(open('/var/www/stage_engine_v2/data.json'))
-          print(f"generated_at_hkt = {d.get('generated_at_hkt')}")
-          print(f"fixtures_count = {d.get('fixtures_count')}")
-          stages_count = Counter()
-          pub_count = Counter()
-          reasons = Counter()
-          for fx in d.get('fixtures') or []:
-              for stage, row in (fx.get('stages') or {}).items():
-                  stages_count[stage] += 1
-                  if row.get('publish_decision') is True:
-                      pub_count[stage] += 1
-                  else:
-                      reasons[stage] += 1
-          for s in ('首預', 'T-30', 'T-5'):
-              print(f"stage {s:6}: fired={stages_count[s]:>4}  推播={pub_count[s]:>4}  被 gate={reasons[s]:>4}")
-          # 三 stage 齊備場數
-          full = sum(1 for fx in d.get('fixtures') or [] if len(fx.get('stages') or {}) == 3)
-          print(f"三 stage 齊備 fixture 數 = {full}")
-          PY
-          else
-            echo "(dashboard payload 未存在——timer 未跑過？)"
-          fi
-
-          echo ""
-          echo "===== 舊 crown pipeline 依然正常運作 (sanity check) ====="
-          stat -c 'size=%s mtime=%y' /var/www/crown/data.json
-          stat -c 'size=%s mtime=%y' /opt/footbreak/system/sim_ledger.json 2>/dev/null || echo "(舊 ledger 位置不同)"
-          REMOTE
-          cat /tmp/output.txt
+          scp analysis/audit_crown_v2_condition_performance.py \
+            "$DEPLOY_USER@$DEPLOY_HOST:/tmp/audit_crown_v2_condition_performance.py"
+          ssh "$DEPLOY_USER@$DEPLOY_HOST" \
+            "sudo /opt/footbreak/.venv/bin/python3 /tmp/audit_crown_v2_condition_performance.py /var/www/stage_engine_v2/data.json" \
+            > /tmp/crown-v2-condition-performance-audit.json
+          python3 -m json.tool /tmp/crown-v2-condition-performance-audit.json
 
       - name: 上傳快照
         uses: actions/upload-artifact@v4
         with:
-          name: stage-v2-snapshot
-          path: /tmp/output.txt
+          name: crown-v2-condition-performance-audit
+          path: /tmp/crown-v2-condition-performance-audit.json
           retention-days: 7
