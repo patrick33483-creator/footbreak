@@ -18,13 +18,15 @@ from typing import Any
 DEFAULT_SENT_LOG = Path("/var/lib/footbreak/stage_engine_v2/telegram_sent.jsonl")
 DEFAULT_CONDITION_SENT_LOG = Path("/var/lib/footbreak/stage_engine_v2/condition_telegram_sent.jsonl")
 
-# 皇冠V2 細分條件當中，決策時點為 T-5 嘅 3 個公開條件（第 4 個
-# A-HDC-OPEN-AWAY-MINUS-050 決策時點為首預，明確排除）。
-T5_CONDITION_ALERT_IDS = frozenset({
+# 只通知目前公開觀察條件；已降級背景條件不發 Telegram。
+CONDITION_ALERT_IDS = frozenset({
     "S-HIL-T5-OVER-185",
+    "WATCH-HIL-T5-OVER-180",
     "A-HIL-OPEN-T5-OVER-180",
-    "A-HDC-HHH-SAME-LINE",
+    "A-HDC-OPEN-AWAY-MINUS-050",
+    "S-HIL-OPEN-OVER-3-180",
 })
+CONDITION_ALERT_ACTIVATED_AT = datetime.fromisoformat("2026-09-02T20:41:00+08:00")
 
 TELEGRAM_API = "https://api.telegram.org"
 
@@ -219,6 +221,64 @@ def format_condition_message(condition: dict[str, Any], observation: dict[str, A
     return "\n".join(line for line in lines if line)
 
 
+def format_condition_group_message(
+    matches: list[tuple[dict[str, Any], dict[str, Any]]],
+) -> str:
+    """同一場命中多個條件時，只發一則通知並逐條列出歷史命中率。"""
+    if not matches:
+        return ""
+    first_observation = matches[0][1]
+    lines = [
+        "[皇冠V2] 合資格賽事",
+        str(first_observation.get("league") or ""),
+        f"{first_observation.get('home') or ''} vs {first_observation.get('away') or ''}",
+        f"開賽 (HKT): {first_observation.get('kickoff') or ''}",
+        f"命中條件：{len(matches)} 條",
+    ]
+    for index, (condition, observation) in enumerate(matches, start=1):
+        hist = condition.get("historical") or {}
+        sample = hist.get("sample")
+        hit_rate = hist.get("hit_rate")
+        roi = hist.get("roi")
+        stage = observation.get("decision_stage") or ""
+        direction = (observation.get("directions") or {}).get(stage) or ""
+        selected_line = observation.get("selected_line")
+        odds = observation.get("odds")
+        detail = f"{index}. {condition.get('title') or condition.get('id') or ''}"
+        lines.extend(["", detail, f"時點：{stage}｜方向：{direction}"])
+        market_line = []
+        if selected_line is not None:
+            market_line.append(f"線位 {selected_line}")
+        if odds is not None:
+            try:
+                market_line.append(f"賠率 {float(odds):.2f}")
+            except (TypeError, ValueError):
+                pass
+        if market_line:
+            lines.append("｜".join(market_line))
+        if sample is not None and hit_rate is not None:
+            roi_txt = f"｜ROI {roi*100:+.1f}%" if roi is not None else ""
+            lines.append(
+                f"歷史：{sample} 場｜命中率 {hit_rate*100:.1f}%{roi_txt}"
+            )
+    lines.extend(["", "純統計追蹤，不代表投注建議。"])
+    return "\n".join(line for line in lines if line)
+
+
+def _is_alert_eligible(observation: dict[str, Any]) -> bool:
+    """只發上線後仍未開賽的項目，避免首次啟用時補發歷史紀錄。"""
+    kickoff_raw = observation.get("kickoff")
+    if not kickoff_raw:
+        return False
+    try:
+        kickoff = datetime.fromisoformat(str(kickoff_raw).replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if kickoff.tzinfo is None:
+        kickoff = kickoff.replace(tzinfo=timezone.utc)
+    return kickoff >= CONDITION_ALERT_ACTIVATED_AT
+
+
 def send_condition_alert(
     condition: dict[str, Any],
     observation: dict[str, Any],
@@ -281,15 +341,16 @@ def send_condition_alert(
 def send_condition_alerts(
     segmented_conditions: dict[str, Any],
     *,
-    condition_ids: frozenset[str] = T5_CONDITION_ALERT_IDS,
+    condition_ids: frozenset[str] = CONDITION_ALERT_IDS,
     sent_log_path: Path | str = DEFAULT_CONDITION_SENT_LOG,
     enabled_env: str = "STAGE_V2_CONDITION_ALERT_ENABLED",
     bot_token_env: str = "TELEGRAM_BOT_TOKEN",
     chat_id_env: str = "TELEGRAM_CHAT_ID",
 ) -> list[dict[str, Any]]:
-    """逐個遠過指定條件（預設 T-5 嘅 3 個公開條件）嘅 observations，
-    對每一場尚未發過嘅比賽發 Telegram 達標。
-    """
+    """按比賽合併公開條件；每場只發一則並列出各條件命中率。"""
+    log_path = Path(sent_log_path)
+    sent_keys = _load_sent_keys(log_path)
+    grouped: dict[str, list[tuple[dict[str, Any], dict[str, Any], str]]] = {}
     results: list[dict[str, Any]] = []
     for condition in segmented_conditions.get("public_conditions") or []:
         if not isinstance(condition, dict):
@@ -299,15 +360,48 @@ def send_condition_alerts(
         for observation in condition.get("observations") or []:
             if not isinstance(observation, dict):
                 continue
-            result = send_condition_alert(
-                condition,
-                observation,
-                sent_log_path=sent_log_path,
-                enabled_env=enabled_env,
-                bot_token_env=bot_token_env,
-                chat_id_env=chat_id_env,
-            )
-            results.append(result)
+            if not _is_alert_eligible(observation):
+                continue
+            key = f"{condition.get('id') or ''}:{_condition_identity_key(observation)}"
+            if key in sent_keys:
+                results.append({
+                    "sent": False, "shadow": False, "skipped": True,
+                    "reason": "duplicate", "key": key,
+                })
+                continue
+            identity = _condition_identity_key(observation)
+            grouped.setdefault(identity, []).append((condition, observation, key))
+
+    enabled = _env_flag(enabled_env, default=False)
+    bot_token = os.getenv(bot_token_env, "").strip()
+    chat_id = os.getenv(chat_id_env, "").strip()
+    for matches in grouped.values():
+        text = format_condition_group_message([
+            (condition, observation) for condition, observation, _ in matches
+        ])
+        ts = datetime.now(timezone.utc).isoformat()
+        if not enabled or not bot_token or not chat_id:
+            reason = "shadow_mode" if not enabled else "missing_credentials"
+            for _, _, key in matches:
+                _append_sent(log_path, {
+                    "key": key, "sent_at_utc": ts, "mode": "shadow", "text": text,
+                })
+                results.append({
+                    "sent": False, "shadow": True, "skipped": False,
+                    "reason": reason, "key": key,
+                })
+            continue
+
+        ok = _post_telegram(bot_token, chat_id, text)
+        for _, _, key in matches:
+            if ok:
+                _append_sent(log_path, {
+                    "key": key, "sent_at_utc": ts, "mode": "live", "text": text,
+                })
+            results.append({
+                "sent": ok, "shadow": False, "skipped": False,
+                "reason": "ok" if ok else "telegram_error", "key": key,
+            })
     return results
 
 
@@ -319,5 +413,7 @@ __all__ = [
     "send_condition_alerts",
     "format_condition_message",
     "DEFAULT_CONDITION_SENT_LOG",
-    "T5_CONDITION_ALERT_IDS",
+    "CONDITION_ALERT_IDS",
+    "CONDITION_ALERT_ACTIVATED_AT",
+    "format_condition_group_message",
 ]
