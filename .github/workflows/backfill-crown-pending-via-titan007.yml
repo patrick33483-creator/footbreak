@@ -19,6 +19,12 @@ on:
         description: how many past days of pending to scan
         required: false
         default: "7"
+      source:
+        description: pending target source
+        required: true
+        default: crown_history
+        type: choice
+        options: [crown_history, v2_conditions]
   schedule:
     # 03:00 HKT nightly = 19:00 UTC previous day
     - cron: "0 19 * * *"
@@ -53,6 +59,7 @@ jobs:
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
           MODE: ${{ inputs.mode || 'audit' }}
           LOOKBACK_DAYS: ${{ inputs.lookback_days || '7' }}
+          SOURCE: ${{ inputs.source || 'crown_history' }}
         run: |
           set -euo pipefail
           target="$DEPLOY_USER@$DEPLOY_HOST"
@@ -78,7 +85,7 @@ jobs:
           ssh -o BatchMode=yes -o ConnectTimeout=20 \
             -o ServerAliveInterval=15 -o ServerAliveCountMax=8 \
             "$target" \
-            "sudo env MODE='$MODE' LOOKBACK_DAYS='$LOOKBACK_DAYS' \
+            "sudo env MODE='$MODE' LOOKBACK_DAYS='$LOOKBACK_DAYS' SOURCE='$SOURCE' \
               REMOTE_WORK='$remote_work' SCRIPT_SHA='$script_sha' bash -s" \
             <<'REMOTE' | tee crown-titan007-backfill.json
           set -euo pipefail
@@ -88,8 +95,44 @@ jobs:
             echo "ERROR: script sha mismatch (expected $SCRIPT_SHA, got $actual)" >&2
             exit 1
           fi
+          history=/var/lib/footbreak/crown/prediction_history.json
+          if [ "$SOURCE" = "v2_conditions" ]; then
+            history="$REMOTE_WORK/v2-pending-targets.json"
+            python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          payload = json.loads(
+              Path("/var/www/stage_engine_v2/data.json").read_text(encoding="utf-8")
+          )
+          matches = {}
+          conditions = (
+              (payload.get("segmented_conditions") or {}).get("public_conditions") or []
+          )
+          for condition in conditions:
+              for row in condition.get("observations") or []:
+                  if row.get("settlement"):
+                      continue
+                  match_id = str(row.get("match_id") or "").strip()
+                  if not match_id:
+                      continue
+                  matches[match_id] = {
+                      "home": row.get("home"),
+                      "away": row.get("away"),
+                      "kickoff_hkt": row.get("kickoff"),
+                      "result_status": row.get("result_status") or "待賽果",
+                  }
+          target = Path(os.environ["REMOTE_WORK"]) / "v2-pending-targets.json"
+          target.write_text(
+              json.dumps({"matches": matches}, ensure_ascii=False, indent=2),
+              encoding="utf-8",
+          )
+          print(f"V2 pending targets exported: {len(matches)}")
+          PY
+          fi
           python3 backfill_titan007_scores.py \
-            --history /var/lib/footbreak/crown/prediction_history.json \
+            --history "$history" \
             --mode "$MODE" \
             --lookback-days "$LOOKBACK_DAYS" \
             --out "$REMOTE_WORK/report.json"
