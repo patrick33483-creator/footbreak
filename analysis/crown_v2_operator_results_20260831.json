@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
-  "batch_id": "crown-operator-result-overlay-20260831-v1",
+  "batch_id": "crown-operator-result-overlay-20260902-v2",
   "score_scope": "90_minutes_including_stoppage_time_excluding_extra_time",
-  "verified_at": "2026-08-31T18:15:00+08:00",
+  "verified_at": "2026-09-02T22:12:00+08:00",
   "results": [
     {"match_id":"50074073","league":"意甲","home":"卡利亚里","away":"国际米兰","kickoff":"2026-08-31T02:45:00+08:00","home_score":0,"away_score":1,"provider_event_id":"20260830D422D1FF","provider_home":"Cagliari Calcio","provider_away":"FC Internazionale Milano","provider_start":"2026-08-30T18:45:00Z","orientation":"direct"},
     {"match_id":"3040723","league":"意乙","home":"比萨","away":"卡坦萨罗","kickoff":"2026-08-31T03:00:00+08:00","home_score":2,"away_score":1,"provider_event_id":"20260830125927EE","provider_home":"Pisa Sporting Club","provider_away":"US Catanzaro 1929","provider_start":"2026-08-30T19:00:00Z","orientation":"direct"},
@@ -19,7 +19,13 @@
     {"match_id":"3031326","league":"尼拉甲春","home":"HYH 塞巴科","away":"埃斯特利","kickoff":"2026-08-31T05:00:00+08:00","home_score":0,"away_score":5,"provider_event_id":"20260830795F83E7","provider_home":"HYH Sebaco FC","provider_away":"Real Esteli FC","provider_start":"2026-08-30T21:00:00Z","orientation":"direct"},
     {"match_id":"3041893","league":"萨尔超春","home":"亚古雷","away":"旧金山富尔特","kickoff":"2026-08-31T05:00:00+08:00","home_score":4,"away_score":1,"provider_event_id":"202608306307C840","provider_home":"CD Aguila","provider_away":"CD Fuerte San Francisco","provider_start":"2026-08-30T21:00:00Z","orientation":"direct"},
     {"match_id":"3071864","league":"秘鲁乙","home":"本廷塔克纳","away":"山度士纳斯卡","kickoff":"2026-08-31T04:15:00+08:00","home_score":3,"away_score":1,"provider_event_id":"20260830B66609BB","provider_home":"Bentin Tacna Heroica","provider_away":"Santos FC de Nazca","provider_start":"2026-08-30T20:15:00Z","orientation":"direct"},
-    {"match_id":"3042546","league":"哥斯甲春","home":"肯塔吉内斯","away":"希雷迪亚诺","kickoff":"2026-08-31T01:00:00+08:00","home_score":1,"away_score":0,"provider_event_id":"2026083070E57E74","provider_home":"CS Cartagines","provider_away":"Herediano","provider_start":"2026-08-30T17:00:00Z","orientation":"direct"}
+    {"match_id":"3042546","league":"哥斯甲春","home":"肯塔吉内斯","away":"希雷迪亚诺","kickoff":"2026-08-31T01:00:00+08:00","home_score":1,"away_score":0,"provider_event_id":"2026083070E57E74","provider_home":"CS Cartagines","provider_away":"Herediano","provider_start":"2026-08-30T17:00:00Z","orientation":"direct"},
+    {"match_id":"3022525","league":"奥丙南","home":"拉夫尼茨","away":"卡尔斯多夫","kickoff":"2026-09-02T01:00:00+08:00","home_score":2,"away_score":2,"provider_event_id":"sofascore:iTsuuR","provider_home":"SV Licht-Loidl Lafnitz","provider_away":"SC Kalsdorf","provider_start":"2026-09-01T17:00:00Z","orientation":"direct"},
+    {"match_id":"3000437","league":"日职联","home":"水户蜀葵","away":"鹿岛鹿角","kickoff":"2026-09-02T18:00:00+08:00","home_score":4,"away_score":2,"provider_event_id":"jleague:j1-2026-090216","provider_home":"Mito Hollyhock","provider_away":"Kashima Antlers","provider_start":"2026-09-02T10:00:00Z","orientation":"direct"},
+    {"match_id":"2960369","league":"韩女联","home":"昌宁女足","away":"报恩尚武女足","kickoff":"2026-09-02T18:00:00+08:00","home_score":0,"away_score":1,"provider_event_id":"kwff:2026-09-02-gangjin-sangmu","provider_home":"Gangjin Swans WFC","provider_away":"Sangmu WFC","provider_start":"2026-09-02T10:00:00Z","orientation":"direct"},
+    {"match_id":"3008745","league":"日联杯","home":"金泽","away":"今治","kickoff":"2026-09-02T18:00:00+08:00","home_score":2,"away_score":1,"provider_event_id":"jleague:leaguecup-2026-090203","provider_home":"Zweigen Kanazawa","provider_away":"FC Imabari","provider_start":"2026-09-02T10:00:00Z","orientation":"direct"},
+    {"match_id":"3008749","league":"日联杯","home":"大阪俱乐部(中)","away":"甲府风林","kickoff":"2026-09-02T18:00:00+08:00","home_score":3,"away_score":0,"provider_event_id":"jleague:leaguecup-2026-090211","provider_home":"FC Osaka","provider_away":"Ventforet Kofu","provider_start":"2026-09-02T10:00:00Z","orientation":"direct"},
+    {"match_id":"3081358","league":"克亚U19","home":"瓦拉日丁U19","away":"塞瓦特U19","kickoff":"2026-09-02T18:00:00+08:00","home_score":3,"away_score":1,"provider_event_id":"hns:114653541","provider_home":"NK Varaždin U19","provider_away":"NK Sesvete U19","provider_start":"2026-09-02T10:00:00Z","orientation":"direct"}
   ],
   "excluded": [
     {"match_id":"3050891","reason":"provider_fixture_identity_conflict"},
