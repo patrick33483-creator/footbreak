@@ -28,6 +28,18 @@ def walk(value: Any, depth: int = 0) -> Iterable[dict[str, Any]]:
             yield from walk(child, depth + 1)
 
 
+def walk_paths(value: Any, path: str = "$", depth: int = 0) -> Iterable[tuple[str, dict[str, Any]]]:
+    if depth > 9:
+        return
+    if isinstance(value, dict):
+        yield path, value
+        for key, child in value.items():
+            yield from walk_paths(child, f"{path}.{key}", depth + 1)
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            yield from walk_paths(child, f"{path}[{index}]", depth + 1)
+
+
 def board_shape(node: dict[str, Any]) -> tuple[str, int, int] | None:
     for field in ("hk_odds", "crown_odds", "odds", "markets", "odds_board", "market_lines"):
         board = node.get(field)
@@ -106,17 +118,18 @@ def main() -> None:
             and isinstance(data, dict)
         ):
             relevant_nodes = []
-            for node in walk(data):
+            for node_path, node in walk_paths(data):
                 keys = set(node)
                 if keys & {"HIL", "odds", "markets", "market_predictions"}:
                     relevant_nodes.append({
+                        "path": node_path,
                         "keys": sorted(str(key) for key in keys)[:60],
                         "values": {
                             key: node.get(key)
                             for key in (
                                 "match_id", "fixture_id", "titan_match_id", "stage",
                                 "saved_at", "observed_at", "ts", "source_snapshot_at",
-                                "market", "code", "line", "condition", "side", "odds",
+                                "market", "code", "line", "condition", "side", "selection", "odds",
                             )
                             if key in node and isinstance(node.get(key), (str, int, float, bool, type(None)))
                         },
@@ -131,6 +144,11 @@ def main() -> None:
             snapshot_schema_samples.append({
                 "file": path.name,
                 "top_keys": sorted(str(key) for key in data)[:80],
+                "top_values": {
+                    key: data.get(key)
+                    for key in ("match_id", "fixture_id", "titan_match_id", "stage", "kickoff_hkt", "created_at", "updated_at")
+                    if key in data and isinstance(data.get(key), (str, int, float, bool, type(None)))
+                },
                 "relevant_nodes": relevant_nodes,
             })
         file_has_board = False
