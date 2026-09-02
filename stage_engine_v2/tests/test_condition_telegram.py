@@ -72,7 +72,10 @@ def test_shadow_writes_log_and_no_send(tmp_path: Path, monkeypatch):
     lines = log.read_text(encoding="utf-8").strip().splitlines()
     assert len(lines) == 1
     row = json.loads(lines[0])
-    assert row["key"] == "S-HIL-T5-OVER-185:M1"
+    assert row["key"] == (
+        "S-HIL-T5-OVER-185:"
+        "拜仁|多蒙特|2026-09-03T13:30:00+00:00"
+    )
     assert row["mode"] == "shadow"
 
 
@@ -98,7 +101,10 @@ def test_identity_key_falls_back_to_match_details_when_no_match_id(tmp_path: Pat
     log = tmp_path / "condition_sent.jsonl"
     obs = _observation(match_id="")
     result = send_condition_alert(_condition(), obs, sent_log_path=log)
-    assert result["key"] == "S-HIL-T5-OVER-185:拜仁|多蒙特|2026-09-03T21:30:00+08:00"
+    assert result["key"] == (
+        "S-HIL-T5-OVER-185:"
+        "拜仁|多蒙特|2026-09-03T13:30:00+00:00"
+    )
 
 
 def test_send_condition_alerts_only_covers_public_alert_conditions(tmp_path: Path):
@@ -115,12 +121,13 @@ def test_send_condition_alerts_only_covers_public_alert_conditions(tmp_path: Pat
     }
     results = send_condition_alerts(payload, sent_log_path=log)
     keys = {r["key"] for r in results}
-    assert keys == {
-        "S-HIL-T5-OVER-185:M1",
-        "WATCH-HIL-T5-OVER-180:M2",
-        "A-HIL-OPEN-T5-OVER-180:M3",
-        "A-HDC-OPEN-AWAY-MINUS-050:M4",
-        "S-HIL-OPEN-OVER-3-180:M5",
+    assert len(keys) == 5
+    assert {key.split(":", 1)[0] for key in keys} == {
+        "S-HIL-T5-OVER-185",
+        "WATCH-HIL-T5-OVER-180",
+        "A-HIL-OPEN-T5-OVER-180",
+        "A-HDC-OPEN-AWAY-MINUS-050",
+        "S-HIL-OPEN-OVER-3-180",
     }
 
 
@@ -180,3 +187,30 @@ def test_send_condition_alerts_is_idempotent_across_calls(tmp_path: Path):
     assert first[0]["skipped"] is False
     assert second[0]["skipped"] is True
     assert second[0]["reason"] == "duplicate"
+
+
+def test_send_condition_alerts_deduplicates_provider_ids_for_same_fixture(tmp_path: Path):
+    log = tmp_path / "condition_sent.jsonl"
+    first = _observation("PROVIDER-OLD")
+    second = _observation("PROVIDER-NEW")
+    payload = {
+        "public_conditions": [{
+            **_condition("S-HIL-T5-OVER-185"),
+            "observations": [first, second],
+        }]
+    }
+    results = send_condition_alerts(payload, sent_log_path=log)
+    rows = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    assert len(rows) == 1
+    assert len([result for result in results if not result["skipped"]]) == 1
+
+
+def test_legacy_id_sent_key_prevents_canonical_identity_resend(tmp_path: Path):
+    log = tmp_path / "condition_sent.jsonl"
+    log.write_text(
+        json.dumps({"key": "S-HIL-T5-OVER-185:M1"}) + "\n",
+        encoding="utf-8",
+    )
+    result = send_condition_alert(_condition(), _observation("M1"), sent_log_path=log)
+    assert result["skipped"] is True
+    assert result["reason"] == "duplicate"

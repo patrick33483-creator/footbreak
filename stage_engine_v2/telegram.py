@@ -167,13 +167,30 @@ def send_stage(
 
 
 def _condition_identity_key(observation: dict[str, Any]) -> str:
+    home = " ".join(str(observation.get("home") or "").split()).casefold()
+    away = " ".join(str(observation.get("away") or "").split()).casefold()
+    kickoff_raw = observation.get("kickoff")
+    if home and away and kickoff_raw:
+        try:
+            kickoff = datetime.fromisoformat(str(kickoff_raw).replace("Z", "+00:00"))
+            if kickoff.tzinfo is None:
+                kickoff = kickoff.replace(tzinfo=timezone.utc)
+            return f"{home}|{away}|{kickoff.astimezone(timezone.utc).isoformat()}"
+        except ValueError:
+            return f"{home}|{away}|{str(kickoff_raw).strip()}"
+    return str(observation.get("match_id") or "").strip()
+
+
+def _condition_identity_aliases(
+    condition_id: str,
+    observation: dict[str, Any],
+) -> set[str]:
+    """Include legacy ID-based keys so deployment never re-sends old alerts."""
+    aliases = {f"{condition_id}:{_condition_identity_key(observation)}"}
     match_id = str(observation.get("match_id") or "").strip()
     if match_id:
-        return match_id
-    home = str(observation.get("home") or "").strip().casefold()
-    away = str(observation.get("away") or "").strip().casefold()
-    kickoff = str(observation.get("kickoff") or "").strip()
-    return f"{home}|{away}|{kickoff}"
+        aliases.add(f"{condition_id}:{match_id}")
+    return aliases
 
 
 def format_condition_message(condition: dict[str, Any], observation: dict[str, Any]) -> str:
@@ -298,7 +315,7 @@ def send_condition_alert(
     log_path = Path(sent_log_path)
 
     sent_keys = _load_sent_keys(log_path)
-    if key in sent_keys:
+    if sent_keys.intersection(_condition_identity_aliases(condition_id, observation)):
         return {"sent": False, "shadow": False, "skipped": True, "reason": "duplicate", "key": key}
 
     text = format_condition_message(condition, observation)
@@ -351,6 +368,7 @@ def send_condition_alerts(
     log_path = Path(sent_log_path)
     sent_keys = _load_sent_keys(log_path)
     grouped: dict[str, list[tuple[dict[str, Any], dict[str, Any], str]]] = {}
+    queued_keys: set[str] = set()
     results: list[dict[str, Any]] = []
     for condition in segmented_conditions.get("public_conditions") or []:
         if not isinstance(condition, dict):
@@ -363,12 +381,16 @@ def send_condition_alerts(
             if not _is_alert_eligible(observation):
                 continue
             key = f"{condition.get('id') or ''}:{_condition_identity_key(observation)}"
-            if key in sent_keys:
+            aliases = _condition_identity_aliases(
+                str(condition.get("id") or ""), observation
+            )
+            if sent_keys.intersection(aliases) or key in queued_keys:
                 results.append({
                     "sent": False, "shadow": False, "skipped": True,
                     "reason": "duplicate", "key": key,
                 })
                 continue
+            queued_keys.add(key)
             identity = _condition_identity_key(observation)
             grouped.setdefault(identity, []).append((condition, observation, key))
 

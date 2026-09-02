@@ -9,7 +9,7 @@ from __future__ import annotations
 import math
 import re
 from collections import Counter
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Callable
 
 from .fixtures import HKT, _parse_kickoff
@@ -350,6 +350,53 @@ def _identity_keys(row: dict[str, Any]) -> set[str]:
     return keys
 
 
+def _fixture_identity_key(row: dict[str, Any]) -> str:
+    """Canonical fixture identity across provider/refresh-specific IDs."""
+    home = " ".join(str(row.get("home") or "").split()).casefold()
+    away = " ".join(str(row.get("away") or "").split()).casefold()
+    kickoff = _parse_kickoff(
+        row.get("kickoff_utc") or row.get("kickoff_hkt") or row.get("kickoff")
+    )
+    if home and away and kickoff:
+        return f"match:{home}|{away}|{kickoff.astimezone(timezone.utc).isoformat()}"
+    match_id = str(row.get("id") or row.get("match_id") or "").strip()
+    return f"id:{match_id}" if match_id else f"object:{id(row)}"
+
+
+def _stage_timestamp(stage: dict[str, Any]) -> datetime:
+    parsed = _parse_kickoff(
+        stage.get("predicted_at_utc")
+        or stage.get("predicted_at")
+        or stage.get("captured_at")
+    )
+    return parsed or datetime.min.replace(tzinfo=timezone.utc)
+
+
+def _deduplicate_slots(slots: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Merge repeated snapshots of one fixture and retain the latest stage data."""
+    merged_by_fixture: dict[str, dict[str, Any]] = {}
+    for slot in slots:
+        key = _fixture_identity_key(slot)
+        existing = merged_by_fixture.get(key)
+        if existing is None:
+            copied = dict(slot)
+            copied["stages"] = dict(slot.get("stages") or {})
+            merged_by_fixture[key] = copied
+            continue
+
+        for field, value in slot.items():
+            if field != "stages" and not existing.get(field) and value is not None:
+                existing[field] = value
+        stages = existing.setdefault("stages", {})
+        for stage_name, candidate in (slot.get("stages") or {}).items():
+            if not isinstance(candidate, dict):
+                continue
+            current = stages.get(stage_name)
+            if not isinstance(current, dict) or _stage_timestamp(candidate) >= _stage_timestamp(current):
+                stages[stage_name] = candidate
+    return list(merged_by_fixture.values())
+
+
 def _history_index(rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
     index: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
@@ -474,6 +521,7 @@ def build_segmented_conditions(
         kickoff = _parse_kickoff(slot.get("kickoff_utc") or slot.get("kickoff_hkt"))
         if kickoff is not None and kickoff >= cutoff:
             slots.append(slot)
+    slots = _deduplicate_slots(slots)
     public = []
     matching_observations = []
     for condition in CONDITIONS:

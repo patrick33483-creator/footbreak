@@ -107,6 +107,31 @@ def test_projects_prediction_direction_conditions_and_settles_results() -> None:
     assert hhh_obs[0]["evidence_status"] == "downgraded"
 
 
+def test_duplicate_fixture_snapshots_merge_and_count_once() -> None:
+    early = _slot("provider-old", {
+        "首預": _stage("HDC", "A", 0.5, 1.87, "客隊 -0.5"),
+        "T-30": _stage("HDC", "A", 0.75, 1.94, "客隊 -0.75"),
+    })
+    complete = _slot("provider-new", {
+        "首預": _stage("HDC", "A", 0.5, 1.87, "客隊 -0.5"),
+        "T-30": _stage("HDC", "A", 0.75, 1.94, "客隊 -0.75"),
+        "T-5": _stage("HDC", "A", 0.75, 1.90, "客隊 -0.75"),
+    })
+    for slot in (early, complete):
+        slot["home"] = "水戶蜀葵"
+        slot["away"] = "鹿島鹿角"
+
+    payload = build_segmented_conditions({
+        "fixtures": {"old": early, "new": complete},
+    })
+    conditions = {item["id"]: item for item in payload["public_conditions"]}
+    condition = conditions["A-HDC-OPEN-AWAY-MINUS-050"]
+
+    assert condition["prospective"]["qualified"] == 1
+    assert len(condition["observations"]) == 1
+    assert condition["observations"][0]["directions"]["T-5"] == "客"
+
+
 def test_strict_threshold_same_line_and_activation_cutoff() -> None:
     ledger = {"fixtures": {
         "exact": _slot("exact", {
