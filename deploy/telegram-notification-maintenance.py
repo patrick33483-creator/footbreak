@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -249,8 +250,13 @@ def _footbreak_audit() -> dict[str, Any]:
         and str(row.get("bet_id")) not in crown_acknowledged
         and footbreak_notify._crown_execution_message(row) is not None
     ]
+    legacy_enabled = os.environ.get(
+        "FOOTBREAK_TELEGRAM_ENABLED", "0"
+    ).strip().lower() in {"1", "true", "yes", "on"}
     return {
-        "telegram_enabled": bool(footbreak_notify.BOT_TOKEN and footbreak_notify.CHAT_ID),
+        "telegram_enabled": bool(
+            legacy_enabled and footbreak_notify.BOT_TOKEN and footbreak_notify.CHAT_ID
+        ),
         "bot_token_configured": bool(footbreak_notify.BOT_TOKEN),
         "chat_id_configured": bool(footbreak_notify.CHAT_ID),
         "eligible_outbox": {
