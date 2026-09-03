@@ -13,8 +13,10 @@ WorkingDirectory=/opt/footbreak
 ExecStart=/opt/footbreak/.venv/bin/python3 -m stage_engine_v2 settle --crown-data /var/www/crown/data.json --ledger /var/lib/footbreak/stage_engine_v2/ledger.json --dashboard /var/www/stage_engine_v2/data.json --condition-sent-log /var/lib/footbreak/stage_engine_v2/condition_telegram_sent.jsonl --operator-results /var/lib/footbreak/stage_engine_v2/operator_results.json --automatic-results /var/lib/footbreak/stage_engine_v2/automatic_results.json --lookback-days 7 --max-seconds 30
 StandardOutput=append:/var/log/footbreak/stage-v2-fast-results.log
 StandardError=append:/var/log/footbreak/stage-v2-fast-results.log
-TimeoutStartSec=45s
+# Provider work remains capped at 30 seconds by ExecStart.  Leave enough
+# headroom for the first cache backfill plus dashboard projection and
+# de-duplicated Telegram delivery.
+TimeoutStartSec=90s
 KillMode=control-group
 NoNewPrivileges=true
 PrivateTmp=true
-
