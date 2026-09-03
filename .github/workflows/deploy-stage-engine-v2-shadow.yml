@@ -177,9 +177,14 @@ jobs:
 
           # 7. 按參數決定啟唔啟 timer
           if [ "$ENABLE_TIMER" = "true" ]; then
+            # Stop any previous timed-out generation before validating the new
+            # one. Start the timer only after a complete successful pass.
+            systemctl stop stage-engine-v2-fast-results.timer || true
+            systemctl stop --no-block stage-engine-v2-fast-results.service || true
+            systemctl kill stage-engine-v2-fast-results.service || true
+            systemctl reset-failed stage-engine-v2-fast-results.service || true
             systemctl enable --now stage-engine-v2-tick.timer
-            systemctl enable --now stage-engine-v2-fast-results.timer
-            systemctl restart stage-engine-v2-fast-results.timer
+            systemctl enable stage-engine-v2-fast-results.timer
             # Two failed rollout attempts used the shared sender path while
             # testing settlement. Remove only their post-rollout shadow rows;
             # preserve all live sends and all pre-existing idempotency keys.
@@ -209,7 +214,13 @@ jobs:
                   encoding="utf-8",
               )
           PY
-            systemctl start stage-engine-v2-fast-results.service
+            if ! systemctl start stage-engine-v2-fast-results.service; then
+              echo "!!! fast-result validation FAILED"
+              systemctl status stage-engine-v2-fast-results.service --no-pager || true
+              journalctl -u stage-engine-v2-fast-results.service -n 120 --no-pager || true
+              exit 1
+            fi
+            systemctl start stage-engine-v2-fast-results.timer
             echo "tick + fast-result timers ENABLED"
             systemctl status stage-engine-v2-tick.timer --no-pager | head -12
             systemctl status stage-engine-v2-fast-results.timer --no-pager | head -12
