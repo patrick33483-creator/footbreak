@@ -351,3 +351,31 @@ jobs:
           REMOTE
             echo '```'
           } | tee -a "$GITHUB_STEP_SUMMARY"
+          COMPACT="$(ssh "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          printf 'unit='
+          systemctl show stage-engine-v2-fast-results.service \
+            -p ActiveState -p SubState -p Result --value | paste -sd, -
+          printf '; phase='
+          grep 'stage-v2-settle:' /var/log/footbreak/stage-v2-fast-results.log \
+            | tail -1 | tr '\n' ' '
+          python3 - <<'PY'
+          import json
+          from collections import Counter
+          from pathlib import Path
+
+          sent = Path("/var/lib/footbreak/stage_engine_v2/condition_telegram_sent.jsonl")
+          rows = []
+          if sent.exists():
+              for line in sent.read_text(encoding="utf-8").splitlines():
+                  try:
+                      row = json.loads(line)
+                  except json.JSONDecodeError:
+                      continue
+                  stamp = str(row.get("sent_at_utc") or "")
+                  if "2026-09-03T02:5" in stamp or "2026-09-03T03:0" in stamp:
+                      rows.append(row)
+          print(f"; tg_rows={len(rows)}; tg_modes={dict(Counter(str(x.get('mode')) for x in rows))}")
+          PY
+          REMOTE
+          )"
+          echo "::warning title=Crown V2 production diagnostic::$COMPACT"
