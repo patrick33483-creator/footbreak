@@ -7,7 +7,7 @@ name: 部署 stage-engine-v2 shadow 模式
 #       即V1皇冠通知同一個)。逐stage原始預測同第4個開賽前條件維持shadow。
 # 舊 crown-tick 唔動、舊 dashboard 唔動
 # 只裝: /opt/footbreak/stage_engine_v2/  +  /var/www/stage_engine_v2/dashboard/
-#       + systemd timer stage-engine-v2-tick.timer（30s cadence）
+#       + systemd timers: tick（30s）及 fast results（2min）
 
 on:
   workflow_dispatch:
@@ -49,6 +49,8 @@ jobs:
         run: |
           tar czf /tmp/stage_engine_v2.tgz \
             stage_engine_v2/ \
+            deploy/systemd/stage-engine-v2-fast-results.service \
+            deploy/systemd/stage-engine-v2-fast-results.timer \
             design/stage-engine-v2-thresholds.md
           ls -lh /tmp/stage_engine_v2.tgz
 
@@ -151,6 +153,13 @@ jobs:
           WantedBy=timers.target
           UNIT
 
+          install -m 644 \
+            /opt/footbreak/deploy/systemd/stage-engine-v2-fast-results.service \
+            /etc/systemd/system/stage-engine-v2-fast-results.service
+          install -m 644 \
+            /opt/footbreak/deploy/systemd/stage-engine-v2-fast-results.timer \
+            /etc/systemd/system/stage-engine-v2-fast-results.timer
+
           systemctl daemon-reload
 
           # 6. 驗證 Python module 可以 import（試跑不寫任何嘢）
@@ -169,8 +178,14 @@ jobs:
           # 7. 按參數決定啟唔啟 timer
           if [ "$ENABLE_TIMER" = "true" ]; then
             systemctl enable --now stage-engine-v2-tick.timer
-            echo "timer ENABLED"
+            systemctl enable --now stage-engine-v2-fast-results.timer
+            systemctl restart stage-engine-v2-fast-results.timer
+            systemctl start stage-engine-v2-fast-results.service
+            echo "tick + fast-result timers ENABLED"
             systemctl status stage-engine-v2-tick.timer --no-pager | head -12
+            systemctl status stage-engine-v2-fast-results.timer --no-pager | head -12
+            systemctl is-active --quiet stage-engine-v2-fast-results.timer
+            test -s /var/www/stage_engine_v2/data.json
           else
             echo "timer NOT enabled (enable_timer=$ENABLE_TIMER)"
             echo "手動起 timer 用: sudo systemctl enable --now stage-engine-v2-tick.timer"
