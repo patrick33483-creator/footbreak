@@ -217,6 +217,8 @@ jobs:
             if ! systemctl start stage-engine-v2-fast-results.service; then
               echo "!!! fast-result validation FAILED"
               systemctl status stage-engine-v2-fast-results.service --no-pager || true
+              echo "--- fast-result application log ---"
+              tail -n 160 /var/log/footbreak/stage-v2-fast-results.log || true
               journalctl -u stage-engine-v2-fast-results.service -n 120 --no-pager || true
               exit 1
             fi
