@@ -13,6 +13,7 @@ import json
 import os
 import tempfile
 from datetime import datetime, timedelta, timezone
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +38,7 @@ DEFAULT_AUTOMATIC_RESULTS_PATH = Path(
 )
 SCHEMA_VERSION = 1
 DEFAULT_LOOKBACK_DAYS = 7
+DEFAULT_MAX_FIXTURES = 50
 RESULT_CANDIDATE_BUCKET_SECONDS = 10 * 60
 
 
@@ -125,6 +127,16 @@ def _candidate_bucket(kickoff: datetime) -> int:
     return int(kickoff.timestamp()) // RESULT_CANDIDATE_BUCKET_SECONDS
 
 
+@lru_cache(maxsize=32768)
+def _cached_team_key(value: str | None) -> str:
+    return canonical_team_key(value)
+
+
+@lru_cache(maxsize=4096)
+def _cached_league_key(value: str | None) -> str:
+    return canonical_league_key(value)
+
+
 def _match_result(
     slot: dict[str, Any],
     candidates_by_bucket: dict[int, list[Event]],
@@ -151,8 +163,8 @@ def _match_result(
     matched = match_event(
         target,
         [exact] if exact is not None else candidates,
-        team_key=canonical_team_key,
-        league_key=canonical_league_key,
+        team_key=_cached_team_key,
+        league_key=_cached_league_key,
         allow_reversed=True,
         require_qualifiers=True,
     )
@@ -170,6 +182,7 @@ def sync_results(
     path: Path | str = DEFAULT_AUTOMATIC_RESULTS_PATH,
     now_utc: datetime | None = None,
     lookback_days: int = DEFAULT_LOOKBACK_DAYS,
+    max_fixtures: int = DEFAULT_MAX_FIXTURES,
     max_seconds: float = 30.0,
     client: TitanClient | None = None,
 ) -> dict[str, Any]:
@@ -197,14 +210,26 @@ def sync_results(
         ):
             continue
         due.append(slot)
+    eligible_due = len(due)
     if not due:
         return {
             "ok": True,
             "due": 0,
+            "eligible_due": 0,
             "fetched": 0,
             "settled_now": 0,
             "cached_total": len(known),
         }
+    # Prioritise the newest matches and persist each bounded batch.  A large
+    # first-run backlog must never delay current results; subsequent two-minute
+    # timer runs naturally drain the remainder because cached ids are skipped.
+    due.sort(
+        key=lambda slot: _parse_kickoff(
+            slot.get("kickoff_utc") or slot.get("kickoff_hkt")
+        ) or datetime.min.replace(tzinfo=timezone.utc),
+        reverse=True,
+    )
+    due = due[:max(1, max_fixtures)]
 
     dates = {
         _parse_kickoff(slot.get("kickoff_utc") or slot.get("kickoff_hkt"))
@@ -253,6 +278,7 @@ def sync_results(
     return {
         "ok": True,
         "due": len(due),
+        "eligible_due": eligible_due,
         "fetched": len(rows),
         "settled_now": len(additions),
         "cached_total": len(known) + len(additions),
@@ -372,4 +398,5 @@ __all__ = [
     "load_automatic_history_rows",
     "merge_automatic_history_rows",
     "sync_results",
+    "DEFAULT_MAX_FIXTURES",
 ]

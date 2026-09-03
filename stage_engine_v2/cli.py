@@ -330,6 +330,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--operator-results", default=str(DEFAULT_OPERATOR_RESULTS_PATH))
     sp.add_argument("--automatic-results", default=str(DEFAULT_AUTOMATIC_RESULTS_PATH))
     sp.add_argument("--lookback-days", type=int, default=7)
+    sp.add_argument("--max-fixtures", type=int, default=50)
     sp.add_argument("--max-seconds", type=float, default=30.0)
 
     return p
@@ -367,6 +368,7 @@ def main(argv: list[str] | None = None) -> int:
             ledger,
             path=Path(args.automatic_results),
             lookback_days=args.lookback_days,
+            max_fixtures=args.max_fixtures,
             max_seconds=args.max_seconds,
         )
         # The 30-second prediction tick owns the append-only ledger and can

@@ -172,3 +172,35 @@ def test_sync_compiles_provider_candidates_once(tmp_path, monkeypatch) -> None:
         client=_Client(provider_rows),
     )
     assert calls == len(provider_rows)
+
+
+def test_sync_prioritises_newest_bounded_batch(tmp_path) -> None:
+    now = datetime(2026, 9, 3, 12, 0, tzinfo=timezone.utc)
+    ledger = {"fixtures": {}}
+    provider_rows = []
+    for number in range(3):
+        kickoff = now - timedelta(hours=number + 2)
+        match_id = str(100 + number)
+        slot = dict(_ledger(kickoff)["fixtures"]["123"])
+        slot["id"] = match_id
+        slot["home"] = f"主隊 {number}"
+        slot["away"] = f"客隊 {number}"
+        ledger["fixtures"][match_id] = slot
+        row = _provider_row(kickoff)
+        row.update({
+            "id": f"provider-{match_id}",
+            "home": slot["home"],
+            "away": slot["away"],
+        })
+        provider_rows.append(row)
+    path = tmp_path / "automatic.json"
+    result = sync_results(
+        ledger,
+        path=path,
+        now_utc=now,
+        max_fixtures=2,
+        client=_Client(provider_rows),
+    )
+    assert result["eligible_due"] == 3
+    assert result["due"] == 2
+    assert set(json.loads(path.read_text())["results"]) == {"100", "101"}
