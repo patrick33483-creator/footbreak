@@ -121,16 +121,13 @@ def _candidate(row: dict[str, Any]) -> Event | None:
 
 def _match_result(
     slot: dict[str, Any],
-    rows: list[dict[str, Any]],
+    candidates: list[Event],
+    exact_by_id: dict[str, Event],
 ) -> tuple[dict[str, Any], bool] | None:
     target = _target(slot)
     if target is None:
         return None
-    candidates = [event for row in rows if (event := _candidate(row)) is not None]
-    exact = next(
-        (event for event in candidates if event.id == str(slot.get("id") or "")),
-        None,
-    )
+    exact = exact_by_id.get(str(slot.get("id") or ""))
     matched = match_event(
         target,
         [exact] if exact is not None else candidates,
@@ -197,10 +194,16 @@ def sync_results(
     }
     titan = client or TitanClient(settings())
     rows = titan.results(dates, max_seconds=max_seconds)
+    # Building and normalising provider Events is relatively expensive.  The
+    # first backfill can contain hundreds of due fixtures, so doing this inside
+    # the per-fixture loop turns the pass into O(fixtures × provider rows).
+    # Compile the candidate pool once and keep an exact native-id index.
+    candidates = [event for row in rows if (event := _candidate(row)) is not None]
+    exact_by_id = {event.id: event for event in candidates if event.id}
     additions: dict[str, dict[str, Any]] = {}
     verified_at = datetime.now(timezone.utc).isoformat()
     for slot in due:
-        result = _match_result(slot, rows)
+        result = _match_result(slot, candidates, exact_by_id)
         if result is None:
             continue
         row, reversed_order = result

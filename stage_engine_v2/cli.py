@@ -247,6 +247,7 @@ def _write_dashboard(
     return send_condition_alerts(
         segmented_conditions,
         sent_log_path=condition_sent_log_path,
+        now_utc=now_utc,
     )
 
 

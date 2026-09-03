@@ -27,6 +27,7 @@ T5_CONDITION_ALERT_IDS = frozenset({
 })
 
 TELEGRAM_API = "https://api.telegram.org"
+CONDITION_ALERT_MAX_SECONDS_BEFORE_KICKOFF = 10 * 60
 
 
 def _env_flag(name: str, default: bool = False) -> bool:
@@ -174,6 +175,24 @@ def _condition_identity_key(observation: dict[str, Any]) -> str:
     return f"{home}|{away}|{kickoff}"
 
 
+def _condition_alert_is_current(
+    observation: dict[str, Any],
+    now_utc: datetime,
+) -> bool:
+    """Only allow a T-5 observation shortly before a future kickoff."""
+    raw = str(observation.get("kickoff") or "").strip()
+    if not raw:
+        return False
+    try:
+        kickoff = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if kickoff.tzinfo is None:
+        return False
+    seconds_before = (kickoff.astimezone(timezone.utc) - now_utc).total_seconds()
+    return 0 < seconds_before <= CONDITION_ALERT_MAX_SECONDS_BEFORE_KICKOFF
+
+
 def format_condition_message(condition: dict[str, Any], observation: dict[str, Any]) -> str:
     """格式化細分條件達標 Telegram 訊息。純文字，不用 markdown。"""
     tier = condition.get("tier", "")
@@ -227,6 +246,7 @@ def send_condition_alert(
     enabled_env: str = "STAGE_V2_CONDITION_ALERT_ENABLED",
     bot_token_env: str = "TELEGRAM_BOT_TOKEN",
     chat_id_env: str = "TELEGRAM_CHAT_ID",
+    now_utc: datetime | None = None,
 ) -> dict[str, Any]:
     """發（或 shadow 記錄）一個細分條件達標通知。
 
@@ -236,6 +256,19 @@ def send_condition_alert(
     condition_id = str(condition.get("id") or "")
     key = f"{condition_id}:{_condition_identity_key(observation)}"
     log_path = Path(sent_log_path)
+    now = now_utc or datetime.now(timezone.utc)
+
+    # Fail closed before reading or writing the dedupe log.  Dashboard rebuilds
+    # and result backfills include historical observations; they must never
+    # become actionable Telegram alerts after kickoff.
+    if not _condition_alert_is_current(observation, now):
+        return {
+            "sent": False,
+            "shadow": False,
+            "skipped": True,
+            "reason": "outside_t5_window",
+            "key": key,
+        }
 
     sent_keys = _load_sent_keys(log_path)
     if key in sent_keys:
@@ -245,7 +278,7 @@ def send_condition_alert(
     enabled = _env_flag(enabled_env, default=False)
     bot_token = os.getenv(bot_token_env, "").strip()
     chat_id = os.getenv(chat_id_env, "").strip()
-    ts = datetime.now(timezone.utc).isoformat()
+    ts = now.isoformat()
 
     if not enabled or not bot_token or not chat_id:
         _append_sent(log_path, {
@@ -286,11 +319,13 @@ def send_condition_alerts(
     enabled_env: str = "STAGE_V2_CONDITION_ALERT_ENABLED",
     bot_token_env: str = "TELEGRAM_BOT_TOKEN",
     chat_id_env: str = "TELEGRAM_CHAT_ID",
+    now_utc: datetime | None = None,
 ) -> list[dict[str, Any]]:
     """逐個遠過指定條件（預設 T-5 嘅 3 個公開條件）嘅 observations，
     對每一場尚未發過嘅比賽發 Telegram 達標。
     """
     results: list[dict[str, Any]] = []
+    now = now_utc or datetime.now(timezone.utc)
     for condition in segmented_conditions.get("public_conditions") or []:
         if not isinstance(condition, dict):
             continue
@@ -306,6 +341,7 @@ def send_condition_alerts(
                 enabled_env=enabled_env,
                 bot_token_env=bot_token_env,
                 chat_id_env=chat_id_env,
+                now_utc=now,
             )
             results.append(result)
     return results
@@ -320,4 +356,5 @@ __all__ = [
     "format_condition_message",
     "DEFAULT_CONDITION_SENT_LOG",
     "T5_CONDITION_ALERT_IDS",
+    "CONDITION_ALERT_MAX_SECONDS_BEFORE_KICKOFF",
 ]

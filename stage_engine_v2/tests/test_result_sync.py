@@ -142,3 +142,33 @@ def test_settlement_dashboard_can_skip_notification_path(
     )
     assert result == []
     assert dashboard.exists()
+
+
+def test_sync_compiles_provider_candidates_once(tmp_path, monkeypatch) -> None:
+    kickoff = datetime(2026, 9, 3, 1, 0, tzinfo=timezone.utc)
+    ledger = _ledger(kickoff)
+    second = dict(ledger["fixtures"]["123"])
+    second["id"] = "9002"
+    second["home"] = "另一主隊"
+    second["away"] = "另一客隊"
+    ledger["fixtures"]["9002"] = second
+
+    import stage_engine_v2.result_sync as result_sync
+
+    calls = 0
+    original = result_sync._candidate
+
+    def counted(row):
+        nonlocal calls
+        calls += 1
+        return original(row)
+
+    monkeypatch.setattr(result_sync, "_candidate", counted)
+    provider_rows = [_provider_row(kickoff)]
+    sync_results(
+        ledger,
+        path=tmp_path / "automatic.json",
+        now_utc=kickoff + timedelta(seconds=SETTLE_AFTER_SECONDS + 1),
+        client=_Client(provider_rows),
+    )
+    assert calls == len(provider_rows)

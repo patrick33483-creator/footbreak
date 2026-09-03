@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from stage_engine_v2.telegram import (
@@ -20,6 +21,9 @@ def _condition(condition_id: str = "S-HIL-T5-OVER-185") -> dict:
             "sample": 94, "hit_rate": 0.6667, "roi": 0.2284,
         },
     }
+
+
+NOW = datetime(2026, 8, 29, 13, 25, tzinfo=timezone.utc)
 
 
 def _observation(match_id: str = "M1") -> dict:
@@ -63,7 +67,9 @@ def test_format_condition_message_contains_key_fields():
 def test_shadow_writes_log_and_no_send(tmp_path: Path, monkeypatch):
     monkeypatch.delenv("STAGE_V2_CONDITION_ALERT_ENABLED", raising=False)
     log = tmp_path / "condition_sent.jsonl"
-    result = send_condition_alert(_condition(), _observation(), sent_log_path=log)
+    result = send_condition_alert(
+        _condition(), _observation(), sent_log_path=log, now_utc=NOW
+    )
     assert result["shadow"] is True
     assert result["sent"] is False
     lines = log.read_text(encoding="utf-8").strip().splitlines()
@@ -75,8 +81,12 @@ def test_shadow_writes_log_and_no_send(tmp_path: Path, monkeypatch):
 
 def test_dedupe_skips_second_call(tmp_path: Path):
     log = tmp_path / "condition_sent.jsonl"
-    send_condition_alert(_condition(), _observation(), sent_log_path=log)
-    result2 = send_condition_alert(_condition(), _observation(), sent_log_path=log)
+    send_condition_alert(
+        _condition(), _observation(), sent_log_path=log, now_utc=NOW
+    )
+    result2 = send_condition_alert(
+        _condition(), _observation(), sent_log_path=log, now_utc=NOW
+    )
     assert result2["skipped"] is True
     assert result2["reason"] == "duplicate"
 
@@ -86,7 +96,9 @@ def test_enabled_without_credentials_still_shadow(tmp_path: Path, monkeypatch):
     monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
     monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
     log = tmp_path / "condition_sent.jsonl"
-    result = send_condition_alert(_condition(), _observation(), sent_log_path=log)
+    result = send_condition_alert(
+        _condition(), _observation(), sent_log_path=log, now_utc=NOW
+    )
     assert result["shadow"] is True
     assert result["reason"] == "missing_credentials"
 
@@ -94,7 +106,9 @@ def test_enabled_without_credentials_still_shadow(tmp_path: Path, monkeypatch):
 def test_identity_key_falls_back_to_match_details_when_no_match_id(tmp_path: Path):
     log = tmp_path / "condition_sent.jsonl"
     obs = _observation(match_id="")
-    result = send_condition_alert(_condition(), obs, sent_log_path=log)
+    result = send_condition_alert(
+        _condition(), obs, sent_log_path=log, now_utc=NOW
+    )
     assert result["key"] == "S-HIL-T5-OVER-185:拜仁|多蒙特|2026-08-29T21:30:00+08:00"
 
 
@@ -109,7 +123,7 @@ def test_send_condition_alerts_only_covers_t5_conditions(tmp_path: Path):
             {**_condition("A-HDC-OPEN-AWAY-MINUS-050"), "observations": [_observation("M4")]},
         ]
     }
-    results = send_condition_alerts(payload, sent_log_path=log)
+    results = send_condition_alerts(payload, sent_log_path=log, now_utc=NOW)
     keys = {r["key"] for r in results}
     assert keys == {
         "S-HIL-T5-OVER-185:M1",
@@ -125,8 +139,44 @@ def test_send_condition_alerts_is_idempotent_across_calls(tmp_path: Path):
             {**_condition("S-HIL-T5-OVER-185"), "observations": [_observation("M1")]},
         ]
     }
-    first = send_condition_alerts(payload, sent_log_path=log)
-    second = send_condition_alerts(payload, sent_log_path=log)
+    first = send_condition_alerts(payload, sent_log_path=log, now_utc=NOW)
+    second = send_condition_alerts(payload, sent_log_path=log, now_utc=NOW)
     assert first[0]["skipped"] is False
     assert second[0]["skipped"] is True
     assert second[0]["reason"] == "duplicate"
+
+
+def test_condition_alert_never_sends_after_kickoff(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("STAGE_V2_CONDITION_ALERT_ENABLED", "1")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "token")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "chat")
+    monkeypatch.setattr(
+        "stage_engine_v2.telegram._post_telegram",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("expired alert must not call Telegram")
+        ),
+    )
+    log = tmp_path / "condition_sent.jsonl"
+    result = send_condition_alert(
+        _condition(),
+        _observation(),
+        sent_log_path=log,
+        now_utc=NOW + timedelta(minutes=6),
+    )
+    assert result["sent"] is False
+    assert result["skipped"] is True
+    assert result["reason"] == "outside_t5_window"
+    assert not log.exists()
+
+
+def test_condition_alert_rejects_too_early_observation(tmp_path: Path):
+    log = tmp_path / "condition_sent.jsonl"
+    result = send_condition_alert(
+        _condition(),
+        _observation(),
+        sent_log_path=log,
+        now_utc=NOW - timedelta(minutes=6),
+    )
+    assert result["skipped"] is True
+    assert result["reason"] == "outside_t5_window"
+    assert not log.exists()
