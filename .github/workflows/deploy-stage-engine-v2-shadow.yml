@@ -180,6 +180,35 @@ jobs:
             systemctl enable --now stage-engine-v2-tick.timer
             systemctl enable --now stage-engine-v2-fast-results.timer
             systemctl restart stage-engine-v2-fast-results.timer
+            # Two failed rollout attempts used the shared sender path while
+            # testing settlement. Remove only their post-rollout shadow rows;
+            # preserve all live sends and all pre-existing idempotency keys.
+            python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          path = Path("/var/lib/footbreak/stage_engine_v2/condition_telegram_sent.jsonl")
+          if path.exists():
+              backup = path.with_name(path.name + ".pre-fast-results-cleanup")
+              backup.write_bytes(path.read_bytes())
+              kept = []
+              for line in path.read_text(encoding="utf-8").splitlines():
+                  try:
+                      row = json.loads(line)
+                  except json.JSONDecodeError:
+                      kept.append(line)
+                      continue
+                  if (
+                      row.get("mode") == "shadow"
+                      and str(row.get("sent_at_utc") or "") >= "2026-09-03T02:58:00"
+                  ):
+                      continue
+                  kept.append(line)
+              path.write_text(
+                  "".join(f"{line}\n" for line in kept),
+                  encoding="utf-8",
+              )
+          PY
             systemctl start stage-engine-v2-fast-results.service
             echo "tick + fast-result timers ENABLED"
             systemctl status stage-engine-v2-tick.timer --no-pager | head -12
