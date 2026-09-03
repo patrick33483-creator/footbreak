@@ -301,8 +301,29 @@ jobs:
           echo "=== result cache / condition stats / delayed sends ==="
           python3 - <<'PY'
           import json
+          import re
           from collections import Counter
+          from datetime import datetime, timezone
           from pathlib import Path
+
+          GUARD_DEPLOYED_AT = datetime.fromisoformat("2026-09-03T03:44:00+00:00")
+          KICKOFF_LINE = re.compile(r"^開賽 \(HKT\):\s*(\S+)", re.MULTILINE)
+
+          def parse_time(value):
+              try:
+                  parsed = datetime.fromisoformat(str(value or "").replace("Z", "+00:00"))
+              except ValueError:
+                  return None
+              if parsed.tzinfo is None:
+                  parsed = parsed.replace(tzinfo=timezone.utc)
+              return parsed.astimezone(timezone.utc)
+
+          def kickoff_from_row(row):
+              direct = parse_time(row.get("kickoff_hkt"))
+              if direct is not None:
+                  return direct
+              match = KICKOFF_LINE.search(str(row.get("text") or ""))
+              return parse_time(match.group(1)) if match else None
 
           cache_path = Path("/var/lib/footbreak/stage_engine_v2/automatic_results.json")
           cache = json.loads(cache_path.read_text()) if cache_path.exists() else {}
@@ -313,7 +334,8 @@ jobs:
           board_path = Path("/var/www/stage_engine_v2/data.json")
           board = json.loads(board_path.read_text()) if board_path.exists() else {}
           print("dashboard_generated_at_hkt=", board.get("generated_at_hkt"))
-          for row in board.get("segmented_conditions") or []:
+          segmented = board.get("segmented_conditions") or {}
+          for row in segmented.get("public_conditions") or []:
               if not isinstance(row, dict):
                   continue
               print(
@@ -327,6 +349,7 @@ jobs:
               "/var/lib/footbreak/stage_engine_v2/condition_telegram_sent.jsonl"
           )
           delayed = []
+          stale_live = []
           if sent_path.exists():
               for line in sent_path.read_text(encoding="utf-8").splitlines():
                   try:
@@ -336,8 +359,22 @@ jobs:
                   stamp = str(row.get("sent_at_utc") or "")
                   if "2026-09-03T02:5" in stamp or "2026-09-03T03:0" in stamp:
                       delayed.append(row)
+                  sent_at = parse_time(stamp)
+                  kickoff = kickoff_from_row(row)
+                  if (
+                      row.get("mode") == "live"
+                      and sent_at is not None
+                      and kickoff is not None
+                      and sent_at >= kickoff
+                  ):
+                      stale_live.append((sent_at, kickoff, row))
           print("tg_rows_1050_to_1109_hkt=", len(delayed))
           print("tg_modes=", dict(Counter(str(x.get("mode")) for x in delayed)))
+          stale_since_guard = [
+              item for item in stale_live if item[0] >= GUARD_DEPLOYED_AT
+          ]
+          print("stale_live_all_time=", len(stale_live))
+          print("stale_live_since_guard=", len(stale_since_guard))
           for row in delayed[-30:]:
               print(
                   "tg_row",
@@ -346,6 +383,14 @@ jobs:
                   row.get("condition_id"),
                   row.get("match_id"),
                   row.get("kickoff_hkt"),
+              )
+          for sent_at, kickoff, row in stale_since_guard[-30:]:
+              print(
+                  "STALE_AFTER_GUARD",
+                  sent_at.isoformat(),
+                  kickoff.isoformat(),
+                  row.get("condition_id"),
+                  row.get("match_id"),
               )
           PY
           REMOTE
@@ -360,11 +405,26 @@ jobs:
             | tail -1 | tr '\n' ' '
           python3 - <<'PY'
           import json
+          import re
           from collections import Counter
+          from datetime import datetime, timezone
           from pathlib import Path
+
+          guard = datetime.fromisoformat("2026-09-03T03:44:00+00:00")
+          kickoff_line = re.compile(r"^開賽 \(HKT\):\s*(\S+)", re.MULTILINE)
+
+          def parse_time(value):
+              try:
+                  parsed = datetime.fromisoformat(str(value or "").replace("Z", "+00:00"))
+              except ValueError:
+                  return None
+              if parsed.tzinfo is None:
+                  parsed = parsed.replace(tzinfo=timezone.utc)
+              return parsed.astimezone(timezone.utc)
 
           sent = Path("/var/lib/footbreak/stage_engine_v2/condition_telegram_sent.jsonl")
           rows = []
+          stale_after_guard = []
           if sent.exists():
               for line in sent.read_text(encoding="utf-8").splitlines():
                   try:
@@ -374,7 +434,24 @@ jobs:
                   stamp = str(row.get("sent_at_utc") or "")
                   if "2026-09-03T02:5" in stamp or "2026-09-03T03:0" in stamp:
                       rows.append(row)
-          print(f"; tg_rows={len(rows)}; tg_modes={dict(Counter(str(x.get('mode')) for x in rows))}")
+                  sent_at = parse_time(stamp)
+                  kickoff = parse_time(row.get("kickoff_hkt"))
+                  if kickoff is None:
+                      match = kickoff_line.search(str(row.get("text") or ""))
+                      kickoff = parse_time(match.group(1)) if match else None
+                  if (
+                      row.get("mode") == "live"
+                      and sent_at is not None
+                      and kickoff is not None
+                      and sent_at >= kickoff
+                      and sent_at >= guard
+                  ):
+                      stale_after_guard.append(row)
+          print(
+              f"; tg_rows={len(rows)}"
+              f"; tg_modes={dict(Counter(str(x.get('mode')) for x in rows))}"
+              f"; stale_after_guard={len(stale_after_guard)}"
+          )
           PY
           REMOTE
           )"
