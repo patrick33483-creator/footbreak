@@ -27,6 +27,12 @@ from .operator_results import (
 )
 from .predictor import build_prediction
 from .publisher import decide_publish
+from .result_sync import (
+    DEFAULT_AUTOMATIC_RESULTS_PATH,
+    load_automatic_history_rows,
+    merge_automatic_history_rows,
+    sync_results,
+)
 from .scheduler import due_stages
 from .segmented_conditions import build_segmented_conditions
 from .telegram import DEFAULT_CONDITION_SENT_LOG, DEFAULT_SENT_LOG, send_condition_alerts, send_stage
@@ -82,6 +88,7 @@ def _run_tick(
     native_queue_dir: Path = DEFAULT_NATIVE_QUEUE_DIR,
     condition_sent_log_path: Path = DEFAULT_CONDITION_SENT_LOG,
     operator_results_path: Path = DEFAULT_OPERATOR_RESULTS_PATH,
+    automatic_results_path: Path = DEFAULT_AUTOMATIC_RESULTS_PATH,
 ) -> dict[str, Any]:
     started_at = datetime.now(timezone.utc)
     fixtures = refresh_fixtures(
@@ -141,6 +148,7 @@ def _run_tick(
                 crown_data_path,
                 ledger=ledger,
                 operator_results_path=operator_results_path,
+                automatic_results_path=automatic_results_path,
             ),
             condition_sent_log_path=condition_sent_log_path,
         )
@@ -240,6 +248,7 @@ def _load_history_rows(
     *,
     ledger: dict[str, Any] | None = None,
     operator_results_path: Path = DEFAULT_OPERATOR_RESULTS_PATH,
+    automatic_results_path: Path = DEFAULT_AUTOMATIC_RESULTS_PATH,
 ) -> list[dict[str, Any]]:
     """Read Crown history and merge a validated V2-only operator overlay."""
     rows: list[dict[str, Any]] = []
@@ -266,6 +275,8 @@ def _load_history_rows(
     if ledger is None:
         return rows
     rows = [*rows, *project_verified_crown_scores(rows, ledger)]
+    automatic_rows = load_automatic_history_rows(automatic_results_path, ledger)
+    rows = merge_automatic_history_rows(rows, automatic_rows)
     operator_rows = load_operator_history_rows(operator_results_path, ledger)
     return merge_operator_history_rows(rows, operator_rows)
 
@@ -286,6 +297,11 @@ def build_parser() -> argparse.ArgumentParser:
             default=str(DEFAULT_OPERATOR_RESULTS_PATH),
             help="V2-only, identity-locked operator result overlay",
         )
+        sp.add_argument(
+            "--automatic-results",
+            default=str(DEFAULT_AUTOMATIC_RESULTS_PATH),
+            help="V2-only, identity-locked automatic result cache",
+        )
         sp.add_argument("--now", default=None,
                         help="覆蓋現在時間（ISO 格式，缺 tz 當 HKT）")
         sp.add_argument("--window-hours", type=int, default=48)
@@ -297,6 +313,16 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("dashboard")
     sp.add_argument("--ledger", default=str(DEFAULT_LEDGER_PATH))
     sp.add_argument("--dashboard", default=str(DEFAULT_DASHBOARD_PATH))
+
+    sp = sub.add_parser("settle")
+    sp.add_argument("--crown-data", default=str(DEFAULT_CROWN_DATA_PATH))
+    sp.add_argument("--ledger", default=str(DEFAULT_LEDGER_PATH))
+    sp.add_argument("--dashboard", default=str(DEFAULT_DASHBOARD_PATH))
+    sp.add_argument("--condition-sent-log", default=str(DEFAULT_CONDITION_SENT_LOG))
+    sp.add_argument("--operator-results", default=str(DEFAULT_OPERATOR_RESULTS_PATH))
+    sp.add_argument("--automatic-results", default=str(DEFAULT_AUTOMATIC_RESULTS_PATH))
+    sp.add_argument("--lookback-days", type=int, default=7)
+    sp.add_argument("--max-seconds", type=float, default=30.0)
 
     return p
 
@@ -315,6 +341,31 @@ def main(argv: list[str] | None = None) -> int:
             native_queue_dir=Path(args.native_queue_dir),
             condition_sent_log_path=Path(args.condition_sent_log),
             operator_results_path=Path(args.operator_results),
+            automatic_results_path=Path(args.automatic_results),
+        )
+        json.dump(result, sys.stdout, ensure_ascii=False, indent=2)
+        sys.stdout.write("\n")
+        return 0
+    if args.cmd == "settle":
+        ledger_path = Path(args.ledger)
+        ledger = load_ledger(ledger_path)
+        result = sync_results(
+            ledger,
+            path=Path(args.automatic_results),
+            lookback_days=args.lookback_days,
+            max_seconds=args.max_seconds,
+        )
+        _write_dashboard(
+            ledger,
+            Path(args.dashboard),
+            now_utc=datetime.now(timezone.utc),
+            history_rows=_load_history_rows(
+                Path(args.crown_data),
+                ledger=ledger,
+                operator_results_path=Path(args.operator_results),
+                automatic_results_path=Path(args.automatic_results),
+            ),
+            condition_sent_log_path=Path(args.condition_sent_log),
         )
         json.dump(result, sys.stdout, ensure_ascii=False, indent=2)
         sys.stdout.write("\n")
