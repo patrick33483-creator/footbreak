@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -353,8 +354,14 @@ def main(argv: list[str] | None = None) -> int:
         sys.stdout.write("\n")
         return 0
     if args.cmd == "settle":
+        started = time.monotonic()
+        print("stage-v2-settle: load-ledger", flush=True)
         ledger_path = Path(args.ledger)
         ledger = load_ledger(ledger_path)
+        print(
+            f"stage-v2-settle: sync-results fixtures={len(ledger.get('fixtures') or {})}",
+            flush=True,
+        )
         result = sync_results(
             ledger,
             path=Path(args.automatic_results),
@@ -365,19 +372,34 @@ def main(argv: list[str] | None = None) -> int:
         # commit while the provider request above is in flight.  Reload before
         # projection so a fast settlement pass never publishes an older
         # snapshot over a newly recorded stage.
+        print(
+            f"stage-v2-settle: sync-complete elapsed={time.monotonic() - started:.1f}s "
+            f"due={result.get('due')} settled={result.get('settled_now')}",
+            flush=True,
+        )
         ledger = load_ledger(ledger_path)
+        print("stage-v2-settle: load-history", flush=True)
+        history_rows = _load_history_rows(
+            Path(args.crown_data),
+            ledger=ledger,
+            operator_results_path=Path(args.operator_results),
+            automatic_results_path=Path(args.automatic_results),
+        )
+        print(
+            f"stage-v2-settle: write-dashboard history_rows={len(history_rows)}",
+            flush=True,
+        )
         _write_dashboard(
             ledger,
             Path(args.dashboard),
             now_utc=datetime.now(timezone.utc),
-            history_rows=_load_history_rows(
-                Path(args.crown_data),
-                ledger=ledger,
-                operator_results_path=Path(args.operator_results),
-                automatic_results_path=Path(args.automatic_results),
-            ),
+            history_rows=history_rows,
             condition_sent_log_path=Path(args.condition_sent_log),
             send_alerts=False,
+        )
+        print(
+            f"stage-v2-settle: complete elapsed={time.monotonic() - started:.1f}s",
+            flush=True,
         )
         json.dump(result, sys.stdout, ensure_ascii=False, indent=2)
         sys.stdout.write("\n")
