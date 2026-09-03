@@ -28,7 +28,7 @@ from crown.matching import (
     canonical_team_key,
     match_event,
 )
-from crown.titan import TitanClient
+from crown.titan import TitanClient, parse_match_header
 
 from .fixtures import _parse_kickoff
 from .segmented_conditions import STAGES, _prediction
@@ -126,6 +126,32 @@ def _candidate(row: dict[str, Any]) -> Event | None:
 
 def _candidate_bucket(kickoff: datetime) -> int:
     return int(kickoff.timestamp()) // RESULT_CANDIDATE_BUCKET_SECONDS
+
+
+def _exact_header_result(
+    client: TitanClient,
+    match_id: str,
+    max_seconds: float,
+) -> dict[str, Any] | None:
+    """Read only the completion-gated score header for one native Titan ID."""
+    test_reader = getattr(client, "result_header", None)
+    if callable(test_reader):
+        return test_reader(match_id, max_seconds=max_seconds)
+    reader = getattr(client, "_read", None)
+    if not callable(reader):
+        return None
+    source = reader(
+        "https://livestatic.titan007.com/phone/txt/analysisheader/cn/"
+        f"{match_id[0]}/{match_id[1:3]}/{match_id}.txt",
+        encoding="utf-8",
+        timeout=max(0.1, min(3.0, max_seconds)),
+        attempts=1,
+        hard_deadline=max_seconds,
+    )
+    row = parse_match_header(source, match_id)
+    if row is not None:
+        row["source"] = "titan007_analysis_header"
+    return row
 
 
 @lru_cache(maxsize=32768)
@@ -264,12 +290,12 @@ def sync_results(
         # stable analysis header is completion-gated and preserves exact
         # fixture identity; postponed/live rows remain pending.
         if result is None:
-            detail_reader = getattr(titan, "result_detail", None)
             match_id = str(slot.get("id") or "")
             remaining = deadline - time.monotonic()
-            if callable(detail_reader) and match_id.isdigit() and remaining > 0.1:
+            if match_id.isdigit() and remaining > 0.1:
                 try:
-                    detail = detail_reader(
+                    detail = _exact_header_result(
+                        titan,
                         match_id,
                         max_seconds=min(3.0, remaining),
                     )

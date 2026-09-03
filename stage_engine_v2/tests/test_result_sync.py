@@ -55,7 +55,7 @@ class _DetailClient(_Client):
         self.details = details
         self.detail_calls: list[tuple[str, float]] = []
 
-    def result_detail(self, match_id: str, max_seconds: float) -> dict | None:
+    def result_header(self, match_id: str, max_seconds: float) -> dict | None:
         self.detail_calls.append((match_id, max_seconds))
         return self.details.get(match_id)
 
