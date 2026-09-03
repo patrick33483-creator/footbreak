@@ -12,6 +12,7 @@ import fcntl
 import json
 import os
 import tempfile
+import time
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from pathlib import Path
@@ -187,6 +188,8 @@ def sync_results(
     client: TitanClient | None = None,
 ) -> dict[str, Any]:
     """Fetch and persist scores for recent due V2 fixtures only."""
+    started = time.monotonic()
+    deadline = started + max(0.1, float(max_seconds))
     now = now_utc or datetime.now(timezone.utc)
     cache_path = Path(path)
     payload = _load(cache_path)
@@ -251,9 +254,31 @@ def sync_results(
             _candidate_bucket(event.kickoff), []
         ).append(event)
     additions: dict[str, dict[str, Any]] = {}
+    detail_fetched = 0
     verified_at = datetime.now(timezone.utc).isoformat()
     for slot in due:
         result = _match_result(slot, candidates_by_bucket, exact_by_id)
+        # Titan's legacy Over_YYYYMMDD completed-results page can return its
+        # own HTTP-200 404 document.  When that bulk page has no usable row,
+        # recover only by the slot's original numeric Titan fixture ID.  The
+        # stable analysis header is completion-gated and preserves exact
+        # fixture identity; postponed/live rows remain pending.
+        if result is None:
+            detail_reader = getattr(titan, "result_detail", None)
+            match_id = str(slot.get("id") or "")
+            remaining = deadline - time.monotonic()
+            if callable(detail_reader) and match_id.isdigit() and remaining > 0.1:
+                try:
+                    detail = detail_reader(
+                        match_id,
+                        max_seconds=min(3.0, remaining),
+                    )
+                except (OSError, TimeoutError, ValueError):
+                    detail = None
+                event = _candidate(detail) if isinstance(detail, dict) else None
+                if event is not None:
+                    detail_fetched += 1
+                    result = _match_result(slot, {}, {event.id: event})
         if result is None:
             continue
         row, reversed_order = result
@@ -279,7 +304,9 @@ def sync_results(
         "ok": True,
         "due": len(due),
         "eligible_due": eligible_due,
-        "fetched": len(rows),
+        "fetched": len(rows) + detail_fetched,
+        "bulk_fetched": len(rows),
+        "detail_fetched": detail_fetched,
         "settled_now": len(additions),
         "cached_total": len(known) + len(additions),
     }

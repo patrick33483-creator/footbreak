@@ -49,6 +49,17 @@ class _Client:
         return self.rows
 
 
+class _DetailClient(_Client):
+    def __init__(self, rows: list[dict], details: dict[str, dict | None]) -> None:
+        super().__init__(rows)
+        self.details = details
+        self.detail_calls: list[tuple[str, float]] = []
+
+    def result_detail(self, match_id: str, max_seconds: float) -> dict | None:
+        self.detail_calls.append((match_id, max_seconds))
+        return self.details.get(match_id)
+
+
 def _provider_row(kickoff: datetime, *, reversed_order: bool = False) -> dict:
     return {
         "id": "provider-123",
@@ -204,3 +215,27 @@ def test_sync_prioritises_newest_bounded_batch(tmp_path) -> None:
     assert result["eligible_due"] == 3
     assert result["due"] == 2
     assert set(json.loads(path.read_text())["results"]) == {"100", "101"}
+
+
+def test_sync_falls_back_to_exact_result_detail_when_bulk_page_is_empty(
+    tmp_path,
+) -> None:
+    kickoff = datetime(2026, 9, 3, 1, 0, tzinfo=timezone.utc)
+    detail = _provider_row(kickoff)
+    detail["id"] = "123"
+    client = _DetailClient([], {"123": detail})
+    path = tmp_path / "automatic.json"
+
+    result = sync_results(
+        _ledger(kickoff),
+        path=path,
+        now_utc=kickoff + timedelta(seconds=SETTLE_AFTER_SECONDS + 1),
+        client=client,
+    )
+
+    assert result["bulk_fetched"] == 0
+    assert result["detail_fetched"] == 1
+    assert result["settled_now"] == 1
+    assert client.detail_calls and client.detail_calls[0][0] == "123"
+    saved = json.loads(path.read_text(encoding="utf-8"))["results"]["123"]
+    assert (saved["home_score"], saved["away_score"]) == (2, 1)
