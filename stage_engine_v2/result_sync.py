@@ -21,6 +21,7 @@ from crown.config import settings
 from crown.lines import settle_handicap, settle_total
 from crown.matching import (
     Event,
+    STRONG_NAME_KICKOFF_TOLERANCE_SECONDS,
     canonical_league_key,
     canonical_team_key,
     match_event,
@@ -36,6 +37,7 @@ DEFAULT_AUTOMATIC_RESULTS_PATH = Path(
 )
 SCHEMA_VERSION = 1
 DEFAULT_LOOKBACK_DAYS = 7
+RESULT_CANDIDATE_BUCKET_SECONDS = 10 * 60
 
 
 def _empty_payload() -> dict[str, Any]:
@@ -119,15 +121,33 @@ def _candidate(row: dict[str, Any]) -> Event | None:
     )
 
 
+def _candidate_bucket(kickoff: datetime) -> int:
+    return int(kickoff.timestamp()) // RESULT_CANDIDATE_BUCKET_SECONDS
+
+
 def _match_result(
     slot: dict[str, Any],
-    candidates: list[Event],
+    candidates_by_bucket: dict[int, list[Event]],
     exact_by_id: dict[str, Event],
 ) -> tuple[dict[str, Any], bool] | None:
     target = _target(slot)
     if target is None:
         return None
     exact = exact_by_id.get(str(slot.get("id") or ""))
+    candidates: list[Event] = []
+    if exact is None:
+        bucket = _candidate_bucket(target.kickoff)
+        bucket_radius = (
+            STRONG_NAME_KICKOFF_TOLERANCE_SECONDS
+            // RESULT_CANDIDATE_BUCKET_SECONDS
+        ) + 1
+        for value in range(bucket - bucket_radius, bucket + bucket_radius + 1):
+            candidates.extend(candidates_by_bucket.get(value, ()))
+        candidates = [
+            event for event in candidates
+            if abs((event.kickoff - target.kickoff).total_seconds())
+            <= STRONG_NAME_KICKOFF_TOLERANCE_SECONDS
+        ]
     matched = match_event(
         target,
         [exact] if exact is not None else candidates,
@@ -194,16 +214,21 @@ def sync_results(
     }
     titan = client or TitanClient(settings())
     rows = titan.results(dates, max_seconds=max_seconds)
-    # Building and normalising provider Events is relatively expensive.  The
-    # first backfill can contain hundreds of due fixtures, so doing this inside
-    # the per-fixture loop turns the pass into O(fixtures × provider rows).
-    # Compile the candidate pool once and keep an exact native-id index.
+    # Compile once and index by native id plus kickoff bucket.  A first backfill
+    # can have 1,500+ ledger fixtures; scanning every provider row for every
+    # fixture is quadratic even though the matcher rejects anything beyond its
+    # 90-minute reschedule tolerance.
     candidates = [event for row in rows if (event := _candidate(row)) is not None]
     exact_by_id = {event.id: event for event in candidates if event.id}
+    candidates_by_bucket: dict[int, list[Event]] = {}
+    for event in candidates:
+        candidates_by_bucket.setdefault(
+            _candidate_bucket(event.kickoff), []
+        ).append(event)
     additions: dict[str, dict[str, Any]] = {}
     verified_at = datetime.now(timezone.utc).isoformat()
     for slot in due:
-        result = _match_result(slot, candidates, exact_by_id)
+        result = _match_result(slot, candidates_by_bucket, exact_by_id)
         if result is None:
             continue
         row, reversed_order = result
