@@ -355,6 +355,11 @@ def main(argv: list[str] | None = None) -> int:
             lookback_days=args.lookback_days,
             max_seconds=args.max_seconds,
         )
+        # The 30-second prediction tick owns the append-only ledger and can
+        # commit while the provider request above is in flight.  Reload before
+        # projection so a fast settlement pass never publishes an older
+        # snapshot over a newly recorded stage.
+        ledger = load_ledger(ledger_path)
         _write_dashboard(
             ledger,
             Path(args.dashboard),

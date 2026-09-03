@@ -379,7 +379,8 @@ def _matching_history(
     # a legacy Crown row whose market/line can differ from V2.  Operator rows
     # remain the highest-priority identity-locked source.
     source_priority = {
-        "opticodds_operator_verified_overlay": 2,
+        "opticodds_operator_verified_overlay": 3,
+        "titan007_completed_results_identity_locked": 2,
         "crown_verified_history_bridge": 1,
     }
     return max(

@@ -1,0 +1,12 @@
+[Unit]
+Description=每兩分鐘快速更新皇冠 V2 賽果
+
+[Timer]
+OnBootSec=45s
+OnUnitActiveSec=2min
+AccuracySec=10s
+Persistent=true
+Unit=stage-engine-v2-fast-results.service
+
+[Install]
+WantedBy=timers.target
