@@ -392,6 +392,11 @@ jobs:
                   row.get("condition_id"),
                   row.get("match_id"),
               )
+          if stale_since_guard:
+              raise SystemExit(
+                  f"stale Crown V2 live alerts after guard deployment: "
+                  f"{len(stale_since_guard)}"
+              )
           PY
           REMOTE
             echo '```'
