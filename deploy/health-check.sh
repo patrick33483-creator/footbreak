@@ -82,6 +82,22 @@ if systemctl is-enabled --quiet footbreak-daily-condition-report.timer ||
 fi
 echo "OK retired timer footbreak-daily-condition-report.timer is disabled"
 
+[ "${FOOTBREAK_TELEGRAM_ENABLED:-0}" = 0 ] || {
+  echo "FAIL legacy Footbreak Telegram is not disabled" >&2
+  exit 1
+}
+echo "OK legacy Footbreak Telegram disabled"
+[ "${INCIDENT_ALERT_ENABLED:-0}" = 0 ] || {
+  echo "FAIL legacy incident Telegram is not disabled" >&2
+  exit 1
+}
+echo "OK legacy incident Telegram disabled"
+[ "${CROWN_TELEGRAM_ENABLED:-0}" = 0 ] || {
+  echo "FAIL legacy Crown Telegram is not disabled" >&2
+  exit 1
+}
+echo "OK legacy Crown Telegram disabled"
+
 if crown_is_enabled; then
   for unit in crown-round-update.timer crown-first-look-reconcile.timer crown-early-admission-reconcile.timer crown-tick.timer crown-sweep.timer crown-settle.timer; do
     systemctl is-enabled --quiet "$unit" || {
@@ -417,21 +433,6 @@ for name in TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID PINNAPI_API_KEY; do
   }
   echo "OK credential $name configured"
 done
-[ "${FOOTBREAK_TELEGRAM_ENABLED:-0}" = 0 ] || {
-  echo "FAIL legacy Footbreak Telegram is not disabled" >&2
-  exit 1
-}
-echo "OK legacy Footbreak Telegram disabled"
-[ "${INCIDENT_ALERT_ENABLED:-0}" = 0 ] || {
-  echo "FAIL legacy incident Telegram is not disabled" >&2
-  exit 1
-}
-echo "OK legacy incident Telegram disabled"
-[ "${CROWN_TELEGRAM_ENABLED:-0}" = 0 ] || {
-  echo "FAIL legacy Crown Telegram is not disabled" >&2
-  exit 1
-}
-echo "OK legacy Crown Telegram disabled"
 
 "$APP_DIR/.venv/bin/python3" - "$FOOTBREAK_DATA" "$CROWN_DATA" <<'PY'
 import json
