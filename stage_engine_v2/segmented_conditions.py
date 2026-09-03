@@ -360,6 +360,37 @@ def _history_index(rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]
     return index
 
 
+def _fixture_identity(slot: dict[str, Any]) -> str:
+    """Identify one real fixture even when upstream assigned duplicate IDs."""
+    league = " ".join(str(slot.get("league") or "").split()).casefold()
+    home = " ".join(str(slot.get("home") or "").split()).casefold()
+    away = " ".join(str(slot.get("away") or "").split()).casefold()
+    kickoff = _parse_kickoff(slot.get("kickoff_utc") or slot.get("kickoff_hkt"))
+    if league and home and away and kickoff:
+        return f"{league}|{home}|{away}|{kickoff.isoformat()}"
+    return f"id:{slot.get('id')}"
+
+
+def _slot_quality(slot: dict[str, Any]) -> tuple[int, int, int, int, str]:
+    """Prefer the duplicate carrying the latest and most complete snapshots."""
+    stages = slot.get("stages") or {}
+    predicted_at = max(
+        (
+            str(item.get("predicted_at_utc") or item.get("predicted_at") or "")
+            for item in stages.values()
+            if isinstance(item, dict)
+        ),
+        default="",
+    )
+    return (
+        int(isinstance(stages.get("T-5"), dict)),
+        int(isinstance(stages.get("T-30"), dict)),
+        int(isinstance(stages.get("首預"), dict)),
+        sum(isinstance(item, dict) for item in stages.values()),
+        predicted_at,
+    )
+
+
 def _matching_history(
     slot: dict[str, Any],
     stage: str,
@@ -468,13 +499,17 @@ def build_segmented_conditions(
     if cutoff is None:
         raise ValueError("invalid segmented condition activation cutoff")
     history_index = _history_index(history_rows or [])
-    slots = []
+    slots_by_fixture: dict[str, dict[str, Any]] = {}
     for slot in (ledger.get("fixtures") or {}).values():
         if not isinstance(slot, dict):
             continue
         kickoff = _parse_kickoff(slot.get("kickoff_utc") or slot.get("kickoff_hkt"))
         if kickoff is not None and kickoff >= cutoff:
-            slots.append(slot)
+            key = _fixture_identity(slot)
+            existing = slots_by_fixture.get(key)
+            if existing is None or _slot_quality(slot) > _slot_quality(existing):
+                slots_by_fixture[key] = slot
+    slots = list(slots_by_fixture.values())
     public = []
     matching_observations = []
     for condition in CONDITIONS:

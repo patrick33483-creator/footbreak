@@ -107,6 +107,38 @@ def test_projects_prediction_direction_conditions_and_settles_results() -> None:
     assert hhh_obs[0]["evidence_status"] == "downgraded"
 
 
+def test_same_fixture_with_different_ids_counts_once_and_keeps_richest_slot() -> None:
+    earlier = _slot("duplicate-t30", {
+        "首預": _stage("HDC", "A", 0.5, 1.87, "away 客隊"),
+        "T-30": _stage("HDC", "A", 0.75, 1.94, "away 客隊"),
+    })
+    richer = _slot("duplicate-t5", {
+        "首預": _stage("HDC", "A", 0.5, 1.87, "away 客隊"),
+        "T-30": _stage("HDC", "A", 0.75, 1.94, "away 客隊"),
+        "T-5": _stage("HDC", "A", 0.75, 1.90, "away 客隊"),
+    })
+    for slot in (earlier, richer):
+        slot["league"] = "日職聯"
+        slot["home"] = "水戶蜀葵"
+        slot["away"] = "鹿島鹿角"
+
+    payload = build_segmented_conditions({
+        "fixtures": {
+            "duplicate-t30": earlier,
+            "duplicate-t5": richer,
+        },
+    })
+    condition = next(
+        row for row in payload["public_conditions"]
+        if row["id"] == "A-HDC-OPEN-AWAY-MINUS-050"
+    )
+
+    assert condition["prospective"]["qualified"] == 1
+    assert len(condition["observations"]) == 1
+    assert condition["observations"][0]["match_id"] == "duplicate-t5"
+    assert condition["observations"][0]["directions"]["T-5"] == "客"
+
+
 def test_strict_threshold_same_line_and_activation_cutoff() -> None:
     ledger = {"fixtures": {
         "exact": _slot("exact", {
