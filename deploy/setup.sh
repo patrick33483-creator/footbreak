@@ -16,6 +16,17 @@ CROWN_WEB_ROOT="/var/www/crown"
 BACKTEST_STATE_DIR="/var/lib/footbreak/backtest"
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+upsert_env() {
+  local file="$1" key="$2" value="$3" tmp
+  touch "$file"
+  chmod 600 "$file"
+  tmp="$(mktemp)"
+  grep -v -E "^[[:space:]]*(export[[:space:]]+)?${key}[[:space:]]*=" "$file" > "$tmp" || true
+  printf '%s=%s\n' "$key" "$value" >> "$tmp"
+  install -m 0600 "$tmp" "$file"
+  rm -f "$tmp"
+}
+
 sync_crown_web_root() {
   # nginx's www-data worker needs x on every directory and r on static files.
   # Crown state remains under /var/lib/footbreak/crown at mode 0600.
@@ -99,6 +110,12 @@ else
   echo "  Crown 環境檔已存在,唔覆蓋"
 fi
 
+# Legacy notification transport stays retired on both fresh installs and
+# upgrades. These flags do not affect scans, ledgers, dashboards or V2.
+upsert_env "$ENV_FILE" FOOTBREAK_TELEGRAM_ENABLED 0
+upsert_env "$ENV_FILE" INCIDENT_ALERT_ENABLED 0
+upsert_env "$CROWN_ENV_FILE" CROWN_TELEGRAM_ENABLED 0
+
 # 首次由 repo 嘅 state-seed 帶入模擬倉,之後永遠唔再覆蓋
 echo "▸ 6.5/7 帶入模擬倉初始狀態(只做一次)"
 for f in sim_ledger.json notify_state.json predictions.json accuracy.json hk_snapshots.json; do
@@ -146,6 +163,8 @@ systemctl disable --now footbreak-backtest.timer 2>/dev/null || true
 systemctl enable --now footbreak-server-health-monitor.timer direction-path-conditions.timer
 systemctl disable --now telegram-silence-monitor.timer 2>/dev/null || true
 systemctl stop telegram-silence-monitor.service 2>/dev/null || true
+systemctl disable --now footbreak-daily-condition-report.timer 2>/dev/null || true
+systemctl stop footbreak-daily-condition-report.service 2>/dev/null || true
 
 install -m 0644 "$APP_DIR/deploy/nginx-footbreak.conf" /etc/nginx/sites-available/footbreak
 ln -sf /etc/nginx/sites-available/footbreak /etc/nginx/sites-enabled/footbreak

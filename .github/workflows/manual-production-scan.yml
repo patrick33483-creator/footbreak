@@ -17,18 +17,12 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
 
-      - name: 設定群組通知並執行一次真實掃描
+      - name: 靜默執行一次真實掃描
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
-          GROUP_CHAT_ID: ${{ secrets.TELEGRAM_GROUP_CHAT_ID }}
         run: |
-          [[ "$GROUP_CHAT_ID" =~ ^-?[0-9]+$ ]] || {
-            echo "TELEGRAM_GROUP_CHAT_ID 缺失或格式錯誤" >&2
-            exit 1
-          }
-          ssh "$DEPLOY_USER@$DEPLOY_HOST" \
-            "sudo env GROUP_CHAT_ID='$GROUP_CHAT_ID' bash -s" <<'REMOTE'
+          ssh "$DEPLOY_USER@$DEPLOY_HOST" "sudo bash -s" <<'REMOTE'
           set -euo pipefail
 
           upsert_env() {
@@ -42,17 +36,9 @@ jobs:
             rm -f "$tmp"
           }
 
-          upsert_env /etc/footbreak.env TELEGRAM_CHAT_ID "$GROUP_CHAT_ID"
-          upsert_env /etc/footbreak-crown.env CROWN_TELEGRAM_CHAT_ID "$GROUP_CHAT_ID"
-          upsert_env /etc/footbreak-crown.env CROWN_TELEGRAM_ENABLED 1
-
-          set -a
-          . /etc/footbreak.env
-          set +a
-          test -n "${TELEGRAM_BOT_TOKEN:-}" || {
-            echo "伺服器未設定 TELEGRAM_BOT_TOKEN" >&2
-            exit 1
-          }
+          upsert_env /etc/footbreak.env FOOTBREAK_TELEGRAM_ENABLED 0
+          upsert_env /etc/footbreak.env INCIDENT_ALERT_ENABLED 0
+          upsert_env /etc/footbreak-crown.env CROWN_TELEGRAM_ENABLED 0
 
           /opt/footbreak/deploy/run.sh tick
           /opt/footbreak/deploy/crown-run.sh tick

@@ -1460,6 +1460,12 @@ def notify_pending_committed_bets(ledger, *, max_attempts=8, max_seconds=None):
 
 
 def send(text, *, max_seconds=None, return_response=False):
+    # Legacy Footbreak Telegram delivery is independently kill-switched so
+    # prediction, ledger and dashboard work can continue without messages.
+    if os.environ.get("FOOTBREAK_TELEGRAM_ENABLED", "0").strip().lower() not in {
+        "1", "true", "yes", "on",
+    }:
+        return False
     if not CHAT_ID:
         raise RuntimeError("TELEGRAM_CHAT_ID 未設定")
     if BOT_TOKEN:

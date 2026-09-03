@@ -344,13 +344,22 @@ class IncidentAlertTests(unittest.TestCase):
         self.assertIn("/botprivate-token/sendMessage", request.full_url)
         self.assertEqual(json.loads(request.data.decode("utf-8"))["chat_id"], "703318555")
 
-    def test_deployment_config_requires_explicit_private_recipient(self) -> None:
+    def test_deployment_config_requires_legacy_notifications_disabled(self) -> None:
         root = SYSTEM.parents[0]
         example = (root / "deploy" / "footbreak.env.example").read_text(encoding="utf-8")
+        crown_example = (root / "deploy" / "footbreak-crown.env.example").read_text(encoding="utf-8")
         health = (root / "deploy" / "health-check.sh").read_text(encoding="utf-8")
-        self.assertIn("INCIDENT_TELEGRAM_CHAT_ID=703318555", example)
-        self.assertIn("INCIDENT_TELEGRAM_CHAT_ID", health)
-        self.assertIn('= 703318555', health)
+        update = (root / "deploy" / "update.sh").read_text(encoding="utf-8")
+        self.assertIn("FOOTBREAK_TELEGRAM_ENABLED=0", example)
+        self.assertIn("INCIDENT_ALERT_ENABLED=0", example)
+        self.assertIn("CROWN_TELEGRAM_ENABLED=0", crown_example)
+        for key in (
+            "FOOTBREAK_TELEGRAM_ENABLED",
+            "INCIDENT_ALERT_ENABLED",
+            "CROWN_TELEGRAM_ENABLED",
+        ):
+            self.assertIn(f'upsert_env /etc/footbreak', update)
+            self.assertIn(f'${{{key}:-0}}" = 0', health)
 
     def test_preemption_is_suppressed_and_wrappers_share_the_systemd_key_boundary(self) -> None:
         with patch.object(alerts_module.subprocess, "run") as run:

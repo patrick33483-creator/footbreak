@@ -73,8 +73,21 @@ class DailyConditionReportTests(unittest.TestCase):
         self.assertIn("# 報告".encode(), body)
 
     def test_missing_telegram_credentials_fails_closed(self) -> None:
-        with patch.dict(report.os.environ, {}, clear=True):
+        with patch.dict(report.os.environ, {"FOOTBREAK_TELEGRAM_ENABLED": "1"}, clear=True):
             with self.assertRaises(RuntimeError):
+                report.telegram_credentials()
+
+    def test_retired_legacy_transport_fails_closed_even_with_credentials(self) -> None:
+        with patch.dict(
+            report.os.environ,
+            {
+                "FOOTBREAK_TELEGRAM_ENABLED": "0",
+                "TELEGRAM_BOT_TOKEN": "token",
+                "TELEGRAM_CHAT_ID": "123",
+            },
+            clear=True,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "disabled"):
                 report.telegram_credentials()
 
 

@@ -8,6 +8,17 @@ APP_DIR="/opt/footbreak"
 WEB_ROOT="/var/www/footbreak"
 BRANCH="${1:-main}"
 
+upsert_env() {
+  local file="$1" key="$2" value="$3" tmp
+  touch "$file"
+  chmod 600 "$file"
+  tmp="$(mktemp)"
+  grep -v -E "^[[:space:]]*(export[[:space:]]+)?${key}[[:space:]]*=" "$file" > "$tmp" || true
+  printf '%s=%s\n' "$key" "$value" >> "$tmp"
+  install -m 0600 "$tmp" "$file"
+  rm -f "$tmp"
+}
+
 crown_is_enabled_in_config() {
   # Read only the validation-gate assignment; never source an environment file
   # in this privileged deploy hook and never print its contents.
@@ -100,6 +111,11 @@ else
   git --no-pager log --oneline "$BEFORE..$AFTER" | sed -n '1,20p'
 fi
 
+echo "▸ 永久停用舊版 Footbreak、Crown 及事故 Telegram 通知"
+upsert_env /etc/footbreak.env FOOTBREAK_TELEGRAM_ENABLED 0
+upsert_env /etc/footbreak.env INCIDENT_ALERT_ENABLED 0
+upsert_env /etc/footbreak-crown.env CROWN_TELEGRAM_ENABLED 0
+
 echo "▸ 同步 Python 依賴"
 if [ -f requirements.txt ] && [ -x .venv/bin/pip ]; then
   .venv/bin/pip install -q -r requirements.txt
@@ -174,7 +190,7 @@ systemctl enable --now \
   footbreak-tick.timer footbreak-sweep.timer footbreak-settle.timer \
   footbreak-result-reconcile.timer footbreak-dashboard-self-heal.timer \
   footbreak-server-health-monitor.timer \
-  footbreak-daily-condition-report.timer direction-path-conditions.timer
+  direction-path-conditions.timer
 # The direction-path ledger is a local, read-only research worker.  It must
 # remain independent of the Crown prediction gate and survive a host that has
 # retained a disabled or masked unit state from an earlier setup/rollback.
@@ -240,29 +256,10 @@ systemctl is-active --quiet footbreak-server-health-monitor.timer || {
 # both the timer and any in-flight one-shot service on every deployment.
 systemctl disable --now telegram-silence-monitor.timer 2>/dev/null || true
 systemctl stop telegram-silence-monitor.service 2>/dev/null || true
-# The report is generated entirely on this host from locked local snapshots.
-# Reenable creates the durable timers.target symlink on both fresh and upgraded
-# servers.  Persistent=true makes a missed 12:15 HKT fire once after boot.
-install -d -o root -g root -m 0700 /var/lib/footbreak/daily-condition-reports
-systemctl unmask footbreak-daily-condition-report.timer 2>/dev/null || true
-systemctl reenable footbreak-daily-condition-report.timer
-systemctl restart footbreak-daily-condition-report.timer
-systemctl is-enabled --quiet footbreak-daily-condition-report.timer || {
-  systemctl show footbreak-daily-condition-report.timer \
-    -p LoadState -p ActiveState -p SubState -p UnitFileState -p Result
-  echo "ERROR: footbreak-daily-condition-report.timer did not become enabled" >&2
-  exit 1
-}
-systemctl is-active --quiet footbreak-daily-condition-report.timer || {
-  systemctl show footbreak-daily-condition-report.timer \
-    -p LoadState -p ActiveState -p SubState -p Result
-  echo "ERROR: footbreak-daily-condition-report.timer did not restart" >&2
-  exit 1
-}
-# Run once after deployment.  Per-window send state makes this idempotent, so
-# a later deployment regenerates the files but cannot duplicate either the
-# Telegram summary or document for an already delivered window.
-systemctl start footbreak-daily-condition-report.service
+# The legacy daily Telegram report is retired. Keep its historical unit files
+# for audit only, and stop both future fires and any in-flight one-shot.
+systemctl disable --now footbreak-daily-condition-report.timer 2>/dev/null || true
+systemctl stop footbreak-daily-condition-report.service 2>/dev/null || true
 systemctl enable crown-dashboard-api.service footbreak-dashboard-api.service
 systemctl restart crown-dashboard-api.service footbreak-dashboard-api.service
 # `systemctl is-active` can briefly report active while a crashing process is
