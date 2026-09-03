@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from crown.common import SETTLE_AFTER_SECONDS
+from stage_engine_v2.cli import _write_dashboard
 from stage_engine_v2.result_sync import (
     load_automatic_history_rows,
     merge_automatic_history_rows,
@@ -122,3 +123,22 @@ def test_automatic_result_rejects_verified_score_conflict() -> None:
     }]
     with pytest.raises(ValueError, match="conflicts with Crown history"):
         merge_automatic_history_rows(existing, automatic)
+
+
+def test_settlement_dashboard_can_skip_notification_path(
+    tmp_path, monkeypatch
+) -> None:
+    def _unexpected(*args, **kwargs):
+        raise AssertionError("settlement must not enter Telegram delivery")
+
+    monkeypatch.setattr("stage_engine_v2.cli.send_condition_alerts", _unexpected)
+    dashboard = tmp_path / "dashboard.json"
+    result = _write_dashboard(
+        {"fixtures": {}},
+        dashboard,
+        now_utc=datetime(2026, 9, 3, tzinfo=timezone.utc),
+        history_rows=[],
+        send_alerts=False,
+    )
+    assert result == []
+    assert dashboard.exists()

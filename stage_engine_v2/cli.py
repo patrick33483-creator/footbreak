@@ -177,6 +177,7 @@ def _write_dashboard(
     now_utc: datetime,
     history_rows: list[dict[str, Any]] | None = None,
     condition_sent_log_path: Path = DEFAULT_CONDITION_SENT_LOG,
+    send_alerts: bool = True,
 ) -> list[dict[str, Any]]:
     fixtures_out = []
     for slot in (ledger.get("fixtures") or {}).values():
@@ -240,7 +241,12 @@ def _write_dashboard(
     tmp = dashboard_path.with_suffix(dashboard_path.suffix + ".tmp")
     tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     tmp.replace(dashboard_path)
-    return send_condition_alerts(segmented_conditions, sent_log_path=condition_sent_log_path)
+    if not send_alerts:
+        return []
+    return send_condition_alerts(
+        segmented_conditions,
+        sent_log_path=condition_sent_log_path,
+    )
 
 
 def _load_history_rows(
@@ -371,6 +377,7 @@ def main(argv: list[str] | None = None) -> int:
                 automatic_results_path=Path(args.automatic_results),
             ),
             condition_sent_log_path=Path(args.condition_sent_log),
+            send_alerts=False,
         )
         json.dump(result, sys.stdout, ensure_ascii=False, indent=2)
         sys.stdout.write("\n")
