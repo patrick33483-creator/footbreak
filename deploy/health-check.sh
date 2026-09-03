@@ -73,6 +73,15 @@ if systemctl is-enabled --quiet telegram-silence-monitor.timer ||
 fi
 echo "OK retired timer telegram-silence-monitor.timer is disabled"
 
+if systemctl is-enabled --quiet footbreak-daily-condition-report.timer ||
+   systemctl is-active --quiet footbreak-daily-condition-report.timer; then
+  systemctl show footbreak-daily-condition-report.timer \
+    -p LoadState -p ActiveState -p SubState -p UnitFileState -p Result
+  echo "FAIL retired timer footbreak-daily-condition-report.timer is enabled or active" >&2
+  exit 1
+fi
+echo "OK retired timer footbreak-daily-condition-report.timer is disabled"
+
 if crown_is_enabled; then
   for unit in crown-round-update.timer crown-first-look-reconcile.timer crown-early-admission-reconcile.timer crown-tick.timer crown-sweep.timer crown-settle.timer; do
     systemctl is-enabled --quiet "$unit" || {
@@ -408,25 +417,21 @@ for name in TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID PINNAPI_API_KEY; do
   }
   echo "OK credential $name configured"
 done
-if [ "${INCIDENT_ALERT_ENABLED:-1}" = 1 ]; then
-  INCIDENT_PRIVATE_CHAT_ID="${INCIDENT_TELEGRAM_CHAT_ID:-703318555}"
-  [ "$INCIDENT_PRIVATE_CHAT_ID" = 703318555 ] || {
-    echo "FAIL private incident Telegram chat ID is not PPlai" >&2
-    exit 1
-  }
-  echo "OK private incident Telegram recipient configured"
-else
-  echo "OK private incident Telegram disabled by INCIDENT_ALERT_ENABLED=0"
-fi
-if crown_is_enabled; then
-  [ "${CROWN_TELEGRAM_ENABLED:-0}" = 1 ] || {
-    echo "FAIL Crown Telegram disabled" >&2
-    exit 1
-  }
-  echo "OK Crown Telegram enabled"
-else
-  echo "OK Crown Telegram not required while Crown is disabled"
-fi
+[ "${FOOTBREAK_TELEGRAM_ENABLED:-0}" = 0 ] || {
+  echo "FAIL legacy Footbreak Telegram is not disabled" >&2
+  exit 1
+}
+echo "OK legacy Footbreak Telegram disabled"
+[ "${INCIDENT_ALERT_ENABLED:-0}" = 0 ] || {
+  echo "FAIL legacy incident Telegram is not disabled" >&2
+  exit 1
+}
+echo "OK legacy incident Telegram disabled"
+[ "${CROWN_TELEGRAM_ENABLED:-0}" = 0 ] || {
+  echo "FAIL legacy Crown Telegram is not disabled" >&2
+  exit 1
+}
+echo "OK legacy Crown Telegram disabled"
 
 "$APP_DIR/.venv/bin/python3" - "$FOOTBREAK_DATA" "$CROWN_DATA" <<'PY'
 import json

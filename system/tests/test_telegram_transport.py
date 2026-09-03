@@ -146,6 +146,7 @@ class TelegramTransportTests(unittest.TestCase):
         context.__exit__ = Mock(return_value=False)
 
         with (
+            patch.dict(notify.os.environ, {"FOOTBREAK_TELEGRAM_ENABLED": "1"}),
             patch.object(notify, "CHAT_ID", "-123456"),
             patch.object(notify, "BOT_TOKEN", "token-value"),
             patch.object(notify.urllib.request, "urlopen", return_value=context) as urlopen,
@@ -158,4 +159,14 @@ class TelegramTransportTests(unittest.TestCase):
         payload = json.loads(request.data.decode())
         self.assertEqual(payload["chat_id"], "-123456")
         self.assertEqual(payload["parse_mode"], "HTML")
+        external_tool.assert_not_called()
+
+    def test_legacy_footbreak_transport_is_silent_by_default(self) -> None:
+        with (
+            patch.dict(notify.os.environ, {}, clear=True),
+            patch.object(notify.urllib.request, "urlopen") as urlopen,
+            patch.object(notify.subprocess, "run") as external_tool,
+        ):
+            self.assertFalse(notify.send("should not send"))
+        urlopen.assert_not_called()
         external_tool.assert_not_called()

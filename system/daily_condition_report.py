@@ -97,6 +97,10 @@ def load_state(path: Path) -> dict[str, Any]:
 
 
 def telegram_credentials() -> tuple[str, str]:
+    if os.environ.get("FOOTBREAK_TELEGRAM_ENABLED", "0").strip().lower() not in {
+        "1", "true", "yes", "on",
+    }:
+        raise RuntimeError("Legacy Footbreak Telegram is disabled")
     token = str(
         os.environ.get("TELEGRAM_BOT_TOKEN")
         or os.environ.get("CROWN_TELEGRAM_BOT_TOKEN")

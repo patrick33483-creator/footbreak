@@ -4,21 +4,11 @@ on:
   workflow_dispatch:
     inputs:
       action:
-        description: Safe audit, or the explicitly labelled one-shot system test
+        description: Read-only audit of retired legacy notification outboxes
         required: true
         default: audit
         type: choice
-        options: [audit, system-test, crown-condition2-demo]
-      test_id:
-        description: Required unique ID for system-test (never re-sent after acknowledgement)
-        required: false
-        type: string
-      enable_crown_telegram:
-        description: Set CROWN_TELEGRAM_ENABLED=1 before audit/test; does not enable Crown runner
-        required: true
-        default: "false"
-        type: choice
-        options: ["false", "true"]
+        options: [audit]
 
 concurrency:
   group: production-maintenance
@@ -44,82 +34,26 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
 
-      - name: Audit notification outboxes and optionally verify Telegram delivery
+      - name: Audit retired notification outboxes without delivery
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
           ACTION: ${{ inputs.action }}
-          TEST_ID: ${{ inputs.test_id }}
-          ENABLE_CROWN_TELEGRAM: ${{ inputs.enable_crown_telegram }}
         run: |
           set -euo pipefail
-          case "$ACTION" in audit|system-test|crown-condition2-demo) ;; *) exit 2;; esac
-          if [ "$ACTION" != audit ] && ! [[ "$TEST_ID" =~ ^[A-Za-z0-9._-]{8,96}$ ]]; then
-            echo "$ACTION requires an 8–96 character safe test_id" >&2
-            exit 2
-          fi
-          case "$ENABLE_CROWN_TELEGRAM" in true|false) ;; *) exit 2;; esac
+          [ "$ACTION" = audit ] || exit 2
           ssh -o BatchMode=yes -o ConnectTimeout=20 \
             -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
             "$DEPLOY_USER@$DEPLOY_HOST" \
-            "sudo env ACTION='$ACTION' TEST_ID='$TEST_ID' ENABLE_CROWN_TELEGRAM='$ENABLE_CROWN_TELEGRAM' bash -s" <<'REMOTE' | tee telegram-notification-maintenance.json
+            "sudo env ACTION='$ACTION' bash -s" <<'REMOTE' | tee telegram-notification-maintenance.json
           set -euo pipefail
-          if [ "$ENABLE_CROWN_TELEGRAM" = true ]; then
-            file=/etc/footbreak-crown.env
-            tmp="$(mktemp)"
-            grep -v '^CROWN_TELEGRAM_ENABLED=' "$file" > "$tmp" || true
-            printf 'CROWN_TELEGRAM_ENABLED=1\n' >> "$tmp"
-            install -m 0600 "$tmp" "$file"
-            rm -f "$tmp"
-          fi
           set -a
           [ ! -f /etc/footbreak.env ] || . /etc/footbreak.env
           [ ! -f /etc/footbreak-crown.env ] || . /etc/footbreak-crown.env
           set +a
-          if [ "$ACTION" = crown-condition2-demo ]; then
-            cd /opt/footbreak
-            PYTHONPATH=/opt/footbreak /opt/footbreak/.venv/bin/python3 - <<'PY'
-          import json
-          from crown.config import settings
-          from crown.notify import _send
-
-          text = "\n".join([
-              "【測試示範，非真實投注訊號】",
-              "【皇冠 Wilson #2】",
-              "20:00 測試聯賽",
-              "測試主隊 vs 測試客隊",
-              "",
-              "達標時點：T-30",
-              "皇冠訊號：入球大細 · 大 2.75 @1.95",
-              "Wilson 最低賠率要求：1.93",
-              "決定：投注",
-              "投注平台：皇冠",
-              "同一場 #2 只通知一次",
-          ])
-          response = _send(settings(), text, return_response=True)
-          if not response.get("ok"):
-              raise RuntimeError(f"Crown condition #2 demo failed: {response}")
-          print(json.dumps({
-              "generated_at": __import__("datetime").datetime.now(
-                  __import__("datetime").timezone.utc
-              ).isoformat(),
-              "safe_read_only": False,
-              "crown_condition2_demo": {
-                  "telegram_response_ok": True,
-                  "message_id": response.get("message_id"),
-                  "transport": response.get("transport"),
-              },
-          }, ensure_ascii=False))
-          PY
-            exit 0
-          fi
-          args=()
-          if [ "$ACTION" = system-test ]; then
-            args+=(--system-test-id "$TEST_ID")
-          fi
           cd /opt/footbreak
           PYTHONPATH=/opt/footbreak /opt/footbreak/.venv/bin/python3 \
-            deploy/telegram-notification-maintenance.py "${args[@]}"
+            deploy/telegram-notification-maintenance.py
           REMOTE
 
       - name: Upload maintenance evidence
