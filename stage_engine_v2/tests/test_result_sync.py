@@ -136,6 +136,64 @@ def test_automatic_result_rejects_verified_score_conflict() -> None:
         merge_automatic_history_rows(existing, automatic)
 
 
+def test_automatic_result_replaces_all_stale_pending_rows() -> None:
+    existing = [
+        {
+            "match_id": "123",
+            "stage": "T-5",
+            "result_status": "待賽果",
+            "score": None,
+            "market": "HDC",
+        },
+        {
+            "match_id": "123",
+            "stage": "T-5",
+            "result_status": "Pending",
+            "score": None,
+            "market": "HIL",
+        },
+        {
+            "match_id": "456",
+            "stage": "T-5",
+            "result_status": "待賽果",
+            "score": None,
+        },
+    ]
+    automatic = [{
+        "match_id": "123",
+        "stage": "T-5",
+        "result_status": "已核對",
+        "score": "2-1",
+        "market_grades": [{"market": "HDC"}, {"market": "HIL"}],
+    }]
+
+    merged = merge_automatic_history_rows(existing, automatic)
+
+    assert len(merged) == 2
+    assert [row["match_id"] for row in merged] == ["456", "123"]
+    settled = merged[1]
+    assert settled["result_status"] == "已核對"
+    assert settled["score"] == "2-1"
+    assert len(settled["market_grades"]) == 2
+
+
+def test_automatic_result_does_not_duplicate_matching_verified_row() -> None:
+    existing = [{
+        "match_id": "123",
+        "stage": "T-5",
+        "result_status": "已核實",
+        "score": "2-1",
+    }]
+    automatic = [{
+        "match_id": "123",
+        "stage": "T-5",
+        "result_status": "已核對",
+        "score": "2-1",
+    }]
+
+    assert merge_automatic_history_rows(existing, automatic) == existing
+
+
 def test_settlement_dashboard_can_skip_notification_path(
     tmp_path, monkeypatch
 ) -> None:

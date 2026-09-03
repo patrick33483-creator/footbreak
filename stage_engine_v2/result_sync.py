@@ -426,7 +426,7 @@ def merge_automatic_history_rows(
     history_rows: list[dict[str, Any]],
     automatic_rows: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Prefer existing verified Crown rows and reject score disagreements."""
+    """Replace stale pending rows while preserving verified Crown results."""
     verified: dict[tuple[str, str], str] = {}
     for row in history_rows:
         if row.get("result_status") not in {"已核對", "已核實"}:
@@ -435,15 +435,25 @@ def merge_automatic_history_rows(
         if all(key):
             verified[key] = str(row.get("score") or "")
     accepted = []
+    automatic_keys: set[tuple[str, str]] = set()
     for row in automatic_rows:
         key = (str(row.get("match_id") or ""), str(row.get("stage") or ""))
+        if not all(key):
+            continue
         existing = verified.get(key)
         if existing:
             if existing != str(row.get("score") or ""):
                 raise ValueError(f"automatic result conflicts with Crown history: {key[0]}:{key[1]}")
             continue
+        automatic_keys.add(key)
         accepted.append(row)
-    return [*history_rows, *accepted]
+    retained = []
+    for row in history_rows:
+        key = (str(row.get("match_id") or ""), str(row.get("stage") or ""))
+        if key in automatic_keys:
+            continue
+        retained.append(row)
+    return [*retained, *accepted]
 
 
 __all__ = [
