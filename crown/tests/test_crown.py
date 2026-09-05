@@ -4043,22 +4043,52 @@ class CrownSafetyTests(unittest.TestCase):
             dashboard.assert_called_once_with(config)
             archive.assert_not_called()
 
-    def test_settlement_does_not_repeat_history_result_providers(self) -> None:
+    def test_settlement_reconciles_history_and_rebuilds_dashboard(self) -> None:
         import crown.run as crown_run
 
         with tempfile.TemporaryDirectory() as directory:
             config = replace(settings(), state_dir=Path(directory), web_root=Path(directory) / "web")
+            ledger = {"watch": {}}
             with patch("crown.run.settings", return_value=config), \
                  patch("crown.run.run", return_value={"ok": True, "mode": "settle"}), \
-                 patch("crown.run.load_ledger", return_value={"watch": {}}), \
+                 patch("crown.run.load_ledger", return_value=ledger), \
                  patch("crown.run.update_history") as update, \
                  patch("crown.run.write_dashboard_data") as dashboard, \
                  patch("crown.run.notify_new", return_value=0) as notify, \
                  patch("sys.argv", ["crown.run", "settle"]):
                 self.assertEqual(crown_run.main(), 0)
-            update.assert_not_called()
+            update.assert_called_once_with(config, ledger)
             dashboard.assert_called_once_with(config)
             notify.assert_not_called()
+
+    def test_history_detail_budget_is_bounded_and_configurable(self) -> None:
+        from crown.prediction_history import _result_detail_request_budget
+
+        with patch.dict(
+            os.environ,
+            {"CROWN_HISTORY_RESULT_DETAIL_BUDGET": "20"},
+        ):
+            self.assertEqual(_result_detail_request_budget(), 20)
+        with patch.dict(
+            os.environ,
+            {"CROWN_HISTORY_RESULT_DETAIL_BUDGET": "999"},
+        ):
+            self.assertEqual(_result_detail_request_budget(), 100)
+        with patch.dict(
+            os.environ,
+            {"CROWN_HISTORY_RESULT_DETAIL_BUDGET": "invalid"},
+        ):
+            self.assertEqual(_result_detail_request_budget(), 3)
+
+    def test_history_reconciliation_prioritizes_newest_completed_fixture(self) -> None:
+        from crown.prediction_history import _result_reconciliation_order
+
+        rows = [
+            {"match_id": "older", "stage": "T-5", "kickoff": "2026-09-01T12:00:00+08:00"},
+            {"match_id": "newer", "stage": "T-5", "kickoff": "2026-09-05T12:00:00+08:00"},
+        ]
+        rows.sort(key=_result_reconciliation_order, reverse=True)
+        self.assertEqual([row["match_id"] for row in rows], ["newer", "older"])
 
     def test_tick_skips_telegram_when_shared_deadline_is_exhausted(self) -> None:
         import crown.run as crown_run
