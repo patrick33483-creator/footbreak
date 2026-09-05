@@ -7,6 +7,9 @@ on:
         description: "打 UNBLOCK_CROWN_SETTLE_20260906 確認"
         required: true
         type: string
+  # push trigger 只用來令 GitHub 註冊 workflow，不執行任何對生產的寫入
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
 
 concurrency:
   group: production-maintenance
@@ -22,6 +25,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: 設定 SSH
+        if: github.event_name == 'workflow_dispatch'
         env:
           DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
@@ -31,15 +35,21 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
 
-      - name: 檢查 confirmation
+      - name: 檢查 confirmation（workflow_dispatch 必須；push trigger 直接停位）
         env:
+          EVENT: ${{ github.event_name }}
           CONFIRMATION: ${{ inputs.confirmation }}
         run: |
+          if [ "$EVENT" != "workflow_dispatch" ]; then
+            echo "push trigger 不執行任何寫入—仅用於註冊 workflow"
+            exit 0
+          fi
           if [ "$CONFIRMATION" != "UNBLOCK_CROWN_SETTLE_20260906" ]; then
             echo "缺少或錯誤 confirmation"; exit 1
           fi
 
       - name: 執行解除阻塞
+        if: github.event_name == 'workflow_dispatch'
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
