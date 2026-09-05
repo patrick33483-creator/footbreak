@@ -106,6 +106,57 @@ jobs:
           python3 -m json.tool /tmp/stage_engine_v2_ledger.json >/dev/null
           python3 -m json.tool /tmp/stage_engine_v2_operator_results.json >/dev/null
 
+      - name: 核對 9 月 5 日 result overlay（唯讀）
+        run: |
+          python3 - <<'PY'
+          import json
+
+          dashboard = json.load(open("/tmp/stage_engine_v2_data.json", encoding="utf-8"))
+          overlay = json.load(open(
+              "/tmp/stage_engine_v2_operator_results.json", encoding="utf-8"
+          ))
+          expected_scores = {
+              "2999444":"2-1","2999445":"2-1","3073546":"0-2","3017137":"5-1",
+              "3017139":"2-0","3017135":"0-0","3074121":"0-2","3011378":"0-3",
+              "3072828":"0-0","3017504":"1-1","2952571":"5-0","3074031":"2-0",
+              "3046401":"3-2","3022530":"3-1","3074014":"1-1","3067704":"3-0",
+              "3040108":"2-0","3040109":"2-0","3044385":"2-2","3037897":"3-3",
+              "3040113":"2-1","3037794":"4-0","3021974":"1-4","3034775":"1-2",
+              "3062073":"0-0","2998236":"0-2","3026028":"0-3","3077486":"3-3",
+              "3062727":"1-1","3062632":"1-1","3000937":"1-1","2939044":"1-1",
+              "3027730":"2-1","2939043":"1-1","3019505":"0-2","3071701":"0-3",
+              "3083995":"1-0","2997393":"0-0","2957032":"1-2",
+          }
+          excluded = {"3073570", "3041547", "2920125", "3074431"}
+          assert overlay["batch_id"] == "crown-operator-result-overlay-20260905-v1"
+          assert len(overlay["results"]) == 79
+          observations = dashboard["segmented_conditions"]["matching_observations"]
+          actual_scores = {
+              str(row["match_id"]): row.get("score")
+              for row in observations
+              if str(row.get("match_id")) in expected_scores
+          }
+          assert actual_scores == expected_scores, (actual_scores, expected_scores)
+          excluded_rows = [
+              row for row in observations if str(row.get("match_id")) in excluded
+          ]
+          assert {str(row["match_id"]) for row in excluded_rows} == excluded
+          assert all(row.get("result_status") == "待賽果" for row in excluded_rows)
+          conditions = {
+              row["id"]: row["prospective"]
+              for row in dashboard["segmented_conditions"]["public_conditions"]
+          }
+          print(json.dumps({
+              "live_verification": "ok",
+              "generated_at_hkt": dashboard["generated_at_hkt"],
+              "overlay_batch_id": overlay["batch_id"],
+              "overlay_fixtures": len(overlay["results"]),
+              "new_verified_scores": actual_scores,
+              "intentionally_pending": sorted(excluded),
+              "conditions": conditions,
+          }, ensure_ascii=False, indent=2, sort_keys=True))
+          PY
+
       - name: 上傳快照
         uses: actions/upload-artifact@v4
         with:
