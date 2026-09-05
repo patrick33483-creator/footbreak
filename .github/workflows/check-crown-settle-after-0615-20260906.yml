@@ -1,0 +1,103 @@
+name: 查 06:15 crown-settle 後狀態
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: 設定 SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: 查狀態
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=8 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'bash -s' <<'REMOTE'
+          set +e
+          echo "===== 1. crown-settle 最近 30 條 log (過去 20 分鐘) ====="
+          sudo journalctl -u crown-settle.service --no-pager --since '20 minutes ago' 2>&1 | tail -30
+          echo
+          echo "===== 2. 現時 crown-settle 狀態 ====="
+          sudo systemctl is-active crown-settle.service 2>&1
+          sudo systemctl show crown-settle.service --property=ExecMainStatus,Result,ConditionResult,ActiveEnterTimestamp,InactiveEnterTimestamp --no-pager 2>&1
+          echo
+          echo "===== 3. Sentinel 現況 ====="
+          sudo ls -la /run/crown-t5-priority 2>&1 | head -2
+          echo
+          echo "===== 4. ledger + dashboard mtime ====="
+          sudo ls -la /var/lib/footbreak/crown/ledger.json /var/www/crown/data.json 2>&1
+          echo
+          echo "===== 5. ledger 賽果統計 (正確探索) ====="
+          sudo /opt/footbreak/.venv/bin/python3 - <<'PY' 2>&1
+          import json
+          from collections import Counter
+          d = json.load(open('/var/lib/footbreak/crown/ledger.json'))
+          top = list(d.keys()) if isinstance(d, dict) else []
+          print(f"top-level keys: {top[:20]}")
+          watch = d.get('watch', {}) if isinstance(d, dict) else {}
+          print(f"total watch entries: {len(watch)}")
+          sample_keys = None
+          for mid, ent in watch.items():
+              if isinstance(ent, dict):
+                  sample_keys = list(ent.keys())
+                  break
+          print(f"sample entry keys: {sample_keys[:40] if sample_keys else None}")
+          fields = ['result', 'result_status', 'settled', 'score', 'final_score', 'ft_score',
+                    'home_score', 'away_score', 'ht_score', 'goals', 'outcome',
+                    'settlement_status', 'settled_at', 'has_result', 'final', 'ended',
+                    'status', 'state', 'match_result', 'score_home', 'score_away']
+          present = {f: 0 for f in fields}
+          for mid, ent in watch.items():
+              if not isinstance(ent, dict): continue
+              for f in fields:
+                  v = ent.get(f)
+                  if v not in (None, "", {}, [], 0):
+                      present[f] += 1
+          print("Non-empty result-related fields:")
+          for k, v in present.items():
+              if v > 0: print(f"  {k}: {v}")
+          # 睇下有無其他 top-level 可能係 settled/verified list
+          for k in top:
+              v = d.get(k)
+              if isinstance(v, (list, dict)):
+                  print(f"  {k}: type={type(v).__name__} len={len(v)}")
+          PY
+          echo
+          echo "===== 6. Data.json 內 dashboard 顯示 (pending/verified count) ====="
+          sudo /opt/footbreak/.venv/bin/python3 - <<'PY' 2>&1
+          import json
+          d = json.load(open('/var/www/crown/data.json'))
+          top = list(d.keys()) if isinstance(d, dict) else []
+          print(f"top-level: {top[:30]}")
+          # 找 hit rate / count 之類
+          for k in ['summary', 'stats', 'meta', 'accuracy', 'hit_rate', 'accumulated', 'verified', 'pending']:
+              if k in d:
+                  v = d[k]
+                  if isinstance(v, (int, float, str)):
+                      print(f"  {k}: {v}")
+                  elif isinstance(v, dict):
+                      print(f"  {k}: keys={list(v.keys())[:20]}")
+                  elif isinstance(v, list):
+                      print(f"  {k}: list len={len(v)}")
+          PY
+          echo
+          echo "===== DONE ====="
+          REMOTE
