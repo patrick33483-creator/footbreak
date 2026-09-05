@@ -1,0 +1,236 @@
+name: Crown V2 operator result overlay
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "Required: APPLY_CROWN_V2_OPERATOR_RESULTS_20260905"
+        required: true
+        type: string
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout exact approved update branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
+          fetch-depth: 1
+
+      - name: Package V2 code and verified overlay
+        run: |
+          set -euo pipefail
+          test "${{ inputs.confirmation }}" = APPLY_CROWN_V2_OPERATOR_RESULTS_20260905
+          test -s analysis/crown_v2_operator_results_20260905.json
+          tar czf /tmp/crown-v2-operator-overlay.tgz \
+            stage_engine_v2 \
+            analysis/crown_v2_operator_results_20260905.json
+
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: Upload exact package
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          scp /tmp/crown-v2-operator-overlay.tgz \
+            "$DEPLOY_USER@$DEPLOY_HOST:/tmp/crown-v2-operator-overlay.tgz"
+
+      - name: Validate, apply, and verify persistent settlement
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            -o ServerAliveInterval=20 -o ServerAliveCountMax=90 \
+            "$DEPLOY_USER@$DEPLOY_HOST" "sudo bash -s" <<'REMOTE'
+          set -euo pipefail
+          python=/opt/footbreak/.venv/bin/python3
+          [ -x "$python" ] || python=python3
+          live=/opt/footbreak/stage_engine_v2
+          state=/var/lib/footbreak/stage_engine_v2
+          ledger="$state/ledger.json"
+          overlay="$state/operator_results.json"
+          dashboard=/var/www/stage_engine_v2/data.json
+          timer=stage-engine-v2-tick.timer
+          service=stage-engine-v2-tick.service
+          stamp="$(TZ=Asia/Hong_Kong date +%Y%m%d-%H%M%S)"
+          work="$(mktemp -d)"
+          backup_root="/var/lib/footbreak/backups/crown-v2-operator-overlay-$stamp"
+          timer_was_active=0
+          applied=0
+
+          cleanup() {
+            rc=$?
+            if [ "$rc" -ne 0 ] && [ "$applied" -eq 1 ]; then
+              systemctl stop "$timer" "$service" || true
+              rm -rf "$live.failed-$stamp"
+              if [ -d "$live" ]; then mv "$live" "$live.failed-$stamp"; fi
+              if [ -d "$backup_root/stage_engine_v2" ]; then
+                cp -a "$backup_root/stage_engine_v2" "$live"
+              fi
+              if [ -f "$backup_root/operator_results.json" ]; then
+                install -m 0600 "$backup_root/operator_results.json" "$overlay"
+              else
+                rm -f "$overlay"
+              fi
+              if [ -f "$backup_root/data.json" ]; then
+                install -m 0644 "$backup_root/data.json" "$dashboard"
+              fi
+            fi
+            if [ "$timer_was_active" -eq 1 ]; then
+              systemctl start "$timer" || true
+            fi
+            rm -rf "$work"
+            exit "$rc"
+          }
+          trap cleanup EXIT
+
+          test -s /tmp/crown-v2-operator-overlay.tgz
+          test -d "$live"
+          test -s "$ledger"
+          mkdir -p "$work/package" "$backup_root"
+          tar xzf /tmp/crown-v2-operator-overlay.tgz -C "$work/package"
+          manifest="$work/package/analysis/crown_v2_operator_results_20260905.json"
+          test -s "$manifest"
+
+          if systemctl is-active --quiet "$timer"; then timer_was_active=1; fi
+          systemctl stop "$timer" || true
+          systemctl stop "$service" || true
+          cp -a "$live" "$backup_root/stage_engine_v2"
+          if [ -f "$overlay" ]; then cp -a "$overlay" "$backup_root/operator_results.json"; fi
+          if [ -f "$dashboard" ]; then cp -a "$dashboard" "$backup_root/data.json"; fi
+
+          PYTHONPATH="$work/package:/opt/footbreak" "$python" - "$ledger" "$manifest" <<'PY'
+          import json, sys
+          from pathlib import Path
+          from stage_engine_v2.operator_results import load_operator_history_rows
+          from stage_engine_v2.segmented_conditions import build_segmented_conditions
+
+          ledger = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          manifest = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
+          rows = load_operator_history_rows(Path(sys.argv[2]), ledger)
+          assert len({row["match_id"] for row in rows}) == 79
+          payload = build_segmented_conditions(ledger, rows)
+          expected_scores = {
+              str(row["match_id"]): f'{row["home_score"]}-{row["away_score"]}'
+              for row in manifest["results"] if row.get("evidence_urls")
+          }
+          actual = {
+              str(row["match_id"]): row["score"]
+              for row in payload["matching_observations"]
+              if str(row.get("match_id")) in expected_scores
+          }
+          assert len(expected_scores) == 39
+          assert actual == expected_scores, (actual, expected_scores)
+          print(json.dumps({"dry_run": "ok", "fixtures": 79, "new_scores": actual},
+                           ensure_ascii=False, sort_keys=True))
+          PY
+
+          new_live="/opt/footbreak/stage_engine_v2.new-$stamp"
+          rm -rf "$new_live"
+          cp -a "$work/package/stage_engine_v2" "$new_live"
+          chown -R footbreak:footbreak "$new_live" 2>/dev/null || true
+          mv "$live" "/opt/footbreak/stage_engine_v2.previous-$stamp"
+          mv "$new_live" "$live"
+          install -m 0600 "$manifest" "$overlay"
+          applied=1
+
+          systemctl start "$service"
+          "$python" - "$dashboard" "$manifest" "$backup_root" <<'PY'
+          import hashlib, json, sys
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          dashboard_path, manifest_path, backup_root = map(Path, sys.argv[1:])
+          payload = json.loads(dashboard_path.read_text(encoding="utf-8"))
+          manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+          expected_scores = {
+              str(row["match_id"]): f'{row["home_score"]}-{row["away_score"]}'
+              for row in manifest["results"] if row.get("evidence_urls")
+          }
+          observations = payload["segmented_conditions"]["matching_observations"]
+          scores = {
+              str(row["match_id"]): row.get("score")
+              for row in observations if str(row.get("match_id")) in expected_scores
+          }
+          settlements = {
+              str(row["match_id"]): row.get("settlement")
+              for row in observations if str(row.get("match_id")) in expected_scores
+          }
+          assert len(expected_scores) == 39
+          assert scores == expected_scores, (scores, expected_scores)
+          assert all(settlements.values()), settlements
+          audit = {
+              "schema_version": 1,
+              "applied_at_utc": datetime.now(timezone.utc).isoformat(),
+              "batch_id": manifest["batch_id"],
+              "manifest_sha256": hashlib.sha256(
+                  manifest_path.read_bytes()
+              ).hexdigest(),
+              "fixtures": 79,
+              "new_verified_fixtures": 39,
+              "excluded": manifest["excluded"],
+              "settlements": settlements,
+              "scores": scores,
+              "dashboard_generated_at_utc": payload["generated_at_utc"],
+              "backup_root": str(backup_root),
+          }
+          Path("/var/lib/footbreak/stage_engine_v2/"
+               "operator_results_20260905_audit.json").write_text(
+              json.dumps(audit, ensure_ascii=False, indent=2, sort_keys=True),
+              encoding="utf-8",
+          )
+          print(json.dumps(audit, ensure_ascii=False, indent=2, sort_keys=True))
+          PY
+
+          if [ "$timer_was_active" -eq 1 ]; then
+            systemctl start "$timer"
+          fi
+          sleep 40
+          systemctl is-active --quiet "$timer"
+          systemctl is-failed --quiet "$service" && exit 1 || true
+          "$python" - "$dashboard" "$manifest" <<'PY'
+          import json, sys
+          payload = json.load(open(sys.argv[1], encoding="utf-8"))
+          manifest = json.load(open(sys.argv[2], encoding="utf-8"))
+          expected_scores = {
+              str(row["match_id"]): f'{row["home_score"]}-{row["away_score"]}'
+              for row in manifest["results"] if row.get("evidence_urls")
+          }
+          actual = {
+              str(row["match_id"]): row.get("score")
+              for row in payload["segmented_conditions"]["matching_observations"]
+              if str(row.get("match_id")) in expected_scores
+          }
+          assert actual == expected_scores, (actual, expected_scores)
+          print(json.dumps({
+              "persistence_check": "ok",
+              "fixtures": len(actual),
+              "generated_at_utc": payload["generated_at_utc"],
+          }, ensure_ascii=False))
+          PY
+          trap - EXIT
+          rm -rf "$work"
+          echo "Crown V2 operator overlay applied and verified: $backup_root"
+          REMOTE
+
+      - name: Cleanup SSH key
+        if: always()
+        run: shred -u ~/.ssh/id_ed25519 2>/dev/null || rm -f ~/.ssh/id_ed25519
