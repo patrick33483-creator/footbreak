@@ -49,6 +49,8 @@ def _path(config: Settings):
 _SCOREABLE_MARKETS = {"HDC", "HIL", "CHL"}
 _CORNER_RESULT_RETRY_DAYS = 7
 _RESULT_DETAIL_REQUEST_BUDGET = 3
+_RESULT_DETAIL_REQUEST_BUDGET_ENV = "CROWN_HISTORY_RESULT_DETAIL_BUDGET"
+_RESULT_DETAIL_REQUEST_BUDGET_MAX = 100
 _TITAN_RESULT_PASS_SECONDS = 30.0
 _HKJC_RESULT_PASS_SECONDS = 45.0
 _HKJC_RESULT_GRACE_SECONDS = 6 * 60 * 60
@@ -56,6 +58,29 @@ _TERMINAL_RESULT_SOURCES = {
     "hkjc_official_exact_id_terminal_status",
     "titan_exact_id_terminal_status",
 }
+
+
+def _result_detail_request_budget() -> int:
+    """Return a bounded exact-ID recovery budget for this history pass."""
+    raw = os.environ.get(
+        _RESULT_DETAIL_REQUEST_BUDGET_ENV,
+        str(_RESULT_DETAIL_REQUEST_BUDGET),
+    )
+    try:
+        budget = int(raw)
+    except (TypeError, ValueError):
+        budget = _RESULT_DETAIL_REQUEST_BUDGET
+    return min(_RESULT_DETAIL_REQUEST_BUDGET_MAX, max(0, budget))
+
+
+def _result_reconciliation_order(row: dict[str, Any]) -> tuple[float, str, str]:
+    """Prefer recent completed fixtures while keeping deterministic stage ties."""
+    kickoff = parse_time(row.get("kickoff_hkt") or row.get("kickoff"))
+    return (
+        kickoff.timestamp() if kickoff is not None else float("-inf"),
+        str(row.get("match_id") or ""),
+        str(row.get("stage") or ""),
+    )
 
 
 class HistoryShapeConflict(ValueError):
@@ -1034,6 +1059,12 @@ def grade_history(config: Settings) -> dict[str, Any]:
         unresolved_result = row.get("result_status") not in {"已核對", "不計"}
         if unresolved_result or pending_corner_result(row, kickoff):
             due.append(row)
+    # Exact-ID detail recovery is intentionally bounded.  Work newest-first so
+    # the public V2 condition hit rates do not remain stale behind a large
+    # historical backlog. Rows for the same fixture share TitanClient's cache,
+    # so one request settles every retained stage without weakening identity
+    # verification.
+    due.sort(key=_result_reconciliation_order, reverse=True)
     dates = {
         parse_time(row.get("kickoff")).strftime("%Y-%m-%d")
         for row in due if parse_time(row.get("kickoff"))
@@ -1045,7 +1076,8 @@ def grade_history(config: Settings) -> dict[str, Any]:
     titan_error = None
     official_error = None
     titan_client = TitanClient(config)
-    titan_client.limit_result_detail_requests(_RESULT_DETAIL_REQUEST_BUDGET)
+    result_detail_budget = _result_detail_request_budget()
+    titan_client.limit_result_detail_requests(result_detail_budget)
     try:
         titan_rows = (
             titan_client.results(dates, max_seconds=_TITAN_RESULT_PASS_SECONDS)
@@ -1176,6 +1208,7 @@ def grade_history(config: Settings) -> dict[str, Any]:
         "graded_now": graded_now,
         "excluded_now": excluded_now,
         "terminal_exclusions_backfilled": exclusions_backfilled,
+        "result_detail_budget": result_detail_budget,
         "corner_detail": dict(sorted(corner_detail_reasons.items())),
         "unresolved": sum(
             row.get("result_status") not in {"已核對", "不計"}

@@ -17,6 +17,11 @@ ExecStart=/opt/footbreak/deploy/crown-run.sh settle
 # cgroup-only last-resort backstop.
 Environment=CROWN_SETTLE_PASS_DEADLINE_SECONDS=120
 Environment=CROWN_SETTLE_PROVIDER_PASS_DEADLINE_SECONDS=90
+# The history reconciler falls back to Titan's exact fixture-detail endpoint
+# only after the bounded schedule/official result snapshots miss. One exact ID
+# is cached across all retained prediction stages. This cap lets current V2
+# condition results catch up without an unbounded provider fan-out.
+Environment=CROWN_HISTORY_RESULT_DETAIL_BUDGET=20
 TimeoutStartSec=900
 # A timeout or urgent T-5 preemption must terminate Python and every provider
 # helper in this unit's cgroup. The runner lock is then released by its shell;

@@ -709,10 +709,11 @@ def main() -> int:
                     result["dashboard_projection_warning"] = "deferred_tick_deadline"
             else:
                 result["dashboard_projection_warning"] = "deferred_tick_deadline"
-        elif args.mode == "sweep":
-            # Settlement already fetches one bounded, exact-ID provider
-            # snapshot.  Defer history grading to sweep rather than repeat
-            # Titan/HKJC result reads in the same settlement invocation.
+        elif args.mode in {"sweep", "settle"}:
+            # Both periodic paths must reconcile the all-prediction history.
+            # Sweep is lower priority and may be preempted by an urgent T-5;
+            # settle is the independent retry path that keeps V2 condition
+            # scores current. Provider matching remains strict-ID/fail-closed.
             update_history(config, ledger)
     except Exception as exc:
         history_warning = f"prediction_history_{type(exc).__name__}"
