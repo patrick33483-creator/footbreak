@@ -1,0 +1,134 @@
+name: 解除皇冠結算阻塞 20260906
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "打 UNBLOCK_CROWN_SETTLE_20260906 確認"
+        required: true
+        type: string
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  unblock:
+    name: 清 stale T-5 sentinel 並手動觸發一次 crown-settle
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: 設定 SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: 檢查 confirmation
+        env:
+          CONFIRMATION: ${{ inputs.confirmation }}
+        run: |
+          if [ "$CONFIRMATION" != "UNBLOCK_CROWN_SETTLE_20260906" ]; then
+            echo "缺少或錯誤 confirmation"; exit 1
+          fi
+
+      - name: 執行解除阻塞
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=40 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'bash -s' <<'REMOTE'
+          set +e
+          echo "===== BEFORE ====="
+          echo "--- sentinel file ---"
+          sudo ls -la /run/crown-t5-priority 2>&1
+          echo "--- crown-settle.service status (short) ---"
+          sudo systemctl is-active crown-settle.service 2>&1
+          sudo systemctl show crown-settle.service --property=ConditionResult,Result,ExecMainStatus --no-pager 2>&1
+          echo "--- last 5 log ---"
+          sudo journalctl -u crown-settle.service --no-pager -n 5 2>&1 | tail -10
+          echo
+          echo "===== ACTION 1: 檢查 sentinel age ====="
+          if [ -e /run/crown-t5-priority ]; then
+            age=$(( $(date +%s) - $(sudo stat -c %Y /run/crown-t5-priority) ))
+            echo "sentinel age: ${age}s"
+            if [ "$age" -gt 900 ]; then
+              echo "→ sentinel 老過 15 分鐘、判定 stale，準備清除"
+              sudo rm -f /run/crown-t5-priority && echo "已清 /run/crown-t5-priority"
+            else
+              echo "→ sentinel 仲新（<15 分鐘），保守起見唔清"
+            fi
+          else
+            echo "sentinel 已經冇"
+          fi
+          echo
+          echo "===== ACTION 2: reset-failed crown-settle ====="
+          sudo systemctl reset-failed crown-settle.service 2>&1
+          echo
+          echo "===== ACTION 3: 手動 start crown-settle.service ====="
+          sudo systemctl start crown-settle.service 2>&1
+          rc=$?
+          echo "systemctl start rc=$rc"
+          echo
+          echo "===== 等 60 秒俾佢跑 ====="
+          for i in 1 2 3 4 5 6; do
+            sleep 10
+            act=$(sudo systemctl is-active crown-settle.service 2>&1)
+            sub=$(sudo systemctl is-failed crown-settle.service 2>&1)
+            echo "  [t+$((i*10))s] active=$act failed=$sub"
+            if [ "$act" = "inactive" ] || [ "$act" = "failed" ]; then break; fi
+          done
+          echo
+          echo "===== AFTER ====="
+          echo "--- crown-settle.service tail log ---"
+          sudo journalctl -u crown-settle.service --no-pager -n 30 --since '5 minutes ago' 2>&1 | tail -40
+          echo
+          echo "--- crown ledger stats ---"
+          sudo /opt/footbreak/.venv/bin/python3 - <<'PY' 2>&1 | tail -30
+          import json, os
+          from collections import Counter
+          from datetime import datetime, timedelta, timezone
+          HKT = timezone(timedelta(hours=8))
+          path = "/var/lib/footbreak/crown/ledger.json"
+          d = json.load(open(path))
+          watch = d.get("watch", {}) if isinstance(d, dict) else {}
+          print(f"watch entries: {len(watch)}")
+          # In watch structure: result / verified fields
+          c = Counter()
+          overdue_pending = 0
+          verified = 0
+          now = datetime.now(HKT)
+          for mid, ent in list(watch.items())[:100000]:
+              if not isinstance(ent, dict): continue
+              rs = ent.get("result_status") or ent.get("status") or ""
+              c[str(rs)] += 1
+              ko = ent.get("kickoff_hkt") or ent.get("kickoff")
+              has_result = bool(ent.get("home_score") is not None or ent.get("final_score") or ent.get("score"))
+              if has_result: verified += 1
+              if ko and not has_result:
+                  try:
+                      k = datetime.fromisoformat(str(ko))
+                      if k.tzinfo is None: k = k.replace(tzinfo=HKT)
+                      if k < now - timedelta(hours=3): overdue_pending += 1
+                  except Exception: pass
+          print("status distribution:")
+          for k,v in c.most_common(10): print(f"  {k!r}: {v}")
+          print(f"verified with score: {verified}")
+          print(f"overdue pending (kickoff > 3h ago, no score): {overdue_pending}")
+          PY
+          echo
+          echo "--- /var/www/crown/data.json mtime ---"
+          sudo ls -la /var/www/crown/data.json 2>&1
+          echo
+          echo "===== DONE ====="
+          REMOTE
