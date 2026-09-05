@@ -1,0 +1,62 @@
+name: 診斷 T-5 sentinel age pattern 20260906
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: 設定 SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: 觀察 sentinel 兩分鐘生命週期
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=8 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'bash -s' <<'REMOTE'
+          set +e
+          echo "===== 1. 現時 sentinel + T-5 相關 unit 狀態 ====="
+          sudo ls -la /run/crown-t5-priority 2>&1
+          sudo systemctl list-timers --all | grep -iE 'crown' 2>&1 | head -20
+          echo
+          echo "===== 2. 邊個 process / unit 會 touch sentinel? ====="
+          sudo grep -rn 'crown-t5-priority' /opt/footbreak/deploy/ /opt/footbreak/crown/ /etc/systemd/system/crown* 2>/dev/null | head -30
+          echo
+          echo "===== 3. crown-tick 最近 log 睇下 sentinel 生命週期 ====="
+          sudo journalctl -u crown-tick.service --no-pager -n 60 --since '10 minutes ago' 2>&1 | grep -iE 'sentinel|priority|t-5|T5|guard' | head -30
+          echo
+          echo "===== 4. 每 10 秒抽樣 sentinel 存在 + age，跑 2 分鐘 ====="
+          for i in $(seq 1 12); do
+            ts=$(date '+%H:%M:%S')
+            if [ -e /run/crown-t5-priority ]; then
+              age=$(( $(date +%s) - $(sudo stat -c %Y /run/crown-t5-priority) ))
+              size=$(sudo stat -c %s /run/crown-t5-priority)
+              echo "  [$ts] EXISTS age=${age}s size=${size}"
+            else
+              echo "  [$ts] ABSENT"
+            fi
+            sleep 10
+          done
+          echo
+          echo "===== 5. 觀察期內 crown-settle timer 有無被 skip ====="
+          sudo journalctl -u crown-settle.service --no-pager --since '3 minutes ago' 2>&1 | tail -20
+          echo
+          echo "===== DONE ====="
+          REMOTE
