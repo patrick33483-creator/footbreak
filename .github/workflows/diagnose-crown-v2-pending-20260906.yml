@@ -2,6 +2,8 @@ name: 診斷皇冠 V2 待賽果 20260906
 
 on:
   workflow_dispatch:
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
 
 permissions:
   contents: read
