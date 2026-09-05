@@ -88,8 +88,11 @@ jobs:
             echo "ERROR: script sha mismatch (expected $SCRIPT_SHA, got $actual)" >&2
             exit 1
           fi
+          sudo install -m 0600 -o "$(id -u)" -g "$(id -g)" \
+            /var/lib/footbreak/crown/prediction_history.json \
+            "$REMOTE_WORK/prediction_history.json"
           /opt/footbreak/.venv/bin/python3 backfill_titan007_scores.py \
-            --history /var/lib/footbreak/crown/prediction_history.json \
+            --history "$REMOTE_WORK/prediction_history.json" \
             --mode "$MODE" \
             --lookback-days "$LOOKBACK_DAYS" \
             --out "$REMOTE_WORK/report.json"
