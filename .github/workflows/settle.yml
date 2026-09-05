@@ -68,7 +68,7 @@ jobs:
             if [ "$footbreak_rc" -ne 0 ]; then
               footbreak_error=$(printf "%s\n" "$footbreak_output" | tail -n 20 | tr "\n" " " | sed "s/%/%25/g")
               echo "::error file=.github/workflows/settle.yml,line=52::$footbreak_error"
-              exit "$footbreak_rc"
+              echo "Footbreak settlement failed independently; continuing with Crown settlement."
             fi
             echo "=== Crown managed settlement ==="
             sudo systemctl reset-failed crown-settle.service || true
