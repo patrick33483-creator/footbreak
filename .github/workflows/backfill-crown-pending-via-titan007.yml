@@ -88,8 +88,10 @@ jobs:
             echo "ERROR: script sha mismatch (expected $SCRIPT_SHA, got $actual)" >&2
             exit 1
           fi
+          # 皇冠 prediction history 實際位 /var/lib/footbreak/crown/
+          # （舊 path /opt/footbreak/prediction_history.json 不存在，進而令每晚 backfill fail）
           python3 backfill_titan007_scores.py \
-            --history /opt/footbreak/prediction_history.json \
+            --history /var/lib/footbreak/crown/prediction_history.json \
             --mode "$MODE" \
             --lookback-days "$LOOKBACK_DAYS" \
             --out "$REMOTE_WORK/report.json"
