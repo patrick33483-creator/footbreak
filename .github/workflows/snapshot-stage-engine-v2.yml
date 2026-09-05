@@ -84,9 +84,35 @@ jobs:
           REMOTE
           cat /tmp/output.txt
 
+      - name: 匯出 v2 live data（唯讀）
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            'sudo cat /var/www/stage_engine_v2/data.json' \
+            > /tmp/stage_engine_v2_data.json
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            'sudo cat /var/lib/footbreak/stage_engine_v2/ledger.json' \
+            > /tmp/stage_engine_v2_ledger.json
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            'sudo cat /var/lib/footbreak/stage_engine_v2/operator_results.json 2>/dev/null || printf "{}\n"' \
+            > /tmp/stage_engine_v2_operator_results.json
+          python3 -m json.tool /tmp/stage_engine_v2_data.json >/dev/null
+          python3 -m json.tool /tmp/stage_engine_v2_ledger.json >/dev/null
+          python3 -m json.tool /tmp/stage_engine_v2_operator_results.json >/dev/null
+
       - name: 上傳快照
         uses: actions/upload-artifact@v4
         with:
           name: stage-v2-snapshot
-          path: /tmp/output.txt
+          path: |
+            /tmp/output.txt
+            /tmp/stage_engine_v2_data.json
+            /tmp/stage_engine_v2_ledger.json
+            /tmp/stage_engine_v2_operator_results.json
           retention-days: 7
