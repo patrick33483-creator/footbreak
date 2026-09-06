@@ -1,0 +1,74 @@
+name: Read crown-radar code
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "打 RADAR"
+        required: true
+        type: string
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/read-crown-radar-20260906.yml']
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  r:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: diagnose/crown-v2-pending-20260906
+          fetch-depth: 1
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - env:
+          E: ${{ github.event_name }}
+          C: ${{ inputs.confirmation }}
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then exit 0; fi
+          if [ "$C" != "RADAR" ]; then exit 1; fi
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=30 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          set +e
+          echo "===== 1. Locate crown-radar files ====="
+          find /var/www -maxdepth 4 -name "*radar*" -o -name "*signals*" 2>/dev/null | head -20
+          echo "---"
+          find /opt/footbreak -maxdepth 4 -name "*radar*" -type d 2>/dev/null | head -10
+          find /opt -maxdepth 5 -name "*radar*" -type d 2>/dev/null | head -10
+          echo
+          echo "===== 2. Nginx config for crown-radar ====="
+          grep -rn "crown-radar" /etc/nginx/ 2>/dev/null | head -10
+          echo
+          echo "===== 3. systemd services for radar ====="
+          ls /etc/systemd/system/ | grep -i radar 2>/dev/null | head -10
+          systemctl list-units --state=active 2>/dev/null | grep -i radar | head -5
+          echo
+          echo "===== 4. crown-radar workspace ls ====="
+          for d in /opt/crown-radar /opt/footbreak/crown-radar /var/lib/crown-radar /var/www/crown-radar; do
+              if [ -d "$d" ]; then
+                  echo "=== $d ==="
+                  ls -la "$d" | head -30
+                  echo
+              fi
+          done
+          REMOTE
