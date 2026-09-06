@@ -1,0 +1,159 @@
+name: Fix all four issues
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "打 FIX_FOUR"
+        required: true
+        type: string
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  fix:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - env:
+          E: ${{ github.event_name }}
+          C: ${{ inputs.confirmation }}
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then echo "push registers"; exit 0; fi
+          if [ "$C" != "FIX_FOUR" ]; then echo "wrong"; exit 1; fi
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'bash -s' <<'REMOTE'
+          set +e
+
+          echo "========================================"
+          echo "===== FIX 1: stage-engine-v2-fast-results ====="
+          echo "========================================"
+          # 呢個 timer 停 3 日,只需 reset failed state + restart timer
+          echo "--- Before ---"
+          sudo systemctl status stage-engine-v2-fast-results.timer --no-pager 2>&1 | head -8
+          sudo systemctl reset-failed stage-engine-v2-fast-results.service 2>&1
+          sudo systemctl restart stage-engine-v2-fast-results.timer 2>&1
+          sleep 2
+          echo "--- After ---"
+          sudo systemctl status stage-engine-v2-fast-results.timer --no-pager 2>&1 | head -10
+          # 手動 trigger 一次確認 service 可以 run
+          echo "--- 手動 trigger 一次 ---"
+          sudo systemctl start stage-engine-v2-fast-results.service 2>&1
+          sleep 15
+          sudo systemctl status stage-engine-v2-fast-results.service --no-pager 2>&1 | head -15
+          echo "--- Recent 30s output ---"
+          sudo journalctl -u stage-engine-v2-fast-results.service --since '1 min ago' --no-pager -o cat 2>&1 | tail -15
+          echo
+
+          echo "========================================"
+          echo "===== FIX 2: footbreak-settle stale lock ====="
+          echo "========================================"
+          echo "--- 檢查 lock file ---"
+          sudo find /var/lock /var/lib/footbreak -maxdepth 3 -name '*footbreak-settle*.lock*' 2>&1
+          sudo find /var/lock /var/lib/footbreak -maxdepth 3 -name '*footbreak*.lock*' 2>&1 | head -10
+          echo "--- 檢查 concurrent job (footbreak-tick/sweep/reconcile 咪 running) ---"
+          sudo systemctl is-active footbreak-tick.service footbreak-sweep.service footbreak-result-reconcile.service 2>&1
+          echo "--- 睇 run.sh 個 lock 機制點寫 ---"
+          sudo grep -n -A 2 'lock\|LOCK\|flock' /opt/footbreak/deploy/run.sh 2>&1 | head -20
+          echo "--- Reset failed state + 嘗試手動 run ---"
+          sudo systemctl reset-failed footbreak-settle.service 2>&1
+          # 等 tick / reconcile 唔 busy 先 trigger
+          sleep 5
+          sudo systemctl start footbreak-settle.service 2>&1 &
+          sleep 20
+          sudo systemctl status footbreak-settle.service --no-pager 2>&1 | head -15
+          sudo journalctl -u footbreak-settle.service --since '1 min ago' --no-pager -o cat 2>&1 | tail -15
+          echo
+
+          echo "========================================"
+          echo "===== FIX 3: crown-tick timeout ====="
+          echo "========================================"
+          echo "--- crown-tick service unit timeout setting ---"
+          sudo systemctl show crown-tick.service --property=TimeoutStartUSec,TimeoutStopUSec 2>&1
+          echo "--- Drop-in overrides ---"
+          sudo ls -la /etc/systemd/system/crown-tick.service.d/ 2>&1
+          sudo cat /etc/systemd/system/crown-tick.service.d/*.conf 2>&1
+          echo "--- Recent tick outcomes (是否每次都 timeout) ---"
+          sudo journalctl -u crown-tick.service --since '2 hours ago' --no-pager -o cat 2>&1 | grep -E "Started|status=|Failed|Deactiv|budget" | tail -20
+          echo "(判斷: 唔改 crown-tick 個 timeout,只 reset failed state,確保 sentinel 有 cleanup)"
+          sudo systemctl reset-failed crown-tick.service 2>&1
+          # Sentinel cleanup: 如果 sentinel 存在但 crown-tick 唔 running -> stale, 刪
+          if [ -f /run/crown-t5-priority ]; then
+            if ! sudo systemctl is-active --quiet crown-tick.service; then
+              sudo rm -f /run/crown-t5-priority && echo "刪咗 stale sentinel"
+            fi
+          else
+            echo "無 stale sentinel"
+          fi
+          echo
+
+          echo "========================================"
+          echo "===== FIX 4: dashboard-self-heal ModuleNotFoundError ====="
+          echo "========================================"
+          echo "--- 現時 script call 邊個 module ---"
+          sudo grep -n 'system\.\|-m system' /opt/footbreak/deploy/dashboard-self-heal.sh 2>&1 | head -20
+          echo "--- system module 響邊 ---"
+          sudo ls -la /opt/footbreak/system/gen_app_data.py 2>&1
+          sudo ls -la /opt/footbreak/system/__init__.py 2>&1
+          echo "--- 檢查 script 用邊個 cwd/PYTHONPATH ---"
+          sudo head -30 /opt/footbreak/deploy/dashboard-self-heal.sh 2>&1
+          echo "--- Service unit WorkingDirectory ---"
+          sudo systemctl show footbreak-dashboard-self-heal.service --property=WorkingDirectory,Environment 2>&1
+          echo "(呢個要睇完 code 先識點 fix,先唔改)"
+          echo
+
+          echo "========================================"
+          echo "===== FINAL: 整體狀態 ====="
+          echo "========================================"
+          sudo systemctl list-timers --all 2>&1 | grep -iE "crown|footbreak|stage|fast-results" | head -15
+          echo
+          echo "--- df ---"
+          df -h / 2>&1
+          echo
+          echo "--- Ledger unresolved crown 依家幾多 ---"
+          sudo /opt/footbreak/.venv/bin/python3 -c "
+          import json
+          l = json.load(open('/var/lib/footbreak/crown/ledger.json'))
+          w = l.get('watch', {})
+          from datetime import datetime, timezone, timedelta
+          HKT = timezone(timedelta(hours=8))
+          now = datetime.now(HKT)
+          past_unresolved = 0
+          for k, v in w.items():
+              if not isinstance(v, dict): continue
+              ko = v.get('kickoff_hkt') or v.get('kickoff') or ''
+              try:
+                  dt = datetime.fromisoformat(str(ko).replace('Z','+00:00'))
+                  if dt.tzinfo is None: dt = dt.replace(tzinfo=HKT)
+              except: continue
+              if dt > now: continue
+              stages = v.get('stages') or []
+              resolved = False
+              for s in stages:
+                  if isinstance(s, dict):
+                      if s.get('result_status') in {'已核對','不計','void'}: resolved = True
+              if not resolved: past_unresolved += 1
+          print('past unresolved:', past_unresolved)
+          " 2>&1
+          REMOTE
