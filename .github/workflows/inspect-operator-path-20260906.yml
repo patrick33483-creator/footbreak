@@ -1,0 +1,73 @@
+name: Inspect operator manual result path
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "打 OP"
+        required: true
+        type: string
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  op:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - env:
+          E: ${{ github.event_name }}
+          C: ${{ inputs.confirmation }}
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then echo "push registers"; exit 0; fi
+          if [ "$C" != "OP" ]; then echo "wrong"; exit 1; fi
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'bash -s' <<'REMOTE'
+          set +e
+          echo "===== A. Operator-results file 在邊? ====="
+          sudo grep -rn "operator_results\|operator-results\|manual_result\|已核對" /opt/footbreak/stage_engine_v2/ /opt/footbreak/crown/ /opt/footbreak/system/ 2>&1 | grep -v __pycache__ | grep -v test_ | head -40
+          echo
+          echo "===== B. 讀 operator_results 定義 ====="
+          sudo head -80 /opt/footbreak/stage_engine_v2/operator_results.py 2>&1
+          echo
+          echo "===== C. crown/prediction_history 有無 operator input path ====="
+          sudo grep -n "operator\|manual\|已核對\|apply_result\|user_result" /opt/footbreak/crown/prediction_history.py 2>&1 | head -20
+          echo
+          echo "===== D. 賽果 input file 有無實際 file ====="
+          sudo find /opt/footbreak /var/lib/footbreak /etc/footbreak -name '*operator*result*' -o -name '*manual*result*' 2>&1 | head -20
+          sudo find /opt/footbreak /var/lib/footbreak -name '*.jsonl' -mtime -30 2>&1 | head -20
+          echo
+          echo "===== E. Config 邊個路徑係 DEFAULT_OPERATOR_RESULTS ====="
+          sudo grep -rn "DEFAULT_OPERATOR_RESULTS\|OPERATOR_RESULTS_PATH\|operator.*result.*path" /opt/footbreak/ 2>&1 | grep -v __pycache__ | grep -v test_ | head -20
+          echo
+          echo "===== F. Dashboard UI 有無 upload result button (frontend) ====="
+          sudo grep -rn "手動\|manual\|operator\|已核對\|上傳賽果\|填寫賽果" /opt/footbreak/crown/dashboard/ 2>&1 | grep -v __pycache__ | head -20
+          echo
+          echo "===== G. dashboard-api 有無 POST result endpoint ====="
+          sudo grep -n "POST\|@app.post\|route.*result\|result.*route" /opt/footbreak/system/dashboard_api.py 2>&1 | head -20
+          sudo grep -n "POST\|@app.post\|route.*result\|result.*route" /opt/footbreak/crown/dashboard_api.py 2>&1 | head -20
+          echo
+          echo "===== H. 睇邊個 file 儲存 dashboard UI 手填之結果 (最近 7 日改動) ====="
+          sudo find /var/lib/footbreak /var/www -type f \( -name '*.json' -o -name '*.jsonl' \) -mtime -7 -size +0 2>&1 | head -30
+          REMOTE
