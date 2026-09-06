@@ -73,15 +73,16 @@ jobs:
 
           cat > /tmp/rg.py <<'PY'
           """Mass grade by monkeypatching the per-run request budget."""
-          import sys, time, json
+          import sys, time, json, traceback
           sys.path.insert(0, '/opt/footbreak')
           import crown.prediction_history as ph
-          from crown.config import Settings
+          from crown.config import settings as _settings
 
           # Elevate budget
           ph._RESULT_DETAIL_REQUEST_BUDGET = 999999
 
-          config = Settings.from_env()
+          config = _settings()
+          print(f'config.state_dir={config.state_dir}')
 
           for i in range(1, 9):
               t0 = time.time()
@@ -89,6 +90,7 @@ jobs:
                   hist = ph.grade_history(config)
               except Exception as exc:
                   print(f'[pass {i}] exception: {type(exc).__name__}: {exc}')
+                  traceback.print_exc()
                   break
               rows = hist.get('rows', [])
               graded = sum(1 for r in rows if r.get('market_grades'))
@@ -99,6 +101,8 @@ jobs:
               if pending == 0:
                   print('all resolved')
                   break
+              # Small sleep between passes
+              time.sleep(3)
           PY
 
           timeout 4800 /opt/footbreak/.venv/bin/python3 /tmp/rg.py 2>&1 | tail -80 || echo "grade_history timed out or errored"
@@ -107,13 +111,16 @@ jobs:
           echo
           echo "===== 3. Regenerate data.json ====="
           /opt/footbreak/.venv/bin/python3 <<'PY'
+          import sys, traceback
+          sys.path.insert(0, '/opt/footbreak')
           from crown.dashboard_data import write_dashboard_data
-          from crown.config import Settings
+          from crown.config import settings as _settings
           try:
-              res = write_dashboard_data(Settings.from_env())
+              res = write_dashboard_data(_settings())
               print('data.json OK', type(res).__name__)
           except Exception as exc:
               print(f'ERROR: {type(exc).__name__}: {exc}')
+              traceback.print_exc()
           PY
 
           # 4) Verify
