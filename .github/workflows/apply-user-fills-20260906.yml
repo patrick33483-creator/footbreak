@@ -1,0 +1,145 @@
+name: Apply user fills to crown ledger
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "打 APPLY-FILLS-3311"
+        required: true
+        type: string
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: diagnose/crown-v2-pending-20260906
+          fetch-depth: 1
+      - env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - env:
+          C: ${{ inputs.confirmation }}
+        run: |
+          if [ "$C" != "APPLY-FILLS-3311" ]; then echo "wrong"; exit 1; fi
+      - env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          # Upload fill map to server
+          scp -o BatchMode=yes -o ConnectTimeout=20 \
+            exports/fill_map.b64 "$DEPLOY_USER@$DEPLOY_HOST:/tmp/fill_map.b64"
+
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          set -e
+          # Decode
+          base64 -d /tmp/fill_map.b64 > /tmp/fill_map.json
+          echo "===== fill_map size ====="
+          python3 -c "import json;print(len(json.load(open('/tmp/fill_map.json'))))"
+
+          # Backup ledger first
+          TS=$(date +%Y%m%d-%H%M%S)
+          BACKUP=/var/lib/footbreak/backups/ledger-pre-user-fill-$TS
+          mkdir -p $BACKUP
+          cp /var/lib/footbreak/crown/ledger.json $BACKUP/
+          echo "===== backup ====="
+          ls -la $BACKUP/
+
+          # Apply fills to ledger
+          /opt/footbreak/.venv/bin/python3 <<'PY'
+          import json
+          from datetime import datetime, timezone, timedelta
+
+          HKT = timezone(timedelta(hours=8))
+
+          fills = json.load(open('/tmp/fill_map.json'))
+          ledger = json.load(open('/var/lib/footbreak/crown/ledger.json'))
+          watch = ledger.get('watch', {})
+
+          applied = 0
+          missing_from_ledger = 0
+          for mid, (hs, as_) in fills.items():
+              if mid not in watch:
+                  missing_from_ledger += 1
+                  continue
+              entry = watch[mid]
+              # Set result on entry
+              entry['result'] = {
+                  'home_score': hs,
+                  'away_score': as_,
+                  'score': f'{hs}-{as_}',
+                  'verified_at_hkt': datetime.now(HKT).isoformat(),
+                  'result_source': 'user_manual_fill_20260906',
+              }
+              # Also mark stages as 已核對
+              stages = entry.get('stages') or []
+              for stage in stages:
+                  if not isinstance(stage, dict): continue
+                  stage['result_status'] = '已核對'
+                  stage['result_score'] = f'{hs}-{as_}'
+                  stage['result_home_score'] = hs
+                  stage['result_away_score'] = as_
+                  # Grade the pick if HDC/HIL
+                  pick_code = stage.get('pick_code') or stage.get('code')
+                  side = stage.get('pick_side') or stage.get('side')
+                  line = stage.get('pick_line') or stage.get('line')
+                  if pick_code and side and line is not None:
+                      try:
+                          from crown.lines import settle_handicap, settle_total
+                          if pick_code == 'HDC':
+                              settlement = settle_handicap(float(line), side, hs, as_)
+                          elif pick_code == 'HIL':
+                              settlement = settle_total(float(line), side, hs, as_)
+                          else:
+                              settlement = None
+                          if settlement:
+                              stage['settlement'] = settlement
+                              stage['pick_result'] = settlement.get('result')
+                      except Exception as e:
+                          stage['settle_error'] = str(e)
+              applied += 1
+
+          print(f'Applied to ledger: {applied}')
+          print(f'Missing from ledger (skipped): {missing_from_ledger}')
+
+          # Write back
+          with open('/var/lib/footbreak/crown/ledger.json', 'w') as f:
+              json.dump(ledger, f, ensure_ascii=False)
+
+          print('Ledger updated')
+          PY
+
+          # Regenerate dashboard data.json
+          echo "===== Regenerating data.json ====="
+          cd /opt/footbreak
+          sudo -u footbreak /opt/footbreak/.venv/bin/python3 -m system.gen_app_data 2>&1 | tail -20 || echo "gen_app_data ran with non-zero"
+
+          # Check dashboard
+          echo "===== data.json stats ====="
+          /opt/footbreak/.venv/bin/python3 <<'PY'
+          import json
+          d = json.load(open('/var/www/crown/data.json'))
+          if isinstance(d, list):
+              matches = d
+          else:
+              matches = d.get('matches', [])
+          print(f'total matches: {len(matches)}')
+          with_result = [m for m in matches if isinstance(m, dict) and m.get('result')]
+          print(f'with result: {len(with_result)}')
+          PY
+          REMOTE
