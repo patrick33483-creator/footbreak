@@ -1,0 +1,76 @@
+name: Why crown-settle cancels
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "打 WHY"
+        required: true
+        type: string
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  why:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - env:
+          E: ${{ github.event_name }}
+          C: ${{ inputs.confirmation }}
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then echo "push registers"; exit 0; fi
+          if [ "$C" != "WHY" ]; then echo "wrong"; exit 1; fi
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'bash -s' <<'REMOTE'
+          set +e
+          echo "===== A. crown-settle unit 定義全文 ====="
+          sudo cat /etc/systemd/system/crown-settle.service 2>&1
+          echo "--- drop-in ---"
+          sudo ls -la /etc/systemd/system/crown-settle.service.d/ 2>&1
+          sudo cat /etc/systemd/system/crown-settle.service.d/*.conf 2>&1
+          echo
+          echo "===== B. Sentinel monitor 定義 ====="
+          sudo cat /etc/systemd/system/crown-tick-sentinel-monitor.service 2>&1
+          echo "--- 有無 script ---"
+          sudo grep -rn "crown-t5-priority" /etc/systemd/system/ /opt/footbreak/deploy/ /usr/local/bin/ 2>&1 | head -30
+          echo
+          echo "===== C. 邊個 create 個 sentinel ====="
+          sudo grep -rn "crown-t5-priority" /opt/footbreak/ 2>&1 | grep -v __pycache__ | head -20
+          echo
+          echo "===== D. crown-run.sh settle 前 30 行 ====="
+          sudo head -50 /opt/footbreak/deploy/crown-run.sh 2>&1
+          echo
+          echo "===== E. Recent 5 min crown-settle attempts ====="
+          sudo journalctl _COMM=systemd --since '10 min ago' --no-pager -o cat 2>&1 | grep -iE "crown-settle" | tail -30
+          echo
+          echo "===== F. 有無 systemctl stop/kill crown-settle ====="
+          sudo journalctl --since '10 min ago' --no-pager -o cat 2>&1 | grep -iE "stop.*crown-settle|kill.*crown-settle|cancel.*crown-settle" | tail -20
+          echo
+          echo "===== G. 睇 dashboard 主 update path 究竟係邊個 ====="
+          sudo grep -rln "def.*write.*result\|result_status\|已核對" /opt/footbreak/crown/ /opt/footbreak/system/ 2>&1 | head -10
+          echo
+          echo "===== H. 現時 stage-engine-v2-fb-tick 有無 write result ====="
+          sudo journalctl -u stage-engine-v2-fb-tick.service --since '5 min ago' --no-pager -o cat 2>&1 | tail -30
+          REMOTE
