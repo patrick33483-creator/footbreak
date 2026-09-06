@@ -1,0 +1,96 @@
+name: Big cleanup
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "打 BIG_CLEANUP"
+        required: true
+        type: string
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  c:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: SSH
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - name: Check
+        env:
+          E: ${{ github.event_name }}
+          C: ${{ inputs.confirmation }}
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then echo "push registers only"; exit 0; fi
+          if [ "$C" != "BIG_CLEANUP" ]; then echo "wrong confirmation"; exit 1; fi
+      - name: run
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'bash -s' <<'REMOTE'
+          set +e
+          echo "===== BEFORE ====="
+          df -h / 2>&1
+          echo
+          echo "===== 1. /tmp/data-ro.db 資訊 (只刪 mtime >1日) ====="
+          sudo ls -la /tmp/data-ro.db 2>&1
+          # 檢查有無 process 開緊佢
+          sudo lsof /tmp/data-ro.db 2>&1 | head -5
+          # 只刪如果 mtime >1 日
+          sudo find /tmp -maxdepth 1 -name 'data-ro.db*' -type f -mtime +1 -print -delete 2>&1
+          echo
+          echo "===== 2. /opt/odds-***/data/pre-recompute-*.db.gz (>3日) ====="
+          sudo find /opt -maxdepth 4 -name 'pre-recompute-*.db.gz' -type f -mtime +3 -print -delete 2>&1
+          sudo find /opt -maxdepth 4 -name 'pre-recompute-*.db-wal.gz' -type f -mtime +3 -print -delete 2>&1
+          echo
+          echo "===== 3. /opt/odds-***/backups/pre-deploy-*.sql.gz 保留最新一個 ====="
+          sudo ls -la /opt/odds-*/backups/pre-deploy-*.sql.gz 2>&1
+          # 保留最新，刪其餘
+          sudo bash -c 'for d in /opt/odds-*/backups; do
+            cd "$d" 2>/dev/null || continue
+            ls -t pre-deploy-*.sql.gz 2>/dev/null | tail -n +2 | xargs -r rm -v
+          done' 2>&1
+          echo
+          echo "===== 4. journal vacuum to 200M ====="
+          sudo journalctl --vacuum-size=200M 2>&1 | tail -3
+          echo
+          echo "===== 5. /var/log/syslog.1 rotate ====="
+          sudo ls -la /var/log/syslog* 2>&1
+          # syslog.1 有壓縮版可保留，刪未壓縮
+          sudo rm -f /var/log/syslog.1 2>&1 && echo "刪咗 syslog.1"
+          # 順手 rotate journal binary log (if > 200M)
+          echo
+          echo "===== 6. /var/lib/footbreak/crown 清舊 backup 又出咗未 ====="
+          sudo find /var/lib/footbreak/crown/ -maxdepth 1 -name 'ledger.json.before-*' -type f -mtime +1 -print -delete 2>&1 | tail -5
+          sudo find /var/lib/footbreak/crown/ -maxdepth 1 -name 'ledger.json.*.bak' -type f -mtime +1 -print -delete 2>&1 | tail -5
+          sudo find /var/lib/footbreak/crown/ -maxdepth 1 -name '.ledger.json.*' -type f -mmin +5 -print -delete 2>&1 | tail -5
+          echo
+          echo "===== 7. /var/lib/footbreak/backups 清 >7日 ====="
+          sudo du -sh /var/lib/footbreak/backups 2>&1
+          sudo find /var/lib/footbreak/backups -type f -mtime +7 -print -delete 2>&1 | head -10
+          echo
+          echo "===== AFTER ====="
+          df -h / 2>&1
+          echo
+          echo "===== 剩返嘅大檔案 top 15 ====="
+          sudo find / -xdev -type f -size +100M -not -path '/proc/*' -not -path '/sys/*' -exec ls -la {} \; 2>/dev/null | sort -k5 -n -r | head -15
+          REMOTE
