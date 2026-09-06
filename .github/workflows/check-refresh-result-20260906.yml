@@ -1,0 +1,90 @@
+name: Check refresh result
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "打 CHECK"
+        required: true
+        type: string
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/check-refresh-result-20260906.yml']
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - env:
+          E: ${{ github.event_name }}
+          C: ${{ inputs.confirmation }}
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then exit 0; fi
+          if [ "$C" != "CHECK" ]; then exit 1; fi
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=30 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          set +e
+          echo "===== data.json current state ====="
+          ls -la /var/www/crown/data.json
+          echo
+          echo "===== check history file first ====="
+          ls -la /var/lib/footbreak/crown/prediction_history.json
+          /opt/footbreak/.venv/bin/python3 <<'PY'
+          import json
+          h = json.load(open('/var/lib/footbreak/crown/prediction_history.json'))
+          rows = h.get('rows', [])
+          stats = h.get('stats', {})
+          print(f'history rows: {len(rows)}')
+          filled = [r for r in rows if r.get('result_source') == 'user_manual_fill_20260906']
+          resolved = [r for r in rows if r.get('result_status') in ('已核對','已核實')]
+          print(f'user_manual_fill rows: {len(filled)}')
+          print(f'all resolved rows: {len(resolved)}')
+          print(f'stats accuracy: {stats.get("accuracy")}')
+          print(f'stats hits/graded: {stats.get("hits")}/{stats.get("graded")}')
+          PY
+          echo
+          echo "===== data.json state ====="
+          /opt/footbreak/.venv/bin/python3 <<'PY'
+          import json
+          d = json.load(open('/var/www/crown/data.json'))
+          ph = d.get('prediction_history', {})
+          if isinstance(ph, dict):
+              rows = ph.get('rows', [])
+              stats = ph.get('stats', {})
+              print(f'dashboard prediction_history rows: {len(rows)}')
+              filled = [r for r in rows if r.get('result_source') == 'user_manual_fill_20260906']
+              resolved = [r for r in rows if r.get('result_status') in ('已核對','已核實')]
+              print(f'user_manual_fill rows: {len(filled)}')
+              print(f'resolved rows: {len(resolved)}')
+              print(f'accuracy: {stats.get("accuracy")}')
+              print(f'hits/graded: {stats.get("hits")}/{stats.get("graded")}')
+              by_stage = stats.get('by_stage', {})
+              for k, v in by_stage.items():
+                  if isinstance(v, dict):
+                      print(f'  {k}: accuracy={v.get("accuracy")}, hits/graded={v.get("hits")}/{v.get("graded")}')
+                  else:
+                      print(f'  {k}: {v}')
+          PY
+          REMOTE
