@@ -1,0 +1,81 @@
+name: Regen dashboard data.json
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "打 REGEN"
+        required: true
+        type: string
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/regen-dashboard-20260906.yml']
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  regen:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - env:
+          E: ${{ github.event_name }}
+          C: ${{ inputs.confirmation }}
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then echo "reg"; exit 0; fi
+          if [ "$C" != "REGEN" ]; then exit 1; fi
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          set +e
+          echo "===== 1. Which user runs footbreak services? ====="
+          systemctl cat footbreak-dashboard 2>/dev/null | grep -E "^User|^Group|^ExecStart" | head -5
+          systemctl cat crown-tick 2>/dev/null | grep -E "^User|^Group|^ExecStart" | head -5
+          echo
+          echo "===== 2. data.json ownership ====="
+          ls -la /var/www/crown/data.json
+          echo
+          echo "===== 3. Look at gen_app_data source ====="
+          ls /opt/footbreak/system/gen_app_data*.py 2>/dev/null
+          echo
+          echo "===== 4. Try regen as root ====="
+          cd /opt/footbreak
+          /opt/footbreak/.venv/bin/python3 -m system.gen_app_data 2>&1 | tail -30
+          echo
+          echo "===== 5. data.json now ====="
+          ls -la /var/www/crown/data.json
+          /opt/footbreak/.venv/bin/python3 <<'PY'
+          import json
+          d = json.load(open('/var/www/crown/data.json'))
+          if isinstance(d, list):
+              matches = d
+          else:
+              print('keys:', list(d.keys())[:15])
+              matches = d.get('matches', d.get('records', []))
+          print(f'total: {len(matches)}')
+          if matches:
+              print('sample keys:', list(matches[0].keys())[:15])
+              with_result = [m for m in matches if isinstance(m, dict) and (m.get('result') or m.get('result_status') or m.get('home_score') is not None)]
+              print(f'with result: {len(with_result)}')
+              if with_result:
+                  print('sample:', {k:v for k,v in list(with_result[0].items())[:8]})
+          PY
+          REMOTE
