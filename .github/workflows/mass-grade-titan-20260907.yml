@@ -49,17 +49,14 @@ jobs:
           cd /opt/footbreak
 
           # DRY-RUN: NO writes. Discover the exact grading api before real run.
-          echo "===== inspect crown.prediction_history public surface ====="
-          /opt/footbreak/.venv/bin/python3 -c "
-          import crown.prediction_history as m, inspect
-          fns = [(n, str(inspect.signature(getattr(m,n)))) for n in dir(m) if callable(getattr(m,n,None)) and not n.startswith('__')]
-          for n, s in fns:
-              if any(k in n.lower() for k in ('grade','result','apply','update')):
-                  print(f'{n}{s}')
-          "
+          echo "===== Functions in prediction_history that grade/apply results ====="
+          grep -n "^def " crown/prediction_history.py | head -60
           echo
-          echo "===== update_history signature + first 40 lines ====="
-          grep -n "^def update_history\|^def _apply\|^def apply_result\|^def grade_row" crown/prediction_history.py | head -10
+          echo "===== Post-_result usage in tick loop (line 1090-1160) ====="
+          sed -n '1090,1160p' crown/prediction_history.py
+          echo
+          echo "===== _apply_result / grading helpers grep ====="
+          grep -n "_apply_result\|apply_result\|_write_market_grades\|_grade_predictions\|def grade" crown/prediction_history.py | head -20
           echo
           # Skip mutation
           echo "SKIPPED mutation on purpose (dry-run)."
