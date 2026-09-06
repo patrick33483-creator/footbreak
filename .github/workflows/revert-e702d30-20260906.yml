@@ -1,0 +1,95 @@
+name: Revert e702d30 crown files
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "打 REVERT_E702D30 確認"
+        required: true
+        type: string
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  revert:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: 設定 SSH
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: Check confirmation
+        env:
+          EVENT: ${{ github.event_name }}
+          CONFIRMATION: ${{ inputs.confirmation }}
+        run: |
+          if [ "$EVENT" != "workflow_dispatch" ]; then
+            echo "push trigger 只為註冊 workflow"
+            exit 0
+          fi
+          if [ "$CONFIRMATION" != "REVERT_E702D30" ]; then
+            echo "缺少或錯誤 confirmation"; exit 1
+          fi
+
+      - name: Do revert
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=8 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'bash -s' <<'REMOTE'
+          set -e
+          cd /opt/footbreak
+          echo "===== BEFORE ====="
+          sudo git -C /opt/footbreak log --oneline -3 -- crown/run.py crown/prediction_history.py 2>&1
+          echo
+          echo "現時 crown-settle 狀態:"
+          sudo systemctl show crown-settle.service --property=ActiveState,SubState --no-pager 2>&1
+          echo
+          echo "===== 1. Backup 現時兩個 file (保留 e702d30 版本) ====="
+          sudo cp -p crown/run.py crown/run.py.e702d30.bak
+          sudo cp -p crown/prediction_history.py crown/prediction_history.py.e702d30.bak
+          sudo ls -la crown/run.py.e702d30.bak crown/prediction_history.py.e702d30.bak 2>&1
+          echo
+          echo "===== 2. checkout 前一個 commit (6c0b687) 個版本 ====="
+          sudo git -C /opt/footbreak checkout 6c0b687 -- crown/run.py crown/prediction_history.py 2>&1
+          echo
+          echo "===== 3. 確認 diff ====="
+          sudo git -C /opt/footbreak diff HEAD -- crown/run.py crown/prediction_history.py 2>&1 | head -80
+          echo
+          echo "===== 4. 清 .pyc cache (令 systemd 下次 import 時用新 source) ====="
+          sudo rm -f crown/__pycache__/run.cpython-*.pyc crown/__pycache__/prediction_history.cpython-*.pyc
+          sudo ls -la crown/__pycache__/ 2>&1 | grep -E 'run|prediction_history' | head -5
+          echo
+          echo "===== 5. Stop 現時 crown-settle instance ====="
+          sudo systemctl stop crown-settle.service 2>&1 || true
+          sudo systemctl reset-failed crown-settle.service 2>&1 || true
+          echo
+          echo "===== AFTER ====="
+          sudo git -C /opt/footbreak log --oneline -1 -- crown/run.py crown/prediction_history.py 2>&1
+          echo "(注：呢個係 git blame 睇最後 commit——local file 已 checkout 到 6c0b687 版本)"
+          sudo git -C /opt/footbreak status crown/run.py crown/prediction_history.py 2>&1
+          echo
+          echo "===== 下次 timer ====="
+          sudo systemctl list-timers crown-settle.timer --no-pager 2>&1
+          echo
+          echo "===== DONE ====="
+          echo "Revert 完成。如要復原：sudo cp crown/run.py.e702d30.bak crown/run.py && sudo cp crown/prediction_history.py.e702d30.bak crown/prediction_history.py && sudo rm crown/__pycache__/run.cpython-*.pyc"
+          REMOTE
