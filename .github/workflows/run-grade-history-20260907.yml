@@ -52,13 +52,33 @@ jobs:
           BACKUP_DIR=/var/lib/footbreak/crown/backups/history-run-grade-${STAMP}
           mkdir -p "$BACKUP_DIR"
 
-          # 1) Restore pre-fill (rollback broken user_manual_fill)
-          echo "===== 1. Rollback prediction_history.json ====="
-          PREFILL=/var/lib/footbreak/crown/backups/history-pre-user-fill-20260906-224014/prediction_history.json
-          if [ ! -f "$PREFILL" ]; then
-              echo "ERROR: Pre-fill backup missing at $PREFILL"
+          # 1) Find largest pre-user-fill backup and restore
+          echo "===== 1. Locate pre-fill backup ====="
+          ls -la /var/lib/footbreak/crown/backups/ 2>&1 | head -20
+          echo
+          # Prefer explicit history-pre-user-fill dir, else largest history-*
+          PREFILL_DIR=$(ls -1d /var/lib/footbreak/crown/backups/history-pre-user-fill-* 2>/dev/null | head -1)
+          if [ -z "$PREFILL_DIR" ] || [ ! -f "$PREFILL_DIR/prediction_history.json" ]; then
+              # fallback: any history-* dir with a prediction_history.json that predates user_manual_fill
+              for d in $(ls -1td /var/lib/footbreak/crown/backups/history-* 2>/dev/null); do
+                  if [ -f "$d/prediction_history.json" ]; then
+                      # Check if this file has 0 user_manual_fill rows
+                      cnt=$(grep -c '"user_manual_fill_20260906"' "$d/prediction_history.json" || echo 0)
+                      if [ "$cnt" = "0" ]; then
+                          PREFILL_DIR="$d"
+                          break
+                      fi
+                  fi
+              done
+          fi
+          if [ -z "$PREFILL_DIR" ] || [ ! -f "$PREFILL_DIR/prediction_history.json" ]; then
+              echo "ERROR: No clean pre-fill backup found"
               exit 2
           fi
+          PREFILL="$PREFILL_DIR/prediction_history.json"
+          echo "Using PREFILL=$PREFILL"
+          ls -la "$PREFILL"
+
           cp -a /var/lib/footbreak/crown/prediction_history.json "$BACKUP_DIR/before-restore.json"
           cp -a "$PREFILL" /var/lib/footbreak/crown/prediction_history.json
           chown -R crown:crown /var/lib/footbreak/crown/ 2>/dev/null || true

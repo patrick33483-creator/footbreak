@@ -1,0 +1,63 @@
+name: List crown backups
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "打 LSBK"
+        required: true
+        type: string
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/ls-backups-20260907.yml']
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  l:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - env:
+          E: ${{ github.event_name }}
+          C: ${{ inputs.confirmation }}
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then exit 0; fi
+          if [ "$C" != "LSBK" ]; then exit 1; fi
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          set +e
+          echo "===== /var/lib/footbreak/crown/backups (recent) ====="
+          ls -latr /var/lib/footbreak/crown/backups/ 2>&1 | tail -30
+          echo
+          echo "===== Each pre-fill candidate: check user_manual_fill count ====="
+          for d in $(ls -1d /var/lib/footbreak/crown/backups/history-* 2>/dev/null | tail -10); do
+              f="$d/prediction_history.json"
+              if [ -f "$f" ]; then
+                  cnt=$(grep -c '"user_manual_fill_20260906"' "$f")
+                  sz=$(du -h "$f" | cut -f1)
+                  echo "$d/  size=$sz  user_fill_rows=$cnt"
+              else
+                  echo "$d/  (no prediction_history.json)"
+              fi
+          done
+          REMOTE
