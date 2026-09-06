@@ -1,0 +1,124 @@
+name: Verify + 擴大清理
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "打 CLEANUP_MORE"
+        required: true
+        type: string
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  c:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: SSH
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - name: Check
+        env:
+          E: ${{ github.event_name }}
+          C: ${{ inputs.confirmation }}
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then echo "push registers only"; exit 0; fi
+          if [ "$C" != "CLEANUP_MORE" ]; then echo "wrong confirmation"; exit 1; fi
+      - name: run
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=8 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'bash -s' <<'REMOTE'
+          set +e
+          echo "===== A. data.json 現況 ====="
+          sudo ls -la /var/www/crown/data.json 2>&1
+          sudo /opt/footbreak/.venv/bin/python3 -c "
+          import json
+          d = json.load(open('/var/www/crown/data.json'))
+          print('generated_at:', d.get('generated_at'))
+          print('matches:', len(d.get('matches', [])))
+          print('summary:', d.get('summary'))
+          " 2>&1
+          echo
+          echo "===== B. crown-settle 最近 20 min log ====="
+          sudo journalctl -u crown-settle.service --since '20 min ago' --no-pager -o cat 2>&1 | tail -25
+          echo
+          echo "===== C. df BEFORE ====="
+          df -h / 2>&1
+          echo
+          echo "===== D. 邊個 dir 最食 space (top 15) ====="
+          sudo du -sh /var/log /var/lib /var/www /var/backups /opt /root /home /tmp 2>&1
+          echo
+          sudo du -h /var/lib/footbreak/ --max-depth=1 2>&1 | sort -h | tail -20
+          echo
+          echo "===== E. 大檔案 top 20 (>50MB, / root) ====="
+          sudo find / -xdev -type f -size +50M -not -path '/proc/*' -not -path '/sys/*' -exec ls -la {} \; 2>/dev/null | sort -k5 -n -r | head -25
+          echo
+          echo "===== F. journal 佔用 ====="
+          sudo journalctl --disk-usage 2>&1
+          echo
+          echo "===== G. 開始清理 ====="
+          echo "-- G1. 縮 journal 到 500M --"
+          sudo journalctl --vacuum-size=500M 2>&1 | tail -5
+          echo
+          echo "-- G2. apt cache --"
+          sudo apt-get clean 2>&1 | tail -3
+          echo
+          echo "-- G3. 舊 apt list --"
+          sudo rm -rf /var/lib/apt/lists/* 2>&1
+          echo
+          echo "-- G4. pyc / __pycache__ 全清 --"
+          sudo find /opt/footbreak -name '__pycache__' -type d -exec rm -rf {} + 2>&1 | tail -3
+          sudo find /opt/footbreak -name '*.pyc' -delete 2>&1 | tail -3
+          echo
+          echo "-- G5. /var/www/crown/ 舊 history-*.json (只留最新 3 個) --"
+          sudo ls -la /var/www/crown/history-*.json 2>&1 | wc -l
+          # 保留最新 3 個，刪其餘
+          sudo bash -c 'cd /var/www/crown && ls -t history-*.json 2>/dev/null | tail -n +4 | xargs -r rm -v' 2>&1 | tail -20
+          echo
+          echo "-- G6. /tmp 舊 crown 垃圾 (>1天) --"
+          sudo find /tmp -maxdepth 2 \( -name '*crown*' -o -name '*.ledger*' \) -type f -mtime +1 -print -delete 2>&1 | tail -20
+          echo
+          echo "-- G7. 再檢查 /var/lib/footbreak/crown 有無新 tmp --"
+          sudo find /var/lib/footbreak/crown/ -maxdepth 1 -name '.ledger.json.*' -type f -mmin +5 -print -delete 2>&1 | tail -10
+          echo
+          echo "-- G8. shipyard/deploy 舊 build artifact --"
+          sudo du -sh /opt/footbreak/.git 2>&1
+          sudo git -C /opt/footbreak gc --auto 2>&1 | tail -5
+          echo
+          echo "===== H. df AFTER ====="
+          df -h / 2>&1
+          echo
+          echo "===== I. 再睇 data.json ====="
+          sudo ls -la /var/www/crown/data.json 2>&1
+          sudo /opt/footbreak/.venv/bin/python3 -c "
+          import json
+          d = json.load(open('/var/www/crown/data.json'))
+          print('generated_at:', d.get('generated_at'))
+          print('matches:', len(d.get('matches', [])))
+          print('summary:', d.get('summary'))
+          " 2>&1
+          echo
+          echo "===== J. crown-settle status ====="
+          sudo systemctl show crown-settle.service --property=ActiveState,SubState,Result,ExecMainStatus,ExecMainExitTimestamp --no-pager 2>&1
+          sudo systemctl list-timers crown-settle.timer --no-pager 2>&1
+          REMOTE
