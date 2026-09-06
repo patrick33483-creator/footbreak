@@ -1,0 +1,107 @@
+name: Cleanup disk full
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "打 CLEANUP_DISK 確認"
+        required: true
+        type: string
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  c:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: SSH
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - name: Check
+        env:
+          E: ${{ github.event_name }}
+          C: ${{ inputs.confirmation }}
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then echo "push registers only"; exit 0; fi
+          if [ "$C" != "CLEANUP_DISK" ]; then echo "wrong confirmation"; exit 1; fi
+      - name: cleanup
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=8 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'bash -s' <<'REMOTE'
+          set +e
+          echo "===== BEFORE df ====="
+          df -h / 2>&1
+          echo
+          echo "===== 1. Stop crown-settle 防止產生新 tmp ====="
+          sudo systemctl stop crown-settle.service crown-settle.timer 2>&1 || true
+          sudo systemctl reset-failed crown-settle.service 2>&1 || true
+          # 等啲 running python 死埋
+          sleep 3
+          sudo pkill -TERM -f 'python.*crown\.run.*settle' 2>&1 || true
+          sleep 3
+          sudo pkill -KILL -f 'python.*crown\.run.*settle' 2>&1 || true
+          echo
+          echo "===== 2. Count tmp file ====="
+          sudo ls -la /var/lib/footbreak/crown/.ledger.json.* 2>&1 | wc -l
+          echo "Total size before:"
+          sudo du -sh /var/lib/footbreak/crown/.ledger.json.* 2>&1 | awk '{s+=$1} END {print s" (see du -c)"}'
+          sudo du -ch /var/lib/footbreak/crown/.ledger.json.* 2>&1 | tail -1
+          echo
+          echo "確認保留正檔 ledger.json:"
+          sudo ls -la /var/lib/footbreak/crown/ledger.json 2>&1
+          echo
+          echo "===== 3. 刪 stale tmp (只刪 .ledger.json. 前綴，唔郁 ledger.json) ====="
+          sudo find /var/lib/footbreak/crown/ -maxdepth 1 -name '.ledger.json.*' -type f -mmin +2 -print -delete 2>&1 | tail -50
+          echo
+          echo "===== 4. 清 stale publish lock (它係 0-byte 但 attribute 錯) ====="
+          sudo ls -la /var/www/crown/.data.json.publish.lock 2>&1
+          sudo rm -f /var/www/crown/.data.json.publish.lock 2>&1
+          echo
+          echo "===== 5. 順手清 /tmp 有無 crown 相關垃圾 ====="
+          sudo find /tmp -maxdepth 2 -name '*.ledger*' -o -name '*crown*' 2>&1 | head -20
+          echo
+          echo "===== AFTER df ====="
+          df -h / 2>&1
+          echo
+          echo "===== 6. Start crown-settle timer 返 ====="
+          sudo systemctl start crown-settle.timer 2>&1
+          sudo systemctl list-timers crown-settle.timer --no-pager 2>&1
+          echo
+          echo "===== 7. 立即手動跑一次 settle 睇下有無爆 ====="
+          # 用 systemctl start (respects service unit 嘅權限)
+          sudo systemctl start crown-settle.service --no-block 2>&1
+          echo "started, waiting 40s..."
+          sleep 40
+          sudo systemctl show crown-settle.service --property=ActiveState,SubState,Result,ExecMainStatus --no-pager 2>&1
+          sudo journalctl -u crown-settle.service --since '2 min ago' --no-pager -o cat 2>&1 | tail -20
+          echo
+          echo "===== 8. data.json 而家點？ ====="
+          sudo ls -la /var/www/crown/data.json 2>&1
+          sudo /opt/footbreak/.venv/bin/python3 -c "
+          import json
+          d = json.load(open('/var/www/crown/data.json'))
+          print('generated_at:', d.get('generated_at'))
+          print('matches:', len(d.get('matches', [])))
+          print('summary:', d.get('summary'))
+          " 2>&1
+          REMOTE
