@@ -49,14 +49,14 @@ jobs:
           cd /opt/footbreak
 
           # DRY-RUN: NO writes. Discover the exact grading api before real run.
-          echo "===== Functions in prediction_history that grade/apply results ====="
-          grep -n "^def " crown/prediction_history.py | head -60
+          echo "===== grade_history full body (line 979 to next def) ====="
+          sed -n '979,1080p' crown/prediction_history.py
           echo
-          echo "===== Post-_result usage in tick loop (line 1090-1160) ====="
-          sed -n '1090,1160p' crown/prediction_history.py
+          echo "===== update_history top (line 1313 to 1080-caller) ====="
+          sed -n '1313,1400p' crown/prediction_history.py
           echo
-          echo "===== _apply_result / grading helpers grep ====="
-          grep -n "_apply_result\|apply_result\|_write_market_grades\|_grade_predictions\|def grade" crown/prediction_history.py | head -20
+          echo "===== Who CALLS grade_history vs update_history ====="
+          grep -rn "grade_history\|update_history" --include="*.py" 2>/dev/null | grep -v backup | grep -v previous | head -20
           echo
           # Skip mutation
           echo "SKIPPED mutation on purpose (dry-run)."
