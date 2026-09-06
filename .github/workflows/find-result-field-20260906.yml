@@ -1,0 +1,117 @@
+name: Find result field crown ledger
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "打 FIND"
+        required: true
+        type: string
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/find-result-field-20260906.yml']
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  find:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - env:
+          E: ${{ github.event_name }}
+          C: ${{ inputs.confirmation }}
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then exit 0; fi
+          if [ "$C" != "FIND" ]; then exit 1; fi
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          set +e
+          echo "===== 1. Look at existing settled match in data.json to see result shape ====="
+          /opt/footbreak/.venv/bin/python3 <<'PY'
+          import json
+          d = json.load(open('/var/www/crown/data.json'))
+          matches = d.get('matches', [])
+          # find any match that has result_status or result populated
+          for m in matches:
+              if not isinstance(m, dict): continue
+              status = m.get('result_status') or m.get('status')
+              if status in ('已核對', 'settled', 'graded'):
+                  print('SAMPLE settled match:')
+                  print(json.dumps({k:v for k,v in list(m.items())[:30]}, ensure_ascii=False, indent=2)[:3000])
+                  break
+              # check stages
+              stages = m.get('stages') or []
+              for st in stages:
+                  if isinstance(st, dict) and st.get('result_status') in ('已核對','已核實'):
+                      print('SAMPLE match with stage result:')
+                      print('match keys:', list(m.keys()))
+                      print('stage:', json.dumps(st, ensure_ascii=False, indent=2)[:2000])
+                      break
+              else:
+                  continue
+              break
+          else:
+              print('NO settled match found in data.json')
+              print('first match keys:', list(matches[0].keys()) if matches else [])
+              print('first match sample:')
+              if matches:
+                  print(json.dumps({k:v for k,v in list(matches[0].items())[:15]}, ensure_ascii=False, indent=2)[:2500])
+          PY
+          echo
+          echo "===== 2. Look at ledger.json to see how result was previously stored ====="
+          /opt/footbreak/.venv/bin/python3 <<'PY'
+          import json
+          d = json.load(open('/var/lib/footbreak/crown/ledger.json'))
+          watch = d.get('watch', {})
+          # find one that has NOT been touched by us (source != user_manual_fill)
+          orig = None
+          user_fill = None
+          for k, v in watch.items():
+              if not isinstance(v, dict): continue
+              r = v.get('result')
+              if isinstance(r, dict):
+                  src = r.get('result_source', '')
+                  if 'user_manual' in src and user_fill is None:
+                      user_fill = (k, v)
+                  elif src and 'user_manual' not in src and orig is None:
+                      orig = (k, v)
+              if orig and user_fill:
+                  break
+          if orig:
+              k,v = orig
+              print(f'ORIGINAL result shape for {k}:')
+              print(json.dumps(v.get('result'), ensure_ascii=False, indent=2))
+              print('stages[0] result fields:')
+              st = (v.get('stages') or [{}])[0]
+              print(json.dumps({kk:vv for kk,vv in st.items() if 'result' in kk or 'settle' in kk or kk in ('pick_result',)}, ensure_ascii=False, indent=2))
+          else:
+              print('NO original result found in ledger')
+          if user_fill:
+              k,v = user_fill
+              print(f'\\nUSER FILL shape for {k}:')
+              print(json.dumps(v.get('result'), ensure_ascii=False, indent=2))
+          PY
+          echo
+          echo "===== 3. crown/run.py mode dispatch (top 100 lines) ====="
+          head -100 /opt/footbreak/crown/run.py
+          REMOTE
