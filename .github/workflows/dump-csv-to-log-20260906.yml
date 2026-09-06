@@ -1,0 +1,105 @@
+name: Dump pending CSV to log
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "打 DUMP"
+        required: true
+        type: string
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  dump:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: diagnose/crown-v2-pending-20260906
+          fetch-depth: 5
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - env:
+          E: ${{ github.event_name }}
+          C: ${{ inputs.confirmation }}
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then echo "push registers"; exit 0; fi
+          if [ "$C" != "DUMP" ]; then echo "wrong"; exit 1; fi
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          # 直接 pipe 出嚟 base64 (令 CSV UTF-8 中文字唔亂)
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'sudo /opt/footbreak/.venv/bin/python3' <<'PY' | base64 -w 0 > /tmp/csv.b64
+          import json
+          from datetime import datetime, timezone, timedelta
+          l = json.load(open('/var/lib/footbreak/crown/ledger.json'))
+          w = l.get('watch', {})
+          HKT = timezone(timedelta(hours=8))
+          now = datetime.now(HKT)
+          cutoff = now - timedelta(days=14)
+          rows = []
+          for k, v in w.items():
+              if not isinstance(v, dict): continue
+              ko = v.get('kickoff_hkt') or ''
+              try:
+                  dt = datetime.fromisoformat(str(ko).replace('Z','+00:00'))
+                  if dt.tzinfo is None: dt = dt.replace(tzinfo=HKT)
+              except: continue
+              if dt > now or dt < cutoff: continue
+              stages = v.get('stages') or []
+              if any((s or {}).get('result_status') in {'已核對','不計','void'} for s in stages if isinstance(s, dict)):
+                  continue
+              rows.append({
+                  'match_id': k,
+                  'kickoff_hkt': dt.strftime('%Y-%m-%d %H:%M'),
+                  'league': v.get('league','') or '',
+                  'home': v.get('home','') or '',
+                  'away': v.get('away','') or '',
+              })
+          rows.sort(key=lambda r: (r['kickoff_hkt'], r['league'], r['home']))
+          import csv, sys, io
+          buf = io.StringIO()
+          w2 = csv.writer(buf)
+          w2.writerow(['match_id','kickoff_hkt','league','home','away','home_score','away_score'])
+          for r in rows:
+              w2.writerow([r['match_id'], r['kickoff_hkt'], r['league'], r['home'], r['away'], '', ''])
+          sys.stdout.write(buf.getvalue())
+          PY
+          echo "===== base64 length ====="
+          wc -c /tmp/csv.b64
+          echo "===== CSV size (decoded) ====="
+          base64 -d /tmp/csv.b64 | wc -c
+      - name: Commit CSV back to branch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Split base64 into 100-char lines for git
+          fold -w 100 /tmp/csv.b64 > /tmp/csv.b64.wrapped
+          git config --global user.email agent@perplexity
+          git config --global user.name perplexity-agent
+          git fetch origin diagnose/crown-v2-pending-20260906
+          git checkout diagnose/crown-v2-pending-20260906
+          mkdir -p exports
+          cp /tmp/csv.b64.wrapped exports/pending-20260906.csv.b64
+          git add exports/
+          git commit -m "Export pending CSV $(date +%Y%m%d-%H%M)" || echo "nothing to commit"
+          git push origin diagnose/crown-v2-pending-20260906
