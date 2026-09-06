@@ -46,14 +46,16 @@ jobs:
           ssh -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=30 \
             "$DEPLOY_USER@$DEPLOY_HOST" 'bash -s' <<'REMOTE'
           set +e
-          # NON-SUDO inspection of crown-radar source layout ONLY. No secrets, no configs.
           cd /opt/crown-radar 2>/dev/null || exit 0
-          echo "===== Source directory structure ====="
-          find . -type f \( -name '*.ts' -o -name '*.tsx' -o -name '*.js' -o -name '*.jsx' -o -name '*.html' -o -name '*.py' \) -not -path '*/node_modules/*' -not -path '*/.git/*' 2>/dev/null | sort | head -100
+          echo "===== backfill-corner-results-titan.ts (Titan007 result fetcher) ====="
+          cat scripts/backfill-corner-results-titan.ts 2>/dev/null | head -200
           echo
-          echo "===== README (public) ====="
-          cat README.md 2>/dev/null | head -50
+          echo "===== audit-corner-results-20260906.ts ====="
+          cat scripts/audit-corner-results-20260906.ts 2>/dev/null | head -150
           echo
-          echo "===== package.json scripts (no env) ====="
-          cat package.json 2>/dev/null | python3 -c 'import json,sys;d=json.loads(sys.stdin.read());print(json.dumps({"name":d.get("name"),"scripts":d.get("scripts",{}),"deps":list(d.get("dependencies",{}).keys())[:20]},indent=2))'
+          echo "===== dashboard.tsx (main layout) ====="
+          cat client/src/pages/dashboard.tsx 2>/dev/null | head -200
+          echo
+          echo "===== ou-signals.tsx  ====="
+          cat client/src/pages/ou-signals.tsx 2>/dev/null | head -200
           REMOTE
