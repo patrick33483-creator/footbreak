@@ -1,0 +1,121 @@
+name: Trigger crown settle & check pipeline
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "打 TRIG"
+        required: true
+        type: string
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  trig:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - env:
+          E: ${{ github.event_name }}
+          C: ${{ inputs.confirmation }}
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then echo "push registers"; exit 0; fi
+          if [ "$C" != "TRIG" ]; then echo "wrong"; exit 1; fi
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'bash -s' <<'REMOTE'
+          set +e
+          echo "===== A. Data.json 現時狀態 ====="
+          ls -la /var/www/crown/data.json
+          python3 -c "
+          import json
+          d=json.load(open('/var/www/crown/data.json'))
+          matches=d.get('matches',[])
+          print('total matches:',len(matches))
+          from datetime import datetime, timezone, timedelta
+          HKT=timezone(timedelta(hours=8))
+          now=datetime.now(HKT)
+          past=[m for m in matches if m.get('kickoff_hkt') and datetime.fromisoformat(m['kickoff_hkt']).replace(tzinfo=HKT)<now]
+          with_result=[m for m in past if any((s or {}).get('result_status') in {'已核對','不計','void'} for s in (m.get('stages') or []))]
+          print('past matches:',len(past))
+          print('past with result:',len(with_result))
+          # Sample 5 個未 resolve
+          missing=[m for m in past if m not in with_result][:5]
+          for m in missing:
+              print('MISSING:', m.get('home','?'), 'vs', m.get('away','?'), m.get('kickoff_hkt'))
+          " 2>&1
+          echo
+          echo "===== B. 手動 trigger crown-settle ====="
+          # 首先確認 sentinel 冇殘留
+          ls -la /run/crown-t5-priority 2>&1
+          sudo systemctl reset-failed crown-settle.service 2>&1
+          sudo systemctl start crown-settle.service 2>&1 &
+          disown
+          echo "started, wait 60s..."
+          sleep 60
+          echo "--- crown-settle 結果 ---"
+          sudo systemctl status crown-settle.service --no-pager 2>&1 | head -20
+          echo "--- Recent journal ---"
+          sudo journalctl -u crown-settle.service --since '3 min ago' --no-pager -o cat 2>&1 | tail -30
+          echo
+          echo "===== C. Data.json 事後狀態 ====="
+          ls -la /var/www/crown/data.json
+          python3 -c "
+          import json
+          d=json.load(open('/var/www/crown/data.json'))
+          matches=d.get('matches',[])
+          from datetime import datetime, timezone, timedelta
+          HKT=timezone(timedelta(hours=8))
+          now=datetime.now(HKT)
+          past=[m for m in matches if m.get('kickoff_hkt') and datetime.fromisoformat(m['kickoff_hkt']).replace(tzinfo=HKT)<now]
+          with_result=[m for m in past if any((s or {}).get('result_status') in {'已核對','不計','void'} for s in (m.get('stages') or []))]
+          print('past matches:',len(past))
+          print('past with result:',len(with_result))
+          " 2>&1
+          echo
+          echo "===== D. Ledger unresolved crown 事後 ====="
+          sudo /opt/footbreak/.venv/bin/python3 -c "
+          import json
+          from datetime import datetime, timezone, timedelta
+          l=json.load(open('/var/lib/footbreak/crown/ledger.json'))
+          w=l.get('watch',{})
+          HKT=timezone(timedelta(hours=8))
+          now=datetime.now(HKT)
+          past_unresolved=0
+          for v in w.values():
+              if not isinstance(v,dict): continue
+              ko=v.get('kickoff_hkt') or ''
+              try:
+                  dt=datetime.fromisoformat(str(ko).replace('Z','+00:00'))
+                  if dt.tzinfo is None: dt=dt.replace(tzinfo=HKT)
+              except: continue
+              if dt>now: continue
+              stages=v.get('stages') or []
+              if not any((s or {}).get('result_status') in {'已核對','不計','void'} for s in stages if isinstance(s,dict)):
+                  past_unresolved+=1
+          print('past unresolved:',past_unresolved)
+          " 2>&1
+          echo
+          echo "===== E. Timers 狀態 ====="
+          sudo systemctl list-timers --all 2>&1 | grep -iE "crown|footbreak|stage" | head -15
+          REMOTE
