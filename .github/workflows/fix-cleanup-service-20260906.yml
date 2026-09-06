@@ -1,0 +1,87 @@
+name: Fix cleanup service (remove bad line)
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "打 FIX"
+        required: true
+        type: string
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  f:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: SSH
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - env:
+          E: ${{ github.event_name }}
+          C: ${{ inputs.confirmation }}
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then echo "push registers"; exit 0; fi
+          if [ "$C" != "FIX" ]; then echo "wrong"; exit 1; fi
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'bash -s' <<'REMOTE'
+          set +e
+
+          echo "===== 重寫 service unit (拆咗 -o 分兩條) ====="
+          sudo tee /etc/systemd/system/crown-tmp-cleanup.service > /dev/null <<'UNIT'
+          [Unit]
+          Description=Clean stale crown ledger tmp files (agent-installed 20260906)
+
+          [Service]
+          Type=oneshot
+          # 前兩條係核心：清 crown-settle 中途死留低嘅 stale tmp
+          ExecStart=/usr/bin/find /var/lib/footbreak/crown -maxdepth 1 -type f -name '.ledger.json.*' -mmin +3 -delete
+          ExecStart=/usr/bin/find /var/lib/footbreak/stage_engine_v2 -maxdepth 1 -type f -name '.ledger.json.*' -mmin +3 -delete
+          # 順手清 /tmp 內超過 1 小時嘅 crown- prefix
+          ExecStart=/usr/bin/find /tmp -maxdepth 1 -type f -name 'crown-*' -mmin +60 -delete
+          # 順手清 /tmp 內超過 1 小時嘅 settle- prefix
+          ExecStart=/usr/bin/find /tmp -maxdepth 1 -type f -name 'settle-*' -mmin +60 -delete
+          Nice=10
+          IOSchedulingClass=idle
+          UNIT
+
+          echo "===== reload ====="
+          sudo systemctl daemon-reload 2>&1
+
+          echo "===== 手動 trigger 驗證 ====="
+          sudo systemctl start crown-tmp-cleanup.service 2>&1
+          sleep 2
+          sudo systemctl status crown-tmp-cleanup.service --no-pager 2>&1 | head -12
+
+          echo
+          echo "===== timer 狀態 ====="
+          sudo systemctl list-timers crown-tmp-cleanup.timer --no-pager 2>&1
+
+          echo
+          echo "===== stale tmp 現況 ====="
+          sudo ls /var/lib/footbreak/crown/.ledger.json.* 2>&1 | wc -l
+
+          echo
+          echo "===== df ====="
+          df -h / 2>&1
+          REMOTE
