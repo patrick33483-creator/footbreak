@@ -1,0 +1,108 @@
+name: Deep verify ledger structure
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "打 DEEP"
+        required: true
+        type: string
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/deep-verify-20260906.yml']
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deep:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - env:
+          E: ${{ github.event_name }}
+          C: ${{ inputs.confirmation }}
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then exit 0; fi
+          if [ "$C" != "DEEP" ]; then exit 1; fi
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          set +e
+          echo "===== A. Ledger size + watch count + backup dir ====="
+          ls -la /var/lib/footbreak/crown/ledger.json
+          ls -lat /var/lib/footbreak/backups/ | head -5
+          echo
+          echo "===== B. Look for archive/history file with past matches ====="
+          find /var/lib/footbreak/ -maxdepth 4 -name "*.json*" -size +50M 2>/dev/null | head -20
+          echo
+          echo "===== C. Where does prediction_history go? ====="
+          ls -la /var/lib/footbreak/crown/prediction_history* 2>&1 | head
+          echo
+          echo "===== D. Check history file schema for match 2998227 ====="
+          for f in /var/lib/footbreak/crown/prediction_history.jsonl /var/lib/footbreak/crown/prediction_history.json; do
+              if [ -f "$f" ]; then
+                  echo "--- $f ---"
+                  ls -la "$f"
+                  # Search first occurrence of 2998227
+                  grep -m1 "2998227" "$f" 2>/dev/null | head -c 1500
+                  echo
+              fi
+          done
+          echo
+          echo "===== E. Where does data.json 368 matches come from? Check crown/dashboard_data.py ====="
+          grep -n "def write_dashboard_data\|def _collect_matches\|prediction_history\|update_history" /opt/footbreak/crown/dashboard_data.py 2>/dev/null | head -20
+          echo
+          echo "===== F. Rebuild data.json flow (crown run.py mode selection) ====="
+          grep -n "def run\|mode.*==\|action.*==\|def main" /opt/footbreak/crown/run.py | head -20
+          echo
+          echo "===== G. Check data.json age vs crown-tick last run ====="
+          systemctl status crown-tick.timer --no-pager 2>&1 | grep -E "Trigger|LastTrigger" | head -3
+          systemctl status crown-tick --no-pager 2>&1 | grep -E "Active|InvocationID" | head -3
+          echo
+          echo "===== H. Sample of 3311 match IDs — are ANY in ledger watch? ====="
+          /opt/footbreak/.venv/bin/python3 <<'PY'
+          import json
+          fills = json.load(open('/tmp/fill_map.json')) if __import__('os').path.exists('/tmp/fill_map.json') else {}
+          ledger = json.load(open('/var/lib/footbreak/crown/ledger.json'))
+          watch = ledger.get('watch') or {}
+          print(f'fill_map count: {len(fills)}, watch count: {len(watch)}')
+          hits = [k for k in fills if k in watch]
+          print(f'overlap: {len(hits)}')
+          if hits[:3]:
+              print('sample overlap:', hits[:3])
+          print('watch keys sample:', list(watch.keys())[:5])
+          print('fill keys sample:', list(fills.keys())[:5])
+          # Check if past kickoffs archived elsewhere
+          import gzip, os
+          histpath = '/var/lib/footbreak/crown/prediction_history.jsonl'
+          if os.path.exists(histpath):
+              print(f'\\nprediction_history.jsonl size:', os.path.getsize(histpath))
+              # Count lines matching each match ID
+              count = 0
+              with open(histpath) as f:
+                  for line in f:
+                      if '2998227' in line or '2933128' in line:
+                          count += 1
+                          if count <= 2:
+                              print('sample line:', line[:800])
+              print(f'lines matching sample IDs: {count}')
+          PY
+          REMOTE
