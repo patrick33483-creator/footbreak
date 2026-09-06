@@ -1,0 +1,92 @@
+name: 查 crown-settle timeout + SIGTERM 原因
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: 設定 SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: 只讀查
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=8 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'bash -s' <<'REMOTE'
+          set +e
+          echo "===== 1. crown-settle.service 完整 unit ====="
+          sudo cat /etc/systemd/system/crown-settle.service 2>&1
+          echo
+          echo "===== 2. crown-settle.timer ====="
+          sudo cat /etc/systemd/system/crown-settle.timer 2>&1
+          echo
+          echo "===== 3. systemctl show timeout / limit props ====="
+          sudo systemctl show crown-settle.service --property=TimeoutStartUSec,TimeoutStopUSec,RuntimeMaxUSec,WatchdogUSec,MemoryMax,CPUQuota,TasksMax,Conflicts,After --no-pager 2>&1
+          echo
+          echo "===== 4. 過去 6 小時 crown-settle 全部 log ====="
+          sudo journalctl -u crown-settle.service --no-pager --since '6 hours ago' 2>&1 | tail -80
+          echo
+          echo "===== 5. crown-tick-sentinel-monitor 相關 log (可能係佢 kill) ====="
+          sudo journalctl -u crown-tick-sentinel-monitor.service --no-pager --since '2 hours ago' 2>&1 | tail -30
+          echo
+          echo "===== 6. 現時最新 ledger + data.json mtime + sentinel ====="
+          sudo ls -la /var/lib/footbreak/crown/ledger.json /var/www/crown/data.json /run/crown-t5-priority 2>&1
+          echo
+          echo "===== 7. Ledger stats + bets 快照 ====="
+          sudo /opt/footbreak/.venv/bin/python3 - <<'PY' 2>&1
+          import json
+          d = json.load(open('/var/lib/footbreak/crown/ledger.json'))
+          stats = d.get('stats', {})
+          print(f"stats keys: {list(stats.keys())}")
+          for k, v in stats.items():
+              if isinstance(v, (int, float, str, bool)):
+                  print(f"  {k}: {v}")
+          bets = d.get('bets', [])
+          print(f"\ntotal bets: {len(bets)}")
+          if bets:
+              print(f"latest bet keys: {list(bets[-1].keys())[:30]}")
+              # count pending vs settled
+              settled = sum(1 for b in bets if b.get('settled') or b.get('settled_at') or b.get('result') or b.get('outcome'))
+              print(f"settled bets: {settled}")
+              print(f"pending bets: {len(bets) - settled}")
+              # last 5 bets
+              print("\nlast 5 bets (partial):")
+              for b in bets[-5:]:
+                  print(f"  match_id={b.get('match_id','?')} kickoff={b.get('kickoff','?')} settled={b.get('settled','?')} result={b.get('result','?')}")
+          PY
+          echo
+          echo "===== 8. data.json summary ====="
+          sudo /opt/footbreak/.venv/bin/python3 - <<'PY' 2>&1
+          import json
+          d = json.load(open('/var/www/crown/data.json'))
+          print(f"generated_at: {d.get('generated_at')}")
+          s = d.get('summary', {})
+          for k, v in s.items(): print(f"  summary.{k}: {v}")
+          matches = d.get('matches', [])
+          print(f"matches len: {len(matches)}")
+          if matches:
+              settled = sum(1 for m in matches if m.get('result') or m.get('settled') or m.get('final_score') or m.get('score'))
+              print(f"matches with result: {settled}")
+              print(f"matches pending: {len(matches) - settled}")
+          PY
+          echo
+          echo "===== DONE ====="
+          REMOTE
