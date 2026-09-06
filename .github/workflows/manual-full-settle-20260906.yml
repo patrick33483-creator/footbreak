@@ -1,0 +1,104 @@
+name: Manual full settle + clean stale ledger bak
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "打 FULL_SETTLE"
+        required: true
+        type: string
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  s:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: SSH
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - name: Check
+        env:
+          E: ${{ github.event_name }}
+          C: ${{ inputs.confirmation }}
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then echo "push registers only"; exit 0; fi
+          if [ "$C" != "FULL_SETTLE" ]; then echo "wrong confirmation"; exit 1; fi
+      - name: run
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=8 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'bash -s' <<'REMOTE'
+          set +e
+          echo "===== 1. Stop timer + service ====="
+          sudo systemctl stop crown-settle.timer crown-settle.service 2>&1 | tail -3
+          sudo systemctl reset-failed crown-settle.service 2>&1
+          sleep 3
+          sudo pkill -TERM -f 'python.*crown\.run.*settle' 2>&1 || true
+          sleep 3
+          sudo pkill -KILL -f 'python.*crown\.run.*settle' 2>&1 || true
+          echo
+          echo "===== 2. 清 stale ledger.json.before* / .bak / .ledger.json.* tmp ====="
+          # 舊 named backup
+          sudo find /var/lib/footbreak/crown/ -maxdepth 1 -name 'ledger.json.before-*' -type f -mtime +2 -print -delete 2>&1 | tail -20
+          sudo find /var/lib/footbreak/crown/ -maxdepth 1 -name 'ledger.json.*.bak' -type f -mtime +2 -print -delete 2>&1 | tail -10
+          sudo find /var/lib/footbreak/crown/ -maxdepth 1 -name 'ledger.json.condition*' -type f -mtime +2 -print -delete 2>&1 | tail -10
+          # anonymous tmp
+          sudo find /var/lib/footbreak/crown/ -maxdepth 1 -name '.ledger.json.*' -type f -mmin +2 -print -delete 2>&1 | tail -20
+          echo
+          echo "===== 3. df 中途 ====="
+          df -h / 2>&1
+          echo
+          echo "確認正檔仲喺:"
+          sudo ls -la /var/lib/footbreak/crown/ledger.json 2>&1
+          echo
+          echo "===== 4. 手動跑 settle (無 systemd timeout) ====="
+          # 直接以 root 用 crown venv 跑，無 systemd 15min timeout
+          # 用 CROWN_HISTORY_RESULT_DETAIL_BUDGET=0 減少 network call
+          sudo bash -c '
+            cd /opt/footbreak &&
+            timeout 2400 /opt/footbreak/.venv/bin/python3 -m crown.run settle 2>&1
+          ' 2>&1 | tail -30
+          echo "settle exit=$?"
+          echo
+          echo "===== 5. data.json 睇下 ====="
+          sudo ls -la /var/www/crown/data.json 2>&1
+          sudo /opt/footbreak/.venv/bin/python3 -c "
+          import json
+          d = json.load(open('/var/www/crown/data.json'))
+          print('generated_at:', d.get('generated_at'))
+          print('matches:', len(d.get('matches', [])))
+          print('summary:', d.get('summary'))
+          m = d.get('matches', [])
+          if m:
+              print('First 3 matches:')
+              for x in m[:3]:
+                  print(' ', x.get('kickoff_hkt'), x.get('home'), 'vs', x.get('away'), 'status=', x.get('status'))
+          " 2>&1
+          echo
+          echo "===== 6. Restart timer ====="
+          sudo systemctl start crown-settle.timer 2>&1
+          sudo systemctl list-timers crown-settle.timer --no-pager 2>&1
+          echo
+          echo "===== 7. df final ====="
+          df -h / 2>&1
+          REMOTE
