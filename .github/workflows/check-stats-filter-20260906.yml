@@ -1,0 +1,89 @@
+name: Check stats filter
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "打 STATS"
+        required: true
+        type: string
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/check-stats-filter-20260906.yml']
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  s:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - env:
+          E: ${{ github.event_name }}
+          C: ${{ inputs.confirmation }}
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then exit 0; fi
+          if [ "$C" != "STATS" ]; then exit 1; fi
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=30 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          set +e
+          echo "===== 1. Compare user_fill row vs original resolved row ====="
+          /opt/footbreak/.venv/bin/python3 <<'PY'
+          import json
+          h = json.load(open('/var/lib/footbreak/crown/prediction_history.json'))
+          rows = h.get('rows', [])
+          # Original resolved (before my fill)
+          orig = None
+          user_fill = None
+          for r in rows:
+              src = r.get('result_source', '')
+              status = r.get('result_status')
+              if status in ('已核對','已核實'):
+                  if src == 'user_manual_fill_20260906' and user_fill is None:
+                      user_fill = r
+                  elif src != 'user_manual_fill_20260906' and orig is None:
+                      orig = r
+              if orig and user_fill:
+                  break
+          print('=== ORIGINAL resolved row keys ===')
+          if orig:
+              print('keys:', sorted(orig.keys()))
+              # Fields present in orig, missing in user_fill
+              missing = set(orig.keys()) - set(user_fill.keys() if user_fill else set())
+              print('fields orig has that user_fill missing:', missing)
+              # important fields for stats
+              for k in ('result_status','result_score','score','home_score','away_score','pick','pick_result','settlement','stage','condition','market','era','prediction_era','history_key','match_id'):
+                  print(f'  orig.{k}={orig.get(k)}')
+          print()
+          print('=== USER FILL row ===')
+          if user_fill:
+              print('keys:', sorted(user_fill.keys()))
+              for k in ('result_status','result_score','score','home_score','away_score','pick','pick_result','settlement','stage','condition','market','era','prediction_era','history_key','match_id'):
+                  print(f'  fill.{k}={user_fill.get(k)}')
+          PY
+          echo
+          echo "===== 2. Look at calculate_stats era filter ====="
+          grep -n "def calculate_stats\|prediction_era\|era\|comparable_era" /opt/footbreak/crown/prediction_history.py | head -30
+          echo
+          echo "===== 3. Check dashboard PREDICTION_ERA constant ====="
+          grep -n "PREDICTION_ERA" /opt/footbreak/crown/*.py | head -10
+          REMOTE
