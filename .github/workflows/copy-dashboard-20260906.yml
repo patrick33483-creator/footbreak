@@ -1,0 +1,78 @@
+name: Copy hkjc-dashboard to crown www
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "打 COPY"
+        required: true
+        type: string
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/copy-dashboard-20260906.yml']
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  copy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - env:
+          E: ${{ github.event_name }}
+          C: ${{ inputs.confirmation }}
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then exit 0; fi
+          if [ "$C" != "COPY" ]; then exit 1; fi
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          set -e
+          echo "===== 1. Find which script/service publishes to /var/www/crown ====="
+          # Search for anything referencing /var/www/crown
+          grep -r "/var/www/crown" /etc/systemd/system/ 2>/dev/null | head -10
+          echo "---"
+          grep -r "/var/www/crown" /opt/footbreak/ --include='*.py' --include='*.sh' 2>/dev/null | head -20
+          echo
+          echo "===== 2. Show hkjc-dashboard vs crown data.json ====="
+          ls -la /opt/footbreak/hkjc-dashboard/data.json /var/www/crown/data.json 2>&1
+          echo
+          echo "===== 3. Compare: crown data.json count with_result before copy ====="
+          /opt/footbreak/.venv/bin/python3 <<'PY'
+          import json
+          for p in ['/opt/footbreak/hkjc-dashboard/data.json', '/var/www/crown/data.json']:
+              try:
+                  d = json.load(open(p))
+                  m = d.get('matches', []) if isinstance(d, dict) else d
+                  wr = [x for x in m if isinstance(x, dict) and (x.get('result') or x.get('result_status'))]
+                  # Look for stage prediction with result_status
+                  stage_wr = 0
+                  for x in m:
+                      if isinstance(x, dict):
+                          for st in (x.get('stages') or []):
+                              if isinstance(st, dict) and st.get('result_status') == '已核對':
+                                  stage_wr += 1
+                                  break
+                  print(f'{p}: total={len(m)} with_result={len(wr)} with_stage_result={stage_wr}')
+              except Exception as e:
+                  print(f'{p}: {e}')
+          PY
+          REMOTE
