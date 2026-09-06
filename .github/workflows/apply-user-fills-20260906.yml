@@ -7,6 +7,9 @@ on:
         description: "打 APPLY-FILLS-3311"
         required: true
         type: string
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/apply-user-fills-20260906.yml']
 
 concurrency:
   group: production-maintenance
@@ -24,7 +27,8 @@ jobs:
         with:
           ref: diagnose/crown-v2-pending-20260906
           fetch-depth: 1
-      - env:
+      - if: github.event_name == 'workflow_dispatch'
+        env:
           DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
         run: |
@@ -33,10 +37,13 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
       - env:
+          E: ${{ github.event_name }}
           C: ${{ inputs.confirmation }}
         run: |
+          if [ "$E" != "workflow_dispatch" ]; then echo "push registers only"; exit 0; fi
           if [ "$C" != "APPLY-FILLS-3311" ]; then echo "wrong"; exit 1; fi
-      - env:
+      - if: github.event_name == 'workflow_dispatch'
+        env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
         run: |
