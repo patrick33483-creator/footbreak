@@ -1,0 +1,229 @@
+name: Inspect grading api (dry-run only)
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "打 MASSGRADE"
+        required: true
+        type: string
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/mass-grade-titan-20260907.yml']
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  m:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - env:
+          E: ${{ github.event_name }}
+          C: ${{ inputs.confirmation }}
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then exit 0; fi
+          if [ "$C" != "MASSGRADE" ]; then exit 1; fi
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=60 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          set -eu
+          cd /opt/footbreak
+
+          # DRY-RUN: NO writes. Discover the exact grading api before real run.
+          echo "===== inspect crown.prediction_history public surface ====="
+          /opt/footbreak/.venv/bin/python3 -c "
+          import crown.prediction_history as m, inspect
+          fns = [(n, str(inspect.signature(getattr(m,n)))) for n in dir(m) if callable(getattr(m,n,None)) and not n.startswith('__')]
+          for n, s in fns:
+              if any(k in n.lower() for k in ('grade','result','apply','update')):
+                  print(f'{n}{s}')
+          "
+          echo
+          echo "===== update_history signature + first 40 lines ====="
+          grep -n "^def update_history\|^def _apply\|^def apply_result\|^def grade_row" crown/prediction_history.py | head -10
+          echo
+          # Skip mutation
+          echo "SKIPPED mutation on purpose (dry-run)."
+          exit 0
+
+          # (unreachable) original plan below
+          STAMP=$(date +%Y%m%d-%H%M%S)
+          BACKUP_DIR=/var/lib/footbreak/crown/backups/history-mass-grade-${STAMP}
+          mkdir -p "$BACKUP_DIR"
+
+          # 1) Rollback my broken 4779-row fill (restore pre-fill snapshot)
+          echo "===== 1. Rollback prediction_history to pre-fill snapshot ====="
+          PREFILL=/var/lib/footbreak/crown/backups/history-pre-user-fill-20260906-224014/prediction_history.json
+          if [ ! -f "$PREFILL" ]; then
+              echo "ERROR: Pre-fill backup missing at $PREFILL"
+              exit 2
+          fi
+          cp -a /var/lib/footbreak/crown/prediction_history.json "$BACKUP_DIR/prediction_history-before-restore.json"
+          cp -a "$PREFILL" /var/lib/footbreak/crown/prediction_history.json
+          chown crown:crown /var/lib/footbreak/crown/prediction_history.json 2>/dev/null || true
+          ls -la /var/lib/footbreak/crown/prediction_history.json
+
+          # 2) Run mass-grader (uses crown.titan.TitanClient + crown.prediction_history._direct_titan_result)
+          echo
+          echo "===== 2. Mass-grade via titan007 direct-detail ====="
+
+          # Copy the run script to a known path
+          cat > /tmp/mass_grade.py <<'PY'
+          """Mass-grade pending prediction_history rows via titan007 direct detail.
+
+          Uses the SAME code path as crown.prediction_history._direct_titan_result
+          + _oriented_titan_result, just without the per-tick request budget.
+          Pending rows that have a titan_match_id and no market_grades get a
+          titan007 detail fetch; if the exact-id detail matches identity, the
+          grading pipeline populates market_grades / correct / actual / forecast.
+          """
+          from __future__ import annotations
+          import json, os, sys, time, traceback
+          from datetime import datetime
+
+          sys.path.insert(0, '/opt/footbreak')
+          from crown.config import Settings
+          from crown.titan import TitanClient
+          from crown.prediction_history import (
+              _direct_titan_result,
+              _titan_event,
+              _target,
+              _oriented_titan_result,
+          )
+          # Grading helper: replicate what the tick loop does after obtaining a score.
+          # In crown.prediction_history the applied grading is via update_history's
+          # inner _apply_result — we reuse existing engine grading by calling
+          # _direct_titan_result then finalise_row from prediction_history.
+          from crown.prediction_history import PREDICTION_ERA
+
+          config = Settings.from_env()
+          client = TitanClient(config)
+          client.limit_result_detail_requests(999999)  # remove per-run budget
+
+          path = '/var/lib/footbreak/crown/prediction_history.json'
+          data = json.load(open(path))
+          rows = data.get('rows', [])
+          print(f'Loaded {len(rows)} rows')
+
+          # Candidates: has titan_match_id, no market_grades, prediction_era matches, result_status pending
+          candidates = []
+          for i, r in enumerate(rows):
+              tid = str(r.get('titan_match_id') or r.get('match_id') or '')
+              if not tid.isdigit():
+                  continue
+              if r.get('market_grades'):
+                  continue
+              if r.get('prediction_era') != PREDICTION_ERA:
+                  continue
+              if r.get('result_status') in ('已核對', '不計'):
+                  continue
+              candidates.append(i)
+
+          print(f'candidates: {len(candidates)}')
+
+          # Find how the tick loop applies score+source to row.
+          # crown.prediction_history has an internal _apply_result / update_history.
+          # We reimplement the minimal apply: call _direct_titan_result, then the
+          # same downstream update via crown.prediction_history helpers.
+          from crown.prediction_history import _apply_result  # if exists
+          have_apply = True
+
+          from crown.common import iso_hkt
+
+          wrote = 0
+          fail_no_detail = 0
+          fail_no_match = 0
+          fail_exc = 0
+          start = time.time()
+          for k, idx in enumerate(candidates, 1):
+              row = rows[idx]
+              try:
+                  score = _direct_titan_result(row, client)
+                  if not score:
+                      fail_no_detail += 1
+                      continue
+                  if have_apply:
+                      _apply_result(row, score, "titan007_direct_detail_exact_id_bulk_20260907")
+                      wrote += 1
+                  else:
+                      fail_exc += 1
+              except Exception:
+                  fail_exc += 1
+                  if fail_exc < 5:
+                      traceback.print_exc()
+              # gentle 300ms delay
+              time.sleep(0.3)
+              if k % 200 == 0:
+                  el = time.time() - start
+                  rate = k / el
+                  eta = (len(candidates) - k) / rate
+                  print(f'[{k}/{len(candidates)}] wrote={wrote} no_detail={fail_no_detail} no_match={fail_no_match} exc={fail_exc} rate={rate:.1f}/s eta_min={eta/60:.1f}')
+
+          # Save
+          bkp = '/tmp/prediction_history-postgrade.json'
+          json.dump(data, open(bkp, 'w'), ensure_ascii=False)
+          os.replace(bkp, path)
+          print(f'\nDone. wrote={wrote} no_detail={fail_no_detail} no_match={fail_no_match} exc={fail_exc}')
+          PY
+
+          # Check if _apply_result exists; if not, we halt and fall back to plan B
+          if ! /opt/footbreak/.venv/bin/python3 -c "from crown.prediction_history import _apply_result" 2>/dev/null; then
+              echo "===== _apply_result NOT found — inspecting available helpers ====="
+              /opt/footbreak/.venv/bin/python3 -c "import crown.prediction_history as m; import inspect; print([n for n in dir(m) if not n.startswith('__')])" | tr ',' '\n' | grep -i "result\|grade\|apply" | head -20
+              echo
+              echo "HALTING. Need to know exact apply function name before mutation."
+              exit 3
+          fi
+
+          echo "===== Running mass-grade (rate limited 300ms between requests) ====="
+          # Timeout ~50 min: 4779 rows * 0.3s = 24 min; add margin
+          timeout 3000 /opt/footbreak/.venv/bin/python3 /tmp/mass_grade.py 2>&1 | tail -80
+
+          # 3) Regenerate data.json
+          echo
+          echo "===== 3. Regenerate dashboard data.json ====="
+          cd /opt/footbreak
+          /opt/footbreak/.venv/bin/python3 -c "
+          from crown.dashboard_data import write_dashboard_data
+          from crown.config import Settings
+          write_dashboard_data(Settings.from_env())
+          print('data.json regenerated')
+          "
+
+          # 4) Verify
+          echo
+          echo "===== 4. Verify ====="
+          /opt/footbreak/.venv/bin/python3 <<'PY'
+          import json
+          h = json.load(open('/var/lib/footbreak/crown/prediction_history.json'))
+          rows = h.get('rows', [])
+          graded = [r for r in rows if r.get('market_grades')]
+          via_bulk = [r for r in rows if r.get('result_source') == 'titan007_direct_detail_exact_id_bulk_20260907']
+          print(f'total rows: {len(rows)}')
+          print(f'with market_grades: {len(graded)}')
+          print(f'via bulk-grader: {len(via_bulk)}')
+          d = json.load(open('/var/www/crown/data.json'))
+          st = d.get('summary', {}) or d.get('overview', {})
+          print(f'data.json overall: {json.dumps(st, ensure_ascii=False, indent=2)[:800]}')
+          PY
+
+          REMOTE
