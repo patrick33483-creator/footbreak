@@ -1,0 +1,92 @@
+name: Export pending matches (for user to fill)
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "打 EXP"
+        required: true
+        type: string
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  exp:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - env:
+          E: ${{ github.event_name }}
+          C: ${{ inputs.confirmation }}
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then echo "push registers"; exit 0; fi
+          if [ "$C" != "EXP" ]; then echo "wrong"; exit 1; fi
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'sudo /opt/footbreak/.venv/bin/python3' <<'PY' > /tmp/pending.csv
+          import json
+          from datetime import datetime, timezone, timedelta
+          l = json.load(open('/var/lib/footbreak/crown/ledger.json'))
+          w = l.get('watch', {})
+          HKT = timezone(timedelta(hours=8))
+          now = datetime.now(HKT)
+          # Only past matches, past 14 days (最相關,最有可能仲用),unresolved
+          cutoff = now - timedelta(days=14)
+          rows = []
+          for k, v in w.items():
+              if not isinstance(v, dict): continue
+              ko = v.get('kickoff_hkt') or ''
+              try:
+                  dt = datetime.fromisoformat(str(ko).replace('Z','+00:00'))
+                  if dt.tzinfo is None: dt = dt.replace(tzinfo=HKT)
+              except: continue
+              if dt > now or dt < cutoff: continue
+              stages = v.get('stages') or []
+              if any((s or {}).get('result_status') in {'已核對','不計','void'} for s in stages if isinstance(s, dict)):
+                  continue
+              rows.append({
+                  'match_id': k,
+                  'kickoff_hkt': dt.strftime('%Y-%m-%d %H:%M'),
+                  'league': v.get('league','') or '',
+                  'home': v.get('home','') or '',
+                  'away': v.get('away','') or '',
+              })
+          rows.sort(key=lambda r: (r['kickoff_hkt'], r['league'], r['home']))
+          import csv, sys
+          w = csv.writer(sys.stdout)
+          w.writerow(['match_id','kickoff_hkt','league','home','away','home_score','away_score'])
+          for r in rows:
+              w.writerow([r['match_id'], r['kickoff_hkt'], r['league'], r['home'], r['away'], '', ''])
+          PY
+          echo "===== 頭 30 行 ====="
+          head -30 /tmp/pending.csv
+          echo
+          echo "===== Total 場次 ====="
+          wc -l /tmp/pending.csv
+          echo
+          echo "===== By league 分佈 ====="
+          tail -n +2 /tmp/pending.csv | cut -d, -f3 | sort | uniq -c | sort -rn | head -30
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pending-matches
+          path: /tmp/pending.csv
