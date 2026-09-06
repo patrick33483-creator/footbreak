@@ -1,0 +1,177 @@
+name: Install disk alert timer
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "打 INSTALL_ALERT"
+        required: true
+        type: string
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  a:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - env:
+          E: ${{ github.event_name }}
+          C: ${{ inputs.confirmation }}
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then echo "push registers"; exit 0; fi
+          if [ "$C" != "INSTALL_ALERT" ]; then echo "wrong"; exit 1; fi
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'bash -s' <<'REMOTE'
+          set +e
+
+          echo "===== 1. 寫 disk-alert.sh (單一責任: 檢查磁碟 + 發 Telegram) ====="
+          sudo tee /usr/local/bin/disk-alert-agent20260906.sh > /dev/null <<'SCRIPT'
+          #!/bin/bash
+          # 每次 fire 檢查 / 磁碟 avail; <2G 就發 Telegram; 有 rate-limit (30 分鐘一次)
+          set +e
+
+          THRESHOLD_KB=$((2 * 1024 * 1024))   # 2GB in KB
+          STATE_FILE=/var/lib/disk-alert-agent20260906.state
+          MIN_ALERT_INTERVAL=1800              # 30 分鐘
+
+          # 讀 avail KB
+          AVAIL_KB=$(df -k / | awk 'NR==2 {print $4}')
+          AVAIL_GB=$(awk -v k="$AVAIL_KB" 'BEGIN{printf "%.2f", k/1024/1024}')
+          USED_PCT=$(df -h / | awk 'NR==2 {print $5}')
+
+          # 唔夠 2G 先發
+          if [ "$AVAIL_KB" -ge "$THRESHOLD_KB" ]; then
+            exit 0
+          fi
+
+          # Rate limit
+          NOW=$(date +%s)
+          if [ -r "$STATE_FILE" ]; then
+            LAST=$(cat "$STATE_FILE" 2>/dev/null)
+            [ -z "$LAST" ] && LAST=0
+            if [ $((NOW - LAST)) -lt "$MIN_ALERT_INTERVAL" ]; then
+              exit 0
+            fi
+          fi
+
+          # 讀 bot token / chat id
+          if [ -f /etc/footbreak.env ]; then
+            set -a
+            . /etc/footbreak.env
+            set +a
+          fi
+
+          if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ]; then
+            echo "$(date '+%F %T') no telegram creds" >&2
+            exit 1
+          fi
+
+          # 搵 top 3 大戶
+          TOP=$(du -sh /var/lib/footbreak/crown /opt/odds-*/data /tmp /var/lib/docker 2>/dev/null | sort -h | tail -5 | awk '{printf "%s %s\\n", $1, $2}')
+
+          HOST=$(hostname -s)
+          TEXT="⚠️ Disk low on ${HOST}
+          Available: ${AVAIL_GB} GB (threshold 2 GB)
+          Used: ${USED_PCT}
+          Top dirs:
+          ${TOP}
+          Time: $(date '+%F %T %Z')"
+
+          # Send
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
+            --data-urlencode "text=${TEXT}" > /dev/null
+
+          if [ $? -eq 0 ]; then
+            echo "$NOW" > "$STATE_FILE"
+            echo "$(date '+%F %T') alert sent, avail=${AVAIL_GB}G"
+          else
+            echo "$(date '+%F %T') telegram send failed" >&2
+            exit 1
+          fi
+          SCRIPT
+
+          sudo chmod +x /usr/local/bin/disk-alert-agent20260906.sh
+          sudo chown root:root /usr/local/bin/disk-alert-agent20260906.sh
+
+          echo "===== 2. 寫 systemd service ====="
+          sudo tee /etc/systemd/system/disk-alert-agent20260906.service > /dev/null <<'UNIT'
+          [Unit]
+          Description=Disk low-space Telegram alert (agent-installed 20260906)
+
+          [Service]
+          Type=oneshot
+          ExecStart=/usr/local/bin/disk-alert-agent20260906.sh
+          Nice=10
+          UNIT
+
+          echo "===== 3. 寫 systemd timer (每 10 分鐘) ====="
+          sudo tee /etc/systemd/system/disk-alert-agent20260906.timer > /dev/null <<'TIMER'
+          [Unit]
+          Description=Trigger disk-alert every 10 min (agent-installed 20260906)
+
+          [Timer]
+          OnBootSec=5min
+          OnUnitActiveSec=10min
+          AccuracySec=30s
+          Persistent=true
+
+          [Install]
+          WantedBy=timers.target
+          TIMER
+
+          echo "===== 4. daemon-reload + enable ====="
+          sudo systemctl daemon-reload 2>&1
+          sudo systemctl enable --now disk-alert-agent20260906.timer 2>&1
+
+          echo
+          echo "===== 5. 手動 dry-run (依家 5G >2G,唔會發) ====="
+          sudo systemctl start disk-alert-agent20260906.service 2>&1
+          sleep 2
+          sudo systemctl status disk-alert-agent20260906.service --no-pager 2>&1 | head -12
+
+          echo
+          echo "===== 6. Force 一次真發送測試: 暫時將 threshold 改到 100G,即刻 fire ====="
+          # 直接跑一次 modified 版本測試 Telegram send
+          sudo bash -c '
+            set +a
+            . /etc/footbreak.env 2>/dev/null
+            AVAIL_GB=$(df -h / | awk "NR==2 {print \$4}")
+            HOST=$(hostname -s)
+            TEXT="✅ [Test] Disk alert installed on ${HOST}. Current avail: ${AVAIL_GB}. Will alert if < 2G (checks every 10 min, rate-limited to once per 30 min). — agent 2026-09-06"
+            if [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHAT_ID" ]; then
+              curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+                --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
+                --data-urlencode "text=${TEXT}" | head -c 200
+              echo
+            else
+              echo "no creds"
+            fi
+          '
+
+          echo
+          echo "===== 7. Timer 下次 fire ====="
+          sudo systemctl list-timers disk-alert-agent20260906.timer --no-pager 2>&1
+          REMOTE
