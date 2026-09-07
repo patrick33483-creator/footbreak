@@ -1,0 +1,79 @@
+name: Read radar history.html + score endpoint
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "打 RADARHIST"
+        required: true
+        type: string
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/read-radar-history-20260907.yml']
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  r:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - env:
+          E: ${{ github.event_name }}
+          C: ${{ inputs.confirmation }}
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then exit 0; fi
+          if [ "$C" != "RADARHIST" ]; then exit 1; fi
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          set +e
+          echo "===== 1) nginx: 揾邊個 site serve /crown-radar/history ====="
+          grep -rn "crown-radar\|crown_radar" /etc/nginx/sites-available/ 2>/dev/null | head -20
+          echo
+          echo "===== 2) crown-radar client build folder ====="
+          ls /opt/crown-radar/client/ 2>/dev/null | head
+          ls /opt/crown-radar/dist/ 2>/dev/null | head
+          find /opt/crown-radar -maxdepth 4 -name "history*" 2>/dev/null | head -20
+          echo
+          echo "===== 3) crown-radar router / api routes ====="
+          find /opt/crown-radar/server -type f -name "*.ts" 2>/dev/null | xargs grep -l "history\|result" 2>/dev/null | head -10
+          echo
+          echo "===== 4) 睇 crown-radar 個 server/routes (揾 API endpoints) ====="
+          ls /opt/crown-radar/server/ 2>/dev/null
+          find /opt/crown-radar/server -maxdepth 2 -type f -name "*.ts" 2>/dev/null | head -30
+          echo
+          echo "===== 5) crown-radar API paths registered ====="
+          grep -rn "app\.\(get\|post\)\|router\.\(get\|post\)\|fastify\.\(get\|post\)" /opt/crown-radar/server 2>/dev/null | grep -vE "test|spec" | head -30
+          echo
+          echo "===== 6) 試 curl 現時 radar history endpoints (由 host 內部) ====="
+          for path in /crown-radar/history.html /crown-radar/api/history /crown-radar/api/signals /crown-radar/api/results /crown-radar/results.json /crown-radar/history.json; do
+            echo "-- $path --"
+            curl -s -o /dev/null -w "HTTP %{http_code} · %{size_download}b\n" "http://127.0.0.1$path"
+          done
+          echo
+          echo "===== 7) 揾 client-side (React) file 個 history component ====="
+          find /opt/crown-radar/client -type f \( -name "*.tsx" -o -name "*.ts" -o -name "*.jsx" \) 2>/dev/null | xargs grep -l "歷史\|history" 2>/dev/null | head -10
+          echo
+          echo "===== 8) crown-radar 個 index.html + main entry ====="
+          find /opt/crown-radar -name "index.html" 2>/dev/null | head -5
+          find /opt/crown-radar/dist -type f 2>/dev/null | head -20
+          REMOTE
