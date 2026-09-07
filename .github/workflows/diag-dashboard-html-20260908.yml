@@ -1,0 +1,59 @@
+name: Diag dashboard html structure
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/diag-dashboard-html-20260908.yml']
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  d:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -T 15 -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+      - env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=30 -o StrictHostKeyChecking=accept-new \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          set -e
+          
+          echo "===== index.html size ====="
+          wc -l /var/www/stage_engine_v2/index.html
+          
+          echo
+          echo "===== index.html head 100 lines ====="
+          head -100 /var/www/stage_engine_v2/index.html
+          
+          echo
+          echo "===== history.html size ====="
+          wc -l /var/www/stage_engine_v2/history.html
+          
+          echo
+          echo "===== history.html full content ====="
+          cat /var/www/stage_engine_v2/history.html
+          
+          echo
+          echo "===== Where fixtures are rendered in index.html (grep) ====="
+          grep -n "fixtures\|kickoff\|today" /var/www/stage_engine_v2/index.html | head -30
+          
+          echo
+          echo "===== All files in v2 dir ====="
+          ls -la /var/www/stage_engine_v2/*.html /var/www/stage_engine_v2/*.js 2>/dev/null
+          REMOTE
