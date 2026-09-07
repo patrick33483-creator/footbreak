@@ -37,22 +37,19 @@ jobs:
         run: |
           if [ "$E" != "workflow_dispatch" ]; then exit 0; fi
           SSH="ssh -o BatchMode=yes -o ConnectTimeout=20 -o StrictHostKeyChecking=accept-new $DEPLOY_USER@$DEPLOY_HOST"
-          echo "=== BEFORE ==="
-          $SSH 'sudo systemctl show crown-sweep.service -p TimeoutStartUSec -p TimeoutStopUSec'
-          echo
-          echo "=== apply drop-in override ==="
-          $SSH 'sudo mkdir -p /etc/systemd/system/crown-sweep.service.d'
-          $SSH "sudo tee /etc/systemd/system/crown-sweep.service.d/timeout.conf > /dev/null <<'CONF'
-[Service]
-TimeoutStartSec=300
-CONF"
-          $SSH 'sudo systemctl daemon-reload'
-          $SSH 'sudo systemctl restart crown-sweep.timer'
-          echo
-          echo "=== AFTER ==="
-          $SSH 'sudo systemctl show crown-sweep.service -p TimeoutStartUSec -p TimeoutStopUSec'
-          echo
+          SCP="scp -o BatchMode=yes -o ConnectTimeout=20 -o StrictHostKeyChecking=accept-new"
+          printf '%s\n%s\n' '[Service]' 'TimeoutStartSec=300' > /tmp/timeout.conf
           echo "=== drop-in content ==="
+          cat /tmp/timeout.conf
+          echo
+          echo "=== BEFORE ==="
+          $SSH 'sudo systemctl show crown-sweep.service -p TimeoutStartUSec'
+          echo
+          $SCP /tmp/timeout.conf $DEPLOY_USER@$DEPLOY_HOST:/tmp/timeout.conf
+          $SSH 'sudo mkdir -p /etc/systemd/system/crown-sweep.service.d && sudo cp /tmp/timeout.conf /etc/systemd/system/crown-sweep.service.d/timeout.conf && sudo systemctl daemon-reload && sudo systemctl restart crown-sweep.timer'
+          echo "=== AFTER ==="
+          $SSH 'sudo systemctl show crown-sweep.service -p TimeoutStartUSec'
+          echo
           $SSH 'sudo cat /etc/systemd/system/crown-sweep.service.d/timeout.conf'
           echo
           echo "=== timer status ==="
