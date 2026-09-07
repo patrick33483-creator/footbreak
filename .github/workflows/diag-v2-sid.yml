@@ -39,7 +39,8 @@ jobs:
           SSH="ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=30 -i ~/.ssh/id_ed25519 $DEPLOY_USER@$DEPLOY_HOST"
 
           # Write py locally, scp, then run
-          cat > /tmp/diag.py <<'PYEOF'
+          python3 - <<'PYWRITE' > /tmp/diag.py
+          content = r'''
           import json
           from datetime import datetime, timezone
           now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
@@ -50,16 +51,28 @@ jobs:
           fx = d.get("fixtures", [])
           print("V2 fixtures:", len(fx))
           future = past = no_time = 0
+          futures_sample = []
           for f in fx:
               k = f.get("kickoff_utc")
-              if not k: no_time += 1; continue
+              if not k:
+                  no_time += 1
+                  continue
               try:
                   t = datetime.fromisoformat(k.replace("Z","+00:00"))
-                  if t.timestamp()*1000 > now_ms: future += 1
-                  else: past += 1
-              except: no_time += 1
-          print(f"V2 kickoff: future={future} past={past} no_time={no_time}")
-          print("V2 sample:", json.dumps({k: fx[0].get(k) for k in ["id","source","home","away","kickoff_utc","league"]}, ensure_ascii=False))
+                  if t.timestamp()*1000 > now_ms:
+                      future += 1
+                      if len(futures_sample) < 5:
+                          futures_sample.append({"home": f.get("home"), "away": f.get("away"), "kickoff": k, "stages": list(f.get("stages",{}).keys())})
+                  else:
+                      past += 1
+              except Exception:
+                  no_time += 1
+          print("V2 kickoff: future={} past={} no_time={}".format(future, past, no_time))
+          print("V2 sample fx[0]:", json.dumps({k: fx[0].get(k) for k in ["id","source","home","away","kickoff_utc","league"]}, ensure_ascii=False))
+          if futures_sample:
+              print("V2 future samples:")
+              for s in futures_sample:
+                  print(" ", json.dumps(s, ensure_ascii=False))
           print()
 
           import urllib.request
@@ -72,26 +85,26 @@ jobs:
                   print("radar sample:", json.dumps({k: m.get(k) for k in ["sid","league","home","away","kickoff_utc"]}, ensure_ascii=False))
                   t = datetime.fromtimestamp(m["kickoff_utc"]/1000, tz=timezone.utc)
                   print("  kickoff ISO:", t.isoformat())
-                  # Match by (home, away)
-                  radar_by_ha = {(str(m.get("home","")).strip(), str(m.get("away","")).strip()): m for m in radar}
+                  radar_by_ha = {(str(x.get("home","")).strip(), str(x.get("away","")).strip()): x for x in radar}
                   v2_by_ha = {(str(f.get("home","")).strip(), str(f.get("away","")).strip()): f for f in fx}
                   common = set(radar_by_ha) & set(v2_by_ha)
-                  print(f"(home,away) match: {len(common)} / radar={len(radar_by_ha)}, v2={len(v2_by_ha)}")
+                  print("(home,away) match: {} / radar={}, v2={}".format(len(common), len(radar_by_ha), len(v2_by_ha)))
                   if common:
                       key = list(common)[0]
-                      rf = radar_by_ha[key]; vf = v2_by_ha[key]
-                      print(f"  sample match: home={key[0]} away={key[1]}")
-                      print(f"    radar kickoff: {datetime.fromtimestamp(rf['kickoff_utc']/1000, tz=timezone.utc).isoformat()}")
-                      print(f"    v2 kickoff:    {vf.get('kickoff_utc')}")
-                      print(f"    v2 stages: {list(vf.get('stages',{}).keys())}")
-                  # Also try sid-based match
+                      rf = radar_by_ha[key]
+                      vf = v2_by_ha[key]
+                      print("  sample match: home={} away={}".format(key[0], key[1]))
+                      print("    radar kickoff:", datetime.fromtimestamp(rf["kickoff_utc"]/1000, tz=timezone.utc).isoformat())
+                      print("    v2 kickoff:   ", vf.get("kickoff_utc"))
+                      print("    v2 stages:    ", list(vf.get("stages",{}).keys()))
                   v2_sids = {str(f.get("id")) for f in fx}
-                  radar_sids = {str(m["sid"]) for m in radar}
-                  print(f"sid overlap: {len(v2_sids & radar_sids)}")
+                  radar_sids = {str(x["sid"]) for x in radar}
+                  print("sid overlap:", len(v2_sids & radar_sids))
           except Exception as e:
               print("radar API error:", e)
-          PYEOF
-          # de-indent
-          sed -i 's/^          //' /tmp/diag.py
+          '''
+          import textwrap
+          print(textwrap.dedent(content))
+          PYWRITE
           scp -o StrictHostKeyChecking=accept-new -i ~/.ssh/id_ed25519 /tmp/diag.py "$DEPLOY_USER@$DEPLOY_HOST:/tmp/diag.py"
           $SSH 'python3 /tmp/diag.py; rm -f /tmp/diag.py'
