@@ -1,25 +1,25 @@
 #!/usr/bin/env python3
-"""crownsystem-v3 · Titan upcoming + V2 predict merge
+"""crownsystem-v3 · Crown 皇冠盤場 + V2 三階段預測
 
 Read:
-  /var/www/stage_engine_v2/titan_today.json   (Titan 今日皇冠場列表)
-  /var/www/stage_engine_v2/data.json          (V2 預測結果, join by sid)
+  /var/www/crown/data.json  (Crown scraper + V2 predict 已寫入嘅完整 137 場)
 
 Write:
   /var/www/crownsystem-v3/matches.json
-  [{sid, kickoff, league, home, away, first, t30, t5}, ...]
+  [{sid, kickoff_display, kickoff_utc, league, home, away, first, t30, t5}, ...]
 
-Filter: 只保留 score == "-" (未開波) 嘅場.
+Filter: 只保留未開波 (kickoff_utc > now).
 """
 from __future__ import annotations
 import json
 import os
 import tempfile
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
-TITAN = "/var/www/stage_engine_v2/titan_today.json"
-V2 = "/var/www/stage_engine_v2/data.json"
+CROWN = "/var/www/crown/data.json"
 OUT = "/var/www/crownsystem-v3/matches.json"
+
+HKT = timezone(timedelta(hours=8))
 
 
 def load_json(path: str, default):
@@ -30,79 +30,91 @@ def load_json(path: str, default):
         return default
 
 
-def build_v2_lookup(v2_data: dict) -> dict[str, dict]:
-    lookup: dict[str, dict] = {}
-    for f in v2_data.get("fixtures", []) or []:
-        sid = str(f.get("id") or "").strip()
-        if not sid:
+def parse_ko(match: dict) -> datetime | None:
+    """Parse kickoff to UTC datetime. Crown match uses kickoff_hkt ISO."""
+    for k in ("kickoff_utc", "kickoff_hkt", "kickoff"):
+        v = match.get(k)
+        if not v:
             continue
-        stages = f.get("stages") or {}
-        # Stage keys are Chinese: 首預 / T-30 / T-5
-        lookup[sid] = {
-            "first": (stages.get("首預") or {}).get("summary") or "-",
-            "t30": (stages.get("T-30") or {}).get("summary") or "-",
-            "t5": (stages.get("T-5") or {}).get("summary") or "-",
-        }
-    return lookup
+        try:
+            dt = datetime.fromisoformat(str(v).replace(" ", "T"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=HKT)
+            return dt.astimezone(timezone.utc)
+        except ValueError:
+            continue
+    return None
+
+
+def _stage_summary(match: dict, stage_name: str) -> str:
+    """Return a display string for the requested stage.
+
+    Crown data.json has:
+      - match['stages'] (list of stage rows), each with 'stage' and 'market_predictions'
+      - match['lead_view'] (top-level lead if stage matches current)
+      - match['pick'] / match['forecast'] fields
+
+    We try, in priority: stages[stage_name].market_predictions[0] lead label + odds.
+    """
+    stages = match.get("stages")
+    if isinstance(stages, list):
+        for row in stages:
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("stage") or "") != stage_name:
+                continue
+            preds = row.get("market_predictions")
+            if isinstance(preds, list) and preds:
+                p = preds[0] if isinstance(preds[0], dict) else {}
+                label = p.get("label") or p.get("selection") or ""
+                odds = p.get("odds") or p.get("decimal_odds")
+                if label and odds:
+                    return f"{label} @ {odds}"
+                if label:
+                    return str(label)
+            # if stage exists but no prediction, mark waiting
+            status = row.get("status") or row.get("source_status")
+            if status:
+                return f"({status})"
+            return "(等候中)"
+    return "-"
 
 
 def main() -> int:
-    titan = load_json(TITAN, {})
-    v2 = load_json(V2, {})
-    v2_lookup = build_v2_lookup(v2)
+    crown = load_json(CROWN, {})
+    matches_raw = crown.get("matches") or []
 
-    matches_raw = titan.get("matches") or titan.get("fixtures") or titan
-    if not isinstance(matches_raw, list):
-        matches_raw = []
-
+    now_utc = datetime.now(timezone.utc)
     out_matches = []
     for m in matches_raw:
-        score = str(m.get("score", "")).strip()
-        # 只要未開波
-        if score not in ("", "-"):
+        if not isinstance(m, dict):
             continue
-        sid = str(m.get("sid") or "").strip()
-        v2p = v2_lookup.get(sid, {"first": "-", "t30": "-", "t5": "-"})
+        ko = parse_ko(m)
+        if ko is None:
+            continue
+        if ko <= now_utc:
+            continue  # skip past
+        sid = str(
+            m.get("titan_match_id")
+            or m.get("match_id")
+            or m.get("hkjc_match_id")
+            or m.get("id")
+            or ""
+        ).strip()
+        ko_hkt = ko.astimezone(HKT)
         out_matches.append({
             "sid": sid,
-            "kickoff": str(m.get("kickoff", "")).strip(),
-            "league": str(m.get("league", "")).strip(),
-            "home": str(m.get("home", "")).strip(),
-            "away": str(m.get("away", "")).strip(),
-            "first": v2p["first"],
-            "t30": v2p["t30"],
-            "t5": v2p["t5"],
+            "kickoff_utc_ms": int(ko.timestamp() * 1000),
+            "kickoff_display": f"{ko_hkt.month}-{ko_hkt.day} {ko_hkt.strftime('%H:%M')}",
+            "league": str(m.get("league") or "").strip(),
+            "home": str(m.get("home") or "").strip(),
+            "away": str(m.get("away") or "").strip(),
+            "first": _stage_summary(m, "首預"),
+            "t30": _stage_summary(m, "T-30"),
+            "t5": _stage_summary(m, "T-5"),
         })
 
-    # sort by kickoff HH:MM, but wrap around "now" (HK time)
-    # so today's remaining slots come first, then tomorrow's early slots.
-    from datetime import timedelta
-    hk = datetime.now(timezone.utc) + timedelta(hours=8)
-    now_mins = hk.hour * 60 + hk.minute
-    def sort_key(m):
-        k = m.get("kickoff", "")
-        try:
-            hh, mm = k.split(":")
-            v = int(hh) * 60 + int(mm)
-        except Exception:
-            return 9_999_999
-        # if HH:MM already passed today (with 60min tolerance for in-progress), treat as tomorrow
-        if v < now_mins - 60:
-            v += 24 * 60
-        return v
-    out_matches.sort(key=sort_key)
-
-    # attach display kickoff with M-D prefix (radar style)
-    today = hk
-    tomorrow = hk + timedelta(days=1)
-    for m in out_matches:
-        try:
-            hh, mm = m["kickoff"].split(":")
-            v = int(hh) * 60 + int(mm)
-            d = tomorrow if v < now_mins - 60 else today
-            m["kickoff_display"] = f"{d.month}-{d.day} {m['kickoff']}"
-        except Exception:
-            m["kickoff_display"] = m["kickoff"]
+    out_matches.sort(key=lambda x: x["kickoff_utc_ms"])
 
     payload = {
         "generated_utc": datetime.now(timezone.utc).isoformat(),
@@ -110,7 +122,6 @@ def main() -> int:
         "matches": out_matches,
     }
 
-    # atomic write
     os.makedirs(os.path.dirname(OUT), exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=os.path.dirname(OUT), prefix=".matches.", suffix=".json")
     try:
