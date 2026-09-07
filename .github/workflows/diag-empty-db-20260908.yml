@@ -1,0 +1,87 @@
+name: Diag empty DB
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/diag-empty-db-20260908.yml']
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  d:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -T 15 -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+      - env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=30 -o StrictHostKeyChecking=accept-new \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          set -e
+          echo "===== 1) File mtimes ====="
+          ls -la /var/www/stage_engine_v2/data.json /var/www/stage_engine_v2/titan_today.json /var/www/stage_engine_v2/results.json 2>&1
+          
+          echo
+          echo "===== 2) data.json stats ====="
+          python3 - <<'PY'
+          import json
+          from datetime import datetime, timezone, timedelta
+          HKT = timezone(timedelta(hours=8))
+          now = datetime.now(timezone.utc)
+          print(f"now UTC: {now.isoformat()}")
+          print(f"now HKT: {now.astimezone(HKT).isoformat()}")
+          
+          d = json.load(open('/var/www/stage_engine_v2/data.json'))
+          fx = d.get('fixtures', [])
+          print(f"data.json fixtures: {len(fx)}")
+          print(f"generated_at_hkt: {d.get('generated_at_hkt')}")
+          
+          today_hkt = now.astimezone(HKT).date().isoformat()
+          today_fx = [f for f in fx if (f.get('kickoff_hkt','')[:10] == today_hkt)]
+          future_fx = [f for f in today_fx if f.get('kickoff_utc') and f['kickoff_utc'] > now.isoformat()]
+          print(f"today HKT ({today_hkt}) fixtures: {len(today_fx)}")
+          print(f"today + kickoff > now (upcoming): {len(future_fx)}")
+          
+          # Sample 5 upcoming
+          for f in future_fx[:5]:
+              print(f"  id={f.get('id')} {f.get('kickoff_hkt')} {f.get('home','')} vs {f.get('away','')} [{f.get('league','')}]")
+          
+          # titan overlap
+          t = json.load(open('/var/www/stage_engine_v2/titan_today.json'))
+          titan_sids = set(t['sids'])
+          print(f"\ntitan sids: {len(titan_sids)}")
+          print(f"titan generated_at_hkt: {t['generated_at_hkt']}")
+          
+          fx_ids = {str(f.get('id','')) for f in fx}
+          overlap_all = titan_sids & fx_ids
+          print(f"overlap (data.json ALL vs titan today): {len(overlap_all)}")
+          
+          future_ids = {str(f.get('id','')) for f in future_fx}
+          overlap_future = titan_sids & future_ids
+          print(f"overlap (data.json future today vs titan today): {len(overlap_future)}")
+          
+          # 睇下 titan 有邊D sample sids
+          print(f"\ntitan sids sample: {sorted(list(titan_sids))[:10]}")
+          print(f"data.json future today ids sample: {sorted(list(future_ids))[:10]}")
+          
+          # titan fixture 樣本
+          print("\ntitan sample fixtures:")
+          for f in t['fixtures'][:5]:
+              print(f"  sid={f['sid']} {f['kickoff']} {f['home']} vs {f['away']} status='{f['status']}' [{f['league']}]")
+          PY
+          REMOTE
