@@ -1,0 +1,134 @@
+name: Diag no_result breakdown
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/diag-no-result-20260907.yml']
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  d:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 6
+    steps:
+      - env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=30 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          set -e
+          
+          python3 <<'PY'
+          import json, sys
+          from datetime import datetime, timezone, timedelta
+          
+          HKT = timezone(timedelta(hours=8))
+          NOW = datetime.now(HKT)
+          
+          data = json.load(open('/var/www/stage_engine_v2/data.json'))
+          results = json.load(open('/var/www/stage_engine_v2/results.json'))
+          
+          fixtures = data.get('fixtures', [])
+          matched = set(results['results'].keys())
+          
+          missing = [f for f in fixtures if str(f.get('id')) not in matched]
+          print(f'Total fixtures: {len(fixtures)}')
+          print(f'Matched: {len(matched)}')
+          print(f'Missing: {len(missing)}')
+          print()
+          
+          # 分析 missing 嘅類型
+          by_source = {}
+          by_status = {'past': [], 'future': [], 'unknown_ko': []}
+          
+          for f in missing:
+              src = f.get('source', 'unknown')
+              by_source[src] = by_source.get(src, 0) + 1
+              
+              ko_str = f.get('kickoff_utc') or f.get('kickoff')
+              if not ko_str:
+                  by_status['unknown_ko'].append(f)
+                  continue
+              try:
+                  ko = datetime.fromisoformat(ko_str.replace('Z','+00:00'))
+                  if ko.tzinfo is None:
+                      ko = ko.replace(tzinfo=timezone.utc)
+                  # 完場 = kickoff + 2.5小時 < now
+                  finished_time = ko + timedelta(hours=2, minutes=30)
+                  if finished_time < NOW:
+                      by_status['past'].append(f)
+                  else:
+                      by_status['future'].append(f)
+              except Exception as e:
+                  by_status['unknown_ko'].append(f)
+          
+          print('=== By source ===')
+          for k, v in sorted(by_source.items(), key=lambda x: -x[1]):
+              print(f'  {k}: {v}')
+          
+          print()
+          print('=== By kickoff status (missing only) ===')
+          print(f'  應該完場 (kickoff+2.5h < now): {len(by_status["past"])}  ← 呢D 係真.問題')
+          print(f'  未完場 (kickoff+2.5h >= now): {len(by_status["future"])}  ← 呢D 係正常, 未完場冇 result')
+          print(f'  Unknown kickoff: {len(by_status["unknown_ko"])}')
+          
+          print()
+          print('=== 應該完場但冇 result — 分析 ===')
+          past = by_status['past']
+          past_by_source = {}
+          for f in past:
+              src = f.get('source', 'unknown')
+              past_by_source[src] = past_by_source.get(src, 0) + 1
+          for k, v in sorted(past_by_source.items(), key=lambda x: -x[1]):
+              print(f'  source={k}: {v}')
+          
+          # Show sample per source
+          print()
+          print('=== Sample past-missing (10 per source) ===')
+          for src in past_by_source:
+              print(f'\n--- source={src} ---')
+              samples = [f for f in past if f.get('source') == src][:10]
+              for s in samples:
+                  ko = s.get('kickoff_utc') or s.get('kickoff', '')
+                  print(f'  id={s.get("id")} ko={ko[:19]} {s.get("home","?")} vs {s.get("away","?")} league={s.get("league","?")}')
+          
+          # Kickoff distribution of past-missing
+          print()
+          print('=== Past-missing 開波時間分佈 (以家 HKT ' + NOW.strftime('%Y-%m-%d %H:%M') + ') ===')
+          buckets = {'<24h ago': 0, '1-3d ago': 0, '3-7d ago': 0, '>7d ago': 0}
+          for f in past:
+              ko_str = f.get('kickoff_utc') or f.get('kickoff')
+              try:
+                  ko = datetime.fromisoformat(ko_str.replace('Z','+00:00'))
+                  if ko.tzinfo is None:
+                      ko = ko.replace(tzinfo=timezone.utc)
+                  age = (NOW - ko).total_seconds() / 3600
+                  if age < 24:
+                      buckets['<24h ago'] += 1
+                  elif age < 72:
+                      buckets['1-3d ago'] += 1
+                  elif age < 168:
+                      buckets['3-7d ago'] += 1
+                  else:
+                      buckets['>7d ago'] += 1
+              except: pass
+          for k, v in buckets.items():
+              print(f'  {k}: {v}')
+          PY
+          REMOTE
