@@ -1,0 +1,95 @@
+name: Fix crown-t5-priority sentinel + verify
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "打 CLEAR_T5"
+        required: true
+        type: string
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/fix-crown-t5-priority-20260908.yml']
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  d:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          C: ${{ inputs.confirmation }}
+        run: if [ "$C" != "CLEAR_T5" ]; then exit 1; fi
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -T 15 -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=30 -o StrictHostKeyChecking=accept-new \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          set -e
+          
+          echo "===== 1) Check t5-priority sentinel ====="
+          ls -la /run/crown-t5-priority 2>/dev/null && echo "EXISTS" || echo "NOT EXISTS"
+          
+          echo
+          echo "===== 2) What creates this sentinel? ====="
+          grep -rn "crown-t5-priority" /opt/footbreak/ 2>/dev/null | head -20
+          
+          echo
+          echo "===== 3) Remove stale sentinel ====="
+          rm -f /run/crown-t5-priority
+          echo "removed"
+          
+          echo
+          echo "===== 4) Manual trigger crown-sweep ====="
+          systemctl reset-failed crown-sweep.service crown-settle.service crown-reverse-t5-drain.service 2>/dev/null || true
+          systemctl start crown-sweep.service
+          sleep 60
+          systemctl status crown-sweep.service --no-pager | head -8
+          echo
+          journalctl -u crown-sweep.service -n 15 --no-pager | tail -20
+          
+          echo
+          echo "===== 5) All failed units now ====="
+          systemctl --failed --no-pager
+          
+          echo
+          echo "===== 6) v2 data.json state ====="
+          ls -la /var/www/stage_engine_v2/data.json
+          python3 - <<'PY'
+          import json
+          d = json.load(open('/var/www/stage_engine_v2/data.json'))
+          print('generated_at_utc:', d.get('generated_at_utc'))
+          print('fixtures count:', d.get('fixtures_count'))
+          from datetime import datetime, timezone, timedelta
+          HKT = timezone(timedelta(hours=8))
+          NOW = datetime.now(HKT)
+          today = NOW.date()
+          today_count = 0
+          for f in d.get('fixtures', []):
+              ko = f.get('kickoff_utc') or f.get('kickoff','')
+              try:
+                  k = datetime.fromisoformat(ko.replace('Z','+00:00')).astimezone(HKT)
+                  if k.date() == today:
+                      today_count += 1
+              except: pass
+          print(f'HKT today fixtures: {today_count}')
+          PY
+          REMOTE
