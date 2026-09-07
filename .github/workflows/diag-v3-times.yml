@@ -1,0 +1,84 @@
+name: Diag v3 kickoff times
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation: {description: "打 DIAGT", required: true, type: string}
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/diag-v3-times.yml']
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  d:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - env:
+          E: ${{ github.event_name }}
+          C: ${{ inputs.confirmation }}
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then exit 0; fi
+          if [ "$C" != "DIAGT" ]; then exit 1; fi
+      - env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          if [ "${{ github.event_name }}" != "workflow_dispatch" ]; then exit 0; fi
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+          SSH="ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=30 -i ~/.ssh/id_ed25519 $DEPLOY_USER@$DEPLOY_HOST"
+          echo "NOW UTC: $(date -u +%FT%TZ)"
+          echo
+          $SSH 'python3 <<PY
+import json
+d = json.load(open("/var/www/stage_engine_v2/data.json"))
+fx = d.get("fixtures", [])
+print(f"total fixtures: {len(fx)}")
+from datetime import datetime, timezone
+now = datetime.now(timezone.utc)
+future = past = no_time = 0
+stages_count = {}
+for f in fx:
+    k = f.get("kickoff_utc")
+    if not k:
+        no_time += 1
+        continue
+    try:
+        t = datetime.fromisoformat(k.replace("Z","+00:00"))
+        if t > now: future += 1
+        else: past += 1
+    except: no_time += 1
+    st = f.get("stages", {})
+    stages_count[len(st)] = stages_count.get(len(st), 0) + 1
+
+print(f"future kickoff: {future}")
+print(f"past kickoff: {past}")
+print(f"no/bad time: {no_time}")
+print(f"stages count dist: {stages_count}")
+print()
+print("Sample future fixture:")
+for f in fx:
+    k = f.get("kickoff_utc","")
+    try:
+        t = datetime.fromisoformat(k.replace("Z","+00:00"))
+        if t > now:
+            print(json.dumps({kk: f.get(kk) for kk in ["id","league","home","away","kickoff_utc","kickoff_hkt"]}, ensure_ascii=False))
+            print("stages keys:", list(f.get("stages",{}).keys()))
+            break
+    except: pass
+print()
+print("First 3 fixtures kickoff_utc:")
+for f in fx[:3]: print(" ", f.get("kickoff_utc"), "|", f.get("home"), "vs", f.get("away"))
+print("Last 3 fixtures kickoff_utc:")
+for f in fx[-3:]: print(" ", f.get("kickoff_utc"), "|", f.get("home"), "vs", f.get("away"))
+PY'
