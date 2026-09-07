@@ -1,0 +1,106 @@
+name: Diag titan007 old dates
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/diag-titan-old-20260907.yml']
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  d:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -T 15 -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+      - env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=30 -o StrictHostKeyChecking=accept-new \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          set -e
+          
+          echo "===== 1) Curl HEAD titan007 Over pages 20260828 vs 20260906 ====="
+          for d in 20260828 20260901 20260905 20260906 20260907; do
+            code_size=$(curl -s -o /dev/null -w '%{http_code} %{size_download}' \
+              --max-time 10 -A 'Mozilla/5.0' \
+              "http://bf.titan007.com/football/Over_${d}.htm")
+            echo "  Over_${d}.htm : $code_size bytes"
+          done
+          
+          echo
+          echo "===== 2) Fetch 20260828 (10 days ago) - check if it has data ====="
+          curl -s --max-time 15 -A 'Mozilla/5.0' \
+            "http://bf.titan007.com/football/Over_20260828.htm" \
+            | iconv -f GBK -t UTF-8 2>/dev/null \
+            | head -c 3000
+          echo
+          echo "..."
+          
+          echo
+          echo "===== 3) Grep sId count in 20260828 vs 20260906 ====="
+          for d in 20260828 20260901 20260906; do
+            n=$(curl -s --max-time 15 -A 'Mozilla/5.0' \
+              "http://bf.titan007.com/football/Over_${d}.htm" \
+              | grep -oE "sId='[0-9]+'" | wc -l)
+            echo "  Over_${d}.htm sId count: $n"
+          done
+          
+          echo
+          echo "===== 4) Real breakdown of no_result via results.json stats ====="
+          python3 -c "
+          import json
+          d = json.load(open('/var/www/stage_engine_v2/results.json'))
+          data = json.load(open('/var/www/stage_engine_v2/data.json'))
+          fixtures = data.get('fixtures', [])
+          unique_ids = {str(f.get('id')) for f in fixtures}
+          matched_ids = set(d['results'].keys())
+          truly_missing = unique_ids - matched_ids
+          print(f'Total unique fixture ids: {len(unique_ids)}')
+          print(f'Matched: {len(matched_ids)}')
+          print(f'Truly missing (unique): {len(truly_missing)}')
+          
+          # Get details of these truly-missing
+          missing_fx = [f for f in fixtures if str(f.get('id')) in truly_missing]
+          seen = set()
+          uniq_missing = []
+          for f in missing_fx:
+              i = str(f.get('id'))
+              if i in seen: continue
+              seen.add(i); uniq_missing.append(f)
+          
+          from collections import Counter
+          from datetime import datetime, timezone, timedelta
+          HKT = timezone(timedelta(hours=8))
+          NOW = datetime.now(HKT)
+          
+          age = Counter()
+          for f in uniq_missing:
+              ko_str = f.get('kickoff_utc') or f.get('kickoff','')
+              try:
+                  ko = datetime.fromisoformat(ko_str.replace('Z','+00:00')).astimezone(HKT)
+                  age[f'{(NOW-ko).days}d'] += 1
+              except:
+                  age['unk'] += 1
+          print('Age buckets:')
+          for k in sorted(age.items(), key=lambda x: int(x[0][:-1]) if x[0]!='unk' else 999):
+              print(f'  {k[0]}: {k[1]}')
+          
+          src = Counter(f.get('source','?') for f in uniq_missing)
+          print(f'Sources: {dict(src)}')
+          "
+          REMOTE
