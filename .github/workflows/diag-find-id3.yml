@@ -1,0 +1,47 @@
+name: Diag find id=3 refs
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        required: true
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/diag-find-id3.yml']
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+jobs:
+  d:
+    runs-on: ubuntu-latest
+    env:
+      E: ${{ github.event_name }}
+      C: ${{ inputs.confirmation }}
+    steps:
+      - name: guard
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then exit 0; fi
+          if [ "$C" != "DIAGID3" ]; then exit 1; fi
+      - name: ssh
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - name: diag
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then exit 0; fi
+          SSH="ssh -o BatchMode=yes -o ConnectTimeout=20 -o StrictHostKeyChecking=accept-new $DEPLOY_USER@$DEPLOY_HOST"
+          echo '=== titan007-crown-id-3 literal ==='
+          $SSH 'sudo grep -rn "titan007-crown-id-3\|titan007_crown_id_3\|COMPANY_ID.*3\|crown_id.*3\|company_id.*3\|CROWN_COMPANY\|companyID=3" /opt/footbreak --include="*.py" --include="*.env" --include="*.yaml" --include="*.json" 2>/dev/null | grep -v ".git" | head -30'
+          echo
+          echo '=== files with company_id=3 constant ==='
+          $SSH 'sudo grep -rn -E "\"3\"|= *3\b" /opt/footbreak/system/crown /opt/footbreak/crown 2>/dev/null | grep -iE "company|scrape|source" | head -20'
+          echo
+          echo '=== crown scraper entry points ==='
+          $SSH 'sudo find /opt/footbreak -type f -name "*.py" 2>/dev/null | xargs grep -l "titan007\|titan_007\|vip.titan" 2>/dev/null | head -10'
