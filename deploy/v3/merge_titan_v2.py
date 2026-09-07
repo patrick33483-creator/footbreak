@@ -92,15 +92,15 @@ def main() -> int:
         return v
     out_matches.sort(key=sort_key)
 
-    # attach display kickoff with day marker for clarity
+    # attach display kickoff with M-D prefix (radar style)
+    today = hk
+    tomorrow = hk + timedelta(days=1)
     for m in out_matches:
         try:
             hh, mm = m["kickoff"].split(":")
             v = int(hh) * 60 + int(mm)
-            if v < now_mins - 60:
-                m["kickoff_display"] = "明 " + m["kickoff"]
-            else:
-                m["kickoff_display"] = m["kickoff"]
+            d = tomorrow if v < now_mins - 60 else today
+            m["kickoff_display"] = f"{d.month}-{d.day} {m['kickoff']}"
         except Exception:
             m["kickoff_display"] = m["kickoff"]
 
