@@ -1,0 +1,47 @@
+name: Diag v2 raw schema
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        required: true
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/diag-v2-schema.yml']
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+jobs:
+  d:
+    runs-on: ubuntu-latest
+    env:
+      E: ${{ github.event_name }}
+      C: ${{ inputs.confirmation }}
+    steps:
+      - name: guard
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then exit 0; fi
+          if [ "$C" != "DIAGVS" ]; then exit 1; fi
+      - name: ssh
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - name: diag
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then exit 0; fi
+          SSH="ssh -o BatchMode=yes -o ConnectTimeout=20 -o StrictHostKeyChecking=accept-new $DEPLOY_USER@$DEPLOY_HOST"
+          echo '=== predictor.py head 100 (see what fields it needs) ==='
+          $SSH 'sudo head -170 /opt/footbreak/stage_engine_v2/predictor.py 2>&1'
+          echo
+          echo '=== _source_snapshot fn ==='
+          $SSH 'sudo sed -n "18,82p" /opt/footbreak/stage_engine_v2/predictor.py 2>&1'
+          echo
+          echo '=== sample crown match (first upcoming) ==='
+          $SSH "sudo /opt/footbreak/.venv/bin/python3 -c 'import json,datetime;d=json.load(open(\"/var/www/crown/data.json\"));now=datetime.datetime.now(datetime.timezone.utc);m=d.get(\"matches\",[]);u=[x for x in m if x.get(\"kickoff_utc\") and x.get(\"kickoff_utc\") > now.isoformat()];u.sort(key=lambda x:x.get(\"kickoff_utc\",\"\"));print(\"upcoming:\",len(u));print(\"keys:\",list(u[0].keys()) if u else None);print(\"---\");print(json.dumps(u[0], ensure_ascii=False, indent=2)[:3000] if u else \"none\")'"
