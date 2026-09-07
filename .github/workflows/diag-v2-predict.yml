@@ -1,0 +1,72 @@
+name: Diag v2 predict entry
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        required: true
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/diag-v2-predict.yml']
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+jobs:
+  d:
+    runs-on: ubuntu-latest
+    env:
+      E: ${{ github.event_name }}
+      C: ${{ inputs.confirmation }}
+    steps:
+      - run: if [ "$E" != "workflow_dispatch" ]; then exit 0; fi; if [ "$C" != "DIAGV2P" ]; then exit 1; fi
+      - env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then exit 0; fi
+          SSH="ssh -o BatchMode=yes -o ConnectTimeout=20 -o StrictHostKeyChecking=accept-new $DEPLOY_USER@$DEPLOY_HOST"
+          echo '=== V2 CLI help ==='
+          $SSH 'sudo /opt/footbreak/.venv/bin/python3 -m stage_engine_v2.cli --help 2>&1 | head -40'
+          echo
+          echo '=== V2 tick service unit ==='
+          $SSH 'sudo systemctl cat footbreak-tick.service 2>&1 | head -25'
+          echo
+          echo '=== V2 tick recent log (10 min) ==='
+          $SSH 'sudo journalctl -u footbreak-tick.service --since "10 min ago" --no-pager -o cat 2>&1 | tail -50'
+          echo
+          echo '=== V2 tick timer schedule ==='
+          $SSH 'sudo systemctl list-timers footbreak-tick.timer --no-pager 2>&1 | head -5'
+          echo
+          echo '=== V2 fixtures.py load_upcoming logic ==='
+          $SSH 'sudo grep -n "load_upcoming\|def " /opt/footbreak/stage_engine_v2/fixtures.py 2>&1 | head -20'
+          echo
+          echo '=== V2 data.json 首預/T-30/T-5 count (titan sids) ==='
+          $SSH 'sudo /opt/footbreak/.venv/bin/python3 -c "
+import json
+d = json.load(open(\"/opt/footbreak/stage_engine_v2/dashboard/data.json\"))
+matches = d.get(\"matches\", [])
+titan = [m for m in matches if m.get(\"source\") == \"titan\"]
+print(f\"total matches: {len(matches)}, titan: {len(titan)}\")
+stg_counts = {}
+for m in titan:
+    stages = m.get(\"stages\") or {}
+    for k in stages:
+        stg_counts[k] = stg_counts.get(k, 0) + 1
+print(\"titan stage counts:\", stg_counts)
+sample = titan[0] if titan else None
+if sample:
+    print(\"sample titan match:\")
+    print(\"  id:\", sample.get(\"id\"), \"kickoff:\", sample.get(\"kickoff_utc\"))
+    print(\"  home:\", sample.get(\"home\"), \"away:\", sample.get(\"away\"))
+    print(\"  stages keys:\", list((sample.get(\"stages\") or {}).keys()))
+" 2>&1'
+          echo
+          echo '=== V2 predictor / publisher entry ==='
+          $SSH 'sudo grep -rn "def run\|def predict\|def tick\|def publish" /opt/footbreak/stage_engine_v2/*.py 2>&1 | head -20'
