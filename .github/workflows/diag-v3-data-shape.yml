@@ -2,6 +2,9 @@ name: Diag v3 data shape
 
 on:
   workflow_dispatch: {}
+  push:
+    paths:
+      - '.github/workflows/diag-v3-data-shape.yml'
 
 concurrency:
   group: production-maintenance
