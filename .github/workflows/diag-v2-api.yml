@@ -1,0 +1,58 @@
+name: Diag v2 api
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        required: true
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/diag-v2-api.yml']
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+jobs:
+  d:
+    runs-on: ubuntu-latest
+    env:
+      E: ${{ github.event_name }}
+      C: ${{ inputs.confirmation }}
+    steps:
+      - name: guard
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then exit 0; fi
+          if [ "$C" != "DIAGV2A" ]; then exit 1; fi
+      - name: ssh
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - name: diag
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then exit 0; fi
+          SSH="ssh -o BatchMode=yes -o ConnectTimeout=20 -o StrictHostKeyChecking=accept-new $DEPLOY_USER@$DEPLOY_HOST"
+          echo '=== crown/titan.py (top-level defs + first 100 lines) ==='
+          $SSH 'sudo grep -nE "^(def |class |CROWN|COMPANY|URL|BASE)" /opt/footbreak/crown/titan.py 2>/dev/null | head -30'
+          echo
+          $SSH 'sudo head -100 /opt/footbreak/crown/titan.py 2>/dev/null'
+          echo
+          echo '=== crown/engine.py public API (def signatures) ==='
+          $SSH 'sudo grep -nE "^def |^class " /opt/footbreak/crown/engine.py 2>/dev/null | head -40'
+          echo
+          echo '=== crown/opening_model.py public API ==='
+          $SSH 'sudo grep -nE "^def |^class |crown-opening-fixed-v1" /opt/footbreak/crown/opening_model.py 2>/dev/null | head -40'
+          echo
+          echo '=== stage_engine_v2 predict entry (fixtures.py) ==='
+          $SSH 'sudo grep -nE "^def |^class |crown-opening" /opt/footbreak/stage_engine_v2/fixtures.py 2>/dev/null | head -20'
+          echo
+          echo '=== stage_engine_v2/predictor.py signatures ==='
+          $SSH 'sudo grep -nE "^def |^class " /opt/footbreak/stage_engine_v2/predictor.py 2>/dev/null | head -30'
+          echo
+          echo '=== how crown-sweep invokes ==='
+          $SSH 'sudo systemctl cat crown-sweep.service 2>&1 | grep -E "ExecStart"'
