@@ -1,0 +1,76 @@
+name: Recon backfill_titan007_scores.py
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/recon-backfill-20260907.yml']
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  d:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=30 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          set -e
+          
+          echo "===== File overview ====="
+          wc -l /opt/footbreak/analysis/backfill_titan007_scores.py
+          head -30 /opt/footbreak/analysis/backfill_titan007_scores.py
+          
+          echo
+          echo "===== main + argparse ====="
+          grep -n "argparse\|add_argument\|def main\|if __name__" /opt/footbreak/analysis/backfill_titan007_scores.py | head -30
+          
+          echo
+          echo "===== argparse section (context) ====="
+          awk '/argparse\.|add_argument|parse_args/{p=NR-2}p && NR<=p+40{print NR": "$0}' /opt/footbreak/analysis/backfill_titan007_scores.py | head -60
+          
+          echo
+          echo "===== usage --help (dry) ====="
+          cd /opt/footbreak
+          python3 analysis/backfill_titan007_scores.py --help 2>&1 | head -30 || echo "no --help"
+          
+          echo
+          echo "===== state_dir & related files ====="
+          ls -la /var/lib/footbreak/crown/ | head -20
+          
+          echo
+          echo "===== prediction_history sample structure ====="
+          python3 -c "
+          import json
+          d = json.load(open('/var/lib/footbreak/crown/prediction_history.json'))
+          print('keys:', list(d.keys())[:10])
+          rows = d.get('rows', [])
+          print(f'total rows: {len(rows)}')
+          # find one with score, one without
+          no_score = [r for r in rows if not r.get('score')][:3]
+          have_score = [r for r in rows if r.get('score')][:3]
+          print('--- rows WITHOUT score ---')
+          for r in no_score:
+              print({k: r.get(k) for k in ['match_id','titan_match_id','hkjc_match_id','home','away','kickoff','score','league']})
+          print('--- rows WITH score ---')
+          for r in have_score:
+              print({k: r.get(k) for k in ['match_id','titan_match_id','hkjc_match_id','home','away','kickoff','score','league']})
+          "
+          REMOTE
