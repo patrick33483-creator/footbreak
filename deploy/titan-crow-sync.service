@@ -1,0 +1,11 @@
+[Unit]
+Description=Titan Crow (id=3) fixtures hourly sync
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/local/bin/titan-crow-sync.py
+TimeoutStartSec=180
+Nice=10

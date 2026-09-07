@@ -1,0 +1,104 @@
+name: Deploy titan crow sync
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "打 DEPLOY_TITAN"
+        required: true
+        type: string
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/deploy-titan-sync-20260908.yml']
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  d:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          C: ${{ inputs.confirmation }}
+        run: if [ "$C" != "DEPLOY_TITAN" ]; then exit 1; fi
+      - uses: actions/checkout@v4
+        if: github.event_name == 'workflow_dispatch'
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -T 15 -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          # Copy files up first
+          scp -o BatchMode=yes -o ConnectTimeout=30 -o StrictHostKeyChecking=accept-new \
+            deploy/titan-crow-sync.py \
+            deploy/titan-crow-sync.service \
+            deploy/titan-crow-sync.timer \
+            "$DEPLOY_USER@$DEPLOY_HOST:/tmp/"
+          
+          ssh -o BatchMode=yes -o ConnectTimeout=30 -o StrictHostKeyChecking=accept-new \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          set -e
+          
+          echo "===== 1) Install script ====="
+          install -m 755 /tmp/titan-crow-sync.py /usr/local/bin/titan-crow-sync.py
+          ls -la /usr/local/bin/titan-crow-sync.py
+          
+          echo
+          echo "===== 2) Install systemd units ====="
+          install -m 644 /tmp/titan-crow-sync.service /etc/systemd/system/titan-crow-sync.service
+          install -m 644 /tmp/titan-crow-sync.timer /etc/systemd/system/titan-crow-sync.timer
+          systemctl daemon-reload
+          systemctl enable --now titan-crow-sync.timer
+          
+          echo
+          echo "===== 3) Run once immediately (foreground with limited timeout) ====="
+          systemctl start titan-crow-sync.service
+          # Wait up to 90s for completion
+          for i in $(seq 1 18); do
+            state=$(systemctl show -p ActiveState --value titan-crow-sync.service)
+            sub=$(systemctl show -p SubState --value titan-crow-sync.service)
+            echo "[${i}x5s] state=$state sub=$sub"
+            if [ "$state" != "active" ] && [ "$state" != "activating" ]; then break; fi
+            sleep 5
+          done
+          
+          echo
+          echo "===== 4) Status ====="
+          systemctl status titan-crow-sync.service --no-pager | head -15
+          echo
+          journalctl -u titan-crow-sync.service -n 20 --no-pager | tail -20
+          
+          echo
+          echo "===== 5) Output file ====="
+          ls -la /var/www/stage_engine_v2/titan_today.json 2>/dev/null || echo "NO OUTPUT"
+          if [ -f /var/www/stage_engine_v2/titan_today.json ]; then
+            python3 - <<'PY'
+          import json
+          d = json.load(open('/var/www/stage_engine_v2/titan_today.json'))
+          print(f"count: {d['count']}")
+          print(f"generated_at_hkt: {d['generated_at_hkt']}")
+          print(f"first 5 fixtures:")
+          for fx in d['fixtures'][:5]:
+              print(f"  {fx['sid']} {fx['kickoff']} {fx['home']} vs {fx['away']} [{fx['league']}]")
+          PY
+          fi
+          
+          echo
+          echo "===== 6) Timer next run ====="
+          systemctl list-timers titan-crow-sync.timer --no-pager
+          REMOTE
