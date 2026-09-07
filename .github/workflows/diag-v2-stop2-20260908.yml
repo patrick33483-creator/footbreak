@@ -1,0 +1,66 @@
+name: Diag V2 stop full journal
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/diag-v2-stop2-20260908.yml']
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  d:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -T 15 -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+      - env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=30 -o StrictHostKeyChecking=accept-new \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          set -e
+          
+          echo "===== System time + timezone ====="
+          date
+          date -u
+          timedatectl
+          
+          echo
+          echo "===== crown-settle failing details ====="
+          systemctl status crown-settle.service --no-pager | head -30
+          echo
+          journalctl -u crown-settle.service -n 40 --no-pager | tail -60
+          
+          echo
+          echo "===== crown-sweep failing details ====="
+          journalctl -u crown-sweep.service -n 30 --no-pager | tail -40
+          
+          echo
+          echo "===== footbreak-sweep failing details ====="
+          journalctl -u footbreak-sweep.service -n 30 --no-pager | tail -40
+          
+          echo
+          echo "===== First fail timestamp ====="
+          for u in crown-settle crown-sweep footbreak-sweep footbreak-settle footbreak-result-reconcile crown-reverse-t5-drain; do
+            first_fail=$(journalctl -u ${u}.service -o short-iso --no-pager --grep="failed|Failed with" 2>/dev/null | tail -20 | head -1)
+            echo "  $u : $first_fail"
+          done
+          
+          echo
+          echo "===== Wide fail log (last 24h) ====="
+          journalctl --since '1 day ago' --no-pager -p err | tail -50
+          REMOTE
