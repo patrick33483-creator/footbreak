@@ -1,0 +1,69 @@
+name: V3 Init Daemon
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'type CONFIRM'
+        required: true
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths:
+      - '.github/workflows/v3-init-daemon.yml'
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+jobs:
+  init:
+    runs-on: ubuntu-latest
+    env:
+      CONFIRM_INPUT: ${{ github.event.inputs.confirm || 'CONFIRM' }}
+    steps:
+      - name: Guard
+        run: |
+          test "$CONFIRM_INPUT" = "CONFIRM" || { echo "no confirm"; exit 1; }
+      - name: SSH init
+        env:
+          SSHKEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          H: ${{ secrets.DEPLOY_HOST }}
+          U: ${{ secrets.DEPLOY_USER }}
+        run: |
+          mkdir -p ~/.ssh && printf '%s\n' "$SSHKEY" > ~/.ssh/id && chmod 600 ~/.ssh/id
+          SSH="ssh -i ~/.ssh/id -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=30 $U@$H"
+          $SSH bash <<'EOF'
+          set -e
+          echo "=== 1. Create /opt/crown-v3 skeleton ==="
+          sudo mkdir -p /opt/crown-v3/{data,logs,src}
+          sudo chown -R $USER:$USER /opt/crown-v3
+          
+          echo "=== 2. Copy V2 crown module (read-only import) ==="
+          # 唔改 V2, 只借 python module import via sys.path
+          ls -la /opt/footbreak/crown/ | head -20
+          
+          echo "=== 3. Create venv, install requests + lxml ==="
+          python3 -m venv /opt/crown-v3/venv
+          /opt/crown-v3/venv/bin/pip install -q requests lxml beautifulsoup4
+          
+          echo "=== 4. Test import V2 apply_opening_model ==="
+          /opt/crown-v3/venv/bin/python -c "
+          import sys
+          sys.path.insert(0, '/opt/footbreak')
+          from crown.opening_model import apply_opening_model, MODEL_VERSION
+          print(f'MODEL_VERSION={MODEL_VERSION}')
+          print('apply_opening_model imported OK')
+          "
+          
+          echo "=== 5. Verify /opt/footbreak/crown/titan.py accessible ==="
+          /opt/crown-v3/venv/bin/python -c "
+          import sys
+          sys.path.insert(0, '/opt/footbreak')
+          from crown.titan import TitanClient, parse_crown_asian, crown_prices_from_pages
+          print('titan module imported OK')
+          "
+          
+          echo "=== 6. Show V3 web dir ==="
+          ls /var/www/crownsystem-v3/ 2>/dev/null | head -10 || echo "V3 web dir missing"
+          
+          echo "=== DONE skeleton init ==="
+          EOF
