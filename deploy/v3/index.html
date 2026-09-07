@@ -90,7 +90,7 @@
       });
       document.getElementById("count").textContent = `共 ${filtered.length} 場（未開波）`;
       const rows = filtered.map(m => `<tr>
-          <td class="ko">${escapeHtml(m.kickoff)}</td>
+          <td class="ko">${escapeHtml(m.kickoff_display || m.kickoff)}</td>
           <td class="league">${escapeHtml(m.league)}</td>
           <td class="team">${escapeHtml(m.home)}</td>
           <td class="team">${escapeHtml(m.away)}</td>

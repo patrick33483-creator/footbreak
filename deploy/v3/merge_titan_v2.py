@@ -74,15 +74,35 @@ def main() -> int:
             "t5": v2p["t5"],
         })
 
-    # sort by kickoff HH:MM
+    # sort by kickoff HH:MM, but wrap around "now" (HK time)
+    # so today's remaining slots come first, then tomorrow's early slots.
+    from datetime import timedelta
+    hk = datetime.now(timezone.utc) + timedelta(hours=8)
+    now_mins = hk.hour * 60 + hk.minute
     def sort_key(m):
         k = m.get("kickoff", "")
         try:
             hh, mm = k.split(":")
-            return int(hh) * 60 + int(mm)
+            v = int(hh) * 60 + int(mm)
         except Exception:
-            return 9999
+            return 9_999_999
+        # if HH:MM already passed today (with 60min tolerance for in-progress), treat as tomorrow
+        if v < now_mins - 60:
+            v += 24 * 60
+        return v
     out_matches.sort(key=sort_key)
+
+    # attach display kickoff with day marker for clarity
+    for m in out_matches:
+        try:
+            hh, mm = m["kickoff"].split(":")
+            v = int(hh) * 60 + int(mm)
+            if v < now_mins - 60:
+                m["kickoff_display"] = "明 " + m["kickoff"]
+            else:
+                m["kickoff_display"] = m["kickoff"]
+        except Exception:
+            m["kickoff_display"] = m["kickoff"]
 
     payload = {
         "generated_utc": datetime.now(timezone.utc).isoformat(),
