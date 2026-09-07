@@ -1,0 +1,180 @@
+name: Patch history table to radar layout
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "打 PATCHTBL"
+        required: true
+        type: string
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/patch-history-table-20260907.yml']
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  p:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - env:
+          E: ${{ github.event_name }}
+          C: ${{ inputs.confirmation }}
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then exit 0; fi
+          if [ "$C" != "PATCHTBL" ]; then exit 1; fi
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=60 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          set -eu
+          STAMP=$(date +%Y%m%d-%H%M%S)
+          BACKUP=/var/www/crown/app.js.backup-${STAMP}
+          cp -a /var/www/crown/app.js "$BACKUP"
+          echo "Backup: $BACKUP"
+
+          python3 <<'PY'
+          import re, sys
+
+          path = "/var/www/crown/app.js"
+          with open(path, "r", encoding="utf-8") as f:
+              src = f.read()
+
+          # ============================================================
+          # 1) Replace `const historyRows = (items) => items.map((r) => `<tr>
+          #    ...  }).join('');`
+          # with a group-by-match version that produces one row per match
+          # with three stage cells.
+          # ============================================================
+
+          # Find start marker
+          start_marker = "const historyRows = (items) => items.map((r) => `<tr>"
+          start = src.find(start_marker)
+          if start < 0:
+              sys.exit("ERR: historyRows start marker not found")
+
+          # Find end: the corresponding "}).join('');"
+          # Look forward for the exact end pattern.
+          end_marker = "}</td>\n  </tr>`).join('');"
+          end_idx = src.find(end_marker, start)
+          if end_idx < 0:
+              sys.exit("ERR: historyRows end marker not found")
+          end = end_idx + len(end_marker)
+
+          new_rows_fn = r"""const historyRows = (items) => {
+    // Group rows by match (home + away + kickoff date). Each match -> 3 stage cells.
+    const groups = new Map();
+    const stageOrder = ['首預', 'T-30', 'T-5'];
+    for (const r of items) {
+      const dateKey = r.kickoff ? String(r.kickoff).slice(0, 10) : '';
+      const key = `${dateKey}|${r.home || ''}|${r.away || ''}`;
+      if (!groups.has(key)) {
+        groups.set(key, { key, kickoff: r.kickoff, home: r.home, away: r.away, league: r.league, score: r.score, actual: r.actual, stages: {} });
+      }
+      const g = groups.get(key);
+      // Prefer canonical stage names; fold '首預' from any stage variant
+      let s = r.stage;
+      if (s && s.startsWith('T-5')) s = 'T-5';
+      if (s === '初盤預測' || s === '初盤') s = '首預';
+      if (stageOrder.indexOf(s) >= 0) {
+        // Keep newest predicted_at per stage
+        const cur = g.stages[s];
+        if (!cur || (r.predicted_at && r.predicted_at > (cur.predicted_at || ''))) {
+          g.stages[s] = r;
+        }
+      }
+      // Fill in score/actual from any row that has them (usually the T-5 row)
+      if (!g.score && r.score) g.score = r.score;
+      if (!g.actual && r.actual) g.actual = r.actual;
+    }
+    // Sort groups by kickoff desc (newest first)
+    const ordered = Array.from(groups.values()).sort((a, b) => (b.kickoff || '').localeCompare(a.kickoff || ''));
+
+    const marketLabel = { HDC: '讓球', HIL: '入球大細', CHL: '角球大細', ML: '獨贏', DC: '雙勝', BTS: '兩隊入球' };
+    const dirCH = { HOME: '主', AWAY: '客', DRAW: '和', OVER: '大', UNDER: '細', YES: '有', NO: '冇' };
+    const stageCell = (row) => {
+      if (!row) return '<span class="dim">—</span>';
+      const mps = row.market_predictions || [];
+      if (!mps.length) return '<span class="dim">—</span>';
+      const m = mps[0] || {};
+      const mkt = marketLabel[m.code] || m.code || '';
+      // direction preference: side / direction / selection_side
+      const rawDir = m.side || m.direction || m.selection_side || m.pick || '';
+      const dir = dirCH[String(rawDir).toUpperCase()] || rawDir || '';
+      const line = (m.line != null) ? m.line : (m.handicap != null ? m.handicap : '');
+      const odds = (m.odds != null) ? Number(m.odds).toFixed(2) : '—';
+      const lineStr = (line !== '' && line != null) ? ` ${line}` : '';
+      return `<span class="hist-mkt">${mkt} ${esc(dir)}${lineStr}</span> <span class="hist-odds">${odds}</span>`;
+    };
+
+    return ordered.map((g) => `<tr>
+      <td data-label="開賽" class="mono nowrap">${g.kickoff ? `${hkDay(g.kickoff)} ${hkClock(g.kickoff)}` : '—'}</td>
+      <td data-label="聯賽">${esc(g.league || '')}</td>
+      <td data-label="主隊">${esc(g.home || '')}</td>
+      <td data-label="比分" class="mono">${g.score ? `<b>${esc(g.score)}</b>` : '<span class="dim">—</span>'}${g.actual ? `<div class="cell-sub">${esc(g.actual)}</div>` : ''}</td>
+      <td data-label="客隊">${esc(g.away || '')}</td>
+      <td data-label="初盤預測">${stageCell(g.stages['首預'])}</td>
+      <td data-label="T-30 預測">${stageCell(g.stages['T-30'])}</td>
+      <td data-label="T-5 預測">${stageCell(g.stages['T-5'])}</td>
+    </tr>`).join('');
+  }"""
+
+          new_src = src[:start] + new_rows_fn + src[end:]
+
+          # ============================================================
+          # 2) Replace historyTable table header (8 cols) with new headers.
+          # Find: `<tr><th>開賽</th><th>賽事</th><th>階段</th><th>1X2 輔助</th><th>各市場預測／結果</th><th>信念</th><th>模擬注</th><th>整場賽果</th></tr>`
+          # ============================================================
+          old_head = "<tr><th>開賽</th><th>賽事</th><th>階段</th><th>1X2 輔助</th><th>各市場預測／結果</th><th>信念</th><th>模擬注</th><th>整場賽果</th></tr>"
+          new_head = "<tr><th>開賽</th><th>聯賽</th><th>主隊</th><th>比分</th><th>客隊</th><th>初盤預測</th><th>T-30 預測</th><th>T-5 預測</th></tr>"
+          if old_head not in new_src:
+              sys.exit("ERR: old table header not found")
+          new_src = new_src.replace(old_head, new_head, 1)
+
+          # ============================================================
+          # 3) Sanity checks
+          # ============================================================
+          if "const historyRows = (items) =>" not in new_src:
+              sys.exit("ERR: new historyRows missing")
+          if new_head not in new_src:
+              sys.exit("ERR: new header missing")
+
+          # Write .tmp then rename
+          with open(path + ".tmp", "w", encoding="utf-8") as f:
+              f.write(new_src)
+
+          import os
+          os.replace(path + ".tmp", path)
+
+          diff = len(new_src) - len(src)
+          print(f"patched: size diff = {diff:+d} bytes")
+          PY
+
+          # Preserve ownership/mode
+          chown root:www-data /var/www/crown/app.js
+          chmod 644 /var/www/crown/app.js
+          ls -la /var/www/crown/app.js "$BACKUP"
+
+          echo
+          echo "===== Show new historyRows head/tail ====="
+          grep -n "const historyRows" /var/www/crown/app.js | head -3
+          grep -n "初盤預測</th>" /var/www/crown/app.js | head -3
+          REMOTE
