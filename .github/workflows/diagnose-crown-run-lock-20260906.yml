@@ -1,0 +1,54 @@
+name: 診斷 crown-run.sh 內部鎖 20260906
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: 設定 SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: 只讀查 crown-run.sh 內部鎖機制
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=8 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'bash -s' <<'REMOTE'
+          set +e
+          echo "===== 1. crown-run.sh settle 相關內容 ====="
+          sudo grep -nE 'already running|duplicate|lock|settle|status.*75|TEMPFAIL' /opt/footbreak/deploy/crown-run.sh 2>&1 | head -60
+          echo
+          echo "===== 2. crown-run.sh 上下文 (完整檔案) ====="
+          sudo wc -l /opt/footbreak/deploy/crown-run.sh
+          sudo cat /opt/footbreak/deploy/crown-run.sh 2>&1 | head -200
+          echo
+          echo "===== 3. 尋找可能嘅 pid / lock file ====="
+          sudo ls -la /run/crown-* /var/run/crown-* /var/lock/crown-* /var/lock/footbreak-crown-* /tmp/crown-* 2>&1 | grep -v "No such" | head -30
+          sudo find /var/lib/footbreak/crown -maxdepth 2 -name '*.lock' -o -name '*.pid' -o -name '*running*' 2>/dev/null | head -20
+          echo
+          echo "===== 4. 現時任何 crown-settle 或 crown-run.sh process ====="
+          sudo pgrep -af 'crown-settle\|crown-run\.sh' 2>&1 | head -20
+          echo "(none if empty)"
+          echo
+          echo "===== 5. 睇下 /var/lib/footbreak/crown 有冇 running marker ====="
+          sudo find /var/lib/footbreak/crown -maxdepth 1 -type f -newer /tmp -mtime -1 2>/dev/null | xargs -I{} sudo ls -la {} 2>&1 | grep -iE 'lock|pid|running|settle' | head -20
+          echo
+          echo "===== DONE ====="
+          REMOTE
