@@ -1,0 +1,68 @@
+name: Diag fixture id format
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/diag-fixture-id-format-20260908.yml']
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  d:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -T 15 -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+      - env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=30 -o StrictHostKeyChecking=accept-new \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          set -e
+          python3 - <<'PY'
+          import json
+          d = json.load(open('/var/www/stage_engine_v2/data.json'))
+          fx = d.get('fixtures', [])
+          print(f"fixtures count: {len(fx)}")
+          print(f"first fixture keys: {list(fx[0].keys()) if fx else 'none'}")
+          if fx:
+              for f in fx[:3]:
+                  print(json.dumps({k:v for k,v in f.items() if not isinstance(v,dict)}, ensure_ascii=False, indent=1))
+          
+          # Check if 'id' matches titan sid format (7 digits)
+          titan = json.load(open('/var/www/stage_engine_v2/titan_today.json'))
+          titan_sids = set(titan['sids'])
+          print(f"\ntitan sids: {len(titan_sids)}")
+          
+          # ID formats in data.json
+          ids = [str(f.get('id','')) for f in fx]
+          id_set = set(ids)
+          print(f"data.json unique ids: {len(id_set)}")
+          
+          # Overlap
+          overlap = titan_sids & id_set
+          print(f"OVERLAP (data.json id ∈ titan sids): {len(overlap)}")
+          
+          # Show a sample of each
+          print(f"data.json id samples: {ids[:5]}")
+          print(f"titan sid samples: {list(titan_sids)[:5]}")
+          
+          # Check other fields for matching
+          for f in fx[:2]:
+              print(f"\nfx keys+kick+id: id={f.get('id')} sid={f.get('sid')} match_id={f.get('match_id')} crown_id={f.get('crown_id')} hkjc_id={f.get('hkjc_id')} titan_sid={f.get('titan_sid')} kickoff={f.get('kickoff_utc')}")
+          PY
+          REMOTE
