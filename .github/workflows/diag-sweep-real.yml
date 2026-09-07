@@ -1,0 +1,53 @@
+name: Diag sweep real
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        required: true
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/diag-sweep-real.yml']
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+jobs:
+  d:
+    runs-on: ubuntu-latest
+    env:
+      E: ${{ github.event_name }}
+      C: ${{ inputs.confirmation }}
+    steps:
+      - name: guard
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then exit 0; fi
+          if [ "$C" != "DIAGSWR" ]; then exit 1; fi
+      - name: ssh
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - name: diag
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then exit 0; fi
+          SSH="ssh -o BatchMode=yes -o ConnectTimeout=20 -o StrictHostKeyChecking=accept-new $DEPLOY_USER@$DEPLOY_HOST"
+          echo '=== unit type ==='
+          $SSH 'sudo systemctl show crown-sweep.service -p Type -p RemainAfterExit -p ExecStart -p Restart -p RestartSec'
+          echo
+          echo '=== last 3 hours full journal ==='
+          $SSH "sudo journalctl -u crown-sweep.service --since '3 hours ago' --no-pager -o short 2>&1 | tail -100"
+          echo
+          echo '=== timer trigger recent ==='
+          $SSH "sudo journalctl -u crown-sweep.timer --since '3 hours ago' --no-pager 2>&1 | tail -20"
+          echo
+          echo '=== crown data.json last update time ==='
+          $SSH 'sudo stat /var/www/crown/data.json | grep -E "Modify|Access"'
+          echo
+          echo '=== check if scraper wrote data recently ==='
+          $SSH "sudo find /var/www/crown/ -type f -mmin -60 -exec ls -la {} \; 2>&1 | head -20"
