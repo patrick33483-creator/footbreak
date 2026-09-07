@@ -30,41 +30,40 @@ jobs:
           printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
-      - name: diag
+      - name: build
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
         run: |
           if [ "$E" != "workflow_dispatch" ]; then exit 0; fi
+          cat > /tmp/dsc.py << 'PYEOF'
+          import json
+          c = json.load(open("/var/www/crown/data.json"))
+          t = json.load(open("/var/www/stage_engine_v2/titan_today.json"))
+          matches = c.get("matches", [])
+          titan_sids = set(str(x.get("sid","")).strip() for x in t.get("matches",[]) if x.get("sid"))
+          crown_sids = set(str(m.get("titan_match_id") or m.get("match_id") or "").strip() for m in matches if m)
+          crown_sids.discard("")
+          print("titan_today sids:", len(titan_sids))
+          print("crown/data sids:", len(crown_sids))
+          print("intersect (both):", len(titan_sids & crown_sids))
+          print("in titan only (missing from crown):", len(titan_sids - crown_sids))
+          print("in crown only (past matches):", len(crown_sids - titan_sids))
+          missing = list(titan_sids - crown_sids)[:10]
+          print("sample missing sids:", missing)
+          dm = [m for m in matches if str(m.get("collection_attempt", {}).get("status","")) == "DATA_MISSING"]
+          print("crown 場 DATA_MISSING:", len(dm))
+          ok = [m for m in matches if str(m.get("collection_attempt", {}).get("status","")) != "DATA_MISSING" and m.get("stages")]
+          print("crown 場有 stages:", len(ok))
+          if ok:
+              x = ok[0]
+              print("sample OK match sid:", x.get("titan_match_id"))
+              print("sample OK stages type:", type(x.get("stages")).__name__)
+              print("sample OK 首預 lead:", x.get("lead_view"))
+          PYEOF
           SSH="ssh -o BatchMode=yes -o ConnectTimeout=20 -o StrictHostKeyChecking=accept-new $DEPLOY_USER@$DEPLOY_HOST"
-          $SSH 'sudo cat > /tmp/dsc.py << PYEOF
-import json
-c = json.load(open("/var/www/crown/data.json"))
-t = json.load(open("/var/www/stage_engine_v2/titan_today.json"))
-matches = c.get("matches",[])
-titan_sids = set(str(x.get("sid","")).strip() for x in t.get("matches",[]) if x.get("sid"))
-crown_sids = set(str(m.get("titan_match_id") or m.get("match_id") or "").strip() for m in matches if m)
-crown_sids.discard("")
-print("titan_today sids:", len(titan_sids))
-print("crown/data sids:", len(crown_sids))
-print("intersect (both):", len(titan_sids & crown_sids))
-print("in titan only (missing from crown):", len(titan_sids - crown_sids))
-print("in crown only (past matches):", len(crown_sids - titan_sids))
-# Sample missing sids (in titan, not in crown)
-missing = list(titan_sids - crown_sids)[:10]
-print("sample missing sids:", missing)
-# Sample matches with DATA_MISSING
-dm = [m for m in matches if str(m.get("opening_model_status","")) in ("waiting_for_first_complete_crown_quote",) or str(m.get("crown_quote_status",""))=="direct_current" and str(m.get("collection_attempt",{}).get("status",""))=="DATA_MISSING"]
-print("crown 場 DATA_MISSING:", len(dm))
-# Sample non-missing
-ok = [m for m in matches if str(m.get("crown_quote_status",""))=="direct_current" and str(m.get("collection_attempt",{}).get("status","")) != "DATA_MISSING"]
-print("crown 場有盤:", len(ok))
-if ok:
-    x = ok[0]
-    print("sample OK match keys stages type:", type(x.get("stages")).__name__)
-    print("sample OK 首預 lead:", x.get("lead_view"))
-PYEOF
-sudo /opt/footbreak/.venv/bin/python3 /tmp/dsc.py'
+          scp -o BatchMode=yes -o StrictHostKeyChecking=accept-new /tmp/dsc.py $DEPLOY_USER@$DEPLOY_HOST:/tmp/dsc.py
+          $SSH 'sudo /opt/footbreak/.venv/bin/python3 /tmp/dsc.py'
           echo
-          echo "=== crown-sweep last 30 lines ==="
+          echo '=== crown-sweep last 30 lines ==='
           $SSH "sudo journalctl -u crown-sweep.service --since '30 min ago' --no-pager -o cat 2>&1 | tail -30"
