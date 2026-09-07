@@ -1,0 +1,84 @@
+name: Rollback crown app.js and locate v2 history
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "打 ROLLBACK"
+        required: true
+        type: string
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/rollback-and-find-v2-20260907.yml']
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  r:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - env:
+          E: ${{ github.event_name }}
+          C: ${{ inputs.confirmation }}
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then exit 0; fi
+          if [ "$C" != "ROLLBACK" ]; then exit 1; fi
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          set +e
+          echo "===== 1) Rollback /var/www/crown/app.js ====="
+          LATEST_BACKUP=$(ls -t /var/www/crown/app.js.backup-* 2>/dev/null | head -1)
+          echo "Restoring from: $LATEST_BACKUP"
+          if [ -n "$LATEST_BACKUP" ]; then
+            cp -a "$LATEST_BACKUP" /var/www/crown/app.js
+            chown root:www-data /var/www/crown/app.js
+            chmod 644 /var/www/crown/app.js
+            echo "Rollback done"
+            ls -la /var/www/crown/app.js
+          fi
+
+          echo
+          echo "===== 2) nginx config: 揾邊個 site serve /v2/crown/ ====="
+          grep -rn "v2/crown\|/v2/\|stage_engine_v2" /etc/nginx/ 2>/dev/null | head -40
+          echo
+          echo "===== 3) 揾實際 folder ====="
+          ls -la /var/www/ 2>/dev/null
+          echo
+          for d in /var/www/stage_engine_v2 /var/www/stage_engine_v2_fb; do
+            echo "===== $d ====="
+            ls -la $d 2>/dev/null | head -20
+            if [ -f $d/history.html ]; then
+              echo "-- history.html head 60 lines --"
+              head -60 $d/history.html
+              echo "-- history.html size + js refs --"
+              wc -c $d/history.html
+              grep -o 'src="[^"]*\.js"' $d/history.html | head
+            fi
+          done
+          echo
+          echo "===== 4) 揾邊 folder history.html serve /v2/crown/ ====="
+          for f in $(find /var/www -maxdepth 3 -name history.html 2>/dev/null); do
+            echo "candidate: $f"
+            head -20 "$f" | grep -E "title|皇冠|v2|crown" | head -5
+          done
+          REMOTE
