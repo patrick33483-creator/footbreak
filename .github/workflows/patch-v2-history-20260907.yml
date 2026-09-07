@@ -1,0 +1,73 @@
+name: Patch v2 history.html to table layout
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "打 V2TBL"
+        required: true
+        type: string
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/patch-v2-history-20260907.yml']
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  p:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      HTML_B64: PCFET0NUWVBFIGh0bWw+CjxodG1sIGxhbmc9InpoLUhhbnQiPgo8aGVhZD4KPG1ldGEgY2hhcnNldD0iVVRGLTgiPgo8bWV0YSBuYW1lPSJ2aWV3cG9ydCIgY29udGVudD0id2lkdGg9ZGV2aWNlLXdpZHRoLCBpbml0aWFsLXNjYWxlPTEiPgo8dGl0bGU+55qH5Yag57O757WxVjIgwrcg5q235Y+y57SA6YyEPC90aXRsZT4KPHN0eWxlPgo6cm9vdCB7CiAgLS1iZzogIzE3MTYxNDsKICAtLXN1cmZhY2U6ICMxQzFCMTk7CiAgLS1zdXJmYWNlLWFsdDogIzIwMUYxRDsKICAtLWJvcmRlcjogIzM5MzgzNjsKICAtLXRleHQ6ICNDRENDQ0E7CiAgLS10ZXh0LW11dGVkOiAjNzk3ODc2OwogIC0tdGV4dC1mYWludDogIzVBNTk1NzsKICAtLWFjY2VudDogIzRGOThBMzsKICAtLXNoYWRvdzogI0JCNjUzQjsKICAtLXN0YWdlLWZpcnN0OiAjNEY5OEEzOwogIC0tc3RhZ2UtdDMwOiAjRkRBQjQzOwogIC0tc3RhZ2UtdDU6ICNEMTYzQTc7Cn0KKiB7IGJveC1zaXppbmc6IGJvcmRlci1ib3g7IG1hcmdpbjogMDsgcGFkZGluZzogMDsgfQpib2R5IHsKICBmb250LWZhbWlseTogLWFwcGxlLXN5c3RlbSwgQmxpbmtNYWNTeXN0ZW1Gb250LCAiU2Vnb2UgVUkiLCAiUGluZ0ZhbmcgSEsiLCAiTm90byBTYW5zIENKSyBUQyIsIHNhbnMtc2VyaWY7CiAgYmFja2dyb3VuZDogdmFyKC0tYmcpOyBjb2xvcjogdmFyKC0tdGV4dCk7CiAgcGFkZGluZzogMjRweDsgbGluZS1oZWlnaHQ6IDEuNTsKICBmb250LXNpemU6IDE0cHg7Cn0KaDEgeyBmb250LXNpemU6IDIycHg7IGZvbnQtd2VpZ2h0OiA2MDA7IG1hcmdpbi1ib3R0b206IDRweDsgfQouc3VidGl0bGUgeyBjb2xvcjogdmFyKC0tdGV4dC1tdXRlZCk7IGZvbnQtc2l6ZTogMTNweDsgbWFyZ2luLWJvdHRvbTogMjBweDsgfQouc2hhZG93LWJhZGdlIHsKICBkaXNwbGF5OiBpbmxpbmUtYmxvY2s7IHBhZGRpbmc6IDJweCA4cHg7IGJvcmRlci1yYWRpdXM6IDRweDsKICBiYWNrZ3JvdW5kOiB2YXIoLS1zaGFkb3cpOyBjb2xvcjogdmFyKC0tYmcpOyBmb250LXdlaWdodDogNjAwOwogIGZvbnQtc2l6ZTogMTFweDsgbWFyZ2luLWxlZnQ6IDhweDsgdmVydGljYWwtYWxpZ246IG1pZGRsZTsKfQoubmF2IHsgbWFyZ2luLWJvdHRvbTogMjBweDsgfQoubmF2IGEgewogIGNvbG9yOiB2YXIoLS10ZXh0LW11dGVkKTsgdGV4dC1kZWNvcmF0aW9uOiBub25lOyBtYXJnaW4tcmlnaHQ6IDE2cHg7CiAgcGFkZGluZy1ib3R0b206IDRweDsgZm9udC1zaXplOiAxM3B4Owp9Ci5uYXYgYS5hY3RpdmUgeyBjb2xvcjogdmFyKC0tdGV4dCk7IGJvcmRlci1ib3R0b206IDJweCBzb2xpZCB2YXIoLS1hY2NlbnQpOyB9Ci5uYXYgYTpob3ZlciB7IGNvbG9yOiB2YXIoLS10ZXh0KTsgfQoKLmhpc3Qtd3JhcCB7IG92ZXJmbG93LXg6IGF1dG87IGJhY2tncm91bmQ6IHZhcigtLXN1cmZhY2UpOyBib3JkZXI6IDFweCBzb2xpZCB2YXIoLS1ib3JkZXIpOyBib3JkZXItcmFkaXVzOiA4cHg7IH0KdGFibGUuaGlzdCB7CiAgd2lkdGg6IDEwMCU7IGJvcmRlci1jb2xsYXBzZTogY29sbGFwc2U7IGZvbnQtc2l6ZTogMTNweDsKICBmb250LXZhcmlhbnQtbnVtZXJpYzogdGFidWxhci1udW1zOwp9CnRhYmxlLmhpc3QgdGgsIHRhYmxlLmhpc3QgdGQgewogIHBhZGRpbmc6IDEwcHggMTJweDsgdGV4dC1hbGlnbjogbGVmdDsgYm9yZGVyLWJvdHRvbTogMXB4IHNvbGlkIHZhcigtLWJvcmRlcik7CiAgdmVydGljYWwtYWxpZ246IG1pZGRsZTsgd2hpdGUtc3BhY2U6IG5vd3JhcDsKfQp0YWJsZS5oaXN0IHRoIHsKICBiYWNrZ3JvdW5kOiB2YXIoLS1zdXJmYWNlLWFsdCk7IGNvbG9yOiB2YXIoLS10ZXh0LW11dGVkKTsKICBmb250LXdlaWdodDogNjAwOyBmb250LXNpemU6IDEycHg7IHRleHQtdHJhbnNmb3JtOiBub25lOwogIGJvcmRlci1ib3R0b206IDJweCBzb2xpZCB2YXIoLS1ib3JkZXIpOwogIHBvc2l0aW9uOiBzdGlja3k7IHRvcDogMDsKfQp0YWJsZS5oaXN0IHRib2R5IHRyOmhvdmVyIHsgYmFja2dyb3VuZDogdmFyKC0tc3VyZmFjZS1hbHQpOyB9CnRhYmxlLmhpc3QgdGQuZGltIHsgY29sb3I6IHZhcigtLXRleHQtZmFpbnQpOyB9CnRhYmxlLmhpc3QgdGQubW9ubyB7IGZvbnQtdmFyaWFudC1udW1lcmljOiB0YWJ1bGFyLW51bXM7IH0KdGFibGUuaGlzdCB0ZC5zY29yZSB7IGNvbG9yOiB2YXIoLS10ZXh0KTsgZm9udC13ZWlnaHQ6IDYwMDsgdGV4dC1hbGlnbjogY2VudGVyOyB9CnRhYmxlLmhpc3QgdGQudGVhbS1ob21lIHsgY29sb3I6IHZhcigtLXRleHQpOyB9CnRhYmxlLmhpc3QgdGQudGVhbS1hd2F5IHsgY29sb3I6IHZhcigtLXRleHQpOyB9CnRhYmxlLmhpc3QgdGQubGVhZ3VlIHsgY29sb3I6IHZhcigtLXRleHQtbXV0ZWQpOyBmb250LXNpemU6IDEycHg7IH0KdGFibGUuaGlzdCB0ZC5raWNrb2ZmIHsgY29sb3I6IHZhcigtLXRleHQtbXV0ZWQpOyBmb250LXNpemU6IDEycHg7IH0KLnN0YWdlLWhkLWZpcnN0IHsgY29sb3I6IHZhcigtLXN0YWdlLWZpcnN0KTsgfQouc3RhZ2UtaGQtdDMwIHsgY29sb3I6IHZhcigtLXN0YWdlLXQzMCk7IH0KLnN0YWdlLWhkLXQ1IHsgY29sb3I6IHZhcigtLXN0YWdlLXQ1KTsgfQoucGljayB7IGNvbG9yOiB2YXIoLS10ZXh0KTsgfQoub2Rkcy1wYXJlbiB7IGNvbG9yOiB2YXIoLS10ZXh0LW11dGVkKTsgfQoubWlzcyB7IGNvbG9yOiB2YXIoLS10ZXh0LWZhaW50KTsgfQouZW1wdHkgewogIHBhZGRpbmc6IDQwcHg7IHRleHQtYWxpZ246IGNlbnRlcjsgY29sb3I6IHZhcigtLXRleHQtbXV0ZWQpOwogIGJhY2tncm91bmQ6IHZhcigtLXN1cmZhY2UpOyBib3JkZXI6IDFweCBkYXNoZWQgdmFyKC0tYm9yZGVyKTsKICBib3JkZXItcmFkaXVzOiA4cHg7Cn0KZm9vdGVyIHsgbWFyZ2luLXRvcDogMjRweDsgY29sb3I6IHZhcigtLXRleHQtZmFpbnQpOyBmb250LXNpemU6IDEycHg7IH0KZm9vdGVyIGEgeyBjb2xvcjogdmFyKC0tYWNjZW50KTsgdGV4dC1kZWNvcmF0aW9uOiBub25lOyB9Cjwvc3R5bGU+CjwvaGVhZD4KPGJvZHk+CjxoMT7nmoflhqDns7vntbFWMiDCtyDmrbflj7LntIDpjIQ8c3BhbiBjbGFzcz0ic2hhZG93LWJhZGdlIj5TSEFET1c8L3NwYW4+PC9oMT4KPGRpdiBjbGFzcz0ic3VidGl0bGUiPuaMieWgtOasoeS4gCByb3cg5bGV56S6IDxiPuWIneebpOmgkOa4rCAvIFQtMzAgLyBULTU8L2I+IOS4ieWAi+aZgum7nuWYhemgkOa4rOaWueWQkeWPiuizoOeOh+OAgjwvZGl2PgoKPGRpdiBjbGFzcz0ibmF2Ij4KICA8YSBocmVmPSIuLyI+5Y2z5pmCIGRhc2hib2FyZDwvYT4KICA8YSBocmVmPSIuL2hpc3RvcnkuaHRtbCIgY2xhc3M9ImFjdGl2ZSI+5q235Y+y57SA6YyEPC9hPgogIDxhIGhyZWY9Ii4vY29uZGl0aW9ucy5odG1sIj7ntLDliIbmop3ku7Y8L2E+CjwvZGl2PgoKPGRpdiBpZD0ibWF0Y2hlcyI+PC9kaXY+Cgo8Zm9vdGVyPgogIOizh+aWmeeUsSA8Y29kZT4vdjIvY3Jvd24vZGF0YS5qc29uPC9jb2RlPiDmj5Dkvpsgwrcg5q+P5qyh6LyJ5YWl6YO95L+C5pyA5paw5b+r54WnIMK3CiAg5a6M5pW05Y6f5aeL6LOH5paZ5Za6IGRyb3BsZXQgPGNvZGU+L3Zhci9saWIvZm9vdGJyZWFrL3N0YWdlX2VuZ2luZV92Mi9sZWRnZXIuanNvbjwvY29kZT4KPC9mb290ZXI+Cgo8c2NyaXB0Pgpjb25zdCBTVEFHRV9PUkRFUiA9IFsn6aaW6aCQJywgJ1QtMzAnLCAnVC01J107CgpmdW5jdGlvbiBmbXRPZGRzKHgpIHsgcmV0dXJuICh4ID09IG51bGwpID8gJ+KAlCcgOiBOdW1iZXIoeCkudG9GaXhlZCgyKTsgfQoKZnVuY3Rpb24gZm10S2lja29mZkhLVChpc28pIHsKICBpZiAoIWlzbykgcmV0dXJuICfigJQnOwogIHRyeSB7CiAgICBjb25zdCBkID0gbmV3IERhdGUoaXNvKTsKICAgIHJldHVybiBkLnRvTG9jYWxlU3RyaW5nKCd6aC1ISycsIHsKICAgICAgdGltZVpvbmU6ICdBc2lhL0hvbmdfS29uZycsIGhvdXIxMjogZmFsc2UsCiAgICAgIG1vbnRoOiAnMi1kaWdpdCcsIGRheTogJzItZGlnaXQnLCBob3VyOiAnMi1kaWdpdCcsIG1pbnV0ZTogJzItZGlnaXQnCiAgICB9KTsKICB9IGNhdGNoIHsgcmV0dXJuIGlzbzsgfQp9CgpmdW5jdGlvbiBlc2MocykgewogIGlmIChzID09IG51bGwpIHJldHVybiAnJzsKICByZXR1cm4gU3RyaW5nKHMpLnJlcGxhY2UoL1smPD4iJ10vZywgYyA9PiAoewogICAgJyYnOiAnJmFtcDsnLCAnPCc6ICcmbHQ7JywgJz4nOiAnJmd0OycsICciJzogJyZxdW90OycsICInIjogJyYjMzk7JwogIH1bY10pKTsKfQoKZnVuY3Rpb24gc3RhZ2VDZWxsKHJlYykgewogIGlmICghcmVjKSByZXR1cm4gJzxzcGFuIGNsYXNzPSJtaXNzIj7igJQ8L3NwYW4+JzsKICBjb25zdCBsYWJlbCA9IHJlYy5sZWFkX2xhYmVsIHx8IHJlYy5sZWFkX21hcmtldCB8fCAnJzsKICBjb25zdCBvZGRzID0gZm10T2RkcyhyZWMubGVhZF9vZGRzKTsKICBpZiAoIWxhYmVsICYmIG9kZHMgPT09ICfigJQnKSByZXR1cm4gJzxzcGFuIGNsYXNzPSJtaXNzIj7igJQ8L3NwYW4+JzsKICByZXR1cm4gYDxzcGFuIGNsYXNzPSJwaWNrIj4ke2VzYyhsYWJlbCl9PC9zcGFuPiA8c3BhbiBjbGFzcz0ib2Rkcy1wYXJlbiI+KCAke29kZHN9ICk8L3NwYW4+YDsKfQoKZnVuY3Rpb24gcmVuZGVyVGFibGUoZml4dHVyZXMpIHsKICBpZiAoIWZpeHR1cmVzLmxlbmd0aCkgewogICAgcmV0dXJuICc8ZGl2IGNsYXNzPSJlbXB0eSI+5YaH5aC05qyh5Y+v6aGv56S6PC9kaXY+JzsKICB9CiAgY29uc3Qgcm93cyA9IGZpeHR1cmVzLm1hcChmeCA9PiB7CiAgICBjb25zdCBzdGFnZXMgPSBmeC5zdGFnZXMgfHwge307CiAgICBjb25zdCBzY29yZSA9IGZ4LnJlc3VsdF9zY29yZSB8fCBmeC5zY29yZSB8fCAnJzsKICAgIHJldHVybiBgPHRyPgogICAgICA8dGQgY2xhc3M9ImtpY2tvZmYgbW9ubyI+JHtmbXRLaWNrb2ZmSEtUKGZ4LmtpY2tvZmZfdXRjKX08L3RkPgogICAgICA8dGQgY2xhc3M9ImxlYWd1ZSI+JHtlc2MoZngubGVhZ3VlIHx8ICcnKX08L3RkPgogICAgICA8dGQgY2xhc3M9InRlYW0taG9tZSI+JHtlc2MoZnguaG9tZSB8fCAnJyl9PC90ZD4KICAgICAgPHRkIGNsYXNzPSJzY29yZSI+JHtzY29yZSA/IGVzYyhzY29yZSkgOiAnPHNwYW4gY2xhc3M9Im1pc3MiPuKAlDwvc3Bhbj4nfTwvdGQ+CiAgICAgIDx0ZCBjbGFzcz0idGVhbS1hd2F5Ij4ke2VzYyhmeC5hd2F5IHx8ICcnKX08L3RkPgogICAgICA8dGQ+JHtzdGFnZUNlbGwoc3RhZ2VzWyfpppbpoJAnXSl9PC90ZD4KICAgICAgPHRkPiR7c3RhZ2VDZWxsKHN0YWdlc1snVC0zMCddKX08L3RkPgogICAgICA8dGQ+JHtzdGFnZUNlbGwoc3RhZ2VzWydULTUnXSl9PC90ZD4KICAgIDwvdHI+YDsKICB9KS5qb2luKCcnKTsKCiAgcmV0dXJuIGA8ZGl2IGNsYXNzPSJoaXN0LXdyYXAiPgogICAgPHRhYmxlIGNsYXNzPSJoaXN0Ij4KICAgICAgPHRoZWFkPgogICAgICAgIDx0cj4KICAgICAgICAgIDx0aD7plovos708L3RoPgogICAgICAgICAgPHRoPuiBr+izvTwvdGg+CiAgICAgICAgICA8dGg+5Li76ZqKPC90aD4KICAgICAgICAgIDx0aD7mr5TliIY8L3RoPgogICAgICAgICAgPHRoPuWuoumaijwvdGg+CiAgICAgICAgICA8dGggY2xhc3M9InN0YWdlLWhkLWZpcnN0Ij7liJ3nm6TpoJDmuKw8L3RoPgogICAgICAgICAgPHRoIGNsYXNzPSJzdGFnZS1oZC10MzAiPlQtMzAg6aCQ5risPC90aD4KICAgICAgICAgIDx0aCBjbGFzcz0ic3RhZ2UtaGQtdDUiPlQtNSDpoJDmuKw8L3RoPgogICAgICAgIDwvdHI+CiAgICAgIDwvdGhlYWQ+CiAgICAgIDx0Ym9keT4ke3Jvd3N9PC90Ym9keT4KICAgIDwvdGFibGU+CiAgPC9kaXY+YDsKfQoKYXN5bmMgZnVuY3Rpb24gbG9hZCgpIHsKICB0cnkgewogICAgY29uc3QgcmVzID0gYXdhaXQgZmV0Y2goJy4vZGF0YS5qc29uJywgeyBjYWNoZTogJ25vLXN0b3JlJyB9KTsKICAgIGlmICghcmVzLm9rKSB0aHJvdyBuZXcgRXJyb3IoYEhUVFAgJHtyZXMuc3RhdHVzfWApOwogICAgY29uc3QgZGF0YSA9IGF3YWl0IHJlcy5qc29uKCk7CiAgICBjb25zdCBmaXh0dXJlcyA9IChkYXRhLmZpeHR1cmVzIHx8IFtdKS5zbGljZSgpLnNvcnQoKGEsIGIpID0+CiAgICAgIChiLmtpY2tvZmZfdXRjIHx8ICcnKS5sb2NhbGVDb21wYXJlKGEua2lja29mZl91dGMgfHwgJycpCiAgICApOwogICAgZG9jdW1lbnQuZ2V0RWxlbWVudEJ5SWQoJ21hdGNoZXMnKS5pbm5lckhUTUwgPSByZW5kZXJUYWJsZShmaXh0dXJlcyk7CiAgfSBjYXRjaCAoZSkgewogICAgZG9jdW1lbnQuZ2V0RWxlbWVudEJ5SWQoJ21hdGNoZXMnKS5pbm5lckhUTUwgPQogICAgICBgPGRpdiBjbGFzcz0iZW1wdHkiPui8ieWFpeWkseaVl++8miR7ZXNjKGUubWVzc2FnZSl9PC9kaXY+YDsKICB9Cn0KCmxvYWQoKTsKPC9zY3JpcHQ+CjwvYm9keT4KPC9odG1sPgo=
+    steps:
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - env:
+          E: ${{ github.event_name }}
+          C: ${{ inputs.confirmation }}
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then exit 0; fi
+          if [ "$C" != "V2TBL" ]; then exit 1; fi
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          HTML_B64: ${{ env.HTML_B64 }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=60 \
+            "$DEPLOY_USER@$DEPLOY_HOST" "sudo bash -s $HTML_B64" <<'REMOTE'
+          set -eu
+          B64="$1"
+          STAMP=$(date +%Y%m%d-%H%M%S)
+          BACKUP=/var/www/stage_engine_v2/history.html.backup-${STAMP}
+          cp -a /var/www/stage_engine_v2/history.html "$BACKUP"
+          echo "Backup: $BACKUP"
+
+          echo "$B64" | base64 -d > /var/www/stage_engine_v2/history.html.tmp
+          wc -c /var/www/stage_engine_v2/history.html.tmp
+
+          # Sanity check new file
+          grep -q '初盤預測</th>' /var/www/stage_engine_v2/history.html.tmp || { echo "ERR: header missing"; exit 1; }
+          grep -q 'stageCell' /var/www/stage_engine_v2/history.html.tmp || { echo "ERR: stageCell missing"; exit 1; }
+          grep -q 'table.hist' /var/www/stage_engine_v2/history.html.tmp || { echo "ERR: table missing"; exit 1; }
+
+          mv /var/www/stage_engine_v2/history.html.tmp /var/www/stage_engine_v2/history.html
+          chown root:root /var/www/stage_engine_v2/history.html
+          chmod 644 /var/www/stage_engine_v2/history.html
+          ls -la /var/www/stage_engine_v2/history.html "$BACKUP"
+          echo
+          echo "===== new content head 20 lines ====="
+          head -20 /var/www/stage_engine_v2/history.html
+          REMOTE
