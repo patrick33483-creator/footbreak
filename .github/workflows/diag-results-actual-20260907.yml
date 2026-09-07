@@ -1,0 +1,72 @@
+name: Diag results.json actual state
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/diag-results-actual-20260907.yml']
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  d:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -T 15 -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+      - env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=30 -o StrictHostKeyChecking=accept-new \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          set -e
+          echo "===== 1) results.json size + mtime ====="
+          ls -la /var/www/stage_engine_v2/results.json*
+          
+          echo
+          echo "===== 2) current results.json content check ====="
+          python3 -c "
+          import json
+          d = json.load(open('/var/www/stage_engine_v2/results.json'))
+          print(f'top-level keys: {list(d.keys())}')
+          print(f'results count: {len(d.get(\"results\", {}))}')
+          if 'stats' in d:
+              print(f'stats: {d[\"stats\"]}')
+          if 'meta' in d:
+              m = d['meta']
+              print(f'meta build_elapsed_s: {m.get(\"build_elapsed_s\")}')
+              print(f'meta updated_at_utc: {d.get(\"updated_at_utc\")}')
+              print(f'meta lookback_days if present: {m.get(\"lookback_days\", \"MISSING\")}')
+          "
+          
+          echo
+          echo "===== 3) Last 3 backup results.json sizes ====="
+          ls -la /var/www/stage_engine_v2/results.json.backup-* 2>/dev/null | tail -5
+          
+          echo
+          echo "===== 4) systemd timer last runs ====="
+          journalctl -u v2-results-sync.service --since '30 minutes ago' --no-pager | tail -30
+          
+          echo
+          echo "===== 5) Was 5min timer overwriting merged result? ====="
+          systemctl status v2-results-sync.timer --no-pager | head -8
+          echo
+          echo "=== Compare last 2 backups ==="
+          for b in $(ls -t /var/www/stage_engine_v2/results.json.backup-* 2>/dev/null | head -3); do
+            n=$(python3 -c "import json;print(len(json.load(open('$b')).get('results',{})))" 2>/dev/null)
+            echo "  $b: $n results"
+          done
+          REMOTE
