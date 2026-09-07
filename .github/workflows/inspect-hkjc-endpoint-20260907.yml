@@ -1,0 +1,92 @@
+name: Inspect HKJC results source
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "打 HKJC"
+        required: true
+        type: string
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/inspect-hkjc-endpoint-20260907.yml']
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  r:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - env:
+          E: ${{ github.event_name }}
+          C: ${{ inputs.confirmation }}
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then exit 0; fi
+          if [ "$C" != "HKJC" ]; then exit 1; fi
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          set +e
+          echo "===== 1) Find HKJC / titan providers in radar ====="
+          for f in /opt/crown-radar/server/providers/*.ts; do
+            echo "-- $f --"
+            head -60 "$f" | grep -iE "url|endpoint|http|fetch" | head -6
+          done
+          echo
+          echo "===== 2) hkjc-results test 睇下用邊個 shape ====="
+          cat /opt/crown-radar/tests/hkjc-results.test.ts 2>/dev/null | head -80
+          echo
+          echo "===== 3) 睇 titan-corners.ts endpoint ====="
+          head -80 /opt/crown-radar/server/providers/titan-corners.ts
+          echo
+          echo "===== 4) shared/types.ts result shape ====="
+          grep -A 3 "score\|result" /opt/crown-radar/shared/types.ts | head -60
+          echo
+          echo "===== 5) Footbreak prediction_history rows with score - sample ====="
+          python3 <<'PY'
+          import json
+          d = json.load(open('/var/lib/footbreak/crown/prediction_history.json'))
+          if isinstance(d, dict) and 'rows' in d:
+              rows = d['rows']
+          else:
+              rows = d
+          scored = [r for r in rows if r.get('score') or r.get('actual_score')][:3]
+          print('total rows:', len(rows), 'scored sample:', len(scored))
+          for r in scored:
+              print(json.dumps({k: r[k] for k in list(r.keys()) if k in ['fixture_id','home','away','kickoff','score','actual_score','actual','result_source','league']}, ensure_ascii=False)[:400])
+          PY
+          echo
+          echo "===== 6) v2 data.json 個 fixture id / kickoff shape (第一 fixture 全部 keys) ====="
+          python3 <<'PY'
+          import json
+          d = json.load(open('/var/www/stage_engine_v2/data.json'))
+          fx = d.get('fixtures', [])
+          print('total fixtures:', len(fx))
+          if fx:
+              f = fx[0]
+              print('fx keys:', list(f.keys()))
+              print('sample:', json.dumps({k: f[k] for k in f.keys() if k not in ('stages',)}, ensure_ascii=False))
+          PY
+          echo
+          echo "===== 7) Footbreak backup result_sync.py head ====="
+          head -80 /opt/footbreak/backup-stage-engine-v2-20260903-121035/result_sync.py
+          REMOTE
