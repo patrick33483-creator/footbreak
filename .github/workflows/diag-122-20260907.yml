@@ -25,7 +25,15 @@ jobs:
           install -m 700 -d ~/.ssh
           printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
-          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+          for i in 1 2 3; do
+            if ssh-keyscan -T 15 -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/tmp/ks.err; then
+              echo "keyscan ok (attempt $i)"
+              break
+            fi
+            echo "keyscan attempt $i failed:"; cat /tmp/ks.err
+            sleep 5
+          done
+          test -s ~/.ssh/known_hosts
       - env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
