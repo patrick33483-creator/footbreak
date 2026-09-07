@@ -96,6 +96,7 @@ def main() -> int:
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)
+        os.chmod(tmp, 0o644)
         os.replace(tmp, OUT)
     except Exception:
         try:
