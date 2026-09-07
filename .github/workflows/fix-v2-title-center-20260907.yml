@@ -1,0 +1,87 @@
+name: Fix v2 all cells center + title flex
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "打 CENTERALL"
+        required: true
+        type: string
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/fix-v2-title-center-20260907.yml']
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  f:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - env:
+          E: ${{ github.event_name }}
+          C: ${{ inputs.confirmation }}
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then exit 0; fi
+          if [ "$C" != "CENTERALL" ]; then exit 1; fi
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          set -e
+          TS=$(date +%Y%m%d-%H%M%S)
+          cp /var/www/stage_engine_v2/history.html /var/www/stage_engine_v2/history.html.backup-$TS
+          
+          # 1) 改 h1 用 flex justify-content: center, badge 唔再影響 center
+          sudo python3 <<'PY'
+          p = '/var/www/stage_engine_v2/history.html'
+          s = open(p).read()
+          patches = 0
+          # 1) h1 flex center
+          old_h1 = 'h1 { font-size: 22px; font-weight: 600; margin-bottom: 4px; text-align: center; }'
+          new_h1 = 'h1 { font-size: 22px; font-weight: 600; margin-bottom: 4px; display: flex; align-items: center; justify-content: center; gap: 8px; }'
+          if old_h1 in s:
+              s = s.replace(old_h1, new_h1); patches += 1
+          s = s.replace('font-size: 11px; margin-left: 8px; vertical-align: middle;', 'font-size: 11px; vertical-align: middle;')
+          # 2) table.hist th/td 全部 center
+          old_th_td = 'table.hist th, table.hist td {\n  padding: 10px 12px; text-align: left; border-bottom: 1px solid var(--border);\n  vertical-align: middle; white-space: nowrap;\n}'
+          new_th_td = 'table.hist th, table.hist td {\n  padding: 10px 12px; text-align: center; border-bottom: 1px solid var(--border);\n  vertical-align: middle; white-space: nowrap;\n}'
+          if old_th_td in s:
+              s = s.replace(old_th_td, new_th_td); patches += 1
+              print('th/td centered')
+          else:
+              print('th/td block NOT matched, try loose')
+              import re
+              s2 = re.sub(r'(table\.hist th, table\.hist td \{[^}]*?)text-align: left;', r'\1text-align: center;', s)
+              if s2 != s:
+                  s = s2; patches += 1
+                  print('th/td centered via regex')
+          open(p, 'w').write(s)
+          print(f'wrote {p} bytes={len(s)} patches={patches}')
+          PY
+          
+          echo "===== verify ====="
+          grep -n "^h1 {" /var/www/stage_engine_v2/history.html
+          grep -n "table.hist th, table.hist td" /var/www/stage_engine_v2/history.html
+          sed -n '/table.hist th, table.hist td {/,/^}/p' /var/www/stage_engine_v2/history.html | head -5
+          
+          # 2) force nginx no-cache 呢個 file (加 Cache-Control header via etag change 已足夠, 因為 file 已改)
+          ls -la /var/www/stage_engine_v2/history.html
+          REMOTE
