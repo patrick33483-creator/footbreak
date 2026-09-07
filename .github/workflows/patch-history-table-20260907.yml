@@ -22,6 +22,8 @@ jobs:
   p:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    env:
+      PATCH_SCRIPT_B64: IyEvdXNyL2Jpbi9lbnYgcHl0aG9uMwoiIiJQYXRjaCAvdmFyL3d3dy9jcm93bi9hcHAuanM6IHJld3JpdGUgaGlzdG9yeVJvd3MgKyB0YWJsZSBoZWFkZXIgdG8gcmFkYXIgbGF5b3V0LiIiIgppbXBvcnQgb3MKaW1wb3J0IHN5cwoKcGF0aCA9ICIvdmFyL3d3dy9jcm93bi9hcHAuanMiCndpdGggb3BlbihwYXRoLCAiciIsIGVuY29kaW5nPSJ1dGYtOCIpIGFzIGY6CiAgICBzcmMgPSBmLnJlYWQoKQoKIyAtLS0gMSkgUmVwbGFjZSBoaXN0b3J5Um93cyBhcnJvdyBmdW5jdGlvbiAtLS0Kc3RhcnRfbWFya2VyID0gImNvbnN0IGhpc3RvcnlSb3dzID0gKGl0ZW1zKSA9PiBpdGVtcy5tYXAoKHIpID0+IGA8dHI+IgpzdGFydCA9IHNyYy5maW5kKHN0YXJ0X21hcmtlcikKaWYgc3RhcnQgPCAwOgogICAgc3lzLmV4aXQoIkVSUjogaGlzdG9yeVJvd3Mgc3RhcnQgbWFya2VyIG5vdCBmb3VuZCIpCgplbmRfbWFya2VyID0gIn08L3RkPlxuICA8L3RyPmApLmpvaW4oJycpOyIKZW5kX2lkeCA9IHNyYy5maW5kKGVuZF9tYXJrZXIsIHN0YXJ0KQppZiBlbmRfaWR4IDwgMDoKICAgIHN5cy5leGl0KCJFUlI6IGhpc3RvcnlSb3dzIGVuZCBtYXJrZXIgbm90IGZvdW5kIikKZW5kID0gZW5kX2lkeCArIGxlbihlbmRfbWFya2VyKQoKbmV3X3Jvd3NfZm4gPSByIiIiY29uc3QgaGlzdG9yeVJvd3MgPSAoaXRlbXMpID0+IHsKICAgIC8vIEdyb3VwIHJvd3MgYnkgbWF0Y2ggKGtpY2tvZmYtZGF0ZSArIGhvbWUgKyBhd2F5KS4gRWFjaCBtYXRjaCAtPiBvbmUgcm93IHcvIDMgc3RhZ2UgY2VsbHMuCiAgICBjb25zdCBncm91cHMgPSBuZXcgTWFwKCk7CiAgICBjb25zdCBzdGFnZU9yZGVyID0gWyfpppbpoJAnLCAnVC0zMCcsICdULTUnXTsKICAgIGZvciAoY29uc3QgciBvZiBpdGVtcykgewogICAgICBjb25zdCBkYXRlS2V5ID0gci5raWNrb2ZmID8gU3RyaW5nKHIua2lja29mZikuc2xpY2UoMCwgMTApIDogJyc7CiAgICAgIGNvbnN0IGtleSA9IGAke2RhdGVLZXl9fCR7ci5ob21lIHx8ICcnfXwke3IuYXdheSB8fCAnJ31gOwogICAgICBpZiAoIWdyb3Vwcy5oYXMoa2V5KSkgewogICAgICAgIGdyb3Vwcy5zZXQoa2V5LCB7IGtleSwga2lja29mZjogci5raWNrb2ZmLCBob21lOiByLmhvbWUsIGF3YXk6IHIuYXdheSwgbGVhZ3VlOiByLmxlYWd1ZSwgc2NvcmU6IHIuc2NvcmUsIGFjdHVhbDogci5hY3R1YWwsIHN0YWdlczoge30gfSk7CiAgICAgIH0KICAgICAgY29uc3QgZyA9IGdyb3Vwcy5nZXQoa2V5KTsKICAgICAgbGV0IHMgPSByLnN0YWdlOwogICAgICBpZiAocyAmJiBzLnN0YXJ0c1dpdGgoJ1QtNScpKSBzID0gJ1QtNSc7CiAgICAgIGlmIChzID09PSAn5Yid55uk6aCQ5risJyB8fCBzID09PSAn5Yid55ukJykgcyA9ICfpppbpoJAnOwogICAgICBpZiAoc3RhZ2VPcmRlci5pbmRleE9mKHMpID49IDApIHsKICAgICAgICBjb25zdCBjdXIgPSBnLnN0YWdlc1tzXTsKICAgICAgICBpZiAoIWN1ciB8fCAoci5wcmVkaWN0ZWRfYXQgJiYgci5wcmVkaWN0ZWRfYXQgPiAoY3VyLnByZWRpY3RlZF9hdCB8fCAnJykpKSB7CiAgICAgICAgICBnLnN0YWdlc1tzXSA9IHI7CiAgICAgICAgfQogICAgICB9CiAgICAgIGlmICghZy5zY29yZSAmJiByLnNjb3JlKSBnLnNjb3JlID0gci5zY29yZTsKICAgICAgaWYgKCFnLmFjdHVhbCAmJiByLmFjdHVhbCkgZy5hY3R1YWwgPSByLmFjdHVhbDsKICAgICAgaWYgKCFnLmtpY2tvZmYgJiYgci5raWNrb2ZmKSBnLmtpY2tvZmYgPSByLmtpY2tvZmY7CiAgICAgIGlmICghZy5sZWFndWUgJiYgci5sZWFndWUpIGcubGVhZ3VlID0gci5sZWFndWU7CiAgICB9CiAgICBjb25zdCBvcmRlcmVkID0gQXJyYXkuZnJvbShncm91cHMudmFsdWVzKCkpLnNvcnQoKGEsIGIpID0+IChiLmtpY2tvZmYgfHwgJycpLmxvY2FsZUNvbXBhcmUoYS5raWNrb2ZmIHx8ICcnKSk7CgogICAgY29uc3QgbWFya2V0TGFiZWwgPSB7IEhEQzogJ+iuk+eQgycsIEhJTDogJ+WFpeeQg+Wkp+e0sCcsIENITDogJ+inkueQg+Wkp+e0sCcsIE1MOiAn542o6LSPJywgREM6ICfpm5nli50nLCBCVFM6ICflhanpmorlhaXnkIMnIH07CiAgICBjb25zdCBkaXJDSCA9IHsgSE9NRTogJ+S4uycsIEFXQVk6ICflrqInLCBEUkFXOiAn5ZKMJywgT1ZFUjogJ+WkpycsIFVOREVSOiAn57SwJywgWUVTOiAn5pyJJywgTk86ICflhocnIH07CiAgICBjb25zdCBzdGFnZUNlbGwgPSAocm93KSA9PiB7CiAgICAgIGlmICghcm93KSByZXR1cm4gJzxzcGFuIGNsYXNzPSJkaW0iPuKAlDwvc3Bhbj4nOwogICAgICBjb25zdCBtcHMgPSByb3cubWFya2V0X3ByZWRpY3Rpb25zIHx8IFtdOwogICAgICBpZiAoIW1wcy5sZW5ndGgpIHJldHVybiAnPHNwYW4gY2xhc3M9ImRpbSI+4oCUPC9zcGFuPic7CiAgICAgIGNvbnN0IG0gPSBtcHNbMF0gfHwge307CiAgICAgIGNvbnN0IG1rdCA9IG1hcmtldExhYmVsW20uY29kZV0gfHwgbS5jb2RlIHx8ICcnOwogICAgICBjb25zdCByYXdEaXIgPSBtLnNpZGUgfHwgbS5kaXJlY3Rpb24gfHwgbS5zZWxlY3Rpb25fc2lkZSB8fCBtLnBpY2sgfHwgJyc7CiAgICAgIGNvbnN0IGRpciA9IGRpckNIW1N0cmluZyhyYXdEaXIpLnRvVXBwZXJDYXNlKCldIHx8IHJhd0RpciB8fCAnJzsKICAgICAgY29uc3QgbGluZSA9IChtLmxpbmUgIT0gbnVsbCkgPyBtLmxpbmUgOiAobS5oYW5kaWNhcCAhPSBudWxsID8gbS5oYW5kaWNhcCA6ICcnKTsKICAgICAgY29uc3Qgb2RkcyA9IChtLm9kZHMgIT0gbnVsbCkgPyBOdW1iZXIobS5vZGRzKS50b0ZpeGVkKDIpIDogJ+KAlCc7CiAgICAgIGNvbnN0IGxpbmVTdHIgPSAobGluZSAhPT0gJycgJiYgbGluZSAhPSBudWxsKSA/IGAgJHtsaW5lfWAgOiAnJzsKICAgICAgcmV0dXJuIGA8c3BhbiBjbGFzcz0iaGlzdC1ta3QiPiR7bWt0fSAke2VzYyhkaXIpfSR7bGluZVN0cn08L3NwYW4+IDxzcGFuIGNsYXNzPSJoaXN0LW9kZHMiPiR7b2Rkc308L3NwYW4+YDsKICAgIH07CgogICAgcmV0dXJuIG9yZGVyZWQubWFwKChnKSA9PiBgPHRyPgogICAgICA8dGQgZGF0YS1sYWJlbD0i6ZaL6LO9IiBjbGFzcz0ibW9ubyBub3dyYXAiPiR7Zy5raWNrb2ZmID8gYCR7aGtEYXkoZy5raWNrb2ZmKX0gJHtoa0Nsb2NrKGcua2lja29mZil9YCA6ICfigJQnfTwvdGQ+CiAgICAgIDx0ZCBkYXRhLWxhYmVsPSLoga/os70iPiR7ZXNjKGcubGVhZ3VlIHx8ICcnKX08L3RkPgogICAgICA8dGQgZGF0YS1sYWJlbD0i5Li76ZqKIj4ke2VzYyhnLmhvbWUgfHwgJycpfTwvdGQ+CiAgICAgIDx0ZCBkYXRhLWxhYmVsPSLmr5TliIYiIGNsYXNzPSJtb25vIj4ke2cuc2NvcmUgPyBgPGI+JHtlc2MoZy5zY29yZSl9PC9iPmAgOiAnPHNwYW4gY2xhc3M9ImRpbSI+4oCUPC9zcGFuPid9JHtnLmFjdHVhbCA/IGA8ZGl2IGNsYXNzPSJjZWxsLXN1YiI+JHtlc2MoZy5hY3R1YWwpfTwvZGl2PmAgOiAnJ308L3RkPgogICAgICA8dGQgZGF0YS1sYWJlbD0i5a6i6ZqKIj4ke2VzYyhnLmF3YXkgfHwgJycpfTwvdGQ+CiAgICAgIDx0ZCBkYXRhLWxhYmVsPSLliJ3nm6TpoJDmuKwiPiR7c3RhZ2VDZWxsKGcuc3RhZ2VzWyfpppbpoJAnXSl9PC90ZD4KICAgICAgPHRkIGRhdGEtbGFiZWw9IlQtMzAg6aCQ5risIj4ke3N0YWdlQ2VsbChnLnN0YWdlc1snVC0zMCddKX08L3RkPgogICAgICA8dGQgZGF0YS1sYWJlbD0iVC01IOmgkOa4rCI+JHtzdGFnZUNlbGwoZy5zdGFnZXNbJ1QtNSddKX08L3RkPgogICAgPC90cj5gKS5qb2luKCcnKTsKICB9IiIiCgpuZXdfc3JjID0gc3JjWzpzdGFydF0gKyBuZXdfcm93c19mbiArIHNyY1tlbmQ6XQoKIyAtLS0gMikgUmVwbGFjZSB0YWJsZSBoZWFkZXIgLS0tCm9sZF9oZWFkID0gIjx0cj48dGg+6ZaL6LO9PC90aD48dGg+6LO95LqLPC90aD48dGg+6ZqO5q61PC90aD48dGg+MVgyIOi8lOWKqTwvdGg+PHRoPuWQhOW4guWgtOmgkOa4rO+8j+e1kOaenDwvdGg+PHRoPuS/oeW/tTwvdGg+PHRoPuaooeaTrOazqDwvdGg+PHRoPuaVtOWgtOizveaenDwvdGg+PC90cj4iCm5ld19oZWFkID0gIjx0cj48dGg+6ZaL6LO9PC90aD48dGg+6IGv6LO9PC90aD48dGg+5Li76ZqKPC90aD48dGg+5q+U5YiGPC90aD48dGg+5a6i6ZqKPC90aD48dGg+5Yid55uk6aCQ5risPC90aD48dGg+VC0zMCDpoJDmuKw8L3RoPjx0aD5ULTUg6aCQ5risPC90aD48L3RyPiIKaWYgb2xkX2hlYWQgbm90IGluIG5ld19zcmM6CiAgICBzeXMuZXhpdCgiRVJSOiBvbGQgdGFibGUgaGVhZGVyIG5vdCBmb3VuZCIpCm5ld19zcmMgPSBuZXdfc3JjLnJlcGxhY2Uob2xkX2hlYWQsIG5ld19oZWFkLCAxKQoKIyAtLS0gMykgU2FuaXR5IC0tLQppZiAiY29uc3QgaGlzdG9yeVJvd3MgPSAoaXRlbXMpID0+IiBub3QgaW4gbmV3X3NyYzoKICAgIHN5cy5leGl0KCJFUlI6IG5ldyBoaXN0b3J5Um93cyBtaXNzaW5nIikKaWYgbmV3X2hlYWQgbm90IGluIG5ld19zcmM6CiAgICBzeXMuZXhpdCgiRVJSOiBuZXcgaGVhZGVyIG1pc3NpbmciKQoKd2l0aCBvcGVuKHBhdGggKyAiLnRtcCIsICJ3IiwgZW5jb2Rpbmc9InV0Zi04IikgYXMgZjoKICAgIGYud3JpdGUobmV3X3NyYykKb3MucmVwbGFjZShwYXRoICsgIi50bXAiLCBwYXRoKQoKZGlmZiA9IGxlbihuZXdfc3JjKSAtIGxlbihzcmMpCnByaW50KGYicGF0Y2hlZDogc2l6ZSBkaWZmID0ge2RpZmY6K2R9IGJ5dGVzIikK
     steps:
       - if: github.event_name == 'workflow_dispatch'
         env:
@@ -42,139 +44,28 @@ jobs:
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          SCRIPT_B64: ${{ env.PATCH_SCRIPT_B64 }}
         run: |
           ssh -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=60 \
-            "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+            "$DEPLOY_USER@$DEPLOY_HOST" "sudo bash -s $SCRIPT_B64" <<'REMOTE'
           set -eu
+          SCRIPT_B64="$1"
           STAMP=$(date +%Y%m%d-%H%M%S)
           BACKUP=/var/www/crown/app.js.backup-${STAMP}
           cp -a /var/www/crown/app.js "$BACKUP"
           echo "Backup: $BACKUP"
 
-          python3 <<'PY'
-          import re, sys
+          echo "$SCRIPT_B64" | base64 -d > /tmp/patch_history.py
+          wc -l /tmp/patch_history.py
 
-          path = "/var/www/crown/app.js"
-          with open(path, "r", encoding="utf-8") as f:
-              src = f.read()
+          python3 /tmp/patch_history.py
 
-          # ============================================================
-          # 1) Replace `const historyRows = (items) => items.map((r) => `<tr>
-          #    ...  }).join('');`
-          # with a group-by-match version that produces one row per match
-          # with three stage cells.
-          # ============================================================
-
-          # Find start marker
-          start_marker = "const historyRows = (items) => items.map((r) => `<tr>"
-          start = src.find(start_marker)
-          if start < 0:
-              sys.exit("ERR: historyRows start marker not found")
-
-          # Find end: the corresponding "}).join('');"
-          # Look forward for the exact end pattern.
-          end_marker = "}</td>\n  </tr>`).join('');"
-          end_idx = src.find(end_marker, start)
-          if end_idx < 0:
-              sys.exit("ERR: historyRows end marker not found")
-          end = end_idx + len(end_marker)
-
-          new_rows_fn = r"""const historyRows = (items) => {
-    // Group rows by match (home + away + kickoff date). Each match -> 3 stage cells.
-    const groups = new Map();
-    const stageOrder = ['首預', 'T-30', 'T-5'];
-    for (const r of items) {
-      const dateKey = r.kickoff ? String(r.kickoff).slice(0, 10) : '';
-      const key = `${dateKey}|${r.home || ''}|${r.away || ''}`;
-      if (!groups.has(key)) {
-        groups.set(key, { key, kickoff: r.kickoff, home: r.home, away: r.away, league: r.league, score: r.score, actual: r.actual, stages: {} });
-      }
-      const g = groups.get(key);
-      // Prefer canonical stage names; fold '首預' from any stage variant
-      let s = r.stage;
-      if (s && s.startsWith('T-5')) s = 'T-5';
-      if (s === '初盤預測' || s === '初盤') s = '首預';
-      if (stageOrder.indexOf(s) >= 0) {
-        // Keep newest predicted_at per stage
-        const cur = g.stages[s];
-        if (!cur || (r.predicted_at && r.predicted_at > (cur.predicted_at || ''))) {
-          g.stages[s] = r;
-        }
-      }
-      // Fill in score/actual from any row that has them (usually the T-5 row)
-      if (!g.score && r.score) g.score = r.score;
-      if (!g.actual && r.actual) g.actual = r.actual;
-    }
-    // Sort groups by kickoff desc (newest first)
-    const ordered = Array.from(groups.values()).sort((a, b) => (b.kickoff || '').localeCompare(a.kickoff || ''));
-
-    const marketLabel = { HDC: '讓球', HIL: '入球大細', CHL: '角球大細', ML: '獨贏', DC: '雙勝', BTS: '兩隊入球' };
-    const dirCH = { HOME: '主', AWAY: '客', DRAW: '和', OVER: '大', UNDER: '細', YES: '有', NO: '冇' };
-    const stageCell = (row) => {
-      if (!row) return '<span class="dim">—</span>';
-      const mps = row.market_predictions || [];
-      if (!mps.length) return '<span class="dim">—</span>';
-      const m = mps[0] || {};
-      const mkt = marketLabel[m.code] || m.code || '';
-      // direction preference: side / direction / selection_side
-      const rawDir = m.side || m.direction || m.selection_side || m.pick || '';
-      const dir = dirCH[String(rawDir).toUpperCase()] || rawDir || '';
-      const line = (m.line != null) ? m.line : (m.handicap != null ? m.handicap : '');
-      const odds = (m.odds != null) ? Number(m.odds).toFixed(2) : '—';
-      const lineStr = (line !== '' && line != null) ? ` ${line}` : '';
-      return `<span class="hist-mkt">${mkt} ${esc(dir)}${lineStr}</span> <span class="hist-odds">${odds}</span>`;
-    };
-
-    return ordered.map((g) => `<tr>
-      <td data-label="開賽" class="mono nowrap">${g.kickoff ? `${hkDay(g.kickoff)} ${hkClock(g.kickoff)}` : '—'}</td>
-      <td data-label="聯賽">${esc(g.league || '')}</td>
-      <td data-label="主隊">${esc(g.home || '')}</td>
-      <td data-label="比分" class="mono">${g.score ? `<b>${esc(g.score)}</b>` : '<span class="dim">—</span>'}${g.actual ? `<div class="cell-sub">${esc(g.actual)}</div>` : ''}</td>
-      <td data-label="客隊">${esc(g.away || '')}</td>
-      <td data-label="初盤預測">${stageCell(g.stages['首預'])}</td>
-      <td data-label="T-30 預測">${stageCell(g.stages['T-30'])}</td>
-      <td data-label="T-5 預測">${stageCell(g.stages['T-5'])}</td>
-    </tr>`).join('');
-  }"""
-
-          new_src = src[:start] + new_rows_fn + src[end:]
-
-          # ============================================================
-          # 2) Replace historyTable table header (8 cols) with new headers.
-          # Find: `<tr><th>開賽</th><th>賽事</th><th>階段</th><th>1X2 輔助</th><th>各市場預測／結果</th><th>信念</th><th>模擬注</th><th>整場賽果</th></tr>`
-          # ============================================================
-          old_head = "<tr><th>開賽</th><th>賽事</th><th>階段</th><th>1X2 輔助</th><th>各市場預測／結果</th><th>信念</th><th>模擬注</th><th>整場賽果</th></tr>"
-          new_head = "<tr><th>開賽</th><th>聯賽</th><th>主隊</th><th>比分</th><th>客隊</th><th>初盤預測</th><th>T-30 預測</th><th>T-5 預測</th></tr>"
-          if old_head not in new_src:
-              sys.exit("ERR: old table header not found")
-          new_src = new_src.replace(old_head, new_head, 1)
-
-          # ============================================================
-          # 3) Sanity checks
-          # ============================================================
-          if "const historyRows = (items) =>" not in new_src:
-              sys.exit("ERR: new historyRows missing")
-          if new_head not in new_src:
-              sys.exit("ERR: new header missing")
-
-          # Write .tmp then rename
-          with open(path + ".tmp", "w", encoding="utf-8") as f:
-              f.write(new_src)
-
-          import os
-          os.replace(path + ".tmp", path)
-
-          diff = len(new_src) - len(src)
-          print(f"patched: size diff = {diff:+d} bytes")
-          PY
-
-          # Preserve ownership/mode
           chown root:www-data /var/www/crown/app.js
           chmod 644 /var/www/crown/app.js
           ls -la /var/www/crown/app.js "$BACKUP"
 
           echo
-          echo "===== Show new historyRows head/tail ====="
-          grep -n "const historyRows" /var/www/crown/app.js | head -3
-          grep -n "初盤預測</th>" /var/www/crown/app.js | head -3
+          echo "===== Sanity: new markers ====="
+          grep -c "初盤預測</th>" /var/www/crown/app.js
+          grep -c "const historyRows = (items) => {" /var/www/crown/app.js
           REMOTE
