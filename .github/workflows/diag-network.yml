@@ -1,0 +1,61 @@
+name: Diag Titan Network
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'CONFIRM'
+        required: true
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths:
+      - '.github/workflows/diag-network.yml'
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    env:
+      CONFIRM_INPUT: ${{ github.event.inputs.confirm || 'CONFIRM' }}
+    steps:
+      - name: Guard
+        run: test "$CONFIRM_INPUT" = "CONFIRM"
+      - name: SSH diag
+        env:
+          SSHKEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          H: ${{ secrets.DEPLOY_HOST }}
+          U: ${{ secrets.DEPLOY_USER }}
+        run: |
+          mkdir -p ~/.ssh && printf '%s\n' "$SSHKEY" > ~/.ssh/id && chmod 600 ~/.ssh/id
+          SSH="ssh -i ~/.ssh/id -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=30 $U@$H"
+          $SSH bash <<'EOF'
+          set +e
+          echo "=== DNS resolve ==="
+          host live.titan007.com 2>&1 | head -3
+          host vip.titan007.com 2>&1 | head -3
+          host bf.titan007.com 2>&1 | head -3
+          
+          echo ""
+          echo "=== curl live.titan007.com (Crown filter) ==="
+          curl -o /dev/null -s -w "HTTP=%{http_code} time=%{time_total}s size=%{size_download}\n" --max-time 15 "https://live.titan007.com/index2in1.aspx?id=3" -H "User-Agent: Mozilla/5.0"
+          
+          echo ""
+          echo "=== curl vip.titan007.com AsianOdds sid=2910886 ==="
+          curl -o /dev/null -s -w "HTTP=%{http_code} time=%{time_total}s size=%{size_download}\n" --max-time 30 "https://vip.titan007.com/AsianOdds_n.aspx?id=2910886" -H "User-Agent: Mozilla/5.0" -H "Referer: https://bf.titan007.com/"
+          
+          echo ""
+          echo "=== curl vip.titan007.com OverDown sid=2910886 ==="
+          curl -o /dev/null -s -w "HTTP=%{http_code} time=%{time_total}s size=%{size_download}\n" --max-time 30 "https://vip.titan007.com/OverDown_n.aspx?id=2910886" -H "User-Agent: Mozilla/5.0" -H "Referer: https://bf.titan007.com/"
+          
+          echo ""
+          echo "=== curl bf.titan007.com AsianOdds ==="
+          curl -o /dev/null -s -w "HTTP=%{http_code} time=%{time_total}s size=%{size_download}\n" --max-time 30 "https://bf.titan007.com/AsianOdds_n.aspx?id=2910886" -H "User-Agent: Mozilla/5.0"
+          
+          echo ""
+          echo "=== V2 last successful fetch sample (grep 38 場) ==="
+          # 睇 V2 latest sweep 有邊 38 場 fetch 成功 - 揾 log
+          sudo ls -la /opt/footbreak/logs/*.log 2>&1 | tail -5
+          sudo tail -200 /opt/footbreak/logs/crown-sweep.log 2>/dev/null | grep -iE "fetch|http|titan" | head -20
+          EOF
