@@ -1,0 +1,72 @@
+name: Deploy history pagination
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "打 DEPLOY_HISTORY"
+        required: true
+        type: string
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/deploy-history-pagination-20260908.yml']
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  d:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          C: ${{ inputs.confirmation }}
+        run: if [ "$C" != "DEPLOY_HISTORY" ]; then exit 1; fi
+      - uses: actions/checkout@v4
+        if: github.event_name == 'workflow_dispatch'
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -T 15 -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          scp -o BatchMode=yes -o ConnectTimeout=30 -o StrictHostKeyChecking=accept-new \
+            deploy/v2-history-patched.html \
+            "$DEPLOY_USER@$DEPLOY_HOST:/tmp/history-new.html"
+          
+          ssh -o BatchMode=yes -o ConnectTimeout=30 -o StrictHostKeyChecking=accept-new \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          set -e
+          
+          echo "===== 1) Backup current ====="
+          cp /var/www/stage_engine_v2/history.html /var/www/stage_engine_v2/history.html.backup-$(date +%Y%m%d-%H%M) || true
+          ls -la /var/www/stage_engine_v2/history.html*
+          
+          echo
+          echo "===== 2) Install new ====="
+          install -m 644 -o www-data -g www-data /tmp/history-new.html /var/www/stage_engine_v2/history.html
+          
+          echo
+          echo "===== 3) Verify ====="
+          ls -la /var/www/stage_engine_v2/history.html
+          echo
+          grep -c "load-more" /var/www/stage_engine_v2/history.html
+          grep -c "closedShown" /var/www/stage_engine_v2/history.html
+          
+          echo
+          echo "===== 4) HTTP check ====="
+          curl -s -o /dev/null -w "history.html: HTTP %{http_code}, %{size_download} bytes\n" http://localhost/v2/history.html
+          REMOTE

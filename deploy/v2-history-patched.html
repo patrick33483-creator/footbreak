@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>皇冠系統V2 · 歷史紀錄</title>
+<style>
+:root {
+  --bg: #171614;
+  --surface: #1C1B19;
+  --surface-alt: #201F1D;
+  --border: #393836;
+  --text: #CDCCCA;
+  --text-muted: #797876;
+  --text-faint: #5A5957;
+  --accent: #4F98A3;
+  --shadow: #BB653B;
+  --stage-first: #4F98A3;
+  --stage-t30: #FDAB43;
+  --stage-t5: #D163A7;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang HK", "Noto Sans CJK TC", sans-serif;
+  background: var(--bg); color: var(--text);
+  padding: 24px; line-height: 1.5;
+  font-size: 14px;
+}
+h1 { font-size: 22px; font-weight: 600; margin-bottom: 4px; display: flex; align-items: center; justify-content: center; gap: 8px; }
+.subtitle { color: var(--text-muted); font-size: 13px; margin-bottom: 20px; text-align: center; }
+.nav { text-align: center; margin-bottom: 20px; }
+.shadow-badge {
+  display: inline-block; padding: 2px 8px; border-radius: 4px;
+  background: var(--shadow); color: var(--bg); font-weight: 600;
+  font-size: 11px; vertical-align: middle;
+}
+.nav a {
+  color: var(--text-muted); text-decoration: none; margin-right: 16px;
+  padding-bottom: 4px; font-size: 13px;
+}
+.nav a.active { color: var(--text); border-bottom: 2px solid var(--accent); }
+.nav a:hover { color: var(--text); }
+
+.hist-wrap { overflow-x: auto; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; }
+table.hist {
+  width: 100%; border-collapse: collapse; font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+table.hist th, table.hist td {
+  padding: 10px 12px; text-align: center; border-bottom: 1px solid var(--border);
+  vertical-align: middle; white-space: nowrap;
+}
+table.hist th {
+  background: var(--surface-alt); color: var(--text-muted);
+  font-weight: 600; font-size: 12px; text-transform: none;
+  border-bottom: 2px solid var(--border);
+  position: sticky; top: 0;
+}
+table.hist tbody tr:hover { background: var(--surface-alt); }
+table.hist tbody tr.in-progress { background: rgba(253, 171, 67, 0.06); }
+table.hist td.dim { color: var(--text-faint); }
+table.hist td.mono { font-variant-numeric: tabular-nums; }
+table.hist td.score { color: var(--text); font-weight: 600; text-align: center; }
+table.hist td.team-home { color: var(--text); }
+table.hist td.team-away { color: var(--text); }
+table.hist td.league { color: var(--text-muted); font-size: 12px; }
+table.hist td.kickoff { color: var(--text-muted); font-size: 12px; }
+.status-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--stage-t30); margin-right: 4px; vertical-align: middle; }
+.stage-hd-first { color: var(--stage-first); }
+.stage-hd-t30 { color: var(--stage-t30); }
+.stage-hd-t5 { color: var(--stage-t5); }
+.pick { color: var(--text); }
+.odds-paren { color: var(--text-muted); }
+.miss { color: var(--text-faint); }
+.empty {
+  padding: 40px; text-align: center; color: var(--text-muted);
+  background: var(--surface); border: 1px dashed var(--border);
+  border-radius: 8px;
+}
+.load-more-wrap { text-align: center; margin-top: 16px; }
+.load-more {
+  background: var(--surface); color: var(--text);
+  border: 1px solid var(--border); border-radius: 8px;
+  padding: 10px 20px; font-size: 13px; cursor: pointer;
+  font-family: inherit;
+}
+.load-more:hover { background: var(--surface-alt); border-color: var(--accent); color: var(--accent); }
+.load-more:disabled { opacity: 0.4; cursor: default; }
+.stats { color: var(--text-muted); font-size: 12px; text-align: center; margin: 12px 0; }
+footer { margin-top: 24px; color: var(--text-faint); font-size: 12px; text-align: center; }
+footer a { color: var(--accent); text-decoration: none; }
+</style>
+</head>
+<body>
+<h1>皇冠系統V2 · 歷史紀錄<span class="shadow-badge">SHADOW</span></h1>
+<div class="subtitle">按場次一 row 展示 <b>初盤預測 / T-30 / T-5</b> 三個時點嘅預測方向及賠率。</div>
+
+<div class="nav">
+  <a href="./">即時 dashboard</a>
+  <a href="./history.html" class="active">歷史紀錄</a>
+  <a href="./conditions.html">細分條件</a>
+</div>
+
+<div id="stats" class="stats"></div>
+<div id="matches"></div>
+<div id="loadmore-wrap" class="load-more-wrap"></div>
+
+<footer>
+  資料由 <code>/v2/crown/data.json</code> + <code>/v2/crown/results.json</code> 提供 · 每次載入都係最新快照
+</footer>
+
+<script>
+const PAGE = 20;
+let state = {
+  fixtures: [],   // sorted DESC
+  resultsMap: {},
+  closedShown: PAGE,  // 已完結嗰堆顯示幾多 (每次 load more +20)
+};
+
+function fmtOdds(x) { return (x == null) ? '—' : Number(x).toFixed(2); }
+
+function fmtKickoffHKT(iso) {
+  if (!iso) return '—';
+  try {
+    const d = new Date(iso);
+    return d.toLocaleString('zh-HK', {
+      timeZone: 'Asia/Hong_Kong', hour12: false,
+      month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit'
+    });
+  } catch { return iso; }
+}
+
+function esc(s) {
+  if (s == null) return '';
+  return String(s).replace(/[&<>"']/g, c => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  }[c]));
+}
+
+function stageCell(rec) {
+  if (!rec) return '<span class="miss">—</span>';
+  const label = rec.lead_label || rec.lead_market || '';
+  const odds = fmtOdds(rec.lead_odds);
+  if (!label && odds === '—') return '<span class="miss">—</span>';
+  return `<span class="pick">${esc(label)}</span> <span class="odds-paren">( ${odds} )</span>`;
+}
+
+// 進行中 = kickoff 已過, 但 results 冇 final score
+function isInProgress(fx, resultsMap) {
+  const kt = fx.kickoff_utc ? Date.parse(fx.kickoff_utc) : NaN;
+  if (isNaN(kt)) return false;
+  if (kt > Date.now()) return false;  // 未開波不算進行中
+  const rid = String(fx.id || '');
+  const rr = resultsMap[rid];
+  return !rr || !rr.score;
+}
+
+function renderRow(fx, resultsMap) {
+  const stages = fx.stages || {};
+  const rid = String(fx.id || '');
+  const rr = resultsMap[rid];
+  const score = rr ? rr.score : '';
+  const inProg = isInProgress(fx, resultsMap);
+  const cls = inProg ? ' class="in-progress"' : '';
+  const kickoffCell = inProg
+    ? `<span class="status-dot"></span>${fmtKickoffHKT(fx.kickoff_utc)}`
+    : fmtKickoffHKT(fx.kickoff_utc);
+  return `<tr${cls}>
+    <td class="kickoff mono">${kickoffCell}</td>
+    <td class="league">${esc(fx.league || '')}</td>
+    <td class="team-home">${esc(fx.home || '')}</td>
+    <td class="score">${score ? esc(score) : '<span class="miss">—</span>'}</td>
+    <td class="team-away">${esc(fx.away || '')}</td>
+    <td>${stageCell(stages['首預'])}</td>
+    <td>${stageCell(stages['T-30'])}</td>
+    <td>${stageCell(stages['T-5'])}</td>
+  </tr>`;
+}
+
+function renderTable(rowsFixtures, resultsMap) {
+  if (!rowsFixtures.length) {
+    return '<div class="empty">冇場次可顯示</div>';
+  }
+  const rows = rowsFixtures.map(fx => renderRow(fx, resultsMap)).join('');
+  return `<div class="hist-wrap">
+    <table class="hist">
+      <thead>
+        <tr>
+          <th>開賽</th>
+          <th>聯賽</th>
+          <th>主隊</th>
+          <th>比分</th>
+          <th>客隊</th>
+          <th class="stage-hd-first">初盤預測</th>
+          <th class="stage-hd-t30">T-30 預測</th>
+          <th class="stage-hd-t5">T-5 預測</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>
+  </div>`;
+}
+
+function render() {
+  const fx = state.fixtures;
+  const resultsMap = state.resultsMap;
+
+  // 未開波嘅場 (kickoff > now) 位於 index.html, 此頁排除
+  const now = Date.now();
+  const past = fx.filter(f => {
+    const t = f.kickoff_utc ? Date.parse(f.kickoff_utc) : NaN;
+    return !isNaN(t) && t <= now;
+  });
+  const inProgress = past.filter(f => isInProgress(f, resultsMap));
+  const closed = past.filter(f => !isInProgress(f, resultsMap));
+
+  // 規則 (用戶原話):
+  // - default 顯示 20 條 (kickoff DESC, in-progress 因為新自然排前)
+  // - 若 in-progress > 20: 全部 in-progress 顯示 (代替 20 限制)
+  // - 按 「顯示更多」 每次 +20
+  let displayList;
+  if (inProgress.length > PAGE) {
+    // 進行中太多 - 全顯 in-progress + closedShown 條 closed (若用戶已 load more)
+    const closedExtra = closed.slice(0, Math.max(0, state.closedShown - PAGE));
+    displayList = inProgress.concat(closedExtra);
+  } else {
+    // Default: 頭 state.closedShown 條 past (in-progress 先, 但 kickoff DESC 下於 past 若同時間 in-progress kickoff 新)
+    // 簡單: 直接 slice past DESC
+    displayList = past.slice(0, state.closedShown);
+  }
+
+  document.getElementById('stats').innerHTML =
+    `過去場次 <b>${past.length}</b> · 進行中/待結果 <b style="color:var(--stage-t30)">${inProgress.length}</b> · 已完結 <b>${closed.length}</b> · 顯示 <b>${displayList.length}</b> 條`;
+
+  document.getElementById('matches').innerHTML = renderTable(displayList, resultsMap);
+
+  // Load more button
+  const remaining = past.length - displayList.length;
+  const wrap = document.getElementById('loadmore-wrap');
+  if (remaining > 0) {
+    wrap.innerHTML = `<button class="load-more" onclick="loadMore()">顯示更多 (仲有 ${remaining} 條)</button>`;
+  } else {
+    wrap.innerHTML = past.length > 0
+      ? `<div class="stats" style="color:var(--text-faint)">已顯示全部 ${past.length} 條</div>`
+      : '';
+  }
+}
+
+function loadMore() {
+  state.closedShown += PAGE;
+  render();
+}
+window.loadMore = loadMore;
+
+async function load() {
+  try {
+    const [dataRes, resRes] = await Promise.all([
+      fetch('./data.json', { cache: 'no-store' }),
+      fetch('./results.json', { cache: 'no-store' }).catch(() => null)
+    ]);
+    if (!dataRes.ok) throw new Error(`data.json HTTP ${dataRes.status}`);
+    const data = await dataRes.json();
+    let resultsMap = {};
+    if (resRes && resRes.ok) {
+      try {
+        const rj = await resRes.json();
+        resultsMap = rj.results || {};
+      } catch {}
+    }
+    state.fixtures = (data.fixtures || []).slice().sort((a, b) =>
+      (b.kickoff_utc || '').localeCompare(a.kickoff_utc || '')
+    );
+    state.resultsMap = resultsMap;
+    // closedShown 保留 across 60s refresh
+    render();
+  } catch (e) {
+    document.getElementById('matches').innerHTML =
+      `<div class="empty">載入失敗：${esc(e.message)}</div>`;
+  }
+}
+
+load();
+setInterval(load, 60000);
+</script>
+</body>
+</html>
