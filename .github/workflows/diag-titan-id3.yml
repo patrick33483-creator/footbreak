@@ -1,0 +1,98 @@
+name: Diag titan id=3
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        required: true
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/diag-titan-id3.yml']
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+jobs:
+  d:
+    runs-on: ubuntu-latest
+    env:
+      E: ${{ github.event_name }}
+      C: ${{ inputs.confirmation }}
+    steps:
+      - name: guard
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then exit 0; fi
+          if [ "$C" != "DIAGT3" ]; then exit 1; fi
+      - name: ssh
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - name: fetch
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then exit 0; fi
+          SSH="ssh -o BatchMode=yes -o ConnectTimeout=20 -o StrictHostKeyChecking=accept-new $DEPLOY_USER@$DEPLOY_HOST"
+          $SSH 'sudo /opt/footbreak/.venv/bin/python3 << "PY"
+import json, urllib.request, re, sys
+d = json.load(open("/var/www/crown/data.json"))
+matches = d.get("matches", [])
+# Take upcoming only
+from datetime import datetime, timezone, timedelta
+now = datetime.now(timezone.utc)
+HKT = timezone(timedelta(hours=8))
+def ko(m):
+    for k in ("kickoff_hkt","kickoff_utc","kickoff"):
+        v = m.get(k)
+        if not v: continue
+        try:
+            dt = datetime.fromisoformat(str(v).replace(" ","T"))
+            if dt.tzinfo is None: dt = dt.replace(tzinfo=HKT)
+            return dt.astimezone(timezone.utc)
+        except: pass
+    return None
+upcoming = [m for m in matches if (k := ko(m)) and k > now]
+sids = [str(m.get("titan_match_id") or m.get("match_id") or "").strip() for m in upcoming]
+sids = [s for s in sids if s]
+print(f"upcoming: {len(upcoming)}, unique sids: {len(set(sids))}")
+# Sample 20
+import random
+random.seed(0)
+sample = random.sample(sids, min(20, len(sids)))
+UA = {"User-Agent":"Mozilla/5.0","Referer":"http://vip.titan007.com/"}
+has_id3 = 0
+no_id3 = 0
+err = 0
+results = []
+for sid in sample:
+    url = f"http://vip.titan007.com/AsianOdds_n.aspx?id={sid}"
+    try:
+        req = urllib.request.Request(url, headers=UA)
+        html = urllib.request.urlopen(req, timeout=15).read().decode("gb2312","replace")
+        # Check if company id=3 row exists with valid odds
+        # Titan format: game_[N]=[cid,cname,...odds...]
+        rows = re.findall(r"game_\d+\s*=\s*Array\(([^)]+)\)", html)
+        has3 = False
+        for r in rows:
+            parts = r.split(",")
+            if parts and parts[0].strip() == "3":
+                # check odds not empty
+                if len(parts) > 5 and any(p.strip().strip("\x27\x22") for p in parts[3:8]):
+                    has3 = True
+                    break
+        if has3:
+            has_id3 += 1
+        else:
+            no_id3 += 1
+        results.append((sid, "Y" if has3 else "N", len(html)))
+    except Exception as e:
+        err += 1
+        results.append((sid, "ERR", str(e)[:40]))
+print(f"sample={len(sample)} has_id3={has_id3} no_id3={no_id3} err={err}")
+for r in results[:20]:
+    print(r)
+PY'
