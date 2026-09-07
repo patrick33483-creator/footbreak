@@ -1,0 +1,44 @@
+name: V3 Deploy Discovery
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'type CONFIRM'
+        required: true
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      CONFIRM_INPUT: ${{ github.event.inputs.confirm }}
+    steps:
+      - name: Guard
+        run: |
+          test "$CONFIRM_INPUT" = "CONFIRM" || { echo "no confirm"; exit 1; }
+      - uses: actions/checkout@v4
+      - name: SSH copy + test
+        env:
+          SSHKEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          H: ${{ secrets.DEPLOY_HOST }}
+          U: ${{ secrets.DEPLOY_USER }}
+        run: |
+          mkdir -p ~/.ssh && printf '%s\n' "$SSHKEY" > ~/.ssh/id && chmod 600 ~/.ssh/id
+          
+          scp -i ~/.ssh/id -o StrictHostKeyChecking=accept-new -o BatchMode=yes \
+            crown_v3/discovery.py $U@$H:/opt/crown-v3/src/discovery.py
+          
+          SSH="ssh -i ~/.ssh/id -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=30 $U@$H"
+          $SSH bash <<'EOF'
+          set -e
+          echo "=== Test discovery ==="
+          cd /opt/crown-v3
+          venv/bin/python src/discovery.py --mode discover --limit 5 2>&1 | head -60
+          
+          echo ""
+          echo "=== Test fetch sid 2910886 (維多利亞) ==="
+          venv/bin/python src/discovery.py --mode fetch --sid 2910886 2>&1 | head -30
+          EOF
