@@ -143,3 +143,13 @@ jobs:
           echo '=== Titan upcoming source (used by V2 or radar) ==='
           $SSH 'sudo find /opt -maxdepth 5 -name "*.py" 2>&1 | xargs sudo grep -l -iE "titan|nowgoal|next_" 2>/dev/null | head -10'
           $SSH 'sudo ls /var/www/stage_engine_v2/ 2>&1'
+          echo
+          echo '=== titan_today.json content ==='
+          $SSH 'python3 -c "import json; d=json.load(open(\"/var/www/stage_engine_v2/titan_today.json\")); print(\"type:\", type(d).__name__); print(\"top keys:\", list(d.keys()) if isinstance(d, dict) else \"list len=\"+str(len(d))); import sys; sys.stdout.write(json.dumps(d if isinstance(d,list) else d, ensure_ascii=False, indent=2)[:3000])"'
+          echo
+          echo '=== stage_engine_v2 project dir ==='
+          $SSH 'sudo ls /opt/footbreak/stage_engine_v2/ 2>&1 | head -30'
+          $SSH 'sudo cat /opt/footbreak/deploy/run.sh 2>&1 | head -60'
+          echo
+          echo '=== recent t30 log ==='
+          $SSH 'journalctl -u footbreak-t30.service --no-pager -n 20 --since "1 hour ago" 2>&1 | tail -25'
