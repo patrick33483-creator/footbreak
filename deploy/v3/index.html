@@ -74,64 +74,38 @@
     </table>
   </div>
   <footer>
-    數據來源：皇冠 V2 三階段預測 (首預 / T-30 / T-5) · 只顯示未開賽 (kickoff > 現時)
+    數據來源：Titan 皇冠今日未開波場 · V2 三階段預測 (首預 / T-30 / T-5) join by sid
   </footer>
   <script>
-    const fmtKO = (iso) => {
-      if (!iso) return "—";
-      const d = new Date(iso);
-      const m = d.getMonth()+1;
-      const dd = String(d.getDate()).padStart(2,"0");
-      const hh = String(d.getHours()).padStart(2,"0");
-      const mm = String(d.getMinutes()).padStart(2,"0");
-      return `${m}-${dd} ${hh}:${mm}`;
-    };
     function escapeHtml(s) { return String(s ?? "").replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
-    function predCell(stage) {
-      if (!stage) return '<span class="empty">—</span>';
-      const label = stage.lead_label || "—";
-      const odds = stage.lead_odds != null ? stage.lead_odds.toFixed(2) : "—";
-      const prob = stage.lead_prob != null ? (stage.lead_prob*100).toFixed(1)+"%" : "—";
-      const ev = stage.lead_ev != null ? (stage.lead_ev>=0?"+":"") + (stage.lead_ev*100).toFixed(2)+"%" : "—";
-      const conv = stage.conviction != null ? stage.conviction.toFixed(1) : "—";
-      const cls = stage.publish_decision ? "pred-published" : "pred-below";
-      return `<div class="pred-cell">
-        <div class="pred-label ${cls}">${escapeHtml(label)}</div>
-        <div class="pred-meta">賠 ${odds} · 概 ${prob} · EV ${ev}</div>
-        <div class="pred-meta">信 ${conv}</div>
-      </div>`;
+    function pred(v) {
+      if (!v || v === "-" || v === "—") return '<span class="empty">—</span>';
+      return `<span class="pred-label">${escapeHtml(v)}</span>`;
     }
     let allData = [];
     function render() {
       const q = document.getElementById("filter").value.toLowerCase();
-      const now = Date.now();
       const filtered = allData.filter(m => {
-        const ko = m.kickoff_utc ? new Date(m.kickoff_utc).getTime() : 0;
-        if (ko <= now) return false;
         return !q || (String(m.league||"") + String(m.home||"") + String(m.away||"")).toLowerCase().includes(q);
       });
-      filtered.sort((a,b) => new Date(a.kickoff_utc).getTime() - new Date(b.kickoff_utc).getTime());
-      document.getElementById("count").textContent = `共 ${filtered.length} 場（未開賽）`;
-      const rows = filtered.map(m => {
-        const s = m.stages || {};
-        return `<tr>
-          <td class="ko">${fmtKO(m.kickoff_hkt || m.kickoff_utc)}</td>
+      document.getElementById("count").textContent = `共 ${filtered.length} 場（未開波）`;
+      const rows = filtered.map(m => `<tr>
+          <td class="ko">${escapeHtml(m.kickoff)}</td>
           <td class="league">${escapeHtml(m.league)}</td>
           <td class="team">${escapeHtml(m.home)}</td>
           <td class="team">${escapeHtml(m.away)}</td>
-          <td>${predCell(s["首預"])}</td>
-          <td>${predCell(s["T-30"])}</td>
-          <td>${predCell(s["T-5"])}</td>
-        </tr>`;
-      }).join("");
-      document.getElementById("rows").innerHTML = rows || '<tr><td colspan="7" style="text-align:center;padding:40px;color:#64748b">暫無未開賽記錄</td></tr>';
+          <td>${pred(m.first)}</td>
+          <td>${pred(m.t30)}</td>
+          <td>${pred(m.t5)}</td>
+        </tr>`).join("");
+      document.getElementById("rows").innerHTML = rows || '<tr><td colspan="7" style="text-align:center;padding:40px;color:#64748b">暫無未開波記錄</td></tr>';
     }
     async function load() {
       try {
-        const d = await fetch("./data.json?_=" + Date.now()).then(r => r.json());
-        allData = d.fixtures || [];
+        const d = await fetch("./matches.json?_=" + Date.now()).then(r => r.json());
+        allData = d.matches || [];
         document.getElementById("status").textContent =
-          `總場數 ${d.fixtures_count || allData.length} · 更新 ${new Date(d.generated_at_hkt || d.generated_at_utc).toLocaleTimeString('zh-HK')}`;
+          `總場 ${d.count || allData.length} · 更新 ${new Date(d.generated_utc).toLocaleTimeString('zh-HK')}`;
         render();
       } catch (err) {
         document.getElementById("status").textContent = "載入錯誤：" + err.message;

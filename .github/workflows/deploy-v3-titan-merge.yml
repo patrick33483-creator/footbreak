@@ -1,0 +1,93 @@
+name: Deploy V3 titan merge
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation: {description: "打 DEPLOYV3TITAN", required: true, type: string}
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/deploy-v3-titan-merge.yml']
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  d:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: diagnose/crown-v2-pending-20260906
+      - env:
+          E: ${{ github.event_name }}
+          C: ${{ inputs.confirmation }}
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then exit 0; fi
+          if [ "$C" != "DEPLOYV3TITAN" ]; then exit 1; fi
+      - env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          if [ "${{ github.event_name }}" != "workflow_dispatch" ]; then exit 0; fi
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+          SSH="ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=30 -i ~/.ssh/id_ed25519 $DEPLOY_USER@$DEPLOY_HOST"
+          SCP="scp -o StrictHostKeyChecking=accept-new -i ~/.ssh/id_ed25519"
+
+          # 1) scp merge script + new index
+          $SCP deploy/v3/merge_titan_v2.py "$DEPLOY_USER@$DEPLOY_HOST:/tmp/merge_titan_v2.py"
+          $SCP deploy/v3/index.html "$DEPLOY_USER@$DEPLOY_HOST:/tmp/index-v3-new.html"
+
+          # 2) install script + service + timer + index (all via sudo)
+          $SSH 'sudo install -D -m 755 /tmp/merge_titan_v2.py /opt/footbreak/deploy/v3/merge_titan_v2.py'
+          $SSH 'sudo install -D -m 644 /tmp/index-v3-new.html /var/www/crownsystem-v3/index.html.new && sudo cp /var/www/crownsystem-v3/index.html /var/www/crownsystem-v3/index.html.backup-$(date +%Y%m%d-%H%M) 2>/dev/null; sudo mv /var/www/crownsystem-v3/index.html.new /var/www/crownsystem-v3/index.html'
+
+          # 3) write systemd unit
+          cat > /tmp/crownsystem-v3-merge.service <<'UNIT'
+          [Unit]
+          Description=crownsystem-v3 · Titan+V2 merge -> matches.json
+          After=network-online.target
+
+          [Service]
+          Type=oneshot
+          ExecStart=/usr/bin/python3 /opt/footbreak/deploy/v3/merge_titan_v2.py
+          TimeoutStartSec=30
+          UNIT
+          cat > /tmp/crownsystem-v3-merge.timer <<'UNIT'
+          [Unit]
+          Description=crownsystem-v3 merge every 5 min
+
+          [Timer]
+          OnBootSec=1min
+          OnUnitActiveSec=5min
+          Unit=crownsystem-v3-merge.service
+
+          [Install]
+          WantedBy=timers.target
+          UNIT
+          $SCP /tmp/crownsystem-v3-merge.service "$DEPLOY_USER@$DEPLOY_HOST:/tmp/"
+          $SCP /tmp/crownsystem-v3-merge.timer "$DEPLOY_USER@$DEPLOY_HOST:/tmp/"
+          $SSH 'sudo install -m 644 /tmp/crownsystem-v3-merge.service /etc/systemd/system/crownsystem-v3-merge.service'
+          $SSH 'sudo install -m 644 /tmp/crownsystem-v3-merge.timer /etc/systemd/system/crownsystem-v3-merge.timer'
+          $SSH 'sudo systemctl daemon-reload'
+          $SSH 'sudo systemctl enable --now crownsystem-v3-merge.timer'
+
+          # 4) run once immediately to populate matches.json
+          $SSH 'sudo systemctl start crownsystem-v3-merge.service'
+          sleep 3
+          $SSH 'sudo systemctl status crownsystem-v3-merge.service --no-pager -l | tail -20'
+          echo
+          echo '=== matches.json head ==='
+          $SSH 'ls -la /var/www/crownsystem-v3/matches.json; head -c 800 /var/www/crownsystem-v3/matches.json; echo'
+          echo
+          echo '=== verify URLs ==='
+          $SSH 'curl -sS -o /dev/null -w "index=%{http_code}\n" -u radar:toberich http://127.0.0.1/crownsystem-v3/'
+          $SSH 'curl -sS -o /dev/null -w "matches.json=%{http_code}\n" -u radar:toberich http://127.0.0.1/crownsystem-v3/matches.json'
