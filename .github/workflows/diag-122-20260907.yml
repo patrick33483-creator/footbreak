@@ -25,20 +25,13 @@ jobs:
           install -m 700 -d ~/.ssh
           printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
-          for i in 1 2 3; do
-            if ssh-keyscan -T 15 -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/tmp/ks.err; then
-              echo "keyscan ok (attempt $i)"
-              break
-            fi
-            echo "keyscan attempt $i failed:"; cat /tmp/ks.err
-            sleep 5
-          done
-          test -s ~/.ssh/known_hosts
+          # keyscan often silent-fails on GitHub runners; rely on accept-new instead
+          ssh-keyscan -T 15 -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null || echo "keyscan failed, using accept-new"
       - env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
         run: |
-          ssh -o BatchMode=yes -o ConnectTimeout=30 \
+          ssh -o BatchMode=yes -o ConnectTimeout=30 -o StrictHostKeyChecking=accept-new \
             "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
           set -e
           python3 <<'PY'
