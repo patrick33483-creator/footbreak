@@ -1,0 +1,57 @@
+name: Diag v2 fn
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        required: true
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/diag-v2-fn.yml']
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+jobs:
+  d:
+    runs-on: ubuntu-latest
+    env:
+      E: ${{ github.event_name }}
+      C: ${{ inputs.confirmation }}
+    steps:
+      - name: guard
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then exit 0; fi
+          if [ "$C" != "DIAGV2F2" ]; then exit 1; fi
+      - name: ssh
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - name: diag
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then exit 0; fi
+          SSH="ssh -o BatchMode=yes -o ConnectTimeout=20 -o StrictHostKeyChecking=accept-new $DEPLOY_USER@$DEPLOY_HOST"
+          echo '=== apply_opening_model L266 + next 80 lines ==='
+          $SSH 'sudo sed -n "266,346p" /opt/footbreak/crown/opening_model.py'
+          echo
+          echo '=== apply_opening_model call site engine.py L1600-1670 ==='
+          $SSH 'sudo sed -n "1600,1670p" /opt/footbreak/crown/engine.py'
+          echo
+          echo '=== crown_prices_from_pages L293-330 ==='
+          $SSH 'sudo sed -n "293,340p" /opt/footbreak/crown/titan.py'
+          echo
+          echo '=== TitanClient.crown_prices method (grep for def crown_prices) ==='
+          $SSH 'sudo grep -n "def crown_prices\|def snapshot\|def fixture\|def _asian\|def _total" /opt/footbreak/crown/titan.py 2>/dev/null | head -20'
+          echo
+          echo '=== current stage_engine_v2 predictor.py has build_prediction? ==='
+          $SSH 'sudo grep -n "def build_prediction" /opt/footbreak/stage_engine_v2/predictor.py 2>/dev/null'
+          $SSH 'sudo sed -n "148,220p" /opt/footbreak/stage_engine_v2/predictor.py'
+          echo
+          echo '=== engine.py tick entry (what runs each minute) ==='
+          $SSH 'sudo grep -n "def run_tick\|def tick\|def run_sweep\|def sweep" /opt/footbreak/crown/engine.py 2>/dev/null | head -10'
