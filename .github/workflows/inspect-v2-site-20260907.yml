@@ -1,0 +1,71 @@
+name: Inspect crown v2 site layout
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "打 INSPECTV2"
+        required: true
+        type: string
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/inspect-v2-site-20260907.yml']
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  i:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - env:
+          E: ${{ github.event_name }}
+          C: ${{ inputs.confirmation }}
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then exit 0; fi
+          if [ "$C" != "INSPECTV2" ]; then exit 1; fi
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          set +e
+          echo "===== /var/www tree ====="
+          ls -la /var/www/ 2>&1 | head -30
+          echo
+          for d in /var/www/*/; do
+              echo "== $d =="
+              ls -la "$d" 2>&1 | head -25
+              echo
+          done
+          echo "===== find v2 dirs / index.html ====="
+          find /var/www -maxdepth 4 -type d -name "*v2*" 2>&1 | head -20
+          find /var/www -maxdepth 4 -type f -name "index.html" 2>&1 | head -20
+          echo
+          echo "===== nginx sites-enabled ====="
+          ls /etc/nginx/sites-enabled/ 2>&1
+          echo
+          for f in /etc/nginx/sites-enabled/*; do
+              echo "-- $f --"
+              cat "$f" 2>&1 | head -60
+              echo
+          done
+          echo "===== find crown v2 html files ====="
+          find /var/www/crown -maxdepth 4 -type f \( -name "*.html" -o -name "*.js" -o -name "*.css" \) 2>&1 | head -30
+          REMOTE
