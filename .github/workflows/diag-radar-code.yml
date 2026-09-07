@@ -1,0 +1,57 @@
+name: Diag radar code
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        required: true
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/diag-radar-code.yml']
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+jobs:
+  d:
+    runs-on: ubuntu-latest
+    env:
+      E: ${{ github.event_name }}
+      C: ${{ inputs.confirmation }}
+    steps:
+      - name: guard
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then exit 0; fi
+          if [ "$C" != "RCODE" ]; then exit 1; fi
+      - name: ssh
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - name: diag
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then exit 0; fi
+          SSH="ssh -o BatchMode=yes -o ConnectTimeout=20 -o StrictHostKeyChecking=accept-new $DEPLOY_USER@$DEPLOY_HOST"
+          echo '=== crown-radar server providers dir ==='
+          $SSH 'sudo ls /opt/crown-radar/server/providers/ 2>&1'
+          echo
+          echo '=== main titan-corners.ts (first 100 lines) ==='
+          $SSH 'sudo head -100 /opt/crown-radar/server/providers/titan-corners.ts 2>&1'
+          echo
+          echo '=== search main crown provider files ==='
+          $SSH 'sudo grep -rlE "AsianOdds|OverDown|crown.*asian|titan.*asian" /opt/crown-radar/server/ 2>/dev/null | head -10'
+          echo
+          echo '=== check for puppeteer/playwright ==='
+          $SSH 'sudo grep -rE "puppeteer|playwright|chromium|axios|fetch\(" /opt/crown-radar/server/ 2>/dev/null | grep -v test | head -20'
+          echo
+          echo '=== package.json dependencies ==='
+          $SSH 'sudo cat /opt/crown-radar/package.json 2>&1 | head -60'
+          echo
+          echo '=== crown-radar services running ==='
+          $SSH 'sudo docker ps 2>&1 | grep -iE "crown|radar" | head -10'
+          $SSH 'sudo systemctl list-units --all --no-pager 2>&1 | grep -iE "crown-radar" | head -5'
