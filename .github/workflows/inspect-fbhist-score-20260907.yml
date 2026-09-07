@@ -1,0 +1,137 @@
+name: Find score field in fbhist rows + result_sync
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "打 FBSCORE"
+        required: true
+        type: string
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/inspect-fbhist-score-20260907.yml']
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  i:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - env:
+          E: ${{ github.event_name }}
+          C: ${{ inputs.confirmation }}
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then exit 0; fi
+          if [ "$C" != "FBSCORE" ]; then exit 1; fi
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          set +e
+          echo "===== 1) 完整 first row 所有 keys ====="
+          sudo python3 -c "
+          import json
+          d = json.load(open('/var/lib/footbreak/crown/prediction_history.json'))
+          rows = d['rows']
+          print('total rows:', len(rows))
+          print('all keys of row[0]:', sorted(rows[0].keys()))
+          print()
+          print('all keys of row[1]:', sorted(rows[1].keys()))
+          "
+          echo
+          echo "===== 2) 揾一個 row score 唔係 null ====="
+          sudo python3 -c "
+          import json
+          d = json.load(open('/var/lib/footbreak/crown/prediction_history.json'))
+          for r in d['rows']:
+              # 遍歷所有 key 揾包含 score/goal 嘅 field
+              for k in r.keys():
+                  if any(t in k.lower() for t in ['score', 'goal']):
+                      if r[k] not in (None, ''):
+                          print(f'row: home={r.get(\"home\")}, away={r.get(\"away\")}, kickoff={r.get(\"kickoff\")}')
+                          print(f'  {k}: {r[k]!r}')
+                          break
+              else:
+                  continue
+              break
+          "
+          echo
+          echo "===== 3) sample all *score* keys across 500 rows ====="
+          sudo python3 -c "
+          import json
+          from collections import Counter
+          d = json.load(open('/var/lib/footbreak/crown/prediction_history.json'))
+          k_hits = Counter()
+          non_null_hits = Counter()
+          for r in d['rows'][:500]:
+              for k, v in r.items():
+                  if any(t in k.lower() for t in ['score', 'goal', 'result', 'final']):
+                      k_hits[k] += 1
+                      if v not in (None, ''):
+                          non_null_hits[k] += 1
+          print('all keys (first 500 rows):')
+          for k, n in k_hits.most_common():
+              nn = non_null_hits.get(k, 0)
+              print(f'  {k}: total={n}, non_null={nn}')
+          "
+          echo
+          echo "===== 4) result_sync top ====="
+          sudo python3 -c "
+          import json
+          d = json.load(open('/var/lib/footbreak/crown/prediction_history.json'))
+          rs = d.get('result_sync', {})
+          print('result_sync keys:', list(rs.keys())[:20] if isinstance(rs, dict) else type(rs).__name__)
+          if isinstance(rs, dict):
+              for k in list(rs.keys())[:3]:
+                  print(f'  {k}: {json.dumps(rs[k], ensure_ascii=False)[:400]}')
+          "
+          echo
+          echo "===== 5) reviewed_result_backfills top ====="
+          sudo python3 -c "
+          import json
+          d = json.load(open('/var/lib/footbreak/crown/prediction_history.json'))
+          rb = d.get('reviewed_result_backfills', {})
+          print('type:', type(rb).__name__)
+          if isinstance(rb, dict):
+              print('len:', len(rb))
+              for k in list(rb.keys())[:3]:
+                  print(f'  key={k!r}, val={json.dumps(rb[k], ensure_ascii=False)[:400]}')
+          "
+          echo
+          echo "===== 6) automatic_results.json (stage_engine_v2) ====="
+          ls -la /var/lib/footbreak/stage_engine_v2/ 2>/dev/null
+          if [ -f /var/lib/footbreak/stage_engine_v2/automatic_results.json ]; then
+            sudo python3 -c "
+          import json
+          d = json.load(open('/var/lib/footbreak/stage_engine_v2/automatic_results.json'))
+          print('top keys:', list(d.keys()) if isinstance(d, dict) else type(d).__name__)
+          if isinstance(d, dict) and 'results' in d:
+              rs = d['results']
+              print('results type:', type(rs).__name__, 'len:', len(rs) if hasattr(rs, '__len__') else '?')
+              for k in list(rs.keys())[:3] if isinstance(rs, dict) else rs[:3]:
+                  v = rs[k] if isinstance(rs, dict) else k
+                  print(f'  {k!r}: {json.dumps(v, ensure_ascii=False)[:500]}' if isinstance(rs, dict) else json.dumps(v, ensure_ascii=False)[:500])
+          "
+          fi
+          echo
+          echo "===== 7) 揾其他 result JSON 檔 ====="
+          find /var/lib/footbreak -type f -name "*result*" 2>/dev/null | head -20
+          REMOTE
