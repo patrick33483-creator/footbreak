@@ -1,0 +1,109 @@
+name: Diag v2 sid vs radar
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation: {description: "打 DIAGSID", required: true, type: string}
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/diag-v2-sid.yml']
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  d:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - env:
+          E: ${{ github.event_name }}
+          C: ${{ inputs.confirmation }}
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then exit 0; fi
+          if [ "$C" != "DIAGSID" ]; then exit 1; fi
+      - env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          if [ "${{ github.event_name }}" != "workflow_dispatch" ]; then exit 0; fi
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+          SSH="ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=30 -i ~/.ssh/id_ed25519 $DEPLOY_USER@$DEPLOY_HOST"
+          $SSH 'python3 <<PY
+import json
+from datetime import datetime, timezone
+now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+now_iso = datetime.now(timezone.utc).isoformat()
+print(f"now: {now_iso}")
+print()
+
+d = json.load(open("/var/www/stage_engine_v2/data.json"))
+fx = d.get("fixtures", [])
+print(f"V2 fixtures: {len(fx)}")
+# Check id format + kickoff distribution
+future = past = no_time = 0
+ids_sample = []
+for i, f in enumerate(fx):
+    if len(ids_sample) < 3: ids_sample.append({"id": f.get("id"), "source": f.get("source"), "home": f.get("home"), "kickoff_utc": f.get("kickoff_utc")})
+    k = f.get("kickoff_utc")
+    if not k: no_time += 1; continue
+    try:
+        t = datetime.fromisoformat(k.replace("Z","+00:00"))
+        if t.timestamp()*1000 > now_ms: future += 1
+        else: past += 1
+    except: no_time += 1
+print(f"V2 kickoff dist: future={future} past={past} no_time={no_time}")
+print("V2 sample ids:", json.dumps(ids_sample, ensure_ascii=False))
+print()
+
+# Check radar via localhost:5002
+import urllib.request
+try:
+    with urllib.request.urlopen("http://127.0.0.1:5002/api/matches", timeout=5) as r:
+        radar = json.load(r)
+    print(f"radar /api/matches: {len(radar)} upcoming")
+    if radar:
+        print("radar sample:", json.dumps({k: radar[0].get(k) for k in ["sid","league","home","away","kickoff_utc"]}, ensure_ascii=False))
+        # Convert kickoff_utc (ms) to iso
+        t = datetime.fromtimestamp(radar[0]["kickoff_utc"]/1000, tz=timezone.utc)
+        print(f"  kickoff_utc as ISO: {t.isoformat()}")
+except Exception as e:
+    print(f"radar API error: {e}")
+print()
+
+# Check if any V2 fixture id matches a radar sid
+try:
+    radar_sids = {str(m["sid"]) for m in radar}
+    v2_ids = {str(f.get("id")) for f in fx}
+    common = radar_sids & v2_ids
+    print(f"radar sids: {len(radar_sids)}, v2 ids: {len(v2_ids)}, intersect: {len(common)}")
+    if common:
+        print(f"  sample common: {list(common)[:3]}")
+except: pass
+
+# Try match by (home, away)
+radar_by_ha = {}
+for m in radar:
+    key = (str(m.get("home","")).strip(), str(m.get("away","")).strip())
+    radar_by_ha[key] = m
+v2_by_ha = {}
+for f in fx:
+    key = (str(f.get("home","")).strip(), str(f.get("away","")).strip())
+    v2_by_ha[key] = f
+common_ha = set(radar_by_ha) & set(v2_by_ha)
+print(f"(home,away) match: {len(common_ha)}")
+if common_ha:
+    k = list(common_ha)[0]
+    print(f"  sample: {k}")
+    print(f"    radar kickoff: {datetime.fromtimestamp(radar_by_ha[k][\"kickoff_utc\"]/1000, tz=timezone.utc).isoformat()}")
+    print(f"    v2 kickoff:    {v2_by_ha[k].get(\"kickoff_utc\")}")
+    print(f"    v2 stages: {list(v2_by_ha[k].get(\"stages\",{}).keys())}")
+PY'
