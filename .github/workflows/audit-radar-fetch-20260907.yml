@@ -1,0 +1,86 @@
+name: Audit radar hkjc-result-query + settlement fetch
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "打 AUDITFETCH"
+        required: true
+        type: string
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/audit-radar-fetch-20260907.yml']
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  a:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 6
+    steps:
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - env:
+          E: ${{ github.event_name }}
+          C: ${{ inputs.confirmation }}
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then exit 0; fi
+          if [ "$C" != "AUDITFETCH" ]; then exit 1; fi
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          set +e
+          echo "===== A) hkjc-result-query.ts 完整內容 ====="
+          cat /opt/crown-radar/server/providers/hkjc-result-query.ts 2>&1 | head -200
+          
+          echo
+          echo "===== B) settlement.ts 完整內容 ====="
+          cat /opt/crown-radar/server/lib/settlement.ts 2>&1 | head -200
+          
+          echo
+          echo "===== C) providers/titan-corners.ts (fetch URL) ====="
+          grep -n "http\|fetch\|url\|axios\|nowscore\|titan007\|150.\|156." /opt/crown-radar/server/providers/titan-corners.ts | head -30
+          
+          echo
+          echo "===== D) providers/hkjc.ts (fetch URL) ====="
+          grep -n "http\|fetch\|url\|axios\|betting\|hkjc.com" /opt/crown-radar/server/providers/hkjc.ts | head -30
+          
+          echo
+          echo "===== E) 有冇 script/scripts populate results ====="
+          ls /opt/crown-radar/script/ 2>&1
+          ls /opt/crown-radar/scripts/ 2>&1
+          
+          echo
+          echo "===== F) container process (running command) ====="
+          docker inspect crown-radar-v2 --format '{{json .Config.Cmd}} {{json .Config.Entrypoint}}' 2>&1
+          docker logs crown-radar-v2 --tail 30 2>&1 | head -40
+          
+          echo
+          echo "===== G) titan007 sample query 睇下有冇 score endpoint ====="
+          grep -rn "score\|scoreboard\|1x2\|full-time\|final" /opt/crown-radar/server/providers/*.ts 2>&1 | head -20
+          
+          echo
+          echo "===== H) footbreak 端有無類似 titan result fetcher? ====="
+          docker ps --format '{{.Names}}' | head -5
+          docker exec footbreak-app-1 ls /app/ 2>&1 | head -10
+          # 揾 footbreak 內部 result fetcher
+          find /home/patrick/repos/footbreak/crown -name "*result*" -o -name "*settle*" 2>/dev/null | head -10
+          find /var/lib/footbreak -name "*result*" 2>/dev/null | head -10
+          
+          REMOTE
