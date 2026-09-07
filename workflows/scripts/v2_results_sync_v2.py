@@ -10,6 +10,7 @@ Schema: {"results": {match_id: {score, home, away, source, verified_at}},
 """
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import sys
@@ -40,15 +41,15 @@ def _log(msg: str) -> None:
     print(f"[{datetime.now(timezone.utc).isoformat()}] {msg}", flush=True)
 
 
-def _fetch_titan_results() -> tuple[dict[str, dict], int, list[str]]:
-    """Fetch titan007 Over pages for today + yesterday + 2 days ago (HKT).
+def _fetch_titan_results(lookback_days: int = 3) -> tuple[dict[str, dict], int, list[str]]:
+    """Fetch titan007 Over pages for today + previous N-1 days (HKT).
 
     Returns (results_by_titan_id, total_rows, dates_fetched).
     """
     now = datetime.now(HKT)
     dates = {
         (now - timedelta(days=d)).strftime("%Y%m%d")
-        for d in range(0, 3)  # today, yesterday, day-before
+        for d in range(0, lookback_days)
     }
     _log(f"titan007 fetch dates: {sorted(dates)}")
     try:
@@ -181,11 +182,11 @@ def _load_v2_fixtures() -> list[dict]:
     return d.get("fixtures") or []
 
 
-def build_results() -> dict:
+def build_results(lookback_days: int = 3) -> dict:
     started = time.time()
 
     # 1. Primary: titan007 Over pages
-    titan_results, titan_rows, dates = _fetch_titan_results()
+    titan_results, titan_rows, dates = _fetch_titan_results(lookback_days=lookback_days)
 
     # 2. HKJC → titan mapping (from prediction_history)
     hkjc_to_titan = _load_hkjc_to_titan_map()
@@ -277,7 +278,44 @@ def atomic_write(path: Path, data: dict) -> None:
 
 
 def main() -> int:
-    payload = build_results()
+    parser = argparse.ArgumentParser(description="v2 results sync 方案 E")
+    parser.add_argument(
+        "--lookback-days",
+        type=int,
+        default=3,
+        help="How many past days of titan007 Over pages to fetch (default: 3)",
+    )
+    parser.add_argument(
+        "--merge",
+        action="store_true",
+        help="Merge with existing results.json instead of replacing (for backfill mode)",
+    )
+    args = parser.parse_args()
+
+    payload = build_results(lookback_days=args.lookback_days)
+
+    if args.merge and OUT_PATH.exists():
+        try:
+            existing = json.loads(OUT_PATH.read_text(encoding="utf-8"))
+            old_results = existing.get("results", {})
+            new_results = payload["results"]
+            merged = dict(old_results)
+            merged_added = 0
+            merged_replaced = 0
+            for k, v in new_results.items():
+                if k not in merged:
+                    merged_added += 1
+                elif merged[k].get("source") != v.get("source"):
+                    merged_replaced += 1
+                merged[k] = v
+            payload["results"] = merged
+            payload["stats"]["merged_from_previous"] = len(old_results)
+            payload["stats"]["merged_added"] = merged_added
+            payload["stats"]["merged_replaced"] = merged_replaced
+            _log(f"merged mode: prev={len(old_results)} new={len(new_results)} final={len(merged)}")
+        except Exception as e:
+            _log(f"merge failed: {e}, writing new anyway")
+
     atomic_write(OUT_PATH, payload)
     stats = payload["stats"]
     meta = payload["meta"]
@@ -288,7 +326,7 @@ def main() -> int:
         f"history_fb={stats['matched_history_fallback']} "
         f"auto_fb={stats['matched_auto_fallback']} "
         f"no_result={stats['no_result']} / total={stats['total_fixtures']} "
-        f"elapsed={meta['build_elapsed_s']}s"
+        f"lookback={args.lookback_days}d elapsed={meta['build_elapsed_s']}s"
     )
     return 0
 
