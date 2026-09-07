@@ -1,0 +1,50 @@
+name: Diag crown data format
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        required: true
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/diag-crown-data.yml']
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+jobs:
+  d:
+    runs-on: ubuntu-latest
+    env:
+      E: ${{ github.event_name }}
+      C: ${{ inputs.confirmation }}
+    steps:
+      - name: guard
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then exit 0; fi
+          if [ "$C" != "DIAGCD" ]; then exit 1; fi
+      - name: ssh
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - name: diag
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then exit 0; fi
+          SSH="ssh -o BatchMode=yes -o ConnectTimeout=20 -o StrictHostKeyChecking=accept-new $DEPLOY_USER@$DEPLOY_HOST"
+          echo '=== find crown data files ==='
+          $SSH 'sudo find /opt/footbreak /var/lib/footbreak /var/www -name "data.json" -o -name "crown*.json" 2>/dev/null | head -20'
+          echo
+          echo '=== DEFAULT_CROWN_DATA_PATH ==='
+          $SSH 'sudo grep -n DEFAULT_CROWN_DATA_PATH /opt/footbreak/stage_engine_v2/fixtures.py 2>&1 | head -5'
+          echo
+          echo '=== fixtures.py head 60 ==='
+          $SSH 'sudo head -80 /opt/footbreak/stage_engine_v2/fixtures.py 2>&1'
+          echo
+          echo '=== fixtures.py parse_crown_matches + refresh_fixtures ==='
+          $SSH 'sudo sed -n "80,145p" /opt/footbreak/stage_engine_v2/fixtures.py 2>&1'
