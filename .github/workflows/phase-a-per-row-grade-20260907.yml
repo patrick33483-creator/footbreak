@@ -1,0 +1,248 @@
+name: Phase A - per-row titan grade
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "打 PHASEA"
+        required: true
+        type: string
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/phase-a-per-row-grade-20260907.yml']
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  g:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - env:
+          E: ${{ github.event_name }}
+          C: ${{ inputs.confirmation }}
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then exit 0; fi
+          if [ "$C" != "PHASEA" ]; then exit 1; fi
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=60 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          set -eu
+          cd /opt/footbreak
+
+          STAMP=$(date +%Y%m%d-%H%M%S)
+          BACKUP_DIR=/var/lib/footbreak/crown/backups/phase-a-${STAMP}
+          mkdir -p "$BACKUP_DIR"
+          echo "===== Backup current live file ====="
+          cp -a /var/lib/footbreak/crown/prediction_history.json "$BACKUP_DIR/before.json"
+          ls -la "$BACKUP_DIR/"
+
+          cat > /tmp/phase_a.py <<'PY'
+          """Per-row titan grade — bypass batch pass, loop each pending row."""
+          import sys, time, json, traceback
+          from datetime import datetime, timedelta
+          sys.path.insert(0, '/opt/footbreak')
+
+          import crown.prediction_history as ph
+          from crown.prediction_history import (
+              load_history, _direct_titan_result, _target,
+              _grade_market, _persist_learning_result,
+              _is_recovered_audit_row, SETTLE_AFTER_SECONDS, HKT,
+          )
+          from crown.titan import TitanClient
+          from crown.config import settings as _settings
+          from crown.util import iso_hkt, parse_time
+
+          config = _settings()
+          print(f"config.state_dir={config.state_dir}")
+
+          # Load once
+          history = load_history(config)
+          rows = history["rows"]
+          print(f"total rows: {len(rows)}")
+
+          now = datetime.now(HKT)
+
+          # Identify pending rows (same logic as grade_history 'due' filter,
+          # but skip corner-only refetch check)
+          pending = []
+          for r in rows:
+              if _is_recovered_audit_row(r):
+                  continue
+              kickoff = parse_time(r.get("kickoff"))
+              if kickoff is None:
+                  continue
+              if (now - kickoff).total_seconds() < SETTLE_AFTER_SECONDS:
+                  continue
+              if r.get("result_status") in ("已核對", "不計"):
+                  continue
+              if not r.get("titan_match_id"):
+                  continue
+              pending.append(r)
+          print(f"pending w/ titan_match_id: {len(pending)}")
+
+          # Titan client with huge budget
+          titan_client = TitanClient(config)
+          titan_client.limit_result_detail_requests(999999)
+
+          graded = 0
+          failed = 0
+          t0 = time.time()
+          save_every = 200
+          last_save = 0
+
+          for idx, row in enumerate(pending, 1):
+              try:
+                  score = _direct_titan_result(row, titan_client)
+              except Exception as exc:
+                  failed += 1
+                  if failed <= 5:
+                      print(f"  err row {idx} titan_id={row.get('titan_match_id')}: {type(exc).__name__}: {exc}")
+                  continue
+
+              if not score:
+                  failed += 1
+                  continue
+
+              try:
+                  home = int(score["home_score"])
+                  away = int(score["away_score"])
+              except (KeyError, TypeError, ValueError):
+                  failed += 1
+                  continue
+
+              actual = "主勝" if home > away else ("和局" if home == away else "客勝")
+              row.update({
+                  "actual": actual,
+                  "score": f"{home}-{away}",
+                  "correct": (row.get("forecast") == actual) if row.get("forecast") else None,
+                  "result_status": "已核對",
+                  "verified_at": iso_hkt(),
+                  "result_source": "titan007_direct_detail_exact_id",
+                  "result_detail": {
+                      "home_score": home,
+                      "away_score": away,
+                      "corners_total": score.get("corners_total"),
+                  },
+              })
+
+              # Grade all market predictions on this row
+              grades = []
+              for prediction in (row.get("market_predictions") or []):
+                  if not isinstance(prediction, dict):
+                      continue
+                  try:
+                      g = _grade_market(prediction, {
+                          "home_score": home,
+                          "away_score": away,
+                          "corners_total": score.get("corners_total"),
+                      })
+                      if g:
+                          grades.append(g)
+                  except Exception as exc:
+                      if failed <= 5:
+                          print(f"  grade err: {exc}")
+              row["market_grades"] = grades
+
+              # Persist learning result
+              try:
+                  _persist_learning_result(row, {
+                      "home_score": home,
+                      "away_score": away,
+                      "corners_total": score.get("corners_total"),
+                  }, "titan007_direct_detail_exact_id")
+              except Exception as exc:
+                  pass
+
+              graded += 1
+
+              if idx % 50 == 0:
+                  el = time.time() - t0
+                  rate = idx / el if el > 0 else 0
+                  eta = (len(pending) - idx) / rate if rate > 0 else 0
+                  print(f"  [{idx}/{len(pending)}] graded={graded} failed={failed} rate={rate:.1f}/s eta={eta/60:.1f}min")
+
+              # Save every N rows to avoid data loss on interrupt
+              if graded - last_save >= save_every:
+                  path = ph._path(config)
+                  tmp = path.with_suffix(".tmp")
+                  with open(tmp, "w", encoding="utf-8") as f:
+                      json.dump(history, f, ensure_ascii=False)
+                  tmp.replace(path)
+                  last_save = graded
+                  print(f"  [checkpoint] saved after {graded} grades")
+
+              time.sleep(0.3)
+
+          # Final save
+          path = ph._path(config)
+          tmp = path.with_suffix(".tmp")
+          with open(tmp, "w", encoding="utf-8") as f:
+              json.dump(history, f, ensure_ascii=False)
+          tmp.replace(path)
+          el = time.time() - t0
+          print(f"\nDONE: graded={graded} failed={failed} in {el/60:.1f}min")
+          PY
+
+          echo
+          echo "===== Run phase A (per-row grade, 80min timeout) ====="
+          timeout 4800 /opt/footbreak/.venv/bin/python3 -u /tmp/phase_a.py 2>&1 | tail -200 || echo "phase_a timed out or errored"
+
+          # Fix ownership after we wrote as root
+          chown crown:crown /var/lib/footbreak/crown/prediction_history.json 2>/dev/null || true
+
+          echo
+          echo "===== Regenerate data.json ====="
+          /opt/footbreak/.venv/bin/python3 <<'PY'
+          import sys, traceback
+          sys.path.insert(0, '/opt/footbreak')
+          from crown.dashboard_data import write_dashboard_data
+          from crown.config import settings as _settings
+          try:
+              res = write_dashboard_data(_settings())
+              print("data.json OK", type(res).__name__)
+          except Exception as exc:
+              print(f"ERROR: {type(exc).__name__}: {exc}")
+              traceback.print_exc()
+          PY
+
+          echo
+          echo "===== Verify ====="
+          /opt/footbreak/.venv/bin/python3 <<'PY'
+          import json
+          h = json.load(open("/var/lib/footbreak/crown/prediction_history.json"))
+          rows = h.get("rows", [])
+          graded = [r for r in rows if r.get("market_grades")]
+          pending = [r for r in rows if r.get("result_status") not in ("已核對", "不計")]
+          direct = [r for r in rows if r.get("result_source") == "titan007_direct_detail_exact_id"]
+          print(f"total rows:     {len(rows)}")
+          print(f"market_grades:  {len(graded)}")
+          print(f"pending:        {len(pending)}")
+          print(f"titan_direct:   {len(direct)}")
+
+          try:
+              d = json.load(open("/var/www/crown/data.json"))
+              s = d.get("summary", {})
+              print(f"data.json summary: {json.dumps(s, ensure_ascii=False)[:300]}")
+          except Exception as exc:
+              print(f"data.json err: {exc}")
+          PY
+          REMOTE
