@@ -108,3 +108,17 @@ jobs:
           PYWRITE
           scp -o StrictHostKeyChecking=accept-new -i ~/.ssh/id_ed25519 /tmp/diag.py "$DEPLOY_USER@$DEPLOY_HOST:/tmp/diag.py"
           $SSH 'python3 /tmp/diag.py; rm -f /tmp/diag.py'
+          set +e
+          echo
+          echo '=== V2 predict pipeline hunt ==='
+          $SSH 'systemctl list-timers --all --no-pager 2>&1 | grep -iE "stage|engine|v2|predict|footbreak|crown" | head -20'
+          echo
+          $SSH 'sudo find /opt -maxdepth 4 -name "*.service" -o -name "*.timer" 2>/dev/null | grep -iE "stage|v2|predict" | head -20'
+          echo
+          $SSH 'sudo ls /opt/footbreak/deploy/systemd/ 2>/dev/null'
+          echo
+          $SSH 'stat /var/www/stage_engine_v2/data.json | grep Modify'
+          echo
+          echo '=== crown-radar backend auth ==='
+          $SSH 'sudo grep -rn 5002 /etc/nginx/ 2>/dev/null | head -5'
+          $SSH 'curl -sS http://127.0.0.1:5002/ 2>&1 | head -3'
