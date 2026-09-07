@@ -40,6 +40,7 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
           SSH="ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=30 -i ~/.ssh/id_ed25519 $DEPLOY_USER@$DEPLOY_HOST"
+          set +e
           echo "=== list /var/www/crownsystem-v3/ ==="
           $SSH 'ls -la /var/www/crownsystem-v3/ && echo && head -20 /var/www/crownsystem-v3/index.html'
           echo
