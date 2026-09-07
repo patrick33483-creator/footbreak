@@ -1,0 +1,63 @@
+name: Diag rollback plan
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/diag-rollback-plan-20260908.yml']
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  d:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -T 15 -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+      - env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=30 -o StrictHostKeyChecking=accept-new \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          set -e
+          cd /opt/footbreak
+          
+          echo "===== 1) When was wilson_validation.py:4635 hard-fail introduced ====="
+          git log --oneline -20 -- analysis/wilson_validation.py
+          
+          echo
+          echo "===== 2) Find commit that added the hard-fail ValueError ====="
+          git log --oneline -S "required_condition_identity_migration_missing" -- analysis/wilson_validation.py
+          
+          echo
+          echo "===== 3) Find commit that added recompute_namespace check ====="
+          git log --oneline -S "_validate_condition_identity_migrations" -- analysis/wilson_validation.py | head -10
+          
+          echo
+          echo "===== 4) Commits since Sep 6 (last known good) ====="
+          git log --oneline --since '2026-09-06 00:00:00' --until '2026-09-08 00:00:00'
+          
+          echo
+          echo "===== 5) Uncommitted local changes (any manual edits) ====="
+          git status
+          echo
+          git diff --stat
+          
+          echo
+          echo "===== 6) Current HEAD + branch ====="
+          git branch --show-current
+          git rev-parse HEAD
+          REMOTE
