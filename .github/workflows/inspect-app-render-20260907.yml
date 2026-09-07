@@ -1,0 +1,76 @@
+name: Inspect app.js history render
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "打 INSPECTAPP"
+        required: true
+        type: string
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/inspect-app-render-20260907.yml']
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  i:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - env:
+          E: ${{ github.event_name }}
+          C: ${{ inputs.confirmation }}
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then exit 0; fi
+          if [ "$C" != "INSPECTAPP" ]; then exit 1; fi
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          set +e
+          cd /var/www/crown
+          echo "===== File sizes ====="
+          ls -la index.html app.js styles.css
+          echo
+          echo "===== Grep in app.js for key strings ====="
+          for kw in "被 gate" "被gate" "below_min_conviction" "conviction" "機率" "EV" "賠率" "皇冠初盤" "皇冠入球" "初盤預測" "market_predictions" "market_grades"; do
+              cnt=$(grep -c "$kw" app.js 2>/dev/null)
+              echo "  $kw : $cnt"
+          done
+          echo
+          echo "===== 'conviction' context (first 8 hits, ±3 lines) ====="
+          grep -n "conviction" app.js | head -20
+          echo
+          echo "===== '被 gate' context ====="
+          grep -n "被 gate\|被gate" app.js | head -10
+          echo
+          echo "===== '機率' / 'EV' context ====="
+          grep -n "機率\|\"EV\"\|>EV<" app.js | head -20
+          echo
+          echo "===== 'below_min_conviction' render context ====="
+          grep -n "below_min_conviction" app.js | head -10
+          echo
+          echo "===== history render entry — look for card / stage / history keywords ====="
+          grep -n "renderHistory\|historyCard\|initialPrediction\|stage.*card\|history-row\|history-item\|historyRow" app.js | head -20
+          echo
+          echo "===== index.html tabs (即時 dashboard / 歷史紀錄 / 細分條件) ====="
+          grep -n "歷史紀錄\|細分條件\|即時" index.html | head -20
+          REMOTE

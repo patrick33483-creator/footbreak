@@ -66,10 +66,10 @@ jobs:
               load_history, _direct_titan_result, _target,
               _grade_market, _persist_learning_result,
               _is_recovered_audit_row, SETTLE_AFTER_SECONDS, HKT,
+              iso_hkt, parse_time,
           )
           from crown.titan import TitanClient
           from crown.config import settings as _settings
-          from crown.util import iso_hkt, parse_time
 
           config = _settings()
           print(f"config.state_dir={config.state_dir}")
