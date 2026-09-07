@@ -1,0 +1,131 @@
+name: Recon titan Over HTML structure
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "打 RECONSTR"
+        required: true
+        type: string
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/recon-titan-over-structure-20260907.yml']
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  r:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - env:
+          E: ${{ github.event_name }}
+          C: ${{ inputs.confirmation }}
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then exit 0; fi
+          if [ "$C" != "RECONSTR" ]; then exit 1; fi
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          set +e
+          
+          echo "===== 0) crown-radar 個 fetchScores actual implementation ====="
+          grep -A100 "async fetchScores\|async fetchFinalScores\|scoresBase\|Over_\|OVER_URL\|OVER_BASE" /opt/crown-radar/server/providers/pinnacle.ts | head -150
+          
+          echo
+          echo "===== 1) 用同一支 URL + 加 titan-required headers 再試今日 ====="
+          curl -s -A "Mozilla/5.0" \
+            -H "Referer: http://bf.titan007.com/" \
+            -o /tmp/o.htm \
+            "http://bf.titan007.com/football/Over_$(date +%Y%m%d).htm" \
+            -w "HTTP %{http_code} bytes %{size_download}\n"
+          echo "-- bytes: $(wc -c < /tmp/o.htm)"
+          
+          echo
+          echo "===== 2) 昨日 Over 20260906 HTML: 表格結構 ====="
+          curl -s -o /tmp/y.htm "http://bf.titan007.com/football/Over_20260906.htm"
+          iconv -f GBK -t UTF-8 /tmp/y.htm > /tmp/y.utf8 2>/dev/null
+          wc -c /tmp/y.utf8
+          echo "--- table rows containing score ---"
+          # Look for typical row structure
+          python3 <<'PY'
+          import re
+          text = open('/tmp/y.utf8', encoding='utf-8', errors='ignore').read()
+          print(f"total chars: {len(text)}")
+          
+          # count occurrences
+          score_matches = re.findall(r'>(\d+)-(\d+)<', text)
+          print(f"score patterns >N-N<: {len(score_matches)}")
+          print(f"sample scores: {score_matches[:10]}")
+          
+          # look for match id pattern
+          ids = re.findall(r'ScheduleID=(\d+)', text)
+          ids2 = re.findall(r'sid=(\d+)', text)
+          ids3 = re.findall(r'/([0-9]{7})cn?\.htm', text)
+          ids4 = re.findall(r'showAnalyse\((\d+)', text)
+          print(f"ScheduleID=NNN: {len(ids)}, sample: {ids[:5]}")
+          print(f"sid=NNN: {len(ids2)}, sample: {ids2[:5]}")
+          print(f"NNNNcn.htm: {len(ids3)}, sample: {ids3[:5]}")
+          print(f"showAnalyse(NNN): {len(ids4)}, sample: {ids4[:5]}")
+          
+          # Look at a specific row structure
+          # Find a row containing both team name and score
+          rows_with_score = re.findall(r'<tr[^>]*>.*?</tr>', text, re.DOTALL)
+          print(f"\ntotal <tr> rows: {len(rows_with_score)}")
+          # print first row with score
+          for r in rows_with_score:
+              if re.search(r'\d+-\d+', r) and len(r) < 2000:
+                  print("--- SAMPLE ROW ---")
+                  print(r[:1500])
+                  break
+          PY
+          
+          echo
+          echo "===== 3) 另一個可能 URL: live.titan007.com/vbsxml/bfdata.js ====="
+          curl -s -o /tmp/bf.js "http://live.titan007.com/vbsxml/bfdata.js" -w "HTTP %{http_code} bytes %{size_download}\n"
+          head -c 500 /tmp/bf.js
+          echo
+          
+          echo "===== 4) 另一個 URL: 1x2d.titan007.com/YYYYMMDD.js ====="
+          curl -s -o /tmp/x.js "http://1x2d.titan007.com/$(date +%Y%m%d).js" -w "HTTP %{http_code} bytes %{size_download}\n"
+          echo
+          
+          echo "===== 5) titan007 用嘅 relay proxy (crown-radar 見到 relay:http://139.59.66.29:8080) ====="
+          # 需要 relay 先出到去? 試下經 relay
+          curl -s -x "http://139.59.66.29:8080" -o /tmp/t.htm \
+            "http://bf.titan007.com/football/Over_$(date +%Y%m%d).htm" \
+            -w "HTTP %{http_code} bytes %{size_download}\n" 2>&1
+          echo "via relay bytes: $(wc -c < /tmp/t.htm 2>&1)"
+          
+          echo "===== 6) v2 fixture 一 sample titan source 完整 keys ====="
+          sudo python3 -c "
+          import json
+          d = json.load(open('/var/www/stage_engine_v2/data.json'))
+          fx = [f for f in d.get('fixtures', []) if f.get('source')=='titan'][:1]
+          if fx: import pprint; pprint.pprint(fx[0])
+          "
+          
+          echo "===== 7) footbreak 內部有冇 titan_over fetcher py ====="
+          find /home/patrick/repos -name "*titan*" -type f 2>/dev/null | head -20
+          find /opt -name "*titan*" -type f 2>/dev/null | head -20
+          find / -name "titan*.py" -type f 2>/dev/null | grep -v backups | head -20
+          
+          REMOTE
