@@ -122,3 +122,24 @@ jobs:
           echo '=== crown-radar backend auth ==='
           $SSH 'sudo grep -rn 5002 /etc/nginx/ 2>/dev/null | head -5'
           $SSH 'curl -sS http://127.0.0.1:5002/ 2>&1 | head -3'
+          echo
+          echo '=== V2 tick service ==='
+          $SSH 'systemctl cat footbreak-tick.service 2>&1 | grep -E "^ExecStart|WorkingDirectory"'
+          $SSH 'systemctl cat footbreak-t30.service 2>&1 | grep -E "^ExecStart|WorkingDirectory"'
+          $SSH 'systemctl cat footbreak-sweep.service 2>&1 | grep -E "^ExecStart|WorkingDirectory"'
+          echo
+          echo '=== recent tick log ==='
+          $SSH 'journalctl -u footbreak-tick.service --no-pager -n 30 --since "1 hour ago" 2>&1 | tail -40'
+          echo
+          echo '=== data.json full keys ==='
+          $SSH 'python3 -c "import json; d=json.load(open(\"/var/www/stage_engine_v2/data.json\")); print(\"top keys:\", list(d.keys())); print(\"fx[0] keys:\", list(d.get(\"fixtures\",[{}])[0].keys()) if d.get(\"fixtures\") else \"none\"); import datetime; kks=[f.get(\"kickoff_utc\") for f in d.get(\"fixtures\",[])]; kks_sorted=sorted([k for k in kks if k]); print(\"kickoff range:\", kks_sorted[0], \"->\", kks_sorted[-1]) if kks_sorted else print(\"no kickoffs\") "'
+          echo
+          echo '=== V2 project dir ls ==='
+          $SSH 'sudo ls /opt/footbreak/ 2>&1 | head -20; echo ---; sudo find /opt/footbreak -maxdepth 3 -name "*.py" 2>&1 | grep -iE "tick|t30|sweep|fetch|titan|upcoming|predict|stage" | head -30'
+          echo
+          echo '=== V2 tick service exact command ==='
+          $SSH 'systemctl cat footbreak-tick.service 2>&1'
+          echo
+          echo '=== Titan upcoming source (used by V2 or radar) ==='
+          $SSH 'sudo find /opt -maxdepth 5 -name "*.py" 2>&1 | xargs sudo grep -l -iE "titan|nowgoal|next_" 2>/dev/null | head -10'
+          $SSH 'sudo ls /var/www/stage_engine_v2/ 2>&1'
