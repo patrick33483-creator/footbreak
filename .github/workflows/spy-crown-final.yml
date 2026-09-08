@@ -1,6 +1,6 @@
 name: Spy crown-radar final
 on:
-  workflow_dispatch:
+  workflow_dispatch: {}
   push:
     branches: [diagnose/crown-v2-pending-20260906]
     paths: ['.github/workflows/spy-crown-final.yml']
