@@ -101,40 +101,56 @@ jobs:
               print(f"first 5 upcoming: {[m['sid'] for m in picks]}")
           
           def build_prices(m):
-              """Map crown-radar snapshots → V2 prices shape."""
+              """Map crown-radar snapshots → V2 prices shape.
+              V2 expects market='HDC'|'HIL', selection='H'/'A' for HDC and
+              'H'/'L' for HIL, line=float, source_at=iso.
+              """
               rows = []
               snaps = m.get("snapshots", {})
-              # Use initial + T30 + live so opening_cutoff sees a real timestamp.
               ko_ms = m.get("kickoff_utc") or 0
               stage_to_secs = {
-                  "initial_AH": -3600*3, "initial_OU": -3600*3,   # 3h before KO
+                  "initial_AH": -3600*3, "initial_OU": -3600*3,
                   "T30_AH": -1800, "T30_OU": -1800,
                   "live_AH": 0, "live_OU": 0,
               }
+              side_map_ah = {"home": "H", "away": "A"}
+              side_map_ou = {"home": "H", "away": "L"}
               for key, snap in snaps.items():
-                  if not isinstance(snap, dict): continue
-                  if key not in stage_to_secs: continue
-                  market = "AH" if "AH" in key else "OU"
+                  if not isinstance(snap, dict) or key not in stage_to_secs:
+                      continue
+                  is_ah = "AH" in key
+                  code = "HDC" if is_ah else "HIL"
+                  side_map = side_map_ah if is_ah else side_map_ou
                   offset = stage_to_secs[key]
                   source_at = datetime.fromtimestamp((ko_ms + offset*1000)/1000, timezone.utc).isoformat()
-                  for side in ("home", "away"):
-                      odds = snap.get(side)
+                  h_raw = snap.get("h")
+                  if h_raw is None: continue
+                  try:
+                      line = float(h_raw)
+                  except (TypeError, ValueError):
+                      continue
+                  for feed_side, v2_side in side_map.items():
+                      odds = snap.get(feed_side)
                       if odds is None: continue
                       rows.append({
-                          "market": market,
-                          "line": str(snap.get("h", "")),
-                          "selection": side,
+                          "market": code,
+                          "line": line,
+                          "selection": v2_side,
                           "odds": float(odds),
                           "source_at": source_at,
                       })
               return rows
           
-          FORECASTS = [
-              {"code": "AH_home", "market": "AH", "selection": "home"},
-              {"code": "AH_away", "market": "AH", "selection": "away"},
-              {"code": "OU_over", "market": "OU", "selection": "over"},
-              {"code": "OU_under", "market": "OU", "selection": "under"},
-          ]
+          def build_forecasts(m):
+              snaps = m.get("snapshots", {})
+              ah = snaps.get("initial_AH") or snaps.get("live_AH") or {}
+              ou = snaps.get("initial_OU") or snaps.get("live_OU") or {}
+              rows = []
+              if ah.get("h") is not None:
+                  rows.append({"code": "HDC", "line": float(ah["h"])})
+              if ou.get("h") is not None:
+                  rows.append({"code": "HIL", "line": float(ou["h"])})
+              return rows
           
           out = []
           for m in picks:
@@ -145,11 +161,12 @@ jobs:
                   "away": m.get("away"),
               }
               prices = build_prices(m)
+              fx_forecasts = build_forecasts(m)
               try:
                   forecasts, meta = apply_opening_model(
                       fixture=fixture,
                       prices=prices,
-                      forecasts=FORECASTS,
+                      forecasts=fx_forecasts,
                       learning_db_path=db_path,
                   )
                   out.append({
