@@ -2,6 +2,9 @@ name: V3 merge swap to crown-radar
 on:
   workflow_dispatch:
     inputs: {confirm: {description: 'CONFIRM', required: true}}
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/v3-merge-swap.yml']
 
 concurrency: {group: production-maintenance, cancel-in-progress: false}
 
@@ -11,8 +14,15 @@ jobs:
     env: {CONFIRM_INPUT: "${{ github.event.inputs.confirm || 'CONFIRM' }}"}
     steps:
       - uses: actions/checkout@v4
-      - run: test "$CONFIRM_INPUT" = "CONFIRM"
-      - env:
+      - name: Guard push (only dispatch runs the swap)
+        if: github.event_name != 'workflow_dispatch'
+        run: |
+          echo "push event registered workflow. Skipping. Use workflow_dispatch to actually swap."
+          exit 0
+      - if: github.event_name == 'workflow_dispatch'
+        run: test "$CONFIRM_INPUT" = "CONFIRM"
+      - if: github.event_name == 'workflow_dispatch'
+        env:
           SSHKEY: ${{ secrets.DEPLOY_SSH_KEY }}
           H: ${{ secrets.DEPLOY_HOST }}
           U: ${{ secrets.DEPLOY_USER }}
