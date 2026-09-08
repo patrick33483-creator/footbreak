@@ -31,59 +31,50 @@ jobs:
           $SSH bash <<'EOF'
           set -e
           TS=$(date +%Y%m%d-%H%M%S)
-          echo "=== 1. Find nginx site for crownsystem-v3 ==="
-          SITE=$(sudo -n grep -lE "crownsystem-v3" /etc/nginx/sites-enabled/* 2>/dev/null | head -1)
-          [[ -z "$SITE" ]] && SITE=$(sudo -n grep -lE "crownsystem-v3" /etc/nginx/sites-available/* 2>/dev/null | head -1)
-          echo "site: $SITE"
-          [[ -z "$SITE" ]] && { echo "no site"; exit 1; }
-          
+          SITE=/etc/nginx/sites-enabled/unified-dashboard
+
+          echo "=== 1. Show existing crownsystem-v3 blocks ==="
+          sudo -n grep -n -B1 -A6 "crownsystem-v3" "$SITE" | head -60
+
           echo ""
-          echo "=== 2. Backup + show current relevant block ==="
+          echo "=== 2. Backup + patch ==="
           sudo -n cp -p "$SITE" "${SITE}.bak.${TS}"
-          sudo -n grep -n -B2 -A8 "crownsystem-v3\|auth_basic\|matches.json" "$SITE" | head -80
-          
-          echo ""
-          echo "=== 3. Patch: add location for matches.json without auth ==="
-          # Insert a location block before the closing brace of the crownsystem-v3 location or server.
-          # Strategy: append a nested location for matches.json inside the crownsystem-v3 root location.
           sudo -n python3 - "$SITE" <<'PY'
-          import re, sys, io
+          import re, sys
           path = sys.argv[1]
           txt = open(path).read()
-          # If already patched, skip.
           if "location = /crownsystem-v3/matches.json" in txt:
-              print("already patched")
-              sys.exit(0)
-          # Find the location block for /crownsystem-v3/
-          m = re.search(r'(location\s+/crownsystem-v3/?\s*\{)', txt)
+              print("already patched"); sys.exit(0)
+          # Find first line beginning a crownsystem-v3 location.
+          m = re.search(r'^[ \t]*location[^\n]*\bcrownsystem-v3\b[^\n]*\{', txt, re.M)
           if not m:
-              print("no /crownsystem-v3/ block found")
-              sys.exit(2)
-          # Insert an inline location = /crownsystem-v3/matches.json { auth_basic off; } as a sibling
-          # right before the /crownsystem-v3/ block for higher priority.
+              print("no crownsystem-v3 location block found"); sys.exit(2)
+          # Determine the alias root by inspecting the block (up to matching brace, best-effort).
+          # Insert a sibling exact location BEFORE the ^~ block so exact match wins.
           inject = (
               "location = /crownsystem-v3/matches.json {\n"
-              "    auth_basic off;\n"
-              "    root /var/www;\n"
-              "    default_type application/json;\n"
-              "    add_header Cache-Control \"no-store\";\n"
-              "}\n\n"
+              "        alias /var/www/crownsystem-v3/matches.json;\n"
+              "        default_type application/json;\n"
+              "        add_header Cache-Control \"no-store\";\n"
+              "    }\n    "
           )
           new_txt = txt[:m.start()] + inject + txt[m.start():]
           open(path,"w").write(new_txt)
           print("patched")
           PY
-          
+
           echo ""
-          echo "=== 4. Test nginx config + reload ==="
+          echo "=== 3. Show patched context ==="
+          sudo -n grep -n -B1 -A6 "crownsystem-v3" "$SITE" | head -60
+
+          echo ""
+          echo "=== 4. nginx -t + reload ==="
           sudo -n nginx -t
           sudo -n systemctl reload nginx
-          
+
           echo ""
-          echo "=== 5. Verify no-auth access to matches.json ==="
+          echo "=== 5. Verify ==="
           curl -s -o /dev/null -w "matches.json unauth: %{http_code}\n" "http://127.0.0.1/crownsystem-v3/matches.json"
-          curl -s -o /dev/null -w "SPA root unauth : %{http_code}\n" "http://127.0.0.1/crownsystem-v3/"
-          echo ""
-          echo "=== 6. Diff summary ==="
-          sudo -n diff "${SITE}.bak.${TS}" "$SITE" | head -30
+          curl -s -o /dev/null -w "SPA root unauth   : %{http_code}\n" "http://127.0.0.1/crownsystem-v3/"
+          curl -s -o /dev/null -u radar:toberich -w "SPA root authed   : %{http_code}\n" "http://127.0.0.1/crownsystem-v3/"
           EOF
