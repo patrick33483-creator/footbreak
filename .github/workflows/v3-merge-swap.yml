@@ -38,17 +38,17 @@ jobs:
           set -e
           TS=$(date +%Y%m%d-%H%M%S)
           echo "=== 1. Backup old ==="
-          cp -p /opt/footbreak/deploy/v3/merge_titan_v2.py /opt/footbreak/deploy/v3/merge_titan_v2.py.bak.$TS
+          sudo -n cp -p /opt/footbreak/deploy/v3/merge_titan_v2.py /opt/footbreak/deploy/v3/merge_titan_v2.py.bak.$TS
           ls -la /opt/footbreak/deploy/v3/
           
           echo ""
           echo "=== 2. Install new ==="
-          cp /tmp/merge_titan_v2.new.py /opt/footbreak/deploy/v3/merge_titan_v2.py
-          chmod +x /opt/footbreak/deploy/v3/merge_titan_v2.py
+          sudo -n cp /tmp/merge_titan_v2.new.py /opt/footbreak/deploy/v3/merge_titan_v2.py
+          sudo -n chmod +x /opt/footbreak/deploy/v3/merge_titan_v2.py
           
           echo ""
           echo "=== 3. Manual run new merge ==="
-          /usr/bin/python3 /opt/footbreak/deploy/v3/merge_titan_v2.py
+          sudo -n /usr/bin/python3 /opt/footbreak/deploy/v3/merge_titan_v2.py
           
           echo ""
           echo "=== 4. Verify matches.json ==="
