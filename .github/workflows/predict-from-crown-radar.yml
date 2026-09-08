@@ -1,0 +1,169 @@
+name: Predict from Crown Radar feed (read-only)
+on:
+  workflow_dispatch:
+    inputs:
+      confirm: {description: 'CONFIRM', required: true}
+      sids:
+        description: 'comma-separated sIds (blank = first 5 upcoming)'
+        required: false
+        default: ''
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/predict-from-crown-radar.yml']
+
+concurrency: {group: production-maintenance, cancel-in-progress: false}
+
+jobs:
+  predict:
+    runs-on: ubuntu-latest
+    env:
+      CONFIRM_INPUT: "${{ github.event.inputs.confirm || 'CONFIRM' }}"
+      SIDS: "${{ github.event.inputs.sids }}"
+    steps:
+      - name: Guard
+        run: test "$CONFIRM_INPUT" = "CONFIRM"
+      - name: SSH + predict
+        env:
+          SSHKEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          H: ${{ secrets.DEPLOY_HOST }}
+          U: ${{ secrets.DEPLOY_USER }}
+        run: |
+          mkdir -p ~/.ssh && printf '%s\n' "$SSHKEY" > ~/.ssh/id && chmod 600 ~/.ssh/id
+          SSH="ssh -i ~/.ssh/id -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=30 $U@$H"
+          $SSH "SIDS='${SIDS}' bash -s" <<'EOF'
+          set +e
+          cd /opt/footbreak
+          source venv/bin/activate 2>/dev/null || true
+          
+          # Discover crown-radar loopback endpoint (usually via nginx :80 → crown-radar :5002)
+          echo "=== 1. Locate crown-radar feed on this host ==="
+          FEED=""
+          for u in \
+            "http://127.0.0.1/crown-radar/api/matches-crown" \
+            "http://127.0.0.1:5002/api/matches-crown" \
+            "http://127.0.0.1:5000/api/matches-crown"; do
+            code=$(curl -s -u radar:toberich -o /dev/null -w "%{http_code}" --max-time 5 "$u")
+            echo "  $u -> $code"
+            if [[ "$code" == "200" ]]; then FEED="$u"; break; fi
+          done
+          if [[ -z "$FEED" ]]; then
+            echo "ERROR: no crown-radar feed reachable from host"
+            exit 1
+          fi
+          echo "Using feed: $FEED"
+          
+          # Locate learning DB
+          echo ""
+          echo "=== 2. Locate learning_db_path ==="
+          DB=""
+          for p in \
+            /opt/footbreak/data/predictions.db \
+            /opt/footbreak/data/crown.db \
+            /opt/footbreak/data/football.db \
+            /opt/footbreak/data/learning.db; do
+            [[ -f "$p" ]] && DB="$p" && echo "  found: $p" && break
+          done
+          if [[ -z "$DB" ]]; then
+            echo "Available .db files under /opt/footbreak/data:"
+            find /opt/footbreak/data -maxdepth 3 -name '*.db' 2>/dev/null | head
+            # Take the largest as default
+            DB=$(find /opt/footbreak/data -maxdepth 3 -name '*.db' 2>/dev/null | xargs -I{} du -b {} | sort -rn | head -1 | awk '{print $2}')
+            echo "  fallback largest: $DB"
+          fi
+          
+          echo ""
+          echo "=== 3. Run apply_opening_model on selected fixtures ==="
+          FEED_URL="$FEED" DB_PATH="$DB" SIDS_ENV="${SIDS}" python3 - <<'PY'
+          import json, os, sys, urllib.request, base64
+          from datetime import datetime, timezone
+          sys.path.insert(0, "/opt/footbreak")
+          from crown.opening_model import apply_opening_model, MODEL_VERSION
+          
+          feed_url = os.environ["FEED_URL"]
+          db_path = os.environ.get("DB_PATH") or None
+          sids_filter = [s.strip() for s in os.environ.get("SIDS_ENV","").split(",") if s.strip()]
+          
+          req = urllib.request.Request(feed_url)
+          auth = base64.b64encode(b"radar:toberich").decode()
+          req.add_header("Authorization", f"Basic {auth}")
+          data = json.load(urllib.request.urlopen(req, timeout=15))
+          print(f"feed matches: {len(data)}")
+          
+          now_ms = int(datetime.now(timezone.utc).timestamp()*1000)
+          future = [m for m in data if (m.get("kickoff_utc") or 0) > now_ms]
+          future.sort(key=lambda m: m["kickoff_utc"])
+          
+          if sids_filter:
+              picks = [m for m in data if m["sid"] in sids_filter]
+              print(f"filtered by sids: {len(picks)}/{len(sids_filter)}")
+          else:
+              picks = future[:5]
+              print(f"first 5 upcoming: {[m['sid'] for m in picks]}")
+          
+          def build_prices(m):
+              """Map crown-radar snapshots → V2 prices shape."""
+              rows = []
+              snaps = m.get("snapshots", {})
+              # Use initial + T30 + live so opening_cutoff sees a real timestamp.
+              ko_ms = m.get("kickoff_utc") or 0
+              stage_to_secs = {
+                  "initial_AH": -3600*3, "initial_OU": -3600*3,   # 3h before KO
+                  "T30_AH": -1800, "T30_OU": -1800,
+                  "live_AH": 0, "live_OU": 0,
+              }
+              for key, snap in snaps.items():
+                  if not isinstance(snap, dict): continue
+                  if key not in stage_to_secs: continue
+                  market = "AH" if "AH" in key else "OU"
+                  offset = stage_to_secs[key]
+                  source_at = datetime.fromtimestamp((ko_ms + offset*1000)/1000, timezone.utc).isoformat()
+                  for side in ("home", "away"):
+                      odds = snap.get(side)
+                      if odds is None: continue
+                      rows.append({
+                          "market": market,
+                          "line": str(snap.get("h", "")),
+                          "selection": side,
+                          "odds": float(odds),
+                          "source_at": source_at,
+                      })
+              return rows
+          
+          FORECASTS = [
+              {"code": "AH_home", "market": "AH", "selection": "home"},
+              {"code": "AH_away", "market": "AH", "selection": "away"},
+              {"code": "OU_over", "market": "OU", "selection": "over"},
+              {"code": "OU_under", "market": "OU", "selection": "under"},
+          ]
+          
+          out = []
+          for m in picks:
+              fixture = {
+                  "id": m["sid"],
+                  "league": m.get("league"),
+                  "home": m.get("home"),
+                  "away": m.get("away"),
+              }
+              prices = build_prices(m)
+              try:
+                  forecasts, meta = apply_opening_model(
+                      fixture=fixture,
+                      prices=prices,
+                      forecasts=FORECASTS,
+                      learning_db_path=db_path,
+                  )
+                  out.append({
+                      "sid": m["sid"], "home": m["home"], "away": m["away"],
+                      "league": m.get("league"),
+                      "prices_n": len(prices),
+                      "forecasts": forecasts,
+                      "meta": meta,
+                  })
+              except Exception as e:
+                  out.append({"sid": m["sid"], "error": str(e), "trace": repr(e)})
+          
+          print("=== PREDICTIONS ===")
+          print(json.dumps(out, ensure_ascii=False, indent=2, default=str))
+          print(f"=== model_version: {MODEL_VERSION} ===")
+          PY
+          EOF
