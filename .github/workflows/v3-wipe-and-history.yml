@@ -1,0 +1,131 @@
+name: V3 wipe old + install history
+on:
+  workflow_dispatch:
+    inputs: {confirm: {description: 'CONFIRM', required: true}}
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/v3-wipe-and-history.yml']
+
+concurrency: {group: production-maintenance, cancel-in-progress: false}
+
+jobs:
+  x:
+    runs-on: ubuntu-latest
+    env:
+      CONFIRM_INPUT: "${{ github.event.inputs.confirm || 'CONFIRM' }}"
+    steps:
+      - name: Guard push
+        if: github.event_name != 'workflow_dispatch'
+        run: |
+          echo "push registers only; use dispatch to run"
+          exit 0
+      - if: github.event_name == 'workflow_dispatch'
+        run: test "$CONFIRM_INPUT" = "CONFIRM"
+      - if: github.event_name == 'workflow_dispatch'
+        uses: actions/checkout@v4
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          SSHKEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          H: ${{ secrets.DEPLOY_HOST }}
+          U: ${{ secrets.DEPLOY_USER }}
+        run: |
+          mkdir -p ~/.ssh && printf '%s\n' "$SSHKEY" > ~/.ssh/id && chmod 600 ~/.ssh/id
+          SSH="ssh -i ~/.ssh/id -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=30 $U@$H"
+          SCP="scp -i ~/.ssh/id -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=30"
+
+          # Stage new files
+          $SCP .github/scripts/merge_titan_v2.new.py $U@$H:/tmp/merge_titan_v2.new.py
+          $SCP .github/scripts/history.html          $U@$H:/tmp/history.html
+
+          $SSH bash <<'EOF'
+          set -e
+          TS=$(date +%Y%m%d-%H%M%S)
+          BAKROOT=/root/v3-wipe-backup/$TS
+          sudo -n mkdir -p "$BAKROOT"
+
+          echo "=== 1. Archive old (not delete outright) ==="
+          for D in /var/www/crown /var/www/stage_engine_v2 /var/www/footbreak; do
+            [ -d "$D" ] && sudo -n tar czf "$BAKROOT/$(basename $D).tgz" -C "$(dirname $D)" "$(basename $D)" && echo "backed up $D"
+          done
+          sudo -n cp -p /var/www/crownsystem-v3/matches.json "$BAKROOT/matches.json.bak" 2>/dev/null || true
+          sudo -n cp -p /var/www/crownsystem-v3/results.json "$BAKROOT/results.json.bak" 2>/dev/null || true
+          echo "backup dir:"
+          sudo -n ls -la "$BAKROOT"
+
+          echo ""
+          echo "=== 2. Wipe old V3 board files (keeps SPA html) ==="
+          sudo -n rm -f /var/www/crownsystem-v3/matches.json /var/www/crownsystem-v3/results.json
+          echo "V3 dir after wipe:"
+          sudo -n ls -la /var/www/crownsystem-v3/
+
+          echo ""
+          echo "=== 3. Install new merge + history.html ==="
+          sudo -n cp /tmp/merge_titan_v2.new.py /opt/footbreak/deploy/v3/merge_titan_v2.py
+          sudo -n chmod +x /opt/footbreak/deploy/v3/merge_titan_v2.py
+          sudo -n cp /tmp/history.html /var/www/crownsystem-v3/history.html
+          sudo -n chown www-data:www-data /var/www/crownsystem-v3/history.html || true
+          sudo -n chmod 644 /var/www/crownsystem-v3/history.html
+          ls -la /var/www/crownsystem-v3/
+
+          echo ""
+          echo "=== 4. Ensure nginx allows results.json + history.html without auth ==="
+          SITE=/etc/nginx/sites-enabled/unified-dashboard
+          sudo -n cp -p "$SITE" "$BAKROOT/unified-dashboard.conf.bak"
+          sudo -n python3 - "$SITE" <<'PY'
+          import re, sys
+          path = sys.argv[1]
+          txt = open(path).read()
+          # Find first line beginning a crownsystem-v3 location (same pattern as matches.json fix).
+          m = re.search(r'^([ \t]*)location[^\n]*\bcrownsystem-v3\b[^\n]*\{', txt, re.M)
+          if not m:
+              print("no crownsystem-v3 block"); sys.exit(2)
+          indent = m.group(1)
+          def add(path, alias):
+              global txt
+              key = f"location = {path}"
+              if key in txt:
+                  return
+              inject = (
+                  indent + f"location = {path} " + "{\n"
+                  + indent + f"    alias {alias};\n"
+                  + indent + "    default_type " + ("application/json" if alias.endswith(".json") else "text/html") + ";\n"
+                  + indent + '    add_header Cache-Control "no-store";\n'
+                  + indent + "}\n" + indent
+              )
+              # re-locate m each time
+              mm = re.search(r'^([ \t]*)location[^\n]*\bcrownsystem-v3\b[^\n]*\{', txt, re.M)
+              txt = txt[:mm.start()] + inject + txt[mm.start():]
+          add("/crownsystem-v3/results.json", "/var/www/crownsystem-v3/results.json")
+          add("/crownsystem-v3/history.html", "/var/www/crownsystem-v3/history.html")
+          open(path,"w").write(txt)
+          print("nginx patched")
+          PY
+          sudo -n nginx -t
+          sudo -n systemctl reload nginx
+
+          echo ""
+          echo "=== 5. First manual run ==="
+          sudo -n /usr/bin/python3 /opt/footbreak/deploy/v3/merge_titan_v2.py
+
+          echo ""
+          echo "=== 6. Verify ==="
+          ls -la /var/www/crownsystem-v3/
+          echo "--- matches.json head ---"
+          sudo -n head -c 400 /var/www/crownsystem-v3/matches.json
+          echo ""
+          echo "--- results.json summary ---"
+          sudo -n python3 -c "
+          import json
+          d = json.load(open('/var/www/crownsystem-v3/results.json'))
+          print('count:', d.get('count'), 'epoch:', d.get('epoch_display'), 'added:', d.get('added_this_run'))
+          for m in d.get('matches',[])[:5]:
+              print(' ',m['kickoff_display'], m['home'],'vs',m['away'],'|',m['score'] or '—','| first:',m['first'])
+          "
+
+          echo ""
+          echo "=== 7. External unauth curl checks ==="
+          curl -s -o /dev/null -w "matches.json : %{http_code}\n" "http://127.0.0.1/crownsystem-v3/matches.json"
+          curl -s -o /dev/null -w "results.json : %{http_code}\n" "http://127.0.0.1/crownsystem-v3/results.json"
+          curl -s -o /dev/null -w "history.html : %{http_code}\n" "http://127.0.0.1/crownsystem-v3/history.html"
+          curl -s -o /dev/null -w "SPA index    : %{http_code}\n" "http://127.0.0.1/crownsystem-v3/"
+          EOF
