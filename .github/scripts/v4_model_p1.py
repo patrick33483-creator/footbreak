@@ -1,10 +1,9 @@
-"""V4 Phase 1 baseline model: market-implied (no-vig).
+"""V4 Phase 1 baseline: snapshot lock only, NO suggestions.
 
-Sub-models 2-5 are added in Phase 2. Phase 1 uses only sub-model 2 alone,
-which is equivalent to publishing the fair de-vigged prob directly.
-
-Confidence in Phase 1 is a placeholder based purely on absolute edge; it will
-be replaced in Phase 2 by ensemble agreement.
+A no-vig probability alone cannot beat the market by construction — EV = -vig
+for both sides. So Phase 1 does not emit any 提議; it only locks the three
+時點 snapshots for later inspection. Phase 2 introduces the 5-sub-model
+ensemble that produces true alpha vs the closing line.
 """
 import json
 from typing import Dict, Any, Optional
@@ -16,7 +15,9 @@ THRESH_MIN_EV = 0.03   # minimum implied EV to include
 
 
 def predict_two_way(snap: Optional[Dict[str, Any]], side_labels=("主", "客")) -> list:
-    """Given one AH/OU snapshot {h, home, away}, return 0-2 提議 dicts."""
+    """Phase 1: intentionally returns [] — no-vig prob has zero alpha vs the
+    market. Phase 2 will replace this with the ensemble output."""
+    return []
     if not snap:
         return []
     home_hk = snap.get("home")

@@ -80,11 +80,8 @@ function render(matches) {
   const list = matches.filter(m => {
     if (activeF === "soon") return (m.kickoff_ms - now) < 60*60*1000 && (m.kickoff_ms - now) > -30*60*1000;
     if (activeF === "has_sug") {
-      for (const s of Object.values(m.stages || {})) {
-        const p = s.predictions;
-        if (p && ((p.ah||[]).length + (p.ou||[]).length + (p.corners||[]).length) > 0) return true;
-      }
-      return false;
+      // Phase 1: no suggestions ever, treat as "has locked stage"
+      return Object.values(m.stages || {}).some(s => s.status === "已鎖");
     }
     if (activeF === "locked") return Object.values(m.stages || {}).every(s => s.status === "已鎖");
     return true;
@@ -113,18 +110,25 @@ function stageHtml(st, s) {
   const locked = s.status === "已鎖";
   const cls = "stage" + (locked ? " locked" : "");
   const p = s.predictions;
-  let mkts = '';
-  if (locked && p) {
-    for (const [mk, list] of [["ah", p.ah||[]], ["ou", p.ou||[]], ["corners", p.corners||[]]]) {
-      mkts += `<div><b>${MKT_LABEL[mk]}:</b> ${mktLine(mk, list, p)}</div>`;
-    }
+  let body = '';
+  if (locked) {
+    // Show snap (lines + odds), Phase 1 has no suggestions.
+    const snap = s.snap || {};
+    const ah = snap.initial_AH || snap.T30_AH || snap.T5_AH;
+    const ou = snap.initial_OU || snap.T30_OU || snap.T5_OU;
+    if (ah) body += `<div><b>讓:</b> ${escapeHtml(ah.h)} 主@${dec(ah.home)} 客@${dec(ah.away)}</div>`;
+    if (ou) body += `<div><b>大細:</b> ${escapeHtml(ou.h)} 大@${dec(ou.home)} 細@${dec(ou.away)}</div>`;
+    body += `<div><b>角球:</b> <span class="badge no">皇冠冇盤</span></div>`;
+    body += `<div class="none" style="margin-top:3px">P1 baseline、只鎖時點</div>`;
   }
   return `<div class="${cls}">
     <h4>${STAGE_LABEL[st]}</h4>
     <div class="st">${escapeHtml(s.status||'')}${s.locked_at ? ' · '+escapeHtml(s.locked_at.split(' ')[1]||'') : ''}</div>
-    ${mkts || (locked ? '<div class="none">冇提議</div>' : '')}
+    ${body}
   </div>`;
 }
+
+function dec(hk) { if (hk===undefined||hk===null) return '-'; return (parseFloat(hk)+1).toFixed(2); }
 
 function mktLine(mk, list, bundle) {
   if (mk === "corners" && !list.length) return '<span class="badge no">皇冠冇盤</span>';
