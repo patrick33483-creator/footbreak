@@ -25,7 +25,7 @@ jobs:
           $SCP .github/scripts/v4_model_p1.py $U@$H:/tmp/v4_model_p1.py
           $SCP .github/scripts/v4_index.html $U@$H:/tmp/index.html
           $SSH "sudo -n install -m 0644 /tmp/v4_model_p1.py /opt/crownsystem-v4/v4_model_p1.py"
-          $SSH "sudo -n install -m 0644 /tmp/index.html /var/www/crownsystem-v4/index.html && chown root:www-data /var/www/crownsystem-v4/index.html"
+          $SSH "sudo -n install -m 0644 /tmp/index.html /var/www/crownsystem-v4/index.html && sudo -n chown root:www-data /var/www/crownsystem-v4/index.html"
           $SSH "sudo -n python3 /opt/crownsystem-v4/v4_merge.py | head -20"
           for u in "" matches.json results.json history.html; do
             printf "  crownsystem-v4/%s = " "$u"
