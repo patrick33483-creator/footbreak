@@ -32,13 +32,19 @@ jobs:
           set -e
           TS=$(date +%Y%m%d-%H%M%S)
           SITE=/etc/nginx/sites-enabled/unified-dashboard
+          BAK=/root/nginx-backups/unified-dashboard.bak.${TS}
+          sudo -n mkdir -p /root/nginx-backups
 
+          echo "=== 0. Cleanup stray .bak in sites-enabled (nginx reads them) ==="
+          sudo -n bash -c 'for f in /etc/nginx/sites-enabled/*.bak.* ; do [ -f "$f" ] && mv -v "$f" /root/nginx-backups/; done' || true
+
+          echo ""
           echo "=== 1. Show existing crownsystem-v3 blocks ==="
           sudo -n grep -n -B1 -A6 "crownsystem-v3" "$SITE" | head -60
 
           echo ""
           echo "=== 2. Backup + patch ==="
-          sudo -n cp -p "$SITE" "${SITE}.bak.${TS}"
+          sudo -n cp -p "$SITE" "$BAK"
           sudo -n python3 - "$SITE" <<'PY'
           import re, sys
           path = sys.argv[1]
@@ -46,17 +52,16 @@ jobs:
           if "location = /crownsystem-v3/matches.json" in txt:
               print("already patched"); sys.exit(0)
           # Find first line beginning a crownsystem-v3 location.
-          m = re.search(r'^[ \t]*location[^\n]*\bcrownsystem-v3\b[^\n]*\{', txt, re.M)
+          m = re.search(r'^([ \t]*)location[^\n]*\bcrownsystem-v3\b[^\n]*\{', txt, re.M)
           if not m:
               print("no crownsystem-v3 location block found"); sys.exit(2)
-          # Determine the alias root by inspecting the block (up to matching brace, best-effort).
-          # Insert a sibling exact location BEFORE the ^~ block so exact match wins.
+          indent = m.group(1)
           inject = (
-              "location = /crownsystem-v3/matches.json {\n"
-              "        alias /var/www/crownsystem-v3/matches.json;\n"
-              "        default_type application/json;\n"
-              "        add_header Cache-Control \"no-store\";\n"
-              "    }\n    "
+              indent + "location = /crownsystem-v3/matches.json {\n"
+              + indent + "    alias /var/www/crownsystem-v3/matches.json;\n"
+              + indent + "    default_type application/json;\n"
+              + indent + "    add_header Cache-Control \"no-store\";\n"
+              + indent + "}\n" + indent
           )
           new_txt = txt[:m.start()] + inject + txt[m.start():]
           open(path,"w").write(new_txt)
