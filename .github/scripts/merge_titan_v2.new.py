@@ -101,7 +101,20 @@ def _stage_forecasts(m: dict, stage: str) -> list[dict]:
     return out
 
 
-def _summarise(m: dict, stage: str) -> str:
+# Time gates: only emit a stage forecast once KO is within that stage's window.
+_STAGE_GATE_MIN = {
+    "first": None,   # initial always allowed if snapshot present
+    "t30": 30,       # emit only when mins_to_ko <= 30
+    "t5": 5,         # emit only when mins_to_ko <= 5
+}
+
+
+def _summarise(m: dict, stage: str, now_ms: int) -> str:
+    ko_ms = m.get("kickoff_utc") or 0
+    mins_to_ko = (ko_ms - now_ms) / 60000.0
+    gate = _STAGE_GATE_MIN.get(stage)
+    if gate is not None and mins_to_ko > gate:
+        return "(等候中)"
     prices = _stage_prices(m, stage)
     forecasts = _stage_forecasts(m, stage)
     if not prices or not forecasts:
@@ -157,9 +170,9 @@ def main() -> int:
             "league": str(m.get("league") or "").strip(),
             "home": str(m.get("home") or "").strip(),
             "away": str(m.get("away") or "").strip(),
-            "first": _summarise(m, "first"),
-            "t30":   _summarise(m, "t30"),
-            "t5":    _summarise(m, "t5"),
+            "first": _summarise(m, "first", now_ms),
+            "t30":   _summarise(m, "t30", now_ms),
+            "t5":    _summarise(m, "t5", now_ms),
         })
     out_matches.sort(key=lambda x: x["kickoff_utc_ms"])
     payload = {
