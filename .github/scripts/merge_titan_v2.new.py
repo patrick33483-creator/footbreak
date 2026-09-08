@@ -139,8 +139,8 @@ def _summarise(m: dict, stage: str, now_ms: int) -> str:
     label = top.get("label") or top.get("code") or ""
     odds = top.get("odds")
     prob = top.get("prob")
-    if label and odds and prob is not None:
-        return f"{label} @ {odds} · {prob*100:.1f}%"
+    if label and odds is not None:
+        return f"{label} @ {odds}"
     return label or "(等候中)"
 
 
