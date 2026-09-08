@@ -1,0 +1,123 @@
+name: catch nginx rewriter v3
+on:
+  workflow_dispatch:
+    inputs: {confirm: {description: 'CONFIRM', required: true}}
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/catch-rewriter3.yml']
+concurrency: {group: production-maintenance-3, cancel-in-progress: false}
+jobs:
+  x:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env: {CONFIRM_INPUT: "${{ github.event.inputs.confirm || 'CONFIRM' }}"}
+    steps:
+      - if: github.event_name == 'workflow_dispatch'
+        run: test "$CONFIRM_INPUT" = "CONFIRM"
+      - if: github.event_name == 'workflow_dispatch'
+        env: {SSHKEY: "${{ secrets.DEPLOY_SSH_KEY }}", H: "${{ secrets.DEPLOY_HOST }}", U: "${{ secrets.DEPLOY_USER }}"}
+        run: |
+          mkdir -p ~/.ssh && printf '%s\n' "$SSHKEY" > ~/.ssh/id && chmod 600 ~/.ssh/id
+          ssh -i ~/.ssh/id -o StrictHostKeyChecking=accept-new $U@$H bash <<'EOF'
+          set -e
+          SITE=/etc/nginx/sites-enabled/unified-dashboard
+          REAL=$(readlink -f "$SITE")
+
+          echo "=== ALL timers (full list) ==="
+          sudo -n systemctl list-timers --all --no-pager 2>&1 | head -40
+
+          echo ""
+          echo "=== Reapply fix + record baseline hash ==="
+          sudo -n python3 <<'PY'
+          import re
+          p = "/etc/nginx/sites-available/unified-dashboard"
+          txt = open(p).read()
+          txt = re.sub(
+              r'^[ \t]*location\s*=\s*/crownsystem-v3/[A-Za-z0-9._-]+\s*\{[^}]*\}\s*\n',
+              '', txt, flags=re.M | re.S)
+          m = re.search(r'^([ \t]*)location\s*\^~\s*/crownsystem-v3/\s*\{', txt, re.M)
+          assert m
+          indent = m.group(1)
+          def block(url, alias, ctype):
+              return (
+                  indent + "location = " + url + " {\n"
+                  + indent + "    auth_basic off;\n"
+                  + indent + "    alias " + alias + ";\n"
+                  + indent + "    default_type " + ctype + ";\n"
+                  + indent + '    add_header Cache-Control "no-store";\n'
+                  + indent + "}\n" + indent
+              )
+          inject = (
+              block("/crownsystem-v3/matches.json", "/var/www/crownsystem-v3/matches.json", "application/json")
+              + block("/crownsystem-v3/results.json", "/var/www/crownsystem-v3/results.json", "application/json")
+              + block("/crownsystem-v3/history.html", "/var/www/crownsystem-v3/history.html", "text/html")
+          )
+          txt = txt[:m.start()] + inject + txt[m.start():]
+          open(p, "w").write(txt)
+          print("reapplied")
+          PY
+          sudo -n systemctl reload nginx
+
+          MD_BEFORE=$(sudo -n md5sum "$REAL" | awk '{print $1}')
+          MT_BEFORE=$(sudo -n stat -c %Y "$REAL")
+          echo "baseline md5=$MD_BEFORE mtime=$MT_BEFORE"
+
+          echo ""
+          echo "=== Watch 12 min with lsof spotcheck at each 30s tick ==="
+          for i in $(seq 1 24); do
+            sleep 30
+            MT_NOW=$(sudo -n stat -c %Y "$REAL")
+            if [ "$MT_NOW" != "$MT_BEFORE" ]; then
+              MD_NOW=$(sudo -n md5sum "$REAL" | awk '{print $1}')
+              if [ "$MD_NOW" != "$MD_BEFORE" ]; then
+                echo ""
+                echo ">>> [tick $i, $(date +%H:%M:%S)] FILE CHANGED"
+                echo ">>> new mtime=$MT_NOW old=$MT_BEFORE"
+                # Immediately snapshot process list + who opened this file
+                echo ">>> Processes with 'nginx' or 'python' or 'deploy' in cmdline (last 60 sec started):"
+                sudo -n ps -eo pid,etimes,user,cmd | awk 'NR==1 || $2 < 90' | grep -iE "nginx|python|deploy|ansible|salt|puppet|chef|cron" | head -25
+                echo ""
+                echo ">>> journalctl last 90 seconds (grepped for nginx/deploy/service):"
+                sudo -n journalctl --since "90 sec ago" --no-pager 2>&1 | grep -iE "nginx|unified|deploy|reload|crown|footbreak" | tail -25
+                echo ""
+                echo ">>> Now current crownsystem-v3 config state:"
+                sudo -n grep -n "crownsystem-v3" "$REAL" | head -12
+                MT_BEFORE=$MT_NOW
+                MD_BEFORE=$MD_NOW
+                # Reapply so we can catch it again
+                sudo -n python3 <<'PY2'
+                import re
+                p = "/etc/nginx/sites-available/unified-dashboard"
+                txt = open(p).read()
+                txt = re.sub(
+                    r'^[ \t]*location\s*=\s*/crownsystem-v3/[A-Za-z0-9._-]+\s*\{[^}]*\}\s*\n',
+                    '', txt, flags=re.M | re.S)
+                m = re.search(r'^([ \t]*)location\s*\^~\s*/crownsystem-v3/\s*\{', txt, re.M)
+                assert m
+                indent = m.group(1)
+                def block(url, alias, ctype):
+                    return (indent + "location = " + url + " {\n"
+                        + indent + "    auth_basic off;\n"
+                        + indent + "    alias " + alias + ";\n"
+                        + indent + "    default_type " + ctype + ";\n"
+                        + indent + '    add_header Cache-Control "no-store";\n'
+                        + indent + "}\n" + indent)
+                inject = (
+                    block("/crownsystem-v3/matches.json", "/var/www/crownsystem-v3/matches.json", "application/json")
+                    + block("/crownsystem-v3/results.json", "/var/www/crownsystem-v3/results.json", "application/json")
+                    + block("/crownsystem-v3/history.html", "/var/www/crownsystem-v3/history.html", "text/html"))
+                txt = txt[:m.start()] + inject + txt[m.start():]
+                open(p, "w").write(txt)
+                PY2
+                sudo -n systemctl reload nginx
+                MD_BEFORE=$(sudo -n md5sum "$REAL" | awk '{print $1}')
+                MT_BEFORE=$(sudo -n stat -c %Y "$REAL")
+                echo ">>> Reapplied. new md5=$MD_BEFORE"
+              fi
+            else
+              printf "."
+            fi
+          done
+          echo ""
+          echo "=== end of watch ==="
+          EOF
