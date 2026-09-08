@@ -1,0 +1,66 @@
+name: probe v2 vs v3 diff
+on:
+  workflow_dispatch:
+    inputs: {confirm: {description: 'CONFIRM', required: true}}
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/probe-v2-diff.yml']
+concurrency: {group: production-maintenance, cancel-in-progress: false}
+jobs:
+  x:
+    runs-on: ubuntu-latest
+    env: {CONFIRM_INPUT: "${{ github.event.inputs.confirm || 'CONFIRM' }}"}
+    steps:
+      - if: github.event_name == 'workflow_dispatch'
+        run: test "$CONFIRM_INPUT" = "CONFIRM"
+      - if: github.event_name == 'workflow_dispatch'
+        env: {SSHKEY: "${{ secrets.DEPLOY_SSH_KEY }}", H: "${{ secrets.DEPLOY_HOST }}", U: "${{ secrets.DEPLOY_USER }}"}
+        run: |
+          mkdir -p ~/.ssh && printf '%s\n' "$SSHKEY" > ~/.ssh/id && chmod 600 ~/.ssh/id
+          ssh -i ~/.ssh/id -o StrictHostKeyChecking=accept-new $U@$H bash <<'EOF'
+          set -e
+          echo "=== 1. What imports does the NEW merge use? ==="
+          grep -nE "^(import|from) |apply_opening_model|MODEL_VERSION" /opt/footbreak/deploy/v3/merge_titan_v2.py | head -30
+          
+          echo ""
+          echo "=== 2. What learning DBs exist? ==="
+          find /opt/footbreak -maxdepth 5 -name "*.db" 2>/dev/null | head
+          ls -la /opt/footbreak/data/ 2>/dev/null | head
+          
+          echo ""
+          echo "=== 3. Where does V2's REAL predictor read from? ==="
+          find /opt/footbreak -name "*.py" -path "*/crown/*" | head -20
+          
+          echo ""
+          echo "=== 4. Check what V2's data.json (broken) has - full sample ==="
+          sudo -n cat /var/www/crown/data.json 2>/dev/null | python3 -c "
+          import json, sys
+          d = json.load(sys.stdin)
+          print('keys:', list(d.keys())[:20])
+          matches = d.get('matches') or d.get('fixtures') or d.get('items') or []
+          print('matches count:', len(matches) if isinstance(matches,list) else 'N/A')
+          if isinstance(matches,list) and matches:
+              m = matches[0]
+              print('sample keys:', list(m.keys()))
+              stages = m.get('stages') or m.get('stage_data') or []
+              if isinstance(stages,list) and stages:
+                  print('stages[0] keys:', list(stages[0].keys()))
+                  print('stages[0] market_predictions sample:', str(stages[0].get('market_predictions'))[:400])
+                  print('stages[0] opening_model_status:', stages[0].get('opening_model_status'))
+                  print('stages[0] blend_weights:', stages[0].get('blend_weights'))
+                  print('stages[0] reference_source:', stages[0].get('reference_source'))
+          "
+          
+          echo ""
+          echo "=== 5. Check apply_opening_model signature + model version ==="
+          grep -nE "def apply_opening_model|MODEL_VERSION" /opt/footbreak/crown/opening_model.py | head -10
+          
+          echo ""
+          echo "=== 6. Sample new merge output (matches.json first entry raw) ==="
+          python3 -c "
+          import json
+          d = json.load(open('/var/www/crownsystem-v3/matches.json'))
+          print('count:', d['count'], 'source:', d.get('source'))
+          print('first match raw:', json.dumps(d['matches'][0], ensure_ascii=False, indent=2))
+          "
+          EOF
