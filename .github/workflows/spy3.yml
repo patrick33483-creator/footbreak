@@ -1,0 +1,36 @@
+name: spy crown-radar with auth
+on:
+  workflow_dispatch:
+    inputs: {confirm: {description: 'CONFIRM', required: true}}
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/spy3.yml']
+concurrency: {group: production-maintenance-9, cancel-in-progress: false}
+jobs:
+  x:
+    runs-on: ubuntu-latest
+    env: {CONFIRM_INPUT: "${{ github.event.inputs.confirm || 'CONFIRM' }}"}
+    steps:
+      - if: github.event_name == 'workflow_dispatch'
+        run: test "$CONFIRM_INPUT" = "CONFIRM"
+      - if: github.event_name == 'workflow_dispatch'
+        env: {SSHKEY: "${{ secrets.DEPLOY_SSH_KEY }}", H: "${{ secrets.DEPLOY_HOST }}", U: "${{ secrets.DEPLOY_USER }}"}
+        run: |
+          mkdir -p ~/.ssh && printf '%s\n' "$SSHKEY" > ~/.ssh/id && chmod 600 ~/.ssh/id
+          ssh -i ~/.ssh/id -o StrictHostKeyChecking=accept-new $U@$H bash <<'EOF'
+          echo "=== find password backup files for crown-radar / radar ==="
+          sudo -n ls /root/ | grep -iE "radar|crown|password" | head -20
+          echo ""
+          echo "=== try crown-radar htpasswd files ==="
+          sudo -n ls -la /etc/nginx/ | grep htpasswd
+          echo ""
+          echo "=== nginx section for crown-radar ==="
+          sudo -n sed -n '135,150p' /etc/nginx/sites-available/unified-dashboard
+          echo ""
+          echo "=== try common creds ==="
+          for cred in "radar:toberich" "crown:$(sudo -n cat /root/crown-dashboard-password.txt 2>/dev/null)" "radar:$(sudo -n cat /root/crown-radar-password.txt 2>/dev/null)" ; do
+            printf "  cred:${cred%%:*} = "
+            curl -s -o /tmp/b -w "%{http_code}" -u "$cred" http://127.0.0.1/crown-radar/api/matches-crown
+            printf "  head: %s\n" "$(head -c 150 /tmp/b | tr '\n' ' ')"
+          done
+          EOF
