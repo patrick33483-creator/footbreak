@@ -1,0 +1,33 @@
+name: Pull crown sample
+on:
+  workflow_dispatch: {}
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/pull-crown-sample.yml']
+concurrency:
+  group: production-maintenance-23
+  cancel-in-progress: false
+jobs:
+  x:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: diagnose/crown-v2-pending-20260906
+      - env:
+          SSHKEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          H: ${{ secrets.DEPLOY_HOST }}
+          U: ${{ secrets.DEPLOY_USER }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSHKEY" > ~/.ssh/id
+          chmod 600 ~/.ssh/id
+          SSH="ssh -i ~/.ssh/id -o StrictHostKeyChecking=accept-new $U@$H"
+
+          echo "=== crown-radar league distribution ==="
+          $SSH "curl -s -u radar:toberich http://127.0.0.1/crown-radar/api/matches-crown | python3 -c \"import json,sys,collections; d=json.load(sys.stdin); items=d if isinstance(d,list) else d.get('matches') or []; c=collections.Counter(m['league'] for m in items); [print(f'{k}: {v}') for k,v in c.most_common(30)]\""
+
+          echo ""
+          echo "=== first 10 matches (sid, league, home, away, kickoff) ==="
+          $SSH "curl -s -u radar:toberich http://127.0.0.1/crown-radar/api/matches-crown | python3 -c \"import json,sys,datetime; d=json.load(sys.stdin); items=d if isinstance(d,list) else d.get('matches') or []; items.sort(key=lambda m:m.get('kickoff_utc') or 0); [print(m['sid'], m['league'], m['home'],'v',m['away'], datetime.datetime.utcfromtimestamp(m['kickoff_utc']/1000).isoformat() if m.get('kickoff_utc') else '') for m in items[:15]]\""
