@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<title>球賽預測 V4</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { --bg:#0f1216; --fg:#e6e6e6; --dim:#8a8f97; --hi:#33c1ff; --ok:#3dd598; --warn:#ffcc33; --err:#ff6b6b; --box:#1a1e24; --border:#2a2f37; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:-apple-system,"PingFang HK","Microsoft YaHei",Arial,sans-serif; background:var(--bg); color:var(--fg); font-size:14px; }
+  header { padding:12px 14px; border-bottom:1px solid var(--border); position:sticky; top:0; background:var(--bg); z-index:10; }
+  h1 { margin:0; font-size:16px; }
+  .meta { font-size:12px; color:var(--dim); margin-top:4px; }
+  .toolbar { display:flex; gap:6px; margin-top:8px; flex-wrap:wrap; }
+  .toolbar button { background:var(--box); color:var(--fg); border:1px solid var(--border); padding:5px 10px; border-radius:5px; cursor:pointer; font-size:12px; }
+  .toolbar button.on { background:var(--hi); color:#000; }
+  .container { padding:8px; }
+  .match { background:var(--box); border:1px solid var(--border); border-radius:6px; margin-bottom:6px; padding:8px 10px; }
+  .row1 { display:flex; justify-content:space-between; gap:8px; }
+  .teams { font-weight:600; font-size:14px; }
+  .league { color:var(--dim); font-size:11px; margin-top:2px; }
+  .ko { color:var(--hi); font-size:12px; text-align:right; }
+  .status { font-size:11px; color:var(--dim); }
+  .stages { margin-top:8px; display:grid; grid-template-columns: repeat(3, 1fr); gap:4px; }
+  .stage { background:#131619; border:1px solid var(--border); border-radius:4px; padding:6px 7px; font-size:11px; }
+  .stage.locked { border-color:var(--ok); }
+  .stage h4 { margin:0 0 3px 0; font-size:11px; color:var(--hi); }
+  .stage .st { color:var(--dim); font-size:10px; margin-bottom:2px; }
+  .sug { border-left:2px solid var(--ok); padding-left:5px; margin-top:3px; }
+  .sug.h { border-left-color:var(--ok); }
+  .sug.m { border-left-color:var(--warn); }
+  .sug.l { border-left-color:var(--dim); }
+  .none { color:var(--dim); font-style:italic; }
+  .footer { text-align:center; color:var(--dim); font-size:11px; padding:20px 0; }
+  .nolinks a { color:var(--hi); text-decoration:none; }
+  .badge { display:inline-block; background:#2a2f37; color:var(--fg); border-radius:3px; padding:1px 5px; font-size:10px; }
+  .badge.no { background:#3a2020; color:var(--err); }
+</style>
+</head>
+<body>
+<header>
+  <h1>球賽預測 V4 · 皇冠有盤</h1>
+  <div class="meta" id="meta">載入中...</div>
+  <div class="toolbar">
+    <button data-f="all" class="on">全部</button>
+    <button data-f="soon">即將開賽</button>
+    <button data-f="has_sug">有提議</button>
+    <button data-f="locked">全鎖</button>
+    <span class="nolinks" style="margin-left:auto;font-size:11px;padding-top:5px;"><a href="/crownsystem-v4/history.html">歷史 →</a></span>
+  </div>
+</header>
+<div class="container" id="root">載入中...</div>
+<div class="footer">V4 · 由零累積 · 冇 backtest · 每 5 分鐘 refresh</div>
+
+<script>
+const STAGE_LABEL = {INITIAL:"初盤", T30:"T-30", T5:"T-5"};
+const MKT_LABEL = {ah:"讓球", ou:"大細", corners:"角球"};
+
+async function load() {
+  const r = await fetch('matches.json?ts=' + Date.now());
+  const data = await r.json();
+  document.getElementById('meta').textContent =
+    `生成 ${data.meta.generated_at} · 現場 ${data.meta.total_live} · 已鎖 ${countLocked(data.matches)} · 累積結果 ${data.meta.total_completed_recorded}`;
+  render(data.matches);
+}
+
+function countLocked(matches) {
+  let n = 0;
+  for (const m of matches) {
+    for (const s of Object.values(m.stages || {})) {
+      if (s.status === "已鎖") n++;
+    }
+  }
+  return n;
+}
+
+function render(matches) {
+  const activeF = document.querySelector('.toolbar button.on').dataset.f;
+  const now = Date.now();
+  const list = matches.filter(m => {
+    if (activeF === "soon") return (m.kickoff_ms - now) < 60*60*1000 && (m.kickoff_ms - now) > -30*60*1000;
+    if (activeF === "has_sug") {
+      for (const s of Object.values(m.stages || {})) {
+        const p = s.predictions;
+        if (p && ((p.ah||[]).length + (p.ou||[]).length + (p.corners||[]).length) > 0) return true;
+      }
+      return false;
+    }
+    if (activeF === "locked") return Object.values(m.stages || {}).every(s => s.status === "已鎖");
+    return true;
+  });
+  const root = document.getElementById('root');
+  if (!list.length) { root.innerHTML = '<div class="none" style="padding:20px;text-align:center;">冇符合條件嘅場次</div>'; return; }
+  root.innerHTML = list.map(matchHtml).join('');
+}
+
+function matchHtml(m) {
+  return `<div class="match">
+    <div class="row1">
+      <div>
+        <div class="teams">${escapeHtml(m.home)} <span class="status">vs</span> ${escapeHtml(m.away)}</div>
+        <div class="league">${escapeHtml(m.league||'-')} · ${escapeHtml(m.current_stage||'-')}</div>
+      </div>
+      <div class="ko">${escapeHtml(m.kickoff)}</div>
+    </div>
+    <div class="stages">
+      ${["INITIAL","T30","T5"].map(st => stageHtml(st, m.stages[st] || {})).join('')}
+    </div>
+  </div>`;
+}
+
+function stageHtml(st, s) {
+  const locked = s.status === "已鎖";
+  const cls = "stage" + (locked ? " locked" : "");
+  const p = s.predictions;
+  let mkts = '';
+  if (locked && p) {
+    for (const [mk, list] of [["ah", p.ah||[]], ["ou", p.ou||[]], ["corners", p.corners||[]]]) {
+      mkts += `<div><b>${MKT_LABEL[mk]}:</b> ${mktLine(mk, list, p)}</div>`;
+    }
+  }
+  return `<div class="${cls}">
+    <h4>${STAGE_LABEL[st]}</h4>
+    <div class="st">${escapeHtml(s.status||'')}${s.locked_at ? ' · '+escapeHtml(s.locked_at.split(' ')[1]||'') : ''}</div>
+    ${mkts || (locked ? '<div class="none">冇提議</div>' : '')}
+  </div>`;
+}
+
+function mktLine(mk, list, bundle) {
+  if (mk === "corners" && !list.length) return '<span class="badge no">皇冠冇盤</span>';
+  if (!list.length) return '<span class="none">冇</span>';
+  return list.map(s => {
+    const cls = s.confidence === "高" ? "h" : (s.confidence === "中" ? "m" : "l");
+    const line = s.line !== undefined && s.line !== null ? ` ${escapeHtml(String(s.line))}` : '';
+    return `<div class="sug ${cls}">${escapeHtml(s.side)}${line} @${s.decimal_odds} · ${s.confidence} · EV ${(s.ev*100).toFixed(1)}%</div>`;
+  }).join('');
+}
+
+function escapeHtml(s) { return String(s ?? '').replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+
+document.querySelectorAll('.toolbar button').forEach(b => b.addEventListener('click', e => {
+  document.querySelectorAll('.toolbar button').forEach(x => x.classList.remove('on'));
+  e.target.classList.add('on');
+  load();
+}));
+
+load();
+setInterval(load, 60*1000);
+</script>
+</body>
+</html>

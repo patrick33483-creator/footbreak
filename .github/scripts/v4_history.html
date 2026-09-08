@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<title>球賽預測 V4 · 歷史</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { --bg:#0f1216; --fg:#e6e6e6; --dim:#8a8f97; --hi:#33c1ff; --ok:#3dd598; --warn:#ffcc33; --err:#ff6b6b; --box:#1a1e24; --border:#2a2f37; }
+  body { margin:0; font-family:-apple-system,"PingFang HK","Microsoft YaHei",Arial,sans-serif; background:var(--bg); color:var(--fg); font-size:14px; }
+  header { padding:12px 14px; border-bottom:1px solid var(--border); position:sticky; top:0; background:var(--bg); z-index:10; }
+  h1 { margin:0; font-size:16px; }
+  .meta { font-size:12px; color:var(--dim); margin-top:4px; }
+  .container { padding:8px; }
+  .match { background:var(--box); border:1px solid var(--border); border-radius:6px; margin-bottom:6px; padding:8px 10px; }
+  .row1 { display:flex; justify-content:space-between; gap:8px; }
+  .teams { font-weight:600; font-size:14px; }
+  .league { color:var(--dim); font-size:11px; }
+  .ko { color:var(--hi); font-size:12px; text-align:right; }
+  .score { color:var(--warn); font-weight:600; font-size:16px; text-align:right; }
+  .stages { margin-top:8px; display:grid; grid-template-columns: repeat(3, 1fr); gap:4px; }
+  .stage { background:#131619; border:1px solid var(--border); border-radius:4px; padding:6px 7px; font-size:11px; }
+  .stage h4 { margin:0 0 3px 0; font-size:11px; color:var(--hi); }
+  .sug { border-left:2px solid var(--ok); padding-left:5px; margin-top:3px; }
+  .none { color:var(--dim); }
+  .back { color:var(--hi); text-decoration:none; }
+</style>
+</head>
+<body>
+<header>
+  <h1>球賽預測 V4 · 歷史結果</h1>
+  <div class="meta"><a class="back" href="/crownsystem-v4/">← 返回</a> · 由 V4 上線一刻起累積 · 唔自動計輸贏</div>
+</header>
+<div class="container" id="root">載入中...</div>
+
+<script>
+const STAGE_LABEL = {INITIAL:"初盤", T30:"T-30", T5:"T-5"};
+const MKT_LABEL = {ah:"讓球", ou:"大細", corners:"角球"};
+
+async function load() {
+  const r = await fetch('results.json?ts=' + Date.now());
+  const data = await r.json();
+  const list = Array.isArray(data) ? data : (data.results || []);
+  list.sort((a,b) => (b.kickoff_ms||0) - (a.kickoff_ms||0));
+  render(list);
+}
+
+function render(list) {
+  const root = document.getElementById('root');
+  if (!list.length) { root.innerHTML = '<div class="none" style="padding:20px;text-align:center;">仲未有累積結果</div>'; return; }
+  root.innerHTML = list.map(rowHtml).join('');
+}
+
+function rowHtml(m) {
+  const r = m.result || {};
+  const score = (r.home_score !== undefined) ? `${r.home_score} - ${r.away_score}` : '-';
+  return `<div class="match">
+    <div class="row1">
+      <div>
+        <div class="teams">${escapeHtml(m.home)} <span class="none">vs</span> ${escapeHtml(m.away)}</div>
+        <div class="league">${escapeHtml(m.league||'-')} · ${escapeHtml(m.kickoff||'')}</div>
+      </div>
+      <div class="score">${score}</div>
+    </div>
+    <div class="stages">
+      ${["INITIAL","T30","T5"].map(st => stageHtml(st, m.stages ? m.stages[st] : null)).join('')}
+    </div>
+  </div>`;
+}
+
+function stageHtml(st, s) {
+  if (!s) return `<div class="stage"><h4>${STAGE_LABEL[st]}</h4><div class="none">-</div></div>`;
+  if (s.status && s.status !== "已鎖") return `<div class="stage"><h4>${STAGE_LABEL[st]}</h4><div class="none">${escapeHtml(s.status)}</div></div>`;
+  const p = s.predictions;
+  let mkts = '';
+  for (const [mk, list] of [["ah", (p&&p.ah)||[]], ["ou", (p&&p.ou)||[]], ["corners", (p&&p.corners)||[]]]) {
+    mkts += `<div><b>${MKT_LABEL[mk]}:</b> ${list.length ? list.map(x => `${escapeHtml(x.side)}${x.line!==undefined?' '+escapeHtml(String(x.line)):''} @${x.decimal_odds}`).join(', ') : '<span class="none">冇</span>'}</div>`;
+  }
+  return `<div class="stage"><h4>${STAGE_LABEL[st]}</h4>${mkts}</div>`;
+}
+
+function escapeHtml(s) { return String(s ?? '').replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+
+load();
+setInterval(load, 60*1000);
+</script>
+</body>
+</html>
