@@ -11,48 +11,13 @@ jobs:
     runs-on: ubuntu-latest
     env: {CONFIRM_INPUT: "${{ github.event.inputs.confirm || 'CONFIRM' }}"}
     steps:
+      - uses: actions/checkout@v4
+        with: {ref: diagnose/crown-v2-pending-20260906}
       - if: github.event_name == 'workflow_dispatch'
         run: test "$CONFIRM_INPUT" = "CONFIRM"
       - if: github.event_name == 'workflow_dispatch'
         env: {SSHKEY: "${{ secrets.DEPLOY_SSH_KEY }}", H: "${{ secrets.DEPLOY_HOST }}", U: "${{ secrets.DEPLOY_USER }}"}
         run: |
           mkdir -p ~/.ssh && printf '%s\n' "$SSHKEY" > ~/.ssh/id && chmod 600 ~/.ssh/id
-          # Write a python script to the server first, then run it
-          scp -i ~/.ssh/id -o StrictHostKeyChecking=accept-new /dev/stdin $U@$H:/tmp/spy5.py <<'PY'
-          import sys, json, urllib.request, base64, os
-          AUTH = "Basic " + base64.b64encode(b"radar:toberich").decode()
-          def get(path):
-              req = urllib.request.Request("http://127.0.0.1" + path, headers={"Authorization": AUTH})
-              return json.loads(urllib.request.urlopen(req, timeout=20).read())
-          print("### matches-crown ###")
-          d = get("/crown-radar/api/matches-crown")
-          items = d if isinstance(d, list) else d.get("matches", [])
-          print("total:", len(items))
-          if items:
-              m = items[0]
-              print("keys:", sorted(m.keys()))
-              # show whole match without prices arrays to reduce
-              print("--- FULL FIRST MATCH ---")
-              print(json.dumps(m, ensure_ascii=False, indent=2)[:5000])
-              snap = m.get("snapshots") or {}
-              print("--- SNAPSHOT KEYS ---")
-              print(sorted(snap.keys()))
-              for k in list(snap.keys())[:2]:
-                  v = snap[k]
-                  print(f"--- SNAP {k} ---")
-                  print(json.dumps(v, ensure_ascii=False, indent=2)[:800])
-          print("")
-          print("### history ###")
-          d = get("/crown-radar/api/history")
-          items = d if isinstance(d, list) else d.get("matches", [])
-          print("total:", len(items))
-          done = [m for m in items if isinstance(m.get("result"), dict) and m["result"].get("status") in ("完","完場")]
-          print("completed:", len(done))
-          if done:
-              m = done[0]
-              print("keys:", sorted(m.keys()))
-              print("result:", json.dumps(m.get("result"), ensure_ascii=False))
-              print("--- SAMPLE ---")
-              print(json.dumps({k:m[k] for k in sorted(m.keys()) if k != "snapshots"}, ensure_ascii=False, indent=2)[:2000])
-          PY
+          scp -i ~/.ssh/id -o StrictHostKeyChecking=accept-new .github/scripts/spy_crown_radar.py $U@$H:/tmp/spy5.py
           ssh -i ~/.ssh/id -o StrictHostKeyChecking=accept-new $U@$H "python3 /tmp/spy5.py"
