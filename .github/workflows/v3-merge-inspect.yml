@@ -1,0 +1,47 @@
+name: V3 merge inspect
+on:
+  workflow_dispatch:
+    inputs:
+      confirm: {description: 'CONFIRM', required: true}
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/v3-merge-inspect.yml']
+
+concurrency: {group: production-maintenance, cancel-in-progress: false}
+
+jobs:
+  x:
+    runs-on: ubuntu-latest
+    env: {CONFIRM_INPUT: "${{ github.event.inputs.confirm || 'CONFIRM' }}"}
+    steps:
+      - run: test "$CONFIRM_INPUT" = "CONFIRM"
+      - env:
+          SSHKEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          H: ${{ secrets.DEPLOY_HOST }}
+          U: ${{ secrets.DEPLOY_USER }}
+        run: |
+          mkdir -p ~/.ssh && printf '%s\n' "$SSHKEY" > ~/.ssh/id && chmod 600 ~/.ssh/id
+          SSH="ssh -i ~/.ssh/id -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=30 $U@$H"
+          $SSH bash <<'EOF'
+          set +e
+          echo "=== systemd unit file for crownsystem-v3-merge ==="
+          systemctl cat crownsystem-v3-merge.service 2>/dev/null
+          echo ""
+          echo "=== last runs ==="
+          journalctl -u crownsystem-v3-merge.service -n 80 --no-pager 2>/dev/null | tail -80
+          echo ""
+          echo "=== timer if any ==="
+          systemctl list-timers --all --no-pager 2>/dev/null | grep -iE "crownsystem|v3|merge" | head -10
+          echo ""
+          echo "=== find crownsystem-v3 files ==="
+          find / -path /proc -prune -o -type d -name "crownsystem-v3*" -print 2>/dev/null | head
+          find / -path /proc -prune -o -type f -name "*crownsystem*v3*" -print 2>/dev/null | head
+          find / -path /proc -prune -o -type f -name "matches.json" -print 2>/dev/null | head
+          echo ""
+          echo "=== V3 UI (port 8081/8082) ==="
+          curl -s -o /dev/null -w "8081: %{http_code}\n" http://127.0.0.1:8081/
+          curl -s -o /dev/null -w "8082: %{http_code}\n" http://127.0.0.1:8082/
+          curl -s http://127.0.0.1:8081/ 2>/dev/null | head -30
+          echo "---"
+          curl -s http://127.0.0.1:8082/ 2>/dev/null | head -30
+          EOF
