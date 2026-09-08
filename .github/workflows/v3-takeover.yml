@@ -1,0 +1,101 @@
+name: V3 URL takeover by V4 logic
+on:
+  workflow_dispatch:
+    inputs: {confirm: {description: 'CONFIRM', required: true}}
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/v3-takeover.yml']
+concurrency: {group: production-maintenance-16, cancel-in-progress: false}
+jobs:
+  x:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env: {CONFIRM_INPUT: "${{ github.event.inputs.confirm || 'CONFIRM' }}"}
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: diagnose/crown-v2-pending-20260906}
+      - if: github.event_name == 'workflow_dispatch'
+        run: test "$CONFIRM_INPUT" = "CONFIRM"
+      - if: github.event_name == 'workflow_dispatch'
+        env: {SSHKEY: "${{ secrets.DEPLOY_SSH_KEY }}", H: "${{ secrets.DEPLOY_HOST }}", U: "${{ secrets.DEPLOY_USER }}"}
+        run: |
+          set -e
+          mkdir -p ~/.ssh && printf '%s\n' "$SSHKEY" > ~/.ssh/id && chmod 600 ~/.ssh/id
+          SSH="ssh -i ~/.ssh/id -o StrictHostKeyChecking=accept-new $U@$H"
+          SCP="scp -i ~/.ssh/id -o StrictHostKeyChecking=accept-new"
+
+          echo "=== 1. Deploy V4 merge script ==="
+          $SCP .github/scripts/v4_v3schema_merge.py $U@$H:/tmp/v4_v3schema_merge.py
+          $SSH "sudo -n install -m 0755 /tmp/v4_v3schema_merge.py /opt/crownsystem-v4/v4_v3schema_merge.py"
+
+          echo ""
+          echo "=== 2. Cold start: wipe checkpoints + results ==="
+          $SSH "sudo -n bash -c 'echo \"{}\" > /var/lib/crownsystem-v4/checkpoints.json'"
+          $SSH "sudo -n bash -c 'ts=\$(date +%s); if [ -f /var/www/crownsystem-v3/matches.json ]; then cp /var/www/crownsystem-v3/matches.json /var/www/crownsystem-v3/.matches.json.bak.\$ts; fi; if [ -f /var/www/crownsystem-v3/results.json ]; then cp /var/www/crownsystem-v3/results.json /var/www/crownsystem-v3/.results.json.bak.\$ts; fi'"
+
+          echo ""
+          echo "=== 3. First run ==="
+          $SSH "sudo -n python3 /opt/crownsystem-v4/v4_v3schema_merge.py"
+
+          echo ""
+          echo "=== 4. Verify V3 matches.json schema ==="
+          $SSH "sudo -n python3 -c 'import json; d=json.load(open(\"/var/www/crownsystem-v3/matches.json\")); print(\"count=\",d[\"count\"],\"source=\",d[\"source\"]); m=d[\"matches\"][0] if d[\"matches\"] else {}; print(\"sample:\",json.dumps(m,ensure_ascii=False))'"
+
+          echo ""
+          echo "=== 5. Rewrite crownsystem-v3-merge.service to run V4 script ==="
+          $SSH "sudo -n bash -c 'cat > /etc/systemd/system/crownsystem-v3-merge.service' <<'UNIT'
+          [Unit]
+          Description=crownsystem-v3 URL served by V4 merge logic
+          After=network-online.target
+
+          [Service]
+          Type=oneshot
+          ExecStart=/usr/bin/python3 /opt/crownsystem-v4/v4_v3schema_merge.py
+          User=root
+          TimeoutStartSec=45
+          Nice=10
+          UNIT"
+
+          $SSH "sudo -n bash -c 'cat > /etc/systemd/system/crownsystem-v3-merge.timer' <<'UNIT'
+          [Unit]
+          Description=crownsystem-v3 merge tick (V4 logic, every 5 min)
+
+          [Timer]
+          OnBootSec=2min
+          OnUnitActiveSec=5min
+          AccuracySec=15s
+          Persistent=true
+          Unit=crownsystem-v3-merge.service
+
+          [Install]
+          WantedBy=timers.target
+          UNIT"
+
+          $SSH "sudo -n systemctl daemon-reload && sudo -n systemctl enable --now crownsystem-v3-merge.timer"
+
+          echo ""
+          echo "=== 6. Stop V4 timer + remove V4 URL ==="
+          $SSH "sudo -n systemctl disable --now crownsystem-v4-merge.timer || true"
+          $SSH "sudo -n rm -f /etc/systemd/system/crownsystem-v4-merge.timer /etc/systemd/system/crownsystem-v4-merge.service"
+          $SSH "sudo -n systemctl daemon-reload"
+          $SSH "sudo -n rm -rf /var/www/crownsystem-v4"
+
+          echo ""
+          echo "=== 7. Patch nginx template: remove v4 routes ==="
+          $SCP .github/scripts/nginx_strip_v4.py $U@$H:/tmp/nginx_strip_v4.py
+          $SSH "sudo -n python3 /tmp/nginx_strip_v4.py"
+          $SSH "sudo -n nginx -t 2>&1"
+          $SSH "sudo -n systemctl reload nginx"
+
+          echo ""
+          echo "=== 8. Timer status ==="
+          $SSH "sudo -n systemctl list-timers 'crownsystem*' --no-pager"
+
+          echo ""
+          echo "=== 9. External smoke (V3 URL) ==="
+          for u in "matches.json" "results.json" "history.html"; do
+            printf "  crownsystem-v3/%s = " "$u"
+            curl -s -o /dev/null -w "%{http_code}\n" "http://146.190.93.148/crownsystem-v3/$u"
+          done
+          echo "  crownsystem-v3/ (basic auth expected) = $(curl -s -o /dev/null -w '%{http_code}' 'http://146.190.93.148/crownsystem-v3/')"
+          echo "  crownsystem-v4/matches.json (should 404) = $(curl -s -o /dev/null -w '%{http_code}' 'http://146.190.93.148/crownsystem-v4/matches.json')"
