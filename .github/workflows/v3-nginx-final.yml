@@ -42,7 +42,9 @@ jobs:
                   re.M | re.S)
               return pat.sub('', txt)
 
-          for f in ("data.json", "results.json", "titan_today.json"):
+          # Always drop and re-add these three v3 exact blocks (idempotent, safe).
+          for f in ("data.json", "results.json", "titan_today.json",
+                    "matches.json", "history.html"):
               txt = strip_block(f)
 
           # Insert three exact locations before ^~ /crownsystem-v3/
@@ -71,7 +73,7 @@ jobs:
 
           add("/crownsystem-v3/matches.json",  "/var/www/crownsystem-v3/matches.json",  "application/json")
           add("/crownsystem-v3/results.json",  "/var/www/crownsystem-v3/results.json",  "application/json")
-          add("/crownsystem-v3/history.html",  "/var/www/crownsystem-v3/history.html",  "text/html; charset=utf-8")
+          add("/crownsystem-v3/history.html",  "/var/www/crownsystem-v3/history.html",  "text/html")
 
           open(path, "w").write(txt)
           print("patched")
