@@ -1,0 +1,55 @@
+name: V4 cold-start (wipe results + patched merge)
+on:
+  workflow_dispatch:
+    inputs: {confirm: {description: 'CONFIRM', required: true}}
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/v4-cold-start.yml']
+concurrency: {group: production-maintenance-13, cancel-in-progress: false}
+jobs:
+  x:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env: {CONFIRM_INPUT: "${{ github.event.inputs.confirm || 'CONFIRM' }}"}
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: diagnose/crown-v2-pending-20260906}
+      - if: github.event_name == 'workflow_dispatch'
+        run: test "$CONFIRM_INPUT" = "CONFIRM"
+      - if: github.event_name == 'workflow_dispatch'
+        env: {SSHKEY: "${{ secrets.DEPLOY_SSH_KEY }}", H: "${{ secrets.DEPLOY_HOST }}", U: "${{ secrets.DEPLOY_USER }}"}
+        run: |
+          mkdir -p ~/.ssh && printf '%s\n' "$SSHKEY" > ~/.ssh/id && chmod 600 ~/.ssh/id
+          SSH="ssh -i ~/.ssh/id -o StrictHostKeyChecking=accept-new $U@$H"
+          SCP="scp -i ~/.ssh/id -o StrictHostKeyChecking=accept-new"
+
+          # 1. Deploy patched merge
+          $SCP .github/scripts/v4_merge.py $U@$H:/tmp/v4_merge.py
+          $SSH "sudo -n install -m 0755 /tmp/v4_merge.py /opt/crownsystem-v4/v4_merge.py"
+
+          # 2. Cold-start: wipe results.json (keep checkpoints since we already locked some)
+          $SSH "sudo -n bash -c 'echo \"[]\" > /var/www/crownsystem-v4/results.json && chown root:www-data /var/www/crownsystem-v4/results.json'"
+
+          # 3. Run merge with fresh accumulation rule
+          $SSH "sudo -n python3 /opt/crownsystem-v4/v4_merge.py"
+
+          # 4. Show sample
+          $SSH "sudo -n python3 -c 'import json; d=json.load(open(\"/var/www/crownsystem-v4/matches.json\")); print(json.dumps(d[\"meta\"], ensure_ascii=False, indent=2))'"
+
+          # 5. Show a locked row + a suggestion (if any)
+          $SSH "sudo -n python3 -c '
+          import json
+          d = json.load(open(\"/var/www/crownsystem-v4/matches.json\"))
+          locked = [m for m in d[\"matches\"] if any(s.get(\"status\")==\"已鎖\" for s in m[\"stages\"].values())]
+          print(f\"locked_rows={len(locked)}\")
+          with_sug = []
+          for m in locked:
+              for st, s in m[\"stages\"].items():
+                  p = (s or {}).get(\"predictions\") or {}
+                  if (p.get(\"ah\") or p.get(\"ou\")):
+                      with_sug.append(m); break
+          print(f\"with_suggestions={len(with_sug)}\")
+          if with_sug:
+              print(\"sample:\")
+              print(json.dumps(with_sug[0], ensure_ascii=False, indent=2)[:1500])
+          '"

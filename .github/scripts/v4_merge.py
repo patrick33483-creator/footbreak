@@ -138,16 +138,20 @@ def main():
             stats["waiting"] += 1
         ui_rows.append(project_row(m, cp[sid], stage))
 
-    # Detect newly completed: history contains a match not already in results file
+    # Detect newly completed: history contains a match not already in results file.
+    # Cold start rule: only record matches where V4 actually locked >=1 stage.
     results = load_results_history()
     known = {r["sid"] for r in results}
     for sid, hm in hist_by_sid.items():
         if sid in known:
             continue
         r = hm.get("result") or {}
-        if r.get("status") in ("完", "完場"):
-            cp_m = cp.get(sid, {})
-            results.append(result_row(hm, cp_m))
+        if r.get("status") not in ("完", "完場"):
+            continue
+        cp_m = cp.get(sid, {})
+        if not any(st in cp_m for st in STAGES):
+            continue  # V4 didn't lock anything for this match — skip (cold start)
+        results.append(result_row(hm, cp_m))
 
     # Sort UI: soonest kickoff first
     ui_rows.sort(key=lambda r: r["kickoff_ms"])
