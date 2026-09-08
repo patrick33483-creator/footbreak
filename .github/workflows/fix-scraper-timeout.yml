@@ -1,0 +1,56 @@
+name: Fix scraper timeout
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        required: true
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/fix-scraper-timeout.yml']
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+jobs:
+  d:
+    runs-on: ubuntu-latest
+    env:
+      E: ${{ github.event_name }}
+      C: ${{ inputs.confirmation }}
+    steps:
+      - name: guard
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then exit 0; fi
+          if [ "$C" != "FIXST300" ]; then exit 1; fi
+      - name: ssh
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - name: apply
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then exit 0; fi
+          SSH="ssh -o BatchMode=yes -o ConnectTimeout=20 -o StrictHostKeyChecking=accept-new $DEPLOY_USER@$DEPLOY_HOST"
+          SCP="scp -o BatchMode=yes -o ConnectTimeout=20 -o StrictHostKeyChecking=accept-new"
+          printf '%s\n%s\n' '[Service]' 'TimeoutStartSec=300' > /tmp/timeout.conf
+          echo "=== drop-in content ==="
+          cat /tmp/timeout.conf
+          echo
+          echo "=== BEFORE ==="
+          $SSH 'sudo systemctl show crown-sweep.service -p TimeoutStartUSec'
+          echo
+          $SCP /tmp/timeout.conf $DEPLOY_USER@$DEPLOY_HOST:/tmp/timeout.conf
+          $SSH 'sudo mkdir -p /etc/systemd/system/crown-sweep.service.d && sudo cp /tmp/timeout.conf /etc/systemd/system/crown-sweep.service.d/timeout.conf && sudo systemctl daemon-reload && sudo systemctl restart crown-sweep.timer'
+          echo "=== AFTER ==="
+          $SSH 'sudo systemctl show crown-sweep.service -p TimeoutStartUSec'
+          echo
+          $SSH 'sudo cat /etc/systemd/system/crown-sweep.service.d/timeout.conf'
+          echo
+          echo "=== timer status ==="
+          $SSH 'sudo systemctl status crown-sweep.timer --no-pager 2>&1 | head -10'

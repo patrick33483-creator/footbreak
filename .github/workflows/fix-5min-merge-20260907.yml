@@ -1,0 +1,114 @@
+name: Fix 5min timer to use --merge
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "打 FIXMERGE"
+        required: true
+        type: string
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/fix-5min-merge-20260907.yml']
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  d:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -T 15 -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+      - env:
+          E: ${{ github.event_name }}
+          C: ${{ inputs.confirmation }}
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then exit 0; fi
+          if [ "$C" != "FIXMERGE" ]; then exit 1; fi
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=30 -o StrictHostKeyChecking=accept-new \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          set -e
+          TS=$(date +%Y%m%d-%H%M%S)
+          
+          echo "===== 1) Show existing service before patch ====="
+          cat /etc/systemd/system/v2-results-sync.service
+          
+          echo
+          echo "===== 2) Backup + patch to use --merge and 7-day window ====="
+          cp /etc/systemd/system/v2-results-sync.service /etc/systemd/system/v2-results-sync.service.backup-$TS
+          
+          cat > /etc/systemd/system/v2-results-sync.service <<'SVC'
+          [Unit]
+          Description=Build /var/www/stage_engine_v2/results.json from titan007 (5min light job)
+          After=network-online.target
+          
+          [Service]
+          Type=oneshot
+          ExecStart=/usr/local/bin/v2-results-sync.py --lookback-days 7 --merge
+          User=root
+          Nice=10
+          TimeoutStartSec=180
+          SVC
+          
+          systemctl daemon-reload
+          
+          echo
+          echo "===== 3) Restore latest good backup (3473 results) as base ====="
+          # Use pre-5min-overwrite backup
+          LATEST_GOOD=$(ls -S /var/www/stage_engine_v2/results.json.backup-* | head -1)
+          echo "Using: $LATEST_GOOD"
+          cp "$LATEST_GOOD" /var/www/stage_engine_v2/results.json
+          
+          # Show current state
+          python3 -c "
+          import json
+          d = json.load(open('/var/www/stage_engine_v2/results.json'))
+          print(f'restored: {len(d[\"results\"])} results')
+          "
+          
+          echo
+          echo "===== 4) Manual trigger to verify merge behavior ====="
+          systemctl start v2-results-sync.service
+          sleep 25
+          journalctl -u v2-results-sync.service -n 15 --no-pager
+          
+          echo
+          echo "===== 5) Verify results count after merge ====="
+          python3 -c "
+          import json
+          d = json.load(open('/var/www/stage_engine_v2/results.json'))
+          print(f'after merge: {len(d[\"results\"])} results')
+          print(f'stats: {d.get(\"stats\", {})}')
+          "
+          
+          echo
+          echo "===== 6) Run 30-day backfill again to fully refill ====="
+          time /usr/local/bin/v2-results-sync.py --lookback-days 30 --merge 2>&1 | tail -10
+          
+          echo
+          echo "===== 7) Final state ====="
+          python3 -c "
+          import json
+          d = json.load(open('/var/www/stage_engine_v2/results.json'))
+          print(f'FINAL: {len(d[\"results\"])} results')
+          print(f'stats: {d.get(\"stats\", {})}')
+          "
+          REMOTE

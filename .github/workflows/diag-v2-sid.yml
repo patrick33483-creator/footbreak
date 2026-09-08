@@ -1,0 +1,155 @@
+name: Diag v2 sid vs radar
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation: {description: "打 DIAGSID", required: true, type: string}
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/diag-v2-sid.yml']
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  d:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - env:
+          E: ${{ github.event_name }}
+          C: ${{ inputs.confirmation }}
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then exit 0; fi
+          if [ "$C" != "DIAGSID" ]; then exit 1; fi
+      - env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          if [ "${{ github.event_name }}" != "workflow_dispatch" ]; then exit 0; fi
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+          SSH="ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=30 -i ~/.ssh/id_ed25519 $DEPLOY_USER@$DEPLOY_HOST"
+
+          # Write py locally, scp, then run
+          python3 - <<'PYWRITE' > /tmp/diag.py
+          content = r'''
+          import json
+          from datetime import datetime, timezone
+          now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+          print("now UTC:", datetime.now(timezone.utc).isoformat())
+          print()
+
+          d = json.load(open("/var/www/stage_engine_v2/data.json"))
+          fx = d.get("fixtures", [])
+          print("V2 fixtures:", len(fx))
+          future = past = no_time = 0
+          futures_sample = []
+          for f in fx:
+              k = f.get("kickoff_utc")
+              if not k:
+                  no_time += 1
+                  continue
+              try:
+                  t = datetime.fromisoformat(k.replace("Z","+00:00"))
+                  if t.timestamp()*1000 > now_ms:
+                      future += 1
+                      if len(futures_sample) < 5:
+                          futures_sample.append({"home": f.get("home"), "away": f.get("away"), "kickoff": k, "stages": list(f.get("stages",{}).keys())})
+                  else:
+                      past += 1
+              except Exception:
+                  no_time += 1
+          print("V2 kickoff: future={} past={} no_time={}".format(future, past, no_time))
+          print("V2 sample fx[0]:", json.dumps({k: fx[0].get(k) for k in ["id","source","home","away","kickoff_utc","league"]}, ensure_ascii=False))
+          if futures_sample:
+              print("V2 future samples:")
+              for s in futures_sample:
+                  print(" ", json.dumps(s, ensure_ascii=False))
+          print()
+
+          import urllib.request
+          try:
+              r = urllib.request.urlopen("http://127.0.0.1:5002/api/matches", timeout=8)
+              radar = json.loads(r.read())
+              print("radar /api/matches:", len(radar), "upcoming")
+              if radar:
+                  m = radar[0]
+                  print("radar sample:", json.dumps({k: m.get(k) for k in ["sid","league","home","away","kickoff_utc"]}, ensure_ascii=False))
+                  t = datetime.fromtimestamp(m["kickoff_utc"]/1000, tz=timezone.utc)
+                  print("  kickoff ISO:", t.isoformat())
+                  radar_by_ha = {(str(x.get("home","")).strip(), str(x.get("away","")).strip()): x for x in radar}
+                  v2_by_ha = {(str(f.get("home","")).strip(), str(f.get("away","")).strip()): f for f in fx}
+                  common = set(radar_by_ha) & set(v2_by_ha)
+                  print("(home,away) match: {} / radar={}, v2={}".format(len(common), len(radar_by_ha), len(v2_by_ha)))
+                  if common:
+                      key = list(common)[0]
+                      rf = radar_by_ha[key]
+                      vf = v2_by_ha[key]
+                      print("  sample match: home={} away={}".format(key[0], key[1]))
+                      print("    radar kickoff:", datetime.fromtimestamp(rf["kickoff_utc"]/1000, tz=timezone.utc).isoformat())
+                      print("    v2 kickoff:   ", vf.get("kickoff_utc"))
+                      print("    v2 stages:    ", list(vf.get("stages",{}).keys()))
+                  v2_sids = {str(f.get("id")) for f in fx}
+                  radar_sids = {str(x["sid"]) for x in radar}
+                  print("sid overlap:", len(v2_sids & radar_sids))
+          except Exception as e:
+              print("radar API error:", e)
+          '''
+          import textwrap
+          print(textwrap.dedent(content))
+          PYWRITE
+          scp -o StrictHostKeyChecking=accept-new -i ~/.ssh/id_ed25519 /tmp/diag.py "$DEPLOY_USER@$DEPLOY_HOST:/tmp/diag.py"
+          $SSH 'python3 /tmp/diag.py; rm -f /tmp/diag.py'
+          set +e
+          echo
+          echo '=== V2 predict pipeline hunt ==='
+          $SSH 'systemctl list-timers --all --no-pager 2>&1 | grep -iE "stage|engine|v2|predict|footbreak|crown" | head -20'
+          echo
+          $SSH 'sudo find /opt -maxdepth 4 -name "*.service" -o -name "*.timer" 2>/dev/null | grep -iE "stage|v2|predict" | head -20'
+          echo
+          $SSH 'sudo ls /opt/footbreak/deploy/systemd/ 2>/dev/null'
+          echo
+          $SSH 'stat /var/www/stage_engine_v2/data.json | grep Modify'
+          echo
+          echo '=== crown-radar backend auth ==='
+          $SSH 'sudo grep -rn 5002 /etc/nginx/ 2>/dev/null | head -5'
+          $SSH 'curl -sS http://127.0.0.1:5002/ 2>&1 | head -3'
+          echo
+          echo '=== V2 tick service ==='
+          $SSH 'systemctl cat footbreak-tick.service 2>&1 | grep -E "^ExecStart|WorkingDirectory"'
+          $SSH 'systemctl cat footbreak-t30.service 2>&1 | grep -E "^ExecStart|WorkingDirectory"'
+          $SSH 'systemctl cat footbreak-sweep.service 2>&1 | grep -E "^ExecStart|WorkingDirectory"'
+          echo
+          echo '=== recent tick log ==='
+          $SSH 'journalctl -u footbreak-tick.service --no-pager -n 30 --since "1 hour ago" 2>&1 | tail -40'
+          echo
+          echo '=== data.json full keys ==='
+          $SSH 'python3 -c "import json; d=json.load(open(\"/var/www/stage_engine_v2/data.json\")); print(\"top keys:\", list(d.keys())); print(\"fx[0] keys:\", list(d.get(\"fixtures\",[{}])[0].keys()) if d.get(\"fixtures\") else \"none\"); import datetime; kks=[f.get(\"kickoff_utc\") for f in d.get(\"fixtures\",[])]; kks_sorted=sorted([k for k in kks if k]); print(\"kickoff range:\", kks_sorted[0], \"->\", kks_sorted[-1]) if kks_sorted else print(\"no kickoffs\") "'
+          echo
+          echo '=== V2 project dir ls ==='
+          $SSH 'sudo ls /opt/footbreak/ 2>&1 | head -20; echo ---; sudo find /opt/footbreak -maxdepth 3 -name "*.py" 2>&1 | grep -iE "tick|t30|sweep|fetch|titan|upcoming|predict|stage" | head -30'
+          echo
+          echo '=== V2 tick service exact command ==='
+          $SSH 'systemctl cat footbreak-tick.service 2>&1'
+          echo
+          echo '=== Titan upcoming source (used by V2 or radar) ==='
+          $SSH 'sudo find /opt -maxdepth 5 -name "*.py" 2>&1 | xargs sudo grep -l -iE "titan|nowgoal|next_" 2>/dev/null | head -10'
+          $SSH 'sudo ls /var/www/stage_engine_v2/ 2>&1'
+          echo
+          echo '=== titan_today.json content ==='
+          $SSH 'python3 -c "import json; d=json.load(open(\"/var/www/stage_engine_v2/titan_today.json\")); print(\"type:\", type(d).__name__); print(\"top keys:\", list(d.keys()) if isinstance(d, dict) else \"list len=\"+str(len(d))); import sys; sys.stdout.write(json.dumps(d if isinstance(d,list) else d, ensure_ascii=False, indent=2)[:3000])"'
+          echo
+          echo '=== stage_engine_v2 project dir ==='
+          $SSH 'sudo ls /opt/footbreak/stage_engine_v2/ 2>&1 | head -30'
+          $SSH 'sudo cat /opt/footbreak/deploy/run.sh 2>&1 | head -60'
+          echo
+          echo '=== recent t30 log ==='
+          $SSH 'journalctl -u footbreak-t30.service --no-pager -n 20 --since "1 hour ago" 2>&1 | tail -25'

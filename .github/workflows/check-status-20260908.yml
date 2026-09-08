@@ -1,0 +1,84 @@
+name: Check final status
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/check-status-20260908.yml']
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  d:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -T 15 -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+      - env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=30 -o StrictHostKeyChecking=accept-new \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          set -e
+          
+          echo "===== data.json mtime ====="
+          ls -la /var/www/stage_engine_v2/data.json
+          
+          echo
+          echo "===== data.json content ====="
+          python3 - <<'PY'
+          import json
+          from datetime import datetime, timezone, timedelta
+          d = json.load(open('/var/www/stage_engine_v2/data.json'))
+          print('generated_at_utc:', d.get('generated_at_utc'))
+          print('fixtures_count:', d.get('fixtures_count'))
+          HKT = timezone(timedelta(hours=8))
+          NOW = datetime.now(HKT)
+          today = NOW.date()
+          today_count = 0
+          fu_count = 0
+          past_count = 0
+          for f in d.get('fixtures', []):
+              ko = f.get('kickoff_utc') or f.get('kickoff','')
+              try:
+                  k = datetime.fromisoformat(ko.replace('Z','+00:00')).astimezone(HKT)
+                  if k.date() == today: today_count += 1
+                  elif k > NOW: fu_count += 1
+                  else: past_count += 1
+              except: pass
+          print(f'HKT today: {today_count}, future: {fu_count}, past: {past_count}')
+          PY
+          
+          echo
+          echo "===== All units still failed? ====="
+          systemctl --failed --no-pager
+          
+          echo
+          echo "===== Recent crown-sweep runs ====="
+          journalctl -u crown-sweep.service -n 10 --no-pager | tail -15
+          
+          echo
+          echo "===== Recent footbreak-sweep runs ====="
+          journalctl -u footbreak-sweep.service -n 5 --no-pager | tail -8
+          
+          echo
+          echo "===== unknown user footbreak sudo issue ====="
+          journalctl -n 5 --no-pager --grep="unknown user footbreak" | tail -5
+          getent passwd footbreak || echo "user 'footbreak' does not exist"
+          echo
+          grep -rn "USER=footbreak\|-u footbreak" /etc/systemd/system/ 2>/dev/null | head -5
+          REMOTE

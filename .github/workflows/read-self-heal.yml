@@ -1,0 +1,32 @@
+name: read self-heal script
+on:
+  workflow_dispatch:
+    inputs: {confirm: {description: 'CONFIRM', required: true}}
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/read-self-heal.yml']
+concurrency: {group: production-maintenance-5, cancel-in-progress: false}
+jobs:
+  x:
+    runs-on: ubuntu-latest
+    env: {CONFIRM_INPUT: "${{ github.event.inputs.confirm || 'CONFIRM' }}"}
+    steps:
+      - if: github.event_name == 'workflow_dispatch'
+        run: test "$CONFIRM_INPUT" = "CONFIRM"
+      - if: github.event_name == 'workflow_dispatch'
+        env: {SSHKEY: "${{ secrets.DEPLOY_SSH_KEY }}", H: "${{ secrets.DEPLOY_HOST }}", U: "${{ secrets.DEPLOY_USER }}"}
+        run: |
+          mkdir -p ~/.ssh && printf '%s\n' "$SSHKEY" > ~/.ssh/id && chmod 600 ~/.ssh/id
+          ssh -i ~/.ssh/id -o StrictHostKeyChecking=accept-new $U@$H bash <<'EOF'
+          echo "=== dashboard-self-heal.sh (full) ==="
+          sudo -n cat /opt/footbreak/deploy/dashboard-self-heal.sh
+          echo ""
+          echo "=== last 15 self-heal invocations from journal ==="
+          sudo -n journalctl -u footbreak-dashboard-self-heal.service --since "3 hours ago" --no-pager 2>&1 | tail -60
+          echo ""
+          echo "=== merge_titan_v2.py (any nginx or sites) ==="
+          sudo -n grep -nE "nginx|sites-avail|systemctl reload" /opt/footbreak/deploy/v3/merge_titan_v2.py 2>&1 | head
+          echo ""
+          echo "=== nginx-unified-dashboard.conf (installed template) ==="
+          sudo -n grep -nE "crownsystem-v3|matches\.json|results\.json|history\.html" /opt/footbreak/deploy/nginx-unified-dashboard.conf 2>&1 | head -30
+          EOF

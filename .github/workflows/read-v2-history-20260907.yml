@@ -1,0 +1,74 @@
+name: Read v2 history.html full
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "打 READV2"
+        required: true
+        type: string
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/read-v2-history-20260907.yml']
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  r:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - env:
+          E: ${{ github.event_name }}
+          C: ${{ inputs.confirmation }}
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then exit 0; fi
+          if [ "$C" != "READV2" ]; then exit 1; fi
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          set +e
+          echo "===== FULL history.html ====="
+          cat /var/www/stage_engine_v2/history.html
+          echo
+          echo "===== data.json prediction_history keys + sample row ====="
+          python3 -c "
+          import json
+          d = json.load(open('/var/www/stage_engine_v2/data.json'))
+          print('top keys:', list(d.keys())[:20])
+          ph = d.get('prediction_history') or d.get('history') or d.get('rows')
+          if isinstance(ph, dict):
+              print('ph keys:', list(ph.keys())[:20])
+              rows = ph.get('rows') or ph.get('items') or ph.get('records')
+          elif isinstance(ph, list):
+              rows = ph
+          else:
+              rows = None
+          if isinstance(rows, list) and rows:
+              r0 = rows[0]
+              print('row0 keys:', list(r0.keys()))
+              print('row0 json (first 1500):', json.dumps(r0, ensure_ascii=False)[:1500])
+              if len(rows) > 1:
+                  print('row1 stage:', rows[1].get('stage'))
+                  print('row1 keys:', list(rows[1].keys()))
+              print('total rows:', len(rows))
+          "
+          REMOTE

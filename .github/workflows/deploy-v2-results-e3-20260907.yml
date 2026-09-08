@@ -1,0 +1,131 @@
+name: Deploy E v3 + daily timer + backfill 30d
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "打 DEPLOYE3"
+        required: true
+        type: string
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/deploy-v2-results-e3-20260907.yml', 'workflows/scripts/v2_results_sync_v2.py']
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  d:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - env:
+          E: ${{ github.event_name }}
+          C: ${{ inputs.confirmation }}
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then exit 0; fi
+          if [ "$C" != "DEPLOYE3" ]; then exit 1; fi
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          B64=$(base64 -w0 workflows/scripts/v2_results_sync_v2.py)
+          echo "b64 length: ${#B64}"
+          
+          cat > /tmp/remote.sh <<'REMOTE_HEADER'
+          #!/bin/bash
+          set -e
+          TS=$(date +%Y%m%d-%H%M%S)
+          
+          # -------- 1) Backup + install new script --------
+          if [ -f /usr/local/bin/v2-results-sync.py ]; then
+            cp /usr/local/bin/v2-results-sync.py /usr/local/bin/v2-results-sync.py.backup-$TS
+          fi
+          if [ -f /var/www/stage_engine_v2/results.json ]; then
+            cp /var/www/stage_engine_v2/results.json /var/www/stage_engine_v2/results.json.backup-$TS
+          fi
+          echo "$SCRIPT_B64" | base64 -d > /usr/local/bin/v2-results-sync.py
+          chmod 755 /usr/local/bin/v2-results-sync.py
+          echo "===== new script installed ($(wc -l < /usr/local/bin/v2-results-sync.py) lines) ====="
+          
+          # -------- 2) Create daily service + timer (lookback 30, merge mode) --------
+          cat > /etc/systemd/system/v2-results-sync-daily.service <<'SVC'
+          [Unit]
+          Description=v2-results-sync daily backfill (30 days)
+          After=network-online.target
+          
+          [Service]
+          Type=oneshot
+          ExecStart=/usr/local/bin/v2-results-sync.py --lookback-days 30 --merge
+          User=root
+          Nice=10
+          TimeoutStartSec=1200
+          SVC
+          
+          cat > /etc/systemd/system/v2-results-sync-daily.timer <<'TMR'
+          [Unit]
+          Description=Daily 30-day titan007 backfill for v2 results
+          
+          [Timer]
+          OnCalendar=*-*-* 03:00:00 Asia/Hong_Kong
+          Persistent=true
+          RandomizedDelaySec=300
+          
+          [Install]
+          WantedBy=timers.target
+          TMR
+          
+          systemctl daemon-reload
+          systemctl enable --now v2-results-sync-daily.timer
+          
+          echo "===== timers status ====="
+          systemctl list-timers v2-results-sync\* --no-pager
+          
+          # -------- 3) One-shot: run 30-day backfill NOW --------
+          echo
+          echo "===== manual backfill --lookback-days 30 --merge ====="
+          time /usr/local/bin/v2-results-sync.py --lookback-days 30 --merge 2>&1 | tail -20
+          
+          # -------- 4) Inspect final results.json --------
+          echo
+          echo "===== final results.json ====="
+          python3 -c "
+          import json
+          d = json.load(open('/var/www/stage_engine_v2/results.json'))
+          print(f'results count: {len(d[\"results\"])}')
+          print(f'stats: {json.dumps(d[\"stats\"], indent=2)}')
+          print(f'meta: {json.dumps(d[\"meta\"], indent=2)}')
+          # source breakdown
+          src_count = {}
+          for v in d['results'].values():
+              s = v.get('source','?')
+              src_count[s] = src_count.get(s, 0) + 1
+          print('source breakdown:')
+          for k,v in sorted(src_count.items(), key=lambda x:-x[1]):
+              print(f'  {k}: {v}')
+          "
+          
+          echo
+          echo "===== 5min timer (unchanged) status ====="
+          systemctl status v2-results-sync.timer --no-pager | head -5
+          REMOTE_HEADER
+          chmod +x /tmp/remote.sh
+          
+          ssh -o BatchMode=yes -o ConnectTimeout=30 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "SCRIPT_B64='$B64' sudo -E bash -s" < /tmp/remote.sh

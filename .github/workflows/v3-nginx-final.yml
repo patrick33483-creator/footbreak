@@ -1,0 +1,98 @@
+name: V3 nginx final
+on:
+  workflow_dispatch:
+    inputs: {confirm: {description: 'CONFIRM', required: true}}
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/v3-nginx-final.yml']
+concurrency: {group: production-maintenance, cancel-in-progress: false}
+jobs:
+  x:
+    runs-on: ubuntu-latest
+    env: {CONFIRM_INPUT: "${{ github.event.inputs.confirm || 'CONFIRM' }}"}
+    steps:
+      - if: github.event_name == 'workflow_dispatch'
+        run: test "$CONFIRM_INPUT" = "CONFIRM"
+      - if: github.event_name == 'workflow_dispatch'
+        env: {SSHKEY: "${{ secrets.DEPLOY_SSH_KEY }}", H: "${{ secrets.DEPLOY_HOST }}", U: "${{ secrets.DEPLOY_USER }}"}
+        run: |
+          mkdir -p ~/.ssh && printf '%s\n' "$SSHKEY" > ~/.ssh/id && chmod 600 ~/.ssh/id
+          ssh -i ~/.ssh/id -o StrictHostKeyChecking=accept-new $U@$H bash <<'EOF'
+          set -e
+          TS=$(date +%Y%m%d-%H%M%S)
+          SITE=/etc/nginx/sites-enabled/unified-dashboard
+          BAK=/root/nginx-backups/unified-dashboard.bak.${TS}
+          sudo -n mkdir -p /root/nginx-backups
+          sudo -n cp -p "$SITE" "$BAK"
+
+          # 1. Remove existing `crownsystem-v3/data.json`, `results.json`, `titan_today.json`
+          #    blocks (all point to stage_engine_v2 → no longer used).
+          # 2. Insert exact locations for matches.json / results.json / history.html
+          #    with auth_basic off, right before the ^~ /crownsystem-v3/ catch-all.
+
+          sudo -n python3 - "$SITE" <<'PY'
+          import re, sys
+          path = sys.argv[1]
+          txt = open(path).read()
+
+          # Remove old stage_engine_v2 exact blocks
+          def strip_block(name):
+              pat = re.compile(
+                  r'^[ \t]*location\s*=\s*/crownsystem-v3/' + re.escape(name) + r'\s*\{[^}]*\}\s*\n',
+                  re.M | re.S)
+              return pat.sub('', txt)
+
+          # Always drop and re-add these three v3 exact blocks (idempotent, safe).
+          for f in ("data.json", "results.json", "titan_today.json",
+                    "matches.json", "history.html"):
+              txt = strip_block(f)
+
+          # Insert three exact locations before ^~ /crownsystem-v3/
+          m = re.search(r'^([ \t]*)location\s*\^~\s*/crownsystem-v3/\s*\{', txt, re.M)
+          if not m:
+              print("no catchall"); sys.exit(2)
+          indent = m.group(1)
+          def block(url_path, alias, mime):
+              return (
+                  indent + f"location = {url_path} " + "{\n"
+                  + indent + "    auth_basic off;\n"
+                  + indent + f"    alias {alias};\n"
+                  + indent + f"    default_type {mime};\n"
+                  + indent + '    add_header Cache-Control "no-store";\n'
+                  + indent + "}\n" + indent
+              )
+          # Skip any we already have (idempotent).
+          def add(url_path, alias, mime):
+              global txt
+              key = f"location = {url_path} "
+              if key in txt:
+                  return
+              b = block(url_path, alias, mime)
+              mm = re.search(r'^([ \t]*)location\s*\^~\s*/crownsystem-v3/\s*\{', txt, re.M)
+              txt = txt[:mm.start()] + b + txt[mm.start():]
+
+          add("/crownsystem-v3/matches.json",  "/var/www/crownsystem-v3/matches.json",  "application/json")
+          add("/crownsystem-v3/results.json",  "/var/www/crownsystem-v3/results.json",  "application/json")
+          add("/crownsystem-v3/history.html",  "/var/www/crownsystem-v3/history.html",  "text/html")
+
+          open(path, "w").write(txt)
+          print("patched")
+          PY
+
+          echo ""
+          echo "=== Show patched context ==="
+          sudo -n grep -n -B1 -A6 "crownsystem-v3" "$SITE" | head -80
+
+          echo ""
+          echo "=== nginx -t + reload ==="
+          sudo -n nginx -t
+          sudo -n systemctl reload nginx
+
+          echo ""
+          echo "=== Verify ==="
+          curl -s -o /dev/null -w "matches.json unauth: %{http_code}\n" "http://127.0.0.1/crownsystem-v3/matches.json"
+          curl -s -o /dev/null -w "results.json unauth: %{http_code}\n" "http://127.0.0.1/crownsystem-v3/results.json"
+          curl -s -o /dev/null -w "history.html unauth: %{http_code}\n" "http://127.0.0.1/crownsystem-v3/history.html"
+          curl -s -o /dev/null -w "SPA index unauth   : %{http_code}\n" "http://127.0.0.1/crownsystem-v3/"
+          curl -s -o /dev/null -u radar:toberich -w "SPA index authed   : %{http_code}\n" "http://127.0.0.1/crownsystem-v3/"
+          EOF

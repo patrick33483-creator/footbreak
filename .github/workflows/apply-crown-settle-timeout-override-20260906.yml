@@ -1,0 +1,90 @@
+name: 套用 crown-settle timeout override 20260906
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "打 APPLY_CROWN_SETTLE_TIMEOUT_2700 確認"
+        required: true
+        type: string
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: 設定 SSH
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: 檢查 confirmation（push trigger 直接停位、只用於註冊）
+        env:
+          EVENT: ${{ github.event_name }}
+          CONFIRMATION: ${{ inputs.confirmation }}
+        run: |
+          if [ "$EVENT" != "workflow_dispatch" ]; then
+            echo "push trigger 不執行任何寫入—仅用於註冊 workflow"
+            exit 0
+          fi
+          if [ "$CONFIRMATION" != "APPLY_CROWN_SETTLE_TIMEOUT_2700" ]; then
+            echo "缺少或錯誤 confirmation"; exit 1
+          fi
+
+      - name: 套用 timeout override
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=8 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'bash -s' <<'REMOTE'
+          set -e
+          echo "===== BEFORE ====="
+          sudo systemctl show crown-settle.service --property=TimeoutStartUSec --no-pager 2>&1
+          sudo ls -la /etc/systemd/system/crown-settle.service.d/ 2>&1 || echo "(drop-in dir 未存在)"
+          echo
+          echo "===== 建立 drop-in override ====="
+          sudo install -d -m 0755 /etc/systemd/system/crown-settle.service.d
+          sudo tee /etc/systemd/system/crown-settle.service.d/timeout-override.conf >/dev/null <<'EOF'
+          # 加大 TimeoutStartSec 由 15 分鐘 → 45 分鐘（2700 秒）
+          # 令 crown-settle 有足夠時間完成 backlog catch-up
+          # 建立日期：2026-09-06；revert 方法：刪除本檔案 + systemctl daemon-reload
+          [Service]
+          TimeoutStartSec=2700
+          EOF
+          echo "已寫入 /etc/systemd/system/crown-settle.service.d/timeout-override.conf"
+          sudo cat /etc/systemd/system/crown-settle.service.d/timeout-override.conf
+          echo
+          echo "===== daemon-reload ====="
+          sudo systemctl daemon-reload
+          echo
+          echo "===== 停止現時卡住嘅 crown-settle instance ====="
+          sudo systemctl stop crown-settle.service 2>&1 || true
+          sudo systemctl reset-failed crown-settle.service 2>&1 || true
+          echo
+          echo "===== AFTER 確認 ====="
+          sudo systemctl show crown-settle.service --property=TimeoutStartUSec,ActiveState,SubState --no-pager 2>&1
+          echo
+          echo "===== 下次 timer 觸發時間 ====="
+          sudo systemctl list-timers crown-settle.timer --no-pager 2>&1
+          echo
+          echo "===== DONE ====="
+          echo "下次 15 分鐘 timer fire 時 crown-settle 會有 45 分鐘去完成"
+          REMOTE

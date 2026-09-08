@@ -1,0 +1,52 @@
+name: 診 OSError
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+
+permissions:
+  contents: read
+
+jobs:
+  d:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - name: SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - name: run
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'bash -s' <<'REMOTE'
+          set +e
+          echo "===== disk & inode ====="
+          df -h /var /opt /run /tmp 2>&1
+          df -i /var /opt /run /tmp 2>&1
+          echo
+          echo "===== common.py write_json_atomic 上下 (50-90 行) ====="
+          sudo sed -n '30,90p' /opt/footbreak/crown/common.py 2>&1
+          echo
+          echo "===== 邊個檔嘅 dir 有問題？睇最新 crown-settle 完整 log ====="
+          sudo journalctl -u crown-settle.service --since '20 min ago' --no-pager -o cat 2>&1 | tail -50
+          echo
+          echo "===== 檢查 dashboard/ledger/history 相關 dir 權限 ====="
+          sudo ls -la /var/www/crown/ 2>&1
+          sudo ls -la /var/lib/footbreak/crown/ 2>&1 | head -15
+          echo
+          echo "===== 有無 stale .tmp / .swp file？ ====="
+          sudo find /var/www/crown /var/lib/footbreak/crown -name '*.tmp' -o -name '.*.tmp' 2>&1 | head -20
+          echo
+          echo "===== 手動跑一次 settle 睇實際 traceback ====="
+          sudo -u footbreak -H bash -c 'cd /opt/footbreak && CROWN_HISTORY_RESULT_DETAIL_BUDGET=0 timeout 300 /opt/footbreak/.venv/bin/python3 -m crown.run settle 2>&1' 2>&1 | tail -60 || true
+          REMOTE

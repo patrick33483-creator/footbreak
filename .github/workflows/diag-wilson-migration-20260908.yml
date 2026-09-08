@@ -1,0 +1,74 @@
+name: Diag wilson migration
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/diag-wilson-migration-20260908.yml']
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  d:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -T 15 -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+      - env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=30 -o StrictHostKeyChecking=accept-new \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          set -e
+          
+          echo "===== 1) wilson_validation.py:4635 context ====="
+          sed -n '4600,4680p' /opt/footbreak/analysis/wilson_validation.py
+          
+          echo
+          echo "===== 2) Search for migration definition ====="
+          grep -rn "required_condition_identity_migration_missing" /opt/footbreak/ 2>/dev/null | head -10
+          
+          echo
+          echo "===== 3) Search for condition_identity migration functions ====="
+          grep -rn "condition_identity" /opt/footbreak/analysis/wilson_validation.py 2>/dev/null | head -20
+          
+          echo
+          echo "===== 4) Check migration scripts ====="
+          ls /opt/footbreak/migrations/ 2>/dev/null || echo "no migrations dir"
+          find /opt/footbreak -name "*migration*" -type f 2>/dev/null | head -10
+          
+          echo
+          echo "===== 5) footbreak-sweep first fail full trace ====="
+          journalctl -u footbreak-sweep.service --since '2026-09-07 12:40:00' --until '2026-09-07 12:50:00' --no-pager | tail -80
+          
+          echo
+          echo "===== 6) footbreak-direction-path-conditions error (also failing) ====="
+          journalctl -u footbreak-direction-path-conditions.service -n 40 --no-pager | tail -50
+          
+          echo
+          echo "===== 7) footbreak-dashboard-self-heal error ====="
+          journalctl -u footbreak-dashboard-self-heal.service -n 20 --no-pager | tail -25
+          
+          echo
+          echo "===== 8) crown-settle error (why killed by TERM) ====="
+          journalctl -u crown-settle.service --since '2026-09-07 04:55:00' --until '2026-09-07 05:05:00' --no-pager | tail -30
+          
+          echo
+          echo "===== 9) Recent git activity in /opt/footbreak ====="
+          cd /opt/footbreak && git log --oneline -20 2>/dev/null || echo "not a git repo"
+          echo
+          cd /opt/footbreak && git status 2>/dev/null | head -20 || true
+          REMOTE

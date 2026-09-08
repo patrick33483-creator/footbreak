@@ -1,0 +1,88 @@
+name: Diag history render
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/diag-history-render-20260908.yml']
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  d:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -T 15 -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+      - env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=30 -o StrictHostKeyChecking=accept-new \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          set -e
+          python3 - <<'PY'
+          import json
+          from datetime import datetime, timezone, timedelta
+          now = datetime.now(timezone.utc)
+          
+          d = json.load(open('/var/www/stage_engine_v2/data.json'))
+          fx = d.get('fixtures', [])
+          r = json.load(open('/var/www/stage_engine_v2/results.json'))
+          results = r.get('results', {})
+          
+          print(f"data.json fixtures: {len(fx)}")
+          print(f"results.json entries: {len(results)}")
+          
+          # 有 stages/predictions 嘅 fixtures
+          with_pred = [f for f in fx if f.get('stages')]
+          print(f"fixtures with stages: {len(with_pred)}")
+          
+          # 過去 kickoff <= now
+          past = []
+          for f in fx:
+              ko = f.get('kickoff_utc')
+              if ko and ko <= now.isoformat():
+                  past.append(f)
+          print(f"past fixtures (kickoff <= now UTC {now.isoformat()}): {len(past)}")
+          
+          # 進行中: past + no result
+          in_prog = []
+          closed = []
+          for f in past:
+              rid = str(f.get('id',''))
+              rr = results.get(rid)
+              if not rr or not rr.get('score'):
+                  in_prog.append(f)
+              else:
+                  closed.append(f)
+          print(f"in-progress (past + no result): {len(in_prog)}")
+          print(f"closed (past + has result): {len(closed)}")
+          
+          # 5 samples closed 最新
+          past_sorted = sorted(past, key=lambda x: x.get('kickoff_utc',''), reverse=True)
+          print("\ntop 5 past (DESC by kickoff):")
+          for f in past_sorted[:5]:
+              rid = str(f.get('id',''))
+              rr = results.get(rid)
+              score = rr.get('score') if rr else None
+              print(f"  id={f.get('id')} {f.get('kickoff_hkt','')} {f.get('home','')} vs {f.get('away','')} score={score} stages_keys={list((f.get('stages') or {}).keys())}")
+          
+          # 檢查 stages 內容
+          print("\nsample stages of first past:")
+          if past_sorted:
+              print(json.dumps(past_sorted[0].get('stages'), ensure_ascii=False, indent=1)[:800])
+          PY
+          REMOTE

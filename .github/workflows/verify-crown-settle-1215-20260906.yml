@@ -1,0 +1,67 @@
+name: 驗證 12:15 crown-settle 執行
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: 設定 SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: 驗證
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=8 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'bash -s' <<'REMOTE'
+          set +e
+          echo "===== 1. crown-settle 過去 20 分鐘 log ====="
+          sudo journalctl -u crown-settle.service --no-pager --since '20 minutes ago' 2>&1 | tail -25
+          echo
+          echo "===== 2. 現時狀態 ====="
+          sudo systemctl show crown-settle.service --property=ActiveState,SubState,ExecMainStatus,Result,TimeoutStartUSec --no-pager 2>&1
+          echo
+          echo "===== 3. ledger + data.json mtime + 內容 ====="
+          sudo ls -la /var/lib/footbreak/crown/ledger.json /var/www/crown/data.json 2>&1
+          echo
+          sudo /opt/footbreak/.venv/bin/python3 - <<'PY' 2>&1
+          import json
+          from datetime import datetime, timezone, timedelta
+          HKT = timezone(timedelta(hours=8))
+          d = json.load(open('/var/www/crown/data.json'))
+          print(f"data.json generated_at: {d.get('generated_at')}")
+          s = d.get('summary', {})
+          for k, v in s.items(): print(f"  summary.{k}: {v}")
+          matches = d.get('matches', [])
+          print(f"total matches: {len(matches)}")
+          with_result = [m for m in matches if m.get('result') or m.get('final_score') or m.get('score') or m.get('ft_score')]
+          print(f"matches with result: {len(with_result)}")
+          # 睇 match structure
+          if matches:
+              sample = matches[0]
+              print(f"\nmatch sample keys: {list(sample.keys())[:40]}")
+              # 找可能 result 相關嘅 field
+              for k, v in sample.items():
+                  if any(w in k.lower() for w in ['result', 'score', 'settle', 'final', 'ft', 'ended', 'status']):
+                      print(f"  {k}: {v}")
+          PY
+          echo
+          echo "===== DONE ====="
+          REMOTE

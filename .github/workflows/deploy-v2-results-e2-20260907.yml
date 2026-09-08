@@ -1,0 +1,101 @@
+name: Deploy v2-results-sync E v2 (b64 in heredoc)
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "打 DEPLOYE2"
+        required: true
+        type: string
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/deploy-v2-results-e2-20260907.yml', 'workflows/scripts/v2_results_sync_v2.py']
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  d:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - env:
+          E: ${{ github.event_name }}
+          C: ${{ inputs.confirmation }}
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then exit 0; fi
+          if [ "$C" != "DEPLOYE2" ]; then exit 1; fi
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          # Build the b64 payload inline
+          B64=$(base64 -w0 workflows/scripts/v2_results_sync_v2.py)
+          echo "b64 length: ${#B64}"
+          
+          # Write remote script and execute
+          cat > /tmp/remote.sh <<'REMOTE_HEADER'
+          #!/bin/bash
+          set -e
+          TS=$(date +%Y%m%d-%H%M%S)
+          
+          # Backup 舊 script
+          if [ -f /usr/local/bin/v2-results-sync.py ]; then
+            cp /usr/local/bin/v2-results-sync.py /usr/local/bin/v2-results-sync.py.backup-$TS
+            echo "backup: /usr/local/bin/v2-results-sync.py.backup-$TS"
+          fi
+          if [ -f /var/www/stage_engine_v2/results.json ]; then
+            cp /var/www/stage_engine_v2/results.json /var/www/stage_engine_v2/results.json.backup-$TS
+          fi
+          
+          # Write new script from b64
+          echo "$SCRIPT_B64" | base64 -d > /usr/local/bin/v2-results-sync.py
+          chmod 755 /usr/local/bin/v2-results-sync.py
+          
+          echo "===== new script installed ====="
+          wc -l /usr/local/bin/v2-results-sync.py
+          head -3 /usr/local/bin/v2-results-sync.py
+          
+          echo
+          echo "===== test-run new script ====="
+          /usr/local/bin/v2-results-sync.py 2>&1 | tail -40
+          
+          echo
+          echo "===== inspect new results.json ====="
+          python3 -c "
+          import json
+          d = json.load(open('/var/www/stage_engine_v2/results.json'))
+          print(f'results count: {len(d[\"results\"])}')
+          if 'stats' in d:
+              print(f'stats: {json.dumps(d[\"stats\"], indent=2)}')
+          if 'meta' in d:
+              print(f'meta: {json.dumps(d[\"meta\"], indent=2)}')
+          for k in list(d['results'].keys())[:3]:
+              print(f'  {k}: {d[\"results\"][k]}')
+          "
+          
+          echo
+          echo "===== timer status ====="
+          systemctl status v2-results-sync.timer --no-pager | head -5
+          REMOTE_HEADER
+          chmod +x /tmp/remote.sh
+          
+          # Pipe b64 via env var, no SendEnv needed — set locally then ssh with env
+          ssh -o BatchMode=yes -o ConnectTimeout=30 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "SCRIPT_B64='$B64' sudo -E bash -s" < /tmp/remote.sh

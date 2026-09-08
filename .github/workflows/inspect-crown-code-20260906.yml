@@ -1,0 +1,86 @@
+name: 讀 crown code 搵 matches 生成邏輯
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: 設定 SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: 只讀
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=8 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'bash -s' <<'REMOTE'
+          set +e
+          echo "===== 1. crown 目錄 structure ====="
+          sudo ls -la /opt/footbreak/crown/ 2>&1 | head -20
+          echo
+          echo "===== 2. 搵邊個檔寫 data.json / matches ====="
+          sudo grep -rln 'crown_matches\|data\.json\|write.*matches\|dashboard_data\|publish' /opt/footbreak/crown/ 2>/dev/null | head -20
+          echo
+          echo "===== 3. 睇 settle 相關嘅 entry ====="
+          sudo cat /opt/footbreak/crown/run.py 2>/dev/null | head -80
+          echo "..."
+          echo
+          echo "===== 4. 搵 settle handler ====="
+          sudo grep -n 'def.*settle\|"settle"\|settle_mode\|mode == .settle' /opt/footbreak/crown/*.py 2>/dev/null | head -30
+          echo
+          echo "===== 5. 比較兩份 data.json 個 top-level structure ====="
+          echo "-- /var/www/crown/data.json (12:44 new) --"
+          sudo /opt/footbreak/.venv/bin/python3 -c "
+          import json
+          d = json.load(open('/var/www/crown/data.json'))
+          for k in d.keys():
+              v = d[k]
+              tv = type(v).__name__
+              extra = f' len={len(v)}' if hasattr(v, '__len__') else f' = {v!r}'[:80]
+              print(f'  {k}: {tv}{extra}')
+          " 2>&1
+          echo
+          echo "-- /opt/footbreak/crown/dashboard/data.json (backup?) --"
+          sudo ls -la /opt/footbreak/crown/dashboard/data.json 2>&1
+          sudo /opt/footbreak/.venv/bin/python3 -c "
+          import json
+          d = json.load(open('/opt/footbreak/crown/dashboard/data.json'))
+          for k in list(d.keys())[:30]:
+              v = d[k]
+              tv = type(v).__name__
+              extra = f' len={len(v)}' if hasattr(v, '__len__') else f' = {v!r}'[:80]
+              print(f'  {k}: {tv}{extra}')
+          " 2>&1
+          echo
+          echo "===== 6. 搵 max_fixtures / lookback 之類 filter ====="
+          sudo grep -rn 'max_fixtures\|max_matches\|lookback\|window\|days_back\|kickoff.*filter\|since.*kickoff' /opt/footbreak/crown/*.py 2>/dev/null | head -30
+          echo
+          echo "===== 7. 睇最近 crown deploy 有無新 commit ====="
+          if [ -d /opt/footbreak/.git ]; then
+            sudo git -C /opt/footbreak log --oneline -20 -- crown/ deploy/systemd/crown-settle.service 2>&1
+            echo
+            echo "-- 過去 24 小時 crown/ 改動 --"
+            sudo git -C /opt/footbreak log --since '24 hours ago' --stat -- crown/ 2>&1 | head -60
+          else
+            echo "not a git repo"
+          fi
+          echo
+          echo "===== DONE ====="
+          REMOTE

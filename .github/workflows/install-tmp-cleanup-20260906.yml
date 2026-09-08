@@ -1,0 +1,106 @@
+name: Install tmp cleanup cron
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "打 INSTALL_CLEANUP"
+        required: true
+        type: string
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  i:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - name: SSH
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - name: Check
+        env:
+          E: ${{ github.event_name }}
+          C: ${{ inputs.confirmation }}
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then echo "push registers only"; exit 0; fi
+          if [ "$C" != "INSTALL_CLEANUP" ]; then echo "wrong"; exit 1; fi
+      - name: run
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'bash -s' <<'REMOTE'
+          set +e
+
+          echo "===== 1. 寫 service unit ====="
+          sudo tee /etc/systemd/system/crown-tmp-cleanup.service > /dev/null <<'UNIT'
+          [Unit]
+          Description=Clean stale crown ledger tmp files (agent-installed 20260906)
+
+          [Service]
+          Type=oneshot
+          # 刪 crown ledger 目錄入面 mtime > 3 分鐘嘅 .ledger.json.* stale tmp
+          ExecStart=/usr/bin/find /var/lib/footbreak/crown -maxdepth 1 -type f -name '.ledger.json.*' -mmin +3 -delete
+          # 順手清 stage_engine_v2 同類 tmp
+          ExecStart=/usr/bin/find /var/lib/footbreak/stage_engine_v2 -maxdepth 1 -type f -name '.ledger.json.*' -mmin +3 -delete
+          # 清 /tmp 內 stale crown/settle 相關（唔會碰 data-ro.db）
+          ExecStart=/usr/bin/find /tmp -maxdepth 1 -type f \( -name 'crown-*' -o -name 'settle-*' \) -mmin +60 -delete
+          Nice=10
+          IOSchedulingClass=idle
+          UNIT
+
+          echo "===== 2. 寫 timer unit ====="
+          sudo tee /etc/systemd/system/crown-tmp-cleanup.timer > /dev/null <<'TIMER'
+          [Unit]
+          Description=Trigger crown tmp cleanup every 15 min (agent-installed 20260906)
+
+          [Timer]
+          OnBootSec=2min
+          OnUnitActiveSec=15min
+          AccuracySec=30s
+          Persistent=true
+
+          [Install]
+          WantedBy=timers.target
+          TIMER
+
+          echo "===== 3. daemon-reload + enable ====="
+          sudo systemctl daemon-reload 2>&1
+          sudo systemctl enable --now crown-tmp-cleanup.timer 2>&1
+          echo
+
+          echo "===== 4. 即刻手動 trigger 一次確認 works ====="
+          sudo systemctl start crown-tmp-cleanup.service 2>&1
+          sleep 2
+          sudo systemctl status crown-tmp-cleanup.service --no-pager 2>&1 | head -15
+          echo
+
+          echo "===== 5. Timer 下次 fire 時間 ====="
+          sudo systemctl list-timers crown-tmp-cleanup.timer --no-pager 2>&1
+          echo
+
+          echo "===== 6. 清完後 stale tmp count ====="
+          sudo find /var/lib/footbreak/crown -maxdepth 1 -type f -name '.ledger.json.*' 2>&1 | wc -l
+          echo "(fresh tmp <3min 保留)"
+          echo
+
+          echo "===== 7. df ====="
+          df -h / 2>&1
+          REMOTE

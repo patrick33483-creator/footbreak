@@ -1,0 +1,83 @@
+name: Read radar /api/history handler + client history page
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "打 RADARCODE"
+        required: true
+        type: string
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/read-radar-history-code-20260907.yml']
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  r:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - env:
+          E: ${{ github.event_name }}
+          C: ${{ inputs.confirmation }}
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then exit 0; fi
+          if [ "$C" != "RADARCODE" ]; then exit 1; fi
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          set +e
+          echo "===== 1) routes.ts /api/history handler (line 845-900) ====="
+          sed -n '845,900p' /opt/crown-radar/server/routes.ts
+          echo
+          echo "===== 2) storage.getHistory / getHistoryRows related ====="
+          grep -n "getHistory\|history\s*(" /opt/crown-radar/server/storage.ts | head -20
+          echo
+          echo "===== 3) SQL / DB schema for history/results ====="
+          find /opt/crown-radar -name "schema.ts" -o -name "*.sql" 2>/dev/null | head -5
+          if [ -f /opt/crown-radar/shared/schema.ts ]; then
+            grep -A 5 "history\|results\|score" /opt/crown-radar/shared/schema.ts | head -60
+          fi
+          echo
+          echo "===== 4) client-side history page 揾邊個 ====="
+          grep -rn "'/history'\|/history\"\|history\.html" /opt/crown-radar/client/src 2>/dev/null | head -20
+          echo
+          echo "===== 5) 睇 crown-radar-ui history render column ====="
+          grep -n "首預\|T-30\|T-5\|kickoff\|score\|result" /opt/crown-radar/client/src/components/crown-radar-ui.tsx 2>/dev/null | head -30
+          echo
+          echo "===== 6) crown-radar backend response - 用 basic auth curl 試 API ====="
+          # get auth from nginx conf
+          AUTH=$(grep -h "auth_basic_user_file" /etc/nginx/sites-available/unified-dashboard | head -1 | awk '{print $2}' | tr -d ';')
+          echo "auth file: $AUTH"
+          if [ -n "$AUTH" ] && [ -f "$AUTH" ]; then
+            # first user
+            USR=$(head -1 "$AUTH" | cut -d: -f1)
+            echo "user: $USR (password hashed in file, cannot decode)"
+          fi
+          # try direct backend
+          curl -s -o /tmp/api_hist_body.txt -w "HTTP %{http_code} size %{size_download}\n" "http://127.0.0.1:5002/api/history?limit=1"
+          echo "-- backend direct body head --"
+          head -100 /tmp/api_hist_body.txt
+          echo
+          echo "===== 7) 睇 crown-radar 有冇 v2 fixture 相關 mapping ====="
+          grep -rn "3000925\|stage_engine_v2\|v2/crown" /opt/crown-radar/server 2>/dev/null | head -10
+          REMOTE

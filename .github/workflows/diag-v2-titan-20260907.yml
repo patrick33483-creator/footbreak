@@ -1,0 +1,81 @@
+name: Diagnose v2 titan resolver
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "打 DIAG"
+        required: true
+        type: string
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/diag-v2-titan-20260907.yml']
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  d:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - env:
+          E: ${{ github.event_name }}
+          C: ${{ inputs.confirmation }}
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then exit 0; fi
+          if [ "$C" != "DIAG" ]; then exit 1; fi
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=30 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          set +e
+          # (1) List v2 titan resolver files
+          echo "===== v2 files handling titan007 result ====="
+          cd /opt/footbreak
+          grep -rln "titan007_direct_detail_exact_id\|titan_direct_detail\|fetch_titan\|titan_match_id" --include="*.py" 2>/dev/null | head -20
+          echo
+          # (2) Show the resolver entry
+          echo "===== crown/results/* files ====="
+          find crown -maxdepth 3 -type d -name "*result*" -o -name "*titan*" 2>/dev/null | head
+          find crown -maxdepth 3 -type f -name "*result*.py" -o -name "*titan*.py" 2>/dev/null | head
+          echo
+          # (3) Sample: unresolved user_manual_fill row structure to see what auto-resolver sees
+          /opt/footbreak/.venv/bin/python3 <<'PY'
+          import json
+          h = json.load(open('/var/lib/footbreak/crown/prediction_history.json'))
+          rows = h.get('rows', [])
+          fills = [r for r in rows if r.get('result_source') == 'user_manual_fill_20260906']
+          print(f'user_manual_fill rows: {len(fills)}')
+          if fills:
+              s = fills[0]
+              print('sample keys we set:', [k for k in ('match_id','titan_match_id','hkjc_match_id','kickoff','stage','score','home_score','away_score','result_status','result_source','result_missing_reason') if k in s])
+              print('titan_match_id:', s.get('titan_match_id'))
+              print('hkjc_match_id:', s.get('hkjc_match_id'))
+              print('kickoff:', s.get('kickoff'))
+              print('has market_predictions:', bool(s.get('market_predictions')))
+              print('has market_grades:', bool(s.get('market_grades')))
+          # Cohort of auto-resolved (working) rows
+          auto = [r for r in rows if r.get('result_source') == 'titan007_direct_detail_exact_id']
+          print(f'\nauto-resolved rows: {len(auto)}')
+          if auto:
+              s = auto[0]
+              print('auto sample keys:', [k for k in ('match_id','titan_match_id','hkjc_match_id','result_status','result_source','market_grades','correct','actual','forecast') if k in s])
+          PY
+          REMOTE

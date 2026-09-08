@@ -1,0 +1,53 @@
+name: 驗 revert 效果
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+
+permissions:
+  contents: read
+
+jobs:
+  v:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - name: SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - name: verify
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'bash -s' <<'REMOTE'
+          set +e
+          echo "===== data.json 現狀 ====="
+          sudo ls -la /var/www/crown/data.json 2>&1
+          sudo /opt/footbreak/.venv/bin/python3 -c "
+          import json
+          d = json.load(open('/var/www/crown/data.json'))
+          print('generated_at:', d.get('generated_at'))
+          print('matches:', len(d.get('matches', [])))
+          s = d.get('summary', {})
+          print('summary:', s)
+          print('schema_version:', d.get('schema_version'))
+          " 2>&1
+          echo
+          echo "===== 最近 crown-settle 兩次執行 ====="
+          sudo journalctl -u crown-settle.service --since '30 min ago' --no-pager 2>&1 | tail -80
+          echo
+          echo "===== crown-settle status ====="
+          sudo systemctl show crown-settle.service --property=ActiveState,SubState,Result,ExecMainStatus,ExecMainExitTimestamp --no-pager 2>&1
+          echo
+          echo "===== timer ====="
+          sudo systemctl list-timers crown-settle.timer --no-pager 2>&1
+          REMOTE

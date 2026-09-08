@@ -1,0 +1,33 @@
+name: Restore V3 history.html no-auth
+on:
+  workflow_dispatch:
+    inputs: {confirm: {description: 'CONFIRM', required: true}}
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/restore-v3-history.yml']
+concurrency: {group: production-maintenance-17, cancel-in-progress: false}
+jobs:
+  x:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env: {CONFIRM_INPUT: "${{ github.event.inputs.confirm || 'CONFIRM' }}"}
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: diagnose/crown-v2-pending-20260906}
+      - if: github.event_name == 'workflow_dispatch'
+        run: test "$CONFIRM_INPUT" = "CONFIRM"
+      - if: github.event_name == 'workflow_dispatch'
+        env: {SSHKEY: "${{ secrets.DEPLOY_SSH_KEY }}", H: "${{ secrets.DEPLOY_HOST }}", U: "${{ secrets.DEPLOY_USER }}"}
+        run: |
+          mkdir -p ~/.ssh && printf '%s\n' "$SSHKEY" > ~/.ssh/id && chmod 600 ~/.ssh/id
+          SSH="ssh -i ~/.ssh/id -o StrictHostKeyChecking=accept-new $U@$H"
+          SCP="scp -i ~/.ssh/id -o StrictHostKeyChecking=accept-new"
+          $SCP .github/scripts/nginx_restore_v3_history.py $U@$H:/tmp/nrh.py
+          $SSH "sudo -n python3 /tmp/nrh.py"
+          $SSH "sudo -n nginx -t 2>&1"
+          $SSH "sudo -n systemctl reload nginx"
+          echo "---"
+          for u in "matches.json" "results.json" "history.html"; do
+            printf "  crownsystem-v3/%s = " "$u"
+            curl -s -o /dev/null -w "%{http_code}\n" "http://146.190.93.148/crownsystem-v3/$u"
+          done

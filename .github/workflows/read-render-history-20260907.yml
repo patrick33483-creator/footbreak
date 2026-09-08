@@ -1,0 +1,85 @@
+name: Read renderHistory current impl
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "打 READHIST"
+        required: true
+        type: string
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/read-render-history-20260907.yml']
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  r:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - env:
+          E: ${{ github.event_name }}
+          C: ${{ inputs.confirmation }}
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then exit 0; fi
+          if [ "$C" != "READHIST" ]; then exit 1; fi
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          set +e
+          cd /var/www/crown
+          echo "===== renderHistory + historyRows (line 2070-2170) ====="
+          sed -n '2070,2200p' app.js
+          echo
+          echo "===== index.html — 找 dashboard 導航同 view 名 ====="
+          grep -n "data-view\|navbtn\|<nav\|<button" index.html | head -30
+          echo
+          echo "===== 睇 index.html tabs 個 order ====="
+          sed -n '25,50p' index.html
+          echo
+          echo "===== history data shape - 睇 data.json 個 prediction_history 頭一 row ====="
+          python3 -c "
+          import json
+          d = json.load(open('/var/www/crown/data.json'))
+          ph = d.get('prediction_history', {})
+          print('prediction_history keys:', list(ph.keys())[:20] if isinstance(ph, dict) else 'not dict')
+          rows = ph.get('rows') if isinstance(ph, dict) else None
+          if isinstance(rows, list) and rows:
+              r = rows[0]
+              print('row keys:', list(r.keys()))
+              print('sample row (trimmed):', json.dumps({k: r[k] for k in list(r.keys())[:25]}, ensure_ascii=False)[:1500])
+          "
+          echo
+          echo "===== full history-*.json first row structure ====="
+          FIRST_HIST=$(ls -t /var/www/crown/history-*.json 2>/dev/null | head -1)
+          echo "using $FIRST_HIST"
+          python3 -c "
+          import json
+          d = json.load(open('$FIRST_HIST'))
+          rows = d.get('rows') if isinstance(d, dict) else d
+          if isinstance(rows, list) and rows:
+              r = rows[0]
+              print('row keys:', list(r.keys()))
+              print('market_predictions[0]:', json.dumps(r.get('market_predictions', [{}])[0], ensure_ascii=False)[:600])
+              print('sample first 800 chars:', json.dumps(r, ensure_ascii=False)[:800])
+          "
+          REMOTE

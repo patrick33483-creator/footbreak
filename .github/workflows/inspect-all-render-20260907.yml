@@ -1,0 +1,61 @@
+name: Find below_min_conviction location
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "打 FINDSITE"
+        required: true
+        type: string
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/inspect-all-render-20260907.yml']
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  f:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - env:
+          E: ${{ github.event_name }}
+          C: ${{ inputs.confirmation }}
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then exit 0; fi
+          if [ "$C" != "FINDSITE" ]; then exit 1; fi
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          set +e
+          echo "===== Grep all /var/www for 'below_min_conviction' + '被 gate' + '皇冠系統V2' + 'SHADOW' ====="
+          for kw in "below_min_conviction" "被 gate" "皇冠系統V2" "皇冠系統" "SHADOW" "皇冠入球大細" "皇冠讓球"; do
+              echo "--- $kw ---"
+              grep -rln "$kw" /var/www 2>/dev/null | head -20
+          done
+          echo
+          echo "===== nginx: which site serves 皇冠系統V2 ====="
+          # find HTML files with 皇冠系統V2 title
+          find /var/www -maxdepth 3 -name "*.html" -exec grep -l "皇冠系統V2\|皇冠系統" {} \; 2>&1
+          echo
+          echo "===== nginx sites listen ports + routes ====="
+          grep -A2 "listen\|location\|root" /etc/nginx/sites-enabled/* 2>&1 | head -80
+          REMOTE

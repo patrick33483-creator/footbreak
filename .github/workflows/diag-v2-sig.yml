@@ -1,0 +1,56 @@
+name: Diag v2 sig
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        required: true
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/diag-v2-sig.yml']
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+jobs:
+  d:
+    runs-on: ubuntu-latest
+    env:
+      E: ${{ github.event_name }}
+      C: ${{ inputs.confirmation }}
+    steps:
+      - name: guard
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then exit 0; fi
+          if [ "$C" != "DIAGV2S" ]; then exit 1; fi
+      - name: ssh
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - name: diag
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then exit 0; fi
+          SSH="ssh -o BatchMode=yes -o ConnectTimeout=20 -o StrictHostKeyChecking=accept-new $DEPLOY_USER@$DEPLOY_HOST"
+          echo '=== TitanClient class (constructor + public methods) ==='
+          $SSH 'sudo awk "/^class TitanClient/,0" /opt/footbreak/crown/titan.py 2>/dev/null | head -180'
+          echo
+          echo '=== crown_prices_from_pages full body ==='
+          $SSH 'sudo awk "/^def crown_prices_from_pages/,/^def /" /opt/footbreak/crown/titan.py 2>/dev/null | head -60'
+          echo
+          echo '=== apply_opening_model full body ==='
+          $SSH 'sudo awk "/^def apply_opening_model/,/^def /" /opt/footbreak/crown/opening_model.py 2>/dev/null | head -120'
+          echo
+          echo '=== build_prediction full body ==='
+          $SSH 'sudo awk "/^def build_prediction/,/^def /" /opt/footbreak/stage_engine_v2/predictor.py 2>/dev/null | head -80'
+          echo
+          echo '=== who calls apply_opening_model (real usage) ==='
+          $SSH 'sudo grep -rn "apply_opening_model" /opt/footbreak --include="*.py" 2>/dev/null | grep -v "test_\|__pycache__" | head -10'
+          echo
+          echo '=== who calls build_prediction ==='
+          $SSH 'sudo grep -rn "build_prediction" /opt/footbreak --include="*.py" 2>/dev/null | grep -v "test_\|__pycache__" | head -10'

@@ -1,0 +1,99 @@
+name: Diag V2 stopped at 22:45 last night
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/diag-v2-stop-20260908.yml']
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  d:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -T 15 -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+      - env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=30 -o StrictHostKeyChecking=accept-new \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          set -e
+          
+          echo "===== 1) All v2 files mtime (data / results / prediction / html) ====="
+          ls -la /var/www/stage_engine_v2/ 2>/dev/null | head -30
+          
+          echo
+          echo "===== 2) All footbreak timers / services status ====="
+          systemctl list-timers --all --no-pager 2>&1 | grep -Ei "footbreak|crown|v2|stage|prediction" | head -30
+          
+          echo
+          echo "===== 3) Recent failed units ====="
+          systemctl --failed --no-pager
+          
+          echo
+          echo "===== 4) footbreak-related services status ====="
+          for u in $(systemctl list-units --all --no-pager --plain --no-legend | grep -Eio "^[a-z0-9_-]+\.(service|timer)" | grep -Ei "footbreak|crown|v2|stage|prediction" | sort -u); do
+            state=$(systemctl show -p ActiveState -p SubState -p Result --value "$u" 2>/dev/null | tr '\n' '/')
+            echo "  $u : $state"
+          done
+          
+          echo
+          echo "===== 5) Journal since yesterday 22:00 HKT for prediction/crown/stage ====="
+          journalctl --since '2026-09-07 22:00:00' --until '2026-09-08 01:00:00' \
+            -u 'crown-*' -u 'footbreak-*' -u 'stage-*' -u 'v2-*' -u 'prediction-*' \
+            --no-pager 2>&1 | tail -80
+          
+          echo
+          echo "===== 6) prediction_history last update ====="
+          ls -la /var/lib/footbreak/crown/prediction_history.json 2>/dev/null
+          python3 -c "
+          import json
+          d = json.load(open('/var/lib/footbreak/crown/prediction_history.json'))
+          rows = d.get('rows',[])
+          print(f'rows total: {len(rows)}')
+          # last 3 rows kickoffs
+          for r in rows[-5:]:
+              print(f'  {r.get(\"kickoff\",\"?\")} {r.get(\"home\",\"?\")}vs{r.get(\"away\",\"?\")} score={r.get(\"score\")}')
+          "
+          
+          echo
+          echo "===== 7) data.json fixtures fetch time ====="
+          python3 -c "
+          import json
+          d = json.load(open('/var/www/stage_engine_v2/data.json'))
+          print('top keys:', list(d.keys())[:15])
+          print('generated_at:', d.get('generated_at') or d.get('updated_at') or d.get('generated_at_utc'))
+          fx = d.get('fixtures', [])
+          print(f'fixtures count: {len(fx)}')
+          # kickoff range
+          from datetime import datetime, timezone, timedelta
+          HKT = timezone(timedelta(hours=8))
+          NOW = datetime.now(HKT)
+          today_hkt = NOW.date()
+          # count today
+          today_count = 0
+          for f in fx:
+              ko = f.get('kickoff_utc') or f.get('kickoff','')
+              try:
+                  k = datetime.fromisoformat(ko.replace('Z','+00:00')).astimezone(HKT)
+                  if k.date() == today_hkt:
+                      today_count += 1
+              except: pass
+          print(f'HKT today fixtures: {today_count}')
+          "
+          REMOTE

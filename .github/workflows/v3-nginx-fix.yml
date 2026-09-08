@@ -1,0 +1,85 @@
+name: V3 nginx allow matches.json
+on:
+  workflow_dispatch:
+    inputs: {confirm: {description: 'CONFIRM', required: true}}
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/v3-nginx-fix.yml']
+
+concurrency: {group: production-maintenance, cancel-in-progress: false}
+
+jobs:
+  x:
+    runs-on: ubuntu-latest
+    env: {CONFIRM_INPUT: "${{ github.event.inputs.confirm || 'CONFIRM' }}"}
+    steps:
+      - name: Guard push
+        if: github.event_name != 'workflow_dispatch'
+        run: |
+          echo "push registers only; use dispatch to run"
+          exit 0
+      - if: github.event_name == 'workflow_dispatch'
+        run: test "$CONFIRM_INPUT" = "CONFIRM"
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          SSHKEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          H: ${{ secrets.DEPLOY_HOST }}
+          U: ${{ secrets.DEPLOY_USER }}
+        run: |
+          mkdir -p ~/.ssh && printf '%s\n' "$SSHKEY" > ~/.ssh/id && chmod 600 ~/.ssh/id
+          SSH="ssh -i ~/.ssh/id -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=30 $U@$H"
+          $SSH bash <<'EOF'
+          set -e
+          TS=$(date +%Y%m%d-%H%M%S)
+          SITE=/etc/nginx/sites-enabled/unified-dashboard
+          BAK=/root/nginx-backups/unified-dashboard.bak.${TS}
+          sudo -n mkdir -p /root/nginx-backups
+
+          echo "=== 0. Cleanup stray .bak in sites-enabled (nginx reads them) ==="
+          sudo -n bash -c 'for f in /etc/nginx/sites-enabled/*.bak.* ; do [ -f "$f" ] && mv -v "$f" /root/nginx-backups/; done' || true
+
+          echo ""
+          echo "=== 1. Show existing crownsystem-v3 blocks ==="
+          sudo -n grep -n -B1 -A6 "crownsystem-v3" "$SITE" | head -60
+
+          echo ""
+          echo "=== 2. Backup + patch ==="
+          sudo -n cp -p "$SITE" "$BAK"
+          sudo -n python3 - "$SITE" <<'PY'
+          import re, sys
+          path = sys.argv[1]
+          txt = open(path).read()
+          if "location = /crownsystem-v3/matches.json" in txt:
+              print("already patched"); sys.exit(0)
+          # Find first line beginning a crownsystem-v3 location.
+          m = re.search(r'^([ \t]*)location[^\n]*\bcrownsystem-v3\b[^\n]*\{', txt, re.M)
+          if not m:
+              print("no crownsystem-v3 location block found"); sys.exit(2)
+          indent = m.group(1)
+          inject = (
+              indent + "location = /crownsystem-v3/matches.json {\n"
+              + indent + "    alias /var/www/crownsystem-v3/matches.json;\n"
+              + indent + "    default_type application/json;\n"
+              + indent + "    add_header Cache-Control \"no-store\";\n"
+              + indent + "}\n" + indent
+          )
+          new_txt = txt[:m.start()] + inject + txt[m.start():]
+          open(path,"w").write(new_txt)
+          print("patched")
+          PY
+
+          echo ""
+          echo "=== 3. Show patched context ==="
+          sudo -n grep -n -B1 -A6 "crownsystem-v3" "$SITE" | head -60
+
+          echo ""
+          echo "=== 4. nginx -t + reload ==="
+          sudo -n nginx -t
+          sudo -n systemctl reload nginx
+
+          echo ""
+          echo "=== 5. Verify ==="
+          curl -s -o /dev/null -w "matches.json unauth: %{http_code}\n" "http://127.0.0.1/crownsystem-v3/matches.json"
+          curl -s -o /dev/null -w "SPA root unauth   : %{http_code}\n" "http://127.0.0.1/crownsystem-v3/"
+          curl -s -o /dev/null -u radar:toberich -w "SPA root authed   : %{http_code}\n" "http://127.0.0.1/crownsystem-v3/"
+          EOF

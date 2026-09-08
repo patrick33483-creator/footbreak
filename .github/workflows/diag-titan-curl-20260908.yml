@@ -1,0 +1,67 @@
+name: Diag titan curl
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/diag-titan-curl-20260908.yml']
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  d:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -T 15 -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+      - env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=30 -o StrictHostKeyChecking=accept-new \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          set -e
+          echo "===== curl titan crow page ====="
+          curl -s -A "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36" \
+            -H "Accept: text/html,application/xhtml+xml" \
+            -H "Accept-Language: zh-HK,zh;q=0.9,en;q=0.8" \
+            -o /tmp/titan.html \
+            -w "http_code=%{http_code} size=%{size_download}\n" \
+            "https://live.titan007.com/index2in1_big.aspx?id=3"
+          
+          echo
+          echo "===== File info ====="
+          ls -la /tmp/titan.html
+          file /tmp/titan.html
+          
+          echo
+          echo "===== First 300 chars ====="
+          head -c 300 /tmp/titan.html
+          echo
+          echo "..."
+          
+          echo
+          echo "===== Grep for tr1_ sIds ====="
+          grep -oE 'tr1_[0-9]+' /tmp/titan.html | head -20
+          
+          echo
+          echo "===== Count total sIds ====="
+          grep -oE 'tr1_[0-9]+' /tmp/titan.html | wc -l
+          
+          echo
+          echo "===== Check for gzip/encoding ====="
+          curl -sI "https://live.titan007.com/index2in1_big.aspx?id=3" \
+            -A "Mozilla/5.0" | head -20
+          REMOTE

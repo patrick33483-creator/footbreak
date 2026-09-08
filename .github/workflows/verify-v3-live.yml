@@ -1,0 +1,68 @@
+name: Verify v3 live
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        required: true
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/verify-v3-live.yml']
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+jobs:
+  d:
+    runs-on: ubuntu-latest
+    env:
+      E: ${{ github.event_name }}
+      C: ${{ inputs.confirmation }}
+    steps:
+      - name: guard
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then exit 0; fi
+          if [ "$C" != "VERIFYVL" ]; then exit 1; fi
+      - name: ssh
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - name: verify
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then exit 0; fi
+          SSH="ssh -o BatchMode=yes -o ConnectTimeout=20 -o StrictHostKeyChecking=accept-new $DEPLOY_USER@$DEPLOY_HOST"
+          $SSH 'sudo cat > /tmp/vs.py << PYEOF
+import json
+d = json.load(open("/var/www/crownsystem-v3/matches.json"))
+m = d["matches"]
+print("total:", len(m))
+first_pred = sum(1 for x in m if x.get("first") not in ("-","") and not str(x.get("first")).startswith("("))
+first_missing = sum(1 for x in m if "DATA_MISSING" in str(x.get("first","")))
+first_waiting = sum(1 for x in m if "waiting" in str(x.get("first","")))
+t30_pred = sum(1 for x in m if x.get("t30") not in ("-","") and not str(x.get("t30","")).startswith("("))
+t5_pred = sum(1 for x in m if x.get("t5") not in ("-","") and not str(x.get("t5","")).startswith("("))
+print("首預有預測:", first_pred)
+print("首預 DATA_MISSING:", first_missing)
+print("首預 waiting:", first_waiting)
+print("T-30 有預測:", t30_pred)
+print("T-5 有預測:", t5_pred)
+print()
+print("---有預測 sample---")
+shown = 0
+for x in m:
+    if x.get("first") not in ("-","") and not str(x.get("first")).startswith("("):
+        print(x["kickoff_display"], "|", x["home"][:10], "vs", x["away"][:10], "|", x["first"][:35], "|", x["t30"][:20], "|", x["t5"][:15])
+        shown += 1
+        if shown >= 5: break
+PYEOF
+sudo /opt/footbreak/.venv/bin/python3 /tmp/vs.py'
+          echo
+          echo "=== http check ==="
+          $SSH "curl -sS -o /dev/null -w 'index=%{http_code}\n' -u radar:toberich http://127.0.0.1/crownsystem-v3/"
+          $SSH "curl -sS -o /dev/null -w 'matches_json=%{http_code}\n' -u radar:toberich http://127.0.0.1/crownsystem-v3/matches.json"

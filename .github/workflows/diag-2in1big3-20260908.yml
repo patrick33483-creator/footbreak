@@ -1,0 +1,66 @@
+name: Diag 2in1_big_3
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/diag-2in1big3-20260908.yml']
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  d:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -T 15 -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+      - env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=30 -o StrictHostKeyChecking=accept-new \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          set -e
+          echo "===== bf.titan007.com/vbsxml/2in1_big/2in1_big_3.js ====="
+          curl -s -A "Mozilla/5.0" \
+            -H "Referer: https://live.titan007.com/index2in1_big.aspx?id=3" \
+            -H "Accept-Encoding: gzip" --compressed \
+            -o /tmp/big3.txt \
+            -w "http=%{http_code} size=%{size_download} ct=%{content_type}\n" \
+            "https://bf.titan007.com/vbsxml/2in1_big/2in1_big_3.js"
+          
+          ls -la /tmp/big3.txt
+          file /tmp/big3.txt
+          
+          echo
+          echo "--- first 2000 chars ---"
+          head -c 2000 /tmp/big3.txt
+          echo
+          echo
+          echo "===== Count sids in file ====="
+          grep -oE '"[0-9]{7}"' /tmp/big3.txt | wc -l
+          grep -oE '[0-9]{7}' /tmp/big3.txt | sort -u | wc -l
+          
+          echo
+          echo "===== Compare live.titan007.com/2in1_3.js ====="
+          curl -s -A "Mozilla/5.0" \
+            -H "Referer: https://live.titan007.com/index2in1_big.aspx?id=3" \
+            -H "Accept-Encoding: gzip" --compressed \
+            -o /tmp/live3.txt \
+            -w "http=%{http_code} size=%{size_download}\n" \
+            "https://live.titan007.com/2in1_3.js"
+          ls -la /tmp/live3.txt
+          head -c 500 /tmp/live3.txt
+          REMOTE

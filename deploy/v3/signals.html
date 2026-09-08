@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>皇冠球賽預測系統V3 · 訊號</title>
+  <style>
+    :root {
+      --bg: #0f172a; --panel: #1e293b; --border: #334155;
+      --text: #e2e8f0; --muted: #94a3b8; --accent: #f59e0b;
+      --up: #22c55e; --down: #ef4444;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang HK", "Microsoft JhengHei", sans-serif;
+      background: var(--bg); color: var(--text); font-size: 14px; }
+    header { padding: 12px 20px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; }
+    h1 { font-size: 18px; margin: 0; color: var(--accent); }
+    .status { color: var(--muted); font-size: 12px; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { padding: 8px 10px; text-align: center; border-bottom: 1px solid var(--border); font-size: 13px; white-space: nowrap; }
+    th { background: var(--panel); color: var(--muted); font-weight: 500; font-size: 12px; position: sticky; top: 0; }
+    tr:hover { background: rgba(255,255,255,0.04); }
+    .ko { color: var(--muted); font-size: 12px; }
+    .league { color: var(--muted); font-size: 12px; }
+    .team { font-weight: 500; }
+    .pred-cell { display: flex; flex-direction: column; gap: 2px; align-items: center; font-family: "SF Mono", ui-monospace, monospace; font-size: 12px; }
+    .pred-label { font-weight: 500; color: var(--accent); }
+    .pred-meta { font-size: 10px; color: var(--muted); }
+    .empty { color: #475569; }
+    .filter { padding: 8px 20px; background: var(--panel); border-bottom: 1px solid var(--border); }
+    .filter input { background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 6px 10px; border-radius: 4px; width: 220px; }
+    .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; padding: 12px 20px; }
+    .stat { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 10px 14px; }
+    .stat-label { color: var(--muted); font-size: 11px; margin-bottom: 4px; }
+    .stat-value { font-size: 22px; font-weight: 600; color: var(--accent); }
+    footer { padding: 12px 20px; color: var(--muted); font-size: 11px; border-top: 1px solid var(--border); }
+    nav a { padding: 4px 12px; border-radius: 4px; text-decoration: none; font-size: 12px; margin-right: 4px; }
+    .nav-active { background: rgba(245,158,11,0.2); border: 1px solid var(--accent); color: var(--accent); }
+    .nav-inactive { background: transparent; border: 1px solid var(--border); color: var(--muted); }
+    @media (max-width: 768px) {
+      th, td { padding: 6px 6px; font-size: 12px; }
+      .filter input { width: 160px; }
+      .stats { grid-template-columns: repeat(3, 1fr); gap: 6px; padding: 8px 12px; }
+      .stat { padding: 8px 10px; }
+      .stat-value { font-size: 18px; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div style="display:flex; align-items:center; gap:16px;">
+      <h1>皇冠球賽預測系統V3 <span style="color: var(--muted); font-weight: 400; font-size: 13px;">· 買入訊號</span></h1>
+      <nav>
+        <a href="./" class="nav-inactive">即時開賽</a>
+        <a href="./history.html" class="nav-inactive">歷史</a>
+        <a href="./signals.html" class="nav-active">訊號</a>
+      </nav>
+    </div>
+    <div class="status" id="status">載入中…</div>
+  </header>
+  <div class="stats">
+    <div class="stat"><div class="stat-label">已發訊號 (未來場)</div><div class="stat-value" id="stat-pub">—</div></div>
+    <div class="stat"><div class="stat-label">總場 (未來)</div><div class="stat-value" id="stat-total">—</div></div>
+    <div class="stat"><div class="stat-label">發送率</div><div class="stat-value" id="stat-rate">—</div></div>
+  </div>
+  <div class="filter">
+    <input type="text" id="filter" placeholder="搜尋聯賽 / 隊名…" />
+    <span class="status" id="count" style="margin-left: 12px;"></span>
+  </div>
+  <div style="overflow-x: auto;">
+    <table>
+      <thead>
+        <tr>
+          <th>開賽</th>
+          <th>聯賽</th>
+          <th>主隊</th>
+          <th>客隊</th>
+          <th>初盤預測</th>
+          <th>T-30預測</th>
+          <th>T-5預測</th>
+        </tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </div>
+  <footer>
+    訊號定義：三階段中至少一階 publish_decision=true 且 kickoff > 現時
+  </footer>
+  <script>
+    const fmtKO = (iso) => {
+      if (!iso) return "—";
+      const d = new Date(iso);
+      const m = d.getMonth()+1;
+      const dd = String(d.getDate()).padStart(2,"0");
+      const hh = String(d.getHours()).padStart(2,"0");
+      const mm = String(d.getMinutes()).padStart(2,"0");
+      return `${m}-${dd} ${hh}:${mm}`;
+    };
+    function escapeHtml(s) { return String(s ?? "").replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+    function predCell(stage) {
+      if (!stage) return '<span class="empty">—</span>';
+      const label = stage.lead_label || "—";
+      const odds = stage.lead_odds != null ? stage.lead_odds.toFixed(2) : "—";
+      const prob = stage.lead_prob != null ? (stage.lead_prob*100).toFixed(1)+"%" : "—";
+      const ev = stage.lead_ev != null ? (stage.lead_ev>=0?"+":"") + (stage.lead_ev*100).toFixed(2)+"%" : "—";
+      const conv = stage.conviction != null ? stage.conviction.toFixed(1) : "—";
+      const cls = stage.publish_decision ? "pred-label" : "";
+      const dim = stage.publish_decision ? "" : "opacity:0.4;";
+      return `<div class="pred-cell" style="${dim}">
+        <div class="${cls}">${escapeHtml(label)}</div>
+        <div class="pred-meta">賠 ${odds} · 概 ${prob} · EV ${ev}</div>
+        <div class="pred-meta">信 ${conv}${stage.publish_decision ? " ✓" : ""}</div>
+      </div>`;
+    }
+    let allData = [];
+    let allFuture = 0;
+    function render() {
+      const q = document.getElementById("filter").value.toLowerCase();
+      const filtered = allData.filter(m => !q || (String(m.league||"") + String(m.home||"") + String(m.away||"")).toLowerCase().includes(q));
+      filtered.sort((a,b) => new Date(a.kickoff_utc).getTime() - new Date(b.kickoff_utc).getTime());
+      document.getElementById("count").textContent = `共 ${filtered.length} 場（有訊號）`;
+      const rows = filtered.map(m => {
+        const s = m.stages || {};
+        return `<tr>
+          <td class="ko">${fmtKO(m.kickoff_hkt || m.kickoff_utc)}</td>
+          <td class="league">${escapeHtml(m.league)}</td>
+          <td class="team">${escapeHtml(m.home)}</td>
+          <td class="team">${escapeHtml(m.away)}</td>
+          <td>${predCell(s["首預"])}</td>
+          <td>${predCell(s["T-30"])}</td>
+          <td>${predCell(s["T-5"])}</td>
+        </tr>`;
+      }).join("");
+      document.getElementById("rows").innerHTML = rows || '<tr><td colspan="7" style="text-align:center;padding:40px;color:#64748b">暫無訊號</td></tr>';
+    }
+    async function load() {
+      try {
+        const d = await fetch("./data.json?_=" + Date.now()).then(r => r.json());
+        const now = Date.now();
+        const future = (d.fixtures || []).filter(m => {
+          const ko = m.kickoff_utc ? new Date(m.kickoff_utc).getTime() : 0;
+          return ko > now;
+        });
+        allFuture = future.length;
+        allData = future.filter(m => {
+          const s = m.stages || {};
+          return (s["首預"] && s["首預"].publish_decision) ||
+                 (s["T-30"] && s["T-30"].publish_decision) ||
+                 (s["T-5"] && s["T-5"].publish_decision);
+        });
+        document.getElementById("stat-pub").textContent = allData.length;
+        document.getElementById("stat-total").textContent = allFuture;
+        document.getElementById("stat-rate").textContent = allFuture > 0 ? (100*allData.length/allFuture).toFixed(1)+"%" : "—";
+        document.getElementById("status").textContent = `更新 ${new Date(d.generated_at_hkt || d.generated_at_utc).toLocaleTimeString('zh-HK')}`;
+        render();
+      } catch (err) {
+        document.getElementById("status").textContent = "載入錯誤：" + err.message;
+      }
+    }
+    document.getElementById("filter").addEventListener("input", render);
+    load();
+    setInterval(load, 60_000);
+  </script>
+</body>
+</html>

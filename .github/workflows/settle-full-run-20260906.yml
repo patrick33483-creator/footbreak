@@ -1,0 +1,123 @@
+name: Full settle run
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "打 FULL"
+        required: true
+        type: string
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  full:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - env:
+          E: ${{ github.event_name }}
+          C: ${{ inputs.confirmation }}
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then echo "push registers"; exit 0; fi
+          if [ "$C" != "FULL" ]; then echo "wrong"; exit 1; fi
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=30 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'bash -s' <<'REMOTE'
+          set +e
+          echo "===== Before ====="
+          date
+          uptime
+          ls -la /run/crown-t5-priority 2>&1
+          echo
+          echo "===== A. Stop crown-tick.timer + clear sentinel ====="
+          sudo systemctl stop crown-tick.timer 2>&1
+          sudo systemctl stop crown-tick.service 2>&1
+          sudo rm -f /run/crown-t5-priority 2>&1
+          echo "sentinel removed"
+          echo
+          echo "===== B. Foreground crown-run.sh settle (最長 15min) ====="
+          LOG=/tmp/settle-run-$$.log
+          sudo timeout 900 bash /opt/footbreak/deploy/crown-run.sh settle > $LOG 2>&1 &
+          SPID=$!
+          echo "PID=$SPID, log=$LOG"
+          # Poll
+          for i in $(seq 1 45); do
+            if ! kill -0 $SPID 2>/dev/null; then
+              echo "[t+$((i*20))s] EXITED"
+              break
+            fi
+            echo "[t+$((i*20))s] still running..."
+            sleep 20
+          done
+          wait $SPID
+          rc=$?
+          echo "return code: $rc"
+          echo
+          echo "===== C. Log 尾 60 行 ====="
+          sudo tail -60 $LOG 2>&1
+          echo
+          echo "===== D. Restart crown-tick.timer ====="
+          sudo systemctl reset-failed crown-tick.service 2>&1
+          sudo systemctl start crown-tick.timer 2>&1
+          sudo systemctl is-active crown-tick.timer 2>&1
+          echo
+          echo "===== E. Data.json 事後 ====="
+          ls -la /var/www/crown/data.json
+          python3 -c "
+          import json
+          d=json.load(open('/var/www/crown/data.json'))
+          matches=d.get('matches',[])
+          from datetime import datetime, timezone, timedelta
+          HKT=timezone(timedelta(hours=8))
+          now=datetime.now(HKT)
+          past=[m for m in matches if m.get('kickoff_hkt') and datetime.fromisoformat(m['kickoff_hkt']).replace(tzinfo=HKT)<now]
+          with_result=[m for m in past if any((s or {}).get('result_status') in {'已核對','不計','void'} for s in (m.get('stages') or []))]
+          print('past matches:',len(past))
+          print('past with result:',len(with_result))
+          " 2>&1
+          echo
+          echo "===== F. Ledger unresolved 事後 ====="
+          sudo /opt/footbreak/.venv/bin/python3 -c "
+          import json
+          from datetime import datetime, timezone, timedelta
+          l=json.load(open('/var/lib/footbreak/crown/ledger.json'))
+          w=l.get('watch',{})
+          HKT=timezone(timedelta(hours=8))
+          now=datetime.now(HKT)
+          past_unresolved=0
+          for v in w.values():
+              if not isinstance(v,dict): continue
+              ko=v.get('kickoff_hkt') or ''
+              try:
+                  dt=datetime.fromisoformat(str(ko).replace('Z','+00:00'))
+                  if dt.tzinfo is None: dt=dt.replace(tzinfo=HKT)
+              except: continue
+              if dt>now: continue
+              stages=v.get('stages') or []
+              if not any((s or {}).get('result_status') in {'已核對','不計','void'} for s in stages if isinstance(s,dict)):
+                  past_unresolved+=1
+          print('past unresolved:',past_unresolved)
+          " 2>&1
+          rm -f $LOG
+          REMOTE

@@ -1,0 +1,41 @@
+name: Spy simple
+on:
+  workflow_dispatch: {}
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/spy-simple.yml']
+concurrency:
+  group: production-maintenance-22
+  cancel-in-progress: false
+jobs:
+  x:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: diagnose/crown-v2-pending-20260906
+      - env:
+          SSHKEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          H: ${{ secrets.DEPLOY_HOST }}
+          U: ${{ secrets.DEPLOY_USER }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSHKEY" > ~/.ssh/id
+          chmod 600 ~/.ssh/id
+          SSH="ssh -i ~/.ssh/id -o StrictHostKeyChecking=accept-new $U@$H"
+
+          echo "=== nginx crown-radar block ==="
+          $SSH "sudo -n grep -B1 -A20 'crown-radar' /etc/nginx/sites-available/unified-dashboard"
+
+          echo ""
+          echo "=== port 5002 direct probe ==="
+          for ep in api/status api/opportunities api/research api/ou-signals api/matches-crown api/dashboard api/history; do
+            printf "  5002/%s = " "$ep"
+            $SSH "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:5002/$ep; echo ''"
+          done
+
+          echo ""
+          echo "=== matches-crown save + probe ==="
+          $SSH "curl -s -u radar:toberich http://127.0.0.1/crown-radar/api/matches-crown > /tmp/mc.json && ls -la /tmp/mc.json && python3 /opt/crownsystem-v4/../scan_medians.py 2>/dev/null || true"
+          $SSH "python3 -c \"import json; d=json.load(open('/tmp/mc.json')); items=d if isinstance(d,list) else d.get('matches') or []; wm=[m for m in items if m.get('medians') and any(m['medians'].values())]; ws=[m for m in items if m.get('sublines') and any(m['sublines'].values())]; print('total',len(items),'with_medians',len(wm),'with_sublines',len(ws)); print('sample_with_meds', json.dumps(wm[0] if wm else {}, ensure_ascii=False)[:2000])\""

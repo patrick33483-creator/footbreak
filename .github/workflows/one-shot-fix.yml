@@ -1,0 +1,82 @@
+name: one-shot nginx fix
+on:
+  workflow_dispatch:
+    inputs: {confirm: {description: 'CONFIRM', required: true}}
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/one-shot-fix.yml']
+concurrency: {group: production-maintenance, cancel-in-progress: false}
+jobs:
+  x:
+    runs-on: ubuntu-latest
+    env: {CONFIRM_INPUT: "${{ github.event.inputs.confirm || 'CONFIRM' }}"}
+    steps:
+      - if: github.event_name == 'workflow_dispatch'
+        run: test "$CONFIRM_INPUT" = "CONFIRM"
+      - if: github.event_name == 'workflow_dispatch'
+        env: {SSHKEY: "${{ secrets.DEPLOY_SSH_KEY }}", H: "${{ secrets.DEPLOY_HOST }}", U: "${{ secrets.DEPLOY_USER }}"}
+        run: |
+          mkdir -p ~/.ssh && printf '%s\n' "$SSHKEY" > ~/.ssh/id && chmod 600 ~/.ssh/id
+          ssh -i ~/.ssh/id -o StrictHostKeyChecking=accept-new $U@$H bash <<'EOF'
+          set -e
+          TS=$(date +%Y%m%d-%H%M%S)
+          SITE=/etc/nginx/sites-enabled/unified-dashboard
+          sudo -n cp -p "$SITE" /root/nginx-backups/unified-dashboard.oneshotbak.$TS
+
+          echo "=== BEFORE state ==="
+          sudo -n grep -n "crownsystem-v3" "$SITE" | head -20
+          echo ""
+
+          # Fully rebuild the crownsystem-v3 section:
+          # Drop ALL exact crownsystem-v3 location blocks and re-add clean ones.
+          sudo -n python3 <<'PY'
+          import re
+          p = "/etc/nginx/sites-enabled/unified-dashboard"
+          txt = open(p).read()
+
+          # 1. Remove every `location = /crownsystem-v3/<foo> { ... }` exact block.
+          txt = re.sub(
+              r'^[ \t]*location\s*=\s*/crownsystem-v3/[A-Za-z0-9._-]+\s*\{[^}]*\}\s*\n',
+              '', txt, flags=re.M | re.S)
+
+          # 2. Locate the ^~ catch-all and inject three new exact blocks before it.
+          m = re.search(r'^([ \t]*)location\s*\^~\s*/crownsystem-v3/\s*\{', txt, re.M)
+          assert m, "no catchall"
+          indent = m.group(1)
+          def block(url, alias, ctype):
+              return (
+                  indent + "location = " + url + " {\n"
+                  + indent + "    auth_basic off;\n"
+                  + indent + "    alias " + alias + ";\n"
+                  + indent + "    default_type " + ctype + ";\n"
+                  + indent + '    add_header Cache-Control "no-store";\n'
+                  + indent + "}\n" + indent
+              )
+          inject = (
+              block("/crownsystem-v3/matches.json", "/var/www/crownsystem-v3/matches.json", "application/json")
+              + block("/crownsystem-v3/results.json", "/var/www/crownsystem-v3/results.json", "application/json")
+              + block("/crownsystem-v3/history.html", "/var/www/crownsystem-v3/history.html", "text/html")
+          )
+          txt = txt[:m.start()] + inject + txt[m.start():]
+
+          open(p, "w").write(txt)
+          print("done")
+          PY
+
+          echo ""
+          echo "=== AFTER state ==="
+          sudo -n grep -n "crownsystem-v3" "$SITE"
+          echo ""
+          echo "=== nginx test + reload ==="
+          sudo -n nginx -t
+          sudo -n systemctl reload nginx
+
+          echo ""
+          echo "=== Verify (loopback) ==="
+          for u in matches.json results.json history.html; do
+            printf "  %s : " "$u"
+            curl -s -o /dev/null -w "%{http_code}\n" "http://127.0.0.1/crownsystem-v3/$u"
+          done
+          printf "  SPA / unauth : "; curl -s -o /dev/null -w "%{http_code}\n" "http://127.0.0.1/crownsystem-v3/"
+          printf "  SPA / authed : "; curl -s -o /dev/null -u radar:toberich -w "%{http_code}\n" "http://127.0.0.1/crownsystem-v3/"
+          EOF

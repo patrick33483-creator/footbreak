@@ -1,0 +1,72 @@
+name: Diag titan scores
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/diag-titan-scores-20260908.yml']
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  d:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -T 15 -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+      - env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=30 -o StrictHostKeyChecking=accept-new \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          set -e
+          python3 - <<'PY'
+          import json
+          t = json.load(open('/var/www/stage_engine_v2/titan_today.json'))
+          fx = t['fixtures']
+          print(f"titan fixtures: {len(fx)}")
+          
+          # 有 score 嘅
+          with_score = [f for f in fx if f.get('score','').strip() and f['score'] != '-']
+          print(f"with score: {len(with_score)}")
+          
+          # Status breakdown
+          from collections import Counter
+          status_counts = Counter(f.get('status','') for f in fx)
+          print(f"status: {dict(status_counts)}")
+          
+          # Sample 10 with score
+          print("\nsamples with score:")
+          for f in with_score[:10]:
+              print(f"  sid={f['sid']} status='{f['status']}' score='{f['score']}' {f['home']} vs {f['away']}")
+          
+          # Sample 5 without
+          without = [f for f in fx if not (f.get('score','').strip() and f['score'] != '-')]
+          print(f"\nwithout score ({len(without)}):")
+          for f in without[:5]:
+              print(f"  sid={f['sid']} status='{f['status']}' score='{f['score']}' {f['home']} vs {f['away']}")
+          
+          # Overlap with data.json past
+          d = json.load(open('/var/www/stage_engine_v2/data.json'))
+          from datetime import datetime, timezone
+          now = datetime.now(timezone.utc).isoformat()
+          past_ids = {str(f['id']) for f in d['fixtures'] if f.get('kickoff_utc','') <= now}
+          titan_scored_sids = {f['sid'] for f in with_score}
+          overlap = past_ids & titan_scored_sids
+          print(f"\nOVERLAP (data.json past fixtures ∩ titan scored): {len(overlap)}")
+          print(f"  = 呢D 就係 history 可以填 live score 嘅場")
+          PY
+          REMOTE

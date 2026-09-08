@@ -1,0 +1,46 @@
+name: 讀 e702d30 diff
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+
+permissions:
+  contents: read
+
+jobs:
+  read:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: 設定 SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: 讀
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=8 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'bash -s' <<'REMOTE'
+          set +e
+          cd /opt/footbreak
+          echo "===== e702d30 full diff (crown/run.py + crown/prediction_history.py) ====="
+          sudo git show e702d30 -- crown/run.py crown/prediction_history.py 2>&1
+          echo
+          echo "===== 現時 crown/run.py 個 settle handler (line 700-780) ====="
+          sudo sed -n '700,790p' crown/run.py 2>&1
+          echo
+          echo "===== dashboard_data.py write_dashboard_data 嘅 matches 邏輯 ====="
+          sudo grep -n 'matches\s*=\|matches\s*:\|def write_dashboard_data\|def _match' crown/dashboard_data.py 2>&1 | head -30
+          echo
+          echo "===== DONE ====="
+          REMOTE

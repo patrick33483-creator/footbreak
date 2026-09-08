@@ -1,0 +1,76 @@
+name: Diag titan inline JS
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/diag-titan-inline-20260908.yml']
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  d:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -T 15 -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+      - env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=30 -o StrictHostKeyChecking=accept-new \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          set -e
+          echo "===== Re-fetch titan HTML fresh ====="
+          curl -s -A "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36" \
+            -H "Accept: text/html,application/xhtml+xml" \
+            -H "Accept-Language: zh-HK,zh;q=0.9" \
+            -o /tmp/titan.html \
+            "https://live.titan007.com/index2in1_big.aspx?id=3"
+          wc -c /tmp/titan.html
+          
+          echo
+          echo "===== All <script> content (inline blocks) ====="
+          # extract inline scripts
+          python3 <<'PY'
+          import re
+          html = open('/tmp/titan.html').read()
+          # find <script>...</script> WITHOUT src attribute
+          for m in re.finditer(r'<script(?![^>]*src=)[^>]*>(.*?)</script>', html, re.DOTALL):
+              body = m.group(1).strip()
+              if body:
+                  print("--- INLINE SCRIPT ---")
+                  print(body[:2000])
+                  print()
+          PY
+          
+          echo
+          echo "===== .js file loads for '?id=3' page - list any /vbsxml/ URLs ====="
+          grep -oE '"[^"]*vbsxml[^"]*"' /tmp/titan.html | sort -u
+          grep -oE "'[^']*vbsxml[^']*'" /tmp/titan.html | sort -u
+          
+          echo
+          echo "===== event.js content (looks like WS handler) ====="
+          curl -s -A "Mozilla/5.0" \
+            -H "Referer: https://live.titan007.com/index2in1_big.aspx?id=3" \
+            "https://live.titan007.com/event.js?ver=6" | head -c 800
+          
+          echo
+          echo
+          echo "===== SocketHelper.js: is WebSocket used? ====="
+          curl -s -A "Mozilla/5.0" \
+            -H "Referer: https://live.titan007.com/index2in1_big.aspx?id=3" \
+            "https://live.titan007.com/SocketHelper.js?ver=6" | grep -oE "'ws[^']*'|\"ws[^\"]*\"|wss?://[^\"' ]+" | head -20
+          REMOTE

@@ -1,0 +1,119 @@
+name: Diagnose v2 title CSS + score mismatch
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "打 DIAG2"
+        required: true
+        type: string
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/diag-v2-mismatch-20260907.yml']
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  d:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - env:
+          E: ${{ github.event_name }}
+          C: ${{ inputs.confirmation }}
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then exit 0; fi
+          if [ "$C" != "DIAG2" ]; then exit 1; fi
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          set +e
+          echo "===== 1) history.html file info + h1/subtitle/nav CSS ====="
+          ls -la /var/www/stage_engine_v2/history.html
+          echo
+          echo "--- grep h1/subtitle/nav CSS lines ---"
+          grep -n "h1 {" /var/www/stage_engine_v2/history.html
+          grep -n "\.subtitle" /var/www/stage_engine_v2/history.html
+          grep -n "\.nav" /var/www/stage_engine_v2/history.html
+          echo
+          echo "===== 2) 完整 <style> block ====="
+          sed -n '/<style>/,/<\/style>/p' /var/www/stage_engine_v2/history.html | head -80
+          echo
+          echo "===== 3) fetch same URL like browser does ====="
+          curl -s -H "Host: 146.190.93.148" http://127.0.0.1/v2/crown/history.html -o /tmp/served.html -w "HTTP %{http_code} bytes %{size_download}\n"
+          echo
+          echo "--- served content: check css ---"
+          grep -n "h1 {" /tmp/served.html | head -3
+          grep -n "text-align: center" /tmp/served.html | head -5
+          echo
+          echo "--- served content bytes vs disk ---"
+          wc -c /var/www/stage_engine_v2/history.html /tmp/served.html
+          echo
+          echo "===== 4) v2 data.json fixture id shape (5 samples) ====="
+          sudo python3 -c "
+          import json
+          d = json.load(open('/var/www/stage_engine_v2/data.json'))
+          fx = d.get('fixtures', [])
+          print(f'total fixtures: {len(fx)}')
+          print(f'sources:', set(f.get('source') for f in fx))
+          for f in fx[:5]:
+              print(f'  id={f.get(\"id\")!r} source={f.get(\"source\")!r} kickoff={f.get(\"kickoff_utc\")} home={f.get(\"home\")}')
+          "
+          echo
+          echo "===== 5) results.json count + id shape ====="
+          sudo python3 -c "
+          import json
+          d = json.load(open('/var/www/stage_engine_v2/results.json'))
+          rs = d.get('results', {})
+          print(f'total results: {len(rs)}')
+          print(f'sample ids: {list(rs.keys())[:5]}')
+          "
+          echo
+          echo "===== 6) MATCH between v2 fixtures and results.json ====="
+          sudo python3 -c "
+          import json
+          data = json.load(open('/var/www/stage_engine_v2/data.json'))
+          res = json.load(open('/var/www/stage_engine_v2/results.json'))
+          fx_ids = set(str(f.get('id')) for f in data.get('fixtures', []) if f.get('id'))
+          res_ids = set(res.get('results', {}).keys())
+          overlap = fx_ids & res_ids
+          only_fx = fx_ids - res_ids
+          print(f'fx_ids: {len(fx_ids)}')
+          print(f'res_ids: {len(res_ids)}')
+          print(f'overlap: {len(overlap)}')
+          print(f'fx without result: {len(only_fx)}')
+          # sample of fx without result
+          print()
+          print('sample of fx WITHOUT result (kickoff order):')
+          missing = [f for f in data.get('fixtures', []) if str(f.get('id')) in only_fx]
+          missing.sort(key=lambda f: f.get('kickoff_utc', ''))
+          for f in missing[-10:]:  # most recent
+              print(f'  id={f.get(\"id\")} kickoff={f.get(\"kickoff_utc\")} {f.get(\"home\")} vs {f.get(\"away\")}')
+          "
+          echo
+          echo "===== 7) nginx access log recent (past 5min) ====="
+          tail -80 /var/log/nginx/access.log 2>/dev/null | grep -i "history\|results\|data.json" | tail -20
+          echo
+          echo "===== 8) systemd timer last run ====="
+          systemctl status v2-results-sync.timer --no-pager | head -10
+          systemctl list-timers v2-results-sync.timer --no-pager
+          journalctl -u v2-results-sync.service --no-pager -n 5
+          REMOTE

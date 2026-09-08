@@ -1,0 +1,69 @@
+name: Inspect crown-radar realtime score code
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "打 RADARSCORE"
+        required: true
+        type: string
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/inspect-radar-realtime-20260907.yml']
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  r:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - env:
+          E: ${{ github.event_name }}
+          C: ${{ inputs.confirmation }}
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then exit 0; fi
+          if [ "$C" != "RADARSCORE" ]; then exit 1; fi
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          set +e
+          echo "===== crown-radar folder ====="
+          ls /opt/crown-radar/ 2>/dev/null | head -30
+          echo
+          echo "===== grep 'titan' / 'result_score' / 'score' in radar TS/JS files ====="
+          grep -rn -l "titan007\|result_score\|actual_score\|full_time" /opt/crown-radar/ 2>/dev/null | grep -vE "node_modules|\.d\.ts|\.map" | head -20
+          echo
+          echo "===== grep result-related keys in signals.html ====="
+          find /opt/crown-radar -name "signals.html" -o -name "signals.tsx" -o -name "signals.jsx" 2>/dev/null | head -5
+          echo
+          echo "===== 睇 radar 個 backend API endpoints ====="
+          find /opt/crown-radar -name "*.ts" -o -name "*.js" 2>/dev/null | grep -vE "node_modules|dist|build" | head -30
+          echo
+          echo "===== 揾邊處 fetch score / titan ====="
+          grep -rn "score\|result\|final" /opt/crown-radar/src 2>/dev/null | grep -viE "//|scoreboard|score_" | grep -iE "\.score|\.result|full_time|actual" | head -30
+          echo
+          echo "===== list any Python service on droplet doing titan fetch ====="
+          find /opt -maxdepth 4 -type f -name "*.py" 2>/dev/null | xargs grep -l "titan007" 2>/dev/null | head -10
+          echo
+          echo "===== how footbreak grades titan (existing) ====="
+          grep -n "titan007\|_direct_titan" /opt/footbreak/crown/prediction_history.py | head -10
+          REMOTE

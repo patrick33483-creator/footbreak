@@ -1,0 +1,83 @@
+name: Read radar source code
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "打 SRC"
+        required: true
+        type: string
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/read-radar-code-20260906.yml']
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  s:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: diagnose/crown-v2-pending-20260906
+          fetch-depth: 1
+      - env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - env:
+          E: ${{ github.event_name }}
+          C: ${{ inputs.confirmation }}
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then exit 0; fi
+          if [ "$C" != "SRC" ]; then exit 1; fi
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          # scp tarball back
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -c "
+              cd /opt/crown-radar && \
+              tar --exclude=node_modules --exclude=.git --exclude=data --exclude=backups \
+                  --exclude=*.log --exclude=*.sqlite* --exclude=migrations \
+                  --exclude=package-lock.json --exclude=fills \
+                  -czf /tmp/radar-src.tgz . 2>/dev/null && \
+              ls -la /tmp/radar-src.tgz && \
+              chmod 644 /tmp/radar-src.tgz
+            "'
+          scp -o BatchMode=yes -o ConnectTimeout=30 \
+            "$DEPLOY_USER@$DEPLOY_HOST:/tmp/radar-src.tgz" /tmp/radar-src.tgz
+          ls -la /tmp/radar-src.tgz
+          mkdir -p radar-src && tar -xzf /tmp/radar-src.tgz -C radar-src
+          echo "===== File structure ====="
+          find radar-src -maxdepth 3 -type f | sort
+          echo
+          echo "===== File sizes ====="
+          du -sh radar-src/* 2>&1 | sort -rh | head
+      - name: Commit source back
+        run: |
+          # Commit relevant TypeScript/JavaScript source files for inspection
+          git config --global user.email agent@perplexity
+          git config --global user.name perplexity-agent
+          mkdir -p exports/radar-src
+          # Copy only source files (exclude big configs)
+          find radar-src -type f \( -name '*.ts' -o -name '*.tsx' -o -name '*.js' -o -name '*.jsx' -o -name '*.json' -o -name '*.md' -o -name '*.sh' -o -name '*.yml' -o -name '*.html' -o -name '*.css' \) -not -path '*node_modules*' | while read f; do
+              rel=$(echo "$f" | sed 's|^radar-src/||')
+              mkdir -p "exports/radar-src/$(dirname "$rel")"
+              cp "$f" "exports/radar-src/$rel"
+          done
+          git add exports/radar-src/
+          git commit -m "Radar src snapshot" || echo "nothing"
+          git push

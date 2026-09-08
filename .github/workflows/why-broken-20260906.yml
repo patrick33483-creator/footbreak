@@ -1,0 +1,56 @@
+name: Why broken
+on:
+  workflow_dispatch:
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+permissions:
+  contents: read
+jobs:
+  w:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'bash -s' <<'REMOTE'
+          set +e
+
+          echo "===== A. stage-engine-v2-fast-results 為咩 3 日冇 fire ====="
+          sudo systemctl status stage-engine-v2-fast-results.timer --no-pager 2>&1 | head -20
+          sudo systemctl status stage-engine-v2-fast-results.service --no-pager 2>&1 | head -20
+          echo
+          sudo journalctl -u stage-engine-v2-fast-results.service --since '4 days ago' --no-pager -o cat 2>&1 | tail -30
+          echo
+          echo "===== B. footbreak-settle failed reason ====="
+          sudo systemctl status footbreak-settle.service --no-pager 2>&1 | head -25
+          sudo journalctl -u footbreak-settle.service --since '2 hours ago' --no-pager -o cat 2>&1 | tail -30
+          echo
+          echo "===== C. crown-t5-priority sentinel: 邊個 create 佢, 有無 cleanup ====="
+          sudo ls -la /run/crown-t5-priority 2>&1
+          # 睇邊個 unit 用 RuntimeDirectory 建佢
+          sudo grep -rln 'crown-t5-priority' /etc/systemd/system/ 2>&1 | head -10
+          sudo grep -rln 'crown-t5-priority' /opt/footbreak/ 2>&1 | head -10
+          echo
+          echo "===== D. crown-tick.service 狀態 (係佢建 sentinel) ====="
+          sudo systemctl status crown-tick.service --no-pager 2>&1 | head -20
+          sudo journalctl -u crown-tick.service --since '30 min ago' --no-pager -o cat 2>&1 | grep -iE "sentinel|priority|Started|Failed|status" | tail -20
+          echo
+          echo "===== E. footbreak-result-reconcile 卡響邊 ====="
+          sudo systemctl status footbreak-result-reconcile.service --no-pager 2>&1 | head -30
+          sudo journalctl -u footbreak-result-reconcile.service --since '2 hours ago' --no-pager -o cat 2>&1 | tail -30
+          echo
+          echo "===== F. dashboard-self-heal 卡響邊 (activating start) ====="
+          sudo systemctl status footbreak-dashboard-self-heal.service --no-pager 2>&1 | head -20
+          sudo journalctl -u footbreak-dashboard-self-heal.service --since '30 min ago' --no-pager -o cat 2>&1 | tail -30
+          REMOTE

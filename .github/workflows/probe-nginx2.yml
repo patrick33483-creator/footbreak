@@ -1,0 +1,40 @@
+name: probe nginx v3 deep
+on:
+  workflow_dispatch:
+    inputs: {confirm: {description: 'CONFIRM', required: true}}
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/probe-nginx2.yml']
+concurrency: {group: production-maintenance, cancel-in-progress: false}
+jobs:
+  x:
+    runs-on: ubuntu-latest
+    env: {CONFIRM_INPUT: "${{ github.event.inputs.confirm || 'CONFIRM' }}"}
+    steps:
+      - if: github.event_name == 'workflow_dispatch'
+        run: test "$CONFIRM_INPUT" = "CONFIRM"
+      - if: github.event_name == 'workflow_dispatch'
+        env: {SSHKEY: "${{ secrets.DEPLOY_SSH_KEY }}", H: "${{ secrets.DEPLOY_HOST }}", U: "${{ secrets.DEPLOY_USER }}"}
+        run: |
+          mkdir -p ~/.ssh && printf '%s\n' "$SSHKEY" > ~/.ssh/id && chmod 600 ~/.ssh/id
+          ssh -i ~/.ssh/id -o StrictHostKeyChecking=accept-new $U@$H bash <<'EOF'
+          echo "=== 1. All server blocks that match port 80 ==="
+          sudo -n grep -rn "listen.*80\b" /etc/nginx/ | grep -v backup | head
+          echo ""
+          echo "=== 2. All sites-enabled files ==="
+          sudo -n ls -la /etc/nginx/sites-enabled/
+          echo ""
+          echo "=== 3. Which server_name / host is 127.0.0.1 hitting? ==="
+          curl -sI "http://127.0.0.1/crownsystem-v3/matches.json" 2>&1 | head -10
+          curl -sI -H "Host: 146.190.93.148" "http://127.0.0.1/crownsystem-v3/matches.json" 2>&1 | head -10
+          echo ""
+          echo "=== 4. nginx debug: which config file wins? ==="
+          # Check if there's ANOTHER server block claiming the same paths
+          sudo -n grep -rln "crownsystem-v3" /etc/nginx/ | head
+          echo ""
+          echo "=== 5. Force-check that alias actually works ==="
+          curl -s "http://127.0.0.1/crownsystem-v3/matches.json" | head -c 200
+          echo ""
+          echo "=== 6. Enable rewrite_log briefly? Check error log tail ==="
+          sudo -n tail -30 /var/log/nginx/error.log
+          EOF

@@ -1,0 +1,88 @@
+name: Inspect stage_engine_v2 and system module
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "打 INSPECT"
+        required: true
+        type: string
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - env:
+          E: ${{ github.event_name }}
+          C: ${{ inputs.confirmation }}
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then echo "push registers"; exit 0; fi
+          if [ "$C" != "INSPECT" ]; then echo "wrong"; exit 1; fi
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'bash -s' <<'REMOTE'
+          set +e
+
+          echo "===== A. stage_engine_v2 (no _fb) 響 server 有咩 ====="
+          ls -la /opt/footbreak/stage_engine_v2/ 2>&1
+          echo "--- 有無 __init__ ---"
+          ls -la /opt/footbreak/stage_engine_v2/__init__.py /opt/footbreak/stage_engine_v2/__main__.py 2>&1
+          echo "--- __main__ / __init__ 頭 30 行 ---"
+          head -30 /opt/footbreak/stage_engine_v2/__main__.py 2>&1
+          head -30 /opt/footbreak/stage_engine_v2/__init__.py 2>&1
+          echo "--- settle sub-command 響邊 file 定義 ---"
+          grep -rln "settle" /opt/footbreak/stage_engine_v2/ 2>&1 | head -10
+          echo "--- CLI arg parser: 有無 --lookback-days / --max-fixtures / --max-seconds / --condition-sent-log / --operator-results / --automatic-results ---"
+          grep -rn "add_argument\|--lookback-days\|--max-fixtures\|--max-seconds\|--condition-sent-log\|--operator-results\|--automatic-results\|--crown-data\|--dashboard\|--ledger" /opt/footbreak/stage_engine_v2/ 2>&1 | head -40
+          echo
+          echo "===== B. stage_engine_v2_fb 響 server 有 ---"
+          ls -la /opt/footbreak/stage_engine_v2_fb/ 2>&1 | head -20
+          grep -rn "add_argument\|--lookback-days\|--max-fixtures\|--max-seconds\|--condition-sent-log\|--operator-results\|--automatic-results\|--crown-data\|--dashboard\|--ledger" /opt/footbreak/stage_engine_v2_fb/ 2>&1 | head -40
+          echo
+          echo "===== C. 直接跑一次睇實際 error 訊息 ====="
+          cd /opt/footbreak && sudo -u root /opt/footbreak/.venv/bin/python3 -m stage_engine_v2 settle --help 2>&1 | head -40
+          echo "--- OR the fb one ---"
+          cd /opt/footbreak && sudo -u root /opt/footbreak/.venv/bin/python3 -m stage_engine_v2_fb --help 2>&1 | head -20
+          echo
+          echo "===== D. system module 響 server 有咩 ====="
+          ls -la /opt/footbreak/system/ 2>&1 | head -30
+          ls /opt/footbreak/system/*.py 2>&1 | wc -l
+          echo "--- __init__.py 存唔存在 ---"
+          ls -la /opt/footbreak/system/__init__.py 2>&1
+          echo "(如果 __init__ 冇, 加返一個空 file 就搞掂 module import)"
+          echo
+          echo "===== E. footbreak-tick / result-reconcile 卡幾耐 + 咩 stage ====="
+          ps -eo pid,etime,cmd | grep -E "footbreak|crown|stage" | grep -v grep | head -20
+          echo "--- 攞 lock 個 process ---"
+          sudo lsof /var/lock/footbreak.lock 2>&1 | head -10
+          echo
+          echo "===== F. crown-tick 依家 CPU/IO 狀態 ====="
+          uptime
+          echo "--- iostat ---"
+          iostat -x 1 2 2>&1 | tail -15
+          echo "--- Recent tick 逐次 duration ---"
+          sudo journalctl -u crown-tick.service --since '1 hour ago' --no-pager -o cat 2>&1 | grep -E "Started|Deactiv|elapsed|status" | tail -20
+          REMOTE

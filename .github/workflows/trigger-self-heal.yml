@@ -1,0 +1,57 @@
+name: Trigger self-heal v3
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation: {description: "打 TRIGGER", required: true, type: string}
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/trigger-self-heal.yml']
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  d:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - env:
+          E: ${{ github.event_name }}
+          C: ${{ inputs.confirmation }}
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then exit 0; fi
+          if [ "$C" != "TRIGGER" ]; then exit 1; fi
+      - env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          if [ "${{ github.event_name }}" != "workflow_dispatch" ]; then exit 0; fi
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+          SSH="ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=30 -i ~/.ssh/id_ed25519 $DEPLOY_USER@$DEPLOY_HOST"
+          set +e
+          echo "=== 1. sync-nginx.sh (pulls main + installs conf + reloads) ==="
+          $SSH 'sudo bash /opt/footbreak/deploy/sync-nginx.sh 2>&1 | tail -30'
+          echo
+          echo "=== 2. Verify crownsystem-v3 in installed conf ==="
+          $SSH 'sudo grep -n crownsystem-v3 /etc/nginx/sites-available/unified-dashboard | head -10'
+          echo
+          echo "=== 3. Verify nginx -t + curl ==="
+          $SSH 'sudo nginx -t 2>&1 && echo && for p in / /data.json /results.json /titan_today.json /history.html /signals.html; do
+                  c=$(curl -s -o /dev/null -w "%{http_code}" -u radar:toberich "http://127.0.0.1/crownsystem-v3$p")
+                  echo "  /crownsystem-v3$p -> $c"
+                done
+                echo
+                echo "no-auth (expect 401):"
+                curl -s -o /dev/null -w "  /crownsystem-v3/ -> %{http_code}\n" http://127.0.0.1/crownsystem-v3/
+                echo
+                echo "title check:"
+                curl -sS -u radar:toberich http://127.0.0.1/crownsystem-v3/ | grep -o "<title>[^<]*</title>"'

@@ -1,0 +1,90 @@
+name: Inspect env full
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+
+permissions:
+  contents: read
+
+jobs:
+  i:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - name: SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - name: run
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'bash -s' <<'REMOTE'
+          set +e
+          echo "===== A. systemctl show env (key only) ====="
+          sudo systemctl show crown-settle.service -p Environment --no-pager 2>&1 | tr ' ' '\n' | grep -oE '^[A-Z_]+=' | sort -u
+          echo
+          echo "===== B. crown-run.sh 尾段睇 python 點 launch ====="
+          sudo tail -100 /opt/footbreak/deploy/crown-run.sh 2>&1
+          echo
+          echo "===== C. 睇 crown-settle 上次成功執行嘅時間 ====="
+          sudo journalctl -u crown-settle.service --since '2 hours ago' --no-pager -o cat 2>&1 | grep -E "'ok': True|'ok': False|Started|status" | head -20
+          echo
+          echo "===== D. 而家 crown-settle 狀態 + 14:00 有無跑 ====="
+          sudo systemctl show crown-settle.service --property=ActiveState,SubState,Result,ExecMainStatus,ExecMainExitTimestamp --no-pager 2>&1
+          sudo journalctl -u crown-settle.service --since '10 min ago' --no-pager -o cat 2>&1 | tail -20
+          echo
+          echo "===== E. data.json 現況 ====="
+          sudo ls -la /var/www/crown/data.json 2>&1
+          sudo /opt/footbreak/.venv/bin/python3 -c "
+          import json
+          d = json.load(open('/var/www/crown/data.json'))
+          print('generated_at:', d.get('generated_at'))
+          print('matches:', len(d.get('matches', [])))
+          print('summary:', d.get('summary'))
+          " 2>&1
+          echo
+          echo "===== F. Pending backlog 睇下真實有幾多 ====="
+          sudo /opt/footbreak/.venv/bin/python3 -c "
+          import json
+          l = json.load(open('/var/lib/footbreak/crown/ledger.json'))
+          w = l.get('watch', {})
+          print('watch entries:', len(w))
+          # 統計未 settled
+          from datetime import datetime, timezone, timedelta
+          HKT = timezone(timedelta(hours=8))
+          now = datetime.now(HKT)
+          past_unresolved = 0
+          past_unresolved_recent = 0
+          for k, v in w.items():
+              if not isinstance(v, dict): continue
+              ko = v.get('kickoff_hkt') or v.get('kickoff')
+              if not ko: continue
+              try:
+                  dt = datetime.fromisoformat(str(ko).replace('Z','+00:00'))
+                  if dt.tzinfo is None: dt = dt.replace(tzinfo=HKT)
+              except: continue
+              if dt > now: continue  # future match
+              # past match — check if any stage has unresolved result
+              stages = v.get('stages') or []
+              for s in stages:
+                  if isinstance(s, dict):
+                      rs = s.get('result_status')
+                      if rs not in {'已核對','不計'}:
+                          past_unresolved += 1
+                          if (now - dt).days <= 3:
+                              past_unresolved_recent += 1
+                          break
+          print('past matches with unresolved result:', past_unresolved)
+          print('  of which within last 3 days:', past_unresolved_recent)
+          " 2>&1
+          REMOTE

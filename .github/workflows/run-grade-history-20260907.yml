@@ -1,0 +1,152 @@
+name: Run grade_history mass
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "打 RUNGRADE"
+        required: true
+        type: string
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/run-grade-history-20260907.yml']
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  r:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - env:
+          E: ${{ github.event_name }}
+          C: ${{ inputs.confirmation }}
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then exit 0; fi
+          if [ "$C" != "RUNGRADE" ]; then exit 1; fi
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=60 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          set -eu
+          cd /opt/footbreak
+
+          STAMP=$(date +%Y%m%d-%H%M%S)
+          BACKUP_DIR=/var/lib/footbreak/crown/backups/history-run-grade-${STAMP}
+          mkdir -p "$BACKUP_DIR"
+
+          # 1) Restore from confirmed pre-fill backup (verified 69MB, 0 user_manual_fill rows)
+          echo "===== 1. Rollback prediction_history.json ====="
+          PREFILL=/var/lib/footbreak/crown/backups/history-pre-user-fill-20260906-224008/prediction_history.json
+          if [ ! -f "$PREFILL" ]; then
+              echo "ERROR: Pre-fill backup missing at $PREFILL"
+              exit 2
+          fi
+          echo "Using PREFILL=$PREFILL"
+          ls -la "$PREFILL"
+
+          cp -a /var/lib/footbreak/crown/prediction_history.json "$BACKUP_DIR/before-restore.json"
+          cp -a "$PREFILL" /var/lib/footbreak/crown/prediction_history.json
+          chown -R crown:crown /var/lib/footbreak/crown/ 2>/dev/null || true
+          ls -la /var/lib/footbreak/crown/prediction_history.json
+
+          # 2) Run grade_history with elevated budget via monkeypatch. Multiple passes.
+          echo
+          echo "===== 2. Run grade_history with budget=999999, up to 8 passes ====="
+
+          cat > /tmp/rg.py <<'PY'
+          """Mass grade by monkeypatching the per-run request budget."""
+          import sys, time, json, traceback
+          sys.path.insert(0, '/opt/footbreak')
+          import crown.prediction_history as ph
+          from crown.config import settings as _settings
+
+          # Elevate budget
+          ph._RESULT_DETAIL_REQUEST_BUDGET = 999999
+
+          config = _settings()
+          print(f'config.state_dir={config.state_dir}')
+
+          for i in range(1, 9):
+              t0 = time.time()
+              try:
+                  hist = ph.grade_history(config)
+              except Exception as exc:
+                  print(f'[pass {i}] exception: {type(exc).__name__}: {exc}')
+                  traceback.print_exc()
+                  break
+              rows = hist.get('rows', [])
+              graded = sum(1 for r in rows if r.get('market_grades'))
+              pending = sum(1 for r in rows if r.get('result_status') not in ('已核對', '不計'))
+              el = time.time() - t0
+              print(f'[pass {i}] rows={len(rows)} graded={graded} pending={pending} took={el:.1f}s')
+              # If nothing left to grade, stop
+              if pending == 0:
+                  print('all resolved')
+                  break
+              # Small sleep between passes
+              time.sleep(3)
+          PY
+
+          timeout 4800 /opt/footbreak/.venv/bin/python3 /tmp/rg.py 2>&1 | tail -80 || echo "grade_history timed out or errored"
+
+          # 3) Regen data.json
+          echo
+          echo "===== 3. Regenerate data.json ====="
+          /opt/footbreak/.venv/bin/python3 <<'PY'
+          import sys, traceback
+          sys.path.insert(0, '/opt/footbreak')
+          from crown.dashboard_data import write_dashboard_data
+          from crown.config import settings as _settings
+          try:
+              res = write_dashboard_data(_settings())
+              print('data.json OK', type(res).__name__)
+          except Exception as exc:
+              print(f'ERROR: {type(exc).__name__}: {exc}')
+              traceback.print_exc()
+          PY
+
+          # 4) Verify
+          echo
+          echo "===== 4. Verify ====="
+          /opt/footbreak/.venv/bin/python3 <<'PY'
+          import json
+          h = json.load(open('/var/lib/footbreak/crown/prediction_history.json'))
+          rows = h.get('rows', [])
+          graded = [r for r in rows if r.get('market_grades')]
+          pending = [r for r in rows if r.get('result_status') not in ('已核對','不計')]
+          direct = [r for r in rows if r.get('result_source') == 'titan007_direct_detail_exact_id']
+          print(f'total rows: {len(rows)}')
+          print(f'with market_grades: {len(graded)}')
+          print(f'pending: {len(pending)}')
+          print(f'titan007_direct_detail_exact_id: {len(direct)}')
+
+          try:
+              d = json.load(open('/var/www/crown/data.json'))
+              # Print top-level stats keys
+              print('data.json top keys:', list(d.keys())[:20])
+              for k in ('overall_stats','overview','summary','stats'):
+                  if k in d:
+                      print(f'{k} snippet:', json.dumps(d[k], ensure_ascii=False)[:400])
+          except Exception as exc:
+              print(f'data.json err: {exc}')
+          PY
+
+          REMOTE

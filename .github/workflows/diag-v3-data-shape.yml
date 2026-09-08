@@ -1,0 +1,103 @@
+name: Diag v3 data shape
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "打 DIAGV3"
+        required: true
+        type: string
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/diag-v3-data-shape.yml']
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  d:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 6
+    steps:
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          C: ${{ inputs.confirmation }}
+        run: |
+          if [ "$C" != "DIAGV3" ]; then echo "Bad confirmation"; exit 1; fi
+      - env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+          SSH="ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=30 -i ~/.ssh/id_ed25519 $DEPLOY_USER@$DEPLOY_HOST"
+
+          cat > /tmp/probe.py <<'PY'
+          import json, os, sys
+          def dump(p, label):
+              print(f"=== {label} {p} ===")
+              try:
+                  with open(p) as f: d = json.load(f)
+              except Exception as e:
+                  print("ERR", e); return
+              if isinstance(d, dict):
+                  print("top dict keys:", list(d.keys())[:20])
+                  for k in list(d.keys())[:6]:
+                      v = d[k]
+                      if isinstance(v, list) and v:
+                          print(f"  {k}: list[{len(v)}] first keys:", list(v[0].keys())[:20])
+                          print(f"  first sample:", json.dumps(v[0], ensure_ascii=False)[:500])
+                      elif isinstance(v, dict):
+                          print(f"  {k}: dict keys:", list(v.keys())[:10])
+                      else:
+                          print(f"  {k}:", type(v).__name__, str(v)[:60])
+              elif isinstance(d, list):
+                  print(f"top list len={len(d)}")
+                  if d:
+                      print("first item keys:", list(d[0].keys())[:20])
+                      print("sample:", json.dumps(d[0], ensure_ascii=False)[:600])
+          dump("/var/www/stage_engine_v2/data.json", "DATA")
+          dump("/var/www/stage_engine_v2/results.json", "RESULTS")
+
+          # Find fixture with 3 stages
+          try:
+              with open("/var/www/stage_engine_v2/data.json") as f: d = json.load(f)
+              fixtures = d if isinstance(d, list) else (d.get("fixtures") or d.get("matches") or [])
+              staged = [x for x in fixtures if isinstance(x.get("stages"), dict) and len(x.get("stages", {})) >= 2]
+              print(f"\n=== FIXTURES with stages: {len(staged)} ===")
+              for f in staged[:3]:
+                  print("---")
+                  print("kickoff:", f.get("kickoff"), "home:", f.get("home"), "away:", f.get("away"), "league:", f.get("league"))
+                  print("all top keys:", list(f.keys()))
+                  print("stages keys:", list(f["stages"].keys()))
+                  for k, v in f["stages"].items():
+                      print(f"  {k}:", json.dumps(v, ensure_ascii=False)[:250])
+          except Exception as e:
+              print("stages probe err:", e)
+
+          # results sample
+          try:
+              with open("/var/www/stage_engine_v2/results.json") as f: r = json.load(f)
+              if isinstance(r, list) and r:
+                  print(f"\n=== RESULTS first 2 ===")
+                  for x in r[:2]:
+                      print(json.dumps(x, ensure_ascii=False)[:300])
+              elif isinstance(r, dict):
+                  keys = list(r.keys())[:3]
+                  print(f"\n=== RESULTS first 3 keys ===")
+                  for k in keys:
+                      print(k, "→", json.dumps(r[k], ensure_ascii=False)[:300])
+          except Exception as e:
+              print("results err:", e)
+          PY
+          B64=$(base64 -w0 /tmp/probe.py)
+          $SSH "echo '$B64' | base64 -d | sudo python3 -"
+          echo "--- titan_today.json head ---"
+          $SSH 'sudo head -c 800 /var/www/stage_engine_v2/titan_today.json && echo'

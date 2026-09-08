@@ -1,0 +1,56 @@
+name: Diag find radar
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        required: true
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/diag-find-radar.yml']
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+jobs:
+  d:
+    runs-on: ubuntu-latest
+    env:
+      E: ${{ github.event_name }}
+      C: ${{ inputs.confirmation }}
+    steps:
+      - name: guard
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then exit 0; fi
+          if [ "$C" != "FINDR" ]; then exit 1; fi
+      - name: ssh
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - name: diag
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then exit 0; fi
+          SSH="ssh -o BatchMode=yes -o ConnectTimeout=20 -o StrictHostKeyChecking=accept-new $DEPLOY_USER@$DEPLOY_HOST"
+          echo '=== /opt/ dirs ==='
+          $SSH 'sudo ls -la /opt/ 2>&1'
+          echo
+          echo '=== search radar-related dirs ==='
+          $SSH 'sudo find /opt /srv /root /home -maxdepth 3 -type d \( -iname "*radar*" -o -iname "*crown-radar*" -o -iname "*皇冠*" \) 2>/dev/null'
+          echo
+          echo '=== search radar systemd services ==='
+          $SSH 'sudo systemctl list-units --all --no-pager 2>/dev/null | grep -iE "radar|crown" | head -20'
+          echo
+          echo '=== search nginx sites for radar ==='
+          $SSH 'sudo ls /etc/nginx/sites-enabled/ 2>&1; sudo grep -r "radar" /etc/nginx/sites-enabled/ 2>&1 | head -20'
+          echo
+          echo '=== search var/www for radar ==='
+          $SSH 'sudo ls /var/www/ 2>&1'
+          echo
+          echo '=== check running python processes ==='
+          $SSH 'sudo ps auxf 2>/dev/null | grep -iE "radar|crown|titan" | grep -v grep | head -20'

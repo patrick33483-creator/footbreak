@@ -1,0 +1,100 @@
+name: Audit crown-radar result pipeline
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "打 AUDITRADAR"
+        required: true
+        type: string
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/audit-crown-radar-results-20260907.yml']
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  a:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 6
+    steps:
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - env:
+          E: ${{ github.event_name }}
+          C: ${{ inputs.confirmation }}
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then exit 0; fi
+          if [ "$C" != "AUDITRADAR" ]; then exit 1; fi
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          set +e
+          echo "===== 1) crown-radar 目錄結構 ====="
+          ls /opt/crown-radar/
+          ls /opt/crown-radar/server/ 2>/dev/null | head -40
+          
+          echo
+          echo "===== 2) result-related files ====="
+          find /opt/crown-radar/server -type f \( -name "*result*" -o -name "*score*" -o -name "*settle*" \) 2>/dev/null | head -20
+          
+          echo
+          echo "===== 3) titan007 / titan / hkjc source files ====="
+          find /opt/crown-radar/server -type f -name "*.ts" -o -name "*.js" 2>/dev/null | xargs grep -l "titan007\|hkjc-result\|scoreboard" 2>/dev/null | head -10
+          
+          echo
+          echo "===== 4) SQLite results table schema + row count ====="
+          find /opt/crown-radar -name "*.sqlite" -o -name "*.db" 2>/dev/null | head -5
+          for f in $(find /opt/crown-radar -name "*.sqlite" -o -name "*.db" 2>/dev/null | head -3); do
+            echo "--- $f ---"
+            sqlite3 "$f" ".schema results" 2>&1 | head -20
+            sqlite3 "$f" "SELECT COUNT(*) FROM results;" 2>&1
+            sqlite3 "$f" "SELECT * FROM results ORDER BY fetched_at DESC LIMIT 3;" 2>&1
+          done
+          
+          echo
+          echo "===== 5) results endpoint code (routes.ts) ====="
+          if [ -f /opt/crown-radar/server/routes.ts ]; then
+            grep -n "result\|score" /opt/crown-radar/server/routes.ts | head -30
+          fi
+          
+          echo
+          echo "===== 6) titan007 / hkjc source: 見完整 fetch logic ====="
+          for f in /opt/crown-radar/server/titan-corners.ts /opt/crown-radar/server/hkjc-result-query.ts /opt/crown-radar/server/hkjc.ts; do
+            if [ -f "$f" ]; then
+              echo "===== $f (first 100 lines) ====="
+              head -100 "$f"
+              echo
+            fi
+          done
+          
+          echo
+          echo "===== 7) cron / polling scheduler ====="
+          find /opt/crown-radar/server -type f -exec grep -l "setInterval\|cron\|schedule" {} \; 2>/dev/null | head -10
+          
+          echo
+          echo "===== 8) how does radar match titan match_id ====="
+          grep -rn "match_id\|matchId" /opt/crown-radar/server/*.ts 2>/dev/null | grep -i "result\|score\|titan\|hkjc" | head -20
+          
+          echo
+          echo "===== 9) radar systemd + docker ====="
+          systemctl status crown-radar --no-pager 2>&1 | head -10
+          docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' 2>&1 | grep -i "radar\|crown" | head -5
+          
+          REMOTE

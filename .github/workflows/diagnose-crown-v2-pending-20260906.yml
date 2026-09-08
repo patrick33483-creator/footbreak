@@ -1,0 +1,111 @@
+name: 診斷皇冠 V2 待賽果 20260906
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    name: 只讀診斷 crown-settle 與 backfill 路徑
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: 設定 SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: 收集只讀證據
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=8 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'bash -s' <<'REMOTE'
+          set +e
+          echo "===== 1. /opt/footbreak listing ====="
+          sudo ls -la /opt/footbreak 2>&1 | head -60
+          echo
+          echo "===== 2. prediction_history.json 實際位置 ====="
+          sudo find /opt /var/lib -maxdepth 6 -name 'prediction_history*.json*' 2>/dev/null
+          sudo find /opt /var/lib -maxdepth 6 -name 'prediction_history*' 2>/dev/null
+          echo
+          echo "===== 3. /var/lib/footbreak listing ====="
+          sudo ls -la /var/lib/footbreak 2>&1 | head -40
+          echo "----- /var/lib/footbreak/crown -----"
+          sudo ls -la /var/lib/footbreak/crown 2>&1 | head -40
+          echo
+          echo "===== 4. crown-settle lock 狀態 ====="
+          sudo ls -la /var/lock/footbreak-crown-settle.lock /var/lock/footbreak.lock 2>&1
+          echo "----- fuser -----"
+          sudo fuser -v /var/lock/footbreak-crown-settle.lock 2>&1 || echo "(no holder or fuser failed)"
+          sudo fuser -v /var/lock/footbreak.lock 2>&1 || echo "(no holder or fuser failed)"
+          echo
+          echo "===== 5. crown-settle service 狀態 ====="
+          sudo systemctl status crown-settle.service --no-pager -n 30 2>&1 | head -60
+          echo "----- crown-settle.timer -----"
+          sudo systemctl status crown-settle.timer --no-pager -n 10 2>&1 | head -20
+          echo
+          echo "===== 6. crown-settle 最近 log ====="
+          sudo journalctl -u crown-settle.service --no-pager -n 40 2>&1 | tail -60
+          echo
+          echo "===== 7. footbreak-* timers 狀態 ====="
+          sudo systemctl list-timers 'footbreak*' 'crown*' --no-pager 2>&1 | head -20
+          echo
+          echo "===== 8. Crown ledger pending 數 (from /var/lib/footbreak/crown/ledger.json) ====="
+          sudo /opt/footbreak/.venv/bin/python3 - <<'PY' 2>&1 | head -40
+          import json, os
+          from collections import Counter
+          from datetime import datetime, timedelta, timezone
+          HKT = timezone(timedelta(hours=8))
+          path = "/var/lib/footbreak/crown/ledger.json"
+          if not os.path.exists(path):
+              print("ledger.json NOT at", path)
+          else:
+              d = json.load(open(path))
+              watch = d.get("watch", {}) if isinstance(d, dict) else {}
+              matches = d.get("matches", {}) if isinstance(d, dict) else {}
+              print(f"watch entries: {len(watch)}")
+              print(f"matches entries: {len(matches)}")
+              # Count by result_status
+              c = Counter()
+              c2 = Counter()
+              now = datetime.now(HKT)
+              overdue_pending = 0
+              for mid, ent in matches.items():
+                  if not isinstance(ent, dict): continue
+                  c[str(ent.get("result_status") or "(none)")] += 1
+                  ko = ent.get("kickoff_hkt") or ent.get("kickoff")
+                  if ko and str(ent.get("result_status") or "") != "已核對":
+                      try:
+                          k = datetime.fromisoformat(str(ko))
+                          if k.tzinfo is None: k = k.replace(tzinfo=HKT)
+                          if k < now - timedelta(hours=3): overdue_pending += 1
+                      except Exception: pass
+              print("result_status distribution (matches):")
+              for k,v in c.most_common(): print(f"  {k}: {v}")
+              print(f"overdue pending (kickoff > 3h ago, not 已核對): {overdue_pending}")
+          PY
+          echo
+          echo "===== 9. /var/www/crown data 檔 ====="
+          sudo ls -la /var/www/crown 2>&1 | head -20
+          echo
+          echo "===== 10. deploy/run.sh settle 內容偷睇 ====="
+          sudo test -f /opt/footbreak/deploy/run.sh && sudo grep -nE 'settle|history' /opt/footbreak/deploy/run.sh 2>&1 | head -30
+          echo
+          echo "===== 11. crown-settle.service unit ====="
+          sudo systemctl cat crown-settle.service --no-pager 2>&1 | head -40
+          echo
+          echo "===== DONE ====="
+          REMOTE

@@ -1,0 +1,113 @@
+name: Recon titan007 Over page + v2 fixture titan id
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "打 RECONE"
+        required: true
+        type: string
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/recon-titan-over-20260907.yml']
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  r:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - env:
+          E: ${{ github.event_name }}
+          C: ${{ inputs.confirmation }}
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then exit 0; fi
+          if [ "$C" != "RECONE" ]; then exit 1; fi
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          set +e
+          
+          echo "===== A) titan007 Over page 今日 + 昨日 fetch ====="
+          for d in 20260907 20260906; do
+            echo "--- fetching bf.titan007.com/football/Over_${d}.htm ---"
+            curl -s -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
+              -o /tmp/over_${d}.htm \
+              "http://bf.titan007.com/football/Over_${d}.htm" \
+              -w "HTTP %{http_code} bytes %{size_download} type %{content_type}\n"
+            
+            # Convert GBK → UTF-8 (titan007 用 GBK)
+            iconv -f GBK -t UTF-8 /tmp/over_${d}.htm > /tmp/over_${d}.utf8 2>/dev/null || cp /tmp/over_${d}.htm /tmp/over_${d}.utf8
+            wc -c /tmp/over_${d}.utf8
+            echo "--- head 100 lines (utf8) ---"
+            head -100 /tmp/over_${d}.utf8
+            echo "..."
+            echo "--- middle sample: rows with score ---"
+            grep -o "[0-9]-[0-9]" /tmp/over_${d}.utf8 | head -20
+            echo "--- lines with score-like pattern ---"
+            grep -E "[0-9]+-[0-9]+" /tmp/over_${d}.utf8 | head -10
+            echo "--- titan match id (URL /details/...html) ---"
+            grep -oE "/detail/[0-9]+" /tmp/over_${d}.utf8 | head -20
+            grep -oE "[0-9]{7,}cn\.htm" /tmp/over_${d}.utf8 | head -20
+            echo "==============================="
+          done
+          
+          echo
+          echo "===== B) v2 data.json fixture id shape (source breakdown) ====="
+          sudo python3 <<'PY'
+          import json
+          d = json.load(open('/var/www/stage_engine_v2/data.json'))
+          fx = d.get('fixtures', [])
+          by_src = {}
+          for f in fx:
+              s = f.get('source', 'unk')
+              by_src.setdefault(s, []).append(f)
+          for s, items in by_src.items():
+              print(f'source={s}: {len(items)} fixtures')
+              print(f'  sample ids: {[i.get("id") for i in items[:3]]}')
+              print(f'  sample keys of one: {list(items[0].keys())}')
+              # 睇 titan source 嘅 id, 有冇其他 titan ref
+              print(f'  first: {items[0]}')
+              print()
+          PY
+          
+          echo
+          echo "===== C) footbreak team_alias / team_aliases 檔案位置 ====="
+          find /var/lib/footbreak -name "*alias*" 2>/dev/null | head -10
+          find /home/patrick/repos -name "*alias*" -type f 2>/dev/null | head -10
+          
+          echo
+          echo "===== D) prediction_history.json 有冇 titan_match_id 逐場記? ====="
+          sudo python3 -c "
+          import json
+          d = json.load(open('/var/lib/footbreak/crown/prediction_history.json'))
+          rows = d.get('rows', [])
+          print(f'total rows: {len(rows)}')
+          # 睇有 titan_match_id 幾多
+          with_titan = [r for r in rows if r.get('titan_match_id')]
+          with_score = [r for r in rows if r.get('score')]
+          print(f'with titan_match_id: {len(with_titan)}')
+          print(f'with score: {len(with_score)}')
+          for r in rows[:3]:
+              print(f'  match_id={r.get(\"match_id\")} titan={r.get(\"titan_match_id\")} score={r.get(\"score\")} kickoff={r.get(\"kickoff\")}')
+          "
+          REMOTE

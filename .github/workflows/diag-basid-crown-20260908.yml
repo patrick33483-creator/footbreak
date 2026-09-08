@@ -1,0 +1,82 @@
+name: Diag BaSID crown filter
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/diag-basid-crown-20260908.yml']
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  d:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -T 15 -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+      - env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=30 -o StrictHostKeyChecking=accept-new \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          set -e
+          
+          echo "===== BaSID.js: total sids ====="
+          curl -s -A "Mozilla/5.0" "https://live.titan007.com/vbsxml/Ballpub/BaSID.js?r=007" \
+            | tr -d '\r' | grep -oE 'Ba_Soccer="[^"]*"' \
+            | sed 's/Ba_Soccer="//;s/"//' | tr ',' '\n' | wc -l
+          
+          echo
+          echo "===== Compare to titan?id=3 HTML rendered count ====="
+          echo "From earlier browser test: 134 tr1_ rows"
+          
+          echo
+          echo "===== func_big.js (looks like data code) ====="
+          curl -s -A "Mozilla/5.0" \
+            -H "Referer: https://live.titan007.com/index2in1_big.aspx?id=3" \
+            "https://live.titan007.com/func_big.js?ver=6" \
+            -o /tmp/funcbig.js
+          ls -la /tmp/funcbig.js
+          
+          # search for the id=3 filter (crown-related codes)
+          echo
+          echo "===== func_big.js: search for 'Crow' or company filter (id=3) ====="
+          grep -oE '(Crow|皇冠|CompanyID|companyID|companyid)' /tmp/funcbig.js | sort -u | head -20
+          
+          echo
+          echo "===== func_big.js: search for id=3 hint (may be array of company IDs) ====="
+          # try find keys
+          grep -oE 'companyid[^,;]{0,80}' /tmp/funcbig.js | head -5
+          grep -oE 'CompanyID[^,;]{0,80}' /tmp/funcbig.js | head -5
+          
+          echo
+          echo "===== Try direct AJAX endpoints for crown company ====="
+          # Common patterns in win007
+          for u in \
+            "https://vbs.titan007.com/vbsxml/2in1/2in1_3.js" \
+            "https://vbs.titan007.com/vbsxml/2in1/2in1_1.js" \
+            "https://live.titan007.com/2in1_3.js" \
+            "https://bf.titan007.com/vbsxml/2in1_big/2in1_big_3.js" \
+            "https://vbs.titan007.com/vbsxml/2in1_big/2in1_big_3.js" \
+            "https://live.titan007.com/vbsxml/2in1_big/2in1_big_3.js"; do
+            code=$(curl -s -A "Mozilla/5.0" -H "Referer: https://live.titan007.com/" -o /dev/null -w "%{http_code}" "$u")
+            echo "$u => $code"
+          done
+          
+          echo
+          echo "===== Deep dive: BaSID.js content ====="
+          head -c 3000 /tmp/basid.txt 2>/dev/null || curl -s -A "Mozilla/5.0" "https://live.titan007.com/vbsxml/Ballpub/BaSID.js?r=007" | head -c 3000
+          REMOTE

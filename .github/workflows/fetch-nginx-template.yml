@@ -1,0 +1,44 @@
+name: Fetch nginx template
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation: {description: "打 FETCH", required: true, type: string}
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/fetch-nginx-template.yml']
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  d:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - env:
+          E: ${{ github.event_name }}
+          C: ${{ inputs.confirmation }}
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then exit 0; fi
+          if [ "$C" != "FETCH" ]; then exit 1; fi
+      - env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          if [ "${{ github.event_name }}" != "workflow_dispatch" ]; then exit 0; fi
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+          SSH="ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=30 -i ~/.ssh/id_ed25519 $DEPLOY_USER@$DEPLOY_HOST"
+          echo "=== BEGIN TEMPLATE ==="
+          $SSH 'cat /opt/footbreak/deploy/nginx-unified-dashboard.conf'
+          echo "=== END TEMPLATE ==="
+          echo "=== git remote of /opt/footbreak ==="
+          $SSH 'cd /opt/footbreak && git remote -v && git branch -v | head -5'

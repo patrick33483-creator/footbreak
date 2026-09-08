@@ -1,0 +1,63 @@
+name: Read crown/titan.py
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "打 TITAN"
+        required: true
+        type: string
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/read-titan-py-20260907.yml']
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  t:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - env:
+          E: ${{ github.event_name }}
+          C: ${{ inputs.confirmation }}
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then exit 0; fi
+          if [ "$C" != "TITAN" ]; then exit 1; fi
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'bash -s' <<'REMOTE'
+          set +e
+          cd /opt/footbreak
+          echo "===== crown/prediction_history.py: _direct_titan_result + _terminal_titan_status ====="
+          awk '/^def _direct_titan_result/,/^def [^_]/{print NR": "$0}' crown/prediction_history.py | head -80
+          echo
+          awk '/^def _terminal_titan_status/,/^def [^_]/{print NR": "$0}' crown/prediction_history.py | head -80
+          echo
+          echo "===== _result function (line 666) ====="
+          sed -n '666,760p' crown/prediction_history.py
+          echo
+          echo "===== Who FETCHES titan detail per row (TitanClient methods called)? ====="
+          grep -n "TitanClient\|match_detail\|fetch_match\|detail_page\|_direct_titan\|_terminal_titan" crown/prediction_history.py | head -30
+          echo
+          echo "===== TitanClient methods list ====="
+          grep -n "def " crown/titan.py | head -40
+          REMOTE

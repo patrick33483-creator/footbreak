@@ -1,0 +1,177 @@
+name: Apply user fills to prediction_history
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "打 APPLY-HISTORY-3311"
+        required: true
+        type: string
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/apply-fills-history-20260906.yml']
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: diagnose/crown-v2-pending-20260906
+          fetch-depth: 1
+      - env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - env:
+          E: ${{ github.event_name }}
+          C: ${{ inputs.confirmation }}
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then exit 0; fi
+          if [ "$C" != "APPLY-HISTORY-3311" ]; then exit 1; fi
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          # Upload fill map to server (already there but re-upload for safety)
+          scp -o BatchMode=yes -o ConnectTimeout=20 \
+            exports/fill_map.b64 "$DEPLOY_USER@$DEPLOY_HOST:/tmp/fill_map.b64"
+
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          set -e
+          base64 -d /tmp/fill_map.b64 > /tmp/fill_map.json
+          echo "fill count: $(/opt/footbreak/.venv/bin/python3 -c 'import json;print(len(json.load(open("/tmp/fill_map.json"))))')"
+
+          # Backup
+          TS=$(date +%Y%m%d-%H%M%S)
+          BACKUP=/var/lib/footbreak/crown/backups/history-pre-user-fill-$TS
+          mkdir -p $BACKUP
+          cp /var/lib/footbreak/crown/prediction_history.json $BACKUP/
+          echo "backup: $(ls -la $BACKUP/)"
+
+          # Apply to history rows
+          /opt/footbreak/.venv/bin/python3 <<'PY'
+          import json, os
+          from datetime import datetime, timezone, timedelta
+
+          HKT = timezone(timedelta(hours=8))
+
+          fills = json.load(open('/tmp/fill_map.json'))
+          hist = json.load(open('/var/lib/footbreak/crown/prediction_history.json'))
+          rows = hist.get('rows', [])
+          print(f'history rows: {len(rows)}')
+
+          # Import settle functions
+          import sys
+          sys.path.insert(0, '/opt/footbreak')
+          from crown.lines import settle_handicap, settle_total
+
+          updated = 0
+          matched_ids = set()
+          for row in rows:
+              mid = str(row.get('match_id') or '')
+              if mid not in fills:
+                  continue
+              hs, as_ = fills[mid]
+              matched_ids.add(mid)
+              # Only mutate if not already resolved
+              existing_status = row.get('result_status')
+              if existing_status in ('已核對', '已核實'):
+                  # Already settled -- skip if score matches, else warn
+                  existing_score = row.get('score') or row.get('result_score')
+                  if existing_score and existing_score != f'{hs}-{as_}':
+                      pass  # keep original
+                  continue
+              row['home_score'] = hs
+              row['away_score'] = as_
+              row['score'] = f'{hs}-{as_}'
+              row['result_status'] = '已核對'
+              row['result_source'] = 'user_manual_fill_20260906'
+              row['verified_at_hkt'] = datetime.now(HKT).isoformat()
+              # Grade pick
+              pick = row.get('pick') or {}
+              code = pick.get('code') or row.get('pick_code')
+              side = pick.get('side') or row.get('pick_side')
+              line = pick.get('line') if pick.get('line') is not None else row.get('pick_line')
+              if code and side and line is not None:
+                  try:
+                      if code == 'HDC':
+                          st = settle_handicap(float(line), side, hs, as_)
+                      elif code == 'HIL':
+                          st = settle_total(float(line), side, hs, as_)
+                      else:
+                          st = None
+                      if st:
+                          row['settlement'] = st
+                          row['pick_result'] = st.get('result')
+                  except Exception as e:
+                      row['settle_error'] = str(e)
+              updated += 1
+
+          print(f'rows updated: {updated}')
+          print(f'unique match_ids matched: {len(matched_ids)}')
+          missing = set(fills) - matched_ids
+          print(f'fill match_ids NOT in history: {len(missing)}')
+          if list(missing)[:3]:
+              print('sample missing:', list(missing)[:5])
+
+          # Recompute stats
+          from crown.prediction_history import calculate_stats
+          try:
+              hist['stats'] = calculate_stats(rows, comparable_era='crown-v2')
+              print('stats recomputed')
+          except Exception as e:
+              print(f'stats recompute skipped: {e}')
+
+          # Save
+          tmp = '/var/lib/footbreak/crown/prediction_history.json.new'
+          with open(tmp, 'w') as f:
+              json.dump(hist, f, ensure_ascii=False)
+          os.replace(tmp, '/var/lib/footbreak/crown/prediction_history.json')
+          print('saved prediction_history.json')
+          PY
+
+          echo
+          echo "===== Trigger crown refresh (rebuild data.json from history) ====="
+          # crown-tick uses tick mode which reads history + writes data.json
+          # Use refresh mode which is a lighter alternative
+          systemctl start crown-tick.service &
+          TICK_PID=$!
+          echo "waiting up to 90s for tick..."
+          wait $TICK_PID
+          systemctl is-active crown-tick.service || true
+
+          echo
+          echo "===== Check data.json ====="
+          ls -la /var/www/crown/data.json
+          /opt/footbreak/.venv/bin/python3 <<'PY'
+          import json
+          d = json.load(open('/var/www/crown/data.json'))
+          ph = d.get('prediction_history', {})
+          if isinstance(ph, dict):
+              rows = ph.get('rows', [])
+              stats = ph.get('stats', {})
+              print(f'prediction_history rows: {len(rows)}')
+              resolved = [r for r in rows if r.get('result_status') in ('已核對','已核實')]
+              print(f'resolved rows: {len(resolved)}')
+              user_filled = [r for r in rows if r.get('result_source') == 'user_manual_fill_20260906']
+              print(f'user_manual_fill rows: {len(user_filled)}')
+              print(f'stats keys: {list(stats.keys())[:15]}')
+              hit = stats.get('hit_rate') or stats.get('accuracy') or stats.get('total_hit_rate')
+              print(f'top-level hit rate field: {hit}')
+          PY
+          REMOTE

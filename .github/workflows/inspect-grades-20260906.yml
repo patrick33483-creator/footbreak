@@ -1,0 +1,73 @@
+name: Inspect market grades
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "打 GRADES"
+        required: true
+        type: string
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/inspect-grades-20260906.yml']
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  g:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - env:
+          E: ${{ github.event_name }}
+          C: ${{ inputs.confirmation }}
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then exit 0; fi
+          if [ "$C" != "GRADES" ]; then exit 1; fi
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=30 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          set +e
+          /opt/footbreak/.venv/bin/python3 <<'PY'
+          import json
+          h = json.load(open('/var/lib/footbreak/crown/prediction_history.json'))
+          rows = h.get('rows', [])
+          # Find rows that ARE counted in stats (correct=T/F, has market_grades)
+          counted = None
+          uncounted_fill = None
+          for r in rows:
+              if r.get('correct') is not None and counted is None:
+                  counted = r
+              if r.get('result_source') == 'user_manual_fill_20260906' and uncounted_fill is None:
+                  uncounted_fill = r
+              if counted and uncounted_fill:
+                  break
+
+          print('=== COUNTED row (has correct=T/F) full dump ===')
+          if counted:
+              # dump full row
+              print(json.dumps({k: v for k,v in counted.items() if k not in ('team_history_features','team_history_sample','opening_snapshot_hash','learning_payload_sha256')}, ensure_ascii=False, indent=2, default=str)[:4500])
+          print()
+          print('=== USER FILL row full dump ===')
+          if uncounted_fill:
+              print(json.dumps({k: v for k,v in uncounted_fill.items() if k not in ('team_history_features','team_history_sample','opening_snapshot_hash','learning_payload_sha256')}, ensure_ascii=False, indent=2, default=str)[:4500])
+          PY
+          REMOTE

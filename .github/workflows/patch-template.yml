@@ -1,0 +1,158 @@
+name: patch nginx template to add v4 route
+on:
+  workflow_dispatch:
+    inputs: {confirm: {description: 'CONFIRM', required: true}}
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/patch-template.yml']
+concurrency: {group: production-maintenance-6, cancel-in-progress: false}
+jobs:
+  x:
+    runs-on: ubuntu-latest
+    env: {CONFIRM_INPUT: "${{ github.event.inputs.confirm || 'CONFIRM' }}"}
+    steps:
+      - if: github.event_name == 'workflow_dispatch'
+        run: test "$CONFIRM_INPUT" = "CONFIRM"
+      - if: github.event_name == 'workflow_dispatch'
+        env: {SSHKEY: "${{ secrets.DEPLOY_SSH_KEY }}", H: "${{ secrets.DEPLOY_HOST }}", U: "${{ secrets.DEPLOY_USER }}"}
+        run: |
+          mkdir -p ~/.ssh && printf '%s\n' "$SSHKEY" > ~/.ssh/id && chmod 600 ~/.ssh/id
+          ssh -i ~/.ssh/id -o StrictHostKeyChecking=accept-new $U@$H bash <<'EOF'
+          set -e
+          TEMPLATE=/opt/footbreak/deploy/nginx-unified-dashboard.conf
+          SITE_AVAIL=/etc/nginx/sites-available/unified-dashboard
+
+          echo "=== backup template ==="
+          sudo -n cp -v "$TEMPLATE" "$TEMPLATE.bak.$(date +%s)"
+
+          echo ""
+          echo "=== patch template (idempotent) ==="
+          sudo -n python3 <<'PY'
+          import re
+          p = "/opt/footbreak/deploy/nginx-unified-dashboard.conf"
+          txt = open(p).read()
+          orig = txt
+
+          # First remove any leftover crownsystem-v3/matches.json, results.json, history.html,
+          # crownsystem-v4 exact-match blocks so we get a clean, idempotent injection.
+          txt = re.sub(
+              r'^[ \t]*location\s*=\s*/crownsystem-v[34]/[A-Za-z0-9._-]+\s*\{[^}]*\}\s*\n',
+              '', txt, flags=re.M | re.S)
+          # Remove any prior ^~ /crownsystem-v4/ block
+          txt = re.sub(
+              r'^[ \t]*location\s*\^~\s*/crownsystem-v4/\s*\{[^}]*\}\s*\n',
+              '', txt, flags=re.M | re.S)
+          # Remove old v4 redirect
+          txt = re.sub(
+              r'^[ \t]*location\s*=\s*/crownsystem-v4\s*\{[^}]*\}\s*\n',
+              '', txt, flags=re.M | re.S)
+
+          # Find the anchor: `location ^~ /crownsystem-v3/ {` — we inject BEFORE it
+          m = re.search(r'^([ \t]*)location\s*\^~\s*/crownsystem-v3/\s*\{', txt, re.M)
+          assert m, "anchor location ^~ /crownsystem-v3/ not found in template"
+          indent = m.group(1)
+
+          def exact_block(url, alias, ctype):
+              return (
+                  f"{indent}location = {url} {{\n"
+                  f"{indent}    auth_basic off;\n"
+                  f"{indent}    alias {alias};\n"
+                  f"{indent}    default_type {ctype};\n"
+                  f'{indent}    add_header Cache-Control "no-store";\n'
+                  f"{indent}}}\n"
+              )
+
+          # Transitional v3 exceptions (matches.json now correctly aliased)
+          v3_matches = exact_block("/crownsystem-v3/matches.json",
+                                    "/var/www/crownsystem-v3/matches.json",
+                                    "application/json")
+          v3_results = exact_block("/crownsystem-v3/results.json",
+                                    "/var/www/crownsystem-v3/results.json",
+                                    "application/json")
+          v3_history = exact_block("/crownsystem-v3/history.html",
+                                    "/var/www/crownsystem-v3/history.html",
+                                    "text/html")
+
+          # V4 blocks (public, no auth for the data + SPA files)
+          v4_redirect = (
+              f"{indent}location = /crownsystem-v4 {{ return 301 /crownsystem-v4/; }}\n"
+          )
+          v4_matches  = exact_block("/crownsystem-v4/matches.json",
+                                    "/var/www/crownsystem-v4/matches.json",
+                                    "application/json")
+          v4_results  = exact_block("/crownsystem-v4/results.json",
+                                    "/var/www/crownsystem-v4/results.json",
+                                    "application/json")
+          # SPA + assets: public read, no auth
+          v4_root = (
+              f"{indent}location ^~ /crownsystem-v4/ {{\n"
+              f"{indent}    auth_basic off;\n"
+              f"{indent}    alias /var/www/crownsystem-v4/;\n"
+              f"{indent}    try_files $uri $uri/ /crownsystem-v4/index.html;\n"
+              f'{indent}    add_header Cache-Control "no-store";\n'
+              f"{indent}}}\n"
+          )
+
+          inject = (
+              "\n" + indent + "# --- crownsystem-v3 transitional exceptions (v4 replacing v3) ---\n"
+              + v3_matches + v3_results + v3_history
+              + indent + "# --- crownsystem-v4 (球賽預測 V4) ---\n"
+              + v4_redirect + v4_matches + v4_results + v4_root + "\n"
+          )
+
+          txt = txt[:m.start()] + inject + indent + txt[m.start()+len(indent):]
+
+          open(p, "w").write(txt)
+          print("injected. delta lines:", len(txt.splitlines()) - len(orig.splitlines()))
+          PY
+
+          echo ""
+          echo "=== apply template to sites-available immediately ==="
+          sudo -n install -m 0644 "$TEMPLATE" "$SITE_AVAIL"
+          sudo -n nginx -t 2>&1 | tail -3
+          sudo -n systemctl reload nginx
+
+          echo ""
+          echo "=== ensure v3 dirs still there + create v4 placeholders ==="
+          sudo -n mkdir -p /var/www/crownsystem-v4
+          # placeholder to allow first curl to 200 instead of 404
+          sudo -n bash -c 'if [ ! -s /var/www/crownsystem-v4/matches.json ]; then echo "{\"placeholder\":true,\"note\":\"V4 starting up\"}" > /var/www/crownsystem-v4/matches.json; fi'
+          sudo -n bash -c 'if [ ! -s /var/www/crownsystem-v4/results.json ]; then echo "[]" > /var/www/crownsystem-v4/results.json; fi'
+          sudo -n bash -c 'if [ ! -s /var/www/crownsystem-v4/index.html ]; then echo "<h1>球賽預測 V4</h1><p>啟動中...</p>" > /var/www/crownsystem-v4/index.html; fi'
+          sudo -n chown -R root:www-data /var/www/crownsystem-v4
+          sudo -n chmod -R 0644 /var/www/crownsystem-v4/*
+          sudo -n chmod 0755 /var/www/crownsystem-v4
+
+          echo ""
+          echo "=== stop and disable v3 merge timer (V4 is taking over) ==="
+          sudo -n systemctl disable --now crownsystem-v3-merge.timer 2>&1 || true
+
+          echo ""
+          echo "=== verify: config state ==="
+          sudo -n grep -n "crownsystem-v[34]" /etc/nginx/sites-available/unified-dashboard | head -25
+
+          echo ""
+          echo "=== external smoke ==="
+          for u in v3/matches.json v3/results.json v3/history.html v4/matches.json v4/results.json v4/; do
+            sleep 1
+            printf "  crownsystem-%s = " "$u"
+            curl -s -o /dev/null -w "%{http_code}\n" "http://127.0.0.1/crownsystem-$u"
+          done
+
+          echo ""
+          echo "=== Watch 60s to prove self-heal now restores CORRECT template ==="
+          MD=$(sudo -n md5sum /etc/nginx/sites-available/unified-dashboard | awk '{print $1}')
+          echo "current md5=$MD"
+          for i in 1 2 3 4 5 6; do
+            sleep 10
+            MD2=$(sudo -n md5sum /etc/nginx/sites-available/unified-dashboard | awk '{print $1}')
+            if [ "$MD2" = "$MD" ]; then
+              printf "  [%ds] unchanged\n" $((i*10))
+            else
+              printf "  [%ds] CHANGED to %s\n" $((i*10)) "$MD2"
+              MD=$MD2
+              # Check v4 still there
+              sudo -n grep -c "crownsystem-v4" /etc/nginx/sites-available/unified-dashboard
+            fi
+          done
+          EOF

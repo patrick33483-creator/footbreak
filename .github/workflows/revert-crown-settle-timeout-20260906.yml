@@ -1,0 +1,85 @@
+name: 緊急撤銷 crown-settle timeout override
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "打 REVERT_CROWN_SETTLE_TIMEOUT 確認"
+        required: true
+        type: string
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  revert:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: 設定 SSH
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: 檢查 confirmation
+        env:
+          EVENT: ${{ github.event_name }}
+          CONFIRMATION: ${{ inputs.confirmation }}
+        run: |
+          if [ "$EVENT" != "workflow_dispatch" ]; then
+            echo "push trigger 只為註冊 workflow，不執行"
+            exit 0
+          fi
+          if [ "$CONFIRMATION" != "REVERT_CROWN_SETTLE_TIMEOUT" ]; then
+            echo "缺少或錯誤 confirmation"; exit 1
+          fi
+
+      - name: 撤銷 override
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=8 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'bash -s' <<'REMOTE'
+          set -e
+          echo "===== BEFORE ====="
+          sudo systemctl show crown-settle.service --property=TimeoutStartUSec,ActiveState,SubState --no-pager 2>&1
+          sudo ls -la /var/www/crown/data.json 2>&1
+          echo
+          echo "===== 1. 停止跑緊嘅 crown-settle instance ====="
+          sudo systemctl stop crown-settle.service 2>&1 || true
+          sudo systemctl reset-failed crown-settle.service 2>&1 || true
+          echo
+          echo "===== 2. 刪除 drop-in override ====="
+          sudo rm -f /etc/systemd/system/crown-settle.service.d/timeout-override.conf
+          sudo rmdir /etc/systemd/system/crown-settle.service.d 2>&1 || echo "(dir 未空或已消失)"
+          sudo systemctl daemon-reload
+          echo
+          echo "===== 3. 尋找 data.json 潛在備份 ====="
+          sudo find /var/lib/footbreak/crown /var/www/crown /opt/footbreak -maxdepth 3 -name 'data*.json*' -o -name '*data.json.bak*' -o -name '*data.json.prev*' 2>/dev/null | head -20
+          echo
+          echo "===== 4. crown 相關 unit list（睇邊個負責寫 data.json） ====="
+          sudo grep -rn 'data.json\|CROWN_WEB_ROOT\|/var/www/crown' /opt/footbreak/deploy/systemd/ /etc/systemd/system/crown-* 2>/dev/null | head -30
+          echo
+          echo "===== AFTER 確認 ====="
+          sudo systemctl show crown-settle.service --property=TimeoutStartUSec,ActiveState,SubState --no-pager 2>&1
+          sudo ls -la /var/www/crown/data.json 2>&1
+          sudo ls -la /var/lib/footbreak/crown/ledger.json 2>&1
+          echo
+          echo "===== DONE ====="
+          echo "TimeoutStartSec 已恢復 15min。crown-settle 已 stop、reset-failed。"
+          REMOTE

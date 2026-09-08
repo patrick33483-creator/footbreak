@@ -1,0 +1,46 @@
+name: Fix V3 sort by kickoff
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation: {description: "打 FIXSORT", required: true, type: string}
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/fix-v3-sort.yml']
+
+concurrency: {group: production-maintenance, cancel-in-progress: false}
+permissions: {contents: read}
+
+jobs:
+  d:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: diagnose/crown-v2-pending-20260906}
+      - env: {E: "${{ github.event_name }}", C: "${{ inputs.confirmation }}"}
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then exit 0; fi
+          if [ "$C" != "FIXSORT" ]; then exit 1; fi
+      - env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          if [ "${{ github.event_name }}" != "workflow_dispatch" ]; then exit 0; fi
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+          SSH="ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=30 -i ~/.ssh/id_ed25519 $DEPLOY_USER@$DEPLOY_HOST"
+          SCP="scp -o StrictHostKeyChecking=accept-new -i ~/.ssh/id_ed25519"
+
+          $SCP deploy/v3/merge_titan_v2.py "$DEPLOY_USER@$DEPLOY_HOST:/tmp/merge_titan_v2.py"
+          $SCP deploy/v3/index.html "$DEPLOY_USER@$DEPLOY_HOST:/tmp/index-v3.html"
+          $SSH 'sudo install -m 755 /tmp/merge_titan_v2.py /opt/footbreak/deploy/v3/merge_titan_v2.py'
+          $SSH 'sudo install -m 644 /tmp/index-v3.html /var/www/crownsystem-v3/index.html'
+          $SSH 'sudo systemctl start crownsystem-v3-merge.service; sleep 2'
+          echo '=== first 12 rows kickoff ==='
+          $SSH 'sudo python3 -c "import json; d=json.load(open(\"/var/www/crownsystem-v3/matches.json\")); [print(m[\"kickoff_display\"], \"|\", m[\"league\"], \"|\", m[\"home\"], \"vs\", m[\"away\"]) for m in d[\"matches\"][:12]]"'
+          echo
+          $SSH 'curl -sS -o /dev/null -w "index=%{http_code} matches=%{http_code}\n" -u radar:toberich http://127.0.0.1/crownsystem-v3/'

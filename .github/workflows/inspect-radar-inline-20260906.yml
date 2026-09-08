@@ -1,0 +1,61 @@
+name: Inspect radar inline
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "打 INSPECT"
+        required: true
+        type: string
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/inspect-radar-inline-20260906.yml']
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  i:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - env:
+          E: ${{ github.event_name }}
+          C: ${{ inputs.confirmation }}
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then exit 0; fi
+          if [ "$C" != "INSPECT" ]; then exit 1; fi
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=30 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'bash -s' <<'REMOTE'
+          set +e
+          cd /opt/crown-radar 2>/dev/null || exit 0
+          echo "===== backfill-corner-results-titan.ts (Titan007 result fetcher) ====="
+          cat scripts/backfill-corner-results-titan.ts 2>/dev/null | head -200
+          echo
+          echo "===== audit-corner-results-20260906.ts ====="
+          cat scripts/audit-corner-results-20260906.ts 2>/dev/null | head -150
+          echo
+          echo "===== dashboard.tsx (main layout) ====="
+          cat client/src/pages/dashboard.tsx 2>/dev/null | head -200
+          echo
+          echo "===== ou-signals.tsx  ====="
+          cat client/src/pages/ou-signals.tsx 2>/dev/null | head -200
+          REMOTE

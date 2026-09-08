@@ -1,0 +1,49 @@
+name: DF check
+on:
+  workflow_dispatch:
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+permissions:
+  contents: read
+jobs:
+  d:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - name: run
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'bash -s' <<'REMOTE'
+          set +e
+          echo "===== df ====="
+          df -h / 2>&1
+          echo
+          echo "===== 增長最快嘅嘢: stale tmp 又出現？ ====="
+          sudo du -sh /var/lib/footbreak/crown 2>&1
+          sudo ls /var/lib/footbreak/crown/.ledger.json.* 2>&1 | wc -l
+          sudo du -ch /var/lib/footbreak/crown/.ledger.json.* 2>&1 | tail -1
+          echo
+          echo "===== data.json 有無 refresh ====="
+          sudo ls -la /var/www/crown/data.json 2>&1
+          sudo /opt/footbreak/.venv/bin/python3 -c "
+          import json
+          d = json.load(open('/var/www/crown/data.json'))
+          print('generated_at:', d.get('generated_at'))
+          print('matches:', len(d.get('matches', [])))
+          " 2>&1
+          echo
+          echo "===== 最近 30 min crown-settle result ====="
+          sudo journalctl -u crown-settle.service --since '30 min ago' --no-pager -o cat 2>&1 | grep -E "'ok': True|'ok': False|Started|skipped|Failed" | tail -15
+          REMOTE

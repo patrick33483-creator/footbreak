@@ -1,0 +1,94 @@
+name: Verify user fill actually landed in ledger
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "打 VER"
+        required: true
+        type: string
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/verify-fill-20260906.yml']
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  ver:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - env:
+          E: ${{ github.event_name }}
+          C: ${{ inputs.confirmation }}
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then exit 0; fi
+          if [ "$C" != "VER" ]; then exit 1; fi
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          set +e
+          /opt/footbreak/.venv/bin/python3 <<'PY'
+          import json
+          d = json.load(open('/var/lib/footbreak/crown/ledger.json'))
+          watch = d.get('watch', {})
+          # Check first fill target: 2998227
+          for target in ['2998227', '2933128', '3068092']:
+              print(f'=== match_id {target} ===')
+              v = watch.get(target)
+              if not v:
+                  print(f'NOT in watch')
+                  # Try search
+                  for k in list(watch.keys())[:5]:
+                      print('sample watch key:', k)
+                  continue
+              print(f'keys: {list(v.keys())}')
+              print(f'result field: {v.get("result")}')
+              stages = v.get('stages') or []
+              print(f'stages count: {len(stages)}')
+              if stages:
+                  st = stages[0] if isinstance(stages, list) else next(iter(stages.values()), {})
+                  if isinstance(st, dict):
+                      rel = {k:vv for k,vv in st.items() if 'result' in k or 'settle' in k or 'pick' in k}
+                      print(f'stage[0] result/settle fields: {rel}')
+              print()
+          # Also check overall shape
+          print(f'total watch entries: {len(watch)}')
+          # How many have any result field set now?
+          w_result = sum(1 for v in watch.values() if isinstance(v, dict) and v.get('result'))
+          print(f'entries with result field: {w_result}')
+          # Check stages structure
+          sample_key = list(watch.keys())[0]
+          sample = watch[sample_key]
+          print(f'\\nsample watch entry keys: {list(sample.keys())}')
+          print(f'sample stages type: {type(sample.get("stages"))}')
+          stages = sample.get('stages')
+          if isinstance(stages, list) and stages:
+              print(f'stage[0] type: {type(stages[0])}')
+              if isinstance(stages[0], dict):
+                  print(f'stage[0] keys: {list(stages[0].keys())}')
+          elif isinstance(stages, dict):
+              print(f'stages dict keys: {list(stages.keys())[:5]}')
+              first_stage = next(iter(stages.values()))
+              if isinstance(first_stage, dict):
+                  print(f'stages[first] keys: {list(first_stage.keys())}')
+          PY
+          REMOTE

@@ -1,0 +1,63 @@
+name: Full settle v2 (with env)
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "打 FULL_SETTLE_V2"
+        required: true
+        type: string
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  s:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: SSH
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - name: Check
+        env:
+          E: ${{ github.event_name }}
+          C: ${{ inputs.confirmation }}
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then echo "push registers only"; exit 0; fi
+          if [ "$C" != "FULL_SETTLE_V2" ]; then echo "wrong confirmation"; exit 1; fi
+      - name: run
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=8 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'bash -s' <<'REMOTE'
+          set +e
+          echo "===== 1. Show crown-settle unit env config ====="
+          sudo systemctl cat crown-settle.service 2>&1
+          echo
+          echo "===== 2. EnvironmentFile 內容 (只 key 唔顯 value) ====="
+          for f in $(sudo systemctl show crown-settle.service -p EnvironmentFiles --no-pager 2>&1 | sed 's/EnvironmentFiles=//' | grep -oP '/[^ ]+'); do
+            echo "-- $f --"
+            sudo grep -E '^[A-Z_]+=' "$f" 2>&1 | sed 's/=.*/=***/' | head -30
+          done
+          echo
+          echo "===== 3. Wrapper /opt/footbreak/deploy/crown-run.sh 頭 60 行 ====="
+          sudo sed -n '1,60p' /opt/footbreak/deploy/crown-run.sh 2>&1
+          REMOTE

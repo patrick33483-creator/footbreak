@@ -1,0 +1,73 @@
+name: Find result provider
+on:
+  workflow_dispatch:
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+permissions:
+  contents: read
+jobs:
+  r:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'bash -s' <<'REMOTE'
+          set +e
+          echo "===== 1. crown/settle 相關 code: 邊個 module 負責攞 result ====="
+          sudo grep -rln --include='*.py' -iE "class.*result.*provider|def.*fetch_result|def.*get_result|result_matcher|match_result" /opt/footbreak/crown/ 2>&1 | head -15
+          echo
+          echo "===== 2. 邊條 code path 寫 result_status ====="
+          sudo grep -rln --include='*.py' "result_status" /opt/footbreak/crown/ /opt/footbreak/system/ 2>&1 | head -10
+          echo
+          echo "===== 3. settle mode 個 entry: crown/run.py settle 呢邊 call 咩 ====="
+          sudo grep -n -A 30 "def.*settle\|MODE.*settle\|mode ==.*settle\|'settle'" /opt/footbreak/crown/run.py 2>&1 | head -80
+          echo
+          echo "===== 4. 有無 result_fetcher / result_provider service running ====="
+          sudo systemctl list-units --type=service --all 2>&1 | grep -iE "result|footbreak" | head -20
+          echo
+          echo "===== 5. 所有 footbreak/crown 相關 timer + service 狀態 ====="
+          sudo systemctl list-timers --all 2>&1 | grep -iE "crown|footbreak|stage|opticodds|hkjc" | head -20
+          echo
+          echo "===== 6. Git log 睇 8 月頭到而家改咗咩 (只頭 30 條 subject) ====="
+          cd /opt/footbreak && sudo git log --oneline --since='2026-08-01' 2>&1 | head -40
+          echo
+          echo "===== 7. Result cache dir 內, 上次寫係咩時候咩 file ====="
+          sudo find /opt/footbreak/system/cache -type f -printf '%T+ %p\n' 2>&1 | sort -r | head -10
+          echo
+          echo "===== 8. opticodds / hkjc provider config 有無 ====="
+          sudo grep -iE "opticodds|hkjc|pinnacle|api_key|api_token" /etc/footbreak*.env 2>&1 | grep -v "^#" | sed 's/=.*/=***/'
+          echo
+          echo "===== 9. Watch 入面有無 home_name (0 = 全部 None -> matcher 冇 run) ====="
+          sudo /opt/footbreak/.venv/bin/python3 -c "
+          import json
+          l = json.load(open('/var/lib/footbreak/crown/ledger.json'))
+          w = l.get('watch', {})
+          with_name = 0; without_name = 0
+          for k, v in w.items():
+              if not isinstance(v, dict): continue
+              if v.get('home_name') or v.get('home'): with_name += 1
+              else: without_name += 1
+          print(f'watch entries with home_name: {with_name}')
+          print(f'  without home_name: {without_name}')
+          # Sample 一場睇下有咩 key
+          for k, v in w.items():
+              if isinstance(v, dict):
+                  print(f'sample key {k} keys:', list(v.keys())[:15])
+                  break
+          " 2>&1
+          echo
+          echo "===== 10. crown-settle service exec 睇 ExecStart ====="
+          sudo systemctl cat crown-settle.service 2>&1 | head -30
+          REMOTE

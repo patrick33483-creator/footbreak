@@ -1,0 +1,77 @@
+name: Diag titan BaSID
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/diag-titan-basid-20260908.yml']
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  d:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -T 15 -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+      - env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=30 -o StrictHostKeyChecking=accept-new \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          set -e
+          echo "===== 1) Try BaSID.js ====="
+          curl -s -A "Mozilla/5.0" \
+            -H "Referer: https://live.titan007.com/index2in1_big.aspx?id=3" \
+            -o /tmp/basid.txt \
+            -w "http_code=%{http_code} size=%{size_download}\n" \
+            "https://live.titan007.com/vbsxml/Ballpub/BaSID.js?r=007"
+          
+          ls -la /tmp/basid.txt
+          echo "--- first 800 chars ---"
+          head -c 800 /tmp/basid.txt
+          echo
+          
+          echo
+          echo "===== 2) Try football odds/score txt ====="
+          curl -s -A "Mozilla/5.0" \
+            -H "Referer: https://live.titan007.com/index2in1_big.aspx?id=3" \
+            -o /tmp/fs.txt \
+            -w "http_code=%{http_code} size=%{size_download}\n" \
+            "https://live.titan007.com/vbsxml/position/footballscore.txt"
+          
+          ls -la /tmp/fs.txt
+          echo "--- first 500 chars ---"
+          head -c 500 /tmp/fs.txt
+          echo
+          
+          echo
+          echo "===== 3) Try 3in1.js data ====="
+          for u in \
+            "https://live.titan007.com/vbsxml/allmatch.js" \
+            "https://live.titan007.com/vbsxml/allmatch.js?r=007" \
+            "https://bf.titan007.com/vbsxml/allmatch.js" \
+            "https://bf.titan007.com/vbsxml/2in1_big.js" \
+            "https://bf.titan007.com/vbsxml/index2in1_big3.js" \
+            "https://bf.titan007.com/vbsxml/big/inplay_big3.js"; do
+            curl -s -A "Mozilla/5.0" -o /dev/null -w "$u => %{http_code} %{size_download}\n" "$u" || true
+          done
+          
+          echo
+          echo "===== 4) BaSID.js content type ====="
+          curl -sI "https://live.titan007.com/vbsxml/Ballpub/BaSID.js?r=007" \
+            -A "Mozilla/5.0" | head -10
+          REMOTE

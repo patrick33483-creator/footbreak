@@ -1,0 +1,47 @@
+name: Diag titan date + radar auth
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation: {description: "打 DIAGDATE", required: true, type: string}
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/diag-titan-date.yml']
+
+concurrency: {group: production-maintenance, cancel-in-progress: false}
+permissions: {contents: read}
+
+jobs:
+  d:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - env: {E: "${{ github.event_name }}", C: "${{ inputs.confirmation }}"}
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then exit 0; fi
+          if [ "$C" != "DIAGDATE" ]; then exit 1; fi
+      - env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          if [ "${{ github.event_name }}" != "workflow_dispatch" ]; then exit 0; fi
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+          SSH="ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=30 -i ~/.ssh/id_ed25519 $DEPLOY_USER@$DEPLOY_HOST"
+
+          echo '=== titan_today.json top-level keys + sample raw ==='
+          $SSH 'sudo python3 -c "import json; d=json.load(open(\"/var/www/stage_engine_v2/titan_today.json\")); print(\"top:\", type(d).__name__, list(d.keys()) if isinstance(d,dict) else len(d)); mm=d.get(\"matches\") or d.get(\"fixtures\") or []; print(\"match keys:\", list(mm[0].keys()) if mm else \"none\"); print(\"first 3:\"); import sys; [print(json.dumps(m, ensure_ascii=False)) for m in mm[:3]]; print(\"---meta---\"); print(json.dumps({k:v for k,v in d.items() if k not in (\"matches\",\"fixtures\")}, ensure_ascii=False)[:500] if isinstance(d,dict) else \"list\")"'
+
+          echo
+          echo '=== V2 fixtures.py load logic (see how titan is fetched) ==='
+          $SSH 'sudo grep -n "titan\|next_\|kickoff\|Over_\|Next_" /opt/footbreak/stage_engine_v2/fixtures.py 2>&1 | head -30'
+          echo
+          $SSH 'sudo ls /opt/footbreak/stage_engine_v2/dashboard/ 2>&1'
+          echo
+          echo '=== crown-radar auth: check its config env ==='
+          $SSH 'sudo systemctl cat crown-radar.service 2>&1 | head -30'
+          $SSH 'sudo cat /etc/crown-radar.env 2>&1 | head -20'
+          $SSH 'sudo find /etc -name "*.env" 2>&1 | xargs sudo grep -l -i "radar\|CROWN_RADAR\|5002" 2>/dev/null | head -5'

@@ -1,0 +1,52 @@
+name: spy crown-radar api shape
+on:
+  workflow_dispatch:
+    inputs: {confirm: {description: 'CONFIRM', required: true}}
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/spy-crown-radar.yml']
+concurrency: {group: production-maintenance-7, cancel-in-progress: false}
+jobs:
+  x:
+    runs-on: ubuntu-latest
+    env: {CONFIRM_INPUT: "${{ github.event.inputs.confirm || 'CONFIRM' }}"}
+    steps:
+      - if: github.event_name == 'workflow_dispatch'
+        run: test "$CONFIRM_INPUT" = "CONFIRM"
+      - if: github.event_name == 'workflow_dispatch'
+        env: {SSHKEY: "${{ secrets.DEPLOY_SSH_KEY }}", H: "${{ secrets.DEPLOY_HOST }}", U: "${{ secrets.DEPLOY_USER }}"}
+        run: |
+          mkdir -p ~/.ssh && printf '%s\n' "$SSHKEY" > ~/.ssh/id && chmod 600 ~/.ssh/id
+          ssh -i ~/.ssh/id -o StrictHostKeyChecking=accept-new $U@$H bash <<'EOF'
+          set -e
+          echo "=== matches-crown top level keys + first sample ==="
+          curl -s http://127.0.0.1/crown-radar/api/matches-crown | python3 -c '
+          import sys, json
+          d = json.load(sys.stdin)
+          print("top keys:", list(d.keys()) if isinstance(d, dict) else "list len=" + str(len(d)))
+          items = d.get("matches") if isinstance(d, dict) else d
+          if isinstance(items, list) and items:
+              print("count:", len(items))
+              m = items[0]
+              print("\\nfirst match keys:", sorted(m.keys()))
+              print("\\nfirst match sample:")
+              print(json.dumps(m, ensure_ascii=False, indent=2)[:3500])
+          '
+
+          echo ""
+          echo "=== history top level + one item with result ==="
+          curl -s http://127.0.0.1/crown-radar/api/history | python3 -c '
+          import sys, json
+          d = json.load(sys.stdin)
+          items = d.get("matches") if isinstance(d, dict) else d
+          if isinstance(items, list) and items:
+              print("history count:", len(items))
+              # Find one with result
+              done = [m for m in items if m.get("result") and m["result"].get("status") in ("完","完場")]
+              print("completed count:", len(done))
+              if done:
+                  m = done[0]
+                  print("\\ncompleted sample keys:", sorted(m.keys()))
+                  print(json.dumps(m, ensure_ascii=False, indent=2)[:3000])
+          '
+          EOF

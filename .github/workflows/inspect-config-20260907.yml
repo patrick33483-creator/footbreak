@@ -1,0 +1,64 @@
+name: Inspect crown config api
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "打 INSPECTCFG"
+        required: true
+        type: string
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/inspect-config-20260907.yml']
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  i:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - env:
+          E: ${{ github.event_name }}
+          C: ${{ inputs.confirmation }}
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then exit 0; fi
+          if [ "$C" != "INSPECTCFG" ]; then exit 1; fi
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          set +e
+          cd /opt/footbreak
+          echo "===== config.py: find Settings + constructors ====="
+          grep -n "^class Settings\|def from_\|def load_\|@dataclass\|@classmethod" crown/config.py | head -30
+          echo
+          echo "===== First 40 lines of config.py ====="
+          sed -n '1,60p' crown/config.py
+          echo
+          echo "===== How update_history caller in run.py loads config ====="
+          sed -n '700,720p' crown/run.py
+          echo
+          echo "===== How dashboard_api gets config ====="
+          sed -n '40,55p' crown/dashboard_api.py
+          echo
+          echo "===== analysis/audit_crown_condition2_pending_results settings() ====="
+          grep -B2 -A5 "^def settings\|Settings(" analysis/audit_crown_condition2_pending_results.py | head -30
+          REMOTE

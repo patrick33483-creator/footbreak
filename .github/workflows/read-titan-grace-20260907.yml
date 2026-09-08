@@ -1,0 +1,95 @@
+name: Read titan grace + rate-limit
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "打 GRACE"
+        required: true
+        type: string
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/read-titan-grace-20260907.yml']
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  g:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - env:
+          E: ${{ github.event_name }}
+          C: ${{ inputs.confirmation }}
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then exit 0; fi
+          if [ "$C" != "GRACE" ]; then exit 1; fi
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'bash -s' <<'REMOTE'
+          set +e
+          cd /opt/footbreak
+          echo "===== _RESULT_DETAIL_REQUEST_BUDGET ====="
+          grep -n "_RESULT_DETAIL_REQUEST_BUDGET\|RESULT_DETAIL_REQUEST_BUDGET" crown/prediction_history.py | head -5
+          echo
+          echo "===== settle.py budget lookup ====="
+          grep -n "REQUEST_BUDGET\|budget" crown/settle.py 2>/dev/null | head -10
+          echo
+          echo "===== _HKJC_RESULT_GRACE_SECONDS default ====="
+          grep -n "_HKJC_RESULT_GRACE_SECONDS\|HKJC_RESULT_GRACE\|GRACE_SECONDS" crown/prediction_history.py | head -10
+          echo
+          echo "===== _result call site (line 1080-1130) ====="
+          sed -n '1080,1130p' crown/prediction_history.py
+          echo
+          echo "===== limit_result_detail_requests default limit ====="
+          sed -n '313,340p' crown/titan.py
+          echo
+          echo "===== Where is limit_result_detail_requests called? ====="
+          grep -rn "limit_result_detail_requests" --include="*.py" 2>/dev/null | grep -v backup | grep -v previous | head -10
+          echo
+          echo "===== Sudo: fill sample distribution by kickoff age =====" 
+          sudo /opt/footbreak/.venv/bin/python3 <<'PY'
+          import json
+          from datetime import datetime, timezone, timedelta
+          h = json.load(open('/var/lib/footbreak/crown/prediction_history.json'))
+          rows = h.get('rows', [])
+          fills = [r for r in rows if r.get('result_source') == 'user_manual_fill_20260906']
+          now = datetime.now(timezone(timedelta(hours=8)))
+          buckets = {'<12h':0, '12-24h':0, '1-3d':0, '3-7d':0, '>7d':0}
+          with_hkjc = with_titan = 0
+          for r in fills:
+              if r.get('hkjc_match_id'): with_hkjc += 1
+              if r.get('titan_match_id'): with_titan += 1
+              try:
+                  ko = datetime.fromisoformat(r.get('kickoff'))
+                  age = (now - ko).total_seconds() / 3600
+                  if age < 12: buckets['<12h'] += 1
+                  elif age < 24: buckets['12-24h'] += 1
+                  elif age < 72: buckets['1-3d'] += 1
+                  elif age < 168: buckets['3-7d'] += 1
+                  else: buckets['>7d'] += 1
+              except Exception: pass
+          print(f'total fills: {len(fills)}')
+          print(f'with_hkjc_match_id: {with_hkjc}')
+          print(f'with_titan_match_id: {with_titan}')
+          print(f'age distribution: {buckets}')
+          PY
+          REMOTE

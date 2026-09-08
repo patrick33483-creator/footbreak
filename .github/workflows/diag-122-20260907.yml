@@ -1,0 +1,125 @@
+name: Diag 122 no_result
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/diag-122-20260907.yml']
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  d:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          # keyscan often silent-fails on GitHub runners; rely on accept-new instead
+          ssh-keyscan -T 15 -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null || echo "keyscan failed, using accept-new"
+      - env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=30 -o StrictHostKeyChecking=accept-new \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          set -e
+          python3 <<'PY'
+          import json
+          from datetime import datetime, timezone, timedelta
+          from collections import Counter
+          
+          HKT = timezone(timedelta(hours=8))
+          NOW = datetime.now(HKT)
+          
+          data = json.load(open('/var/www/stage_engine_v2/data.json'))
+          results = json.load(open('/var/www/stage_engine_v2/results.json'))
+          
+          fixtures = data.get('fixtures', [])
+          matched = set(results['results'].keys())
+          
+          missing = [f for f in fixtures if str(f.get('id')) not in matched]
+          print(f'Total: {len(fixtures)}  Matched: {len(matched)}  Missing: {len(missing)}')
+          print()
+          
+          # By source
+          by_source = Counter(f.get('source','?') for f in missing)
+          print('=== By source ===')
+          for k,v in by_source.most_common(): print(f'  {k}: {v}')
+          
+          # By kickoff age (HKT days)
+          print()
+          print('=== By kickoff age (HKT) ===')
+          age_buckets = Counter()
+          for f in missing:
+              ko_str = f.get('kickoff_utc') or f.get('kickoff')
+              try:
+                  ko = datetime.fromisoformat(ko_str.replace('Z','+00:00')).astimezone(HKT)
+                  days = (NOW - ko).days
+                  if days < 30: bucket = f'{days}d ago'
+                  elif days < 60: bucket = '30-60d ago'
+                  elif days < 90: bucket = '60-90d ago'
+                  else: bucket = '>90d ago'
+                  age_buckets[bucket] += 1
+              except Exception as e:
+                  age_buckets['unknown'] += 1
+          for k, v in sorted(age_buckets.items()): print(f'  {k}: {v}')
+          
+          # By league
+          print()
+          print('=== By league (top 15) ===')
+          leagues = Counter(f.get('league','?') for f in missing)
+          for k,v in leagues.most_common(15): print(f'  {k}: {v}')
+          
+          # Sample 20 with kickoff detail
+          print()
+          print('=== Sample 20 missing ===')
+          samples = missing[:20]
+          for f in samples:
+              ko = (f.get('kickoff_utc') or f.get('kickoff') or '')[:19]
+              print(f'  id={f.get("id"):>10} src={f.get("source","?"):5} ko={ko} {f.get("home","?")} vs {f.get("away","?")} league={f.get("league","?")}')
+          
+          # Check if these ids appear in prediction_history at all
+          print()
+          print('=== Check prediction_history for missing ids ===')
+          try:
+              fb = json.load(open('/var/lib/footbreak/crown/prediction_history.json'))
+              fb_ids = set()
+              for r in fb.get('rows', []):
+                  for k in ['match_id','titan_match_id','hkjc_match_id']:
+                      v = r.get(k)
+                      if v: fb_ids.add(str(v))
+              missing_ids = {str(f.get('id')) for f in missing}
+              overlap = missing_ids & fb_ids
+              print(f'  Missing ids in fb history: {len(overlap)}/{len(missing_ids)}')
+          except Exception as e:
+              print(f'  fb check error: {e}')
+          
+          # Sample titan007 direct fetch attempt on 3 missing
+          print()
+          print('=== Test titan007 direct fetch on 3 titan-source missing ===')
+          import subprocess
+          titan_missing = [f for f in missing if f.get('source')=='titan'][:3]
+          for f in titan_missing:
+              tid = f.get('id')
+              # Try fetching titan match detail page
+              url = f'http://bf.titan007.com/football/hg/Data_{tid}.js'
+              try:
+                  r = subprocess.run(['curl','-s','-o','/dev/null','-w','%{http_code} %{size_download}b',
+                                      '--max-time','8','-A','Mozilla/5.0',url],
+                                     capture_output=True, text=True, timeout=15)
+                  print(f'  {tid}: {r.stdout.strip()}  {f.get("home")}vs{f.get("away")}')
+              except Exception as e:
+                  print(f'  {tid}: ERROR {e}')
+          PY
+          REMOTE

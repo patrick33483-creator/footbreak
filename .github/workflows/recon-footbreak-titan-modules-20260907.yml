@@ -1,0 +1,90 @@
+name: Recon footbreak titan modules
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "打 RECONFB"
+        required: true
+        type: string
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/recon-footbreak-titan-modules-20260907.yml']
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  r:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - env:
+          E: ${{ github.event_name }}
+          C: ${{ inputs.confirmation }}
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then exit 0; fi
+          if [ "$C" != "RECONFB" ]; then exit 1; fi
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          set +e
+          
+          echo "===== A) /opt/footbreak/system/titan_results.py 完整 ====="
+          wc -l /opt/footbreak/system/titan_results.py
+          cat /opt/footbreak/system/titan_results.py
+          
+          echo
+          echo "===== B) /opt/footbreak/crown/titan.py 頭 200 行 ====="
+          wc -l /opt/footbreak/crown/titan.py
+          head -200 /opt/footbreak/crown/titan.py
+          
+          echo
+          echo "===== C) analysis/backfill_titan007_scores.py (script sample) ====="
+          wc -l /opt/footbreak/analysis/backfill_titan007_scores.py
+          head -150 /opt/footbreak/analysis/backfill_titan007_scores.py
+          
+          echo
+          echo "===== D) 有冇 test script call titan_results 攞今日賽果? ====="
+          # 試下 direct call titan_results module
+          cd /opt/footbreak
+          sudo -u root python3 -c "
+          import sys; sys.path.insert(0, '/opt/footbreak')
+          try:
+              from system import titan_results as tr
+              print('module functions:')
+              print([n for n in dir(tr) if not n.startswith('_')])
+          except Exception as e:
+              print(f'error: {e}')
+          "
+          
+          echo
+          echo "===== E) footbreak crown.titan module functions ====="
+          sudo -u root python3 -c "
+          import sys; sys.path.insert(0, '/opt/footbreak')
+          try:
+              from crown import titan
+              print('module functions:')
+              print([n for n in dir(titan) if not n.startswith('_')])
+          except Exception as e:
+              print(f'error: {e}')
+          "
+          
+          REMOTE

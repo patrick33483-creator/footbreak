@@ -1,0 +1,47 @@
+name: Find crown radar
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/find-crown-radar-20260908.yml']
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  d:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -T 15 -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+      - env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=30 -o StrictHostKeyChecking=accept-new \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          set -e
+          echo "===== /var/www 目錄 ====="
+          ls -la /var/www/ | head -30
+          echo
+          echo "===== nginx conf 揾 crown-radar ====="
+          grep -rn "crown-radar\|crown_radar" /etc/nginx/ 2>&1 | head -20 || true
+          echo
+          echo "===== 揾 history.html 全部路徑 ====="
+          find /var/www /opt /home -name "history.html" 2>/dev/null | head -20
+          echo
+          echo "===== 揾 crown-radar 目錄 ====="
+          find / -maxdepth 5 -type d -name "*crown*radar*" 2>/dev/null | head -20
+          REMOTE

@@ -1,0 +1,126 @@
+name: Deploy crownsystem-v3
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "打 DEPLOYV3"
+        required: true
+        type: string
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/deploy-crownsystem-v3.yml']
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - env:
+          E: ${{ github.event_name }}
+          C: ${{ inputs.confirmation }}
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then echo "Push trigger; requires workflow_dispatch DEPLOYV3"; exit 1; fi
+          if [ "$C" != "DEPLOYV3" ]; then echo "Bad confirmation"; exit 1; fi
+      - env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+          SSH="ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=30 -i ~/.ssh/id_ed25519 $DEPLOY_USER@$DEPLOY_HOST"
+          SCP="scp -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=30 -i ~/.ssh/id_ed25519"
+
+          # 1. Backup existing nginx conf
+          $SSH 'sudo cp /etc/nginx/sites-available/unified-dashboard /etc/nginx/sites-available/unified-dashboard.backup-crownsystem-v3-$(date +%Y%m%d-%H%M%S)'
+
+          # 2. Create target dir + upload HTML
+          $SSH 'sudo mkdir -p /var/www/crownsystem-v3 && sudo chown -R www-data:www-data /var/www/crownsystem-v3'
+          $SCP deploy/v3/index.html    "$DEPLOY_USER@$DEPLOY_HOST:/tmp/v3-index.html"
+          $SCP deploy/v3/history.html  "$DEPLOY_USER@$DEPLOY_HOST:/tmp/v3-history.html"
+          $SCP deploy/v3/signals.html  "$DEPLOY_USER@$DEPLOY_HOST:/tmp/v3-signals.html"
+          $SSH 'sudo mv /tmp/v3-index.html /var/www/crownsystem-v3/index.html
+                sudo mv /tmp/v3-history.html /var/www/crownsystem-v3/history.html
+                sudo mv /tmp/v3-signals.html /var/www/crownsystem-v3/signals.html
+                sudo chown www-data:www-data /var/www/crownsystem-v3/*.html
+                sudo chmod 644 /var/www/crownsystem-v3/*.html'
+
+          # 3. Create htpasswd for V3 (user=radar pass=toberich)
+          $SSH 'sudo sh -c "echo \"radar:\$(openssl passwd -apr1 toberich)\" > /etc/nginx/.htpasswd-crownsystem-v3"
+                sudo chmod 644 /etc/nginx/.htpasswd-crownsystem-v3
+                sudo chown root:www-data /etc/nginx/.htpasswd-crownsystem-v3'
+
+          # 4. Inject nginx location if not already present
+          $SSH 'if sudo grep -q "location.*crownsystem-v3" /etc/nginx/sites-available/unified-dashboard; then
+                  echo "V3 location already exists, skipping inject"
+                else
+                  sudo python3 <<PYEOF
+          import re
+          fp = "/etc/nginx/sites-available/unified-dashboard"
+          with open(fp) as f: conf = f.read()
+          v3_block = """
+              # 皇冠球賽預測系統V3 (2026-09-07)
+              location = /crownsystem-v3 { return 301 /crownsystem-v3/; }
+              location = /crownsystem-v3/data.json {
+                  auth_basic \"crownsystem-v3\";
+                  auth_basic_user_file /etc/nginx/.htpasswd-crownsystem-v3;
+                  alias /var/www/stage_engine_v2/data.json;
+                  add_header Cache-Control \"no-store, must-revalidate\";
+                  expires -1;
+              }
+              location = /crownsystem-v3/results.json {
+                  auth_basic \"crownsystem-v3\";
+                  auth_basic_user_file /etc/nginx/.htpasswd-crownsystem-v3;
+                  alias /var/www/stage_engine_v2/results.json;
+                  add_header Cache-Control \"no-store, must-revalidate\";
+                  expires -1;
+              }
+              location = /crownsystem-v3/titan_today.json {
+                  auth_basic \"crownsystem-v3\";
+                  auth_basic_user_file /etc/nginx/.htpasswd-crownsystem-v3;
+                  alias /var/www/stage_engine_v2/titan_today.json;
+                  add_header Cache-Control \"no-store, must-revalidate\";
+                  expires -1;
+              }
+              location ^~ /crownsystem-v3/ {
+                  auth_basic \"crownsystem-v3\";
+                  auth_basic_user_file /etc/nginx/.htpasswd-crownsystem-v3;
+                  alias /var/www/crownsystem-v3/;
+                  index index.html;
+              }
+          """
+          # Inject before the "location / {" catch-all
+          new = re.sub(r"(\n\s*location / \{)", v3_block + r"\n\1", conf, count=1)
+          if new == conf:
+              raise SystemExit("Failed to find injection point (location / {)")
+          with open(fp, "w") as f: f.write(new)
+          print("Injected V3 nginx block")
+          PYEOF
+                fi'
+
+          # 5. Test + reload nginx
+          $SSH 'sudo nginx -t 2>&1'
+          $SSH 'sudo systemctl reload nginx 2>&1'
+
+          # 6. Verify
+          echo "=== Verify V3 URLs ==="
+          $SSH 'curl -sS -o /dev/null -w "index: %{http_code}\n"       -u radar:toberich http://127.0.0.1/crownsystem-v3/
+                curl -sS -o /dev/null -w "history: %{http_code}\n"     -u radar:toberich http://127.0.0.1/crownsystem-v3/history.html
+                curl -sS -o /dev/null -w "signals: %{http_code}\n"     -u radar:toberich http://127.0.0.1/crownsystem-v3/signals.html
+                curl -sS -o /dev/null -w "data.json: %{http_code}\n"   -u radar:toberich http://127.0.0.1/crownsystem-v3/data.json
+                curl -sS -o /dev/null -w "results.json: %{http_code}\n" -u radar:toberich http://127.0.0.1/crownsystem-v3/results.json
+                curl -sS -o /dev/null -w "titan: %{http_code}\n"       -u radar:toberich http://127.0.0.1/crownsystem-v3/titan_today.json
+                curl -sS -o /dev/null -w "no auth: %{http_code}\n"     http://127.0.0.1/crownsystem-v3/'
+          echo "=== Done ==="

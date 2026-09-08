@@ -1,0 +1,79 @@
+name: Setup Playwright for titan sync
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "打 INSTALL_PW"
+        required: true
+        type: string
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/setup-playwright-20260908.yml']
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  d:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          C: ${{ inputs.confirmation }}
+        run: if [ "$C" != "INSTALL_PW" ]; then exit 1; fi
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -T 15 -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=30 -o StrictHostKeyChecking=accept-new \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=40 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          set -e
+          
+          echo "===== 1) Check current Python/pip ====="
+          which python3
+          python3 --version
+          
+          echo
+          echo "===== 2) Disk free? ====="
+          df -h / | head -2
+          
+          echo
+          echo "===== 3) Create venv for titan sync ====="
+          mkdir -p /opt/titan-sync
+          if [ ! -d /opt/titan-sync/venv ]; then
+            python3 -m venv /opt/titan-sync/venv
+          fi
+          /opt/titan-sync/venv/bin/pip install --upgrade pip -q
+          /opt/titan-sync/venv/bin/pip install playwright -q
+          
+          echo
+          echo "===== 4) Install Chromium (headless) ====="
+          /opt/titan-sync/venv/bin/playwright install chromium --with-deps 2>&1 | tail -20
+          
+          echo
+          echo "===== 5) Verify ====="
+          /opt/titan-sync/venv/bin/playwright --version
+          ls -la /root/.cache/ms-playwright/ 2>/dev/null || ls -la ~/.cache/ms-playwright/ 2>/dev/null
+          
+          echo
+          echo "===== 6) Disk after install ====="
+          df -h / | head -2
+          du -sh /opt/titan-sync/
+          REMOTE

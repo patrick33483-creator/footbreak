@@ -1,0 +1,37 @@
+name: Spy crown-radar full API
+on:
+  workflow_dispatch:
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/spy-crown-radar-full.yml']
+concurrency: {group: production-maintenance-18, cancel-in-progress: false}
+jobs:
+  x:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: diagnose/crown-v2-pending-20260906}
+      - env: {SSHKEY: "${{ secrets.DEPLOY_SSH_KEY }}", H: "${{ secrets.DEPLOY_HOST }}", U: "${{ secrets.DEPLOY_USER }}"}
+        run: |
+          mkdir -p ~/.ssh && printf '%s\n' "$SSHKEY" > ~/.ssh/id && chmod 600 ~/.ssh/id
+          SSH="ssh -i ~/.ssh/id -o StrictHostKeyChecking=accept-new $U@$H"
+
+          echo "=== 1. Grab crown.html to see any embedded API calls ==="
+          $SSH "curl -s -u radar:toberich http://127.0.0.1/crown-radar/crown.html | head -c 4000"
+          echo ""
+          echo "=== 2. List crown-radar location routes from nginx ==="
+          $SSH "sudo -n grep -A2 'crown-radar' /etc/nginx/sites-available/unified-dashboard | head -60"
+          echo ""
+          echo "=== 3. crown-radar app source ==="
+          $SSH "sudo -n ls -la /opt/crown-radar/ 2>&1 | head -30"
+          echo ""
+          echo "=== 4. Search Python files for API endpoints ==="
+          $SSH "sudo -n grep -rn '@app.route\|@app.get\|@app.post' /opt/crown-radar/ 2>&1 | head -30"
+          echo ""
+          echo "=== 5. curl any /api/ endpoints we discover ==="
+          for ep in api/matches-crown api/matches-pin api/matches api/pinnacle api/all api/full api/live api/history; do
+            printf "  /crown-radar/%s = " "$ep"
+            $SSH "curl -s -u radar:toberich -o /dev/null -w '%{http_code} ' http://127.0.0.1/crown-radar/$ep && curl -s -u radar:toberich http://127.0.0.1/crown-radar/$ep | head -c 100"
+            echo ""
+          done

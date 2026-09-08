@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>皇冠球賽預測系統V3 · 即時開賽</title>
+  <style>
+    :root {
+      --bg: #0f172a; --panel: #1e293b; --border: #334155;
+      --text: #e2e8f0; --muted: #94a3b8; --accent: #f59e0b;
+      --up: #22c55e; --down: #ef4444;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang HK", "Microsoft JhengHei", sans-serif;
+      background: var(--bg); color: var(--text); font-size: 14px; }
+    header { padding: 12px 20px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; }
+    h1 { font-size: 18px; margin: 0; color: var(--accent); }
+    .status { color: var(--muted); font-size: 12px; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { padding: 8px 10px; text-align: center; border-bottom: 1px solid var(--border); font-size: 13px; white-space: nowrap; }
+    th { background: var(--panel); color: var(--muted); font-weight: 500; font-size: 12px; position: sticky; top: 0; }
+    tr:hover { background: rgba(255,255,255,0.04); }
+    .ko { color: var(--muted); font-size: 12px; }
+    .league { color: var(--muted); font-size: 12px; }
+    .team { font-weight: 500; }
+    .pred-cell { display: flex; flex-direction: column; gap: 2px; align-items: center; font-family: "SF Mono", ui-monospace, monospace; font-size: 12px; }
+    .pred-label { font-weight: 500; color: var(--text); }
+    .pred-meta { font-size: 10px; color: var(--muted); }
+    .pred-published { color: var(--accent); font-weight: 600; }
+    .pred-below { color: var(--muted); }
+    .empty { color: #475569; }
+    .filter { padding: 8px 20px; background: var(--panel); border-bottom: 1px solid var(--border); }
+    .filter input { background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 6px 10px; border-radius: 4px; width: 220px; }
+    footer { padding: 12px 20px; color: var(--muted); font-size: 11px; border-top: 1px solid var(--border); }
+    nav a { padding: 4px 12px; border-radius: 4px; text-decoration: none; font-size: 12px; margin-right: 4px; }
+    .nav-active { background: rgba(245,158,11,0.2); border: 1px solid var(--accent); color: var(--accent); }
+    .nav-inactive { background: transparent; border: 1px solid var(--border); color: var(--muted); }
+    @media (max-width: 768px) {
+      th, td { padding: 6px 6px; font-size: 12px; }
+      .filter input { width: 160px; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div style="display:flex; align-items:center; gap:16px;">
+      <h1>皇冠球賽預測系統V3 <span style="color: var(--muted); font-weight: 400; font-size: 13px;">· 三階段預測</span></h1>
+      <nav>
+        <a href="./" class="nav-active">即時開賽</a>
+        <a href="./history.html" class="nav-inactive">歷史</a>
+        <a href="./signals.html" class="nav-inactive">訊號</a>
+      </nav>
+    </div>
+    <div class="status" id="status">載入中…</div>
+  </header>
+  <div class="filter">
+    <input type="text" id="filter" placeholder="搜尋聯賽 / 隊名…" />
+    <span class="status" id="count" style="margin-left: 12px;"></span>
+  </div>
+  <div style="overflow-x: auto;">
+    <table>
+      <thead>
+        <tr>
+          <th>開賽</th>
+          <th>聯賽</th>
+          <th>主隊</th>
+          <th>客隊</th>
+          <th>初盤預測</th>
+          <th>T-30預測</th>
+          <th>T-5預測</th>
+        </tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </div>
+  <footer>
+    數據來源：Titan 皇冠今日未開波場 · V2 三階段預測 (首預 / T-30 / T-5) join by sid
+  </footer>
+  <script>
+    function escapeHtml(s) { return String(s ?? "").replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+    function pred(v) {
+      if (!v || v === "-" || v === "—") return '<span class="empty">—</span>';
+      return `<span class="pred-label">${escapeHtml(v)}</span>`;
+    }
+    let allData = [];
+    function render() {
+      const q = document.getElementById("filter").value.toLowerCase();
+      const filtered = allData.filter(m => {
+        return !q || (String(m.league||"") + String(m.home||"") + String(m.away||"")).toLowerCase().includes(q);
+      });
+      document.getElementById("count").textContent = `共 ${filtered.length} 場（未開波）`;
+      const rows = filtered.map(m => `<tr>
+          <td class="ko">${escapeHtml(m.kickoff_display || m.kickoff)}</td>
+          <td class="league">${escapeHtml(m.league)}</td>
+          <td class="team">${escapeHtml(m.home)}</td>
+          <td class="team">${escapeHtml(m.away)}</td>
+          <td>${pred(m.first)}</td>
+          <td>${pred(m.t30)}</td>
+          <td>${pred(m.t5)}</td>
+        </tr>`).join("");
+      document.getElementById("rows").innerHTML = rows || '<tr><td colspan="7" style="text-align:center;padding:40px;color:#64748b">暫無未開波記錄</td></tr>';
+    }
+    async function load() {
+      try {
+        const d = await fetch("./matches.json?_=" + Date.now()).then(r => r.json());
+        allData = d.matches || [];
+        document.getElementById("status").textContent =
+          `總場 ${d.count || allData.length} · 更新 ${new Date(d.generated_utc).toLocaleTimeString('zh-HK')}`;
+        render();
+      } catch (err) {
+        document.getElementById("status").textContent = "載入錯誤：" + err.message;
+      }
+    }
+    document.getElementById("filter").addEventListener("input", render);
+    load();
+    setInterval(load, 60_000);
+  </script>
+</body>
+</html>

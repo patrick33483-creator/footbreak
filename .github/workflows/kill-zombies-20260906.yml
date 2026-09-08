@@ -1,0 +1,109 @@
+name: Kill zombies + patch
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "打 KILL"
+        required: true
+        type: string
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  kill:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - env:
+          E: ${{ github.event_name }}
+          C: ${{ inputs.confirmation }}
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then echo "push registers"; exit 0; fi
+          if [ "$C" != "KILL" ]; then echo "wrong"; exit 1; fi
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'bash -s' <<'REMOTE'
+          set +e
+          echo "===== Before ====="
+          uptime
+          echo
+          echo "===== A. Kill zombies (>1 day) ====="
+          # 攞 elapsed > 1 day 嘅所有相關 process
+          ps -eo pid,etime,cmd | awk '/backfill_titan007|crown-\*\*\*-v2|docker build.*crown/ && !/awk/' 2>&1
+          echo "--- Killing docker build zombies ---"
+          for pid in $(pgrep -f 'docker build.*crown|docker-buildx buildx build|crown-\*\*\*-v2'); do
+            echo "kill $pid"
+            sudo kill -TERM $pid 2>&1
+          done
+          echo "--- Killing 4-day backfill zombie ---"
+          for pid in $(pgrep -f 'backfill_titan007_scores'); do
+            echo "kill $pid"
+            sudo kill -TERM $pid 2>&1
+          done
+          for pid in $(pgrep -f 'MODE=audit.*titan007'); do
+            echo "kill $pid"
+            sudo kill -TERM $pid 2>&1
+          done
+          sleep 5
+          # SIGKILL if still there
+          for pid in $(pgrep -f 'docker build.*crown|backfill_titan007|MODE=audit.*titan007|crown-\*\*\*-v2'); do
+            echo "SIGKILL $pid"
+            sudo kill -9 $pid 2>&1
+          done
+          sleep 3
+          echo "--- Remaining ---"
+          ps -eo pid,etime,cmd | awk '$2 ~ /-/ && !/awk/ && !/dashboard_api|server_health_monitor|odds-recovery-overlay/' 2>&1 | head -10
+          echo
+          echo "===== B. Add system/__init__.py ====="
+          if [ ! -f /opt/footbreak/system/__init__.py ]; then
+            sudo touch /opt/footbreak/system/__init__.py
+            sudo chown 2000:2000 /opt/footbreak/system/__init__.py 2>&1
+            echo "created"
+          else
+            echo "already exists"
+          fi
+          ls -la /opt/footbreak/system/__init__.py
+          echo
+          echo "===== C. Stop + disable broken stage-engine-v2-fast-results (CLI 錯) ====="
+          sudo systemctl stop stage-engine-v2-fast-results.timer stage-engine-v2-fast-results.service 2>&1
+          sudo systemctl disable stage-engine-v2-fast-results.timer 2>&1
+          echo "--- Status ---"
+          sudo systemctl is-enabled stage-engine-v2-fast-results.timer 2>&1
+          sudo systemctl is-active stage-engine-v2-fast-results.timer 2>&1
+          echo
+          echo "===== D. Reset failed states ====="
+          sudo systemctl reset-failed 2>&1
+          sudo systemctl --failed --no-pager 2>&1 | head -20
+          echo
+          echo "===== After ====="
+          uptime
+          sleep 10
+          uptime
+          echo
+          echo "===== dashboard-self-heal 依家可以 import 未 ====="
+          sudo systemctl restart footbreak-dashboard-self-heal.service 2>&1
+          sleep 10
+          sudo systemctl status footbreak-dashboard-self-heal.service --no-pager 2>&1 | head -15
+          sudo journalctl -u footbreak-dashboard-self-heal.service --since '1 min ago' --no-pager -o cat 2>&1 | tail -20
+          REMOTE

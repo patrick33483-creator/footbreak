@@ -1,0 +1,53 @@
+name: Diag v2 scraper
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        required: true
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/diag-v2-scraper.yml']
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+jobs:
+  d:
+    runs-on: ubuntu-latest
+    env:
+      E: ${{ github.event_name }}
+      C: ${{ inputs.confirmation }}
+    steps:
+      - name: guard
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then exit 0; fi
+          if [ "$C" != "DIAGVS2" ]; then exit 1; fi
+      - name: ssh
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - name: diag
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then exit 0; fi
+          SSH="ssh -o BatchMode=yes -o ConnectTimeout=20 -o StrictHostKeyChecking=accept-new $DEPLOY_USER@$DEPLOY_HOST"
+          echo '=== files touching AsianOdds_n / OverDown_n / titan ==='
+          $SSH 'sudo grep -rln -E "AsianOdds_n|OverDown_n|vip\.titan007" /opt/footbreak --include="*.py" 2>/dev/null | grep -v ".git\|__pycache__" | head -20'
+          echo
+          echo '=== files touching titan007 crown / company id constants ==='
+          $SSH 'sudo grep -rln -E "titan007-crown-id|COMPANY_ID|crown_company|company_id" /opt/footbreak --include="*.py" 2>/dev/null | grep -v ".git\|__pycache__" | head -20'
+          echo
+          echo '=== crown-run.sh (what it invokes) ==='
+          $SSH 'sudo cat /opt/footbreak/deploy/crown-run.sh 2>/dev/null | head -50'
+          echo
+          echo '=== crown-sweep.service exec ==='
+          $SSH 'sudo systemctl cat crown-sweep.service 2>&1 | grep -E "ExecStart|WorkingDirectory" | head -5'
+          echo
+          echo '=== crown module top-level ==='
+          $SSH 'sudo ls -la /opt/footbreak/system/crown /opt/footbreak/crown 2>/dev/null | head -40'

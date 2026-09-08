@@ -1,0 +1,40 @@
+name: Find telegram config
+on:
+  workflow_dispatch:
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+permissions:
+  contents: read
+jobs:
+  t:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'bash -s' <<'REMOTE'
+          set +e
+          echo "===== 1. /etc/footbreak.env 有無 telegram ====="
+          sudo grep -iE 'telegram|tg_|bot_token|chat_id' /etc/footbreak*.env 2>&1 | sed 's/=.*/=***/'
+          echo
+          echo "===== 2. incident_alert.py 點 send ====="
+          sudo find /opt/footbreak -name 'incident_alert*' 2>&1 | head -5
+          sudo head -30 /opt/footbreak/system/incident_alert.py 2>&1
+          echo
+          echo "===== 3. systemd env 有無 TG env ====="
+          sudo systemctl show crown-settle.service --property=Environment,EnvironmentFiles --no-pager 2>&1
+          echo
+          echo "===== 4. 用 incident_alert.py --help ====="
+          sudo /opt/footbreak/.venv/bin/python3 /opt/footbreak/system/incident_alert.py --help 2>&1 | head -30
+          REMOTE

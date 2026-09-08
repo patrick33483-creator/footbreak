@@ -1,0 +1,94 @@
+name: V4 deploy MVP (Phase 1)
+on:
+  workflow_dispatch:
+    inputs: {confirm: {description: 'CONFIRM', required: true}}
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/v4-deploy-mvp.yml']
+concurrency: {group: production-maintenance-12, cancel-in-progress: false}
+jobs:
+  x:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env: {CONFIRM_INPUT: "${{ github.event.inputs.confirm || 'CONFIRM' }}"}
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: diagnose/crown-v2-pending-20260906}
+      - if: github.event_name == 'workflow_dispatch'
+        run: test "$CONFIRM_INPUT" = "CONFIRM"
+      - if: github.event_name == 'workflow_dispatch'
+        env: {SSHKEY: "${{ secrets.DEPLOY_SSH_KEY }}", H: "${{ secrets.DEPLOY_HOST }}", U: "${{ secrets.DEPLOY_USER }}"}
+        run: |
+          mkdir -p ~/.ssh && printf '%s\n' "$SSHKEY" > ~/.ssh/id && chmod 600 ~/.ssh/id
+          SSH="ssh -i ~/.ssh/id -o StrictHostKeyChecking=accept-new $U@$H"
+          SCP="scp -i ~/.ssh/id -o StrictHostKeyChecking=accept-new"
+
+          # 1. Create app dir on prod
+          $SSH "sudo -n mkdir -p /opt/crownsystem-v4 /var/lib/crownsystem-v4 /var/www/crownsystem-v4"
+
+          # 2. Copy python + html
+          $SCP .github/scripts/v4_common.py $U@$H:/tmp/v4_common.py
+          $SCP .github/scripts/v4_model_p1.py $U@$H:/tmp/v4_model_p1.py
+          $SCP .github/scripts/v4_merge.py $U@$H:/tmp/v4_merge.py
+          $SCP .github/scripts/v4_index.html $U@$H:/tmp/index.html
+          $SCP .github/scripts/v4_history.html $U@$H:/tmp/history.html
+
+          $SSH "sudo -n install -m 0644 /tmp/v4_common.py /opt/crownsystem-v4/v4_common.py"
+          $SSH "sudo -n install -m 0644 /tmp/v4_model_p1.py /opt/crownsystem-v4/v4_model_p1.py"
+          $SSH "sudo -n install -m 0755 /tmp/v4_merge.py /opt/crownsystem-v4/v4_merge.py"
+          $SSH "sudo -n install -m 0644 /tmp/index.html /var/www/crownsystem-v4/index.html"
+          $SSH "sudo -n install -m 0644 /tmp/history.html /var/www/crownsystem-v4/history.html"
+          $SSH "sudo -n chown -R root:www-data /var/www/crownsystem-v4"
+
+          # 3. Do a first run to populate matches.json + results.json
+          echo ""
+          echo "=== first-run smoke ==="
+          $SSH "sudo -n python3 /opt/crownsystem-v4/v4_merge.py"
+
+          # 4. External smoke
+          echo ""
+          echo "=== external check ==="
+          for u in "" matches.json results.json history.html; do
+            printf "  crownsystem-v4/%s = " "$u"
+            curl -s -o /dev/null -w "%{http_code}\n" "http://146.190.93.148/crownsystem-v4/$u"
+          done
+
+          # 5. Install systemd unit + timer
+          $SSH "sudo -n bash -c 'cat > /etc/systemd/system/crownsystem-v4-merge.service' <<'UNIT'
+          [Unit]
+          Description=crownsystem-v4 merge (球賽預測 V4)
+          After=network-online.target
+
+          [Service]
+          Type=oneshot
+          ExecStart=/usr/bin/python3 /opt/crownsystem-v4/v4_merge.py
+          User=root
+          TimeoutStartSec=45
+          Nice=10
+          UNIT"
+
+          $SSH "sudo -n bash -c 'cat > /etc/systemd/system/crownsystem-v4-merge.timer' <<'UNIT'
+          [Unit]
+          Description=crownsystem-v4 merge tick (every 5 min)
+
+          [Timer]
+          OnBootSec=2min
+          OnUnitActiveSec=5min
+          AccuracySec=15s
+          Persistent=true
+          Unit=crownsystem-v4-merge.service
+
+          [Install]
+          WantedBy=timers.target
+          UNIT"
+
+          $SSH "sudo -n systemctl daemon-reload && sudo -n systemctl enable --now crownsystem-v4-merge.timer"
+
+          echo ""
+          echo "=== timer status ==="
+          $SSH "sudo -n systemctl list-timers crownsystem-v4-merge.timer --no-pager"
+          $SSH "sudo -n systemctl status crownsystem-v4-merge.service --no-pager -n 5" || true
+
+          echo ""
+          echo "=== matches.json sample ==="
+          $SSH "sudo -n python3 -c 'import json; d=json.load(open(\"/var/www/crownsystem-v4/matches.json\")); print(json.dumps(d[\"meta\"], ensure_ascii=False, indent=2)); print(\"first match:\", json.dumps(d[\"matches\"][0], ensure_ascii=False, indent=2)[:1200] if d[\"matches\"] else \"none\")'"

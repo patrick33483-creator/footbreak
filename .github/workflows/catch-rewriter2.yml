@@ -1,0 +1,103 @@
+name: catch nginx rewriter v2
+on:
+  workflow_dispatch:
+    inputs: {confirm: {description: 'CONFIRM', required: true}}
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/catch-rewriter2.yml']
+concurrency: {group: production-maintenance-2, cancel-in-progress: false}
+jobs:
+  x:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env: {CONFIRM_INPUT: "${{ github.event.inputs.confirm || 'CONFIRM' }}"}
+    steps:
+      - if: github.event_name == 'workflow_dispatch'
+        run: test "$CONFIRM_INPUT" = "CONFIRM"
+      - if: github.event_name == 'workflow_dispatch'
+        env: {SSHKEY: "${{ secrets.DEPLOY_SSH_KEY }}", H: "${{ secrets.DEPLOY_HOST }}", U: "${{ secrets.DEPLOY_USER }}"}
+        run: |
+          mkdir -p ~/.ssh && printf '%s\n' "$SSHKEY" > ~/.ssh/id && chmod 600 ~/.ssh/id
+          ssh -i ~/.ssh/id -o StrictHostKeyChecking=accept-new $U@$H bash <<'EOF'
+          set -e
+          SITE=/etc/nginx/sites-enabled/unified-dashboard
+
+          # Ensure auditd
+          which auditctl >/dev/null || sudo -n apt-get install -y auditd 2>&1 | tail -3
+
+          # Add audit watch on the file (arm on -w path -p wa)
+          sudo -n auditctl -w "$SITE" -p wa -k nginx-rewrite 2>&1 | tail -2 || true
+          # Also watch the sites-available real file (SITE is symlink to it)
+          REAL=$(sudo -n readlink -f "$SITE")
+          echo "REAL=$REAL"
+          sudo -n auditctl -w "$REAL" -p wa -k nginx-rewrite 2>&1 | tail -2 || true
+
+          echo ""
+          echo "=== BEFORE ==="
+          MD_BEFORE=$(sudo -n md5sum "$REAL" | awk '{print $1}')
+          MT_BEFORE=$(sudo -n stat -c %Y "$REAL")
+          echo "md5=$MD_BEFORE mtime=$MT_BEFORE"
+
+          # Apply the one-shot fix INLINE so we know the rewrite happens AFTER
+          echo ""
+          echo "=== Re-apply the fix ==="
+          sudo -n python3 <<'PY'
+          import re
+          p = "/etc/nginx/sites-available/unified-dashboard"
+          txt = open(p).read()
+          txt = re.sub(
+              r'^[ \t]*location\s*=\s*/crownsystem-v3/[A-Za-z0-9._-]+\s*\{[^}]*\}\s*\n',
+              '', txt, flags=re.M | re.S)
+          m = re.search(r'^([ \t]*)location\s*\^~\s*/crownsystem-v3/\s*\{', txt, re.M)
+          assert m
+          indent = m.group(1)
+          def block(url, alias, ctype):
+              return (
+                  indent + "location = " + url + " {\n"
+                  + indent + "    auth_basic off;\n"
+                  + indent + "    alias " + alias + ";\n"
+                  + indent + "    default_type " + ctype + ";\n"
+                  + indent + '    add_header Cache-Control "no-store";\n'
+                  + indent + "}\n" + indent
+              )
+          inject = (
+              block("/crownsystem-v3/matches.json", "/var/www/crownsystem-v3/matches.json", "application/json")
+              + block("/crownsystem-v3/results.json", "/var/www/crownsystem-v3/results.json", "application/json")
+              + block("/crownsystem-v3/history.html", "/var/www/crownsystem-v3/history.html", "text/html")
+          )
+          txt = txt[:m.start()] + inject + txt[m.start():]
+          open(p, "w").write(txt)
+          print("fix reapplied")
+          PY
+          sudo -n nginx -t 2>&1 | tail -3
+          sudo -n systemctl reload nginx
+          echo "fix reload done"
+
+          echo ""
+          echo "=== Watch 5 min for revert ==="
+          for i in $(seq 1 60); do
+            sleep 5
+            MT_NOW=$(sudo -n stat -c %Y "$REAL")
+            if [ "$MT_NOW" != "$MT_BEFORE" ] && [ "$i" -gt 2 ]; then
+              MD_NOW=$(sudo -n md5sum "$REAL" | awk '{print $1}')
+              if [ "$MD_NOW" != "$MD_BEFORE" ]; then
+                echo ">>> [$i * 5s] file changed (mtime $MT_BEFORE -> $MT_NOW, md5 tail $(echo $MD_NOW | tail -c 8))"
+                # Read the audit log for this file
+                echo ">>> AUDIT LOG entries:"
+                sudo -n ausearch -k nginx-rewrite --start recent 2>&1 | tail -60
+                echo ">>> RECENT JOURNAL:"
+                sudo -n journalctl --since "60 sec ago" --no-pager 2>&1 | tail -30
+                # Check if crownsystem-v3/matches.json still exists in the file
+                echo ">>> Config state (crownsystem-v3 lines):"
+                sudo -n grep -n "crownsystem-v3" "$REAL"
+                MT_BEFORE=$MT_NOW
+                MD_BEFORE=$MD_NOW
+              fi
+            fi
+          done
+
+          echo ""
+          echo "=== Cleanup audit rule ==="
+          sudo -n auditctl -W "$REAL" -p wa -k nginx-rewrite 2>&1 | tail || true
+          sudo -n auditctl -W "$SITE" -p wa -k nginx-rewrite 2>&1 | tail || true
+          EOF

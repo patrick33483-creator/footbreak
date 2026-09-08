@@ -1,0 +1,88 @@
+name: Trigger crown-tick refresh sync
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "打 REFRESH"
+        required: true
+        type: string
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/trigger-refresh-20260906.yml']
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  refresh:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - env:
+          E: ${{ github.event_name }}
+          C: ${{ inputs.confirmation }}
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then exit 0; fi
+          if [ "$C" != "REFRESH" ]; then exit 1; fi
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'sudo bash -s' <<'REMOTE'
+          set +e
+          echo "===== 1. data.json BEFORE ====="
+          ls -la /var/www/crown/data.json
+          echo
+          echo "===== 2. Look for refresh mode in crown/run.py ====="
+          grep -n "refresh\|rebuild\|write_dashboard_data" /opt/footbreak/crown/run.py | head -10
+          echo
+          echo "===== 3. Try running crown refresh directly ====="
+          cd /opt/footbreak
+          # Use the crown-run.sh wrapper if available
+          if [ -x /opt/footbreak/deploy/crown-run.sh ]; then
+              timeout 300 /opt/footbreak/deploy/crown-run.sh refresh 2>&1 | tail -30
+          else
+              timeout 300 /opt/footbreak/.venv/bin/python3 -m crown.run --mode refresh 2>&1 | tail -30
+          fi
+          RC=$?
+          echo "rc=$RC"
+          echo
+          echo "===== 4. data.json AFTER ====="
+          ls -la /var/www/crown/data.json
+          echo
+          echo "===== 5. Check data.json prediction_history + stats ====="
+          /opt/footbreak/.venv/bin/python3 <<'PY'
+          import json
+          d = json.load(open('/var/www/crown/data.json'))
+          ph = d.get('prediction_history', {})
+          if isinstance(ph, dict):
+              rows = ph.get('rows', [])
+              stats = ph.get('stats', {})
+              print(f'rows: {len(rows)}')
+              resolved = [r for r in rows if r.get('result_status') in ('已核對','已核實')]
+              print(f'resolved: {len(resolved)}')
+              user_filled = [r for r in rows if r.get('result_source') == 'user_manual_fill_20260906']
+              print(f'user_manual_fill: {len(user_filled)}')
+              print(f'accuracy: {stats.get("accuracy")}')
+              print(f'hits/graded: {stats.get("hits")}/{stats.get("graded")}')
+              by_stage = stats.get('by_stage', {})
+              for k, v in by_stage.items():
+                  print(f'  stage {k}: {v}')
+          PY
+          REMOTE

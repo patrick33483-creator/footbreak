@@ -1,0 +1,131 @@
+name: Deep settle diagnostic
+on:
+  workflow_dispatch:
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+permissions:
+  contents: read
+jobs:
+  d:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'bash -s' <<'REMOTE'
+          set +e
+          echo "===== 1. crown-settle 最近 1 小時執行 result 統計 ====="
+          sudo journalctl -u crown-settle.service --since '90 min ago' --no-pager -o cat 2>&1 | \
+            grep -E "'ok'|skipped|Started|Failed|status=" | tail -30
+          echo
+          echo "===== 2. data.json 最新 3 個 match 有無 result ====="
+          sudo /opt/footbreak/.venv/bin/python3 -c "
+          import json
+          d = json.load(open('/var/www/crown/data.json'))
+          print('generated_at:', d.get('generated_at'))
+          print('total matches:', len(d.get('matches', [])))
+          # 過去咗嘅 match 睇下有無 result
+          from datetime import datetime, timezone, timedelta
+          HKT = timezone(timedelta(hours=8))
+          now = datetime.now(HKT)
+          past_no_result = 0
+          past_with_result = 0
+          samples = []
+          for m in d.get('matches', []):
+              ko = m.get('kickoff_hkt') or m.get('kickoff')
+              if not ko: continue
+              try:
+                  dt = datetime.fromisoformat(str(ko).replace('Z','+00:00'))
+                  if dt.tzinfo is None: dt = dt.replace(tzinfo=HKT)
+              except: continue
+              if dt >= now: continue
+              # 過去嘅
+              # 睇邊個 field 代表 result
+              stages = m.get('stages') or []
+              has_result = False
+              rs_seen = []
+              for s in stages:
+                  if isinstance(s, dict):
+                      rs = s.get('result_status') or s.get('result')
+                      if rs: rs_seen.append(rs)
+                      if rs and rs not in ('待賽果', None, ''):
+                          has_result = True
+              if has_result:
+                  past_with_result += 1
+              else:
+                  past_no_result += 1
+                  if len(samples) < 5:
+                      samples.append({'home': m.get('home_name') or m.get('home'), 'away': m.get('away_name') or m.get('away'), 'kickoff': str(ko), 'stages_result_status': rs_seen[:3]})
+          print(f'past matches with result: {past_with_result}')
+          print(f'past matches WITHOUT result: {past_no_result}')
+          print('samples of missing:')
+          for s in samples: print(' ', s)
+          " 2>&1
+          echo
+          echo "===== 3. Ledger 入面今日 06/09 嘅 fixture: 已 resolved 幾多? ====="
+          sudo /opt/footbreak/.venv/bin/python3 -c "
+          import json
+          from datetime import datetime, timezone, timedelta
+          HKT = timezone(timedelta(hours=8))
+          today = datetime.now(HKT).strftime('%Y-%m-%d')
+          l = json.load(open('/var/lib/footbreak/crown/ledger.json'))
+          w = l.get('watch', {})
+          today_total, today_resolved, today_pending = 0, 0, 0
+          samples = []
+          for k, v in w.items():
+              if not isinstance(v, dict): continue
+              ko = v.get('kickoff_hkt') or v.get('kickoff') or ''
+              if not str(ko).startswith(today): continue
+              today_total += 1
+              stages = v.get('stages') or []
+              is_resolved = False
+              for s in stages:
+                  if isinstance(s, dict):
+                      rs = s.get('result_status')
+                      if rs in {'已核對','不計','void'}: is_resolved = True
+              if is_resolved:
+                  today_resolved += 1
+              else:
+                  today_pending += 1
+                  if len(samples) < 5:
+                      samples.append({'k':k,'home':v.get('home_name'),'away':v.get('away_name'),'kickoff':ko,'result':v.get('result'),'result_home':v.get('home_score'),'result_away':v.get('away_score')})
+          print(f'今日 {today} fixtures in ledger: {today_total}')
+          print(f'  resolved: {today_resolved}')
+          print(f'  pending: {today_pending}')
+          print('unresolved samples:')
+          for s in samples: print(' ', s)
+          " 2>&1
+          echo
+          echo "===== 4. 最近 30 min settle run stdout log 睇有無 result fetch error ====="
+          sudo journalctl -u crown-settle.service --since '30 min ago' --no-pager -o cat 2>&1 | \
+            grep -iE "result|fetch|error|exception|traceback|status" | tail -30
+          echo
+          echo "===== 5. Result cache dir 有無野 ====="
+          sudo ls -la /opt/footbreak/system/cache/results 2>&1 | tail -20
+          sudo du -sh /opt/footbreak/system/cache/results 2>&1
+          echo
+          echo "===== 6. Result provider config ====="
+          sudo grep -iE "provider|result|fetch" /etc/footbreak*.env 2>&1 | grep -v "^#" | sed 's/=.*/=***/'
+          echo
+          echo "===== 7. Ledger 有無關於今日 result fetch 嘅 timestamp ====="
+          sudo /opt/footbreak/.venv/bin/python3 -c "
+          import json
+          l = json.load(open('/var/lib/footbreak/crown/ledger.json'))
+          # 睇 metadata / last_result_fetch
+          for k in ['last_settle', 'last_result_fetch', 'last_update', 'meta', 'metadata']:
+              if k in l: print(k, ':', str(l[k])[:200])
+          # 睇 top-level keys
+          print('ledger top-level keys:', list(l.keys())[:20])
+          " 2>&1
+          REMOTE

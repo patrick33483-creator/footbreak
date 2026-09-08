@@ -1,0 +1,59 @@
+name: Diag v3 conf history
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation: {description: "打 DIAGV3H", required: true, type: string}
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/diag-v3-conf-hist.yml']
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  d:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - env:
+          E: ${{ github.event_name }}
+          C: ${{ inputs.confirmation }}
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then exit 0; fi
+          if [ "$C" != "DIAGV3H" ]; then exit 1; fi
+      - env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          if [ "${{ github.event_name }}" != "workflow_dispatch" ]; then exit 0; fi
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+          SSH="ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=30 -i ~/.ssh/id_ed25519 $DEPLOY_USER@$DEPLOY_HOST"
+          set +e
+          echo "=== backup files ==="
+          $SSH 'sudo ls -la /etc/nginx/sites-available/*backup* 2>/dev/null | tail -20'
+          echo
+          echo "=== stat unified-dashboard (mtime) ==="
+          $SSH 'sudo stat /etc/nginx/sites-available/unified-dashboard | grep -E "Modify|Change|Size"'
+          echo
+          echo "=== systemd timers watching nginx or dashboard ==="
+          $SSH 'systemctl list-timers --all --no-pager 2>/dev/null | head -20'
+          echo
+          echo "=== search self-heal / revert / dashboard-self-heal ==="
+          $SSH 'sudo find /etc /opt /usr/local -maxdepth 4 -name "*self-heal*" -o -name "*dashboard-restore*" -o -name "*nginx-revert*" -o -name "*sync-nginx*" 2>/dev/null | head -20'
+          echo
+          echo "=== recent journal for nginx / systemd changes to unified-dashboard ==="
+          $SSH 'sudo journalctl --since "30 min ago" 2>/dev/null | grep -iE "unified-dashboard|crownsystem-v3|nginx.*reload|sync-nginx" | tail -30'
+          echo
+          echo "=== diff latest backup vs current ==="
+          $SSH 'LATEST=$(sudo ls -t /etc/nginx/sites-available/unified-dashboard.backup* 2>/dev/null | head -1)
+                echo "Latest backup: $LATEST"
+                if [ -n "$LATEST" ]; then sudo diff "$LATEST" /etc/nginx/sites-available/unified-dashboard | head -80; fi'

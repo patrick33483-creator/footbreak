@@ -1,0 +1,47 @@
+name: Verify cleanup timer
+on:
+  workflow_dispatch:
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+permissions:
+  contents: read
+jobs:
+  v:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'bash -s' <<'REMOTE'
+          set +e
+          echo "===== 1. df 現況 ====="
+          df -h / 2>&1
+          echo
+          echo "===== 2. timer 記錄 ====="
+          sudo systemctl list-timers crown-tmp-cleanup.timer --no-pager 2>&1
+          echo
+          echo "===== 3. 最近 cleanup 執行歷史 ====="
+          sudo journalctl -u crown-tmp-cleanup.service --since '1 hour ago' --no-pager -o cat 2>&1 | tail -20
+          echo
+          echo "===== 4. stale tmp 依家有幾多 ====="
+          sudo ls /var/lib/footbreak/crown/.ledger.json.* 2>&1 | wc -l
+          sudo du -ch /var/lib/footbreak/crown/.ledger.json.* 2>&1 | tail -1
+          echo
+          echo "===== 5. 主要 growth 檔案 size ====="
+          sudo ls -la /var/lib/footbreak/crown/ledger.json /opt/odds-*/data/data.db /opt/odds-*/data/data.db-wal /tmp/data-ro.db 2>&1
+          echo
+          echo "===== 6. crown-settle 最近有無成功 (data.json refresh) ====="
+          sudo ls -la /var/www/crown/data.json 2>&1
+          sudo journalctl -u crown-settle.service --since '30 min ago' --no-pager -o cat 2>&1 | grep -E "'ok': True|'ok': False|skipped|Failed|Started" | tail -10
+          REMOTE

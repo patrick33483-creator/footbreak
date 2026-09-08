@@ -1,0 +1,70 @@
+name: Find disk growth
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+
+permissions:
+  contents: read
+
+jobs:
+  f:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - name: SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - name: run
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'bash -s' <<'REMOTE'
+          set +e
+          echo "===== df ====="
+          df -h / 2>&1
+          echo
+          echo "===== / 頂層 disk usage (排序) ====="
+          sudo du -sh /var /opt /root /home /usr /tmp /srv 2>/dev/null | sort -h
+          echo
+          echo "===== /var/lib top dirs ====="
+          sudo du -h /var/lib --max-depth=1 2>/dev/null | sort -h | tail -15
+          echo
+          echo "===== /opt top dirs ====="
+          sudo du -h /opt --max-depth=1 2>/dev/null | sort -h | tail -15
+          echo
+          echo "===== /opt/odds-*** 內部 ====="
+          sudo du -h /opt/odds-* --max-depth=2 2>/dev/null | sort -h | tail -20
+          echo
+          echo "===== /var/lib/footbreak 內部 ====="
+          sudo du -h /var/lib/footbreak --max-depth=2 2>/dev/null | sort -h | tail -25
+          echo
+          echo "===== /var/lib/footbreak/learning 內部 (SQLite growth?) ====="
+          sudo ls -la /var/lib/footbreak/learning/ 2>&1
+          echo
+          echo "===== data.db-wal + data.db 增長速度 (今日) ====="
+          sudo ls -la /opt/odds-*/data/data.db* 2>&1
+          echo
+          echo "===== 30 分鐘前 vs 依家 ledger.json size ====="
+          sudo ls -la /var/lib/footbreak/crown/ledger.json 2>&1
+          # 睇 mtime 睇下有無壓縮舊 snapshot
+          sudo find /var/lib/footbreak/crown -maxdepth 1 -type f -exec ls -la {} \; 2>&1 | sort -k5 -n -r | head -10
+          echo
+          echo "===== 30 分鐘內新加嘅 file (>10MB) ====="
+          sudo find / -xdev -type f -mmin -30 -size +10M -not -path '/proc/*' -not -path '/sys/*' -exec ls -la {} \; 2>/dev/null | sort -k5 -n -r | head -20
+          echo
+          echo "===== docker 有無食 space? ====="
+          sudo du -sh /var/lib/docker /var/lib/containerd 2>/dev/null
+          echo
+          echo "===== journalctl 用幾多 ====="
+          sudo journalctl --disk-usage 2>&1
+          REMOTE

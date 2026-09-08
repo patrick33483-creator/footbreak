@@ -1,0 +1,38 @@
+name: Spy crown-radar match fields
+on:
+  workflow_dispatch:
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/spy-crown-fields.yml']
+concurrency: {group: production-maintenance-19, cancel-in-progress: false}
+jobs:
+  x:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: diagnose/crown-v2-pending-20260906}
+      - env: {SSHKEY: "${{ secrets.DEPLOY_SSH_KEY }}", H: "${{ secrets.DEPLOY_HOST }}", U: "${{ secrets.DEPLOY_USER }}"}
+        run: |
+          mkdir -p ~/.ssh && printf '%s\n' "$SSHKEY" > ~/.ssh/id && chmod 600 ~/.ssh/id
+          SSH="ssh -i ~/.ssh/id -o StrictHostKeyChecking=accept-new $U@$H"
+
+          echo "=== crown.html <script> section (find embedded fetch calls) ==="
+          $SSH "curl -s -u radar:toberich http://127.0.0.1/crown-radar/crown.html | grep -Eo 'fetch\(\"[^\"]+\"|/api/[a-zA-Z0-9\-]+' | sort -u"
+          echo ""
+          echo "=== First match full JSON (any Pinnacle-like fields?) ==="
+          $SSH "curl -s -u radar:toberich http://127.0.0.1/crown-radar/api/matches-crown | python3 -c '
+          import sys, json
+          d = json.load(sys.stdin)
+          if isinstance(d, list): m = d[0] if d else {}
+          else: m = (d.get(\"matches\") or [{}])[0]
+          print(\"top-level keys:\", sorted(m.keys()))
+          print()
+          print(json.dumps(m, ensure_ascii=False, indent=2))
+          '"
+          echo ""
+          echo "=== Server code — grep for Pinnacle / pin references ==="
+          $SSH "sudo -n grep -riE 'pinnacle|median|pin_odds|/api/pin' /opt/crown-radar/server/ 2>&1 | head -20"
+          echo ""
+          echo "=== Server routes ==="
+          $SSH "sudo -n grep -rnE 'app\.(get|post)|router\.(get|post)' /opt/crown-radar/server/ 2>&1 | head -40"

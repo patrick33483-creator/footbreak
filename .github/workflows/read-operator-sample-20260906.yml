@@ -1,0 +1,101 @@
+name: Read operator overlay sample
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "打 READ"
+        required: true
+        type: string
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  read:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - env:
+          E: ${{ github.event_name }}
+          C: ${{ inputs.confirmation }}
+        run: |
+          if [ "$E" != "workflow_dispatch" ]; then echo "push registers"; exit 0; fi
+          if [ "$C" != "READ" ]; then echo "wrong"; exit 1; fi
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'bash -s' <<'REMOTE'
+          set +e
+          echo "===== A. 現時嘅 operator_results.json 內容 ====="
+          if [ -f /var/lib/footbreak/stage_engine_v2/operator_results.json ]; then
+            python3 -c "
+          import json
+          d=json.load(open('/var/lib/footbreak/stage_engine_v2/operator_results.json'))
+          print('type:', type(d).__name__)
+          if isinstance(d, dict): print('keys:', list(d.keys())[:20], 'total:', len(d))
+          elif isinstance(d, list): print('len:', len(d))
+          " 2>&1
+            echo "--- 頭 30 行原文 ---"
+            sudo head -30 /var/lib/footbreak/stage_engine_v2/operator_results.json 2>&1
+          else
+            echo "file NOT EXIST"
+          fi
+          echo
+          echo "===== B. 9月5日 backup overlay 個 sample ====="
+          sudo head -100 /var/lib/footbreak/backups/crown-v2-operator-overlay-20260905-181210/operator_results.json 2>&1
+          echo "--- 尾 20 行 ---"
+          sudo tail -20 /var/lib/footbreak/backups/crown-v2-operator-overlay-20260905-181210/operator_results.json 2>&1
+          echo "--- Total entries ---"
+          python3 -c "
+          import json
+          d=json.load(open('/var/lib/footbreak/backups/crown-v2-operator-overlay-20260905-181210/operator_results.json'))
+          print(type(d).__name__)
+          if isinstance(d, dict): print('total keys:', len(d))
+          elif isinstance(d, list): print('total items:', len(d))
+          " 2>&1
+          echo
+          echo "===== C. Ledger 隨機 3 場 pending, 攞 match_id / home / away / kickoff ====="
+          sudo /opt/footbreak/.venv/bin/python3 -c "
+          import json
+          from datetime import datetime, timezone, timedelta
+          l=json.load(open('/var/lib/footbreak/crown/ledger.json'))
+          w=l.get('watch',{})
+          HKT=timezone(timedelta(hours=8))
+          now=datetime.now(HKT)
+          count=0
+          for k,v in w.items():
+              if not isinstance(v,dict): continue
+              ko=v.get('kickoff_hkt') or ''
+              try:
+                  dt=datetime.fromisoformat(str(ko).replace('Z','+00:00'))
+                  if dt.tzinfo is None: dt=dt.replace(tzinfo=HKT)
+              except: continue
+              if dt>now: continue
+              stages=v.get('stages') or []
+              if any((s or {}).get('result_status') in {'已核對','不計','void'} for s in stages if isinstance(s,dict)):
+                  continue
+              print('match_id=%s  %s vs %s  ko=%s  hkjc_id=%s  league=%s' % (
+                  k, v.get('home','?'), v.get('away','?'), ko, v.get('hkjc_match_id',''), v.get('league','')))
+              count+=1
+              if count>=5: break
+          " 2>&1
+          REMOTE

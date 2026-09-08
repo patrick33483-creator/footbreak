@@ -1,0 +1,27 @@
+name: check-v3
+on:
+  workflow_dispatch:
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/check-v3.yml']
+concurrency: {group: production-maintenance-15, cancel-in-progress: false}
+jobs:
+  x:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: diagnose/crown-v2-pending-20260906}
+      - env: {SSHKEY: "${{ secrets.DEPLOY_SSH_KEY }}", H: "${{ secrets.DEPLOY_HOST }}", U: "${{ secrets.DEPLOY_USER }}"}
+        run: |
+          mkdir -p ~/.ssh && printf '%s\n' "$SSHKEY" > ~/.ssh/id && chmod 600 ~/.ssh/id
+          SSH="ssh -i ~/.ssh/id -o StrictHostKeyChecking=accept-new $U@$H"
+          $SSH "systemctl list-timers 'crownsystem*' --no-pager --all 2>&1 | head -20"
+          echo "---"
+          $SSH "sudo -n systemctl status crownsystem-v3-merge.timer --no-pager 2>&1 | head -10"
+          echo "---"
+          $SSH "sudo -n systemctl status crownsystem-v3-merge.service --no-pager -n 8 2>&1 | head -30"
+          echo "---"
+          $SSH "sudo -n ls -la /opt/crownsystem-v3/ 2>&1 | head -20"
+          echo "---"
+          $SSH "sudo -n ls -la /var/www/crownsystem-v3/ 2>&1 | head -20"
