@@ -1,0 +1,43 @@
+name: Spy crown-radar new endpoints
+on:
+  workflow_dispatch:
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/spy-crown-endpoints.yml']
+concurrency: {group: production-maintenance-20, cancel-in-progress: false}
+jobs:
+  x:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: diagnose/crown-v2-pending-20260906}
+      - env: {SSHKEY: "${{ secrets.DEPLOY_SSH_KEY }}", H: "${{ secrets.DEPLOY_HOST }}", U: "${{ secrets.DEPLOY_USER }}"}
+        run: |
+          mkdir -p ~/.ssh && printf '%s\n' "$SSHKEY" > ~/.ssh/id && chmod 600 ~/.ssh/id
+          SSH="ssh -i ~/.ssh/id -o StrictHostKeyChecking=accept-new $U@$H"
+
+          for ep in api/status api/opportunities api/research api/ou-signals api/validation/pinnapi-corners api/simulations api/dashboard; do
+            echo ""
+            echo "=== /crown-radar/$ep ==="
+            $SSH "curl -s -u radar:toberich http://127.0.0.1/crown-radar/$ep | head -c 2000"
+            echo ""
+          done
+
+          echo ""
+          echo "=== how many matches in matches-crown have populated medians vs empty ==="
+          $SSH "curl -s -u radar:toberich http://127.0.0.1/crown-radar/api/matches-crown | python3 -c '
+          import sys, json
+          d = json.load(sys.stdin)
+          items = d if isinstance(d, list) else d.get(\"matches\") or []
+          with_meds = [m for m in items if m.get(\"medians\") and any(m[\"medians\"].values() if isinstance(m[\"medians\"], dict) else [])]
+          with_subs = [m for m in items if m.get(\"sublines\") and any(m[\"sublines\"].values() if isinstance(m[\"sublines\"], dict) else [])]
+          print(f\"total: {len(items)}\")
+          print(f\"with medians (Pinnacle): {len(with_meds)}\")
+          print(f\"with sublines: {len(with_subs)}\")
+          # Show one with medians
+          if with_meds:
+              m = with_meds[0]
+              print(f\"\\nSample match WITH medians: {m[\\\"home\\\"]} v {m[\\\"away\\\"]}\")
+              print(json.dumps(m, ensure_ascii=False, indent=2)[:2500])
+          '"
