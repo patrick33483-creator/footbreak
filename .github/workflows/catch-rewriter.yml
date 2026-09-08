@@ -1,0 +1,63 @@
+name: catch nginx rewriter
+on:
+  workflow_dispatch:
+    inputs: {confirm: {description: 'CONFIRM', required: true}}
+  push:
+    branches: [diagnose/crown-v2-pending-20260906]
+    paths: ['.github/workflows/catch-rewriter.yml']
+concurrency: {group: production-maintenance-2, cancel-in-progress: false}
+jobs:
+  x:
+    runs-on: ubuntu-latest
+    env: {CONFIRM_INPUT: "${{ github.event.inputs.confirm || 'CONFIRM' }}"}
+    steps:
+      - if: github.event_name == 'workflow_dispatch'
+        run: test "$CONFIRM_INPUT" = "CONFIRM"
+      - if: github.event_name == 'workflow_dispatch'
+        env: {SSHKEY: "${{ secrets.DEPLOY_SSH_KEY }}", H: "${{ secrets.DEPLOY_HOST }}", U: "${{ secrets.DEPLOY_USER }}"}
+        run: |
+          mkdir -p ~/.ssh && printf '%s\n' "$SSHKEY" > ~/.ssh/id && chmod 600 ~/.ssh/id
+          ssh -i ~/.ssh/id -o StrictHostKeyChecking=accept-new $U@$H bash <<'EOF'
+          set -e
+          SITE=/etc/nginx/sites-enabled/unified-dashboard
+
+          echo "=== inotifywait install ==="
+          which inotifywait || sudo -n apt-get install -y inotify-tools 2>&1 | tail -3
+
+          echo ""
+          echo "=== Snapshot BEFORE ==="
+          sudo -n stat "$SITE" | grep Modify
+          MD_BEFORE=$(sudo -n md5sum "$SITE" | awk '{print $1}')
+          echo "md5=$MD_BEFORE"
+
+          echo ""
+          echo "=== Watch 90 seconds for rewrites ==="
+          # log any write to the site file with pid info
+          (sudo -n inotifywait -m -e modify,close_write,moved_to "$SITE" 2>/dev/null &
+           WPID=$!
+           sleep 90
+           sudo -n kill $WPID 2>/dev/null || true) | head -20 &
+          WATCHER=$!
+
+          # Also poll every 3 sec
+          for i in $(seq 1 30); do
+            sleep 3
+            MD_NOW=$(sudo -n md5sum "$SITE" | awk '{print $1}')
+            if [ "$MD_NOW" != "$MD_BEFORE" ]; then
+              MT=$(sudo -n stat -c %y "$SITE")
+              echo ">>> [$i] CHANGED at $MT  (md5 $MD_BEFORE -> $MD_NOW)"
+              echo ">>> Running processes at this moment:"
+              sudo -n ps auxf | grep -E "nginx|python|merge|deploy|www-data" | grep -v grep | head -15
+              # dump systemd recent
+              echo ">>> Journal last 30s:"
+              sudo -n journalctl --since "30 sec ago" --no-pager 2>&1 | tail -20
+              break
+            fi
+          done
+
+          wait $WATCHER 2>/dev/null || true
+
+          echo ""
+          echo "=== Final state ==="
+          sudo -n grep -n "crownsystem-v3" "$SITE" | head -15
+          EOF
