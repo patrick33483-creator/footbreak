@@ -7,6 +7,10 @@ on:
         description: 'comma-separated sIds (blank = first 5 upcoming)'
         required: false
         default: ''
+      all:
+        description: 'run all fixtures (true/false)'
+        required: false
+        default: 'false'
   push:
     branches: [diagnose/crown-v2-pending-20260906]
     paths: ['.github/workflows/predict-from-crown-radar.yml']
@@ -19,6 +23,7 @@ jobs:
     env:
       CONFIRM_INPUT: "${{ github.event.inputs.confirm || 'CONFIRM' }}"
       SIDS: "${{ github.event.inputs.sids }}"
+      ALL: "${{ github.event.inputs.all }}"
     steps:
       - name: Guard
         run: test "$CONFIRM_INPUT" = "CONFIRM"
@@ -30,50 +35,32 @@ jobs:
         run: |
           mkdir -p ~/.ssh && printf '%s\n' "$SSHKEY" > ~/.ssh/id && chmod 600 ~/.ssh/id
           SSH="ssh -i ~/.ssh/id -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=30 $U@$H"
-          $SSH "SIDS='${SIDS}' bash -s" <<'EOF'
+          $SSH "SIDS='${SIDS}' ALL='${ALL}' bash -s" <<'EOF'
           set +e
           cd /opt/footbreak
           source venv/bin/activate 2>/dev/null || true
           
-          # Discover crown-radar loopback endpoint (usually via nginx :80 → crown-radar :5002)
-          echo "=== 1. Locate crown-radar feed on this host ==="
+          # Discover crown-radar loopback endpoint
           FEED=""
           for u in \
             "http://127.0.0.1/crown-radar/api/matches-crown" \
             "http://127.0.0.1:5002/api/matches-crown" \
             "http://127.0.0.1:5000/api/matches-crown"; do
             code=$(curl -s -u radar:toberich -o /dev/null -w "%{http_code}" --max-time 5 "$u")
-            echo "  $u -> $code"
-            if [[ "$code" == "200" ]]; then FEED="$u"; break; fi
+            [[ "$code" == "200" ]] && FEED="$u" && break
           done
-          if [[ -z "$FEED" ]]; then
-            echo "ERROR: no crown-radar feed reachable from host"
-            exit 1
-          fi
+          [[ -z "$FEED" ]] && echo "ERROR: no feed" && exit 1
           echo "Using feed: $FEED"
           
-          # Locate learning DB
-          echo ""
-          echo "=== 2. Locate learning_db_path ==="
-          DB=""
-          for p in \
-            /opt/footbreak/data/predictions.db \
-            /opt/footbreak/data/crown.db \
-            /opt/footbreak/data/football.db \
-            /opt/footbreak/data/learning.db; do
-            [[ -f "$p" ]] && DB="$p" && echo "  found: $p" && break
-          done
+          # Locate learning DB (best effort)
+          DB=$(find /opt/footbreak/data -maxdepth 3 -name '*.db' 2>/dev/null | xargs -I{} du -b {} 2>/dev/null | sort -rn | head -1 | awk '{print $2}')
+          # If footbreak/data empty, search wider
           if [[ -z "$DB" ]]; then
-            echo "Available .db files under /opt/footbreak/data:"
-            find /opt/footbreak/data -maxdepth 3 -name '*.db' 2>/dev/null | head
-            # Take the largest as default
-            DB=$(find /opt/footbreak/data -maxdepth 3 -name '*.db' 2>/dev/null | xargs -I{} du -b {} | sort -rn | head -1 | awk '{print $2}')
-            echo "  fallback largest: $DB"
+            DB=$(find /opt/footbreak -maxdepth 4 -name '*.db' 2>/dev/null | xargs -I{} du -b {} 2>/dev/null | sort -rn | head -1 | awk '{print $2}')
           fi
+          echo "DB: $DB"
           
-          echo ""
-          echo "=== 3. Run apply_opening_model on selected fixtures ==="
-          FEED_URL="$FEED" DB_PATH="$DB" SIDS_ENV="${SIDS}" python3 - <<'PY'
+          FEED_URL="$FEED" DB_PATH="$DB" SIDS_ENV="${SIDS}" ALL_ENV="${ALL}" python3 - <<'PY'
           import json, os, sys, urllib.request, base64
           from datetime import datetime, timezone
           sys.path.insert(0, "/opt/footbreak")
@@ -82,11 +69,12 @@ jobs:
           feed_url = os.environ["FEED_URL"]
           db_path = os.environ.get("DB_PATH") or None
           sids_filter = [s.strip() for s in os.environ.get("SIDS_ENV","").split(",") if s.strip()]
+          run_all = os.environ.get("ALL_ENV","").lower() in ("1","true","yes")
           
           req = urllib.request.Request(feed_url)
           auth = base64.b64encode(b"radar:toberich").decode()
           req.add_header("Authorization", f"Basic {auth}")
-          data = json.load(urllib.request.urlopen(req, timeout=15))
+          data = json.load(urllib.request.urlopen(req, timeout=30))
           print(f"feed matches: {len(data)}")
           
           now_ms = int(datetime.now(timezone.utc).timestamp()*1000)
@@ -95,16 +83,13 @@ jobs:
           
           if sids_filter:
               picks = [m for m in data if m["sid"] in sids_filter]
-              print(f"filtered by sids: {len(picks)}/{len(sids_filter)}")
+          elif run_all:
+              picks = data
           else:
               picks = future[:5]
-              print(f"first 5 upcoming: {[m['sid'] for m in picks]}")
+          print(f"picks: {len(picks)}")
           
           def build_prices(m):
-              """Map crown-radar snapshots → V2 prices shape.
-              V2 expects market='HDC'|'HIL', selection='H'/'A' for HDC and
-              'H'/'L' for HIL, line=float, source_at=iso.
-              """
               rows = []
               snaps = m.get("snapshots", {})
               ko_ms = m.get("kickoff_utc") or 0
@@ -125,19 +110,14 @@ jobs:
                   source_at = datetime.fromtimestamp((ko_ms + offset*1000)/1000, timezone.utc).isoformat()
                   h_raw = snap.get("h")
                   if h_raw is None: continue
-                  try:
-                      line = float(h_raw)
-                  except (TypeError, ValueError):
-                      continue
+                  try: line = float(h_raw)
+                  except: continue
                   for feed_side, v2_side in side_map.items():
                       odds = snap.get(feed_side)
                       if odds is None: continue
                       rows.append({
-                          "market": code,
-                          "line": line,
-                          "selection": v2_side,
-                          "odds": float(odds),
-                          "source_at": source_at,
+                          "market": code, "line": line, "selection": v2_side,
+                          "odds": float(odds), "source_at": source_at,
                       })
               return rows
           
@@ -147,40 +127,58 @@ jobs:
               ou = snaps.get("initial_OU") or snaps.get("live_OU") or {}
               rows = []
               if ah.get("h") is not None:
-                  rows.append({"code": "HDC", "line": float(ah["h"])})
+                  try: rows.append({"code": "HDC", "line": float(ah["h"])})
+                  except: pass
               if ou.get("h") is not None:
-                  rows.append({"code": "HIL", "line": float(ou["h"])})
+                  try: rows.append({"code": "HIL", "line": float(ou["h"])})
+                  except: pass
               return rows
           
           out = []
-          for m in picks:
-              fixture = {
-                  "id": m["sid"],
-                  "league": m.get("league"),
-                  "home": m.get("home"),
-                  "away": m.get("away"),
-              }
-              prices = build_prices(m)
-              fx_forecasts = build_forecasts(m)
+          for i, m in enumerate(picks):
               try:
+                  fixture = {"id": m["sid"], "league": m.get("league"),
+                             "home": m.get("home"), "away": m.get("away")}
+                  prices = build_prices(m)
+                  fx = build_forecasts(m)
                   forecasts, meta = apply_opening_model(
-                      fixture=fixture,
-                      prices=prices,
-                      forecasts=fx_forecasts,
+                      fixture=fixture, prices=prices, forecasts=fx,
                       learning_db_path=db_path,
                   )
                   out.append({
                       "sid": m["sid"], "home": m["home"], "away": m["away"],
                       "league": m.get("league"),
+                      "kickoff_utc": m.get("kickoff_utc"),
                       "prices_n": len(prices),
                       "forecasts": forecasts,
-                      "meta": meta,
+                      "opening_status": meta.get("opening_model_status"),
                   })
               except Exception as e:
-                  out.append({"sid": m["sid"], "error": str(e), "trace": repr(e)})
+                  out.append({"sid": m.get("sid"), "error": str(e)})
+              if (i+1) % 25 == 0:
+                  print(f"  ...processed {i+1}/{len(picks)}")
           
-          print("=== PREDICTIONS ===")
-          print(json.dumps(out, ensure_ascii=False, indent=2, default=str))
-          print(f"=== model_version: {MODEL_VERSION} ===")
+          out_path = "/tmp/v3_predictions.json"
+          with open(out_path, "w", encoding="utf-8") as f:
+              json.dump({"model_version": MODEL_VERSION, "count": len(out), "predictions": out}, f, ensure_ascii=False, default=str)
+          
+          errs = [o for o in out if o.get("error")]
+          empty = [o for o in out if not o.get("error") and not o.get("forecasts")]
+          ok = len(out) - len(errs) - len(empty)
+          print(f"=== wrote {len(out)} to {out_path} ===")
+          print(f"ok={ok}, empty_forecasts={len(empty)}, errors={len(errs)}")
+          print(f"model_version: {MODEL_VERSION}")
           PY
+          
+          ls -la /tmp/v3_predictions.json
+          wc -c /tmp/v3_predictions.json
           EOF
+          
+          # Pull JSON back
+          scp -i ~/.ssh/id -o StrictHostKeyChecking=accept-new $U@$H:/tmp/v3_predictions.json /tmp/v3_predictions.json
+          ls -la /tmp/v3_predictions.json
+      - name: Upload predictions
+        uses: actions/upload-artifact@v4
+        with:
+          name: v3_predictions
+          path: /tmp/v3_predictions.json
