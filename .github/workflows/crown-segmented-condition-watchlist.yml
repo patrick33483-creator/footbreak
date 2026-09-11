@@ -1,0 +1,108 @@
+name: Crown segmented condition watchlist
+
+# Rolling-30 ROI monitor for weakening V2 segmented conditions.
+# Read-only against production prediction_history.json; sends Telegram alert
+# only when rolling ROI drops below the configured floor (-5%) with at least
+# 20 decided observations in the window.
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: report is silent; notify sends Telegram alert on breach
+        required: true
+        default: report
+        type: choice
+        options: [report, notify]
+  schedule:
+    # 08:00 HKT daily = 00:00 UTC
+    - cron: "0 0 * * *"
+
+concurrency:
+  group: crown-segmented-condition-watchlist
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  watch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: Run rolling watchlist
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          MODE: ${{ inputs.mode || 'notify' }}
+        run: |
+          set -euo pipefail
+          target="$DEPLOY_USER@$DEPLOY_HOST"
+          remote_work="$(
+            ssh -o BatchMode=yes -o ConnectTimeout=20 "$target" \
+              'umask 077; mktemp -d /tmp/crown-condition-watchlist.XXXXXX'
+          )"
+          cleanup_remote() {
+            ssh -o BatchMode=yes -o ConnectTimeout=20 "$target" \
+              "rm -rf -- $(printf '%q' "$remote_work")" >/dev/null 2>&1 || true
+          }
+          trap cleanup_remote EXIT
+
+          # The script imports crown.segmented_conditions — need whole crown/
+          # package on remote. Package is already installed on prod; we scp
+          # only the watchlist script.
+          scp -q -o BatchMode=yes -o ConnectTimeout=20 \
+            analysis/segmented_condition_watchlist.py \
+            "$target:$remote_work/"
+
+          script_sha="$(
+            sha256sum analysis/segmented_condition_watchlist.py |
+              awk '{print $1}'
+          )"
+
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=8 \
+            "$target" \
+            "env MODE='$MODE' \
+              TELEGRAM_BOT_TOKEN='$TELEGRAM_BOT_TOKEN' \
+              TELEGRAM_CHAT_ID='$TELEGRAM_CHAT_ID' \
+              REMOTE_WORK='$remote_work' SCRIPT_SHA='$script_sha' bash -s" \
+            <<'REMOTE' | tee crown-condition-watchlist.json
+          set -euo pipefail
+          cd /opt/footbreak
+          actual="$(sha256sum "$REMOTE_WORK/segmented_condition_watchlist.py" | awk '{print $1}')"
+          if [ "$actual" != "$SCRIPT_SHA" ]; then
+            echo "ERROR: script sha mismatch" >&2
+            exit 1
+          fi
+          PYTHONPATH=/opt/footbreak \
+          TELEGRAM_BOT_TOKEN="$TELEGRAM_BOT_TOKEN" \
+          TELEGRAM_CHAT_ID="$TELEGRAM_CHAT_ID" \
+            python3 "$REMOTE_WORK/segmented_condition_watchlist.py" \
+              --history /opt/footbreak/prediction_history.json \
+              --mode "$MODE" \
+              --out "$REMOTE_WORK/report.json"
+          cat "$REMOTE_WORK/report.json"
+          REMOTE
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: crown-condition-watchlist-${{ github.run_id }}
+          path: crown-condition-watchlist.json
+          retention-days: 30
