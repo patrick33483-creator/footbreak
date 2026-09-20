@@ -1,0 +1,64 @@
+name: Titan read-only network probe
+
+on:
+  push:
+    branches: [diagnostic/titan-readonly-20260920]
+    paths: [.github/workflows/titan-readonly-network-probe.yml]
+
+permissions: {}
+
+concurrency:
+  group: titan-readonly-network-probe
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux, X64, footbreak-audit-hardened]
+    timeout-minutes: 3
+    steps:
+      - name: Four bounded public-page reads without secrets or privileges
+        shell: bash
+        run: |
+          set -eu
+          timeout 100s python3 - <<'PY'
+          import datetime
+          import hashlib
+          import json
+          import re
+          import time
+          import urllib.error
+          import urllib.request
+
+          targets = (
+              ("AH", "https://vip.titan007.com/AsianOdds_n.aspx?id=2997416&l=0"),
+              ("OU", "https://vip.titan007.com/OverDown_n.aspx?id=2997416&l=0"),
+              ("COU", "https://vip.titan007.com/Corner.aspx?id=2997416&l=0"),
+              ("CONTROL", "https://live.titan007.com/"),
+          )
+          for market, url in targets:
+              started = time.monotonic()
+              result = {
+                  "market": market,
+                  "checked_at_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+              }
+              try:
+                  request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+                  with urllib.request.urlopen(request, timeout=12) as response:
+                      raw = response.read(2_000_000)
+                      text = raw.decode("utf-8", errors="replace")
+                      result.update(
+                          status=response.status,
+                          bytes=len(raw),
+                          sha256=hashlib.sha256(raw).hexdigest(),
+                          fixture_id_present="2997416" in text,
+                          table_rows=len(re.findall(r"<tr\b", text, re.I)),
+                          numeric_cells=len(re.findall(r"<td\b[^>]*>\s*\d+\.\d+\s*</td>", text, re.I)),
+                          bookmaker_markers=[x for x in ("澳门", "澳門", "皇冠", "平*", "香港马会", "香港馬會") if x in text],
+                      )
+              except urllib.error.HTTPError as exc:
+                  result.update(error="http_error", status=exc.code)
+              except Exception as exc:
+                  result.update(error=type(exc).__name__, detail=str(exc)[:180])
+              result["elapsed_seconds"] = round(time.monotonic() - started, 2)
+              print(json.dumps(result, ensure_ascii=False), flush=True)
+          PY
