@@ -1,4 +1,4 @@
-name: Aplus reactivation evidence
+name: Authorized Aplus reactivation and directional TG
 on:
   workflow_dispatch:
 permissions:
@@ -18,7 +18,9 @@ jobs:
           printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
-      - name: Read current production evidence
+      - name: Test approved Aplus rules and TG offline
+        run: node analysis/alow_activation_tests.mjs analysis/alow_activation_payload.json
+      - name: Apply approved Aplus reactivation with rollback
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
@@ -26,13 +28,13 @@ jobs:
           set -euo pipefail
           remote="/tmp/alow-reactivate-${GITHUB_RUN_ID}"
           ssh -o BatchMode=yes "$DEPLOY_USER@$DEPLOY_HOST" "mkdir -p '$remote'"
-          scp analysis/alow_n2_evidence.py \
+          scp analysis/activate_alow_v2.py analysis/alow_activation_payload.json analysis/alow_activation_tests.mjs \
             "$DEPLOY_USER@$DEPLOY_HOST:$remote/"
           ssh -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=15 \
-            "$DEPLOY_USER@$DEPLOY_HOST" "sudo python3 '$remote/alow_n2_evidence.py'" \
-            > alow-n2-evidence.json
+            "$DEPLOY_USER@$DEPLOY_HOST" "sudo python3 '$remote/activate_alow_v2.py' '$remote'" \
+            > alow-activation-receipt.json
       - uses: actions/upload-artifact@v4
         with:
-          name: alow-reactivation-evidence
-          path: alow-n2-evidence.json
+          name: alow-activation-receipt
+          path: alow-activation-receipt.json
           retention-days: 3
