@@ -1,4 +1,4 @@
-name: Aplus first natural TG acceptance monitor
+name: Read-only Aplus 1930 match by match audit
 on:
   workflow_dispatch:
 permissions:
@@ -18,29 +18,21 @@ jobs:
           printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
-      - name: Test independent monitor
-        run: python3 -m unittest discover -s analysis -p test_alow_first_tg_watch.py
-      - name: Install read-only Aplus monitor without restarting production
+      - name: Read 1930 fixtures odds and notification evidence
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
         run: |
           set -euo pipefail
-          remote="/tmp/alow-first-tg-${GITHUB_RUN_ID}"
+          remote="/tmp/alow-1930-${GITHUB_RUN_ID}"
           ssh -o BatchMode=yes "$DEPLOY_USER@$DEPLOY_HOST" "mkdir -p '$remote'"
-          scp analysis/install_alow_first_tg_watch.py analysis/alow_first_tg_watch.py analysis/alow_first_tg_runtime.mjs \
+          scp analysis/audit_alow_1930.py \
             "$DEPLOY_USER@$DEPLOY_HOST:$remote/"
           ssh -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=15 \
-            "$DEPLOY_USER@$DEPLOY_HOST" "sudo python3 '$remote/install_alow_first_tg_watch.py'" \
-            > alow-first-tg-receipt.json
-          sleep 40
-          ssh -o BatchMode=yes -o ConnectTimeout=20 "$DEPLOY_USER@$DEPLOY_HOST" \
-            "sudo python3 /opt/crown-radar-v2/ops/alow-first-tg/watch.py --status; sudo systemctl show crown-alow-first-tg-watch.service -p Result -p ExecMainStatus" \
-            > alow-first-tg-postcheck.txt
+            "$DEPLOY_USER@$DEPLOY_HOST" "sudo python3 '$remote/audit_alow_1930.py'" \
+            > alow-1930-audit.json
       - uses: actions/upload-artifact@v4
         with:
-          name: alow-first-tg-receipt
-          path: |
-            alow-first-tg-receipt.json
-            alow-first-tg-postcheck.txt
+          name: alow-1930-audit
+          path: alow-1930-audit.json
           retention-days: 3
