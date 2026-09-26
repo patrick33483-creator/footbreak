@@ -49,7 +49,8 @@ def run(args, **kwargs):
     return subprocess.run(args, check=True, capture_output=True, text=True, timeout=120, **kwargs)
 
 def api(path):
-    with urllib.request.urlopen("http://127.0.0.1:5002" + path, timeout=25) as r:
+    # Same nginx route as the user-facing page; direct backend port requires auth.
+    with urllib.request.urlopen("http://127.0.0.1/crown-radar" + path, timeout=25) as r:
         return json.loads(r.read())
 
 # Validate in production Node runtime BEFORE writes.
