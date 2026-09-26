@@ -1,4 +1,4 @@
-name: Read-only Aplus 1930 match by match audit
+name: Clear Crown TG league selection line and odds
 on:
   workflow_dispatch:
 permissions:
@@ -18,21 +18,23 @@ jobs:
           printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
-      - name: Read 1930 fixtures odds and notification evidence
+      - name: Test clear TG format offline
+        run: node analysis/test_crown_clear_tg.mjs analysis/crown_clear_tg_formatter.js
+      - name: Apply TG presentation only
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
         run: |
           set -euo pipefail
-          remote="/tmp/alow-1930-${GITHUB_RUN_ID}"
+          remote="/tmp/crown-clear-tg-${GITHUB_RUN_ID}"
           ssh -o BatchMode=yes "$DEPLOY_USER@$DEPLOY_HOST" "mkdir -p '$remote'"
-          scp analysis/audit_alow_1930.py \
+          scp analysis/apply_crown_clear_tg.py analysis/crown_clear_tg_formatter.js analysis/test_crown_clear_tg.mjs \
             "$DEPLOY_USER@$DEPLOY_HOST:$remote/"
           ssh -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=15 \
-            "$DEPLOY_USER@$DEPLOY_HOST" "sudo python3 '$remote/audit_alow_1930.py'" \
-            > alow-1930-audit.json
+            "$DEPLOY_USER@$DEPLOY_HOST" "sudo python3 '$remote/apply_crown_clear_tg.py'" \
+            > crown-clear-tg-receipt.json
       - uses: actions/upload-artifact@v4
         with:
-          name: alow-1930-audit
-          path: alow-1930-audit.json
+          name: crown-clear-tg-receipt
+          path: crown-clear-tg-receipt.json
           retention-days: 3
