@@ -1,4 +1,4 @@
-name: Authorized Aplus reactivation and directional TG
+name: Aplus first natural TG acceptance monitor
 on:
   workflow_dispatch:
 permissions:
@@ -18,23 +18,29 @@ jobs:
           printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
-      - name: Test approved Aplus rules and TG offline
-        run: node analysis/alow_activation_tests.mjs analysis/alow_activation_payload.json
-      - name: Apply approved Aplus reactivation with rollback
+      - name: Test independent monitor
+        run: python3 -m unittest discover -s analysis -p test_alow_first_tg_watch.py
+      - name: Install read-only Aplus monitor without restarting production
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
         run: |
           set -euo pipefail
-          remote="/tmp/alow-reactivate-${GITHUB_RUN_ID}"
+          remote="/tmp/alow-first-tg-${GITHUB_RUN_ID}"
           ssh -o BatchMode=yes "$DEPLOY_USER@$DEPLOY_HOST" "mkdir -p '$remote'"
-          scp analysis/activate_alow_v2.py analysis/alow_activation_payload.json analysis/alow_activation_tests.mjs \
+          scp analysis/install_alow_first_tg_watch.py analysis/alow_first_tg_watch.py analysis/alow_first_tg_runtime.mjs \
             "$DEPLOY_USER@$DEPLOY_HOST:$remote/"
           ssh -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=15 \
-            "$DEPLOY_USER@$DEPLOY_HOST" "sudo python3 '$remote/activate_alow_v2.py' '$remote'" \
-            > alow-activation-receipt.json
+            "$DEPLOY_USER@$DEPLOY_HOST" "sudo python3 '$remote/install_alow_first_tg_watch.py'" \
+            > alow-first-tg-receipt.json
+          sleep 40
+          ssh -o BatchMode=yes -o ConnectTimeout=20 "$DEPLOY_USER@$DEPLOY_HOST" \
+            "sudo python3 /opt/crown-radar-v2/ops/alow-first-tg/watch.py --status; sudo systemctl show crown-alow-first-tg-watch.service -p Result -p ExecMainStatus" \
+            > alow-first-tg-postcheck.txt
       - uses: actions/upload-artifact@v4
         with:
-          name: alow-activation-receipt
-          path: alow-activation-receipt.json
+          name: alow-first-tg-receipt
+          path: |
+            alow-first-tg-receipt.json
+            alow-first-tg-postcheck.txt
           retention-days: 3
