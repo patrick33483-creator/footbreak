@@ -3,6 +3,7 @@ import datetime
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import sqlite3
@@ -19,6 +20,16 @@ originals = {name: (base / name).read_bytes() for name in names}
 for name, expected in payload["expected_sha256"].items():
     assert hashlib.sha256(originals[name]).hexdigest() == expected, f"Concurrent change: {name}"
 server = originals["server.js"].decode()
+if "--inspect-auth" in sys.argv:
+    lines = server.splitlines()
+    indexes = set()
+    for i, line in enumerate(lines):
+        if re.search(r"basic|authoriz|AUTH_USER|AUTH_PASS|BASIC_|401",line,re.I):
+            indexes.update(range(max(0,i-3),min(len(lines),i+5)))
+    for i in sorted(indexes):
+        # Code structure and variable names only; no string literals/credentials.
+        print(i+1, re.sub(r"""(["'])(?:(?!\1).)*?\1""", '"[literal]"', lines[i]))
+    sys.exit(0)
 signal_start = server.index("function buildSignalsPayload(")
 signal_end = server.find("\nfunction ", signal_start + 10)
 assert "captured_at" in server[signal_start:signal_end if signal_end > 0 else signal_start+15000], "Signal timestamps missing"

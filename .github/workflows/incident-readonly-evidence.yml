@@ -1,6 +1,13 @@
 name: Authorized N2 08-12 HKT reactivation
 on:
   workflow_dispatch:
+    inputs:
+      mode:
+        description: apply or inspect-auth
+        required: true
+        default: apply
+        type: choice
+        options: [apply, inspect-auth]
 permissions:
   contents: read
 jobs:
@@ -22,14 +29,17 @@ jobs:
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          MODE: ${{ inputs.mode }}
         run: |
           set -euo pipefail
           remote="/tmp/n2-activation-${GITHUB_RUN_ID}"
+          args=""
+          if [ "$MODE" = inspect-auth ]; then args="--inspect-auth"; fi
           ssh -o BatchMode=yes "$DEPLOY_USER@$DEPLOY_HOST" "mkdir -p '$remote'"
           scp analysis/activate_n2_am8.py analysis/n2_activation_tests.mjs analysis/n2_activation_payload.json \
             "$DEPLOY_USER@$DEPLOY_HOST:$remote/"
           ssh -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=15 \
-            "$DEPLOY_USER@$DEPLOY_HOST" "sudo python3 '$remote/activate_n2_am8.py' '$remote'" \
+            "$DEPLOY_USER@$DEPLOY_HOST" "sudo python3 '$remote/activate_n2_am8.py' '$remote' $args" \
             | tee n2-activation-receipt.json
       - uses: actions/upload-artifact@v4
         with:
