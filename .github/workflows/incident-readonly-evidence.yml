@@ -1,4 +1,4 @@
-name: Clear Crown TG league selection line and odds
+name: Prepare authorized 2000 TG resend from original notified fixtures
 on:
   workflow_dispatch:
 permissions:
@@ -18,23 +18,21 @@ jobs:
           printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
-      - name: Test clear TG format offline
-        run: node analysis/test_crown_clear_tg.mjs analysis/crown_clear_tg_formatter.js
-      - name: Apply TG presentation only
+      - name: Read original 2000 notices and reconstruct corrected payloads
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
         run: |
           set -euo pipefail
-          remote="/tmp/crown-clear-tg-${GITHUB_RUN_ID}"
+          remote="/tmp/crown-resend-2000-${GITHUB_RUN_ID}"
           ssh -o BatchMode=yes "$DEPLOY_USER@$DEPLOY_HOST" "mkdir -p '$remote'"
-          scp analysis/apply_crown_clear_tg.py analysis/crown_clear_tg_formatter.js analysis/test_crown_clear_tg.mjs \
+          scp analysis/prepare_2000_resend.py \
             "$DEPLOY_USER@$DEPLOY_HOST:$remote/"
           ssh -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=15 \
-            "$DEPLOY_USER@$DEPLOY_HOST" "sudo python3 '$remote/apply_crown_clear_tg.py'" \
-            > crown-clear-tg-receipt.json
+            "$DEPLOY_USER@$DEPLOY_HOST" "sudo python3 '$remote/prepare_2000_resend.py'" \
+            > crown-2000-resend-prepared.json
       - uses: actions/upload-artifact@v4
         with:
-          name: crown-clear-tg-receipt
-          path: crown-clear-tg-receipt.json
+          name: crown-2000-resend-prepared
+          path: crown-2000-resend-prepared.json
           retention-days: 3
