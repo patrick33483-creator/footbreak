@@ -43,6 +43,24 @@ out["runtime"]["timers"] = run(["systemctl","list-timers","--all","--no-pager"])
 out["runtime"]["docker"] = run(["docker","ps","--format","{{.Names}} {{.Status}}"])
 out["runtime"]["crown_logs"] = run(["docker","logs","--since","45m","--tail","240","crown-radar-v2"])
 out["databases"] = {}
+for f in Path("/usr/local/bin").iterdir():
+    if any(t in f.name.lower() for t in ["u1", "ce-", "ogb", "strategy", "b_policy"]):
+        if f.suffix in [".py", ".js", ".sh"]:
+            collect(f)
+for f in Path("/opt/crownsystem-v4").glob("*.py"):
+    collect(f)
+for f in Path("/etc").glob("*policy.json"):
+    if any(t in f.name for t in ["crown", "u1", "ce", "b-"]):
+        collect(f)
+for name in ["u1-notify","ce-notify","ogb-fires-builder","strategy-merged-builder","crownsystem-v3-merge"]:
+    out["runtime"][name] = run(["systemctl","show",name+".service","--no-pager","-p","ExecStart","-p","Result","-p","ExecMainStatus"])
+cp = Path("/var/lib/crownsystem-v4/checkpoints.json")
+if cp.is_file():
+    data = json.loads(cp.read_text())
+    out["checkpoint_shape"] = {"type": type(data).__name__, "length": len(data), "keys": list(data)[:12]}
+    out["checkpoints"] = data
+for name in ["u1-notify","ce-notify","crownsystem-v3-merge"]:
+    out["runtime"][name+"_logs"] = run(["journalctl","-u",name+".service","--since","90 minutes ago","-n","100","--no-pager"])
 p = Path("/opt/crown-radar-v2/data/crown.db")
 if p.is_file():
     db = sqlite3.connect(f"file:{p}?mode=ro",uri=True,timeout=10)
