@@ -13,6 +13,23 @@ for root in [Path("/opt/crown-radar-v2/ops"),Path("/opt/footbreak/ops")]:
                 except Exception:pass
 # Probe sports app DB schemas, not environment/config/keys.
 out["opt_dirs"]=[p.name for p in Path("/opt").iterdir() if p.is_dir()]
+out["other_app_files"]={}
+out["json_notifications"]={}
+for root in [Path("/opt/crownsystem-v3"),Path("/opt/crownsystem-v4"),Path("/opt/crown-v3"),Path("/var/lib/footbreak")]:
+    if not root.exists():continue
+    files=run(["rg","--files","--hidden","-g","!node_modules","-g","!.git","-g","!backups","-g","!venv","-g","!.venv",str(root)]).splitlines()
+    out["other_app_files"][str(root)]=[f for f in files if any(f.endswith(s) for s in [".json",".sqlite",".sqlite3",".db",".py",".js"])]
+    for f in files:
+        p=Path(f)
+        if p.suffix==".json" and any(x in p.name.lower() for x in ["notif","telegram","outbox"]):
+            try:
+                j=json.loads(p.read_text())
+                if isinstance(j,list):j=j[-20:]
+                elif isinstance(j,dict):
+                    j={k:(v[-20:] if isinstance(v,list) else dict(list(v.items())[-20:]) if isinstance(v,dict) else v)
+                        for k,v in j.items() if not any(s in k.lower() for s in ["token","secret","password","api_key"])}
+                out["json_notifications"][f]=j
+            except Exception:pass
 paths=[]
 for root in Path("/opt").iterdir():
     if root.is_dir() and any(x in root.name for x in ["crown","foot","radar"]):
