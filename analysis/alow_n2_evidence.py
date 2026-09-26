@@ -20,6 +20,11 @@ out["server_relevant_lines"] = [
     if any(k in line for k in ("strategy-2plus-overlap", "four-channels-live", "ch-Alow", "ch-N2", "heavy_notified_rule", "matchAll("))
 ]
 out["server_strategy_sections"] = []
+out["notification_code"] = "\n".join(lines[1400:1780])
+import subprocess
+probe = subprocess.run(["docker", "inspect", "--format", "{{json .Mounts}}", "crown-radar-v2"],capture_output=True,text=True,timeout=15)
+out["mounts"] = json.loads(probe.stdout) if probe.returncode==0 else []
+out["container_state"] = subprocess.run(["docker", "inspect", "--format", "{{.State.Status}} {{.State.StartedAt}}", "crown-radar-v2"],capture_output=True,text=True,timeout=15).stdout
 for i, line in enumerate(lines):
     if 'if (url.pathname ===' in line and any(k in line for k in ("strategy-2plus-overlap", "four-channels-live")):
         end = next((j for j in range(i+1, len(lines)) if lines[j].startswith('    if (url.pathname')), min(i+650, len(lines)))
