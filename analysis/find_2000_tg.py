@@ -1,5 +1,5 @@
 """Locate recent sports notification records. Never output credentials or send."""
-import json,sqlite3,subprocess,re
+import json,sqlite3,subprocess,re,os
 from pathlib import Path
 def run(a):
     p=subprocess.run(a,capture_output=True,text=True,timeout=60)
@@ -17,7 +17,10 @@ out["other_app_files"]={}
 out["json_notifications"]={}
 for root in [Path("/opt/crownsystem-v3"),Path("/opt/crownsystem-v4"),Path("/opt/crown-v3"),Path("/var/lib/footbreak")]:
     if not root.exists():continue
-    files=run(["rg","--files","--hidden","-g","!node_modules","-g","!.git","-g","!backups","-g","!venv","-g","!.venv",str(root)]).splitlines()
+    files=[]
+    for base,dirs,names in os.walk(root):
+        dirs[:]=[d for d in dirs if d not in {"node_modules",".git","backups","venv",".venv","__pycache__"}]
+        files.extend(str(Path(base)/n) for n in names)
     out["other_app_files"][str(root)]=[f for f in files if any(f.endswith(s) for s in [".json",".sqlite",".sqlite3",".db",".py",".js"])]
     for f in files:
         p=Path(f)
