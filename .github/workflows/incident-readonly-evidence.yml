@@ -1,13 +1,6 @@
-name: Authorized N2 08-12 HKT reactivation
+name: Authorized first natural N2 Telegram observer
 on:
   workflow_dispatch:
-    inputs:
-      mode:
-        description: apply or inspect-auth
-        required: true
-        default: apply
-        type: choice
-        options: [apply, inspect-auth]
 permissions:
   contents: read
 jobs:
@@ -25,24 +18,23 @@ jobs:
           printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
-      - name: Apply user-approved N2 version with backup and verification
+      - name: Test isolated observer
+        run: python3 -m unittest discover -s analysis -p test_n2_first_tg_watch.py
+      - name: Install isolated observer without restarting production
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
-          MODE: ${{ inputs.mode }}
         run: |
           set -euo pipefail
-          remote="/tmp/n2-activation-${GITHUB_RUN_ID}"
-          args=""
-          if [ "$MODE" = inspect-auth ]; then args="--inspect-auth"; fi
+          remote="/tmp/n2-first-tg-${GITHUB_RUN_ID}"
           ssh -o BatchMode=yes "$DEPLOY_USER@$DEPLOY_HOST" "mkdir -p '$remote'"
-          scp analysis/activate_n2_am8.py analysis/n2_activation_tests.mjs analysis/n2_activation_payload.json \
+          scp analysis/install_n2_first_tg_watch.py analysis/n2_first_tg_watch.py analysis/n2_first_tg_runtime.mjs \
             "$DEPLOY_USER@$DEPLOY_HOST:$remote/"
           ssh -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=15 \
-            "$DEPLOY_USER@$DEPLOY_HOST" "sudo python3 '$remote/activate_n2_am8.py' '$remote' $args" \
-            | tee n2-activation-receipt.json
+            "$DEPLOY_USER@$DEPLOY_HOST" "sudo python3 '$remote/install_n2_first_tg_watch.py' '$remote'" \
+            | tee n2-first-tg-receipt.json
       - uses: actions/upload-artifact@v4
         with:
-          name: n2-activation-receipt
-          path: n2-activation-receipt.json
+          name: n2-first-tg-receipt
+          path: n2-first-tg-receipt.json
           retention-days: 3
