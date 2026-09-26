@@ -21,8 +21,8 @@ out["server_relevant_lines"] = [
 ]
 out["server_strategy_sections"] = []
 for i, line in enumerate(lines):
-    if 'app.get(' in line and any(k in line for k in ("strategy-2plus-overlap", "four-channels-live")):
-        end = next((j for j in range(i+1, len(lines)) if lines[j].startswith("app.")), min(i+650, len(lines)))
+    if 'if (url.pathname ===' in line and any(k in line for k in ("strategy-2plus-overlap", "four-channels-live")):
+        end = next((j for j in range(i+1, len(lines)) if lines[j].startswith('    if (url.pathname')), min(i+650, len(lines)))
         out["server_strategy_sections"].append({"start": i+1, "code": "\n".join(lines[i:end])})
 paths = sorted(set(base.glob("*.db")) | set(base.glob("data/*.db")) | set(base.glob("data/*.sqlite")))
 allowed = {"matches", "crown_snapshots", "odds_snapshots", "finished_matches", "heavy_notified_rule"}
