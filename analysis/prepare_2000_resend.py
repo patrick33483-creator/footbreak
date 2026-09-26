@@ -54,7 +54,7 @@ console.log(JSON.stringify(matches.map(m=>{
  return {sid:m.sid,league:m.league,home:m.home,away:m.away,kickoff_utc:m.kickoff_utc,
    notices:m.notices,selections:sentRules.map(r=>({id:r.id,side:r.match.pick,line:r.match.t5Line,odds:r.match.t5Dec})),
    missing_rule_replay:missing,text};
-}))));
+})));
 """
 p=subprocess.run(["docker","exec","-i","crown-radar-v2","node","--input-type=module","-e",node],
     input=json.dumps(matches,ensure_ascii=False),capture_output=True,text=True,check=True,timeout=90)
