@@ -1,8 +1,11 @@
 """Read-only exact recent V3 notification evidence. No network sends."""
-import json,re,hashlib
+import json,re,hashlib,subprocess
 from pathlib import Path
 out={"code":{},"json":{}}
-for name in ["/usr/local/bin/crown-goldpool-notify.py","/usr/local/bin/crown-u1-notify.py","/opt/crownsystem-v3/heavy_watch.py"]:
+names=["/usr/local/bin/crown-goldpool-notify.py","/usr/local/bin/crown-u1-notify.py","/opt/crownsystem-v3/heavy_watch.py"]
+names += [str(p) for p in Path("/usr/local/bin").glob("*") if p.suffix==".py" and ("u1" in p.name.lower() or "ce-notif" in p.name.lower())]
+out["units"]=subprocess.run(["systemctl","list-timers","--all","--no-pager"],capture_output=True,text=True).stdout
+for name in sorted(set(names)):
     p=Path(name)
     if p.exists():
         s=p.read_text()
