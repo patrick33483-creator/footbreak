@@ -1,4 +1,4 @@
-name: Prepare authorized 2000 TG resend from original notified fixtures
+name: Verify notification display deployment
 on:
   workflow_dispatch:
 permissions:
@@ -18,7 +18,7 @@ jobs:
           printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
-      - name: Read original 2000 notices and reconstruct corrected payloads
+      - name: Verify notification code and automatic service health
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
@@ -26,10 +26,10 @@ jobs:
           set -euo pipefail
           remote="/tmp/crown-resend-2000-${GITHUB_RUN_ID}"
           ssh -o BatchMode=yes "$DEPLOY_USER@$DEPLOY_HOST" "mkdir -p '$remote'"
-          scp analysis/apply_v3_tg_display.py analysis/crown_notification_display.py \
+          scp analysis/check_v3_tg_display.py \
             "$DEPLOY_USER@$DEPLOY_HOST:$remote/"
           ssh -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=15 \
-            "$DEPLOY_USER@$DEPLOY_HOST" "sudo python3 '$remote/apply_v3_tg_display.py'" \
+            "$DEPLOY_USER@$DEPLOY_HOST" "sudo python3 '$remote/check_v3_tg_display.py'" \
             > crown-2000-resend-prepared.json
       - uses: actions/upload-artifact@v4
         with:
