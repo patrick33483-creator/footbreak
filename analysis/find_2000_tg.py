@@ -5,6 +5,44 @@ def run(a):
     p=subprocess.run(a,capture_output=True,text=True,timeout=60)
     return p.stdout if p.returncode==0 else ""
 out={"containers":run(["docker","ps","--format","{{.Names}} {{.Image}}"]),"ops_states":{},"db_schemas":{}}
+out["heavy_paths"]=[]
+p=Path("/opt/crownsystem-v3/heavy_watch.py")
+if p.exists():
+    for n,line in enumerate(p.read_text().splitlines(),1):
+        if any(s in line for s in [".db", ".json", "Path(", "def ", "SELECT ", "FROM ", "sqlite3.connect"]):
+            if not any(s in line.lower() for s in ["token","secret","password","api_key"]):
+                out["heavy_paths"].append([n,line])
+out["sports_web_files"]=[]
+for root in [Path("/var/www/crownsystem-v3"),Path("/var/www/crownsystem-v4")]:
+    if root.exists():
+        for base,dirs,names in os.walk(root):
+            dirs[:]=[d for d in dirs if d not in {"node_modules",".git","backups","venv",".venv","__pycache__"}]
+            out["sports_web_files"].extend(str(Path(base)/n) for n in names if n.endswith((".db",".json")))
+out["heavy_data"]={}
+if p.exists():
+    candidates=re.findall(r"""['"](/[^'"\n]+\.(?:db|json))['"]""",p.read_text())
+    candidates+=out["sports_web_files"]
+    for f in sorted(set(candidates)):
+        q=Path(f)
+        if not q.exists() or any(s in q.name.lower() for s in ["config","secret","token"]):continue
+        if q.suffix==".json":
+            try:
+                j=json.loads(q.read_text())
+                if isinstance(j,list):j=j[-35:]
+                elif isinstance(j,dict):
+                    j={k:v[-35:] if isinstance(v,list) else dict(list(v.items())[-35:]) if isinstance(v,dict) else v for k,v in j.items()}
+                out["heavy_data"][f]=j
+            except Exception:pass
+        else:
+            try:
+                c=sqlite3.connect(f"file:{f}?mode=ro",uri=True);c.row_factory=sqlite3.Row
+                tables=[r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'")]
+                out["heavy_data"][f]={"tables":tables,"rows":{}}
+                for name in tables:
+                    if any(s in name.lower() for s in ["notif","sent","heavy"]) and name.replace("_","").isalnum():
+                        out["heavy_data"][f]["rows"][name]=[dict(r) for r in c.execute(f'SELECT * FROM "{name}" ORDER BY rowid DESC LIMIT 25')]
+                c.close()
+            except Exception:pass
 for root in [Path("/opt/crown-radar-v2/ops"),Path("/opt/footbreak/ops")]:
     if root.exists():
         for p in root.glob("*/state.json"):
