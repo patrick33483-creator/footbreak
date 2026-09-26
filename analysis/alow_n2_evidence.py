@@ -13,8 +13,19 @@ for name in ("rule_matcher.js", "rules_stats.js", "data/rules.json", "public/str
         content = p.read_text()
         out["files"][name] = {"content": content, "sha256": hashlib.sha256(content.encode()).hexdigest()}
 out["top_level_names"] = [p.name for p in base.iterdir()]
+lines = (base / "server.js").read_text().splitlines()
+out["server_relevant_lines"] = [
+    {"line": i+1, "text": line}
+    for i, line in enumerate(lines)
+    if any(k in line for k in ("strategy-2plus-overlap", "four-channels-live", "ch-Alow", "ch-N2", "heavy_notified_rule", "matchAll("))
+]
+out["server_strategy_sections"] = []
+for i, line in enumerate(lines):
+    if 'app.get(' in line and any(k in line for k in ("strategy-2plus-overlap", "four-channels-live")):
+        end = next((j for j in range(i+1, len(lines)) if lines[j].startswith("app.")), min(i+650, len(lines)))
+        out["server_strategy_sections"].append({"start": i+1, "code": "\n".join(lines[i:end])})
 paths = sorted(set(base.glob("*.db")) | set(base.glob("data/*.db")) | set(base.glob("data/*.sqlite")))
-allowed = {"matches", "crown_snapshots", "odds_snapshots", "rule_notifications", "strategy_notifications", "notifications", "notification_log", "notification_ledger"}
+allowed = {"matches", "crown_snapshots", "odds_snapshots", "finished_matches", "heavy_notified_rule"}
 for p in paths:
     db = sqlite3.connect(f"file:{p}?mode=ro", uri=True, timeout=10)
     db.row_factory = sqlite3.Row
