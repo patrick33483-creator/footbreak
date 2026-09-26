@@ -1,4 +1,4 @@
-name: Authorized Aplus two-band forward observer
+name: Aplus reactivation evidence
 on:
   workflow_dispatch:
 permissions:
@@ -18,29 +18,21 @@ jobs:
           printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
-      - name: Test isolated observer
-        run: python3 -m unittest discover -s analysis -p test_alow_forward.py
-      - name: Install isolated observer without restarting production
+      - name: Read current production evidence
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
         run: |
           set -euo pipefail
-          remote="/tmp/alow-forward-${GITHUB_RUN_ID}"
+          remote="/tmp/alow-reactivate-${GITHUB_RUN_ID}"
           ssh -o BatchMode=yes "$DEPLOY_USER@$DEPLOY_HOST" "mkdir -p '$remote'"
-          scp analysis/install_alow_forward.py analysis/alow_forward.py analysis/test_alow_forward.py \
+          scp analysis/alow_n2_evidence.py \
             "$DEPLOY_USER@$DEPLOY_HOST:$remote/"
           ssh -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=15 \
-            "$DEPLOY_USER@$DEPLOY_HOST" "sudo python3 '$remote/install_alow_forward.py'" \
-            | tee alow-forward-receipt.json
-          sleep 40
-          ssh -o BatchMode=yes -o ConnectTimeout=20 "$DEPLOY_USER@$DEPLOY_HOST" \
-            "sudo python3 /opt/crown-radar-v2/ops/alow-forward-v1/alow_forward.py --status; sudo systemctl show crown-alow-forward-v1.service -p Result -p ExecMainStatus; sudo systemctl is-active crown-alow-forward-v1.timer" \
-            | tee alow-forward-postcheck.txt
+            "$DEPLOY_USER@$DEPLOY_HOST" "sudo python3 '$remote/alow_n2_evidence.py'" \
+            > alow-n2-evidence.json
       - uses: actions/upload-artifact@v4
         with:
-          name: alow-forward-receipt
-          path: |
-            alow-forward-receipt.json
-            alow-forward-postcheck.txt
+          name: alow-reactivation-evidence
+          path: alow-n2-evidence.json
           retention-days: 3
