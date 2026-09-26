@@ -59,10 +59,19 @@ new_files = {
 def run(args, **kwargs):
     return subprocess.run(args, check=True, capture_output=True, text=True, timeout=120, **kwargs)
 
-def api(path):
-    # Same nginx route as the user-facing page; direct backend port requires auth.
-    with urllib.request.urlopen("http://127.0.0.1/crown-radar" + path, timeout=25) as r:
-        return json.loads(r.read())
+def api(path, as_json=True):
+    # Reuse existing app credentials only inside its container. Never export/log them.
+    code = """
+    const fs=require('fs'),vm=require('vm');
+    const s=fs.readFileSync('/app/server.js','utf8');
+    const read=n=>vm.runInNewContext(s.match(new RegExp('^const '+n+' = .+$','m'))[0]+'\\n'+n,{process});
+    const headers={authorization:'Basic '+Buffer.from(read('AUTH_USER')+':'+read('AUTH_PASSWORD')).toString('base64')};
+    fetch('http://127.0.0.1:5000'+process.argv[1],{headers,signal:AbortSignal.timeout(25000)})
+      .then(async r=>{if(!r.ok)throw new Error('HTTP '+r.status);process.stdout.write(await r.text());})
+      .catch(e=>{console.error(e.message);process.exit(1);});
+    """
+    text = run(["docker","exec","crown-radar-v2","node","-e",code,path]).stdout
+    return json.loads(text) if as_json else text
 
 # Validate in production Node runtime BEFORE writes.
 run(["docker", "cp", str(bundle), "crown-radar-v2:/tmp/n2-authorized-activation"])
@@ -114,6 +123,7 @@ try:
       ".map(n=>[n,crypto.createHash('sha256').update(fs.readFileSync('/app/'+n)).digest('hex')]))));"])
     actual = json.loads(check.stdout)
     assert actual == {k:hashlib.sha256(v).hexdigest() for k,v in new_files.items()}, "Container stale file"
+    assert api("/strategy.html",False) == payload["html"], "Served strategy page differs"
     notice_db = sqlite3.connect(f"file:{base}/data/crown.db?mode=ro",uri=True)
     assert notice_db.execute("SELECT sid,rule_id,notified_at FROM heavy_notified_rule WHERE rule_id IN ('ch-N2','ch-Alow') ORDER BY sid,rule_id").fetchall() == old_ledger, "Legacy notification ledger changed"
     ledger = notice_db.execute("SELECT COUNT(*) FROM heavy_notified_rule WHERE rule_id='ch-N2'").fetchone()[0]
