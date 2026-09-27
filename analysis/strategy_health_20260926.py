@@ -80,7 +80,7 @@ if p.is_file():
     db.execute("PRAGMA query_only=ON")
     db.execute("BEGIN")
     out["database_schema"] = [dict(r) for r in db.execute("SELECT name,sql FROM sqlite_master WHERE type='table'")]
-    for table in ["matches","odds_snapshots","crown_snapshots","finished_matches","heavy_notified_rule"]:
+    for table in ["matches","odds_snapshots","crown_snapshots","finished_matches","heavy_notified_rule","heavy_notified","alow_notification_receipts"]:
         out["databases"][table] = [dict(r) for r in db.execute('SELECT * FROM "'+table+'"')]
     db.rollback()
     db.close()
