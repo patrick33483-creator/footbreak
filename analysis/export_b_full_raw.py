@@ -9,7 +9,7 @@ for name in ["results","matches","ogb_fires","u1_fires","strategy_merged","b_raw
     out["pages"][name]={"sha256":hashlib.sha256(raw).hexdigest(),"data":json.loads(raw)}
 codepaths=["/usr/local/bin/crown-goldpool-notify.py","/usr/local/bin/ogb_drop_policy.py",
            "/usr/local/bin/u1-notify.py","/usr/local/bin/u1_drop_policy.py",
-           "/usr/local/bin/ogb_ahshift_policy.py"]
+           "/usr/local/bin/ogb_ahshift_policy.py","/usr/local/bin/ce_policy.py"]
 keep={"ou_side","_is_a_category","b_raw_snapshot","_b_base","is_b_notify_candidate","check_OG_B",
       "parse_ah","_og_base","crown_ou_snap","main","is_notify_candidate",
       "check_u1","snap","is_a_category","check_B_AHSHIFT","crown_ah_raw_snapshot","notify_B_AHSHIFT"}
@@ -17,7 +17,7 @@ for name in codepaths:
     p=Path(name);raw=p.read_bytes();text=raw.decode()
     if p.name in ("crown-goldpool-notify.py","u1-notify.py"):
         tree=ast.parse(text)
-        funcs={n.name:ast.get_source_segment(text,n) for n in tree.body if isinstance(n,ast.FunctionDef) and n.name in keep}
+        funcs={n.name:ast.get_source_segment(text,n) for n in tree.body if isinstance(n,ast.FunctionDef)}
         constants={}
         for n in tree.body:
             if isinstance(n,ast.Assign) and len(n.targets)==1 and isinstance(n.targets[0],ast.Name) and n.targets[0].id in {"MIN_ODDS_DEC","CUTOFF_MS","B_RAW_READER_VERSION"}:
@@ -28,6 +28,9 @@ p=Path("/var/lib/crown-goldpool-notify/b_drop_policy.json")
 out["policy"]=json.loads(p.read_text())
 out["notified"]=json.loads(Path("/var/lib/crown-goldpool-notify/state.json").read_text())
 out["b_policy_files"]={str(p):json.loads(p.read_text()) for p in Path("/var/lib/crown-goldpool-notify").glob("*policy*.json")}
+out["ce_config"]=json.loads(Path("/etc/crown-ce-policy.json").read_text())
+out["runtime_file_names"]=[str(p) for p in Path("/usr/local/bin").glob("*") if any(s in p.name.lower() for s in ("strategy","merge","ce-","ce_","ogb","u1"))]
+out["page_file_names"]=[p.name for p in Path("/var/www/crownsystem-v3").glob("*.json")]
 out["u1_policy"]=json.loads(Path("/var/lib/u1-notify/drop_policy.json").read_text()) if Path("/var/lib/u1-notify/drop_policy.json").exists() else None
 out["u1_notified"]=json.loads(Path("/var/lib/u1-notify/state.json").read_text())
 out["u1_policy_files"]={str(p):json.loads(p.read_text()) for p in Path("/var/lib/u1-notify").glob("*policy*.json")}
