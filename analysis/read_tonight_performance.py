@@ -1,9 +1,18 @@
 """Read-only notified selections and stored results, never send or mutate."""
-import json,sqlite3
+import json,sqlite3,hashlib,ast
 from pathlib import Path
 from datetime import datetime,timezone
 DAY=1790352000000  # 2026-09-26 00:00 HKT
 out={"asof_utc":datetime.now(timezone.utc).isoformat(),"v3_states":{},"v3_pages":{}}
+out["code_audit"]={}
+for name in ["crown-goldpool-notify.py","u1-notify.py","ogb_drop_policy.py","u1_drop_policy.py","ogb_ahshift_policy.py"]:
+    p=Path("/usr/local/bin")/name
+    if not p.exists():continue
+    text=p.read_text()
+    nodes=ast.parse(text).body
+    funcs={n.name:ast.get_source_segment(text,n) for n in nodes if isinstance(n,ast.FunctionDef) and (
+        n.name.startswith("check_") or n.name in ["_b_base","b_raw_snapshot","evaluate","evaluate_b_drop","is_b_notify_candidate"])}
+    out["code_audit"][name]={"sha256":hashlib.sha256(p.read_bytes()).hexdigest(),"functions":funcs}
 sids=set()
 for name in ["crown-goldpool-notify","u1-notify","ce-notify"]:
     p=Path("/var/lib")/name/"state.json"
@@ -25,10 +34,12 @@ sids.update(str(r["sid"]) for r in out["radar_notices"])
 out["alow_receipts"]=[dict(r) for r in db.execute("SELECT * FROM alow_notification_receipts WHERE notified_at>=?",(DAY,))]
 out["tables"]=[dict(r) for r in db.execute("SELECT name,sql FROM sqlite_master WHERE type='table' AND (name LIKE '%result%' OR name='matches')")]
 out["source_matches"]={}
+out["crown_snapshots"]={}
 out["other_results"]={}
 for sid in sorted(sids):
     r=db.execute("SELECT * FROM matches WHERE sid=?",(sid,)).fetchone()
     out["source_matches"][sid]=dict(r) if r else None
+    out["crown_snapshots"][sid]=[dict(r) for r in db.execute("SELECT * FROM crown_snapshots WHERE sid=?",(sid,))]
 for t in out["tables"]:
     name=t["name"]
     if "result" not in name or not name.replace("_","").isalnum():continue
