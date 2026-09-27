@@ -52,6 +52,18 @@ for f in Path("/opt/crownsystem-v4").glob("*.py"):
 for f in Path("/etc").glob("*policy.json"):
     if any(t in f.name for t in ["crown", "u1", "ce", "b-"]):
         collect(f)
+for root in ["/var/lib/u1-notify", "/var/lib/ce-notify"]:
+    p = Path(root)
+    if p.is_dir():
+        out["listings"][root] = [v.name for v in p.iterdir()]
+        for name in ["state.json", "audit.json", "fires.json"]:
+            collect(p/name)
+for name in ["crown-goldpool-notify", "u1-notify", "ce-notify"]:
+    out["runtime"][name+"_overnight_logs"] = run([
+        "journalctl", "-u", name+".service",
+        "--since", "2026-09-26 18:00:00", "--no-pager",
+        "--grep", "sent [1-9]|failed|ERROR|error|2951580"
+    ])
 for name in ["u1-notify","ce-notify","ogb-fires-builder","strategy-merged-builder","crownsystem-v3-merge"]:
     out["runtime"][name] = run(["systemctl","show",name+".service","--no-pager","-p","ExecStart","-p","Result","-p","ExecMainStatus"])
 cp = Path("/var/lib/crownsystem-v4/checkpoints.json")
@@ -67,6 +79,7 @@ if p.is_file():
     db.row_factory = sqlite3.Row
     db.execute("PRAGMA query_only=ON")
     db.execute("BEGIN")
+    out["database_schema"] = [dict(r) for r in db.execute("SELECT name,sql FROM sqlite_master WHERE type='table'")]
     for table in ["matches","odds_snapshots","crown_snapshots","finished_matches","heavy_notified_rule"]:
         out["databases"][table] = [dict(r) for r in db.execute('SELECT * FROM "'+table+'"')]
     db.rollback()
