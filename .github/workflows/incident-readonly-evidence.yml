@@ -1,4 +1,4 @@
-name: Read tonight notified performance
+name: Export full history for exact B raw reader replay
 on:
   workflow_dispatch:
 permissions:
@@ -18,7 +18,7 @@ jobs:
           printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
-      - name: Read notified selections and saved results only
+      - name: Read full model archive and raw snapshot evidence
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
@@ -26,10 +26,10 @@ jobs:
           set -euo pipefail
           remote="/tmp/crown-resend-2000-${GITHUB_RUN_ID}"
           ssh -o BatchMode=yes "$DEPLOY_USER@$DEPLOY_HOST" "mkdir -p '$remote'"
-          scp analysis/read_tonight_performance.py \
+          scp analysis/export_b_full_raw.py \
             "$DEPLOY_USER@$DEPLOY_HOST:$remote/"
           ssh -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=15 \
-            "$DEPLOY_USER@$DEPLOY_HOST" "sudo python3 '$remote/read_tonight_performance.py'" \
+            "$DEPLOY_USER@$DEPLOY_HOST" "sudo python3 '$remote/export_b_full_raw.py'" \
             > crown-2000-resend-prepared.json
       - uses: actions/upload-artifact@v4
         with:
