@@ -3,6 +3,7 @@ import collections
 import datetime
 import importlib.util
 import json
+import re
 from pathlib import Path
 import sqlite3
 import subprocess
@@ -15,6 +16,33 @@ def connect(path):
     db.execute("PRAGMA query_only=ON")
     db.execute("BEGIN")
     return db
+
+
+def inspect_hkjc():
+    paths = [Path("/opt/crown-radar-v2/server.js")]
+    paths += list(Path("/usr/local/bin").glob("*notify*.py"))
+    paths += list(Path("/opt").glob("*/*telegram*.py"))
+    paths += list(Path("/opt").glob("*/*notify*.py"))
+    excerpts = {}
+    for path in paths:
+        if not path.is_file():
+            continue
+        lines = path.read_text(errors="replace").splitlines()
+        hits = set()
+        for i, line in enumerate(lines):
+            if re.search(r"notifyRPin|r_pin2|HKJC|馬會|hkjc|TELEGRAM_ENABLED", line):
+                hits.update(range(max(0, i-3), min(len(lines), i+7)))
+        excerpts[str(path)] = [
+            f"{i+1}: {lines[i]}" for i in sorted(hits)
+            if not re.search(r"token|secret|password|api.key", lines[i], re.I)
+        ][:240]
+    units = subprocess.run(
+        ["systemctl", "list-timers", "--all", "--no-pager"],
+        capture_output=True, text=True, timeout=20,
+    ).stdout
+    return {"summary": {"action": "inspect_hkjc_notifications"},
+            "excerpts": excerpts, "timers": units,
+            "opt_dirs": [p.name for p in Path("/opt").iterdir() if p.is_dir()]}
 
 
 def audit():

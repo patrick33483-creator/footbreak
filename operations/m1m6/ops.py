@@ -93,6 +93,9 @@ def main():
     elif action=="audit":
         from audit import audit
         result=audit()
+    elif action=="inspect_hkjc":
+        from audit import inspect_hkjc
+        result=inspect_hkjc()
     else:
         raise ValueError("Unknown action")
     print(json.dumps(result,ensure_ascii=False))
