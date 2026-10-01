@@ -20,6 +20,8 @@ def connect(path):
 
 def inspect_hkjc():
     paths = [Path("/opt/crown-radar-v2/server.js")]
+    paths += [Path("/opt/odds-radar/server.js"), Path("/opt/footbreak/v2/telegram.py"),
+              Path("/opt/footbreak/v2/config.py")]
     paths += list(Path("/usr/local/bin").glob("*notify*.py"))
     paths += list(Path("/opt").glob("*/*telegram*.py"))
     paths += list(Path("/opt").glob("*/*notify*.py"))
@@ -32,6 +34,12 @@ def inspect_hkjc():
         for i, line in enumerate(lines):
             if re.search(r"notifyRPin|r_pin2|HKJC|馬會|hkjc|TELEGRAM_ENABLED", line):
                 hits.update(range(max(0, i-3), min(len(lines), i+7)))
+        if path.name == "server.js":
+            for i, line in enumerate(lines):
+                if re.search(r"(async )?function .*([Nn]otify|sendTelegram)|setInterval.*[Nn]otif", line):
+                    hits.update(range(max(0, i-2), min(len(lines), i+12)))
+            if "crown-radar-v2" in str(path):
+                hits = set(range(1895, min(len(lines), 1998)))
         excerpts[str(path)] = [
             f"{i+1}: {lines[i]}" for i in sorted(hits)
             if not re.search(r"token|secret|password|api.key", lines[i], re.I)
@@ -40,8 +48,16 @@ def inspect_hkjc():
         ["systemctl", "list-timers", "--all", "--no-pager"],
         capture_output=True, text=True, timeout=20,
     ).stdout
-    return {"summary": {"action": "inspect_hkjc_notifications"},
+    flags = {}
+    for p in [Path("/etc/footbreak.env"), Path("/opt/odds-radar/.env"),
+              Path("/opt/crown-radar-v2/.env")]:
+        if p.exists():
+            flags[str(p)] = [line for line in p.read_text().splitlines()
+                if re.match(r"^[A-Z_]*(?:TELEGRAM|NOTIFY)[A-Z_]*ENABLED\s*=\s*[01]\s*$", line)]
+    return {"summary": {"action": "inspect_hkjc_notifications"}, "flags": flags,
             "excerpts": excerpts, "timers": units,
+            "containers": subprocess.run(["docker","ps","--format","{{.Names}} {{.Image}}"],
+                         capture_output=True,text=True,timeout=20).stdout,
             "opt_dirs": [p.name for p in Path("/opt").iterdir() if p.is_dir()]}
 
 
