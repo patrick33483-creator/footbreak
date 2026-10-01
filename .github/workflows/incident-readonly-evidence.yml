@@ -1,15 +1,24 @@
-name: Strategy health read-only 20260926
+name: Crown fixed M1-M6 migration
 on:
   workflow_dispatch:
+    inputs:
+      action:
+        type: choice
+        options: [inspect, pause_legacy, install, verify]
+        required: true
+        default: inspect
 permissions:
   contents: read
+concurrency:
+  group: crown-m1m6-migration
+  cancel-in-progress: false
 jobs:
-  evidence:
+  migrate:
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v5
-      - name: Configure existing SSH
+      - name: Configure existing deployment SSH
         env:
           DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
@@ -18,15 +27,20 @@ jobs:
           printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
-      - name: Read production without changes
+      - name: Run scoped migration
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          ACTION: ${{ inputs.action }}
         run: |
           set -euo pipefail
-          ssh -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=15 "$DEPLOY_USER@$DEPLOY_HOST" 'sudo python3 -' < analysis/strategy_health_20260926.py | gzip > strategy-health.json.gz
+          tar -czf /tmp/m1m6-package.tgz -C operations/m1m6 .
+          scp -q /tmp/m1m6-package.tgz "$DEPLOY_USER@$DEPLOY_HOST:/tmp/m1m6-package-${GITHUB_RUN_ID}.tgz"
+          ssh -o BatchMode=yes -o ConnectTimeout=20 "$DEPLOY_USER@$DEPLOY_HOST" \
+            "sudo mkdir -p /opt/crown-m1m6-stage && sudo tar -xzf /tmp/m1m6-package-${GITHUB_RUN_ID}.tgz -C /opt/crown-m1m6-stage && sudo python3 /opt/crown-m1m6-stage/ops.py '$ACTION'" > migration-report.json
+          python3 -c "import json; r=json.load(open('migration-report.json')); print(json.dumps(r.get('summary',{}),ensure_ascii=False,indent=2))"
       - uses: actions/upload-artifact@v4
         with:
-          name: strategy-health-readonly
-          path: strategy-health.json.gz
-          retention-days: 3
+          name: crown-m1m6-migration
+          path: migration-report.json
+          retention-days: 7
