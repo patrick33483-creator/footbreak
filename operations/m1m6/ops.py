@@ -96,6 +96,12 @@ def main():
     elif action=="inspect_hkjc":
         from audit import inspect_hkjc
         result=inspect_hkjc()
+    elif action=="stop_hkjc":
+        from stop_hkjc import stop_hkjc
+        result=stop_hkjc()
+    elif action=="verify_hkjc":
+        from stop_hkjc import verify_hkjc
+        result=verify_hkjc()
     else:
         raise ValueError("Unknown action")
     print(json.dumps(result,ensure_ascii=False))
