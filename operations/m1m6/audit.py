@@ -1,6 +1,7 @@
 """Read-only evidence collection. Never invoke notifier tick or Telegram API."""
 import collections
 import datetime
+import importlib.util
 import json
 from pathlib import Path
 import sqlite3
@@ -47,6 +48,37 @@ def audit():
     for sid in sorted({r["sid"] for r in items}):
         row = crown.execute("SELECT * FROM finished_matches WHERE sid=?", (sid,)).fetchone()
         results[sid] = dict(row) if row else None
+    checkpoints = json.loads(Path("/var/lib/crownsystem-v4/checkpoints.json").read_text())
+    spec = importlib.util.spec_from_file_location("live_policy", "/opt/crown-m1m6/policy.py")
+    live_policy = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(live_policy)
+    sample_ids = {str(r["sid"]) for r in upcoming[:25]}
+    for rule in public["rules"]:
+        if rule["id"] in ("M2", "M5"):
+            sample_ids.update(rule["gate"]["20"]["sids"][-5:])
+    model_evidence = []
+    for sid in sorted(sample_ids):
+        row = crown.execute("SELECT * FROM matches WHERE sid=?", (sid,)).fetchone()
+        if not row:
+            continue
+        m = dict(row)
+        cp = checkpoints.get(sid, {})
+        initial = cp.get("INITIAL", {})
+        snaps = {(r["stage"], r["market"]): dict(r) for r in crown.execute(
+            "SELECT * FROM crown_snapshots WHERE sid=?", (sid,)
+        )}
+        hits, reason = live_policy.evaluate(m, snaps, cp, now)
+        model_evidence.append({
+            "sid": sid, "home": m.get("home"), "away": m.get("away"),
+            "ko": m["kickoff_utc"], "checkpoint_exists": sid in checkpoints,
+            "checkpoint_stages": list(cp), "initial_keys": list(initial),
+            "initial_locked_at": initial.get("locked_at_ms"),
+            "initial_pred_ah": initial.get("prediction", {}).get("pred_ah"),
+            "model_read_by_live_policy": live_policy.initial_model(cp, m["kickoff_utc"], now),
+            "evaluation_reason": reason, "fixed_rule_hits": [h["rule_id"] for h in hits],
+            "checkpoint_identity": {k: initial[k] for k in
+                ("sid", "home", "away", "kickoff_utc", "match", "fixture") if k in initial},
+        })
     crown.rollback()
     crown.close()
     # Only parse the notifier's structured JSON lines, never dump arbitrary logs.
@@ -106,5 +138,6 @@ def audit():
         },
         "batches": batches, "items": items, "official_results": results,
         "observations": observation_counts, "upcoming": upcoming,
+        "model_evidence": model_evidence,
         "public_status": public, "ticks": ticks,
     }
