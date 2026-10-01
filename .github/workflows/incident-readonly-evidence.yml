@@ -4,7 +4,7 @@ on:
     inputs:
       action:
         type: choice
-        options: [inspect, pause_legacy, install, verify]
+        options: [inspect, pause_legacy, install, verify, audit]
         required: true
         default: inspect
 permissions:

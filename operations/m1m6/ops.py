@@ -90,6 +90,9 @@ def main():
     elif action=="verify":
         from install import verify
         result=verify()
+    elif action=="audit":
+        from audit import audit
+        result=audit()
     else:
         raise ValueError("Unknown action")
     print(json.dumps(result,ensure_ascii=False))
