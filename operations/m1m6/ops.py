@@ -2,6 +2,7 @@
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -35,7 +36,10 @@ def inspect():
     for p in [RADAR/"docker-compose.yml",RADAR/"heavy.html",RADAR/"strategy.html",
               Path("/var/www/crownsystem-v3/strategy.html"),Path("/var/www/crownsystem-v3/heavy.html")]:
         if p.exists():
-            files[str(p)]={"content":p.read_text(),"sha256":hashlib.sha256(p.read_bytes()).hexdigest()}
+            content=p.read_text()
+            if "compose" in p.name:
+                content=re.sub(r'(?im)^(\s*[A-Z_]*(?:TOKEN|SECRET|PASSWORD|KEY)[A-Z_]*\s*:\s*).+$',r'\1"[REDACTED]"',content)
+            files[str(p)]={"content":content,"sha256":hashlib.sha256(p.read_bytes()).hexdigest()}
     services={name:run(["systemctl","show",name+".service","-p","ExecStart","-p","ActiveState","-p","UnitFileState"]) for name in LEGACY+["crown-m1m6"]}
     f=env("/etc/footbreak.env")
     c=env(str(RADAR/".env"))
@@ -43,7 +47,7 @@ def inspect():
            "radar_bot_configured":bool(c.get("TELEGRAM_BOT_TOKEN")),"radar_chat_id":c.get("TELEGRAM_CHAT_ID"),
            "same_bot":f.get("TELEGRAM_BOT_TOKEN")==c.get("TELEGRAM_BOT_TOKEN")}
     rules={str(p):json.loads(p.read_text()) for p in RULEFILES if p.exists()}
-    paths=run(["bash","-lc","rg -l 'crown-goldpool-notify|u1-notify|ce-notify|full_sweep|writeRulesFile' /etc/cron* /etc/systemd/system /usr/local/bin 2>/dev/null || true"])
+    paths=run(["bash","-lc","grep -rlE 'crown-goldpool-notify|u1-notify|ce-notify|full_sweep|writeRulesFile' /etc/cron* /etc/systemd/system /usr/local/bin 2>/dev/null || true"])
     return {"summary":{"action":"inspect","at_ms":int(time.time()*1000),"credentials":creds},
             "services":services,"files":files,"rules":rules,"related_paths":paths}
 def pause_legacy():
