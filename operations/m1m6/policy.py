@@ -4,7 +4,7 @@ from datetime import datetime, timezone, timedelta
 from decimal import Decimal as D
 import math
 
-VERSION="M1M6-BATCH-GATE-v1"
+VERSION="M1M6-KICKOFF-BATCH-v2"
 START_MS=1789023600000  # 2026-09-10 15:00 HKT
 HKT=timezone(timedelta(hours=8))
 RULES=[
@@ -133,13 +133,15 @@ def gates(history):
 def key(hit):
     return f"{hit['sid']}:{hit['market']}:{hit['side']}:{num(hit['line']):g}"
 def choose_batch(live,gate_by_rule,now,activated_at,locked=False,attempted=None):
-    """One frozen scan is one global batch. Never enqueue during an open batch."""
-    if locked:
+    """A batch is one kickoff timestamp; append only to that open batch."""
+    if locked and (not isinstance(locked,dict) or not locked.get("kickoff_utc")):
         return []
     selected={}
     attempted=attempted or set()
     for hit in live:
         if not now+1500<hit["ko"] or hit["six_t5_min_at"]<activated_at:
+            continue
+        if locked and hit["ko"]!=locked["kickoff_utc"]:
             continue
         rid=hit["rule_id"]
         if not gate_by_rule[rid]["pass"] or key(hit) in attempted:
@@ -148,4 +150,8 @@ def choose_batch(live,gate_by_rule,now,activated_at,locked=False,attempted=None)
             selected[key(hit)]={**hit,"rules":[],"gate_evidence":{}}
         selected[key(hit)]["rules"].append(rid)
         selected[key(hit)]["gate_evidence"][rid]=gate_by_rule[rid]
-    return list(selected.values())
+    rows=list(selected.values())
+    if not locked and rows:
+        first_ko=min(h["ko"] for h in rows)
+        rows=[h for h in rows if h["ko"]==first_ko]
+    return rows

@@ -105,6 +105,15 @@ def main():
     elif action=="diagnose_results":
         from result_diag import diagnose
         result=diagnose()
+    elif action=="upgrade_batch":
+        from upgrade_batch import upgrade
+        result=upgrade()
+    elif action=="results_preflight":
+        from repair_results import preflight
+        result=preflight()
+    elif action=="repair_results":
+        from repair_results import install_fix
+        result=install_fix()
     else:
         raise ValueError("Unknown action")
     print(json.dumps(result,ensure_ascii=False))

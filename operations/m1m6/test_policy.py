@@ -59,6 +59,22 @@ class RulesTest(unittest.TestCase):
     def test_future_model_not_used(self):
         cp={"INITIAL":{"locked_at_ms":self.ko+1,"prediction":{"pred_ah":"主"}}}
         self.assertIsNone(policy.initial_model(cp,self.ko,self.now))
+    def test_same_kickoff_append_and_other_kickoff_block(self):
+        h=policy.evaluate(self.m,self.s,{},self.now)[0][0]
+        same={**h,"sid":"2"}
+        later={**h,"sid":"3","ko":h["ko"]+60000}
+        gate={"M1":{"pass":True}}
+        lock={"batch_id":1,"kickoff_utc":h["ko"]}
+        selected=policy.choose_batch([h,same,later],gate,self.now,0,lock,{policy.key(h)})
+        self.assertEqual([x["sid"] for x in selected],["2"])
+        self.assertEqual(policy.choose_batch([same],gate,h["ko"],0,lock),[])
+        self.assertEqual(policy.choose_batch([same],gate,self.now,0,{"batch_id":1}),[])
+        self.assertEqual(policy.choose_batch([same],{"M1":{"pass":False}},self.now,0,lock),[])
+    def test_unlocked_batch_never_mixes_kickoffs(self):
+        h=policy.evaluate(self.m,self.s,{},self.now)[0][0]
+        later={**h,"sid":"2","ko":h["ko"]+60000}
+        selected=policy.choose_batch([later,h],{"M1":{"pass":True}},self.now,0)
+        self.assertEqual([x["sid"] for x in selected],["1"])
     def test_result_must_be_official_and_available(self):
         f={"status":"完","home_score":1,"away_score":0,"fetched_at":self.ko+100}
         self.assertFalse(policy.valid_result(f,self.ko,self.ko))
@@ -67,6 +83,46 @@ class RulesTest(unittest.TestCase):
         self.assertFalse(policy.valid_result(f,self.ko,self.ko+101))
 
 class BatchLedgerTest(unittest.TestCase):
+    def test_tick_append_same_batch_settle_all_then_new_batch(self):
+        ko=1790899200000
+        base={"rule_id":"M1","sid":"1","ko":ko,"ko_hkt":policy.fmt(ko),
+              "market":"OU","side":"under","line":3.25,"hk":.8,
+              "t5_at":ko-240000,"six_t5_min_at":ko-240000,
+              "home":"test home","away":"test away","league":"test"}
+        second={**base,"sid":"2"}
+        later={**base,"sid":"3","ko":ko+600000}
+        gate={"20":{"n":20,"wins":19,"den":20,"hit":.95,"pass":True},
+              "30":{"n":20,"wins":19,"den":20,"hit":.95,"pass":False},"pass":True}
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            cfg=root/"config.json"
+            cfg.write_text(json.dumps({"enabled":True,"activated_at":ko-3600000}))
+            with patch.object(notifier,"STATE",root),patch.object(notifier,"CONFIG",cfg), \
+                 patch.object(notifier,"publish"),patch.object(notifier,"env",return_value={"TELEGRAM_BOT_TOKEN":"test","TELEGRAM_CHAT_ID":"test"}), \
+                 patch.object(notifier,"gates",return_value=gate),patch.object(notifier,"collect") as collect, \
+                 patch.object(notifier,"nowms") as clock,patch.object(notifier,"send") as send:
+                clock.return_value=ko-120000
+                send.side_effect=lambda *args:("sent",{"date":clock.return_value//1000,"message_id":123},None)
+                collect.return_value=({"M1":[]},[base],[],{}, {})
+                self.assertEqual(notifier.tick()["sent"],1)
+                collect.return_value=({"M1":[]},[base,second,later],[],{}, {})
+                self.assertEqual(notifier.tick()["sent"],1)
+                self.assertEqual(notifier.tick()["sent"],0)
+                db=notifier.state_db()
+                self.assertEqual(db.execute("SELECT COUNT(*) FROM batches").fetchone()[0],1)
+                self.assertEqual(db.execute("SELECT COUNT(*) FROM items WHERE batch_id=1").fetchone()[0],2)
+                db.close()
+                clock.return_value=ko+100000
+                final={"status":"完","home_score":1,"away_score":0,"fetched_at":ko+90000}
+                collect.return_value=({"M1":[]},[later],[],{"1":final}, {})
+                self.assertEqual(notifier.tick()["sent"],0)
+                collect.return_value=({"M1":[]},[later],[],{"1":final,"2":final}, {})
+                self.assertEqual(notifier.tick()["sent"],1)
+                db=notifier.state_db()
+                self.assertEqual(db.execute("SELECT status FROM batches WHERE id=1").fetchone()[0],"closed")
+                self.assertEqual(db.execute("SELECT batch_id FROM items WHERE sid='3'").fetchone()[0],2)
+                db.close()
+                self.assertEqual(send.call_count,3)
     def test_wait_for_all_and_preserve_uncertain_no_resend(self):
         with tempfile.TemporaryDirectory() as tmp,patch.object(notifier,"STATE",Path(tmp)):
             db=notifier.state_db()

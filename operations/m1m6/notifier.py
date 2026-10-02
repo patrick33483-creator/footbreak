@@ -59,6 +59,10 @@ def state_db():
     CREATE TABLE IF NOT EXISTS items(bet_key TEXT PRIMARY KEY,batch_id INTEGER NOT NULL,sid TEXT NOT NULL,ko INTEGER NOT NULL,payload TEXT NOT NULL,status TEXT NOT NULL,attempt_at INTEGER,ack_at INTEGER,message_id INTEGER,result_json TEXT,error TEXT);
     CREATE TABLE IF NOT EXISTS observations(sid TEXT NOT NULL,rule_id TEXT NOT NULL,first_seen_at INTEGER NOT NULL,origin TEXT NOT NULL,payload TEXT NOT NULL,result_json TEXT,PRIMARY KEY(sid,rule_id));
     """)
+    columns={r[1] for r in db.execute("PRAGMA table_info(batches)")}
+    for name,kind in [("kickoff_utc","INTEGER"),("policy_version","TEXT")]:
+        if name not in columns:
+            db.execute(f"ALTER TABLE batches ADD COLUMN {name} {kind}")
     return db
 def collect(now):
     matches,snaps,finished,cp=source(now)
@@ -93,7 +97,10 @@ def reconcile(db,finished,now):
     if waiting==0:
         db.execute("UPDATE batches SET status='closed',closed_at=? WHERE id=?",(now,batch["id"]))
     db.commit()
-    return {"batch_id":batch["id"],"waiting":waiting} if waiting else None
+    times={r[0] for r in db.execute("SELECT DISTINCT ko FROM items WHERE batch_id=?",(batch["id"],))}
+    ko=batch["kickoff_utc"] or (next(iter(times)) if len(times)==1 else None)
+    return {"batch_id":batch["id"],"waiting":waiting,"kickoff_utc":ko,
+            "accepting_same_kickoff":bool(ko and now+1500<ko)} if waiting else None
 def message(hit,batch_id,other_market=False):
     side="買細" if hit["side"]=="under" else "買主"
     line=f"{hit['line']:g}" if hit["market"]=="OU" else "平手" if hit["line"]==0 else ("受讓" if hit["line"]>0 else "讓")+f"{abs(hit['line']):g}"
@@ -117,7 +124,8 @@ def message(hit,batch_id,other_market=False):
       *evidence,
       "上述為已結算匹配場次窗口，不是下一場勝率。",
       "同場亦有另一市場訊號，存在同場風險。" if other_market else "本訊號只代表列出的市場及方向。",
-      "整批正式賽果齊全前不再開新批次；結算後重新核對20場95%或30場90%。",
+      "同一開賽時間屬同批，開賽前可追加其他合資格場次；整批正式賽果齊全前不開其他時間的新批。",
+      "結算後重新核對20場95%或30場90%，達標先推下一批。",
       "盤價已變即不等同本訊號；不會自動下注。",
     ])
 def send(text,ko,creds):
@@ -144,7 +152,7 @@ def publish(db,config,gate_by_rule,reasons,live,locked,now):
         ledger.append({**{k:p.get(k) for k in ["sid","ko","ko_hkt","home","away","league","market","side","line","hk","rules"]},
           "batch_id":x["batch_id"],"delivery_status":x["status"],"attempt_at":x["attempt_at"],"ack_at":x["ack_at"],
           "message_id":x["message_id"],"result":json.loads(x["result_json"]) if x["result_json"] else None})
-    data={"version":VERSION,"updated_at":now,"activated_at":config["activated_at"],"mode":"global_batch_then_rolling_OR",
+    data={"version":VERSION,"updated_at":now,"activated_at":config["activated_at"],"mode":"same_kickoff_batch_then_rolling_OR",
           "locked_batch":locked,"rules":[{**q,"gate":gate_by_rule[q["id"]]} for q in RULES],
           "live_condition_hits":[{k:v for k,v in h.items() if k!="snapshot_evidence"} for h in live],
           "ledger":ledger,"scan_reasons":dict(reasons),"legacy_retired":True,
@@ -170,14 +178,18 @@ def tick(dry=False):
             db.execute("UPDATE observations SET result_json=? WHERE sid=? AND rule_id=?",(json.dumps(result,ensure_ascii=False),h["sid"],h["rule_id"]))
     db.commit()
     attempted={r[0] for r in db.execute("SELECT bet_key FROM items")}
-    selected=choose_batch(live,gate_by_rule,now,config["activated_at"],bool(locked),attempted) if config.get("enabled") else []
+    selected=choose_batch(live,gate_by_rule,now,config["activated_at"],locked,attempted) if config.get("enabled") else []
     sent=0
     if selected:
         creds=env()
         if not creds.get("TELEGRAM_BOT_TOKEN") or not creds.get("TELEGRAM_CHAT_ID"):
             raise RuntimeError("Telegram configuration missing")
-        cur=db.execute("INSERT INTO batches(created_at,status) VALUES(?,'open')",(now,))
-        batch_id=cur.lastrowid
+        if locked:
+            batch_id=locked["batch_id"]
+        else:
+            cur=db.execute("INSERT INTO batches(created_at,status,kickoff_utc,policy_version) VALUES(?,'open',?,?)",
+                           (now,selected[0]["ko"],VERSION))
+            batch_id=cur.lastrowid
         for h in selected:
             db.execute("INSERT INTO items(bet_key,batch_id,sid,ko,payload,status) VALUES(?,?,?,?,?,'prepared')",
               (key(h),batch_id,h["sid"],h["ko"],json.dumps(h,ensure_ascii=False)))
@@ -190,7 +202,9 @@ def tick(dry=False):
             at=nowms()
             db.execute("UPDATE items SET status='sending',attempt_at=? WHERE bet_key=?",(at,key(h)))
             db.commit()
-            status,ack,error=send(message(h,batch_id,any(z["sid"]==h["sid"] and z["market"]!=h["market"] for z in selected)),h["ko"],creds)
+            other_market=db.execute("SELECT 1 FROM items WHERE batch_id=? AND sid=? AND bet_key<>? AND status IN ('sent','uncertain','prepared')",
+                                    (batch_id,h["sid"],key(h))).fetchone() is not None
+            status,ack,error=send(message(h,batch_id,other_market),h["ko"],creds)
             ack_at=ack.get("date",0)*1000 if ack else None
             # Preserve late acknowledgements honestly; never label as pre-match.
             if status=="sent" and (not ack_at or ack_at>=h["ko"]):
