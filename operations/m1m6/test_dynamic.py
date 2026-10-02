@@ -159,6 +159,25 @@ class DynamicTests(unittest.TestCase):
             self.assertEqual(bool(found),expected,(n,wins))
             self.assertEqual(gates(rows)["pass"],expected)
 
+    def test_fractional_thresholds_with_pushes_in_scanner_and_runtime(self):
+        for n,wins,losses,pushes,expected in [
+            (20,15,1,4,True),   # 15/16=93.75%, four pushes stay inside the 20
+            (20,14,2,4,False),
+            (20,18,1,1,True),   # 18/19 > 92.5%
+            (30,21,3,6,True),   # exact 87.5% boundary, minimum 24 non-push
+            (30,20,4,6,False),
+        ]:
+            outcomes=["W"]*wins+["L"]*losses+["P"]*pushes
+            rows=[{"sid":str(i),"ko":i,"market":"OU","side":"under","line":3.25,
+                   "features":{},"result":outcome,"hk":.8,
+                   "pnl":.8 if outcome=="W" else -1 if outcome=="L" else 0}
+                  for i,outcome in enumerate(outcomes)]
+            self.assertEqual(len(rows),n)
+            with patch.object(d,"atoms_for",return_value=[]):
+                found,_=d.scan(rows)
+            self.assertEqual(bool(found),expected,(n,wins,losses,pushes))
+            self.assertEqual(gates(rows)[str(n)]["pass"],expected)
+
     def test_dynamic_tick_end_to_end_dedupe_and_lock(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp);cfg=root/"config.json";rp=root/"registry.json"
