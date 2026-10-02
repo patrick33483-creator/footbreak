@@ -1,4 +1,4 @@
-"""Three-hour/manual result sync and exhaustive discovery. Never sends Telegram."""
+"""Two-hour/manual result sync and exhaustive discovery. Never sends Telegram."""
 import fcntl
 import hashlib
 import json
@@ -6,7 +6,7 @@ from pathlib import Path
 import subprocess
 import time
 import notifier
-from dynamic_rules import universe,scan,merge,registry,GRAMMAR,seeds,matched_rows,signature
+from dynamic_rules import universe,scan,merge,registry,GRAMMAR,seeds,matched_rows,signature,SEARCH_INTERVAL_MS
 from policy import gates
 
 STATE=Path("/var/lib/crown-m1m6")
@@ -64,7 +64,7 @@ def cycle(sync=True):
             progress("搜尋全部組合及重算現有策略",started_at=started)
             previous=json.loads(REGISTRY.read_text()) if REGISTRY.exists() else {}
             result=compute(now,previous)
-            result["next_search_at"]=started+3*3600000
+            result["next_search_at"]=started+SEARCH_INTERVAL_MS
             result["result_sync"]=sync_result
             progress("合併核驗並更新策略版本",started_at=started)
             # Registry changes and sends cannot interleave. No deletion of any lock.

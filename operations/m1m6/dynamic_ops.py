@@ -46,6 +46,73 @@ def presentation_refresh():
             "pages_verified":all('id="m-ledger-toggle"' in p.read_text() for p in PAGES)}}
 
 
+def schedule_refresh():
+    """Update cadence in place, preserve ledger, rule definitions and config."""
+    import fcntl,hashlib,shutil,time
+    from install import PAGES,render_page
+    from ops import atomic
+    from dynamic_rules import SEARCH_INTERVAL_MS
+    tests=run(["python3","-m","unittest","discover","-s",str(HERE),"-p","test_*.py"],True)
+    timer=Path("/etc/systemd/system/crown-strategy-search.timer")
+    unit=timer.read_text()
+    if "OnUnitActiveSec=3h" not in unit and "OnUnitActiveSec=2h" not in unit:
+        raise RuntimeError("Unexpected timer; no changes applied")
+    run(["systemctl","stop","crown-strategy-search.timer"],True)
+    try:
+        with (BASE/"research.lock").open("a") as research:
+            fcntl.flock(research,fcntl.LOCK_EX)
+            with (BASE/"run.lock").open("a") as tick:
+                fcntl.flock(tick,fcntl.LOCK_EX)
+                backup=BASE/("schedule-backup-"+str(int(time.time()*1000)));backup.mkdir()
+                old_rules=(DEST/"dynamic_rules.py").read_text()
+                expected_rules=old_rules.replace('GRAMMAR="crown-grid-0to3-families-v1"\n',
+                    'GRAMMAR="crown-grid-0to3-families-v1"\nSEARCH_INTERVAL_MS=2*3600000\n',1).replace(
+                    '"next_search_at":now+3*3600000','"next_search_at":now+SEARCH_INTERVAL_MS')
+                old_cycle=(DEST/"research_cycle.py").read_text()
+                expected_cycle=old_cycle.replace("Three-hour/manual","Two-hour/manual").replace(
+                    "seeds,matched_rows,signature\n","seeds,matched_rows,signature,SEARCH_INTERVAL_MS\n").replace(
+                    'started+3*3600000','started+SEARCH_INTERVAL_MS')
+                for name,old,expected in (("dynamic_rules.py",old_rules,expected_rules),
+                                          ("research_cycle.py",old_cycle,expected_cycle)):
+                    if (HERE/name).read_text() not in (old,expected):
+                        raise RuntimeError("Unexpected live source difference: "+name)
+                protected=[BASE/"ledger.sqlite",Path("/etc/crown-m1m6.json"),DEST/"policy.py",
+                           DEST/"notifier.py",DEST/"strategy_runtime.py",DEST/"ledger_view.py"]
+                digest=lambda:{str(p):hashlib.sha256(p.read_bytes()).hexdigest() for p in protected}
+                before=digest()
+                for name in ("dynamic_rules.py","research_cycle.py","panel.html","test_dynamic.py"):
+                    shutil.copy2(DEST/name,backup/name)
+                    shutil.copy2(HERE/name,DEST/name)
+                shutil.copy2(timer,backup/timer.name)
+                timer.write_text(unit.replace("OnUnitActiveSec=3h","OnUnitActiveSec=2h")
+                                 .replace("every three hours","every two hours"))
+                for p in PAGES:
+                    shutil.copy2(p,backup/str(p).lstrip("/").replace("/","__"))
+                    p.write_text(render_page(p.read_text(),(HERE/"panel.html").read_text()))
+                rp=BASE/"registry.json";reg=json.loads(rp.read_text())
+                sp=BASE/"research_status.json";status=json.loads(sp.read_text()) if sp.exists() else {}
+                start=status.get("started_at",reg["updated_at"])
+                next_at=start+SEARCH_INTERVAL_MS
+                shutil.copy2(rp,backup/rp.name)
+                original={k:v for k,v in reg.items() if k!="next_search_at"}
+                reg["next_search_at"]=next_at;atomic(rp,reg)
+                assert original=={k:v for k,v in json.loads(rp.read_text()).items() if k!="next_search_at"}
+                if status.get("phase")=="完成":
+                    status["next_search_at"]=next_at
+                    for p in (sp,Path("/var/www/crownsystem-v3/research_status.json"),
+                              Path("/opt/crown-radar-v2/data/research_status.json")):
+                        atomic(p,status)
+                assert before==digest(),"Protected state changed"
+        run(["systemctl","daemon-reload"],True)
+    finally:
+        run(["systemctl","start","crown-strategy-search.timer"],True)
+    return {"summary":{"action":"schedule_refresh","interval_hours":2,"runs_per_day":12,
+            "tests":tests["stderr"],"protected_files_unchanged":True,"strategy_definitions_unchanged":True,
+            "next_search_at":next_at,"pages_verified":all("每兩小時自動循環" in p.read_text() for p in PAGES),
+            "timer":run(["systemctl","show","crown-strategy-search.timer","-p","ActiveState",
+                         "-p","SubState","-p","TimersMonotonic","-p","NextElapseUSecMonotonic"])["stdout"]}}
+
+
 def inspect():
     nginx=run(["nginx","-T"])
     # nginx configuration has routing/auth file paths, not file contents.
@@ -176,10 +243,10 @@ ProtectSystem=strict
 ReadWritePaths=/var/lib/crown-m1m6 /var/www/crownsystem-v3 /opt/crown-radar-v2/data
 """,
       "crown-strategy-search.timer":"""[Unit]
-Description=Refresh Crown results and all strategy windows every three hours
+Description=Refresh Crown results and all strategy windows every two hours
 [Timer]
 OnBootSec=2min
-OnUnitActiveSec=3h
+OnUnitActiveSec=2h
 AccuracySec=10s
 Unit=crown-strategy-search.service
 [Install]

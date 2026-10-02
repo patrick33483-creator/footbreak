@@ -129,6 +129,9 @@ def main():
     elif action=="presentation_refresh":
         from dynamic_ops import presentation_refresh
         result=presentation_refresh()
+    elif action=="schedule_refresh":
+        from dynamic_ops import schedule_refresh
+        result=schedule_refresh()
     elif action=="results_preflight":
         from repair_results import preflight
         result=preflight()

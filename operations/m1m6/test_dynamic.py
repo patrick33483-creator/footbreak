@@ -11,6 +11,14 @@ from policy import gates,key
 
 
 class DynamicTests(unittest.TestCase):
+    def test_two_hour_interval_and_installed_timer_definition(self):
+        self.assertEqual(d.SEARCH_INTERVAL_MS,7200000)
+        reg=d.registry([],[],{"strategies":[],"sequence":0},100)
+        self.assertEqual(reg["next_search_at"],7200100)
+        import research_cycle
+        self.assertEqual(research_cycle.SEARCH_INTERVAL_MS,7200000)
+        text=Path(__file__).with_name("dynamic_ops.py").read_text()
+        self.assertIn("OnUnitActiveSec=2h",text)
     def rule(self,rid,locks=None):
         return {"id":rid,"active":True,"version":1,"version_at":0,
                 "lock_ids":locks or [rid],"market":"OU","side":"under","clauses":[[d.atom("hour",0)]]}

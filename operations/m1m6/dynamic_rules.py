@@ -8,6 +8,7 @@ from decimal import Decimal as D
 from policy import evaluate, valid_result, settle, gates, fmt, num, key, RULES, THRESHOLDS, GATE_VERSION, MIN_HK, MIN_DECIMAL_ODDS, eligible_price
 
 GRAMMAR="crown-grid-0to3-families-v1"
+SEARCH_INTERVAL_MS=2*3600000
 DIR={"home":"買主","away":"買客","over":"買大","under":"買細"}
 GROUPS=[("OU","over"),("OU","under"),("AH","home"),("AH","away")]
 
@@ -377,5 +378,5 @@ def registry(groups,rows,previous,now):
              "gate":gates([r for r in matched_rows(rows,s) if r["result"]])} for s in old]
     return {"grammar":GRAMMAR,"gate_version":GATE_VERSION,"thresholds":THRESHOLDS,
             "min_decimal_odds":MIN_DECIMAL_ODDS,
-            "updated_at":now,"next_search_at":now+3*3600000,
+            "updated_at":now,"next_search_at":now+SEARCH_INTERVAL_MS,
             "sequence":sequence,"strategies":out,"existing_strategy_checks":checks}
