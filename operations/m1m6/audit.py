@@ -180,6 +180,8 @@ def audit():
         "summary": {
             "action": "audit_natural_notifications", "at_ms": now,
             "version": config.get("version"), "mode": config.get("mode"),
+            "gate_version": config.get("gate_version"), "thresholds": config.get("thresholds"),
+            "gate": config.get("gate"),
             "batch_lock_enabled": public.get("batch_lock_enabled",True),
             "pending_result_count": public.get("pending_result_count"),
             "overlap_allowed": config.get("batch_lock_enabled") is False or config.get("lock_scope")=="per_strategy",

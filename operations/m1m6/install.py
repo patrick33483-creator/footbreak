@@ -10,7 +10,7 @@ import subprocess
 import time
 
 from ops import BASE,RADAR,LEGACY,RULEFILES,atomic,run
-from policy import RULES,VERSION
+from policy import RULES,VERSION,GATE_CONFIG
 
 HERE=Path(__file__).parent
 DEST=Path("/opt/crown-m1m6")
@@ -99,7 +99,7 @@ def install():
         raise RuntimeError("Unit tests failed")
     existing=json.loads(CONFIG.read_text()) if CONFIG.exists() else {}
     cfg={"version":VERSION,"enabled":False,"activated_at":existing.get("activated_at",int(time.time()*1000)),
-         "mode":"global_batch_then_rolling_OR","gate":"20>=95% OR 30>=90%; min nonpush 16/24; positive net units",
+         "mode":"global_batch_then_rolling_OR","gate":GATE_CONFIG,
          "batch_scope":"all M1-M6","batch_release":"all attempted/sent fixtures have official final result",
          "no_result_policy":"remain_locked","fixed_rules":[q["id"] for q in RULES]}
     atomic(CONFIG,cfg)

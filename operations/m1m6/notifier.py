@@ -12,7 +12,7 @@ import time
 import urllib.error
 import urllib.request
 
-from policy import RULES,BY_ID,VERSION,START_MS,evaluate,valid_result,settle,gates,key,choose_batch,fmt
+from policy import RULES,BY_ID,VERSION,START_MS,evaluate,valid_result,settle,gates,key,choose_batch,fmt,GATE_VERSION,THRESHOLDS,GATE_TEXT
 
 STATE=Path("/var/lib/crown-m1m6")
 CONFIG=Path("/etc/crown-m1m6.json")
@@ -147,6 +147,7 @@ def message(hit,batch_id,other_market=False):
       f"皇冠T5：{fmt(hit['t5_at'])}",
       *[f"{rid}條件：{hit.get('rule_descriptions',{}).get(rid) or BY_ID.get(rid,{}).get('description','條件見保存版本')}" for rid in hit["rules"]],
       *evidence,
+      f"放行門檻：{GATE_TEXT}，符合其中一個即可；須足窗口樣本及淨收益為正。",
       "上述為已結算匹配場次窗口，不是下一場勝率。",
       "同場亦有另一市場訊號，存在同場風險。" if other_market else "本訊號只代表列出的市場及方向。",
       "每條策略獨立封鎖：同開賽時間可追加，整批正式賽果齊全後重驗門檻，再推下一場。",
@@ -177,7 +178,8 @@ def publish(db,config,gate_by_rule,reasons,live,pending,now,registry=None,strate
         ledger.append({**{k:p.get(k) for k in ["sid","ko","ko_hkt","home","away","league","market","side","line","hk","rules"]},
           "batch_id":x["batch_id"],"delivery_status":x["status"],"attempt_at":x["attempt_at"],"ack_at":x["ack_at"],
           "message_id":x["message_id"],"result":json.loads(x["result_json"]) if x["result_json"] else None})
-    data={"version":VERSION,"updated_at":now,"activated_at":config["activated_at"],"mode":"rolling_OR_no_batch_lock",
+    data={"version":VERSION,"gate_version":GATE_VERSION,"thresholds":THRESHOLDS,"gate_text":GATE_TEXT,
+          "updated_at":now,"activated_at":config["activated_at"],"mode":"rolling_OR_no_batch_lock",
           "locked_batch":None,"batch_lock_enabled":False,"pending_batches":pending,
           "pending_result_count":sum(x["waiting"] for x in pending),
           "rules":[{**q,"gate":gate_by_rule[q["id"]]} for q in RULES],
@@ -193,7 +195,8 @@ def publish(db,config,gate_by_rule,reasons,live,pending,now,registry=None,strate
                     strategy_pending_batches=strategy_pending,search=registry["search"],
                     existing_strategy_checks=registry.get("existing_strategy_checks",[]),
                     registry_updated_at=registry["updated_at"],next_search_at=registry["next_search_at"],
-                    registry_stale=now-registry["updated_at"]>4*3600000)
+                    registry_gate_version=registry.get("gate_version"),
+                    registry_stale=now-registry["updated_at"]>4*3600000 or registry.get("gate_version")!=GATE_VERSION)
     atomic(STATE/"status.json",data)
     atomic(PUBLIC,data)
     atomic(Path("/opt/crown-radar-v2/data/m1m6_status.json"),data)
@@ -220,7 +223,8 @@ def tick(dry=False):
     db.commit()
     attempted={r[0] for r in db.execute("SELECT bet_key FROM items")}
     selected=choose_batch(live,gate_by_rule,now,config["activated_at"],False,attempted) if config.get("enabled") and registry is None else []
-    if registry is not None and config.get("enabled") and now-registry["updated_at"]<=4*3600000:
+    if (registry is not None and config.get("enabled") and now-registry["updated_at"]<=4*3600000
+            and registry.get("gate_version")==GATE_VERSION):
         selected=choose(live,gate_by_rule,now,config.get("dynamic_activated_at",config["activated_at"]),
                         strategy_pending,registry["strategies"],
                         {r["bet_key"]:dict(r) for r in db.execute("SELECT bet_key,status,result_json FROM items")})

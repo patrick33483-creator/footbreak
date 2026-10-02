@@ -57,6 +57,8 @@ def refresh_test():
 def code_refresh():
     import fcntl,shutil,time
     from install import PAGES,render_page
+    from ops import atomic
+    from policy import GATE_VERSION,GATE_CONFIG,THRESHOLDS
     tests=run(["python3","-m","unittest","discover","-s",str(HERE),"-p","test_*.py"],True)
     run(["systemctl","stop","crown-strategy-search.timer"],True)
     try:
@@ -65,6 +67,11 @@ def code_refresh():
             with (BASE/"run.lock").open("a") as tick:
                 fcntl.flock(tick,fcntl.LOCK_EX)
                 backup=BASE/("dynamic-code-backup-"+str(int(time.time()*1000)));backup.mkdir()
+                config=Path("/etc/crown-m1m6.json")
+                shutil.copy2(config,backup/"config.json")
+                cfg=json.loads(config.read_text())
+                cfg.update(gate=GATE_CONFIG,gate_version=GATE_VERSION,thresholds=THRESHOLDS)
+                atomic(config,cfg)
                 for name in FILES:
                     shutil.copy2(DEST/name,backup/name)
                     shutil.copy2(HERE/name,DEST/name)
@@ -75,7 +82,11 @@ def code_refresh():
         run(["systemctl","start","crown-strategy-search.timer"],True)
     run(["systemctl","start","--no-block","crown-strategy-search.service"],True)
     return {"summary":{"action":"dynamic_code_refresh","tests":tests["stderr"],
-                       "registry_and_ledger_untouched":True,"full_cycle_started":True}}
+                       "registry_and_ledger_untouched":True,"full_cycle_started":True,
+                       "gate_version":GATE_VERSION,"thresholds":THRESHOLDS,
+                       "config_scope":"gate, gate_version, thresholds only",
+                       "page_thresholds_verified":all("最近20場≥90% 或最近30場≥85%" in p.read_text()
+                                                     and "最近20場≥95%" not in p.read_text() for p in PAGES)}}
 
 
 def deploy():

@@ -16,7 +16,7 @@
 <main id="m1m6-root">
  <div class="m-toolbar"><div><h2 style="margin-top:0">皇冠重點｜自動組合策略</h2><div id="m-updated" class="m-muted" role="status">正在讀取通知帳本…</div></div><button id="m-refresh" type="button">立即更新</button></div>
  <section class="m-panel" style="margin-top:16px"><h3>每三小時自動循環</h3><p>核對賽果 → 重算所有現有策略近20／30場 → 全網格重搜 → 合併相近分支並重新驗證 → 更新重點策略。按「立即更新」亦會完整執行，唔只係重讀畫面。</p><p id="m-research" class="m-muted" role="status">讀取最近搜尋紀錄…</p><p id="m-progress" role="status" aria-live="polite"></p></section>
- <section class="m-panel" aria-labelledby="m-lock"><h3 id="m-lock">正在核對通知模式</h3><p>每條合併後策略各自封鎖：同一開賽時間可通知多場，該批正式賽果齊全後再核對最近20場≥95%或30場≥90%，先推下一場。其他策略可獨立運行；更新、改名或合併不會清除未結算封鎖。</p><p class="m-muted">同場同市場同方向同盤線只計一次；開賽後不追加或補發。窗口須足20／30場，非走盤至少16／24場且淨收益為正。走盤不計命中率分母，半贏計命中但只收半注收益。搜尋結果屬探索候選，近期命中率不是下一場勝率；不會自動下注。</p></section>
+ <section class="m-panel" aria-labelledby="m-lock"><h3 id="m-lock">正在核對通知模式</h3><p>每條合併後策略各自封鎖：同一開賽時間可通知多場，該批正式賽果齊全後再核對<span id="m-gate-text">最近20場≥90% 或最近30場≥85%</span>，符合其中一個便可推下一場。其他策略可獨立運行；更新、改名或合併不會清除未結算封鎖。</p><p class="m-muted">同場同市場同方向同盤線只計一次；開賽後不追加或補發。窗口須足20／30場，非走盤至少16／24場且淨收益為正。走盤不計命中率分母，半贏計命中但只收半注收益。搜尋結果屬探索候選，近期命中率不是下一場勝率；不會自動下注。</p></section>
  <h2>現有策略與最新窗口</h2><div id="m-rules" class="m-grid"><div class="m-panel m-muted">載入所有策略及最新窗口…</div></div>
  <h2>新版本TG通知帳本</h2><div class="m-panel"><p class="m-muted">只列新版本實際發送嘗試；歷史研究樣本與舊8條策略不混入本帳本。</p><div id="m-ledger" class="m-table">載入中…</div></div>
  <details class="m-panel"><summary>本輪所有既有策略重算紀錄</summary><div id="m-existing" class="m-table">載入中…</div></details>
@@ -44,6 +44,7 @@
   try{
    const data=window.M1M6_PREVIEW_DATA || await fetch("/crownsystem-v3/m1m6_status.json?t="+Date.now(),{cache:"no-store"}).then(r=>{if(!r.ok)throw Error();return r.json()});
    const stale=Date.now()-data.updated_at>90000;
+   if(data.gate_text)$("m-gate-text").textContent=data.gate_text;
    $("m-updated").textContent=`香港時間 ${time(data.updated_at)}｜${data.version}${stale?"｜資料超過90秒未更新，勿當即時訊號":""}`;
    const dynamic=data.mode==="dynamic_per_strategy_batch" && data.lock_scope==="per_strategy";
    lastRegistryAt=data.registry_updated_at||0;

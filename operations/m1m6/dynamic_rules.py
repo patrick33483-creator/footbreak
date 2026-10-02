@@ -5,7 +5,7 @@ import itertools
 import json
 import re
 from decimal import Decimal as D
-from policy import evaluate, valid_result, settle, gates, fmt, num, key, RULES
+from policy import evaluate, valid_result, settle, gates, fmt, num, key, RULES, THRESHOLDS, GATE_VERSION
 
 GRAMMAR="crown-grid-0to3-families-v1"
 DIR={"home":"買主","away":"買客","over":"買大","under":"買細"}
@@ -227,7 +227,7 @@ def scan(rows):
                 if n not in (20,30):
                     continue
                 den=n-(last&push).bit_count()
-                if den>=n*4//5 and (last&win).bit_count()*100>=(95 if n==20 else 90)*den:
+                if den>=n*4//5 and (last&win).bit_count()*100>=THRESHOLDS[n]*den:
                     g=gates([rr[i] for i in indices(sm)])
                     if g["pass"]:
                         passed=True;break
@@ -372,5 +372,6 @@ def registry(groups,rows,previous,now):
             out.append({**s,"active":False,"gate":gates([r for r in matched_rows(rows,s) if r["result"]])})
     checks=[{"id":s["id"],"version":s["version"],
              "gate":gates([r for r in matched_rows(rows,s) if r["result"]])} for s in old]
-    return {"grammar":GRAMMAR,"updated_at":now,"next_search_at":now+3*3600000,
+    return {"grammar":GRAMMAR,"gate_version":GATE_VERSION,"thresholds":THRESHOLDS,
+            "updated_at":now,"next_search_at":now+3*3600000,
             "sequence":sequence,"strategies":out,"existing_strategy_checks":checks}

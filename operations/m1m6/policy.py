@@ -5,6 +5,10 @@ from decimal import Decimal as D
 import math
 
 VERSION="M1M6-ROLLING-NOLOCK-v3"
+GATE_VERSION="rolling-20-90-or-30-85-v1"
+THRESHOLDS={20:90,30:85}
+GATE_TEXT="最近20場≥90% 或最近30場≥85%"
+GATE_CONFIG="20>=90% OR 30>=85%; min nonpush 16/24; positive net units"
 START_MS=1789023600000  # 2026-09-10 15:00 HKT
 HKT=timezone(timedelta(hours=8))
 RULES=[
@@ -123,13 +127,13 @@ def window_stats(history,n):
     c=Counter(r["result"] for r in rr)
     den=len(rr)-c["P"];wins=c["W"]+c["HW"]
     pnl=sum((num(r["pnl"]) for r in rr),D(0))
-    passed=len(rr)==n and den>=n*4//5 and wins*100>=(95 if n==20 else 90)*den and pnl>0
+    passed=len(rr)==n and den>=n*4//5 and wins*100>=THRESHOLDS[n]*den and pnl>0
     return {"n":len(rr),"required_n":n,**{k:c[k] for k in ["W","HW","P","HL","L"]},
             "den":den,"wins":wins,"hit":wins/den if den else None,"pnl":float(pnl),
-            "pass":passed,"sids":[r["sid"] for r in rr]}
+            "pass":passed,"threshold_pct":THRESHOLDS[n],"sids":[r["sid"] for r in rr]}
 def gates(history):
     a,b=window_stats(history,20),window_stats(history,30)
-    return {"20":a,"30":b,"pass":a["pass"] or b["pass"]}
+    return {"20":a,"30":b,"pass":a["pass"] or b["pass"],"gate_version":GATE_VERSION}
 def key(hit):
     return f"{hit['sid']}:{hit['market']}:{hit['side']}:{num(hit['line']):g}"
 def choose_batch(live,gate_by_rule,now,activated_at,locked=False,attempted=None):

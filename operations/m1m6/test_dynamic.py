@@ -113,7 +113,20 @@ class DynamicTests(unittest.TestCase):
         self.assertEqual(reg["strategies"][0]["gate"]["20"]["wins"],19)
         rows[-2].update(result="L",pnl=-1)
         reg=d.registry([],rows,reg,200)
+        self.assertTrue(reg["existing_strategy_checks"][0]["gate"]["20"]["pass"])
+        rows[-3].update(result="L",pnl=-1)
+        reg=d.registry([],rows,reg,300)
         self.assertFalse(reg["existing_strategy_checks"][0]["gate"]["20"]["pass"])
+
+    def test_scanner_and_runtime_share_new_boundaries(self):
+        for n,wins,expected in [(20,18,True),(20,17,False),(30,26,True),(30,25,False)]:
+            rows=[{"sid":str(i),"ko":i,"market":"OU","side":"under","line":3.25,
+                   "features":{},"result":"W" if i<wins else "L",
+                   "pnl":.8 if i<wins else -1} for i in range(n)]
+            with patch.object(d,"atoms_for",return_value=[]):
+                found,_=d.scan(rows)
+            self.assertEqual(bool(found),expected,(n,wins))
+            self.assertEqual(gates(rows)["pass"],expected)
 
     def test_dynamic_tick_end_to_end_dedupe_and_lock(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -122,7 +135,7 @@ class DynamicTests(unittest.TestCase):
             rules=d.seeds()
             for r in rules:
                 r["active"]=True
-            rp.write_text(json.dumps({"updated_at":100,"strategies":rules,"search":{},"next_search_at":10800100}))
+            rp.write_text(json.dumps({"updated_at":100,"gate_version":d.GATE_VERSION,"strategies":rules,"search":{},"next_search_at":10800100}))
             gate=gates([{"sid":str(i),"ko":i,"result":"W","pnl":.8} for i in range(30)])
             h={**self.hit("M1","1",10000),"ko_hkt":"test","t5_at":10,
                "home":"主","away":"客","league":"test"}
@@ -135,11 +148,17 @@ class DynamicTests(unittest.TestCase):
                  patch.object(notifier,"env",return_value={"TELEGRAM_BOT_TOKEN":"test","TELEGRAM_CHAT_ID":"test"}),\
                  patch.object(notifier,"send",return_value=("sent",{"date":1,"message_id":1},None)) as send,\
                  patch.object(notifier,"atomic") as publish:
+                current=json.loads(rp.read_text())
+                rp.write_text(json.dumps({**current,"gate_version":"old-thresholds"}))
+                self.assertEqual(notifier.tick()["sent"],0)
+                self.assertTrue(publish.call_args.args[1]["registry_stale"])
+                rp.write_text(json.dumps(current))
                 out=notifier.tick()
                 self.assertEqual(out["sent"],2)
                 self.assertEqual(out["strategy_pending_batches"],2)
                 self.assertEqual(notifier.tick()["sent"],0)
                 self.assertEqual(send.call_count,2)
+                self.assertIn("最近20場≥90% 或最近30場≥85%",send.call_args.args[0])
                 data=publish.call_args.args[1]
                 self.assertEqual(data["mode"],"dynamic_per_strategy_batch")
                 self.assertEqual(len(data["rules"]),6)
