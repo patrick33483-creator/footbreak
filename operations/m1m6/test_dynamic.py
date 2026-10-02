@@ -144,6 +144,18 @@ class DynamicTests(unittest.TestCase):
                 self.assertEqual(data["mode"],"dynamic_per_strategy_batch")
                 self.assertEqual(len(data["rules"]),6)
 
+    def test_existing_passing_strategy_retained_without_new_leaf(self):
+        import research_cycle
+        s={**self.rule("D1"),"born_at":0,"active":False,"members":[]}
+        rows=[{"sid":str(i),"ko":i,"market":"OU","side":"under","line":3.25,
+               "features":{"hour":0},"result":"W","pnl":.8} for i in range(20)]
+        with patch.object(research_cycle.notifier,"source",return_value=None),\
+             patch.object(research_cycle,"universe",return_value=(rows,{})),\
+             patch.object(research_cycle,"scan",return_value=([],{"enumerated":0})):
+            out=research_cycle.compute(100,{"strategies":[s],"sequence":1})
+        self.assertEqual(out["search"]["existing_rechecked"],1)
+        self.assertTrue(out["strategies"][0]["active"])
+
     def test_refresh_api_auth_origin_and_busy_dedup(self):
         import http.client,threading
         from types import SimpleNamespace

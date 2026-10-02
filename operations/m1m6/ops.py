@@ -123,6 +123,9 @@ def main():
     elif action=="dynamic_refresh_test":
         from dynamic_ops import refresh_test
         result=refresh_test()
+    elif action=="dynamic_code_refresh":
+        from dynamic_ops import code_refresh
+        result=code_refresh()
     elif action=="results_preflight":
         from repair_results import preflight
         result=preflight()

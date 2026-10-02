@@ -288,7 +288,7 @@ def merge(found,rows):
             if not evidence["pass"]:
                 continue
             g.update(clauses=union,gate=evidence)
-            g["members"].append(c["fingerprint"])
+            g["members"]=sorted(set(g["members"]+[c["fingerprint"]]))
             break
         else:
             groups.append({**c,"members":[c["fingerprint"]]})

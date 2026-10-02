@@ -54,6 +54,26 @@ def refresh_test():
                        "logged_in_browser_verified":False}}
 
 
+def code_refresh():
+    import fcntl,shutil,time
+    tests=run(["python3","-m","unittest","discover","-s",str(HERE),"-p","test_*.py"],True)
+    run(["systemctl","stop","crown-strategy-search.timer"],True)
+    try:
+        with (BASE/"research.lock").open("a") as research:
+            fcntl.flock(research,fcntl.LOCK_EX)
+            with (BASE/"run.lock").open("a") as tick:
+                fcntl.flock(tick,fcntl.LOCK_EX)
+                backup=BASE/("dynamic-code-backup-"+str(int(time.time()*1000)));backup.mkdir()
+                for name in FILES:
+                    shutil.copy2(DEST/name,backup/name)
+                    shutil.copy2(HERE/name,DEST/name)
+    finally:
+        run(["systemctl","start","crown-strategy-search.timer"],True)
+    run(["systemctl","start","--no-block","crown-strategy-search.service"],True)
+    return {"summary":{"action":"dynamic_code_refresh","tests":tests["stderr"],
+                       "registry_and_ledger_untouched":True,"full_cycle_started":True}}
+
+
 def deploy():
     import fcntl,shutil,sqlite3,time
     from ops import atomic

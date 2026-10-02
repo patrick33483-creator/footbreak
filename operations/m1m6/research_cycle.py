@@ -6,7 +6,8 @@ from pathlib import Path
 import subprocess
 import time
 import notifier
-from dynamic_rules import universe,scan,merge,registry,GRAMMAR
+from dynamic_rules import universe,scan,merge,registry,GRAMMAR,seeds,matched_rows,signature
+from policy import gates
 
 STATE=Path("/var/lib/crown-m1m6")
 REGISTRY=STATE/"registry.json"
@@ -23,6 +24,17 @@ def progress(phase,**extra):
 def compute(now,previous):
     rows,reasons=universe(notifier.source(now),now)
     found,counts=scan(rows)
+    # Existing merged OR strategies are also candidates in their own right:
+    # they need not have a freshly qualifying individual grid leaf to remain active.
+    existing_pass=0
+    for s in previous.get("strategies",seeds()):
+        g=gates([r for r in matched_rows(rows,s) if r["result"]])
+        if g["pass"]:
+            existing_pass+=1
+            found.append({"market":s["market"],"side":s["side"],"clauses":s["clauses"],
+                          "fingerprint":signature(s["market"]+"_"+s["side"],s["clauses"]),"gate":g})
+    counts["existing_rechecked"]=len(previous.get("strategies",seeds()))
+    counts["existing_passing"]=existing_pass
     groups=merge(found,rows)
     result=registry(groups,rows,previous,now)
     result["search"]={**counts,"merged_active":len(groups),"rows":len(rows),
