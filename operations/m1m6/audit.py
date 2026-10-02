@@ -171,7 +171,21 @@ def audit():
     result_sync=json.loads(result_sync_path.read_text()) if result_sync_path.exists() else {}
     return {
         "summary": {
-            "action": "audit_first_natural_batch", "at_ms": now,
+            "action": "audit_natural_notifications", "at_ms": now,
+            "version": config.get("version"), "mode": config.get("mode"),
+            "batch_lock_enabled": public.get("batch_lock_enabled",True),
+            "pending_result_count": public.get("pending_result_count"),
+            "overlap_allowed": config.get("batch_lock_enabled") is False,
+            "public_copies_consistent": all(
+                json.loads(p.read_text())==public for p in
+                [Path("/var/www/crownsystem-v3/m1m6_status.json"),
+                 Path("/opt/crown-radar-v2/data/m1m6_status.json")]),
+            "no_lock_page_markers": {
+                str(p): "不設批次封鎖" in p.read_text() and "整批正式賽果齊全前不開下一批" not in p.read_text()
+                for p in [Path("/var/www/crownsystem-v3/strategy.html"),
+                          Path("/var/www/crownsystem-v3/heavy.html"),
+                          Path("/opt/crown-radar-v2/strategy.html"),
+                          Path("/opt/crown-radar-v2/heavy.html")]},
             "activated_at": config["activated_at"], "enabled": config["enabled"],
             "status_updated_at": public["updated_at"],
             "status_age_seconds": (now-public["updated_at"])/1000,

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Global batch lock, causal rolling OR gate, Crown-only notifier."""
+"""No batch lock; causal rolling OR gate and independent result accounting."""
 import argparse
 import collections
 import fcntl
@@ -81,10 +81,7 @@ def collect(now):
             if h["ko"]>now:
                 live.append(h)
     return history,live,observations,finished,reasons
-def reconcile(db,finished,now):
-    batch=db.execute("SELECT * FROM batches WHERE status='open' ORDER BY id LIMIT 1").fetchone()
-    if not batch:
-        return None
+def reconcile_one(db,batch,finished,now):
     for item in db.execute("SELECT * FROM items WHERE batch_id=?",(batch["id"],)).fetchall():
         if item["status"]=="prepared":
             db.execute("UPDATE items SET status='skipped',error='unattempted after interrupted batch; no delayed backfill' WHERE bet_key=?",(item["bet_key"],))
@@ -101,6 +98,28 @@ def reconcile(db,finished,now):
     ko=batch["kickoff_utc"] or (next(iter(times)) if len(times)==1 else None)
     return {"batch_id":batch["id"],"waiting":waiting,"kickoff_utc":ko,
             "accepting_same_kickoff":bool(ko and now+1500<ko)} if waiting else None
+def reconcile(db,finished,now):
+    """Settle every open accounting group independently; none blocks sending."""
+    pending=[]
+    for batch in db.execute("SELECT * FROM batches WHERE status='open' ORDER BY id").fetchall():
+        item=reconcile_one(db,batch,finished,now)
+        if item:
+            pending.append(item)
+    return pending
+def prepare_items(db,selected,now):
+    groups={}
+    for ko in sorted({h["ko"] for h in selected}):
+        row=db.execute("SELECT id FROM batches WHERE status='open' AND kickoff_utc=? ORDER BY id LIMIT 1",(ko,)).fetchone()
+        if row:
+            groups[ko]=row["id"]
+        else:
+            cur=db.execute("INSERT INTO batches(created_at,status,kickoff_utc,policy_version) VALUES(?,'open',?,?)",(now,ko,VERSION))
+            groups[ko]=cur.lastrowid
+    for h in selected:
+        db.execute("INSERT INTO items(bet_key,batch_id,sid,ko,payload,status) VALUES(?,?,?,?,?,'prepared')",
+                   (key(h),groups[h["ko"]],h["sid"],h["ko"],json.dumps(h,ensure_ascii=False)))
+    db.commit()
+    return groups
 def message(hit,batch_id,other_market=False):
     side="買細" if hit["side"]=="under" else "買主"
     line=f"{hit['line']:g}" if hit["market"]=="OU" else "平手" if hit["line"]==0 else ("受讓" if hit["line"]>0 else "讓")+f"{abs(hit['line']):g}"
@@ -114,7 +133,7 @@ def message(hit,batch_id,other_market=False):
             text.append(f"近{n}場 {rate}")
         evidence.append(f"{rid}：{'；'.join(text)}")
     return "\n".join([
-      f"皇冠 M1–M6｜賽前批次 #{batch_id}",
+      f"皇冠 M1–M6｜賽前訊號（記錄組 #{batch_id}）",
       f"策略：{'／'.join(hit['rules'])}（同注只計一次）",
       f"{hit['league']}｜{hit['home']} vs {hit['away']}",
       f"開賽：{fmt(hit['ko'])} 香港時間",
@@ -124,8 +143,8 @@ def message(hit,batch_id,other_market=False):
       *evidence,
       "上述為已結算匹配場次窗口，不是下一場勝率。",
       "同場亦有另一市場訊號，存在同場風險。" if other_market else "本訊號只代表列出的市場及方向。",
-      "同一開賽時間屬同批，開賽前可追加其他合資格場次；整批正式賽果齊全前不開其他時間的新批。",
-      "結算後重新核對20場95%或30場90%，達標先推下一批。",
+      "不設批次封鎖：每場固定條件符合，且最近20場≥95%或最近30場≥90%，即可推介。",
+      "其他訊號未有賽果亦不封鎖；只以已結算匹配場次更新窗口，未足30場不算30場達標。",
       "盤價已變即不等同本訊號；不會自動下注。",
     ])
 def send(text,ko,creds):
@@ -145,15 +164,17 @@ def send(text,ko,creds):
         return ("rejected" if 400<=e.code<500 else "uncertain"),None,f"HTTP {e.code}"
     except Exception as e:
         return "uncertain",None,type(e).__name__
-def publish(db,config,gate_by_rule,reasons,live,locked,now):
+def publish(db,config,gate_by_rule,reasons,live,pending,now):
     ledger=[]
     for x in db.execute("SELECT * FROM items ORDER BY batch_id DESC,bet_key LIMIT 100"):
         p=json.loads(x["payload"])
         ledger.append({**{k:p.get(k) for k in ["sid","ko","ko_hkt","home","away","league","market","side","line","hk","rules"]},
           "batch_id":x["batch_id"],"delivery_status":x["status"],"attempt_at":x["attempt_at"],"ack_at":x["ack_at"],
           "message_id":x["message_id"],"result":json.loads(x["result_json"]) if x["result_json"] else None})
-    data={"version":VERSION,"updated_at":now,"activated_at":config["activated_at"],"mode":"same_kickoff_batch_then_rolling_OR",
-          "locked_batch":locked,"rules":[{**q,"gate":gate_by_rule[q["id"]]} for q in RULES],
+    data={"version":VERSION,"updated_at":now,"activated_at":config["activated_at"],"mode":"rolling_OR_no_batch_lock",
+          "locked_batch":None,"batch_lock_enabled":False,"pending_batches":pending,
+          "pending_result_count":sum(x["waiting"] for x in pending),
+          "rules":[{**q,"gate":gate_by_rule[q["id"]]} for q in RULES],
           "live_condition_hits":[{k:v for k,v in h.items() if k!="snapshot_evidence"} for h in live],
           "ledger":ledger,"scan_reasons":dict(reasons),"legacy_retired":True,
           "history_definition":"全部符合固定條件且當時已知正式賽果；包括未通知的場次",
@@ -169,7 +190,7 @@ def tick(dry=False):
     if dry:
         return {"dry_run":True,"gates":gate_by_rule,"live_hits":len(live),"reasons":dict(reasons),"sends":0}
     db=state_db()
-    locked=reconcile(db,finished,now)
+    pending=reconcile(db,finished,now)
     for h,result in observations:
         db.execute("INSERT OR IGNORE INTO observations VALUES(?,?,?,?,?,?)",
           (h["sid"],h["rule_id"],now,"historical_seed" if h["ko"]<=config["activated_at"] else "observed",
@@ -178,23 +199,15 @@ def tick(dry=False):
             db.execute("UPDATE observations SET result_json=? WHERE sid=? AND rule_id=?",(json.dumps(result,ensure_ascii=False),h["sid"],h["rule_id"]))
     db.commit()
     attempted={r[0] for r in db.execute("SELECT bet_key FROM items")}
-    selected=choose_batch(live,gate_by_rule,now,config["activated_at"],locked,attempted) if config.get("enabled") else []
+    selected=choose_batch(live,gate_by_rule,now,config["activated_at"],False,attempted) if config.get("enabled") else []
     sent=0
     if selected:
         creds=env()
         if not creds.get("TELEGRAM_BOT_TOKEN") or not creds.get("TELEGRAM_CHAT_ID"):
             raise RuntimeError("Telegram configuration missing")
-        if locked:
-            batch_id=locked["batch_id"]
-        else:
-            cur=db.execute("INSERT INTO batches(created_at,status,kickoff_utc,policy_version) VALUES(?,'open',?,?)",
-                           (now,selected[0]["ko"],VERSION))
-            batch_id=cur.lastrowid
+        groups=prepare_items(db,selected,now)
         for h in selected:
-            db.execute("INSERT INTO items(bet_key,batch_id,sid,ko,payload,status) VALUES(?,?,?,?,?,'prepared')",
-              (key(h),batch_id,h["sid"],h["ko"],json.dumps(h,ensure_ascii=False)))
-        db.commit()
-        for h in selected:
+            batch_id=groups[h["ko"]]
             if nowms()+1500>=h["ko"]:
                 db.execute("UPDATE items SET status='skipped',error='kickoff deadline' WHERE bet_key=?",(key(h),))
                 db.commit()
@@ -214,10 +227,11 @@ def tick(dry=False):
               (status,ack_at,ack.get("message_id") if ack else None,error,key(h)))
             db.commit()
             sent+=status=="sent"
-        locked=reconcile(db,finished,nowms())
-    publish(db,config,gate_by_rule,reasons,live,locked,nowms())
+        pending=reconcile(db,finished,nowms())
+    publish(db,config,gate_by_rule,reasons,live,pending,nowms())
     db.close()
-    return {"version":VERSION,"at":fmt(now),"locked_batch":locked,"fixed_live_hits":len(live),"batch_selected":len(selected),"sent":sent,
+    return {"version":VERSION,"at":fmt(now),"locked_batch":None,"batch_lock_enabled":False,
+            "pending_result_count":sum(x["waiting"] for x in pending),"fixed_live_hits":len(live),"batch_selected":len(selected),"sent":sent,
             "gate_pass":[r for r,g in gate_by_rule.items() if g["pass"]]}
 def main():
     ap=argparse.ArgumentParser()

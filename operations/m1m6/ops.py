@@ -108,6 +108,9 @@ def main():
     elif action=="upgrade_batch":
         from upgrade_batch import upgrade
         result=upgrade()
+    elif action=="upgrade_nolock":
+        from upgrade_nolock import upgrade
+        result=upgrade()
     elif action=="results_preflight":
         from repair_results import preflight
         result=preflight()

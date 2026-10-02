@@ -48,33 +48,42 @@ class RulesTest(unittest.TestCase):
         for r in h[-20:]:
             r.update(result="P",pnl=0)
         self.assertFalse(policy.gates(h)["pass"])
-    def test_batch_lock_same_scan_dedupe_and_cutover(self):
+    def test_no_lock_dedupe_and_cutover(self):
         h=policy.evaluate(self.m,self.s,{},self.now)[0][0]
         second={**h,"sid":"2"};duplicate={**h,"rule_id":"M4"}
         gate={i:{"pass":True} for i in ["M1","M4"]}
         self.assertEqual(len(policy.choose_batch([h,second,duplicate],gate,self.now,0)),2)
-        self.assertEqual(policy.choose_batch([h,second],gate,self.now,0,locked=True),[])
+        self.assertEqual(len(policy.choose_batch([h,second],gate,self.now,0,locked=True)),2)
         self.assertEqual(policy.choose_batch([h],gate,self.now,self.now),[])
         self.assertEqual(policy.choose_batch([h],gate,self.ko,0),[])
     def test_future_model_not_used(self):
         cp={"INITIAL":{"locked_at_ms":self.ko+1,"prediction":{"pred_ah":"主"}}}
         self.assertIsNone(policy.initial_model(cp,self.ko,self.now))
-    def test_same_kickoff_append_and_other_kickoff_block(self):
+    def test_any_kickoff_allowed_despite_legacy_lock(self):
         h=policy.evaluate(self.m,self.s,{},self.now)[0][0]
         same={**h,"sid":"2"}
         later={**h,"sid":"3","ko":h["ko"]+60000}
         gate={"M1":{"pass":True}}
         lock={"batch_id":1,"kickoff_utc":h["ko"]}
         selected=policy.choose_batch([h,same,later],gate,self.now,0,lock,{policy.key(h)})
-        self.assertEqual([x["sid"] for x in selected],["2"])
+        self.assertEqual([x["sid"] for x in selected],["2","3"])
         self.assertEqual(policy.choose_batch([same],gate,h["ko"],0,lock),[])
-        self.assertEqual(policy.choose_batch([same],gate,self.now,0,{"batch_id":1}),[])
+        self.assertEqual(len(policy.choose_batch([same],gate,self.now,0,{"batch_id":1})),1)
         self.assertEqual(policy.choose_batch([same],{"M1":{"pass":False}},self.now,0,lock),[])
-    def test_unlocked_batch_never_mixes_kickoffs(self):
+    def test_all_qualified_kickoffs_selected(self):
         h=policy.evaluate(self.m,self.s,{},self.now)[0][0]
         later={**h,"sid":"2","ko":h["ko"]+60000}
         selected=policy.choose_batch([later,h],{"M1":{"pass":True}},self.now,0)
-        self.assertEqual([x["sid"] for x in selected],["1"])
+        self.assertEqual({x["sid"] for x in selected},{"1","2"})
+    def test_incomplete_thirty_does_not_block_passing_twenty(self):
+        h=[{"sid":str(i),"ko":i,"result":"W","pnl":.8} for i in range(22)]
+        h[-1].update(result="L",pnl=-1)
+        g=policy.gates(h)
+        self.assertTrue(g["20"]["pass"])
+        self.assertFalse(g["30"]["pass"])
+        self.assertTrue(g["pass"])
+        h[-2].update(result="L",pnl=-1)
+        self.assertFalse(policy.gates(h)["pass"])
     def test_result_must_be_official_and_available(self):
         f={"status":"完","home_score":1,"away_score":0,"fetched_at":self.ko+100}
         self.assertFalse(policy.valid_result(f,self.ko,self.ko))
@@ -83,7 +92,7 @@ class RulesTest(unittest.TestCase):
         self.assertFalse(policy.valid_result(f,self.ko,self.ko+101))
 
 class BatchLedgerTest(unittest.TestCase):
-    def test_tick_append_same_batch_settle_all_then_new_batch(self):
+    def test_tick_unsettled_groups_do_not_block_new_match(self):
         ko=1790899200000
         base={"rule_id":"M1","sid":"1","ko":ko,"ko_hkt":policy.fmt(ko),
               "market":"OU","side":"under","line":3.25,"hk":.8,
@@ -106,10 +115,14 @@ class BatchLedgerTest(unittest.TestCase):
                 collect.return_value=({"M1":[]},[base],[],{}, {})
                 self.assertEqual(notifier.tick()["sent"],1)
                 collect.return_value=({"M1":[]},[base,second,later],[],{}, {})
-                self.assertEqual(notifier.tick()["sent"],1)
+                out=notifier.tick()
+                self.assertEqual(out["sent"],2)
+                self.assertFalse(out["batch_lock_enabled"])
+                self.assertIsNone(out["locked_batch"])
+                self.assertEqual(out["pending_result_count"],3)
                 self.assertEqual(notifier.tick()["sent"],0)
                 db=notifier.state_db()
-                self.assertEqual(db.execute("SELECT COUNT(*) FROM batches").fetchone()[0],1)
+                self.assertEqual(db.execute("SELECT COUNT(*) FROM batches").fetchone()[0],2)
                 self.assertEqual(db.execute("SELECT COUNT(*) FROM items WHERE batch_id=1").fetchone()[0],2)
                 db.close()
                 clock.return_value=ko+100000
@@ -117,7 +130,7 @@ class BatchLedgerTest(unittest.TestCase):
                 collect.return_value=({"M1":[]},[later],[],{"1":final}, {})
                 self.assertEqual(notifier.tick()["sent"],0)
                 collect.return_value=({"M1":[]},[later],[],{"1":final,"2":final}, {})
-                self.assertEqual(notifier.tick()["sent"],1)
+                self.assertEqual(notifier.tick()["sent"],0)
                 db=notifier.state_db()
                 self.assertEqual(db.execute("SELECT status FROM batches WHERE id=1").fetchone()[0],"closed")
                 self.assertEqual(db.execute("SELECT batch_id FROM items WHERE sid='3'").fetchone()[0],2)
@@ -133,8 +146,8 @@ class BatchLedgerTest(unittest.TestCase):
                            (sid,sid,json.dumps(h),status))
             db.commit()
             f={"status":"完","home_score":1,"away_score":0,"fetched_at":20}
-            self.assertEqual(notifier.reconcile(db,{"1":f},30)["waiting"],1)
-            self.assertIsNone(notifier.reconcile(db,{"1":f,"2":f},30))
+            self.assertEqual(notifier.reconcile(db,{"1":f},30)[0]["waiting"],1)
+            self.assertEqual(notifier.reconcile(db,{"1":f,"2":f},30),[])
             self.assertEqual(db.execute("SELECT status FROM batches").fetchone()[0],"closed")
             self.assertEqual(db.execute("SELECT status FROM items WHERE sid='2'").fetchone()[0],"uncertain")
             db.close()
@@ -144,8 +157,23 @@ class BatchLedgerTest(unittest.TestCase):
             db.execute("INSERT INTO batches(id,created_at,status) VALUES(1,1,'open')")
             db.execute("INSERT INTO items(bet_key,batch_id,sid,ko,payload,status) VALUES('x',1,'1',100,'{}','prepared')")
             db.commit()
-            self.assertIsNone(notifier.reconcile(db,{},30))
+            self.assertEqual(notifier.reconcile(db,{},30),[])
             self.assertEqual(db.execute("SELECT status FROM items").fetchone()[0],"skipped")
+            db.close()
+    def test_later_group_settles_while_earlier_result_missing(self):
+        with tempfile.TemporaryDirectory() as tmp,patch.object(notifier,"STATE",Path(tmp)):
+            db=notifier.state_db()
+            for i in (1,2):
+                db.execute("INSERT INTO batches(id,created_at,status,kickoff_utc) VALUES(?,1,'open',10)",(i,))
+                h={"sid":str(i),"ko":10,"market":"OU","side":"under","line":3.25,"hk":.8}
+                db.execute("INSERT INTO items(bet_key,batch_id,sid,ko,payload,status) VALUES(?,?,?,10,?,'sent')",
+                           (str(i),i,str(i),json.dumps(h)))
+            db.commit()
+            f={"status":"完","home_score":1,"away_score":0,"fetched_at":20}
+            pending=notifier.reconcile(db,{"2":f},30)
+            self.assertEqual([r["batch_id"] for r in pending],[1])
+            self.assertEqual(db.execute("SELECT status FROM batches WHERE id=2").fetchone()[0],"closed")
+            self.assertIsNone(db.execute("SELECT result_json FROM items WHERE sid='1'").fetchone()[0])
             db.close()
 
 if __name__=="__main__":

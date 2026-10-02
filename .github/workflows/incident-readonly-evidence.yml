@@ -4,7 +4,7 @@ on:
     inputs:
       action:
         type: choice
-        options: [inspect, pause_legacy, install, verify, audit, inspect_hkjc, stop_hkjc, verify_hkjc, diagnose_results, upgrade_batch, results_preflight, repair_results, examples]
+        options: [inspect, pause_legacy, install, verify, audit, inspect_hkjc, stop_hkjc, verify_hkjc, diagnose_results, upgrade_batch, upgrade_nolock, results_preflight, repair_results, examples]
         required: true
         default: inspect
 permissions:

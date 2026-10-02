@@ -14,11 +14,11 @@
 @media(max-width:500px){#m1m6-root{padding:12px}#m1m6-root .m-panel{padding:12px}#m1m6-root th,#m1m6-root td{padding:8px 6px}}
 </style>
 <main id="m1m6-root">
- <div class="m-toolbar"><div><h2 style="margin-top:0">M1–M6 批次通知</h2><div id="m-updated" class="m-muted" role="status">正在讀取通知帳本…</div></div><button id="m-refresh" type="button">立即更新</button></div>
- <section class="m-panel" style="margin-top:16px" aria-labelledby="m-lock"><h3 id="m-lock">正在核對批次狀態</h3><p>同一開賽時間屬同一批；其他同批場次資料稍後到齊，仍可在開賽前通過條件及門檻核對後追加通知。不同開賽時間不可混批，整批正式賽果齊全前不開下一批。結算後，各分支須最近20場≥95%或30場≥90%，才可再推下一場。</p><p class="m-muted">同場同市場同方向同盤線只計一次；開賽後不追加或補發。缺資料、未達門檻、批次鎖定會分開顯示；走盤不計命中率分母，半贏計命中但只收半注收益。</p></section>
+ <div class="m-toolbar"><div><h2 style="margin-top:0">M1–M6 達標通知</h2><div id="m-updated" class="m-muted" role="status">正在讀取通知帳本…</div></div><button id="m-refresh" type="button">立即更新</button></div>
+ <section class="m-panel" style="margin-top:16px" aria-labelledby="m-lock"><h3 id="m-lock">正在核對通知模式</h3><p>不設批次封鎖。每場只要固定條件符合，而且該分支最近20場≥95%或最近30場≥90%，就可推介；其他場次未有賽果亦不影響放行。同時符合多場可全部通知，不限同一開賽時間。</p><p class="m-muted">同場同市場同方向同盤線只計一次；開賽後不追加或補發。窗口只用已結算匹配場次，20／30窗口須足20／30場，非走盤至少16／24場且淨收益為正。走盤不計命中率分母，半贏計命中但只收半注收益；近期命中率不是下一場勝率。</p></section>
  <h2>六個固定條件與目前窗口</h2><div id="m-rules" class="m-grid"><div class="m-panel m-muted">載入六組條件及最近窗口…</div></div>
  <h2>新版本TG通知帳本</h2><div class="m-panel"><p class="m-muted">只列新版本實際發送嘗試；歷史研究樣本與舊8條策略不混入本帳本。</p><div id="m-ledger" class="m-table">載入中…</div></div>
- <details class="m-panel"><summary>目前掃描診斷</summary><div id="m-diagnostics" class="m-muted"></div><p class="m-muted">取消、延期或缺正式賽果不會自動當作已結算解鎖；會保留等候狀態。</p></details>
+ <details class="m-panel"><summary>目前掃描診斷</summary><div id="m-diagnostics" class="m-muted"></div><p class="m-muted">取消、延期或缺正式賽果仍保留待結算紀錄，不會假作已結算，亦不封鎖其他合資格場次。</p></details>
 </main>
 <script>
 (()=>{"use strict";
@@ -36,11 +36,11 @@
    const data=window.M1M6_PREVIEW_DATA || await fetch("/crownsystem-v3/m1m6_status.json?t="+Date.now(),{cache:"no-store"}).then(r=>{if(!r.ok)throw Error();return r.json()});
    const stale=Date.now()-data.updated_at>90000;
    $("m-updated").textContent=`香港時間 ${time(data.updated_at)}｜${data.version}${stale?"｜資料超過90秒未更新，勿當即時訊號":""}`;
-   const locked=data.locked_batch;
-   $("m-lock").textContent=locked?`批次 #${locked.batch_id}｜${locked.kickoff_utc?time(locked.kickoff_utc):"原批次"}｜${locked.accepting_same_kickoff?"同開賽時間可追加；其他時間鎖定":`已封批，等候 ${locked.waiting} 筆正式賽果`}`:"批次已解鎖：等候新賽前訊號";
-   $("m-lock").className=locked?"m-warn":"m-pass";
-   $("m-rules").innerHTML=data.rules.map(r=>`<article class="m-panel"><h3>${esc(r.id)}｜${esc(r.label)}</h3><p>${esc(r.description)}</p><p class="${r.gate.pass?"m-pass":"m-warn"}">${r.gate.pass?(locked?(locked.accepting_same_kickoff?"窗口達標，只可追加同開賽時間":"窗口達標，仍受整批鎖限制"):"窗口達標，等候固定條件命中"):"窗口未達標，暫不放行"}</p><div>最近20：${esc(stat(r.gate["20"]))}</div><div>最近30：${esc(stat(r.gate["30"]))}</div><p class="m-muted">窗口是所有符合條件的已結算場次，並非實際TG命中率。</p></article>`).join("");
-   $("m-ledger").innerHTML=data.ledger.length?`<table><thead><tr><th>批次／策略</th><th>香港開賽／賽事</th><th>盤價</th><th>TG狀態</th><th>正式結果</th></tr></thead><tbody>${data.ledger.map(r=>`<tr><td>#${r.batch_id}<br>${esc(r.rules.join("／"))}</td><td>${esc(time(r.ko))}<br>${esc(r.home)} vs ${esc(r.away)}</td><td>${r.side==="under"?"買細":"買主"} ${esc(r.line)}<br>港賠 ${Number(r.hk).toFixed(2)}</td><td>${esc(states[r.delivery_status]||r.delivery_status)}<br>${esc(time(r.ack_at))}</td><td>${r.result?`${esc(r.result.score)}｜${esc(results[r.result.result])}<br>${r.result.pnl>=0?"+":""}${r.result.pnl.toFixed(3)}u`:"等候正式賽果"}</td></tr>`).join("")}</tbody></table>`:"尚未有新版本通知紀錄。系統只會處理切換後新到達、仍未開賽嘅T5訊號，不補發歷史場次。";
+   const noLock=data.batch_lock_enabled===false && data.mode==="rolling_OR_no_batch_lock";
+   $("m-lock").textContent=noLock?`不設批次封鎖｜${data.pending_result_count||0} 筆待結算（不影響新訊號）`:"尚未確認無封鎖版本，請更新後再核對";
+   $("m-lock").className=noLock&&!stale?"m-pass":"m-warn";
+   $("m-rules").innerHTML=data.rules.map(r=>`<article class="m-panel"><h3>${esc(r.id)}｜${esc(r.label)}</h3><p>${esc(r.description)}</p><p class="${r.gate.pass?"m-pass":"m-warn"}">${r.gate.pass?(noLock?"窗口達標，固定條件命中即可推介":"窗口達標，通知模式待確認"):"窗口未達標，暫不放行"}</p><div>最近20：${esc(stat(r.gate["20"]))}${r.gate["20"].n<20?"（未足20場，不算達標）":""}</div><div>最近30：${esc(stat(r.gate["30"]))}${r.gate["30"].n<30?"（未足30場，不算達標）":""}</div><p class="m-muted">窗口是所有符合條件的已結算場次，並非實際TG命中率。</p></article>`).join("");
+   $("m-ledger").innerHTML=data.ledger.length?`<table><thead><tr><th>記錄組／策略</th><th>香港開賽／賽事</th><th>盤價</th><th>TG狀態</th><th>正式結果</th></tr></thead><tbody>${data.ledger.map(r=>`<tr><td>#${r.batch_id}<br>${esc(r.rules.join("／"))}</td><td>${esc(time(r.ko))}<br>${esc(r.home)} vs ${esc(r.away)}</td><td>${r.side==="under"?"買細":"買主"} ${esc(r.line)}<br>港賠 ${Number(r.hk).toFixed(2)}</td><td>${esc(states[r.delivery_status]||r.delivery_status)}<br>${esc(time(r.ack_at))}</td><td>${r.result?`${esc(r.result.score)}｜${esc(results[r.result.result])}<br>${r.result.pnl>=0?"+":""}${r.result.pnl.toFixed(3)}u`:"等候正式賽果"}</td></tr>`).join("")}</tbody></table>`:"尚未有新版本通知紀錄。系統只會處理切換後新到達、仍未開賽嘅T5訊號，不補發歷史場次。";
    $("m-diagnostics").innerHTML=Object.entries(data.scan_reasons).map(([k,v])=>`<div>${esc(reasons[k]||k)}：${v}場</div>`).join("")+`<div>目前固定條件命中：${data.live_condition_hits.length}個分支紀錄（未去重，未必可發送）</div>`;
    for(const id of ["status","meta"]){if($(id))$(id).textContent="M1–M6｜"+time(data.updated_at);}
   }catch(e){$("m-updated").textContent="暫時未能讀取新通知帳本，請稍後按「立即更新」；未有資料不代表沒有符合場次。";$("m-lock").textContent="狀態未能確認";}

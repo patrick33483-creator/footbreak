@@ -52,7 +52,7 @@ def render_page(original,panel):
     header=preserve_header(original[head.end():])
     header=re.sub(r"<h1>.*?</h1>","<h1>皇冠策略 · M1–M6</h1>",header,flags=re.S)
     header=re.sub(r'<button\b[^>]*>.*?</button>',"",header,flags=re.S)
-    top=re.sub(r"<title>.*?</title>","<title>皇冠策略 · M1–M6 批次通知</title>",head.group(),flags=re.S)
+    top=re.sub(r"<title>.*?</title>","<title>皇冠策略 · M1–M6 達標通知</title>",head.group(),flags=re.S)
     return top+"\n"+header+"\n"+panel+"\n</body></html>"
 def verify():
     status=BASE/"status.json"
