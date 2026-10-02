@@ -9,7 +9,8 @@ DEST=Path("/opt/crown-m1m6")
 BASE=Path("/var/lib/crown-m1m6")
 NGINX=Path("/etc/nginx/sites-enabled/unified-dashboard")
 FILES=("policy.py","notifier.py","dynamic_rules.py","strategy_runtime.py","research_cycle.py",
-       "refresh_api.py","panel.html","test_policy.py","test_dynamic.py","ledger_view.py","test_ledger_view.py")
+       "refresh_api.py","panel.html","test_policy.py","test_dynamic.py","ledger_view.py","test_ledger_view.py",
+       "result_refresh.py","test_result_refresh.py")
 
 
 def presentation_refresh():
@@ -108,7 +109,7 @@ def schedule_refresh():
         run(["systemctl","start","crown-strategy-search.timer"],True)
     return {"summary":{"action":"schedule_refresh","interval_hours":2,"runs_per_day":12,
             "tests":tests["stderr"],"protected_files_unchanged":True,"strategy_definitions_unchanged":True,
-            "next_search_at":next_at,"pages_verified":all("每兩小時自動循環" in p.read_text() for p in PAGES),
+            "next_search_at":next_at,"pages_verified":all("每兩小時" in p.read_text() for p in PAGES),
             "timer":run(["systemctl","show","crown-strategy-search.timer","-p","ActiveState",
                          "-p","SubState","-p","TimersMonotonic","-p","NextElapseUSecMonotonic"])["stdout"]}}
 
@@ -175,7 +176,8 @@ def code_refresh():
                            min_decimal_odds=MIN_DECIMAL_ODDS,tg_format="compact-v2")
                 atomic(config,cfg)
                 for name in FILES:
-                    shutil.copy2(DEST/name,backup/name)
+                    if (DEST/name).exists():
+                        shutil.copy2(DEST/name,backup/name)
                     shutil.copy2(HERE/name,DEST/name)
                 for p in PAGES:
                     shutil.copy2(p,backup/str(p).lstrip("/").replace("/","__"))

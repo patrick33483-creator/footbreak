@@ -15,7 +15,7 @@
 </style>
 <main id="m1m6-root">
  <div class="m-toolbar"><div><h2 style="margin-top:0">皇冠重點｜自動組合策略</h2><div id="m-updated" class="m-muted" role="status">正在讀取通知帳本…</div></div><button id="m-refresh" type="button">立即更新</button></div>
- <section class="m-panel" style="margin-top:16px"><h3>每兩小時自動循環</h3><p>核對賽果 → 重算所有現有策略近20／30場 → 全網格重搜 → 合併相近分支並重新驗證 → 更新重點策略。按「立即更新」亦會完整執行，唔只係重讀畫面。</p><p id="m-research" class="m-muted" role="status">讀取最近搜尋紀錄…</p><p id="m-progress" role="status" aria-live="polite"></p></section>
+ <section class="m-panel" style="margin-top:16px"><h3>每兩小時循環＋推介賽事結算觸發</h3><p>已推介賽事首次取得正式賽果並結算後，自動觸發完整更新；同場只觸發一次，多場合併處理，搜尋執行中不重複開程序。來源未提供正式賽果前仍須等候。每兩小時循環及「立即更新」亦保留。</p><p>核對賽果 → 重算所有現有策略近20／30場 → 全網格重搜 → 合併相近分支並重新驗證 → 更新重點策略。</p><p id="m-result-refresh" class="m-muted" role="status"></p><p id="m-research" class="m-muted" role="status">讀取最近搜尋紀錄…</p><p id="m-progress" role="status" aria-live="polite"></p></section>
  <section class="m-panel" aria-labelledby="m-lock"><h3 id="m-lock">正在核對通知模式</h3><p>每條合併後策略各自封鎖：同一開賽時間可通知多場，該批正式賽果齊全後再核對<span id="m-gate-text">最近20場≥92.5% 或最近30場≥87.5%</span>，符合其中一個便可推下一場。其他策略可獨立運行；更新、改名或合併不會清除未結算封鎖。</p><p class="m-muted">同場同市場同方向同盤線只計一次；開賽後不追加或補發。窗口須足20／30場，非走盤至少16／24場且淨收益為正。走盤不計命中率分母，半贏計命中但只收半注收益。搜尋結果屬探索候選，近期命中率不是下一場勝率；不會自動下注。</p></section>
  <p id="m-price-floor" class="m-panel">最低十進制賠率1.70（港賠0.70）：先排除所選方向低於1.70的歷史場次，再取最近20／30場；組合搜尋及新TG通知使用同一限制。既有低賠率實戰紀錄保留並照常結算，不會刪除或解除未結算封鎖。</p>
  <h2>目前合資格策略</h2><p id="m-rules-summary" class="m-muted"></p><div id="m-rules" class="m-grid"><div class="m-panel m-muted">載入合資格策略及最新窗口…</div></div>
@@ -64,6 +64,8 @@
    $("m-lock").textContent=dynamic?`每條策略獨立封鎖｜${(data.strategy_pending_batches||[]).length} 個策略批次待結算`:"自動策略版本尚未確認，請稍後核對";
    $("m-lock").className=dynamic&&!stale&&!data.registry_stale?"m-pass":"m-warn";
    const search=data.search||{};
+   const event=data.result_refresh;
+   $("m-result-refresh").textContent=event?.enabled?`結算觸發：待處理 ${event.pending} 場，已完成 ${event.completed} 場｜最近事件完成：${time(event.latest_completed_at)}`:"結算觸發狀態待確認。";
    $("m-research").textContent=`最近完整循環：${time(data.registry_updated_at)}｜下次：約 ${time(data.next_search_at)}｜枚舉 ${search.enumerated||0} 個組合，合併後 ${search.merged_active||0} 條啟用｜${data.registry_stale?"搜尋逾時，暫停新通知":"既有策略每次一併重算"}`;
    const qualifiedRules=data.registry_stale?[]:data.rules.filter(r=>r.active&&r.gate?.pass);
    $("m-rules-summary").textContent=`只列 ${qualifiedRules.length} 條目前合資格策略；其他條件不顯示，歷史及未結算封鎖保留。`;

@@ -176,6 +176,7 @@ class BatchLedgerTest(unittest.TestCase):
                 collect.return_value=({"M1":[]},[later],[],{"1":final,"2":final}, {})
                 self.assertEqual(notifier.tick()["sent"],0)
                 db=notifier.state_db()
+                self.assertEqual([r[0] for r in db.execute("SELECT sid FROM result_refresh_events ORDER BY sid")],["1","2"])
                 self.assertEqual(db.execute("SELECT status FROM batches WHERE id=1").fetchone()[0],"closed")
                 self.assertEqual(db.execute("SELECT batch_id FROM items WHERE sid='3'").fetchone()[0],2)
                 db.close()

@@ -192,6 +192,7 @@ def audit():
             "search":public.get("search"),
             "registry_updated_at":public.get("registry_updated_at"),
             "next_search_at":public.get("next_search_at"),
+            "result_refresh":public.get("result_refresh"),
             "existing_strategy_checks":public.get("existing_strategy_checks",[]),
             "dynamic_services":{name:subprocess.run(["systemctl","show",name,"-p","ActiveState","-p","SubState","-p","Result","-p","TimersMonotonic","-p","NextElapseUSecMonotonic"],capture_output=True,text=True).stdout for name in
                 ["crown-strategy-search.timer","crown-strategy-search.service","crown-strategy-refresh-api.service"]},

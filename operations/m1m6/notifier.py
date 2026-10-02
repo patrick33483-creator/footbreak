@@ -95,6 +95,8 @@ def reconcile_one(db,batch,finished,now):
         if item["status"] in ["sent","sending","uncertain"] and not item["result_json"] and valid_result(finished.get(item["sid"]),item["ko"],now):
             result=settle(json.loads(item["payload"]),finished[item["sid"]])
             db.execute("UPDATE items SET result_json=? WHERE bet_key=?",(json.dumps(result,ensure_ascii=False),item["bet_key"]))
+            from result_refresh import enqueue
+            enqueue(db,item["sid"],now)
     waiting=db.execute("SELECT COUNT(*) FROM items WHERE batch_id=? AND status IN ('sent','uncertain','sending') AND result_json IS NULL",(batch["id"],)).fetchone()[0]
     if waiting==0:
         db.execute("UPDATE batches SET status='closed',closed_at=? WHERE id=?",(now,batch["id"]))
@@ -167,6 +169,7 @@ def send(text,ko,creds):
         return "uncertain",None,type(e).__name__
 def publish(db,config,gate_by_rule,reasons,live,pending,now,registry=None,strategy_pending=None):
     from ledger_view import context,classify,summary
+    from result_refresh import status as result_refresh_status
     view_ready,view_rules=context(registry,gate_by_rule,now)
     ledger=[]
     for x in db.execute("SELECT * FROM items ORDER BY batch_id DESC,bet_key LIMIT 100"):
@@ -184,6 +187,7 @@ def publish(db,config,gate_by_rule,reasons,live,pending,now,registry=None,strate
           "rules":[{**q,"gate":gate_by_rule[q["id"]]} for q in RULES],
           "live_condition_hits":[{k:v for k,v in h.items() if k!="snapshot_evidence"} for h in live],
           "ledger":ledger,"ledger_view":summary(ledger,view_ready),
+          "result_refresh":result_refresh_status(db),
           "scan_reasons":dict(reasons),"legacy_retired":True,
           "history_definition":"全部符合固定條件且當時已知正式賽果；包括未通知的場次",
           "old_history_archived":True}
@@ -283,6 +287,13 @@ def main():
             print(json.dumps({"skipped":"another tick holds lock"}))
             return
         print(json.dumps(tick(args.dry_run),ensure_ascii=False))
+    if not args.dry_run and REGISTRY.exists():
+        try:
+            from result_refresh import dispatch
+            print(json.dumps({"result_refresh":dispatch()},ensure_ascii=False))
+        except Exception as exc:
+            # Durable events remain pending; retry on a later natural scan.
+            print(json.dumps({"result_refresh_error":type(exc).__name__}),file=sys.stderr)
 if __name__=="__main__":
     try:
         main()
