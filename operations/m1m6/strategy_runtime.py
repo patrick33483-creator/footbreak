@@ -1,6 +1,6 @@
 """Per-strategy locks survive registry revisions and share duplicate branches."""
 import json
-from policy import gates,key
+from policy import gates,key,eligible_price
 from dynamic_rules import universe,matched_rows,description
 
 
@@ -58,6 +58,8 @@ def choose(live,gate_by_rule,now,activated_at,pending,rules,items):
     byrule={r["id"]:r for r in rules}
     candidates={}
     for h in live:
+        if not eligible_price(h):
+            continue
         rid=h["rule_id"]
         if not byrule[rid]["active"] or not gate_by_rule[rid]["pass"]:
             continue

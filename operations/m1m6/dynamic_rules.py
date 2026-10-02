@@ -5,7 +5,7 @@ import itertools
 import json
 import re
 from decimal import Decimal as D
-from policy import evaluate, valid_result, settle, gates, fmt, num, key, RULES, THRESHOLDS, GATE_VERSION
+from policy import evaluate, valid_result, settle, gates, fmt, num, key, RULES, THRESHOLDS, GATE_VERSION, MIN_HK, MIN_DECIMAL_ODDS, eligible_price
 
 GRAMMAR="crown-grid-0to3-families-v1"
 DIR={"home":"買主","away":"買客","over":"買大","under":"買細"}
@@ -96,7 +96,7 @@ def feature_rows(m,snaps,cp,finished,now):
     for market,side in GROUPS:
         q=snaps[("T5",market)]
         hk=num(q["home_odds" if side in ("home","over") else "away_odds"])
-        if not D(".60")<=hk<=D("1.20"):
+        if not MIN_HK<=hk<=D("1.20"):
             continue
         f=dict(ft)
         f["price_band"]=min(5,int((hk-D(".60"))/D(".10")))
@@ -181,6 +181,8 @@ def indices(mask):
 def atoms_for(rows):
     if not rows:
         return []
+    if not rows:
+        return []
     out=[]
     def add(f,v,op="eq"):
         a=atom(f,v,op)
@@ -201,6 +203,7 @@ def atoms_for(rows):
 
 
 def scan(rows):
+    rows=[r for r in rows if eligible_price(r)]
     found=[];counts=collections.Counter()
     for market,side in GROUPS:
         group=market+"_"+side
@@ -265,7 +268,7 @@ def related(a,b):
 
 
 def matched_rows(rows,s):
-    return [r for r in rows if (r["market"],r["side"])==(s["market"],s["side"]) and matches(r,s["clauses"])]
+    return [r for r in rows if eligible_price(r) and (r["market"],r["side"])==(s["market"],s["side"]) and matches(r,s["clauses"])]
 
 
 def merge(found,rows):
@@ -373,5 +376,6 @@ def registry(groups,rows,previous,now):
     checks=[{"id":s["id"],"version":s["version"],
              "gate":gates([r for r in matched_rows(rows,s) if r["result"]])} for s in old]
     return {"grammar":GRAMMAR,"gate_version":GATE_VERSION,"thresholds":THRESHOLDS,
+            "min_decimal_odds":MIN_DECIMAL_ODDS,
             "updated_at":now,"next_search_at":now+3*3600000,
             "sequence":sequence,"strategies":out,"existing_strategy_checks":checks}

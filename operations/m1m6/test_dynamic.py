@@ -45,6 +45,37 @@ class DynamicTests(unittest.TestCase):
         self.assertEqual(rt.choose([h],{"M1":{"pass":True}},100,11,[],[r],{}),[])
         self.assertEqual(rt.choose([h],{"M1":{"pass":True}},9000,0,[],[r],{}),[])
 
+    def test_price_floor_in_live_selection_and_feature_rows(self):
+        r=self.rule("M1");h=self.hit("M1","1",10000);h["hk"]=.69
+        self.assertEqual(rt.choose([h],{"M1":{"pass":True}},100,0,[],[r],{}),[])
+        h["hk"]=.70
+        self.assertEqual(len(rt.choose([h],{"M1":{"pass":True}},100,0,[],[r],{})),1)
+        from test_policy import RulesTest
+        t=RulesTest();t.setUp()
+        t.s[("T5","OU")]["home_odds"]=.69
+        t.s[("T5","OU")]["away_odds"]=.70
+        rows,_=d.feature_rows(t.m,t.s,{}, {},t.now)
+        self.assertNotIn(("OU","over"),[(x["market"],x["side"]) for x in rows])
+        self.assertIn(("OU","under"),[(x["market"],x["side"]) for x in rows])
+        self.assertTrue(all(x["hk"]>=.7 for x in rows))
+
+    def test_low_price_history_cannot_qualify_scanner_or_existing_strategy(self):
+        rows=[{"sid":str(i),"ko":i,"market":"OU","side":"under","line":3.25,
+               "features":{"hour":0},"result":"W","pnl":.69,"hk":.69} for i in range(30)]
+        with patch.object(d,"atoms_for",return_value=[]):
+            found,_=d.scan(rows)
+        self.assertEqual(found,[])
+        old={"strategies":[{**self.rule("M1"),"members":[]}],"sequence":0}
+        reg=d.registry([],rows,old,100)
+        self.assertEqual(reg["existing_strategy_checks"][0]["gate"]["20"]["n"],0)
+        self.assertFalse(reg["strategies"][0]["active"])
+        self.assertEqual(reg["strategies"][0]["lock_ids"],["M1"])
+        for row in rows:
+            row.update(hk=.70,pnl=.70)
+        with patch.object(d,"atoms_for",return_value=[]):
+            found,_=d.scan(rows)
+        self.assertEqual(len(found),1)
+
     def test_one_bet_multiple_reasons_and_deduped_existing(self):
         rules=[self.rule("M1"),self.rule("M2")]
         hits=[self.hit(r["id"],"1",10000) for r in rules]
@@ -76,7 +107,7 @@ class DynamicTests(unittest.TestCase):
 
     def test_merge_or_recomputed_and_stable_id(self):
         rows=[{"sid":str(i),"ko":i,"market":"OU","side":"under","line":3.25,
-               "features":{"hour":0,"ou_line":3.25,"ah_line":0},"result":"W","pnl":.8} for i in range(30)]
+               "features":{"hour":0,"ou_line":3.25,"ah_line":0},"result":"W","pnl":.8,"hk":.8} for i in range(30)]
         a={"market":"OU","side":"under","clauses":[[d.atom("hour",0),d.atom("ou_line",3.25),d.atom("ah_line",.75,"le")]]}
         b=copy.deepcopy(a);b["clauses"][0][-1]=d.atom("ah_line",0,"le")
         for c in (a,b):
@@ -107,7 +138,7 @@ class DynamicTests(unittest.TestCase):
     def test_existing_inactive_strategy_always_recalculated(self):
         old={"strategies":[{**self.rule("D1"),"born_at":0,"active":False,"members":[]}],"sequence":1}
         rows=[{"sid":str(i),"ko":i,"market":"OU","side":"under","line":3.25,
-               "features":{"hour":0},"result":"W" if i<19 else "L","pnl":.8 if i<19 else -1} for i in range(20)]
+               "features":{"hour":0},"result":"W" if i<19 else "L","pnl":.8 if i<19 else -1,"hk":.8} for i in range(20)]
         reg=d.registry([],rows,old,100)
         self.assertTrue(reg["existing_strategy_checks"][0]["gate"]["20"]["pass"])
         self.assertEqual(reg["strategies"][0]["gate"]["20"]["wins"],19)
@@ -122,7 +153,7 @@ class DynamicTests(unittest.TestCase):
         for n,wins,expected in [(20,18,True),(20,17,False),(30,26,True),(30,25,False)]:
             rows=[{"sid":str(i),"ko":i,"market":"OU","side":"under","line":3.25,
                    "features":{},"result":"W" if i<wins else "L",
-                   "pnl":.8 if i<wins else -1} for i in range(n)]
+                   "pnl":.8 if i<wins else -1,"hk":.8} for i in range(n)]
             with patch.object(d,"atoms_for",return_value=[]):
                 found,_=d.scan(rows)
             self.assertEqual(bool(found),expected,(n,wins))
@@ -136,7 +167,7 @@ class DynamicTests(unittest.TestCase):
             for r in rules:
                 r["active"]=True
             rp.write_text(json.dumps({"updated_at":100,"gate_version":d.GATE_VERSION,"strategies":rules,"search":{},"next_search_at":10800100}))
-            gate=gates([{"sid":str(i),"ko":i,"result":"W","pnl":.8} for i in range(30)])
+            gate=gates([{"sid":str(i),"ko":i,"result":"W","pnl":.8,"hk":.8} for i in range(30)])
             h={**self.hit("M1","1",10000),"ko_hkt":"test","t5_at":10,
                "home":"主","away":"客","league":"test"}
             h2={**h,"sid":"2","ko":20000}
@@ -158,7 +189,10 @@ class DynamicTests(unittest.TestCase):
                 self.assertEqual(out["strategy_pending_batches"],2)
                 self.assertEqual(notifier.tick()["sent"],0)
                 self.assertEqual(send.call_count,2)
-                self.assertIn("最近20場≥90% 或最近30場≥85%",send.call_args.args[0])
+                for removed in ("放行門檻","上述為已結算","本訊號只代表","每條策略獨立封鎖",
+                                "不同策略可各自運行","盤價已變"):
+                    self.assertNotIn(removed,send.call_args.args[0])
+                self.assertIn("近20場",send.call_args.args[0])
                 data=publish.call_args.args[1]
                 self.assertEqual(data["mode"],"dynamic_per_strategy_batch")
                 self.assertEqual(len(data["rules"]),6)
@@ -167,7 +201,7 @@ class DynamicTests(unittest.TestCase):
         import research_cycle
         s={**self.rule("D1"),"born_at":0,"active":False,"members":[]}
         rows=[{"sid":str(i),"ko":i,"market":"OU","side":"under","line":3.25,
-               "features":{"hour":0},"result":"W","pnl":.8} for i in range(20)]
+               "features":{"hour":0},"result":"W","pnl":.8,"hk":.8} for i in range(20)]
         with patch.object(research_cycle.notifier,"source",return_value=None),\
              patch.object(research_cycle,"universe",return_value=(rows,{})),\
              patch.object(research_cycle,"scan",return_value=([],{"enumerated":0})):

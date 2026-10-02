@@ -39,7 +39,7 @@ class RulesTest(unittest.TestCase):
         self.assertEqual(policy.settle(h,{"home_score":1,"away_score":2,"fetched_at":1})["pnl"],.4)
         self.assertEqual(policy.settle(h,{"home_score":1,"away_score":3,"fetched_at":1})["result"],"L")
     def test_or_windows_and_no_push_replacement(self):
-        h=[{"sid":str(i),"ko":i,"result":"W","pnl":.8} for i in range(30)]
+        h=[{"sid":str(i),"ko":i,"result":"W","pnl":.8,"hk":.8} for i in range(30)]
         h[-1].update(result="L",pnl=-1)
         self.assertTrue(policy.gates(h)["20"]["pass"])
         h[-2].update(result="L",pnl=-1)
@@ -78,7 +78,7 @@ class RulesTest(unittest.TestCase):
         selected=policy.choose_batch([later,h],{"M1":{"pass":True}},self.now,0)
         self.assertEqual({x["sid"] for x in selected},{"1","2"})
     def test_incomplete_thirty_does_not_block_passing_twenty(self):
-        h=[{"sid":str(i),"ko":i,"result":"W","pnl":.8} for i in range(22)]
+        h=[{"sid":str(i),"ko":i,"result":"W","pnl":.8,"hk":.8} for i in range(22)]
         h[-1].update(result="L",pnl=-1)
         g=policy.gates(h)
         self.assertTrue(g["20"]["pass"])
@@ -89,7 +89,7 @@ class RulesTest(unittest.TestCase):
         h[-3].update(result="L",pnl=-1)
         self.assertFalse(policy.gates(h)["pass"])
     def test_new_threshold_boundaries_and_push_denominator(self):
-        h=[{"sid":str(i),"ko":i,"result":"W","pnl":.8} for i in range(30)]
+        h=[{"sid":str(i),"ko":i,"result":"W","pnl":.8,"hk":.8} for i in range(30)]
         for r in h[-4:]:
             r.update(result="L",pnl=-1)
         self.assertTrue(policy.gates(h)["30"]["pass"])  # 26/30, not rounded 25/30
@@ -97,7 +97,7 @@ class RulesTest(unittest.TestCase):
         self.assertFalse(policy.gates(h)["pass"])
         h[-5].update(result="P",pnl=0)
         self.assertTrue(policy.gates(h)["30"]["pass"])  # 25/29
-        h=[{"sid":str(i),"ko":i,"result":"W","pnl":.8} for i in range(20)]
+        h=[{"sid":str(i),"ko":i,"result":"W","pnl":.8,"hk":.8} for i in range(20)]
         h[-1].update(result="P",pnl=0);h[-2].update(result="L",pnl=-1)
         self.assertTrue(policy.gates(h)["20"]["pass"])  # 18/19
         h[-3].update(result="L",pnl=-1)
@@ -108,6 +108,23 @@ class RulesTest(unittest.TestCase):
         self.assertTrue(policy.valid_result(f,self.ko,self.ko+101))
         f["status"]="取消"
         self.assertFalse(policy.valid_result(f,self.ko,self.ko+101))
+    def test_price_floor_before_window_selection_and_push_exclusion(self):
+        rows=[{"sid":str(i),"ko":i,"result":"W","pnl":.7,"hk":.7} for i in range(30)]
+        low=[{"sid":str(i),"ko":i,"result":"W","pnl":.69,"hk":.69} for i in range(30,70)]
+        g=policy.gates(rows+low)
+        self.assertEqual(g["20"]["sids"],[str(i) for i in range(10,30)])
+        self.assertEqual(g["30"]["n"],30)
+        self.assertEqual(g["30"]["min_selected_hk"],.7)
+        self.assertTrue(g["pass"])
+        self.assertFalse(policy.gates(rows[:19]+low)["pass"])
+        rows[-1].update(result="P",pnl=0)
+        self.assertEqual(policy.gates(rows+low)["20"]["den"],19)
+        self.assertFalse(policy.eligible_price({"hk":.699999}))
+        self.assertFalse(policy.eligible_price({}))
+        self.assertTrue(policy.eligible_price({"hk":.7}))
+    def test_old_low_price_bet_still_settles(self):
+        h={"market":"OU","side":"under","line":3.25,"hk":.65}
+        self.assertEqual(policy.settle(h,{"home_score":1,"away_score":0,"fetched_at":1})["pnl"],.65)
 
 class BatchLedgerTest(unittest.TestCase):
     def setUp(self):

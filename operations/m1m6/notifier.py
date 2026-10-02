@@ -12,7 +12,7 @@ import time
 import urllib.error
 import urllib.request
 
-from policy import RULES,BY_ID,VERSION,START_MS,evaluate,valid_result,settle,gates,key,choose_batch,fmt,GATE_VERSION,THRESHOLDS,GATE_TEXT
+from policy import RULES,BY_ID,VERSION,START_MS,evaluate,valid_result,settle,gates,key,choose_batch,fmt,GATE_VERSION,THRESHOLDS,GATE_TEXT,MIN_DECIMAL_ODDS,eligible_price
 
 STATE=Path("/var/lib/crown-m1m6")
 CONFIG=Path("/etc/crown-m1m6.json")
@@ -147,12 +147,6 @@ def message(hit,batch_id,other_market=False):
       f"皇冠T5：{fmt(hit['t5_at'])}",
       *[f"{rid}條件：{hit.get('rule_descriptions',{}).get(rid) or BY_ID.get(rid,{}).get('description','條件見保存版本')}" for rid in hit["rules"]],
       *evidence,
-      f"放行門檻：{GATE_TEXT}，符合其中一個即可；須足窗口樣本及淨收益為正。",
-      "上述為已結算匹配場次窗口，不是下一場勝率。",
-      "同場亦有另一市場訊號，存在同場風險。" if other_market else "本訊號只代表列出的市場及方向。",
-      "每條策略獨立封鎖：同開賽時間可追加，整批正式賽果齊全後重驗門檻，再推下一場。",
-      "不同策略可各自運行；重複或合併分支共用封鎖，更新策略不會清除未結算紀錄。",
-      "盤價已變即不等同本訊號；不會自動下注。",
     ])
 def send(text,ko,creds):
     remaining=(ko-nowms())/1000
@@ -179,6 +173,7 @@ def publish(db,config,gate_by_rule,reasons,live,pending,now,registry=None,strate
           "batch_id":x["batch_id"],"delivery_status":x["status"],"attempt_at":x["attempt_at"],"ack_at":x["ack_at"],
           "message_id":x["message_id"],"result":json.loads(x["result_json"]) if x["result_json"] else None})
     data={"version":VERSION,"gate_version":GATE_VERSION,"thresholds":THRESHOLDS,"gate_text":GATE_TEXT,
+          "min_decimal_odds":MIN_DECIMAL_ODDS,
           "updated_at":now,"activated_at":config["activated_at"],"mode":"rolling_OR_no_batch_lock",
           "locked_batch":None,"batch_lock_enabled":False,"pending_batches":pending,
           "pending_result_count":sum(x["waiting"] for x in pending),
@@ -239,6 +234,10 @@ def tick(dry=False):
             attach(db,selected,registry["strategies"],now)
         for h in fresh:
             batch_id=groups[h["ko"]]
+            if not eligible_price(h):
+                db.execute("UPDATE items SET status='skipped',error='selected odds below floor or invalid' WHERE bet_key=?",(key(h),))
+                db.commit()
+                continue
             if nowms()+1500>=h["ko"]:
                 db.execute("UPDATE items SET status='skipped',error='kickoff deadline' WHERE bet_key=?",(key(h),))
                 db.commit()
