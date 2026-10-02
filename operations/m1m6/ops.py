@@ -111,6 +111,12 @@ def main():
     elif action=="upgrade_nolock":
         from upgrade_nolock import upgrade
         result=upgrade()
+    elif action=="dynamic_inspect":
+        from dynamic_ops import inspect
+        result=inspect()
+    elif action=="dynamic_preflight":
+        from dynamic_ops import preflight
+        result=preflight()
     elif action=="results_preflight":
         from repair_results import preflight
         result=preflight()

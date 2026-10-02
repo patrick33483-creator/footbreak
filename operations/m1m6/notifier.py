@@ -19,6 +19,7 @@ CONFIG=Path("/etc/crown-m1m6.json")
 CROWN_DB=Path("/opt/crown-radar-v2/data/crown.db")
 CHECKPOINTS=Path("/var/lib/crownsystem-v4/checkpoints.json")
 PUBLIC=Path("/var/www/crownsystem-v3/m1m6_status.json")
+REGISTRY=STATE/"registry.json"
 def nowms():
     return int(time.time()*1000)
 def atomic(path,data):
@@ -65,6 +66,10 @@ def state_db():
             db.execute(f"ALTER TABLE batches ADD COLUMN {name} {kind}")
     return db
 def collect(now):
+    if REGISTRY.exists():
+        from strategy_runtime import collect as dynamic_collect
+        registry=json.loads(REGISTRY.read_text())
+        return dynamic_collect(registry,source(now),now)
     matches,snaps,finished,cp=source(now)
     history={q["id"]:[] for q in RULES}
     live=[];observations=[];reasons=collections.Counter()
@@ -121,8 +126,9 @@ def prepare_items(db,selected,now):
     db.commit()
     return groups
 def message(hit,batch_id,other_market=False):
-    side="買細" if hit["side"]=="under" else "買主"
-    line=f"{hit['line']:g}" if hit["market"]=="OU" else "平手" if hit["line"]==0 else ("受讓" if hit["line"]>0 else "讓")+f"{abs(hit['line']):g}"
+    side={"under":"買細","over":"買大","home":"買主","away":"買客"}[hit["side"]]
+    selected_line=hit["line"]*(-1 if hit["side"]=="away" else 1)
+    line=f"{selected_line:g}" if hit["market"]=="OU" else "平手" if selected_line==0 else ("受讓" if selected_line>0 else "讓")+f"{abs(selected_line):g}"
     evidence=[]
     for rid in hit["rules"]:
         g=hit["gate_evidence"][rid]
@@ -133,18 +139,18 @@ def message(hit,batch_id,other_market=False):
             text.append(f"近{n}場 {rate}")
         evidence.append(f"{rid}：{'；'.join(text)}")
     return "\n".join([
-      f"皇冠 M1–M6｜賽前訊號（記錄組 #{batch_id}）",
+      f"皇冠重點策略｜賽前訊號（記錄組 #{batch_id}）",
       f"策略：{'／'.join(hit['rules'])}（同注只計一次）",
       f"{hit['league']}｜{hit['home']} vs {hit['away']}",
       f"開賽：{fmt(hit['ko'])} 香港時間",
       f"方向：{side} {line}｜港賠 {hit['hk']:.2f}｜十進制 {1+hit['hk']:.2f}",
       f"皇冠T5：{fmt(hit['t5_at'])}",
-      *[f"{rid}條件：{BY_ID[rid]['description']}" for rid in hit["rules"]],
+      *[f"{rid}條件：{hit.get('rule_descriptions',{}).get(rid) or BY_ID.get(rid,{}).get('description','條件見保存版本')}" for rid in hit["rules"]],
       *evidence,
       "上述為已結算匹配場次窗口，不是下一場勝率。",
       "同場亦有另一市場訊號，存在同場風險。" if other_market else "本訊號只代表列出的市場及方向。",
-      "不設批次封鎖：每場固定條件符合，且最近20場≥95%或最近30場≥90%，即可推介。",
-      "其他訊號未有賽果亦不封鎖；只以已結算匹配場次更新窗口，未足30場不算30場達標。",
+      "每條策略獨立封鎖：同開賽時間可追加，整批正式賽果齊全後重驗門檻，再推下一場。",
+      "不同策略可各自運行；重複或合併分支共用封鎖，更新策略不會清除未結算紀錄。",
       "盤價已變即不等同本訊號；不會自動下注。",
     ])
 def send(text,ko,creds):
@@ -164,7 +170,7 @@ def send(text,ko,creds):
         return ("rejected" if 400<=e.code<500 else "uncertain"),None,f"HTTP {e.code}"
     except Exception as e:
         return "uncertain",None,type(e).__name__
-def publish(db,config,gate_by_rule,reasons,live,pending,now):
+def publish(db,config,gate_by_rule,reasons,live,pending,now,registry=None,strategy_pending=None):
     ledger=[]
     for x in db.execute("SELECT * FROM items ORDER BY batch_id DESC,bet_key LIMIT 100"):
         p=json.loads(x["payload"])
@@ -179,6 +185,14 @@ def publish(db,config,gate_by_rule,reasons,live,pending,now):
           "ledger":ledger,"scan_reasons":dict(reasons),"legacy_retired":True,
           "history_definition":"全部符合固定條件且當時已知正式賽果；包括未通知的場次",
           "old_history_archived":True}
+    if registry is not None:
+        from strategy_runtime import project_rules
+        data.update(version="CROWN-DYNAMIC-PER-STRATEGY-v4",mode="dynamic_per_strategy_batch",
+                    batch_lock_enabled=True,lock_scope="per_strategy",
+                    rules=project_rules(registry,strategy_pending,gate_by_rule),
+                    strategy_pending_batches=strategy_pending,search=registry["search"],
+                    registry_updated_at=registry["updated_at"],next_search_at=registry["next_search_at"],
+                    registry_stale=now-registry["updated_at"]>4*3600000)
     atomic(STATE/"status.json",data)
     atomic(PUBLIC,data)
     atomic(Path("/opt/crown-radar-v2/data/m1m6_status.json"),data)
@@ -187,10 +201,15 @@ def tick(dry=False):
     now=nowms()
     history,live,observations,finished,reasons=collect(now)
     gate_by_rule={rid:gates(rr) for rid,rr in history.items()}
+    registry=json.loads(REGISTRY.read_text()) if REGISTRY.exists() else None
     if dry:
         return {"dry_run":True,"gates":gate_by_rule,"live_hits":len(live),"reasons":dict(reasons),"sends":0}
     db=state_db()
     pending=reconcile(db,finished,now)
+    strategy_pending=[]
+    if registry is not None:
+        from strategy_runtime import reconcile as reconcile_strategies,choose,attach
+        strategy_pending=reconcile_strategies(db,now)
     for h,result in observations:
         db.execute("INSERT OR IGNORE INTO observations VALUES(?,?,?,?,?,?)",
           (h["sid"],h["rule_id"],now,"historical_seed" if h["ko"]<=config["activated_at"] else "observed",
@@ -199,14 +218,21 @@ def tick(dry=False):
             db.execute("UPDATE observations SET result_json=? WHERE sid=? AND rule_id=?",(json.dumps(result,ensure_ascii=False),h["sid"],h["rule_id"]))
     db.commit()
     attempted={r[0] for r in db.execute("SELECT bet_key FROM items")}
-    selected=choose_batch(live,gate_by_rule,now,config["activated_at"],False,attempted) if config.get("enabled") else []
+    selected=choose_batch(live,gate_by_rule,now,config["activated_at"],False,attempted) if config.get("enabled") and registry is None else []
+    if registry is not None and config.get("enabled") and now-registry["updated_at"]<=4*3600000:
+        selected=choose(live,gate_by_rule,now,config.get("dynamic_activated_at",config["activated_at"]),
+                        strategy_pending,registry["strategies"],
+                        {r["bet_key"]:dict(r) for r in db.execute("SELECT bet_key,status,result_json FROM items")})
     sent=0
     if selected:
         creds=env()
         if not creds.get("TELEGRAM_BOT_TOKEN") or not creds.get("TELEGRAM_CHAT_ID"):
             raise RuntimeError("Telegram configuration missing")
-        groups=prepare_items(db,selected,now)
-        for h in selected:
+        fresh=[h for h in selected if key(h) not in attempted]
+        groups=prepare_items(db,fresh,now)
+        if registry is not None:
+            attach(db,selected,registry["strategies"],now)
+        for h in fresh:
             batch_id=groups[h["ko"]]
             if nowms()+1500>=h["ko"]:
                 db.execute("UPDATE items SET status='skipped',error='kickoff deadline' WHERE bet_key=?",(key(h),))
@@ -228,9 +254,12 @@ def tick(dry=False):
             db.commit()
             sent+=status=="sent"
         pending=reconcile(db,finished,nowms())
-    publish(db,config,gate_by_rule,reasons,live,pending,nowms())
+    if registry is not None:
+        strategy_pending=reconcile_strategies(db,nowms())
+    publish(db,config,gate_by_rule,reasons,live,pending,nowms(),registry,strategy_pending)
     db.close()
-    return {"version":VERSION,"at":fmt(now),"locked_batch":None,"batch_lock_enabled":False,
+    return {"version":"CROWN-DYNAMIC-PER-STRATEGY-v4" if registry else VERSION,"at":fmt(now),"locked_batch":None,"batch_lock_enabled":bool(registry),
+            "lock_scope":"per_strategy" if registry else None,"strategy_pending_batches":len(strategy_pending),
             "pending_result_count":sum(x["waiting"] for x in pending),"fixed_live_hits":len(live),"batch_selected":len(selected),"sent":sent,
             "gate_pass":[r for r,g in gate_by_rule.items() if g["pass"]]}
 def main():
