@@ -167,6 +167,8 @@ def audit():
     for a, b in zip(batches, batches[1:]):
         if a["closed_at"] is None or b["created_at"] < a["closed_at"]:
             overlaps.append([a["id"], b["id"]])
+    result_sync_path=Path("/var/lib/crown-strategy-results/last-run.json")
+    result_sync=json.loads(result_sync_path.read_text()) if result_sync_path.exists() else {}
     return {
         "summary": {
             "action": "audit_first_natural_batch", "at_ms": now,
@@ -179,6 +181,10 @@ def audit():
             "checks": checks, "tick_count": len(ticks),
             "error_ticks": [x for x in ticks if "error_type" in x],
             "latest_ticks": ticks[-5:],
+            "result_sync": {k:result_sync.get(k) for k in
+                ("checked_at_hkt","candidates","written","errors","conflicts",
+                 "status","pending_candidates_after")},
+            "hkjc_notification_stop_flag": Path("/opt/crown-radar-v2/data/HKJC_STRATEGY_TG_DISABLED").exists(),
         },
         "batches": batches, "items": items, "official_results": results,
         "observations": observation_counts, "upcoming": upcoming,
