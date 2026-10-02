@@ -140,11 +140,14 @@ def audit():
          "-o", "cat", "--no-pager"], capture_output=True, text=True, timeout=30,
     )
     ticks = []
+    result_refresh_logs = []
     for line in journal.stdout.splitlines():
         try:
             x = json.loads(line)
         except (ValueError, TypeError):
             continue
+        if isinstance(x,dict) and ("result_refresh" in x or "result_refresh_error" in x):
+            result_refresh_logs.append(x)
         if isinstance(x, dict) and ("gate_pass" in x or "error_type" in x):
             ticks.append(x)
     checks = []
@@ -193,6 +196,8 @@ def audit():
             "registry_updated_at":public.get("registry_updated_at"),
             "next_search_at":public.get("next_search_at"),
             "result_refresh":public.get("result_refresh"),
+            "result_refresh_errors":[x for x in result_refresh_logs if "result_refresh_error" in x],
+            "result_refresh_latest":result_refresh_logs[-5:],
             "existing_strategy_checks":public.get("existing_strategy_checks",[]),
             "dynamic_services":{name:subprocess.run(["systemctl","show",name,"-p","ActiveState","-p","SubState","-p","Result","-p","TimersMonotonic","-p","NextElapseUSecMonotonic"],capture_output=True,text=True).stdout for name in
                 ["crown-strategy-search.timer","crown-strategy-search.service","crown-strategy-refresh-api.service"]},
