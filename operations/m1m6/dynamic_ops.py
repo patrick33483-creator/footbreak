@@ -56,6 +56,7 @@ def refresh_test():
 
 def code_refresh():
     import fcntl,shutil,time
+    from install import PAGES,render_page
     tests=run(["python3","-m","unittest","discover","-s",str(HERE),"-p","test_*.py"],True)
     run(["systemctl","stop","crown-strategy-search.timer"],True)
     try:
@@ -67,6 +68,9 @@ def code_refresh():
                 for name in FILES:
                     shutil.copy2(DEST/name,backup/name)
                     shutil.copy2(HERE/name,DEST/name)
+                for p in PAGES:
+                    shutil.copy2(p,backup/str(p).lstrip("/").replace("/","__"))
+                    p.write_text(render_page(p.read_text(),(HERE/"panel.html").read_text()))
     finally:
         run(["systemctl","start","crown-strategy-search.timer"],True)
     run(["systemctl","start","--no-block","crown-strategy-search.service"],True)

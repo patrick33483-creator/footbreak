@@ -72,6 +72,7 @@ def audit():
         status_copies=[json.loads(p.read_text()) for p in
             [Path("/var/www/crownsystem-v3/m1m6_status.json"),
              Path("/opt/crown-radar-v2/data/m1m6_status.json")]]
+        now=int(time.time()*1000)
     db = connect(base / "ledger.sqlite")
     batches = [dict(r) for r in db.execute("SELECT * FROM batches ORDER BY id")]
     items = []
