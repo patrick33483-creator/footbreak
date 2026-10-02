@@ -18,9 +18,9 @@
  <section class="m-panel" style="margin-top:16px"><h3>每三小時自動循環</h3><p>核對賽果 → 重算所有現有策略近20／30場 → 全網格重搜 → 合併相近分支並重新驗證 → 更新重點策略。按「立即更新」亦會完整執行，唔只係重讀畫面。</p><p id="m-research" class="m-muted" role="status">讀取最近搜尋紀錄…</p><p id="m-progress" role="status" aria-live="polite"></p></section>
  <section class="m-panel" aria-labelledby="m-lock"><h3 id="m-lock">正在核對通知模式</h3><p>每條合併後策略各自封鎖：同一開賽時間可通知多場，該批正式賽果齊全後再核對<span id="m-gate-text">最近20場≥92.5% 或最近30場≥87.5%</span>，符合其中一個便可推下一場。其他策略可獨立運行；更新、改名或合併不會清除未結算封鎖。</p><p class="m-muted">同場同市場同方向同盤線只計一次；開賽後不追加或補發。窗口須足20／30場，非走盤至少16／24場且淨收益為正。走盤不計命中率分母，半贏計命中但只收半注收益。搜尋結果屬探索候選，近期命中率不是下一場勝率；不會自動下注。</p></section>
  <p id="m-price-floor" class="m-panel">最低十進制賠率1.70（港賠0.70）：先排除所選方向低於1.70的歷史場次，再取最近20／30場；組合搜尋及新TG通知使用同一限制。既有低賠率實戰紀錄保留並照常結算，不會刪除或解除未結算封鎖。</p>
- <h2>現有策略與最新窗口</h2><div id="m-rules" class="m-grid"><div class="m-panel m-muted">載入所有策略及最新窗口…</div></div>
+ <h2>目前合資格策略</h2><p id="m-rules-summary" class="m-muted"></p><div id="m-rules" class="m-grid"><div class="m-panel m-muted">載入合資格策略及最新窗口…</div></div>
  <h2>新版本TG通知帳本</h2><div class="m-panel"><div class="m-toolbar"><p class="m-muted">已完場紀錄保留；其餘只顯示符合現行策略及最低賠率1.70的投注。</p><button id="m-ledger-toggle" type="button" aria-pressed="false" hidden>查看收起紀錄</button></div><p id="m-ledger-summary" class="m-muted" role="status">正在核對顯示資格…</p><div id="m-ledger" class="m-table">載入中…</div><p class="m-muted">篩選只改頁面顯示，不是新推介；收起的未結算紀錄仍保留帳本及封鎖。此處列最近100筆通知紀錄，不混入研究樣本或舊8條策略。</p></div>
- <details class="m-panel"><summary>本輪所有既有策略重算紀錄</summary><div id="m-existing" class="m-table">載入中…</div></details>
+ <details class="m-panel"><summary>本輪合資格策略重算紀錄</summary><div id="m-existing" class="m-table">載入中…</div></details>
  <details class="m-panel"><summary>目前掃描診斷</summary><div id="m-diagnostics" class="m-muted"></div><p class="m-muted">取消、延期或缺正式賽果仍保留待結算，不假作結算。只封鎖相關策略及其重複分支，其他策略不受影響。搜尋資料超過四小時未更新時暫停新通知，保留結算及所有紀錄。</p></details>
 </main>
 <script>
@@ -65,9 +65,12 @@
    $("m-lock").className=dynamic&&!stale&&!data.registry_stale?"m-pass":"m-warn";
    const search=data.search||{};
    $("m-research").textContent=`最近完整循環：${time(data.registry_updated_at)}｜下次：約 ${time(data.next_search_at)}｜枚舉 ${search.enumerated||0} 個組合，合併後 ${search.merged_active||0} 條啟用｜${data.registry_stale?"搜尋逾時，暫停新通知":"既有策略每次一併重算"}`;
-   $("m-rules").innerHTML=data.rules.map(r=>`<article class="m-panel"><h3>${esc(r.id)} v${r.version||1}｜${esc(r.label)}</h3><p>${esc(r.description)}</p><p class="${r.gate.pass&&r.active&&!r.pending_result_count?"m-pass":"m-warn"}">${esc(ruleState(r,data,dynamic))}</p><div>最近20：${esc(stat(r.gate["20"]))}${r.gate["20"].n<20?"（未足20場）":""}</div><div>最近30：${esc(stat(r.gate["30"]))}${r.gate["30"].n<30?"（未足30場，不算達標）":""}</div><p class="m-muted">最新窗口含所有已結算匹配場次，並非實際TG命中率。合併分支 ${r.members?.length||1} 個。</p></article>`).join("");
+   const qualifiedRules=data.registry_stale?[]:data.rules.filter(r=>r.active&&r.gate?.pass);
+   $("m-rules-summary").textContent=`只列 ${qualifiedRules.length} 條目前合資格策略；其他條件不顯示，歷史及未結算封鎖保留。`;
+   $("m-rules").innerHTML=qualifiedRules.map(r=>`<article class="m-panel"><h3>${esc(r.id)} v${r.version||1}｜${esc(r.label)}</h3><p>${esc(r.description)}</p><p class="${!r.pending_result_count?"m-pass":"m-warn"}">${esc(ruleState(r,data,dynamic))}</p><div>最近20：${esc(stat(r.gate["20"]))}${r.gate["20"].n<20?"（未足20場）":""}</div><div>最近30：${esc(stat(r.gate["30"]))}${r.gate["30"].n<30?"（未足30場，不算達標）":""}</div><p class="m-muted">最新窗口含所有已結算匹配場次，並非實際TG命中率。合併分支 ${r.members?.length||1} 個。</p></article>`).join("")||`<div class="m-panel m-muted">${data.registry_stale?"資格資料未更新，暫不顯示策略條件。":"目前沒有合資格策略。"}</div>`;
    lastLedgerData=data;renderLedger(data);
-   $("m-existing").innerHTML=(data.existing_strategy_checks||[]).map(r=>`<p>${esc(r.id)} v${r.version}｜近20：${esc(stat(r.gate["20"]))}<br>近30：${esc(stat(r.gate["30"]))}</p>`).join("")||"等待首次完整循環";
+   const qualifiedIds=new Set(qualifiedRules.map(r=>r.id));
+   $("m-existing").innerHTML=(data.existing_strategy_checks||[]).filter(r=>qualifiedIds.has(r.id)&&r.gate?.pass).map(r=>`<p>${esc(r.id)} v${r.version}｜近20：${esc(stat(r.gate["20"]))}<br>近30：${esc(stat(r.gate["30"]))}</p>`).join("")||"本輪沒有可列出的合資格重算紀錄。";
    $("m-diagnostics").innerHTML=Object.entries(data.scan_reasons).map(([k,v])=>`<div>${esc(reasons[k]||k)}：${v}場</div>`).join("")+`<div>目前固定條件命中：${data.live_condition_hits.length}個分支紀錄（未去重，未必可發送）</div>`;
    for(const id of ["status","meta"]){if($(id))$(id).textContent="M1–M6｜"+time(data.updated_at);}
   }catch(e){$("m-updated").textContent="暫時未能讀取新通知帳本，請稍後按「立即更新」；未有資料不代表沒有符合場次。";$("m-lock").textContent="狀態未能確認";}
