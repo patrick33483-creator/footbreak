@@ -37,6 +37,14 @@ def diagnose():
     server = Path("/opt/crown-radar-v2/server.js").read_text().splitlines()
     data["score_source"] = safe("\n".join(server[285:507]))
     data["score_imports"] = safe("\n".join(server[:36]))
+    data["fallback_files"] = [str(p) for p in Path("/opt/crown-strategy-results").glob("*")]
+    data["fallback_source"] = {
+        p.name: safe(p.read_text()) for p in Path("/opt/crown-strategy-results").glob("*.py")
+    }
+    data["fallback_json"] = {
+        p.name: json.loads(p.read_text()) for p in Path("/var/lib/crown-strategy-results").glob("*.json")
+        if p.stat().st_size < 150000
+    }
     for unit in ["crown-strategy-results","hkjc-result-sync","crownsystem-v3-merge"]:
         data[unit] = command(["systemctl","cat",unit+".service",unit+".timer"])
         data[unit+"_journal"] = command(["journalctl","-u",unit+".service","-n","60","--no-pager","-o","cat"])
