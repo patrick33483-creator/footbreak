@@ -166,12 +166,16 @@ def send(text,ko,creds):
     except Exception as e:
         return "uncertain",None,type(e).__name__
 def publish(db,config,gate_by_rule,reasons,live,pending,now,registry=None,strategy_pending=None):
+    from ledger_view import context,classify,summary
+    view_ready,view_rules=context(registry,gate_by_rule,now)
     ledger=[]
     for x in db.execute("SELECT * FROM items ORDER BY batch_id DESC,bet_key LIMIT 100"):
         p=json.loads(x["payload"])
+        result=json.loads(x["result_json"]) if x["result_json"] else None
         ledger.append({**{k:p.get(k) for k in ["sid","ko","ko_hkt","home","away","league","market","side","line","hk","rules"]},
           "batch_id":x["batch_id"],"delivery_status":x["status"],"attempt_at":x["attempt_at"],"ack_at":x["ack_at"],
-          "message_id":x["message_id"],"result":json.loads(x["result_json"]) if x["result_json"] else None})
+          "message_id":x["message_id"],"result":result,
+          **classify(p,result,view_ready,view_rules)})
     data={"version":VERSION,"gate_version":GATE_VERSION,"thresholds":THRESHOLDS,"gate_text":GATE_TEXT,
           "min_decimal_odds":MIN_DECIMAL_ODDS,
           "updated_at":now,"activated_at":config["activated_at"],"mode":"rolling_OR_no_batch_lock",
@@ -179,7 +183,8 @@ def publish(db,config,gate_by_rule,reasons,live,pending,now,registry=None,strate
           "pending_result_count":sum(x["waiting"] for x in pending),
           "rules":[{**q,"gate":gate_by_rule[q["id"]]} for q in RULES],
           "live_condition_hits":[{k:v for k,v in h.items() if k!="snapshot_evidence"} for h in live],
-          "ledger":ledger,"scan_reasons":dict(reasons),"legacy_retired":True,
+          "ledger":ledger,"ledger_view":summary(ledger,view_ready),
+          "scan_reasons":dict(reasons),"legacy_retired":True,
           "history_definition":"全部符合固定條件且當時已知正式賽果；包括未通知的場次",
           "old_history_archived":True}
     if registry is not None:

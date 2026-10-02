@@ -9,7 +9,41 @@ DEST=Path("/opt/crown-m1m6")
 BASE=Path("/var/lib/crown-m1m6")
 NGINX=Path("/etc/nginx/sites-enabled/unified-dashboard")
 FILES=("policy.py","notifier.py","dynamic_rules.py","strategy_runtime.py","research_cycle.py",
-       "refresh_api.py","panel.html","test_policy.py","test_dynamic.py")
+       "refresh_api.py","panel.html","test_policy.py","test_dynamic.py","ledger_view.py","test_ledger_view.py")
+
+
+def presentation_refresh():
+    """Only add a read-only projection and render pages; never run a search/tick."""
+    import ast,fcntl,hashlib,shutil,time
+    from install import PAGES,render_page
+    def unchanged_core(path):
+        tree=ast.parse(path.read_text())
+        tree.body=[n for n in tree.body if not isinstance(n,(ast.FunctionDef,ast.AsyncFunctionDef))
+                   or n.name!="publish"]
+        return ast.dump(tree,include_attributes=False)
+    if unchanged_core(DEST/"notifier.py")!=unchanged_core(HERE/"notifier.py"):
+        raise RuntimeError("Presentation update would change notification/accounting code")
+    tests=run(["python3","-m","unittest","discover","-s",str(HERE),"-p","test_*.py"],True)
+    with (BASE/"run.lock").open("a") as lock:
+        fcntl.flock(lock,fcntl.LOCK_EX)
+        protected=[BASE/"ledger.sqlite",BASE/"registry.json",Path("/etc/crown-m1m6.json"),
+                   DEST/"policy.py",DEST/"strategy_runtime.py",DEST/"dynamic_rules.py",
+                   DEST/"research_cycle.py"]
+        digest=lambda: {str(p):hashlib.sha256(p.read_bytes()).hexdigest() for p in protected}
+        before=digest()
+        backup=BASE/("presentation-backup-"+str(int(time.time()*1000)));backup.mkdir()
+        for name in ("ledger_view.py","test_ledger_view.py","notifier.py","panel.html"):
+            if (DEST/name).exists():
+                shutil.copy2(DEST/name,backup/name)
+            shutil.copy2(HERE/name,DEST/name)
+        for p in PAGES:
+            shutil.copy2(p,backup/str(p).lstrip("/").replace("/","__"))
+            p.write_text(render_page(p.read_text(),(HERE/"panel.html").read_text()))
+        assert before==digest(),"Protected runtime state changed"
+    return {"summary":{"action":"presentation_refresh","tests":tests["stderr"],
+            "notification_and_accounting_ast_unchanged":True,"protected_files_unchanged":True,
+            "search_or_tick_triggered":False,"config_and_locks_unchanged":True,
+            "pages_verified":all('id="m-ledger-toggle"' in p.read_text() for p in PAGES)}}
 
 
 def inspect():
