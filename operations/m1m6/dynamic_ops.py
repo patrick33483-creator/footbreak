@@ -58,7 +58,7 @@ def code_refresh():
     import fcntl,shutil,time
     from install import PAGES,render_page
     from ops import atomic
-    from policy import GATE_VERSION,GATE_CONFIG,THRESHOLDS,MIN_DECIMAL_ODDS
+    from policy import GATE_VERSION,GATE_CONFIG,GATE_TEXT,THRESHOLDS,MIN_DECIMAL_ODDS
     tests=run(["python3","-m","unittest","discover","-s",str(HERE),"-p","test_*.py"],True)
     run(["systemctl","stop","crown-strategy-search.timer"],True)
     try:
@@ -87,8 +87,7 @@ def code_refresh():
                        "gate_version":GATE_VERSION,"thresholds":THRESHOLDS,
                        "min_decimal_odds":MIN_DECIMAL_ODDS,"tg_format":"compact-v2",
                        "config_scope":"gate, gate_version, thresholds, min_decimal_odds, tg_format only",
-                       "page_thresholds_verified":all("最近20場≥90% 或最近30場≥85%" in p.read_text()
-                                                     and "最近20場≥95%" not in p.read_text() for p in PAGES),
+                       "page_thresholds_verified":all(GATE_TEXT in p.read_text() for p in PAGES),
                        "page_price_floor_verified":all("最低十進制賠率1.70" in p.read_text() for p in PAGES)}}
 
 

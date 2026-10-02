@@ -144,13 +144,13 @@ class DynamicTests(unittest.TestCase):
         self.assertEqual(reg["strategies"][0]["gate"]["20"]["wins"],19)
         rows[-2].update(result="L",pnl=-1)
         reg=d.registry([],rows,reg,200)
-        self.assertTrue(reg["existing_strategy_checks"][0]["gate"]["20"]["pass"])
+        self.assertFalse(reg["existing_strategy_checks"][0]["gate"]["20"]["pass"])
         rows[-3].update(result="L",pnl=-1)
         reg=d.registry([],rows,reg,300)
         self.assertFalse(reg["existing_strategy_checks"][0]["gate"]["20"]["pass"])
 
     def test_scanner_and_runtime_share_new_boundaries(self):
-        for n,wins,expected in [(20,18,True),(20,17,False),(30,26,True),(30,25,False)]:
+        for n,wins,expected in [(20,19,True),(20,18,False),(30,27,True),(30,26,False)]:
             rows=[{"sid":str(i),"ko":i,"market":"OU","side":"under","line":3.25,
                    "features":{},"result":"W" if i<wins else "L",
                    "pnl":.8 if i<wins else -1,"hk":.8} for i in range(n)]
