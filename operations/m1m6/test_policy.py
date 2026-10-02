@@ -92,6 +92,9 @@ class RulesTest(unittest.TestCase):
         self.assertFalse(policy.valid_result(f,self.ko,self.ko+101))
 
 class BatchLedgerTest(unittest.TestCase):
+    def setUp(self):
+        p=patch.object(notifier,"REGISTRY",Path("/nonexistent-test-registry.json"))
+        p.start();self.addCleanup(p.stop)
     def test_tick_unsettled_groups_do_not_block_new_match(self):
         ko=1790899200000
         base={"rule_id":"M1","sid":"1","ko":ko,"ko_hkt":policy.fmt(ko),

@@ -92,6 +92,14 @@ def candidates(now):
     attempts = json.loads(attempts_path.read_text()) if attempts_path.exists() else {}
     selected, already_final = [], []
     with connect() as db:
+        # The dynamic grid must not see only old notified winners. Include all
+        # six-snapshot fixtures in the approved Crown research date range.
+        ids.update(str(r[0]) for r in db.execute("""
+            SELECT m.sid FROM matches m JOIN crown_snapshots s ON s.sid=m.sid
+            WHERE m.kickoff_utc>=1789023600000 AND m.kickoff_utc<?
+              AND s.stage IN ('initial','T30','T5') AND s.market IN ('AH','OU')
+            GROUP BY m.sid HAVING COUNT(DISTINCT s.stage||':'||s.market)=6
+            """,(now-100*60000,)))
         ids.update(str(r[0]) for r in db.execute(
             "SELECT sid FROM heavy_notified_rule UNION SELECT sid FROM heavy_notified"))
         for sid in sorted(ids):

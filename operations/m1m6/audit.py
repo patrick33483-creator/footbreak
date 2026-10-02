@@ -1,5 +1,6 @@
 """Read-only evidence collection. Never invoke notifier tick or Telegram API."""
 import collections
+import fcntl
 import datetime
 import importlib.util
 import json
@@ -65,7 +66,12 @@ def audit():
     now = int(time.time() * 1000)
     base = Path("/var/lib/crown-m1m6")
     config = json.loads(Path("/etc/crown-m1m6.json").read_text())
-    public = json.loads((base / "status.json").read_text())
+    with (base/"run.lock").open("a") as lock:
+        fcntl.flock(lock,fcntl.LOCK_EX)
+        public = json.loads((base / "status.json").read_text())
+        status_copies=[json.loads(p.read_text()) for p in
+            [Path("/var/www/crownsystem-v3/m1m6_status.json"),
+             Path("/opt/crown-radar-v2/data/m1m6_status.json")]]
     db = connect(base / "ledger.sqlite")
     batches = [dict(r) for r in db.execute("SELECT * FROM batches ORDER BY id")]
     items = []
@@ -175,11 +181,21 @@ def audit():
             "version": config.get("version"), "mode": config.get("mode"),
             "batch_lock_enabled": public.get("batch_lock_enabled",True),
             "pending_result_count": public.get("pending_result_count"),
-            "overlap_allowed": config.get("batch_lock_enabled") is False,
-            "public_copies_consistent": all(
-                json.loads(p.read_text())==public for p in
-                [Path("/var/www/crownsystem-v3/m1m6_status.json"),
-                 Path("/opt/crown-radar-v2/data/m1m6_status.json")]),
+            "overlap_allowed": config.get("batch_lock_enabled") is False or config.get("lock_scope")=="per_strategy",
+            "public_copies_consistent": all(s==public for s in status_copies),
+            "lock_scope": config.get("lock_scope"),
+            "strategy_locks":public.get("strategy_pending_batches",[]),
+            "search":public.get("search"),
+            "registry_updated_at":public.get("registry_updated_at"),
+            "next_search_at":public.get("next_search_at"),
+            "existing_strategy_checks":public.get("existing_strategy_checks",[]),
+            "dynamic_services":{name:subprocess.run(["systemctl","show",name,"-p","ActiveState","-p","SubState","-p","Result","-p","NextElapseUSecMonotonic"],capture_output=True,text=True).stdout for name in
+                ["crown-strategy-search.timer","crown-strategy-search.service","crown-strategy-refresh-api.service"]},
+            "research_status":json.loads((base/"research_status.json").read_text()) if (base/"research_status.json").exists() else None,
+            "dynamic_page_markers":{str(p):"每條合併後策略各自封鎖" in p.read_text() and
+                'method:"POST"' in p.read_text() for p in [
+                    Path("/var/www/crownsystem-v3/strategy.html"),Path("/var/www/crownsystem-v3/heavy.html"),
+                    Path("/opt/crown-radar-v2/strategy.html"),Path("/opt/crown-radar-v2/heavy.html")]},
             "no_lock_page_markers": {
                 str(p): "不設批次封鎖" in p.read_text() and "整批正式賽果齊全前不開下一批" not in p.read_text()
                 for p in [Path("/var/www/crownsystem-v3/strategy.html"),

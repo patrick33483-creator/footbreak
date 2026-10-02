@@ -52,6 +52,7 @@ def cycle(sync=True):
             progress("搜尋全部組合及重算現有策略",started_at=started)
             previous=json.loads(REGISTRY.read_text()) if REGISTRY.exists() else {}
             result=compute(now,previous)
+            result["next_search_at"]=started+3*3600000
             result["result_sync"]=sync_result
             progress("合併核驗並更新策略版本",started_at=started)
             # Registry changes and sends cannot interleave. No deletion of any lock.

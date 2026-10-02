@@ -117,6 +117,9 @@ def main():
     elif action=="dynamic_preflight":
         from dynamic_ops import preflight
         result=preflight()
+    elif action=="dynamic_deploy":
+        from dynamic_ops import deploy
+        result=deploy()
     elif action=="results_preflight":
         from repair_results import preflight
         result=preflight()

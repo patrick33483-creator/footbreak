@@ -117,6 +117,11 @@ def feature_rows(m,snaps,cp,finished,now):
         row={"sid":sid,"ko":ko,"ko_hkt":fmt(ko),"home":m.get("home",""),"away":m.get("away",""),
              "league":m.get("league",""),"market":market,"side":side,"line":float(q["handicap"]),
              "hk":float(hk),"features":f,"t5_at":q["captured_at"],
+             "snapshot_evidence":{stage+"_"+mkt:{k:v.get(k) for k in
+                 ("handicap","home_odds","away_odds","captured_at")} for (stage,mkt),v in snaps.items()
+                 if stage in ("initial","T30","T5") and mkt in ("AH","OU")},
+             "model_evidence":{stage:{k:(cp.get(stage) or {}).get(k) for k in
+                 ("locked_at_ms","prediction_repairs")} for stage in ("INITIAL","T5")},
              "six_t5_min_at":min(snaps[("T5",x)]["captured_at"] for x in ("AH","OU")),
              "result":None,"pnl":None}
         if valid_result(finished.get(sid),ko,now):
@@ -151,6 +156,7 @@ def label(a):
         market=f.split("_")[0]
         return ("讓球" if market=="AH" else "大小")+"三時點低水傾向"+sym+str(v).replace("主邊","主" if market=="AH" else "大").replace("客邊","客" if market=="AH" else "細")
     name=names.get(f,f.replace("AH","讓球").replace("OU","大小").replace("_主邊_drop","主邊水位").replace("_客邊_drop","客邊水位").replace("_line","盤線").replace("_",""))
+    name=name.replace("主邊","大球" if f.startswith("OU") else "主隊").replace("客邊","細球" if f.startswith("OU") else "客隊")
     return name+sym+("是" if v is True else "否" if v is False else str(v))+("（同盤線）" if f.endswith("_drop") else "")
 
 
@@ -286,6 +292,31 @@ def merge(found,rows):
             break
         else:
             groups.append({**c,"members":[c["fingerprint"]]})
+    # A broad branch encountered later can bridge two earlier groups.
+    # Finish to a fixed point rather than leaving order-dependent duplicates.
+    changed=True
+    while changed:
+        changed=False
+        for i,a in enumerate(groups):
+            for j in range(i+1,len(groups)):
+                b=groups[j]
+                if not related(a,b):
+                    continue
+                x={key(r) for r in matched_rows(rows,a)}
+                y={key(r) for r in matched_rows(rows,b)}
+                logical=any(implied(c,e) or implied(e,c) for c in a["clauses"] for e in b["clauses"])
+                if not logical and len(x&y)/max(1,len(x|y))<.8:
+                    continue
+                cc=a["clauses"]+b["clauses"]
+                cc=[c for k,c in enumerate(cc) if not any(k!=l and implied(c,e) and
+                    (not implied(e,c) or l<k) for l,e in enumerate(cc))]
+                merged={**a,"clauses":cc}
+                g=gates([r for r in matched_rows(rows,merged) if r["result"]])
+                if g["pass"]:
+                    a.update(clauses=cc,gate=g,members=sorted(set(a["members"]+b["members"])))
+                    groups.pop(j);changed=True;break
+            if changed:
+                break
     return groups
 
 
@@ -309,7 +340,16 @@ def registry(groups,rows,previous,now):
     old=previous.get("strategies",seeds())
     used=set();out=[];sequence=previous.get("sequence",0)
     for g in groups:
-        parents=[s for s in old if set(s.get("members",[]))&set(g["members"]) or related(s,g)]
+        parents=[]
+        for s in old:
+            if set(s.get("members",[]))&set(g["members"]):
+                parents.append(s);continue
+            if not related(s,g):
+                continue
+            logical=any(implied(x,y) or implied(y,x) for x in s["clauses"] for y in g["clauses"])
+            a={key(r) for r in matched_rows(rows,s)};b={key(r) for r in matched_rows(rows,g)}
+            if logical or len(a&b)/max(1,len(a|b))>=.8:
+                parents.append(s)
         exact=[s for s in parents if signature(s["market"]+"_"+s["side"],s["clauses"])==signature(g["market"]+"_"+g["side"],g["clauses"])]
         choices=sorted(exact+parents,key=lambda s:(s not in exact,s["id"]))
         pick=next((s for s in choices if s["id"] not in used),None)
@@ -330,5 +370,7 @@ def registry(groups,rows,previous,now):
     for s in old:
         if s["id"] not in used:
             out.append({**s,"active":False,"gate":gates([r for r in matched_rows(rows,s) if r["result"]])})
+    checks=[{"id":s["id"],"version":s["version"],
+             "gate":gates([r for r in matched_rows(rows,s) if r["result"]])} for s in old]
     return {"grammar":GRAMMAR,"updated_at":now,"next_search_at":now+3*3600000,
-            "sequence":sequence,"strategies":out}
+            "sequence":sequence,"strategies":out,"existing_strategy_checks":checks}

@@ -191,6 +191,7 @@ def publish(db,config,gate_by_rule,reasons,live,pending,now,registry=None,strate
                     batch_lock_enabled=True,lock_scope="per_strategy",
                     rules=project_rules(registry,strategy_pending,gate_by_rule),
                     strategy_pending_batches=strategy_pending,search=registry["search"],
+                    existing_strategy_checks=registry.get("existing_strategy_checks",[]),
                     registry_updated_at=registry["updated_at"],next_search_at=registry["next_search_at"],
                     registry_stale=now-registry["updated_at"]>4*3600000)
     atomic(STATE/"status.json",data)
