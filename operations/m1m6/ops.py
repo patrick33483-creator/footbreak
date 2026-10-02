@@ -114,6 +114,9 @@ def main():
     elif action=="repair_results":
         from repair_results import install_fix
         result=install_fix()
+    elif action=="examples":
+        from examples import examples
+        result=examples()
     else:
         raise ValueError("Unknown action")
     print(json.dumps(result,ensure_ascii=False))
