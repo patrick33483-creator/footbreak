@@ -120,6 +120,9 @@ def main():
     elif action=="dynamic_deploy":
         from dynamic_ops import deploy
         result=deploy()
+    elif action=="dynamic_refresh_test":
+        from dynamic_ops import refresh_test
+        result=refresh_test()
     elif action=="results_preflight":
         from repair_results import preflight
         result=preflight()

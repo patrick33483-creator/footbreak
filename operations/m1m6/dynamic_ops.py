@@ -34,6 +34,26 @@ def preflight():
             "registry":r}
 
 
+def refresh_test():
+    import urllib.request,urllib.error
+    def post(url,headers):
+        req=urllib.request.Request(url,data=b"",method="POST",headers=headers)
+        try:
+            with urllib.request.urlopen(req,timeout=15) as response:
+                return {"status":response.status,"body":response.read().decode()[:500]}
+        except urllib.error.HTTPError as e:
+            return {"status":e.code}
+    unauth=post("http://127.0.0.1/crownsystem-v3/api/strategy-refresh",{"X-Crown-Refresh":"1"})
+    internal_denied=post("http://127.0.0.1:8786/refresh",{})
+    # Authorized server-owner verification of the loopback bridge, not a
+    # claim to have authenticated in the user's browser.
+    triggered=post("http://127.0.0.1:8786/refresh",
+                   {"X-Crown-Refresh":"1","X-Authenticated-User":"deployment-verification"})
+    return {"summary":{"action":"dynamic_refresh_bridge_test","unauthenticated_public":unauth,
+                       "missing_internal_auth":internal_denied,"authorized_loopback_trigger":triggered,
+                       "logged_in_browser_verified":False}}
+
+
 def deploy():
     import fcntl,shutil,sqlite3,time
     from ops import atomic
