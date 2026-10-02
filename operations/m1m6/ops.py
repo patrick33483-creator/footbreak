@@ -102,6 +102,9 @@ def main():
     elif action=="verify_hkjc":
         from stop_hkjc import verify_hkjc
         result=verify_hkjc()
+    elif action=="diagnose_results":
+        from result_diag import diagnose
+        result=diagnose()
     else:
         raise ValueError("Unknown action")
     print(json.dumps(result,ensure_ascii=False))
