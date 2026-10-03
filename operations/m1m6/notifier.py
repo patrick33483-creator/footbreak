@@ -170,6 +170,7 @@ def send(text,ko,creds):
 def publish(db,config,gate_by_rule,reasons,live,pending,now,registry=None,strategy_pending=None):
     from ledger_view import context,classify,summary
     from result_refresh import status as result_refresh_status
+    from signal_guard import status as signal_guard_status
     view_ready,view_rules=context(registry,gate_by_rule,now)
     ledger=[]
     for x in db.execute("SELECT * FROM items ORDER BY batch_id DESC,bet_key LIMIT 100"):
@@ -177,6 +178,7 @@ def publish(db,config,gate_by_rule,reasons,live,pending,now,registry=None,strate
         result=json.loads(x["result_json"]) if x["result_json"] else None
         ledger.append({**{k:p.get(k) for k in ["sid","ko","ko_hkt","home","away","league","market","side","line","hk","rules"]},
           "batch_id":x["batch_id"],"delivery_status":x["status"],"attempt_at":x["attempt_at"],"ack_at":x["ack_at"],
+          "conflict_warning":p.get("conflict_warning",False),"conflict_evidence":p.get("conflict_evidence",{}),
           "message_id":x["message_id"],"result":result,
           **classify(p,result,view_ready,view_rules)})
     data={"version":VERSION,"gate_version":GATE_VERSION,"thresholds":THRESHOLDS,"gate_text":GATE_TEXT,
@@ -188,6 +190,7 @@ def publish(db,config,gate_by_rule,reasons,live,pending,now,registry=None,strate
           "live_condition_hits":[{k:v for k,v in h.items() if k!="snapshot_evidence"} for h in live],
           "ledger":ledger,"ledger_view":summary(ledger,view_ready),
           "result_refresh":result_refresh_status(db),
+          "signal_guard":signal_guard_status(db),
           "scan_reasons":dict(reasons),"legacy_retired":True,
           "history_definition":"全部符合固定條件且當時已知正式賽果；包括未通知的場次",
           "old_history_archived":True}
@@ -227,13 +230,19 @@ def tick(dry=False):
     db.commit()
     attempted={r[0] for r in db.execute("SELECT bet_key FROM items")}
     selected=choose_batch(live,gate_by_rule,now,config["activated_at"],False,attempted) if config.get("enabled") and registry is None else []
+    guard_ready=False
     if (registry is not None and config.get("enabled") and now-registry["updated_at"]<=4*3600000
             and registry.get("gate_version")==GATE_VERSION):
-        selected=choose(live,gate_by_rule,now,config.get("dynamic_activated_at",config["activated_at"]),
+        from signal_guard import filter_live
+        guard_ready=True
+        guarded,guard_counts=filter_live(db,live,gate_by_rule,now,
+                            config.get("dynamic_activated_at",config["activated_at"]),registry["strategies"])
+        reasons.update({"signal_guard_"+k:v for k,v in guard_counts.items()})
+        selected=choose(guarded,gate_by_rule,now,config.get("dynamic_activated_at",config["activated_at"]),
                         strategy_pending,registry["strategies"],
                         {r["bet_key"]:dict(r) for r in db.execute("SELECT bet_key,status,result_json FROM items")})
     sent=0
-    if selected:
+    if selected or guard_ready:
         creds=env()
         if not creds.get("TELEGRAM_BOT_TOKEN") or not creds.get("TELEGRAM_CHAT_ID"):
             raise RuntimeError("Telegram configuration missing")
@@ -241,31 +250,8 @@ def tick(dry=False):
         groups=prepare_items(db,fresh,now)
         if registry is not None:
             attach(db,selected,registry["strategies"],now)
-        for h in fresh:
-            batch_id=groups[h["ko"]]
-            if not eligible_price(h):
-                db.execute("UPDATE items SET status='skipped',error='selected odds below floor or invalid' WHERE bet_key=?",(key(h),))
-                db.commit()
-                continue
-            if nowms()+1500>=h["ko"]:
-                db.execute("UPDATE items SET status='skipped',error='kickoff deadline' WHERE bet_key=?",(key(h),))
-                db.commit()
-                continue
-            at=nowms()
-            db.execute("UPDATE items SET status='sending',attempt_at=? WHERE bet_key=?",(at,key(h)))
-            db.commit()
-            other_market=db.execute("SELECT 1 FROM items WHERE batch_id=? AND sid=? AND bet_key<>? AND status IN ('sent','uncertain','prepared')",
-                                    (batch_id,h["sid"],key(h))).fetchone() is not None
-            status,ack,error=send(message(h,batch_id,other_market),h["ko"],creds)
-            ack_at=ack.get("date",0)*1000 if ack else None
-            # Preserve late acknowledgements honestly; never label as pre-match.
-            if status=="sent" and (not ack_at or ack_at>=h["ko"]):
-                status="uncertain"
-                error="ack missing or not pre-kickoff"
-            db.execute("UPDATE items SET status=?,ack_at=?,message_id=?,error=? WHERE bet_key=?",
-              (status,ack_at,ack.get("message_id") if ack else None,error,key(h)))
-            db.commit()
-            sent+=status=="sent"
+        from signal_guard import deliver
+        sent=deliver(db,fresh,groups,creds)
         pending=reconcile(db,finished,nowms())
     if registry is not None:
         strategy_pending=reconcile_strategies(db,nowms())

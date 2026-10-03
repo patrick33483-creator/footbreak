@@ -196,6 +196,7 @@ def audit():
             "registry_updated_at":public.get("registry_updated_at"),
             "next_search_at":public.get("next_search_at"),
             "result_refresh":public.get("result_refresh"),
+            "signal_guard":public.get("signal_guard"),
             "result_refresh_errors":[x for x in result_refresh_logs if "result_refresh_error" in x],
             "result_refresh_latest":result_refresh_logs[-5:],
             "existing_strategy_checks":public.get("existing_strategy_checks",[]),

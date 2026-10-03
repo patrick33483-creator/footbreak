@@ -10,7 +10,32 @@ BASE=Path("/var/lib/crown-m1m6")
 NGINX=Path("/etc/nginx/sites-enabled/unified-dashboard")
 FILES=("policy.py","notifier.py","dynamic_rules.py","strategy_runtime.py","research_cycle.py",
        "refresh_api.py","panel.html","test_policy.py","test_dynamic.py","ledger_view.py","test_ledger_view.py",
-       "result_refresh.py","test_result_refresh.py")
+       "result_refresh.py","test_result_refresh.py","signal_guard.py","test_signal_guard.py")
+
+
+def conflict_guard_refresh():
+    """Narrow notification-only change. No forced sends, search or ledger rewrite."""
+    import fcntl,hashlib,shutil,time
+    tests=run(["python3","-m","unittest","discover","-s",str(HERE),"-p","test_*.py"],True)
+    with (BASE/"research.lock").open("a") as research:
+        fcntl.flock(research,fcntl.LOCK_EX)
+        with (BASE/"run.lock").open("a") as tick:
+            fcntl.flock(tick,fcntl.LOCK_EX)
+            protected=[BASE/"ledger.sqlite",BASE/"registry.json",Path("/etc/crown-m1m6.json"),
+                       DEST/"policy.py",DEST/"strategy_runtime.py",DEST/"dynamic_rules.py",
+                       DEST/"research_cycle.py",DEST/"result_refresh.py"]
+            digest=lambda:{str(p):hashlib.sha256(p.read_bytes()).hexdigest() for p in protected}
+            before=digest()
+            backup=BASE/("conflict-guard-backup-"+str(int(time.time()*1000)));backup.mkdir()
+            for name in ("notifier.py","signal_guard.py","test_signal_guard.py"):
+                if (DEST/name).exists():
+                    shutil.copy2(DEST/name,backup/name)
+                shutil.copy2(HERE/name,DEST/name)
+            assert before==digest(),"Protected strategy or ledger changed"
+    return {"summary":{"action":"conflict_guard_refresh","tests":tests["stderr"],
+                       "protected_files_unchanged":True,"release_before_seconds":120,
+                       "conflict_scope":"whole_match_warning_not_veto","forced_sends":0,
+                       "search_and_schedule_unchanged":True}}
 
 
 def presentation_refresh():

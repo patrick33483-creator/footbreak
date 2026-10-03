@@ -132,6 +132,9 @@ def main():
     elif action=="schedule_refresh":
         from dynamic_ops import schedule_refresh
         result=schedule_refresh()
+    elif action=="conflict_guard_refresh":
+        from dynamic_ops import conflict_guard_refresh
+        result=conflict_guard_refresh()
     elif action=="results_preflight":
         from repair_results import preflight
         result=preflight()
