@@ -96,16 +96,16 @@ class RulesTest(unittest.TestCase):
         h[-4].update(result="L",pnl=-1)
         self.assertFalse(policy.gates(h)["pass"])
         h[-4].update(result="P",pnl=0)
-        self.assertTrue(policy.gates(h)["30"]["pass"])  # 26/29 exceeds 87.5%
+        self.assertFalse(policy.gates(h)["30"]["pass"])  # 26/29 below 90%; never round up
         h[-3].update(result="W",pnl=.8)
         self.assertTrue(policy.gates(h)["30"]["pass"])  # 27/29
         h=[{"sid":str(i),"ko":i,"result":"W","pnl":.8,"hk":.8} for i in range(20)]
         h[-1].update(result="P",pnl=0);h[-2].update(result="L",pnl=-1)
-        self.assertTrue(policy.gates(h)["20"]["pass"])  # 18/19 exceeds 92.5%
+        self.assertFalse(policy.gates(h)["20"]["pass"])  # 18/19 below 95%; never round up
         h[-2].update(result="W",pnl=.8)
         self.assertTrue(policy.gates(h)["20"]["pass"])  # 19/19
         h[-3].update(result="L",pnl=-1)
-        self.assertTrue(policy.gates(h)["20"]["pass"])  # 18/19
+        self.assertFalse(policy.gates(h)["20"]["pass"])  # 18/19
         h[-4].update(result="L",pnl=-1)
         self.assertFalse(policy.gates(h)["20"]["pass"])  # 17/19
     def test_result_must_be_official_and_available(self):

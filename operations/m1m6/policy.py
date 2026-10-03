@@ -5,12 +5,12 @@ from decimal import Decimal as D
 import math
 
 VERSION="M1M6-ROLLING-NOLOCK-v3"
-GATE_VERSION="rolling-20-92.5-or-30-87.5-min-decimal-1.70-v4"
+GATE_VERSION="rolling-20-95-or-30-90-min-decimal-1.70-v5"
 MIN_HK=D(".70")
 MIN_DECIMAL_ODDS=1.70
-THRESHOLDS={20:92.5,30:87.5}
-GATE_TEXT="最近20場≥92.5% 或最近30場≥87.5%"
-GATE_CONFIG="20>=92.5% OR 30>=87.5%; selected decimal odds>=1.70 before window selection; min nonpush 16/24; positive net units"
+THRESHOLDS={20:95,30:90}
+GATE_TEXT="最近20場≥95% 或最近30場≥90%"
+GATE_CONFIG="20>=95% OR 30>=90%; selected decimal odds>=1.70 before window selection; min nonpush 16/24; positive net units"
 START_MS=1789023600000  # 2026-09-10 15:00 HKT
 HKT=timezone(timedelta(hours=8))
 RULES=[

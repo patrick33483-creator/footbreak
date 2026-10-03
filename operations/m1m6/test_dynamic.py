@@ -167,12 +167,14 @@ class DynamicTests(unittest.TestCase):
             self.assertEqual(bool(found),expected,(n,wins))
             self.assertEqual(gates(rows)["pass"],expected)
 
-    def test_fractional_thresholds_with_pushes_in_scanner_and_runtime(self):
+    def test_stricter_thresholds_with_pushes_in_scanner_and_runtime(self):
         for n,wins,losses,pushes,expected in [
-            (20,15,1,4,True),   # 15/16=93.75%, four pushes stay inside the 20
+            (20,15,1,4,False),  # 15/16=93.75%, fails 95%
+            (20,16,0,4,True),
             (20,14,2,4,False),
-            (20,18,1,1,True),   # 18/19 > 92.5%
-            (30,21,3,6,True),   # exact 87.5% boundary, minimum 24 non-push
+            (20,18,1,1,False),  # 18/19 < 95%
+            (30,21,3,6,False),  # 87.5% fails 90%
+            (30,22,2,6,True),   # 22/24 exceeds 90%
             (30,20,4,6,False),
         ]:
             outcomes=["W"]*wins+["L"]*losses+["P"]*pushes
