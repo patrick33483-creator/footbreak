@@ -93,6 +93,9 @@ def main():
     elif action=="audit":
         from audit import audit
         result=audit()
+    elif action=="latency_readonly":
+        from latency_ops import diagnose
+        result=diagnose()
     elif action=="inspect_hkjc":
         from audit import inspect_hkjc
         result=inspect_hkjc()
