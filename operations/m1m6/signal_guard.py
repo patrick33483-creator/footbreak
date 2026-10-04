@@ -2,8 +2,8 @@
 import json
 from policy import eligible_price,key
 
-RELEASE_BEFORE_MS=120000
-VERSION="match-conflict-warning-v1-Tminus2"
+VERSION="match-conflict-warning-v2-ready-immediate"
+RELEASE_MODE="as_soon_as_complete_T5_and_qualified"
 ATTEMPTED=("sent","sending","uncertain")
 
 
@@ -50,12 +50,11 @@ def filter_live(db,live,gates,now,activated_at,rules):
             (sid,hits[0]["ko"],json.dumps(seen,ensure_ascii=False),conflict_at,now))
         if conflict_at is not None:
             counts["conflict_warning"]+=1
-        if now<hits[0]["ko"]-RELEASE_BEFORE_MS:
-            counts["collecting"]+=1
-        else:
-            allowed.extend({**h,"conflict_warning":conflict_at is not None,
-                            "conflict_evidence":seen if conflict_at is not None else {}} for h in hits)
-            counts["ready"]+=1
+        # collect() already requires complete validated snapshots and rule inputs.
+        # Inspect all signals in this scan, but never hold a qualified one for T-2.
+        allowed.extend({**h,"conflict_warning":conflict_at is not None,
+                        "conflict_evidence":seen if conflict_at is not None else {}} for h in hits)
+        counts["ready"]+=1
     db.commit()
     return allowed,counts
 
@@ -67,7 +66,8 @@ def status(db):
     )] if exists else []
     for r in conflicts:
         r["seen"]=json.loads(r["seen"])
-    return {"version":VERSION,"release_before_seconds":RELEASE_BEFORE_MS//1000,
+    return {"version":VERSION,"release_mode":RELEASE_MODE,"intentional_hold_seconds":0,
+            "release_before_seconds":None,
             "scope":"whole_match_warning_not_veto","recent_conflicts":conflicts}
 
 
@@ -114,7 +114,7 @@ def deliver(db,fresh,groups,creds):
     now=nowms()
     for row in db.execute("""SELECT sid,ko FROM signal_guard
           WHERE conflict_at IS NOT NULL AND warning_attempt_at IS NULL
-          AND ko>? AND ko<=?""",(now+1500,now+RELEASE_BEFORE_MS)).fetchall():
+          AND ko>?""",(now+1500,)).fetchall():
         if db.execute("""SELECT 1 FROM items WHERE sid=? AND status IN
             ('sent','sending','uncertain') LIMIT 1""",(row["sid"],)).fetchone():
             bundles.setdefault(row["sid"],[])

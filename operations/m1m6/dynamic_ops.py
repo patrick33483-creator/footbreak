@@ -16,7 +16,7 @@ FILES=("policy.py","notifier.py","dynamic_rules.py","strategy_runtime.py","resea
 
 def conflict_guard_refresh():
     """Narrow notification-only change. No forced sends, search or ledger rewrite."""
-    import fcntl,hashlib,shutil,time
+    import fcntl,hashlib,shutil,time,sqlite3
     tests=run(["python3","-m","unittest","discover","-s",str(HERE),"-p","test_*.py"],True)
     with (BASE/"research.lock").open("a") as research:
         fcntl.flock(research,fcntl.LOCK_EX)
@@ -24,17 +24,36 @@ def conflict_guard_refresh():
             fcntl.flock(tick,fcntl.LOCK_EX)
             protected=[BASE/"ledger.sqlite",BASE/"registry.json",Path("/etc/crown-m1m6.json"),
                        DEST/"policy.py",DEST/"strategy_runtime.py",DEST/"dynamic_rules.py",
-                       DEST/"research_cycle.py",DEST/"result_refresh.py"]
+                       DEST/"research_cycle.py",DEST/"result_refresh.py",DEST/"notifier.py"]
+            if (BASE/"performance_epoch.json").exists():
+                protected.append(BASE/"performance_epoch.json")
             digest=lambda:{str(p):hashlib.sha256(p.read_bytes()).hexdigest() for p in protected}
             before=digest()
             backup=BASE/("conflict-guard-backup-"+str(int(time.time()*1000)));backup.mkdir()
-            for name in ("notifier.py","signal_guard.py","test_signal_guard.py"):
+            for name in ("signal_guard.py","test_signal_guard.py"):
                 if (DEST/name).exists():
                     shutil.copy2(DEST/name,backup/name)
                 shutil.copy2(HERE/name,DEST/name)
             assert before==digest(),"Protected strategy or ledger changed"
+            from signal_guard import status
+            from ops import atomic
+            db=sqlite3.connect(f"file:{BASE/'ledger.sqlite'}?mode=ro",uri=True)
+            db.row_factory=sqlite3.Row
+            try:
+                guard_status=status(db)
+            finally:
+                db.close()
+            public=json.loads((BASE/"status.json").read_text())
+            public["signal_guard"]=guard_status
+            for p in (BASE/"status.json",Path("/var/www/crownsystem-v3/m1m6_status.json"),
+                      Path("/opt/crown-radar-v2/data/m1m6_status.json")):
+                atomic(p,public)
+            assert before==digest(),"Status projection changed protected state"
+            deployed_hash=hashlib.sha256((DEST/"signal_guard.py").read_bytes()).hexdigest()
+            assert deployed_hash==hashlib.sha256((HERE/"signal_guard.py").read_bytes()).hexdigest()
     return {"summary":{"action":"conflict_guard_refresh","tests":tests["stderr"],
-                       "protected_files_unchanged":True,"release_before_seconds":120,
+                       "protected_files_unchanged":True,"signal_guard":guard_status,
+                       "deployed_signal_guard_sha256":deployed_hash,
                        "conflict_scope":"whole_match_warning_not_veto","forced_sends":0,
                        "search_and_schedule_unchanged":True}}
 

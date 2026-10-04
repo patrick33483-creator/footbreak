@@ -41,14 +41,49 @@ class SignalGuardTests(unittest.TestCase):
         return runtime.choose(allowed,{r["id"]:full for r in self.rules},
                               self.ko-120000,0,[],self.rules,{})
 
-    def test_wait_collect_then_keep_both_as_warning(self):
+    def test_ready_immediately_then_keep_both_as_warning(self):
         out,counts=self.ready([self.a],self.now)
-        self.assertEqual(out,[])
-        self.assertEqual(counts["collecting"],1)
+        self.assertEqual(len(out),1)
+        self.assertFalse(out[0]["conflict_warning"])
+        self.assertEqual(counts["collecting"],0)
+        self.assertEqual(counts["ready"],1)
         out,_=self.ready([self.a,self.b])
         self.assertEqual(len(out),2)
         self.assertTrue(all(h["conflict_warning"] for h in out))
         self.assertEqual(guard.status(self.db)["scope"],"whole_match_warning_not_veto")
+        self.assertEqual(guard.status(self.db)["intentional_hold_seconds"],0)
+        self.assertEqual(guard.status(self.db)["release_mode"],
+                         "as_soon_as_complete_T5_and_qualified")
+        self.assertIsNone(guard.status(self.db)["release_before_seconds"])
+
+    def test_send_and_later_warning_before_old_two_minute_boundary(self):
+        allowed,_=self.ready([self.a],self.now)
+        full=gates([{"sid":str(i),"ko":i,"result":"W","pnl":.84,"hk":.84} for i in range(30)])
+        first=runtime.choose(allowed,{r["id"]:full for r in self.rules},
+                             self.now,0,[],self.rules,{})
+        groups=notifier.prepare_items(self.db,first,self.now)
+        runtime.schema(self.db)
+        runtime.attach(self.db,first,self.rules,self.now)
+        with patch.object(notifier,"nowms",return_value=self.now),\
+             patch.object(notifier,"send",return_value=("sent",{"date":1001,"message_id":9},None)) as send:
+            self.assertEqual(guard.deliver(self.db,first,groups,{}),1)
+        self.assertEqual(send.call_count,1)
+        self.ready([self.b],self.now+30000)
+        with patch.object(notifier,"nowms",return_value=self.now+30000),\
+             patch.object(notifier,"send",return_value=("sent",{"date":1031,"message_id":10},None)) as send:
+            guard.deliver(self.db,[],{},{});guard.deliver(self.db,[],{},{})
+        self.assertEqual(send.call_count,1)
+        self.assertIn("條件衝突，不建議投注",send.call_args.args[0])
+        self.assertEqual(self.db.execute("SELECT COUNT(*) FROM items").fetchone()[0],1)
+        self.assertEqual(self.db.execute("SELECT COUNT(*) FROM strategy_batches").fetchone()[0],1)
+
+    def test_early_release_still_requires_activation_and_rule_version(self):
+        self.rules[0]["version_at"]=101
+        out,_=self.ready([self.a],self.now)
+        self.assertEqual(out,[])
+        self.rules[0]["version_at"]=0
+        out,_=guard.filter_live(self.db,[self.a],self.g,self.now,101,self.rules)
+        self.assertEqual(out,[])
 
     def test_across_scan_registry_change_retains_opposite(self):
         self.ready([self.a],self.now)
