@@ -2,8 +2,9 @@
 import json
 from policy import eligible_price,key
 
-VERSION="match-conflict-warning-v2-ready-immediate"
-RELEASE_MODE="as_soon_as_complete_T5_and_qualified"
+VERSION="match-conflict-warning-v3-not-before-Tminus5"
+RELEASE_MODE="not_before_Tminus5_then_as_soon_as_qualified"
+RELEASE_BEFORE_MS=300000
 ATTEMPTED=("sent","sending","uncertain")
 
 
@@ -51,10 +52,14 @@ def filter_live(db,live,gates,now,activated_at,rules):
         if conflict_at is not None:
             counts["conflict_warning"]+=1
         # collect() already requires complete validated snapshots and rule inputs.
-        # Inspect all signals in this scan, but never hold a qualified one for T-2.
-        allowed.extend({**h,"conflict_warning":conflict_at is not None,
-                        "conflict_evidence":seen if conflict_at is not None else {}} for h in hits)
-        counts["ready"]+=1
+        # Accumulate conflict evidence early; release new signals no earlier
+        # than T-5. Missing inputs are never replaced by this timing boundary.
+        if now<hits[0]["ko"]-RELEASE_BEFORE_MS:
+            counts["collecting"]+=1
+        else:
+            allowed.extend({**h,"conflict_warning":conflict_at is not None,
+                            "conflict_evidence":seen if conflict_at is not None else {}} for h in hits)
+            counts["ready"]+=1
     db.commit()
     return allowed,counts
 
@@ -66,8 +71,8 @@ def status(db):
     )] if exists else []
     for r in conflicts:
         r["seen"]=json.loads(r["seen"])
-    return {"version":VERSION,"release_mode":RELEASE_MODE,"intentional_hold_seconds":0,
-            "release_before_seconds":None,
+    return {"version":VERSION,"release_mode":RELEASE_MODE,
+            "release_before_seconds":RELEASE_BEFORE_MS//1000,
             "scope":"whole_match_warning_not_veto","recent_conflicts":conflicts}
 
 

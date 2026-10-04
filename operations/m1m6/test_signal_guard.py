@@ -41,7 +41,7 @@ class SignalGuardTests(unittest.TestCase):
         return runtime.choose(allowed,{r["id"]:full for r in self.rules},
                               self.ko-120000,0,[],self.rules,{})
 
-    def test_ready_immediately_then_keep_both_as_warning(self):
+    def test_ready_at_five_minutes_then_keep_both_as_warning(self):
         out,counts=self.ready([self.a],self.now)
         self.assertEqual(len(out),1)
         self.assertFalse(out[0]["conflict_warning"])
@@ -51,10 +51,34 @@ class SignalGuardTests(unittest.TestCase):
         self.assertEqual(len(out),2)
         self.assertTrue(all(h["conflict_warning"] for h in out))
         self.assertEqual(guard.status(self.db)["scope"],"whole_match_warning_not_veto")
-        self.assertEqual(guard.status(self.db)["intentional_hold_seconds"],0)
         self.assertEqual(guard.status(self.db)["release_mode"],
-                         "as_soon_as_complete_T5_and_qualified")
-        self.assertIsNone(guard.status(self.db)["release_before_seconds"])
+                         "not_before_Tminus5_then_as_soon_as_qualified")
+        self.assertEqual(guard.status(self.db)["release_before_seconds"],300)
+
+    def test_before_five_minutes_accumulates_conflict_without_sending(self):
+        for at in (self.ko-480000,self.ko-300001):
+            out,counts=self.ready([self.a,self.b],at)
+            self.assertEqual(out,[])
+            self.assertEqual(counts["collecting"],1)
+            self.assertEqual(counts["conflict_warning"],1)
+            with patch.object(notifier,"nowms",return_value=at),\
+                 patch.object(notifier,"send") as send:
+                self.assertEqual(guard.deliver(self.db,[],{},{}),0)
+            send.assert_not_called()
+        out,counts=self.ready([self.a,self.b],self.ko-300000)
+        self.assertEqual(len(out),2)
+        self.assertTrue(all(h["conflict_warning"] for h in out))
+        self.assertEqual(counts["collecting"],0)
+
+    def test_five_minute_boundary_does_not_create_missing_or_failed_signal(self):
+        out,_=self.ready([],self.ko-300000)
+        self.assertEqual(out,[])
+        self.g["D0027"]={"pass":False}
+        out,_=self.ready([self.a],self.ko-300000)
+        self.assertEqual(out,[])
+        self.g["D0027"]={"pass":True}
+        out,_=self.ready([self.a],self.ko-240000)
+        self.assertEqual(len(out),1)
 
     def test_send_and_later_warning_before_old_two_minute_boundary(self):
         allowed,_=self.ready([self.a],self.now)
