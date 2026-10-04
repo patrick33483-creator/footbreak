@@ -210,9 +210,11 @@ def publish(db,config,gate_by_rule,reasons,live,pending,now,registry=None,strate
     atomic(PUBLIC,data)
     atomic(Path("/opt/crown-radar-v2/data/m1m6_status.json"),data)
 def tick(dry=False):
+    started=time.monotonic()
     config=json.loads(CONFIG.read_text())
     now=nowms()
     history,live,observations,finished,reasons=collect(now)
+    collected=time.monotonic()
     gate_by_rule={rid:gates(rr) for rid,rr in history.items()}
     registry=json.loads(REGISTRY.read_text()) if REGISTRY.exists() else None
     if dry:
@@ -223,13 +225,8 @@ def tick(dry=False):
     if registry is not None:
         from strategy_runtime import reconcile as reconcile_strategies,choose,attach
         strategy_pending=reconcile_strategies(db,now)
-    for h,result in observations:
-        db.execute("INSERT OR IGNORE INTO observations VALUES(?,?,?,?,?,?)",
-          (h["sid"],h["rule_id"],now,"historical_seed" if h["ko"]<=config["activated_at"] else "observed",
-           json.dumps(h,ensure_ascii=False),json.dumps(result,ensure_ascii=False) if result else None))
-        if result:
-            db.execute("UPDATE observations SET result_json=? WHERE sid=? AND rule_id=?",(json.dumps(result,ensure_ascii=False),h["sid"],h["rule_id"]))
-    db.commit()
+    # Gates use freshly collected source rows, not the observation archive.
+    # Persist the archive after durable notification attempts, off the send path.
     attempted={r[0] for r in db.execute("SELECT bet_key FROM items")}
     selected=choose_batch(live,gate_by_rule,now,config["activated_at"],False,attempted) if config.get("enabled") and registry is None else []
     guard_ready=False
@@ -257,11 +254,21 @@ def tick(dry=False):
         pending=reconcile(db,finished,nowms())
     if registry is not None:
         strategy_pending=reconcile_strategies(db,nowms())
+    dispatched=time.monotonic()
+    from observation_store import persist
+    observation_write=persist(db,observations,now,config["activated_at"])
+    persisted=time.monotonic()
     publish(db,config,gate_by_rule,reasons,live,pending,nowms(),registry,strategy_pending)
     db.close()
     return {"version":"CROWN-DYNAMIC-PER-STRATEGY-v4" if registry else VERSION,"at":fmt(now),"locked_batch":None,"batch_lock_enabled":bool(registry),
             "lock_scope":"per_strategy" if registry else None,"strategy_pending_batches":len(strategy_pending),
             "pending_result_count":sum(x["waiting"] for x in pending),"fixed_live_hits":len(live),"batch_selected":len(selected),"sent":sent,
+            "timings_ms":{"collect":round((collected-started)*1000),
+                          "before_archive":round((dispatched-started)*1000),
+                          "archive":round((persisted-dispatched)*1000),
+                          "total":round((time.monotonic()-started)*1000)},
+            "latency_version":"grouped-collect-incremental-archive-v1",
+            "observation_write":observation_write,
             "gate_pass":[r for r,g in gate_by_rule.items() if g["pass"]]}
 def main():
     ap=argparse.ArgumentParser()

@@ -1,15 +1,23 @@
 """Per-strategy locks survive registry revisions and share duplicate branches."""
 import json
 from policy import gates,key,eligible_price
-from dynamic_rules import universe,matched_rows,description
+from dynamic_rules import universe,matched_rows,matches,description
 
 
 def collect(registry,source,now):
     rows,reasons=universe(source,now)
+    # Check each row's invariant price once, not once for every strategy.
+    # Preserve universe order, every strategy and exact clause semantics.
+    by_market_side={}
+    for r in rows:
+        if eligible_price(r):
+            by_market_side.setdefault((r["market"],r["side"]),[]).append(r)
     history={};live=[];observations=[]
     for s in registry["strategies"]:
         history[s["id"]]=[]
-        for r in matched_rows(rows,s):
+        for r in by_market_side.get((s["market"],s["side"]),[]):
+            if not matches(r,s["clauses"]):
+                continue
             hit={**r,"rule_id":s["id"],"strategy_version":s["version"],
                  "strategy_description":s.get("description") or description(s["clauses"]),
                  "strategy_lock_ids":s["lock_ids"]}
