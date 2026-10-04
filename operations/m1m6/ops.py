@@ -135,6 +135,9 @@ def main():
     elif action=="conflict_guard_refresh":
         from dynamic_ops import conflict_guard_refresh
         result=conflict_guard_refresh()
+    elif action=="stats_reset_refresh":
+        from dynamic_ops import presentation_refresh
+        result=presentation_refresh(reset_stats=True)
     elif action=="results_preflight":
         from repair_results import preflight
         result=preflight()

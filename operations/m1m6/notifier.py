@@ -171,6 +171,7 @@ def publish(db,config,gate_by_rule,reasons,live,pending,now,registry=None,strate
     from ledger_view import context,classify,summary
     from result_refresh import status as result_refresh_status
     from signal_guard import status as signal_guard_status
+    from performance_view import load_epoch,summarize as performance_summary
     view_ready,view_rules=context(registry,gate_by_rule,now)
     ledger=[]
     for x in db.execute("SELECT * FROM items ORDER BY batch_id DESC,bet_key LIMIT 100"):
@@ -191,6 +192,7 @@ def publish(db,config,gate_by_rule,reasons,live,pending,now,registry=None,strate
           "ledger":ledger,"ledger_view":summary(ledger,view_ready),
           "result_refresh":result_refresh_status(db),
           "signal_guard":signal_guard_status(db),
+          "performance_period":performance_summary(db,load_epoch(),now),
           "scan_reasons":dict(reasons),"legacy_retired":True,
           "history_definition":"全部符合固定條件且當時已知正式賽果；包括未通知的場次",
           "old_history_archived":True}

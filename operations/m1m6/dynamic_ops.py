@@ -10,7 +10,8 @@ BASE=Path("/var/lib/crown-m1m6")
 NGINX=Path("/etc/nginx/sites-enabled/unified-dashboard")
 FILES=("policy.py","notifier.py","dynamic_rules.py","strategy_runtime.py","research_cycle.py",
        "refresh_api.py","panel.html","test_policy.py","test_dynamic.py","ledger_view.py","test_ledger_view.py",
-       "result_refresh.py","test_result_refresh.py","signal_guard.py","test_signal_guard.py")
+       "result_refresh.py","test_result_refresh.py","signal_guard.py","test_signal_guard.py",
+       "performance_view.py","test_performance_view.py")
 
 
 def conflict_guard_refresh():
@@ -38,9 +39,9 @@ def conflict_guard_refresh():
                        "search_and_schedule_unchanged":True}}
 
 
-def presentation_refresh():
+def presentation_refresh(reset_stats=False):
     """Only add a read-only projection and render pages; never run a search/tick."""
-    import ast,fcntl,hashlib,shutil,time
+    import ast,fcntl,hashlib,shutil,time,sqlite3
     from install import PAGES,render_page
     def unchanged_core(path):
         tree=ast.parse(path.read_text())
@@ -58,7 +59,8 @@ def presentation_refresh():
         digest=lambda: {str(p):hashlib.sha256(p.read_bytes()).hexdigest() for p in protected}
         before=digest()
         backup=BASE/("presentation-backup-"+str(int(time.time()*1000)));backup.mkdir()
-        for name in ("ledger_view.py","test_ledger_view.py","notifier.py","panel.html"):
+        for name in ("ledger_view.py","test_ledger_view.py","notifier.py","panel.html",
+                     "performance_view.py","test_performance_view.py"):
             if (DEST/name).exists():
                 shutil.copy2(DEST/name,backup/name)
             shutil.copy2(HERE/name,DEST/name)
@@ -67,6 +69,29 @@ def presentation_refresh():
             p.write_text(render_page(p.read_text(),(HERE/"panel.html").read_text()))
         assert before==digest(),"Protected runtime state changed"
         public=json.loads((BASE/"status.json").read_text())
+        if reset_stats:
+            from performance_view import summarize
+            from ops import atomic
+            epoch_path=BASE/"performance_epoch.json"
+            epoch_id="user-reset-20261004-1218-HKT"
+            db=sqlite3.connect(f"file:{BASE/'ledger.sqlite'}?mode=ro",uri=True)
+            db.row_factory=sqlite3.Row
+            try:
+                if epoch_path.exists():
+                    epoch=json.loads(epoch_path.read_text())
+                    if epoch["id"]!=epoch_id:
+                        raise RuntimeError("Unexpected existing performance epoch; do not reset silently")
+                else:
+                    epoch={"id":epoch_id,"started_at":int(time.time()*1000),
+                           "excluded_sids":[r[0] for r in db.execute("SELECT DISTINCT sid FROM items")]}
+                    atomic(epoch_path,epoch)
+                public["performance_period"]=summarize(db,epoch,int(time.time()*1000))
+                for p in (BASE/"status.json",Path("/var/www/crownsystem-v3/m1m6_status.json"),
+                          Path("/opt/crown-radar-v2/data/m1m6_status.json")):
+                    atomic(p,public)
+            finally:
+                db.close()
+            assert before==digest(),"Reset changed protected accounting state"
     return {"summary":{"action":"presentation_refresh","tests":tests["stderr"],
             "notification_and_accounting_ast_unchanged":True,"protected_files_unchanged":True,
             "search_or_tick_triggered":False,"config_and_locks_unchanged":True,
@@ -75,7 +100,10 @@ def presentation_refresh():
                                       and "香港開賽／聯賽／賽事" in p.read_text() for p in PAGES),
             "ledger_rows":len(public.get("ledger",[])),
             "ledger_rows_with_league":sum(bool(str(r.get("league") or "").strip())
-                                        for r in public.get("ledger",[]))},
+                                        for r in public.get("ledger",[])),
+            "performance_reset_requested":reset_stats,
+            "performance_period":public.get("performance_period"),
+            "result_colours_verified":all('m-result-win' in p.read_text() and 'm-result-loss' in p.read_text() for p in PAGES)},
             "public_status":public}
 
 
