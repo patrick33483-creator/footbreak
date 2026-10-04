@@ -66,10 +66,17 @@ def presentation_refresh():
             shutil.copy2(p,backup/str(p).lstrip("/").replace("/","__"))
             p.write_text(render_page(p.read_text(),(HERE/"panel.html").read_text()))
         assert before==digest(),"Protected runtime state changed"
+        public=json.loads((BASE/"status.json").read_text())
     return {"summary":{"action":"presentation_refresh","tests":tests["stderr"],
             "notification_and_accounting_ast_unchanged":True,"protected_files_unchanged":True,
             "search_or_tick_triggered":False,"config_and_locks_unchanged":True,
-            "pages_verified":all('id="m-ledger-toggle"' in p.read_text() for p in PAGES)}}
+            "pages_verified":all('id="m-ledger-toggle"' in p.read_text() for p in PAGES),
+            "page_league_verified":all('class="m-league m-muted"' in p.read_text()
+                                      and "香港開賽／聯賽／賽事" in p.read_text() for p in PAGES),
+            "ledger_rows":len(public.get("ledger",[])),
+            "ledger_rows_with_league":sum(bool(str(r.get("league") or "").strip())
+                                        for r in public.get("ledger",[]))},
+            "public_status":public}
 
 
 def schedule_refresh():

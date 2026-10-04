@@ -1,9 +1,15 @@
 import copy
 import unittest
+from pathlib import Path
 import ledger_view as view
 from policy import GATE_VERSION
 
 class LedgerViewTest(unittest.TestCase):
+    def test_league_display_uses_saved_field_with_escaped_fallback(self):
+        panel=Path(__file__).with_name("panel.html").read_text()
+        self.assertIn("香港開賽／聯賽／賽事",panel)
+        self.assertIn('class="m-league m-muted"',panel)
+        self.assertIn('esc(String(r.league??"").trim()||"未有聯賽資料")',panel)
     def setUp(self):
         self.p={"market":"AH","side":"home","hk":.8,"features":{"hour":0},"rules":["OLD"]}
         self.rules=[{"id":"NEW","active":True,"market":"AH","side":"home",
