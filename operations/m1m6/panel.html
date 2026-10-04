@@ -28,6 +28,8 @@
  </div>
  <section class="m-panel"><h3>每日贏輸</h3><div id="m-daily-profit" class="m-table">正在讀取…</div>
  <p class="m-muted">每注1u模擬；同注多策略只計一次，半贏／半輸按半注。每日按香港開賽日期歸類，未結算唔計盈虧；只計賽前TG已確認、推介時未標記衝突的訊號。舊紀錄保留，但不計入新一輪。</p><p id="m-profit-excluded" class="m-muted"></p></section>
+ <section class="m-panel"><h3>每條策略本輪盈虧</h3><div id="m-strategy-profit" class="m-table">正在讀取…</div>
+ <p class="m-muted">沿用同一重計起點及每注1u。按發送時的策略ID歸屬，停用或改版後仍保留本輪成績；同一注可歸屬多條策略，各列不可直接相加，整體總計仍只計一次。</p></section>
  <h2>新版本TG通知帳本</h2><div class="m-panel"><div class="m-toolbar"><p class="m-muted">已完場紀錄保留；其餘只顯示符合現行策略及最低賠率1.70的投注。</p><button id="m-ledger-toggle" type="button" aria-pressed="false" hidden>查看收起紀錄</button></div><p id="m-ledger-summary" class="m-muted" role="status">正在核對顯示資格…</p><div id="m-ledger" class="m-table">載入中…</div><p class="m-muted">篩選只改頁面顯示，不是新推介；收起的未結算紀錄仍保留帳本及封鎖。此處列最近100筆通知紀錄，不混入研究樣本或舊8條策略。</p></div>
  <details class="m-panel"><summary>本輪合資格策略重算紀錄</summary><div id="m-existing" class="m-table">載入中…</div></details>
  <details class="m-panel"><summary>目前掃描診斷</summary><div id="m-diagnostics" class="m-muted"></div><p class="m-muted">取消、延期或缺正式賽果仍保留待結算，不假作結算。只封鎖相關策略及其重複分支，其他策略不受影響。搜尋資料超過四小時未更新時暫停新通知，保留結算及所有紀錄。</p></details>
@@ -46,7 +48,7 @@
   if(!s?.ready){
    $("m-period-start").textContent="新統計尚未初始化；不會將舊紀錄當成新一輪。";
    $("m-profit-total").textContent=$("m-profit-today").textContent="—";
-   $("m-daily-profit").textContent="等待重計起點。";return;
+   $("m-daily-profit").textContent=$("m-strategy-profit").textContent="等待重計起點。";return;
   }
   $("m-period-start").textContent=`重計起點：${time(s.started_at)} 香港時間｜`+(s.first_match_at?`首場新推介開賽：${time(s.first_match_at)}`:"等待下一場新推介；生效前已推介的賽事不計。");
   const counts=b=>`${b.wins}贏（半贏${b.HW}）・${b.losses}輸（半輸${b.HL}）・${b.P}走盤・${b.pending}待結算`;
@@ -57,6 +59,7 @@
   $("m-today-title").textContent=`今日盈虧（${s.today_date} 香港）`;
   $("m-daily-profit").innerHTML=s.daily.length?`<table><thead><tr><th>香港日期</th><th>贏／輸／走盤</th><th>待結算</th><th>淨盈虧</th></tr></thead><tbody>${s.daily.map(b=>`<tr><td>${esc(b.date)}</td><td>${b.wins}／${b.losses}／${b.P}</td><td>${b.pending}</td><td class="${profitClass(b.pnl)}">${esc(profitText(b.pnl))}</td></tr>`).join("")}</tbody></table>`:"未有新紀錄，下一場新推介開始計算。";
   $("m-profit-excluded").textContent=`本輪另有 ${s.excluded.warning} 筆衝突提示、${s.excluded.unconfirmed} 筆未確認送達，不計投注盈虧。`+(s.excluded.invalid_result?`另有 ${s.excluded.invalid_result} 筆結果需核對，暫不計入。`:"");
+  $("m-strategy-profit").innerHTML=!Array.isArray(s.by_strategy)?"策略分項尚待同步。":s.by_strategy.length?`<table><thead><tr><th>策略</th><th>已結算</th><th>贏／輸／走盤</th><th>待結算</th><th>本輪淨盈虧</th></tr></thead><tbody>${s.by_strategy.map(b=>`<tr><td>${esc(b.id)}${b.versions?.length?`<div class="m-muted">v${esc(b.versions.join("／v"))}</div>`:""}</td><td>${b.settled}</td><td>${b.wins}／${b.losses}／${b.P}<div class="m-muted">半贏${b.HW}・半輸${b.HL}</div></td><td>${b.pending}</td><td class="${profitClass(b.pnl)}">${esc(profitText(b.pnl))}</td></tr>`).join("")}</tbody></table>`:"本輪未有可統計策略；首場新推介後自動列出。";
  }
  const reasons={matched:"固定條件符合",fixed_conditions_not_met:"固定條件不符",missing_or_invalid_six_snapshots:"六快照資料不足／無效",invalid_T30_time:"T30時點不符",invalid_T5_time:"T5時點不符",invalid_snapshot:"快照資料無效",nonchronological:"時點次序不符",outside_market_scope:"盤線超出範圍",invalid_match_time:"開賽時間無效"};
  let busy=false,refreshing=false,lastRegistryAt=0,showAllLedger=false,lastLedgerData=null;

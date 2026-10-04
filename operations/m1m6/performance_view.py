@@ -30,7 +30,7 @@ def summarize(db,epoch,now):
         return {"version":VERSION,"ready":False}
     start=epoch["started_at"]
     excluded_sids=set(epoch.get("excluded_sids",[]))
-    total=bucket();daily={};seen=set();first=None
+    total=bucket();daily={};strategies={};versions={};seen=set();first=None
     excluded={"warning":0,"unconfirmed":0,"invalid_result":0}
     # Deliberately not LIMIT 100: page pagination cannot change performance.
     for raw in db.execute("SELECT * FROM items ORDER BY ko,bet_key"):
@@ -52,7 +52,16 @@ def summarize(db,epoch,now):
             excluded["invalid_result"]+=1
             continue
         date=day(x["ko"]);b=daily.setdefault(date,bucket())
-        for target in (total,b):
+        ids=sorted({str(rid) for rid in (p.get("rules") or [p.get("rule_id") or "未記錄策略"])})
+        strategy_buckets=[]
+        for rid in ids:
+            strategy_buckets.append(strategies.setdefault(rid,bucket()))
+            version=(p.get("rule_versions") or {}).get(rid)
+            if version is None and p.get("rule_id")==rid:
+                version=p.get("strategy_version")
+            if version is not None:
+                versions.setdefault(rid,set()).add(str(version))
+        for target in [total,b,*strategy_buckets]:
             target["notified"]+=1
             if r is None:
                 target["pending"]+=1
@@ -64,4 +73,7 @@ def summarize(db,epoch,now):
             "first_match_at":first,"stake_u":1,"date_basis":"Hong_Kong_kickoff_date",
             "total":finish(total),"today":finish(dict(daily.get(today,bucket()))),
             "today_date":today,"daily":[{"date":date,**finish(b)} for date,b in sorted(daily.items(),reverse=True)],
+            "by_strategy":[{"id":rid,"versions":sorted(versions.get(rid,set())),**finish(b)}
+                           for rid,b in sorted(strategies.items())],
+            "strategy_attribution":"each_triggering_strategy; not_additive; overall_deduplicated",
             "excluded":excluded,"old_history_preserved":True}

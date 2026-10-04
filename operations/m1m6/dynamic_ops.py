@@ -58,6 +58,8 @@ def presentation_refresh(reset_stats=False):
                    DEST/"research_cycle.py"]
         digest=lambda: {str(p):hashlib.sha256(p.read_bytes()).hexdigest() for p in protected}
         before=digest()
+        epoch_path=BASE/"performance_epoch.json"
+        epoch_before=hashlib.sha256(epoch_path.read_bytes()).hexdigest() if epoch_path.exists() else None
         backup=BASE/("presentation-backup-"+str(int(time.time()*1000)));backup.mkdir()
         for name in ("ledger_view.py","test_ledger_view.py","notifier.py","panel.html",
                      "performance_view.py","test_performance_view.py"):
@@ -69,17 +71,16 @@ def presentation_refresh(reset_stats=False):
             p.write_text(render_page(p.read_text(),(HERE/"panel.html").read_text()))
         assert before==digest(),"Protected runtime state changed"
         public=json.loads((BASE/"status.json").read_text())
-        if reset_stats:
+        if reset_stats or epoch_path.exists():
             from performance_view import summarize
             from ops import atomic
-            epoch_path=BASE/"performance_epoch.json"
             epoch_id="user-reset-20261004-1218-HKT"
             db=sqlite3.connect(f"file:{BASE/'ledger.sqlite'}?mode=ro",uri=True)
             db.row_factory=sqlite3.Row
             try:
                 if epoch_path.exists():
                     epoch=json.loads(epoch_path.read_text())
-                    if epoch["id"]!=epoch_id:
+                    if reset_stats and epoch["id"]!=epoch_id:
                         raise RuntimeError("Unexpected existing performance epoch; do not reset silently")
                 else:
                     epoch={"id":epoch_id,"started_at":int(time.time()*1000),
@@ -92,6 +93,9 @@ def presentation_refresh(reset_stats=False):
             finally:
                 db.close()
             assert before==digest(),"Reset changed protected accounting state"
+        epoch_after=hashlib.sha256(epoch_path.read_bytes()).hexdigest() if epoch_path.exists() else None
+        if not reset_stats:
+            assert epoch_before==epoch_after,"Presentation update changed statistics start boundary"
     return {"summary":{"action":"presentation_refresh","tests":tests["stderr"],
             "notification_and_accounting_ast_unchanged":True,"protected_files_unchanged":True,
             "search_or_tick_triggered":False,"config_and_locks_unchanged":True,
@@ -102,6 +106,7 @@ def presentation_refresh(reset_stats=False):
             "ledger_rows_with_league":sum(bool(str(r.get("league") or "").strip())
                                         for r in public.get("ledger",[])),
             "performance_reset_requested":reset_stats,
+            "existing_performance_epoch_unchanged":epoch_before==epoch_after,
             "performance_period":public.get("performance_period"),
             "result_colours_verified":all('m-result-win' in p.read_text() and 'm-result-loss' in p.read_text() for p in PAGES)},
             "public_status":public}

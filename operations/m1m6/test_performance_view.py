@@ -85,10 +85,36 @@ class PerformanceViewTests(unittest.TestCase):
         folder=Path(__file__).parent
         ops=(folder/"dynamic_ops.py").read_text()
         self.assertIn('if epoch_path.exists():',ops)
-        self.assertIn('if epoch["id"]!=epoch_id:',ops)
+        self.assertIn('if reset_stats and epoch["id"]!=epoch_id:',ops)
+        self.assertIn('assert epoch_before==epoch_after',ops)
         html=(folder/"panel.html").read_text()
         for marker in ('m-result-win','m-result-loss','m-profit-total','m-profit-today','m-daily-profit'):
             self.assertIn(marker,html)
+    def test_strategy_overlap_is_not_double_counted_in_total(self):
+        self.add("shared",payload={"rules":["D1","D1","D2"],"rule_versions":{"D1":1,"D2":2}})
+        self.add("solo","L",-1,payload={"rules":["D1"],"rule_versions":{"D1":3}})
+        s=self.get();groups={b["id"]:b for b in s["by_strategy"]}
+        self.assertEqual(s["total"]["notified"],2)
+        self.assertEqual(s["total"]["pnl"],-.2)
+        self.assertEqual(groups["D1"]["notified"],2)
+        self.assertEqual(groups["D1"]["pnl"],-.2)
+        self.assertEqual(groups["D1"]["versions"],["1","3"])
+        self.assertEqual(groups["D2"]["notified"],1)
+        self.assertEqual(groups["D2"]["pnl"],.8)
+    def test_strategy_pending_warning_and_old_scope(self):
+        self.add("new",None,payload={"rules":["M5"]})
+        self.add("warn",payload={"rules":["D9"],"conflict_warning":True})
+        self.add("old",payload={"rules":["D0"]})
+        s=self.get()
+        self.assertEqual([b["id"] for b in s["by_strategy"]],["M5"])
+        self.assertEqual(s["by_strategy"][0]["pending"],1)
+        self.assertEqual(s["by_strategy"][0]["pnl"],0)
+        self.assertEqual(s["started_at"],self.start)
+    def test_strategy_fallback_retains_unlabelled_profit(self):
+        self.add("fallback",payload={"rule_id":"M5","strategy_version":1})
+        self.add("missing",payload={})
+        ids={b["id"] for b in self.get()["by_strategy"]}
+        self.assertEqual(ids,{"M5","未記錄策略"})
 
 
 if __name__=="__main__":
