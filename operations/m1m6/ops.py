@@ -112,6 +112,12 @@ def main():
     elif action=="recent_five_gate_verify":
         from recent_five_gate_ops import verify
         result=verify()
+    elif action=="repair_postponed_3056290":
+        from repair_postponed_3056290 import repair
+        result=repair()
+    elif action=="verify_postponed_3056290":
+        from repair_postponed_3056290 import verify
+        result=verify()
     elif action=="latency_readonly":
         from latency_ops import diagnose
         result=diagnose()
