@@ -160,8 +160,8 @@ class DynamicTests(unittest.TestCase):
     def test_scanner_and_runtime_share_new_boundaries(self):
         for n,wins,expected in [(20,19,True),(20,18,False),(30,27,True),(30,26,False)]:
             rows=[{"sid":str(i),"ko":i,"market":"OU","side":"under","line":3.25,
-                   "features":{},"result":"W" if i<wins else "L",
-                   "pnl":.8 if i<wins else -1,"hk":.8} for i in range(n)]
+                   "features":{},"result":"L" if n-5-(n-wins)<=i<n-5 else "W",
+                   "pnl":-1 if n-5-(n-wins)<=i<n-5 else .8,"hk":.8} for i in range(n)]
             with patch.object(d,"atoms_for",return_value=[]):
                 found,_=d.scan(rows)
             self.assertEqual(bool(found),expected,(n,wins))
@@ -177,7 +177,7 @@ class DynamicTests(unittest.TestCase):
             (30,22,2,6,True),   # 22/24 exceeds 90%
             (30,20,4,6,False),
         ]:
-            outcomes=["W"]*wins+["L"]*losses+["P"]*pushes
+            outcomes=["L"]*losses+["W"]*wins+["P"]*pushes
             rows=[{"sid":str(i),"ko":i,"market":"OU","side":"under","line":3.25,
                    "features":{},"result":outcome,"hk":.8,
                    "pnl":.8 if outcome=="W" else -1 if outcome=="L" else 0}

@@ -79,14 +79,14 @@ class RulesTest(unittest.TestCase):
         self.assertEqual({x["sid"] for x in selected},{"1","2"})
     def test_incomplete_thirty_does_not_block_passing_twenty(self):
         h=[{"sid":str(i),"ko":i,"result":"W","pnl":.8,"hk":.8} for i in range(22)]
-        h[-1].update(result="L",pnl=-1)
+        h[-6].update(result="L",pnl=-1)
         g=policy.gates(h)
         self.assertTrue(g["20"]["pass"])
         self.assertFalse(g["30"]["pass"])
         self.assertTrue(g["pass"])
-        h[-2].update(result="L",pnl=-1)
+        h[-7].update(result="L",pnl=-1)
         self.assertFalse(policy.gates(h)["pass"])
-        h[-3].update(result="L",pnl=-1)
+        h[-8].update(result="L",pnl=-1)
         self.assertFalse(policy.gates(h)["pass"])
     def test_new_threshold_boundaries_and_push_denominator(self):
         h=[{"sid":str(i),"ko":i,"result":"W","pnl":.8,"hk":.8} for i in range(30)]

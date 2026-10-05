@@ -106,6 +106,12 @@ def main():
         from result_revision_ops import evidence
         result={"summary":{"action":"score_revision_verify","database_writes":0,"forced_sends":0},
                 "verification":evidence()}
+    elif action=="recent_five_gate_deploy":
+        from recent_five_gate_ops import deploy
+        result=deploy()
+    elif action=="recent_five_gate_verify":
+        from recent_five_gate_ops import verify
+        result=verify()
     elif action=="latency_readonly":
         from latency_ops import diagnose
         result=diagnose()

@@ -5,12 +5,12 @@ from decimal import Decimal as D
 import math
 
 VERSION="M1M6-ROLLING-NOLOCK-v3"
-GATE_VERSION="rolling-20-95-or-30-90-min-decimal-1.70-v5"
+GATE_VERSION="rolling-20-95-or-30-90-recent5-no-loss-min-decimal-1.70-v6"
 MIN_HK=D(".70")
 MIN_DECIMAL_ODDS=1.70
 THRESHOLDS={20:95,30:90}
-GATE_TEXT="最近20場≥95% 或最近30場≥90%"
-GATE_CONFIG="20>=95% OR 30>=90%; selected decimal odds>=1.70 before window selection; min nonpush 16/24; positive net units"
+GATE_TEXT="最近20場≥95%且近5場不敗 或 最近30場≥90%且近5場不敗（容許走盤）"
+GATE_CONFIG="(20>=95% OR 30>=90%) AND last5 matching settled results all W/HW/P; pushes occupy slots; selected decimal odds>=1.70 before window selection; min nonpush 16/24; positive net units"
 START_MS=1789023600000  # 2026-09-10 15:00 HKT
 HKT=timezone(timedelta(hours=8))
 RULES=[
@@ -140,9 +140,18 @@ def window_stats(history,n):
             "pass":passed,"threshold_pct":THRESHOLDS[n],"min_decimal_odds":MIN_DECIMAL_ODDS,
             "min_selected_hk":min((r["hk"] for r in rr),default=None),
             "sids":[r["sid"] for r in rr]}
+def recent_five(history):
+    rr=sorted((r for r in history if eligible_price(r)),
+              key=lambda r:(r["ko"],int(r["sid"])))[-5:]
+    return {"n":len(rr),"required_n":5,"sids":[r["sid"] for r in rr],
+            "results":[r["result"] for r in rr],"push_allowed":True,
+            "pass":len(rr)==5 and all(r["result"] in ("W","HW","P") for r in rr)}
 def gates(history):
     a,b=window_stats(history,20),window_stats(history,30)
-    return {"20":a,"30":b,"pass":a["pass"] or b["pass"],"gate_version":GATE_VERSION}
+    five=recent_five(history)
+    rolling=a["pass"] or b["pass"]
+    return {"20":a,"30":b,"rolling_pass":rolling,"recent5":five,
+            "pass":rolling and five["pass"],"gate_version":GATE_VERSION}
 def key(hit):
     return f"{hit['sid']}:{hit['market']}:{hit['side']}:{num(hit['line']):g}"
 def choose_batch(live,gate_by_rule,now,activated_at,locked=False,attempted=None):
