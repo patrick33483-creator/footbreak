@@ -93,6 +93,9 @@ def main():
     elif action=="audit":
         from audit import audit
         result=audit()
+    elif action=="recent_five_readonly":
+        from recent_five_audit import export
+        result=export()
     elif action=="latency_readonly":
         from latency_ops import diagnose
         result=diagnose()
