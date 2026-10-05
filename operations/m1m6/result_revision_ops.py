@@ -116,6 +116,13 @@ def evidence(since_ms=0):
         if isinstance(row, dict) and row.get("result_revisions", {}).get("version") == "score-revision-sync-v1":
             ticks.append(row)
     research = json.loads((BASE / "research_status.json").read_text())
+    services = {}
+    for name in ("crown-m1m6.timer", "crown-m1m6.service", "crown-strategy-search.service"):
+        services[name] = subprocess.run(
+            ["systemctl", "show", name, "-p", "ActiveState", "-p", "SubState",
+             "-p", "Result", "-p", "ExecMainStartTimestamp", "-p", "ExecMainExitTimestamp"],
+            capture_output=True, text=True, timeout=10).stdout
+    registry = json.loads((BASE / "registry.json").read_text())
     return {"at_ms": int(time.time() * 1000), "audit": audit, "refresh_events": events,
             "revisioned_queue": revisions_exist, "tracked_source_matches": tracked,
             "target_settlement": {k: target_result.get(k) for k in ("score", "result", "pnl", "result_at")},
@@ -123,7 +130,13 @@ def evidence(since_ms=0):
             "target_public_rows": [{"sid": r["sid"], "result": {k: (r.get("result") or {}).get(k)
                                      for k in ("score", "result", "pnl")}} for r in visible],
             "performance_period": public.get("performance_period"), "research_status": research,
-            "natural_ticks": ticks}
+            "natural_ticks": ticks, "services": services,
+            "registry": {"updated_at": registry["updated_at"],
+                         "existing_strategy_checks": len(registry.get("existing_strategy_checks", [])),
+                         "search": registry.get("search", {})},
+            "runtime_hashes_match": {name: (DEST/name).read_bytes() == (HERE/name).read_bytes()
+                                     for name in FILES},
+            "backup_directories": [p.name for p in sorted(BASE.glob("score-revision-backup-*"))]}
 
 
 def deploy():
