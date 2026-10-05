@@ -255,6 +255,10 @@ def tick(dry=False):
     if registry is not None:
         strategy_pending=reconcile_strategies(db,nowms())
     dispatched=time.monotonic()
+    # Correct settled ledgers after notification attempts, never on the send
+    # critical path. Current gates already use the same fresh source snapshot.
+    from result_revisions import synchronize
+    result_revisions=synchronize(db,finished,now,{h["sid"]:h["ko"] for h,_ in observations})
     from observation_store import persist
     observation_write=persist(db,observations,now,config["activated_at"])
     persisted=time.monotonic()
@@ -269,6 +273,7 @@ def tick(dry=False):
                           "total":round((time.monotonic()-started)*1000)},
             "latency_version":"grouped-collect-incremental-archive-v1",
             "observation_write":observation_write,
+            "result_revisions":result_revisions,
             "gate_pass":[r for r,g in gate_by_rule.items() if g["pass"]]}
 def main():
     ap=argparse.ArgumentParser()

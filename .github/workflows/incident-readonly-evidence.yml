@@ -4,7 +4,7 @@ on:
     inputs:
       action:
         type: choice
-        options: [inspect, pause_legacy, install, verify, audit, recent_five_readonly, score_conflict_readonly, latency_readonly, latency_deploy, inspect_hkjc, stop_hkjc, verify_hkjc, diagnose_results, upgrade_batch, upgrade_nolock, dynamic_inspect, dynamic_preflight, dynamic_deploy, dynamic_refresh_test, dynamic_code_refresh, presentation_refresh, schedule_refresh, conflict_guard_refresh, stats_reset_refresh, results_preflight, repair_results, examples]
+        options: [inspect, pause_legacy, install, verify, audit, recent_five_readonly, score_conflict_readonly, score_revision_deploy, score_revision_verify, latency_readonly, latency_deploy, inspect_hkjc, stop_hkjc, verify_hkjc, diagnose_results, upgrade_batch, upgrade_nolock, dynamic_inspect, dynamic_preflight, dynamic_deploy, dynamic_refresh_test, dynamic_code_refresh, presentation_refresh, schedule_refresh, conflict_guard_refresh, stats_reset_refresh, results_preflight, repair_results, examples]
         required: true
         default: inspect
 permissions:

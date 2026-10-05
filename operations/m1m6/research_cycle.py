@@ -53,8 +53,9 @@ def cycle(sync=True):
         except BlockingIOError:
             return {"busy":True}
         try:
-            from result_refresh import snapshot,complete
-            result_events=snapshot()
+            from result_refresh import snapshot_tokens,complete_tokens
+            result_event_tokens=snapshot_tokens()
+            result_events=[t["sid"] for t in result_event_tokens]
             progress("核對賽果",started_at=started)
             if sync:
                 p=subprocess.run(["systemctl","start","crown-strategy-results.service"],
@@ -76,7 +77,7 @@ def cycle(sync=True):
                 archive.mkdir(exist_ok=True)
                 notifier.atomic(archive/f"{now}.json",result)
                 notifier.atomic(REGISTRY,result)
-                complete(result_events,int(time.time()*1000))
+                complete_tokens(result_event_tokens,int(time.time()*1000))
             progress("完成",started_at=started,completed_at=int(time.time()*1000),
                      next_search_at=result["next_search_at"],search=result["search"],
                      result_sync=sync_result,result_event_sids=result_events)

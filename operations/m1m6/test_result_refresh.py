@@ -56,13 +56,13 @@ class ResultRefreshTest(unittest.TestCase):
             root=Path(tmp)
             with patch.object(cycle,"STATE",root),patch.object(cycle,"REGISTRY",root/"registry.json"),\
                  patch.object(cycle,"progress"),patch.object(cycle.notifier,"atomic"),\
-                 patch.object(events,"snapshot",return_value=["1","2"]),\
-                 patch.object(events,"complete") as complete,\
+                 patch.object(events,"snapshot_tokens",return_value=[{"sid":"1","revision":1},{"sid":"2","revision":1}]),\
+                 patch.object(events,"complete_tokens") as complete,\
                  patch.object(cycle.time,"time",return_value=100),\
                  patch.object(cycle,"compute",return_value={"search":{},"updated_at":100000}) as compute:
                 r=cycle.cycle(sync=False)
                 self.assertEqual(r["next_search_at"],7300000)
-                complete.assert_called_once_with(["1","2"],100000)
+                complete.assert_called_once_with([{"sid":"1","revision":1},{"sid":"2","revision":1}],100000)
                 complete.reset_mock()
                 compute.side_effect=RuntimeError("fixture failure")
                 with self.assertRaises(RuntimeError):

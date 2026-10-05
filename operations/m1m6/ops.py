@@ -99,6 +99,13 @@ def main():
     elif action=="score_conflict_readonly":
         from score_conflict_audit import export
         result=export()
+    elif action=="score_revision_deploy":
+        from result_revision_ops import deploy
+        result=deploy()
+    elif action=="score_revision_verify":
+        from result_revision_ops import evidence
+        result={"summary":{"action":"score_revision_verify","database_writes":0,"forced_sends":0},
+                "verification":evidence()}
     elif action=="latency_readonly":
         from latency_ops import diagnose
         result=diagnose()
