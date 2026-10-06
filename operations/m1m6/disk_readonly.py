@@ -81,3 +81,31 @@ def inspect():
         if p.exists():
             report.setdefault("status_files", {})[name] = {"bytes": p.stat().st_size, "mtime": p.stat().st_mtime}
     return report
+
+
+def inspect_tmp():
+    report = {"summary": {"action": "disk_tmp_readonly", "at_ms": int(time.time()*1000),
+                           "deletes": 0, "database_writes": 0}}
+    report["df"] = command(["df", "-B1", "/"])
+    report["samples"] = {}
+    roots = ["/tmp/snap-private-tmp", "/tmp/snap-private-tmp/snap.chromium",
+             "/tmp/snap-private-tmp/snap.chromium/tmp", "/var/tmp", "/home"]
+    for root in roots:
+        if not Path(root).exists():
+            continue
+        rows = []
+        with os.scandir(root) as entries:
+            for i, entry in enumerate(entries):
+                if i >= 40:
+                    break
+                s = entry.stat(follow_symlinks=False)
+                rows.append({"name": entry.name, "is_dir": entry.is_dir(follow_symlinks=False),
+                             "bytes": s.st_size, "mtime": s.st_mtime})
+        report["samples"][root] = rows
+    report["tmp_browser_usage"] = command(["ionice", "-c", "3", "du", "-x", "-B1", "--max-depth=4",
+                                          "/tmp/snap-private-tmp/snap.chromium"], 150)
+    report["other_usage"] = command(["ionice", "-c", "3", "du", "-x", "-B1", "--max-depth=1",
+                                    "/var/tmp", "/home"], 20)
+    report["cleanup_config"] = command(["systemctl", "cat", "crown-tmp-cleanup.service",
+                                       "crown-tmp-cleanup.timer"])
+    return report

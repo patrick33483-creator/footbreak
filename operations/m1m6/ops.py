@@ -85,6 +85,9 @@ def main():
     elif action=="disk_readonly":
         from disk_readonly import inspect as disk_inspect
         result=disk_inspect()
+    elif action=="disk_tmp_readonly":
+        from disk_readonly import inspect_tmp
+        result=inspect_tmp()
     elif action=="pause_legacy":
         result=pause_legacy()
     elif action=="install":
