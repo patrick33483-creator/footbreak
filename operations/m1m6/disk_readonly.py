@@ -102,8 +102,26 @@ def inspect_tmp():
                 rows.append({"name": entry.name, "is_dir": entry.is_dir(follow_symlinks=False),
                              "bytes": s.st_size, "mtime": s.st_mtime})
         report["samples"][root] = rows
-    report["tmp_browser_usage"] = command(["ionice", "-c", "3", "du", "-x", "-B1", "--max-depth=4",
-                                          "/tmp/snap-private-tmp/snap.chromium"], 150)
+    root = "/tmp/snap-private-tmp/snap.chromium/tmp"
+    counts = {"total": 0, "playwright_profiles": 0, "chromium_fetchers": 0,
+              "older_24h": 0, "older_7d": 0, "complete": True}
+    now = time.time()
+    deadline = time.monotonic()+25
+    with os.scandir(root) as entries:
+        for entry in entries:
+            if time.monotonic() > deadline:
+                counts["complete"] = False
+                break
+            counts["total"] += 1
+            counts["playwright_profiles"] += entry.name.startswith("playwright_chromiumdev_profile-")
+            counts["chromium_fetchers"] += entry.name.startswith("org.chromium.Chromium.chromium_chrome_url_fetcher_")
+            try:
+                age = now-entry.stat(follow_symlinks=False).st_mtime
+                counts["older_24h"] += age > 86400
+                counts["older_7d"] += age > 604800
+            except FileNotFoundError:
+                pass
+    report["browser_tmp_counts"] = counts
     report["other_usage"] = command(["ionice", "-c", "3", "du", "-x", "-B1", "--max-depth=1",
                                     "/var/tmp", "/home"], 20)
     report["cleanup_config"] = command(["systemctl", "cat", "crown-tmp-cleanup.service",
