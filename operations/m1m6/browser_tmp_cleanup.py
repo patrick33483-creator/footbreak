@@ -100,6 +100,14 @@ def health():
             db.execute("PRAGMA query_only=ON")
             row = db.execute(f"SELECT {cols} FROM {table} ORDER BY rowid DESC LIMIT 1").fetchone()
             data["databases"][p] = {"inode": os.stat(p).st_ino, "latest": dict(zip(cols.split(","), row))}
+            if table == "crown_snapshots":
+                deadline = time.monotonic()+5
+                db.set_progress_handler(lambda: int(time.monotonic() > deadline), 10000)
+                try:
+                    data["databases"][p]["max_captured_at"] = db.execute(
+                        "SELECT MAX(captured_at) FROM crown_snapshots").fetchone()[0]
+                except sqlite3.OperationalError:
+                    data["databases"][p]["max_captured_at_check"] = "bounded_query_timeout"
         finally:
             db.close()
     p = Path("/var/lib/crown-m1m6/status.json")
