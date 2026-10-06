@@ -12,8 +12,11 @@ def command(args, timeout=120):
     try:
         p = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
         return {"code": p.returncode, "stdout": p.stdout[-45000:], "stderr": p.stderr[-1500:]}
-    except subprocess.TimeoutExpired:
-        return {"timeout": True}
+    except subprocess.TimeoutExpired as e:
+        out = e.stdout or b""
+        if isinstance(out, bytes):
+            out = out.decode("utf-8", errors="replace")
+        return {"timeout": True, "stdout": out[-45000:], "partial": True}
 
 
 def inspect():
@@ -21,17 +24,21 @@ def inspect():
                            "deletes": 0, "database_writes": 0, "service_changes": 0}}
     report["df"] = command(["df", "-B1", "-T"])
     report["inodes"] = command(["df", "-i", "/"])
-    report["directories"] = command(["du", "-x", "-B1", "--max-depth=2", "/var", "/opt", "/root", "/tmp"], 240)
+    report["directories"] = {}
+    for root in ("/opt", "/var/lib/crown-m1m6", "/var/backups", "/root", "/tmp", "/var/lib", "/var/log"):
+        report["directories"][root] = command(["ionice", "-c", "3", "du", "-x", "-B1", "--max-depth=2", root], 25)
+    report["var_lib_children"] = [p.name for p in Path("/var/lib").iterdir()]
     report["journal_size"] = command(["journalctl", "--disk-usage"])
-    report["large_files"] = command(["find", "/var", "/opt", "/root", "/tmp", "-xdev", "-type", "f",
-                                     "-size", "+200M", "-printf", "%s %TY-%Tm-%Td %TH:%TM %p\n"], 120)
+    report["large_files"] = command(["find", "/opt", "/var/lib/crown-m1m6", "/var/backups", "/root", "/tmp", "-xdev", "-type", "f",
+                                     "-size", "+200M", "-printf", "%s %TY-%Tm-%Td %TH:%TM %p\n"], 30)
     report["deleted_open"] = command(["bash", "-lc", "command -v lsof >/dev/null && lsof -nP +L1 | head -60"], 30)
     units = ["crown-m1m6", "crown-tick", "crown-sweep", "crown-strategy-results",
              "crown-strategy-search", "crown-tmp-cleanup", "footbreak-tick"]
     report["services"] = {u: command(["systemctl", "show", u+".service", "-p", "ActiveState",
                                       "-p", "Result", "-p", "ExecMainStatus",
                                       "-p", "ExecMainExitTimestamp"]) for u in units}
-    logs = command(["journalctl", "--since", "24 hours ago", "--no-pager", "-o", "short-iso",
+    logs = command(["journalctl", "-u", "crown-m1m6.service", "-u", "crown-tick.service",
+                    "-u", "crown-sweep.service", "--since", "30 minutes ago", "--no-pager", "-o", "short-iso",
                     "--case-sensitive=no", "--grep",
                     "no space left|database or disk is full|sqlite_full|disk quota exceeded|database is locked|disk i/o error"], 60)
     text = logs.get("stdout", "")
@@ -41,7 +48,7 @@ def inspect():
     selected = [line for line in text.splitlines() if any(p in line.lower() for p in patterns)]
     report["write_errors"] = {"matches": len(selected), "last": [
         re.sub(r"https?://\S+", "[URL REDACTED]", line) for line in selected[-35:]],
-        "scope": "matching journal records within 24h, output capped at 45000 chars",
+        "scope": "crown m1m6/tick/sweep matching records within 30min, output capped at 45000 chars",
         "query_code": logs.get("code"), "query_timeout": logs.get("timeout", False)}
     report["database_files"] = {}
     for name in ("/opt/crown-radar-v2/data/crown.db", "/var/lib/crown-m1m6/ledger.sqlite"):
