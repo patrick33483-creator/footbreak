@@ -82,6 +82,9 @@ def main():
     action=sys.argv[1]
     if action=="inspect":
         result=inspect()
+    elif action=="disk_readonly":
+        from disk_readonly import inspect as disk_inspect
+        result=disk_inspect()
     elif action=="pause_legacy":
         result=pause_legacy()
     elif action=="install":
