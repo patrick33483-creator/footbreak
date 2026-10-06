@@ -5,7 +5,7 @@ on:
       action:
         type: choice
         description: 'Scoped maintenance or read-only inspection, including disk_readonly'
-        options: [inspect, disk_readonly, disk_tmp_readonly, pause_legacy, install, verify, audit, recent_five_readonly, recent_five_gate_deploy, recent_five_gate_verify, repair_postponed_3056290, verify_postponed_3056290, score_conflict_readonly, score_revision_deploy, score_revision_verify, latency_readonly, latency_deploy, inspect_hkjc, stop_hkjc, verify_hkjc, diagnose_results, upgrade_batch, upgrade_nolock, dynamic_inspect, dynamic_preflight, dynamic_deploy, dynamic_refresh_test, dynamic_code_refresh, presentation_refresh, schedule_refresh, conflict_guard_refresh, stats_reset_refresh, results_preflight, repair_results, examples]
+        options: [inspect, disk_readonly, disk_tmp_readonly, approved_browser_tmp_cleanup, browser_cleanup_verify, pause_legacy, install, verify, audit, recent_five_readonly, recent_five_gate_deploy, recent_five_gate_verify, repair_postponed_3056290, verify_postponed_3056290, score_conflict_readonly, score_revision_deploy, score_revision_verify, latency_readonly, latency_deploy, inspect_hkjc, stop_hkjc, verify_hkjc, diagnose_results, upgrade_batch, upgrade_nolock, dynamic_inspect, dynamic_preflight, dynamic_deploy, dynamic_refresh_test, dynamic_code_refresh, presentation_refresh, schedule_refresh, conflict_guard_refresh, stats_reset_refresh, results_preflight, repair_results, examples]
         required: true
         default: inspect
 permissions:

@@ -88,6 +88,12 @@ def main():
     elif action=="disk_tmp_readonly":
         from disk_readonly import inspect_tmp
         result=inspect_tmp()
+    elif action=="approved_browser_tmp_cleanup":
+        from browser_tmp_cleanup import cleanup
+        result=cleanup()
+    elif action=="browser_cleanup_verify":
+        from browser_tmp_cleanup import verify
+        result=verify()
     elif action=="pause_legacy":
         result=pause_legacy()
     elif action=="install":
