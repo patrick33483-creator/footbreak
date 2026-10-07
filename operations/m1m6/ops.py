@@ -127,6 +127,12 @@ def main():
     elif action=="repair_postponed_3056290":
         from repair_postponed_3056290 import repair
         result=repair()
+    elif action=="repair_result_3092501":
+        from repair_result_3092501 import repair
+        result=repair()
+    elif action=="verify_result_3092501":
+        from repair_result_3092501 import verify
+        result=verify()
     elif action=="verify_postponed_3056290":
         from repair_postponed_3056290 import verify
         result=verify()
