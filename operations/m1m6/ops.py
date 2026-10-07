@@ -154,6 +154,9 @@ def main():
     elif action=="diagnose_results":
         from result_diag import diagnose
         result=diagnose()
+    elif action=="kickoff_mismatch_readonly":
+        from kickoff_mismatch_audit import audit
+        result=audit()
     elif action=="upgrade_batch":
         from upgrade_batch import upgrade
         result=upgrade()
