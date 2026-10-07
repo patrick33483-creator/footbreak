@@ -42,7 +42,12 @@ def audit():
     if prior:
         assert (prior["status"], prior["home_score"], prior["away_score"]) == ("完", 0, 0), "Existing score conflict"
     simulated = {"sid": SID, "status": "完", "home_score": 0, "away_score": 0, "fetched_at": now}
-    rows, quality = universe(source, now)
+    actual_rows, quality = universe(source, now)
+    # A separate pipeline may have imported the score since the user's request.
+    # Compare a deliberately withheld-result baseline to adding this score, not
+    # the misleading no-op of adding an already present score.
+    rows = [{**r, "result": None, "pnl": None, "score": None, "result_at": None}
+            if r["sid"] == SID else r for r in actual_rows]
     after_rows = [settle(r, simulated) if r["sid"] == SID else r for r in rows]
     corrected_rows, corrected_reason = feature_rows(
         {**match, "kickoff_utc": SOURCE_KO}, snapshots[SID], checkpoints.get(SID, {}),
@@ -66,6 +71,7 @@ def audit():
             outputs.append({"id": rule["id"], "version": rule["version"], "active": rule["active"],
                             "description": rule.get("description"), "market": rule["market"], "side": rule["side"],
                             "before": bg, "score_only_after": ag, "source_time_after": cg,
+                            "actual_current": gates([r for r in matched_rows(actual_rows, rule) if r.get("result")]),
                             "hypothetical_match_results": history(impacted),
                             "before_last30": history(before), "after_last30": history(after),
                             "window_changes": {n: {
@@ -81,6 +87,11 @@ def audit():
     with closing(sqlite3.connect(f"file:{BASE/'ledger.sqlite'}?mode=ro", uri=True)) as db:
         sent = db.execute("SELECT COUNT(*) FROM items WHERE sid=? AND status IN ('sent','sending','uncertain')",
                           (SID,)).fetchone()[0]
+    with closing(sqlite3.connect(f"file:{notifier.CROWN_DB}?mode=ro", uri=True)) as db:
+        db.row_factory = sqlite3.Row
+        imports = [dict(r) for r in db.execute(
+            "SELECT observed_at,written_at,source_url,evidence_json FROM strategy_result_sync_audit WHERE sid=? ORDER BY id DESC LIMIT 3",
+            (SID,))]
     return {"summary": {"action": "score_3097372_memory_only_simulation", "at_ms": now,
                         "gate_version": GATE_VERSION, "registry_updated_at": registry.get("updated_at"),
                         "registry_sha256": hashlib.sha256(registry_raw).hexdigest(),
@@ -88,8 +99,10 @@ def audit():
                         "target_notified_items": sent, "database_writes": 0, "registry_writes": 0,
                         "lock_changes": 0, "forced_sends": 0,
                         "baseline_already_has_result": prior is not None,
+                        "comparison_baseline": "counterfactual_withhold_this_result_at_same_current_snapshot",
+                        "qualification_changes": [r for r in changed if r["pass_before"] != r["pass_after"]],
                         "discovery_and_merging_rerun": False},
             "match": match, "source_evidence": {**proof,"url": URL,"raw_header": raw},
-            "prior_official_result": prior, "snapshots": times,
+            "prior_official_result": prior, "existing_import_audits": imports, "snapshots": times,
             "source_time_quality": {"reason": corrected_reason, "valid_market_rows": len(corrected_rows)},
             "baseline_quality": quality, "strategies": outputs}
