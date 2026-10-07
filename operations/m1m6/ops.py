@@ -157,6 +157,9 @@ def main():
     elif action=="kickoff_mismatch_readonly":
         from kickoff_mismatch_audit import audit
         result=audit()
+    elif action=="simulate_score_3097372":
+        from score_3097372_simulation import audit
+        result=audit()
     elif action=="upgrade_batch":
         from upgrade_batch import upgrade
         result=upgrade()
