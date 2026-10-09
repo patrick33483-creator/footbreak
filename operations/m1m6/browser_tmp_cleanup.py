@@ -1,5 +1,6 @@
-"""One-time user-approved old, unused Snap browser temporary cleanup."""
+"""User-approved old, unused Snap browser temporary cleanup."""
 import collections
+import fcntl
 import hashlib
 import json
 import os
@@ -14,6 +15,7 @@ import time
 ROOT = Path("/tmp/snap-private-tmp/snap.chromium/tmp")
 NAME = re.compile(r"(?:playwright_chromiumdev_profile-|org\.chromium\.Chromium\.chromium_chrome_url_fetcher_\.)[A-Za-z0-9_-]+")
 RECEIPT = Path("/var/lib/crown-m1m6/browser_tmp_cleanup_receipt.json")
+LOCK = Path("/var/lib/crown-m1m6/browser_tmp_cleanup.lock")
 from disk_readonly import command
 
 
@@ -116,6 +118,19 @@ def health():
 
 
 def cleanup():
+    """Serialize scheduled and manually dispatched runs, fail closed on overlap."""
+    with LOCK.open("a") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return {"summary": {"action": "approved_browser_tmp_cleanup",
+                                "stop_reason": "another_cleanup_running",
+                                "deleted_directories": 0, "deleted_allocated_bytes": 0,
+                                "database_writes": 0, "service_restarts": 0}}
+        return _cleanup_unlocked()
+
+
+def _cleanup_unlocked():
     assert os.geteuid() == 0
     assert ROOT.resolve() == ROOT and ROOT.is_dir()
     assert shutil.rmtree.avoids_symlink_attacks

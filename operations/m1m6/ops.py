@@ -97,6 +97,12 @@ def main():
     elif action=="browser_cleanup_verify":
         from browser_tmp_cleanup import verify
         result=verify()
+    elif action=="browser_tmp_schedule_install":
+        from browser_tmp_schedule_ops import install as browser_schedule_install
+        result=browser_schedule_install()
+    elif action=="browser_tmp_schedule_verify":
+        from browser_tmp_schedule_ops import verify as browser_schedule_verify
+        result=browser_schedule_verify()
     elif action=="pause_legacy":
         result=pause_legacy()
     elif action=="install":
