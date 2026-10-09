@@ -88,6 +88,9 @@ def main():
     elif action=="disk_tmp_readonly":
         from disk_readonly import inspect_tmp
         result=inspect_tmp()
+    elif action=="browser_growth_readonly":
+        from browser_growth_readonly import inspect as browser_growth_inspect
+        result=browser_growth_inspect()
     elif action=="approved_browser_tmp_cleanup":
         from browser_tmp_cleanup import cleanup
         result=cleanup()
